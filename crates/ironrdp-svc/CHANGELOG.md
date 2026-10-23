@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.8.0...ironrdp-svc-v0.9.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- Add runtime-defined static channels: `StaticChannelSet::insert_dynamic` returns a `StaticChannelKey`, used by key- and name-based accessors such as `get_by_key`, `attach_channel_id_by_key`, `get_channel_id_by_channel_name` and `iter_by_key`, and the set gains `len` and `is_empty` ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba))
+
+- `StaticChannelSet` holds at most `MAX_STATIC_CHANNELS` (31) channels, and `insert` no longer adds a new channel past that limit ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba))
+
+- Add the provided `SvcProcessor::channel_options` method to set the channel options sent in the GCC Client Network Data, readable through `StaticVirtualChannel::channel_options` ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba)) ([#2177](https://github.com/Devolutions/IronRDP/issues/2177)) ([8575afc308](https://github.com/Devolutions/IronRDP/commit/8575afc308ba7f67fced0b0f61ce07fa4aca5995))
+
+- Add `StaticChannelSet::set_maximum_chunk_size` and `client_encode_svc_messages_with_max_chunk_len` to send static channel data in chunks of the negotiated `VCChunkSize`, up to `MAX_CHANNEL_CHUNK_LENGTH` ([#1622](https://github.com/Devolutions/IronRDP/issues/1622)) ([4e3903fbbe](https://github.com/Devolutions/IronRDP/commit/4e3903fbbef2904505f35e3437a7106807ac5987))
+
+### <!-- 4 -->Bug Fixes
+
+- Reject malformed static channel fragment sequences, such as a fragment without an initial fragment or data that does not match the declared length ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba))
+
+### <!-- 7 -->Build
+
+- Bump the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.7.0...ironrdp-svc-v0.8.0)] - 2026-07-10
 
 ### <!-- 7 -->Build

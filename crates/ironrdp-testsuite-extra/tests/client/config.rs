@@ -1237,6 +1237,63 @@ fn udp_and_graphics_pipeline_cli_flags_reach_the_config() {
     assert_eq!(config.udp_offer_version(), UdpVersion::V1);
 }
 
+/// Where `bitmapcachepersistenable:i:1` puts the cache, derived from the documented location
+/// rather than from `default_cache_path`.
+fn documented_default_cache_path() -> Option<PathBuf> {
+    let absolute = |name: &str| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+
+    #[cfg(windows)]
+    {
+        absolute("LOCALAPPDATA").map(|dir| dir.join("IronRDP").join("egfx-cache.bin"))
+    }
+
+    #[cfg(not(windows))]
+    {
+        absolute("XDG_CACHE_HOME")
+            .or_else(|| absolute("HOME").map(|home| home.join(".cache")))
+            .map(|dir| dir.join("ironrdp").join("egfx-cache.bin"))
+    }
+}
+
+#[test]
+fn bitmap_cache_persistence_reaches_the_graphics_cache() {
+    // oracle: reference Microsoft RDP file settings (bitmapcachepersistenable 1 caches bitmaps on
+    // the local computer, 0 does not); off without the key is mutant (desktop pixels written to disk
+    // without being asked), unlike mstsc; the default location is mutant (a path other than the one
+    // default_cache_path documents)
+    let rdp = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";
+    assert_eq!(parse_config_from_rdp(rdp, &[]).channels().egfx_persistent_cache, None);
+
+    let enabled = format!("{rdp}bitmapcachepersistenable:i:1\n");
+    assert_eq!(
+        parse_config_from_rdp(&enabled, &[]).channels().egfx_persistent_cache,
+        documented_default_cache_path()
+    );
+    assert_eq!(
+        parse_config_from_rdp(&enabled, &["--egfx-cache", "explicit.bin"])
+            .channels()
+            .egfx_persistent_cache,
+        Some(PathBuf::from("explicit.bin"))
+    );
+
+    let disabled = format!("{rdp}bitmapcachepersistenable:i:0\n");
+    assert_eq!(
+        parse_config_from_rdp(&disabled, &[]).channels().egfx_persistent_cache,
+        None
+    );
+    // The command line is applied after the .rdp file, so an explicit path still wins.
+    assert_eq!(
+        parse_config_from_rdp(&disabled, &["--egfx-cache", "explicit.bin"])
+            .channels()
+            .egfx_persistent_cache,
+        Some(PathBuf::from("explicit.bin"))
+    );
+}
+
 #[test]
 fn udp_offer_without_udp_is_rejected() {
     let rdp = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";

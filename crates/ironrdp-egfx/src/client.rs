@@ -11,6 +11,9 @@
 //! - **Surface Management**: Tracks server-created surfaces ([3.3.1.6])
 //! - **Frame Acknowledgment**: Sends `FrameAcknowledge` after `EndFrame` ([3.3.5.12])
 //! - **Codec Dispatch**: Routes `WireToSurface1` by `codec_id` ([3.3.5.2])
+//! - **Persistent Bitmap Cache**: Offers stored cache entries after `CapabilitiesConfirm` and
+//!   preloads the slots the server accepts ([3.3.5.16], [3.3.5.17]), through an embedder-supplied
+//!   [`PersistentCacheStore`]
 //!
 //! # Architecture
 //!
@@ -52,6 +55,8 @@
 //! [3.3.1.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/83cb08ff-c97f-4d08-b834-7aa69cdea6c5
 //! [3.3.5.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/90aba3e3-d4a8-4af1-b1bb-a94e2313bbf0
 //! [3.3.5.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/e3c80bff-3e4e-4e65-b7c2-c2cd6b1fb4f5
+//! [3.3.5.16]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/adf5cc51-d0b1-4533-987f-16296bbe6966
+//! [3.3.5.17]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/df29d040-f74b-4002-92ed-f0903b8402c3
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,22 +66,36 @@ use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_graphics::clearcodec::ClearCodecDecoder;
 use ironrdp_graphics::progressive::{ProgressiveDecoder, TILE_BYTES_PER_PIXEL, TILE_DIM};
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
+use ironrdp_graphics::rectangle_processing::Region;
+use ironrdp_graphics::rfx::{self, MessageDecoder as RfxMessageDecoder, TileDecoder as RfxTileDecoder};
 use ironrdp_graphics::zgfx;
-use ironrdp_pdu::geometry::ExclusiveRectangle;
+use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
 use ironrdp_pdu::{PduResult, decode_cursor, decode_err, pdu_other_err};
 use tracing::{debug, trace, warn};
 
 use crate::CHANNEL_NAME;
 use crate::avc444::{Avc444Layout, Yuv444Frame};
+use crate::cache::{
+    CACHE_BYTES, CACHE_SLOTS, MAX_CACHE_IMPORT_ENTRIES, MAX_CACHE_IMPORT_ENTRY_BYTES, PersistentCacheStore,
+    SMALL_CACHE_BYTES, SMALL_CACHE_SLOTS,
+};
 use crate::compositor::{Compositor, OutputUpdate};
 use crate::decode::H264Decoder;
 use crate::pdu::{
-    Avc420BitmapStream, Avc444BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu,
-    CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags,
-    CapabilitiesV107Flags, CapabilitySet, Codec1Type, DeleteEncodingContextPdu, Encoding, EvictCacheEntryPdu,
-    FrameAcknowledgePdu, GfxPdu, MapSurfaceToScaledOutputPdu, MapSurfaceToScaledWindowPdu, MapSurfaceToWindowPdu,
-    PixelFormat, QueueDepth, RawCapabilitySet, SolidFillPdu, SurfaceToCachePdu, SurfaceToSurfacePdu, WireToSurface2Pdu,
+    Avc420BitmapStream, Avc444BitmapStream, CacheImportOfferPdu, CacheImportReplyPdu, CacheToSurfacePdu,
+    CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags,
+    CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet, Codec1Type, DeleteEncodingContextPdu, Encoding,
+    EvictCacheEntryPdu, FrameAcknowledgePdu, GfxPdu, MapSurfaceToScaledOutputPdu, MapSurfaceToScaledWindowPdu,
+    MapSurfaceToWindowPdu, PixelFormat, QueueDepth, RawCapabilitySet, SolidFillPdu, SurfaceToCachePdu,
+    SurfaceToSurfacePdu, WireToSurface2Pdu,
 };
+
+/// Upper bound on the region-clipping work of one RemoteFX command: rectangles scanned while
+/// normalizing each frame's region, plus tiles times normalized rectangles. It bounds the work a
+/// small payload can request, and a command past it is dropped. Normalization merges overlapping
+/// and repeated rectangles first, so only a region of very many disjoint rectangles reaches it,
+/// the same bound the RemoteFX Progressive path applies.
+const MAX_RFX_CLIPPING_WORK: usize = 1 << 20;
 
 /// Max capacity to keep for decompressed buffer when cleared.
 const MAX_DECOMPRESSED_BUFFER_CAPACITY: usize = 16384; // 16 KiB
@@ -122,7 +141,8 @@ pub struct CodecCapabilities {
     pub avc420: bool,
     /// AVC444 (H.264 4:4:4) is available
     pub avc444: bool,
-    /// The bitmap cache is constrained to 16 MB instead of 100 MB ([MS-RDPEGFX] 3.3.1.4)
+    /// The bitmap cache is constrained to 16 MB and 4,096 slots instead of 100 MB and 25,600
+    /// slots ([MS-RDPEGFX] 3.3.1.4)
     ///
     /// Set by `SMALL_CACHE`, by `THINCLIENT` in versions 8 and 8.1, and by version 10.3.
     ///
@@ -204,6 +224,8 @@ pub struct BitmapUpdate {
     /// Codec associated with this update
     ///
     /// RFX Progressive tiles use [`Codec1Type::Uncompressed`] after decoding to RGBA.
+    /// [`Codec1Type::Alpha`] updates carry the surface pixels after the opacity was applied:
+    /// the color an earlier command painted, with the alpha this command set.
     pub codec_id: Codec1Type,
     /// RGBA pixel data (4 bytes per pixel), row-major
     ///
@@ -387,7 +409,7 @@ pub trait GraphicsPipelineHandler: Send {
     ///
     /// Per [MS-RDPEGFX 2.2.2.17].
     ///
-    /// [MS-RDPEGFX 2.2.2.17]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/7c7a0a5d-50c1-44b9-a2e7-44b47ce1e49d
+    /// [MS-RDPEGFX 2.2.2.17]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0c4d88f8-50dc-465a-ab00-88a3fe0ec3c5
     fn on_cache_import_reply(&mut self, _pdu: &CacheImportReplyPdu) {}
 
     /// Called for PDUs that have no specific handler
@@ -436,6 +458,8 @@ pub struct GraphicsPipelineClient {
     clearcodec_decoder: Option<ClearCodecDecoder>,
     planar_decoder: BitmapStreamDecoder,
     progressive_decoder: ProgressiveDecoder,
+    rfx_decoder: RfxMessageDecoder,
+    rfx_tiles: RfxTileDecoder,
     /// Lifetime decode failures, used to throttle diagnostics.
     dropped_updates: u64,
 
@@ -451,6 +475,13 @@ pub struct GraphicsPipelineClient {
     current_frame_id: Option<u32>,
     total_frames_decoded: u32,
     pending_output_reset: Option<(u16, u16)>,
+
+    persistent_cache: Option<Box<dyn PersistentCacheStore>>,
+    /// Whether the persistent cache was already listed for an offer on this channel. Offering
+    /// again after the session filled and evicted slots would announce stale entries.
+    cache_import_attempted: bool,
+    /// Keys of the last `CacheImportOffer`, in offer order, until its reply arrives.
+    offered_cache_keys: Option<Vec<u64>>,
 }
 
 impl GraphicsPipelineClient {
@@ -468,6 +499,8 @@ impl GraphicsPipelineClient {
             clearcodec_decoder: None,
             planar_decoder: BitmapStreamDecoder::default(),
             progressive_decoder: ProgressiveDecoder::new(),
+            rfx_decoder: RfxMessageDecoder::new(),
+            rfx_tiles: RfxTileDecoder::new(),
             dropped_updates: 0,
             decompressor: zgfx::Decompressor::new(),
             decompressed_buffer: Vec::new(),
@@ -479,7 +512,24 @@ impl GraphicsPipelineClient {
             current_frame_id: None,
             total_frames_decoded: 0,
             pending_output_reset: None,
+            persistent_cache: None,
+            cache_import_attempted: false,
+            offered_cache_keys: None,
         }
+    }
+
+    /// Keep the bitmap cache across sessions in `store` ([MS-RDPEGFX] [3.3.1.5]).
+    ///
+    /// Once the server confirms capabilities, the client offers the stored entries in a
+    /// `CacheImportOffer` and loads the ones the server accepts into the slots its
+    /// `CacheImportReply` assigns. When the channel closes, the bitmap cache is saved back.
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    /// [3.3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/1a2abd79-889c-4207-a1c3-c8c1e1d6f117
+    #[must_use]
+    pub fn with_persistent_cache(mut self, store: Box<dyn PersistentCacheStore>) -> Self {
+        self.persistent_cache = Some(store);
+        self
     }
 
     // ========================================================================
@@ -508,6 +558,7 @@ impl GraphicsPipelineClient {
     /// Any processing error while awaiting confirmation closes this client; subsequent `process()` calls fail.
     /// Recreate the channel with a new client after such an error.
     /// Surfaces and cached pixels are discarded; the last output extent remains until a post-confirmation `ResetGraphics` arrives.
+    /// With a persistent cache, the bitmap cache is saved first and offered again once the reset is confirmed.
     /// A previously confirmed `V10_6Err` is echoed for compatibility with peers using that alternate V10.6 value.
     /// The ACK count restarts for Windows interoperability, despite the connection-wide wording in
     /// [MS-RDPEGFX 2.2.2.13] "RDPGFX_FRAME_ACKNOWLEDGE_PDU".
@@ -537,6 +588,11 @@ impl GraphicsPipelineClient {
         self.surfaces.clear();
         // The compositor reset below drops their budget charge with everything else.
         self.avc444_frames.clear();
+        // The reset discards the bitmap cache; save it first, and let the confirmation offer it
+        // again, so the server can paste from it without uploading the tiles anew.
+        self.save_persistent_cache();
+        self.cache_import_attempted = false;
+        self.offered_cache_keys = None;
         self.compositor.reset_protocol();
         // A full channel reset restarts codec contexts, unlike the output-only ResetGraphics PDU.
         self.clearcodec_decoder = None;
@@ -635,7 +691,7 @@ impl GraphicsPipelineClient {
         match pdu {
             GfxPdu::CapabilitiesConfirm(confirm) => {
                 self.handle_capabilities_confirm(confirm.0)?;
-                Ok(vec![])
+                Ok(self.cache_import_offer().into_iter().collect())
             }
             GfxPdu::ResetGraphics(reset) => {
                 self.handle_reset_graphics(reset.width, reset.height)?;
@@ -703,7 +759,7 @@ impl GraphicsPipelineClient {
                     "SurfaceToCache"
                 );
                 self.compositor
-                    .surface_to_cache(pdu.surface_id, pdu.cache_slot, &pdu.source_rectangle);
+                    .surface_to_cache(pdu.surface_id, pdu.cache_slot, pdu.cache_key, &pdu.source_rectangle);
                 self.handler.on_surface_to_cache(&pdu);
                 Ok(vec![])
             }
@@ -725,7 +781,8 @@ impl GraphicsPipelineClient {
                 Ok(vec![])
             }
             GfxPdu::CacheImportReply(pdu) => {
-                trace!("CacheImportReply");
+                trace!(imported = pdu.cache_slots.len(), "CacheImportReply");
+                self.handle_cache_import_reply(&pdu);
                 self.handler.on_cache_import_reply(&pdu);
                 Ok(vec![])
             }
@@ -793,12 +850,18 @@ impl GraphicsPipelineClient {
                     version = cap.version.0,
                     "Server confirmed an unknown EGFX capability version; proceeding with defaults"
                 );
+                self.negotiated_caps = None;
+                self.codec_caps = CodecCapabilities::default();
+                self.compositor.set_small_bitmap_cache(self.codec_caps.small_cache);
                 self.state = ClientState::Active;
                 return Ok(());
             }
             Err(e) if self.state == ClientState::Resetting => return Err(decode_err!(e)),
             Err(e) => {
                 warn!(error = %e, "Failed to parse server's EGFX capabilities confirmation");
+                self.negotiated_caps = None;
+                self.codec_caps = CodecCapabilities::default();
+                self.compositor.set_small_bitmap_cache(self.codec_caps.small_cache);
                 self.state = ClientState::Active;
                 return Ok(());
             }
@@ -990,6 +1053,8 @@ impl GraphicsPipelineClient {
                 self.decode_clearcodec(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data)
             }
             Codec1Type::Planar => self.decode_planar(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data),
+            Codec1Type::RemoteFx => self.decode_remotefx(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data),
+            Codec1Type::Alpha => self.decode_alpha(pdu.surface_id, &pdu.destination_rectangle, &pdu.bitmap_data),
             Codec1Type::Avc444 | Codec1Type::Avc444v2 => {
                 if !self
                     .h264_decoder
@@ -1004,11 +1069,6 @@ impl GraphicsPipelineClient {
             }
             Codec1Type::Uncompressed => {
                 self.handle_uncompressed(pdu);
-                return Ok(());
-            }
-            _ => {
-                trace!(codec_id = ?pdu.codec_id, "Forwarding unsupported codec to handler");
-                self.handler.on_unhandled_pdu(&GfxPdu::WireToSurface1(pdu));
                 return Ok(());
             }
         };
@@ -1439,6 +1499,366 @@ impl GraphicsPipelineClient {
         Ok(())
     }
 
+    /// Decode a RemoteFX (`RDPGFX_CODECID_CAVIDEO`, 0x0003) command.
+    ///
+    /// The payload is a RemoteFX message ([MS-RDPRFX] [2.2.2][rfx-2.2.2]). Its tile positions and
+    /// region rectangles are relative to the top-left corner of `destRect`
+    /// ([MS-RDPEGFX] [2.2.2.1]); only the parts of each tile inside both a region rectangle and
+    /// `destRect` are painted, and only those tiles are decoded.
+    ///
+    /// [MS-RDPRFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/62495a4a-a495-46ea-b459-5cde04c44549
+    /// [rfx-2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/edd6c368-4f39-420a-bf14-a0e83c654ab7
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    /// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/fb919fce-cc97-4d2b-8cf5-a737a00ef1a6
+    fn decode_remotefx(
+        &mut self,
+        surface_id: u16,
+        dest_rect: &ExclusiveRectangle,
+        bitmap_data: &[u8],
+    ) -> PduResult<()> {
+        let message = self
+            .rfx_decoder
+            .parse(bitmap_data)
+            .map_err(|e| pdu_other_err!("RemoteFX decode", source: e))?;
+
+        let Some((surface_width, surface_height)) = self.surfaces.get(&surface_id).map(|s| (s.width, s.height)) else {
+            return Ok(());
+        };
+        // Nothing is painted outside the command destination or the surface.
+        let bound_right = u32::from(dest_rect.right.min(surface_width));
+        let bound_bottom = u32::from(dest_rect.bottom.min(surface_height));
+        let clip = |left: u32, top: u32, width: u32, height: u32| {
+            let right = left.saturating_add(width).min(bound_right);
+            let bottom = top.saturating_add(height).min(bound_bottom);
+            // INVARIANT: `left < right <= bound_right` and `top < bottom <= bound_bottom`, and both
+            // bounds are `u16` values, so every edge fits a `u16` and `right - 1`, `bottom - 1`
+            // cannot underflow.
+            (left < right && top < bottom).then(|| InclusiveRectangle {
+                left: u16::try_from(left).expect("left < right fits u16"),
+                top: u16::try_from(top).expect("top < bottom fits u16"),
+                right: u16::try_from(right - 1).expect("right is at most a u16 bound"),
+                bottom: u16::try_from(bottom - 1).expect("bottom is at most a u16 bound"),
+            })
+        };
+
+        let origin_x = u32::from(dest_rect.left);
+        let origin_y = u32::from(dest_rect.top);
+
+        // Each frame's region is normalized into disjoint rectangles, so a pixel covered by several
+        // (or repeated) region rectangles is painted once, and each tile is intersected with the
+        // normalized region. Both steps scan the region, so their cost is charged against one
+        // bound, all of it before the first tile is decoded.
+        let mut work = 0usize;
+        let mut charge = |units: usize| {
+            work = work.saturating_add(units);
+            if MAX_RFX_CLIPPING_WORK < work {
+                Err(pdu_other_err!("RemoteFX message needs too much region clipping work"))
+            } else {
+                Ok(())
+            }
+        };
+        let mut regions = Vec::with_capacity(message.frames.len());
+        for frame in &message.frames {
+            let mut region = Region::new();
+            let rectangles: Vec<InclusiveRectangle> = if frame.rectangles.is_empty() {
+                // A region without rectangles makes the whole frame valid (MS-RDPRFX 2.2.2.3.3);
+                // in EGFX the frame is the destination.
+                clip(origin_x, origin_y, u32::MAX, u32::MAX).into_iter().collect()
+            } else {
+                frame
+                    .rectangles
+                    .iter()
+                    .filter_map(|r| {
+                        clip(
+                            origin_x + u32::from(r.x),
+                            origin_y + u32::from(r.y),
+                            u32::from(r.width),
+                            u32::from(r.height),
+                        )
+                    })
+                    .collect()
+            };
+            for rectangle in rectangles {
+                charge(region.rectangles.len().saturating_add(1))?;
+                region.union_rectangle(rectangle);
+            }
+            charge(
+                frame
+                    .tile_set
+                    .tiles
+                    .len()
+                    .saturating_mul(region.rectangles.len().max(1)),
+            )?;
+            regions.push(region);
+        }
+
+        let tile_size = u32::from(rfx::TILE_SIZE);
+        for (frame, region) in message.frames.iter().zip(&regions) {
+            let tile_set = &frame.tile_set;
+            // A tile position listed twice in one tileset is decoded once: the last occurrence is
+            // the one that would remain painted.
+            let mut seen = BTreeSet::new();
+            for tile in tile_set.tiles.iter().rev() {
+                if !seen.insert((tile.x, tile.y)) {
+                    continue;
+                }
+                let tile_left = origin_x + u32::from(tile.x) * tile_size;
+                let tile_top = origin_y + u32::from(tile.y) * tile_size;
+                let Some(tile_rect) = clip(tile_left, tile_top, tile_size, tile_size) else {
+                    continue;
+                };
+                let visible = region.intersect_rectangle(&tile_rect).rectangles;
+                if visible.is_empty() {
+                    continue;
+                }
+
+                let pixels = self
+                    .rfx_tiles
+                    .decode(tile, &tile_set.quants, tile_set.entropy_algorithm)
+                    .map_err(|e| pdu_other_err!("RemoteFX tile decode", source: e))?;
+
+                for rectangle in visible {
+                    let destination_rectangle = ExclusiveRectangle {
+                        left: rectangle.left,
+                        top: rectangle.top,
+                        right: rectangle.right + 1,
+                        bottom: rectangle.bottom + 1,
+                    };
+                    // INVARIANT: `destination_rectangle` lies within the 64x64 tile, so each edge is
+                    // at least the tile origin and at most 64 past it: the subtractions cannot
+                    // underflow and the results fit a `u16`.
+                    let local_edge = |edge: u16, origin: u32| {
+                        u16::try_from(u32::from(edge) - origin).expect("tile-local edge is at most 64")
+                    };
+                    let local = ExclusiveRectangle {
+                        left: local_edge(destination_rectangle.left, tile_left),
+                        top: local_edge(destination_rectangle.top, tile_top),
+                        right: local_edge(destination_rectangle.right, tile_left),
+                        bottom: local_edge(destination_rectangle.bottom, tile_top),
+                    };
+                    let update = BitmapUpdate {
+                        surface_id,
+                        width: destination_rectangle.right - destination_rectangle.left,
+                        height: destination_rectangle.bottom - destination_rectangle.top,
+                        destination_rectangle,
+                        codec_id: Codec1Type::RemoteFx,
+                        data: copy_frame_region(pixels, tile_size, &local),
+                    };
+                    self.compositor
+                        .apply_bitmap(surface_id, &update.destination_rectangle, &update.data);
+                    self.handler.on_bitmap_updated(&update);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Decode an Alpha codec (`RDPGFX_CODECID_ALPHA`, 0x000C) command into the surface alpha
+    /// channel, leaving its color channels as an earlier command painted them
+    /// ([MS-RDPEGFX] [3.3.5.1]).
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    /// [3.3.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/3fdfcd8d-ec4f-4b7a-8e0d-0385a840ec81
+    fn decode_alpha(&mut self, surface_id: u16, dest_rect: &ExclusiveRectangle, bitmap_data: &[u8]) -> PduResult<()> {
+        let composited = self
+            .compositor
+            .apply_alpha(surface_id, dest_rect, bitmap_data)
+            .map_err(|e| pdu_other_err!("Alpha decode", source: e))?;
+
+        // The handler receives the whole clipped destination after every Alpha command,
+        // a surface-sized copy for a full-surface command. Handlers compose `BitmapUpdate`s as
+        // complete RGBA pixels, which an alpha-only update would break; if that cost matters,
+        // change the handler contract rather than shrinking this update.
+        if let Some((destination_rectangle, data)) = composited {
+            let update = BitmapUpdate {
+                surface_id,
+                width: destination_rectangle.right - destination_rectangle.left,
+                height: destination_rectangle.bottom - destination_rectangle.top,
+                destination_rectangle,
+                codec_id: Codec1Type::Alpha,
+                data,
+            };
+            self.handler.on_bitmap_updated(&update);
+        }
+        Ok(())
+    }
+
+    /// Build the `CacheImportOffer` sent right after `CapabilitiesConfirm` ([MS-RDPEGFX] [3.3.5.16]),
+    /// or `None` without a persistent cache, a confirmed capability set, or stored entries.
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    /// [3.3.5.16]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/adf5cc51-d0b1-4533-987f-16296bbe6966
+    #[expect(clippy::as_conversions, reason = "Box<GfxPdu> to Box<dyn DvcEncode> coercion")]
+    fn cache_import_offer(&mut self) -> Option<DvcMessage> {
+        let store = self.persistent_cache.as_mut()?;
+        // The cache limits depend on the confirmed flags, so without them nothing is offered.
+        self.negotiated_caps.as_ref()?;
+        if self.cache_import_attempted {
+            return None;
+        }
+        self.cache_import_attempted = true;
+        let (max_slots, max_bytes) = bitmap_cache_limits(&self.codec_caps);
+
+        let stored = match store.entries() {
+            Ok(entries) => entries,
+            Err(error) => {
+                warn!(%error, "Failed to list the persistent bitmap cache; not offering it");
+                return None;
+            }
+        };
+
+        let max_entries = MAX_CACHE_IMPORT_ENTRIES.min(usize::from(max_slots));
+        let mut seen = BTreeSet::new();
+        let mut bytes = 0usize;
+        let mut cache_entries = Vec::new();
+        for entry in stored {
+            if cache_entries.len() == max_entries {
+                break;
+            }
+            let len = usize::try_from(entry.bitmap_len).unwrap_or(usize::MAX);
+            if len > MAX_CACHE_IMPORT_ENTRY_BYTES {
+                continue;
+            }
+            // The server charges each accepted entry against its model of the client's cache, so
+            // an offer larger than the cache would be refused or overflow it.
+            let Some(total) = bytes.checked_add(len).filter(|total| *total <= max_bytes) else {
+                continue;
+            };
+            if len == 0 || !seen.insert(entry.cache_key) {
+                continue;
+            }
+            bytes = total;
+            cache_entries.push(entry);
+        }
+
+        if cache_entries.is_empty() {
+            // No reply follows, so release what listing opened now.
+            store.import_finished();
+            return None;
+        }
+
+        debug!(
+            entries = cache_entries.len(),
+            bytes, "Offering the persistent bitmap cache"
+        );
+        self.offered_cache_keys = Some(cache_entries.iter().map(|entry| entry.cache_key).collect());
+        let offer = GfxPdu::CacheImportOffer(CacheImportOfferPdu { cache_entries });
+        Some(Box::new(offer) as DvcMessage)
+    }
+
+    /// Load the entries the server accepted into the slots it assigned them
+    /// ([MS-RDPEGFX] [3.3.5.17]).
+    ///
+    /// The reply's Nth slot belongs to the Nth offered entry. An entry that cannot be loaded leaves
+    /// its slot empty, so a later paste from it draws nothing, as for any other missing slot.
+    ///
+    /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    /// [3.3.5.17]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/df29d040-f74b-4002-92ed-f0903b8402c3
+    fn handle_cache_import_reply(&mut self, pdu: &CacheImportReplyPdu) {
+        let Some(offered) = self.offered_cache_keys.take() else {
+            warn!("CacheImportReply without a pending CacheImportOffer; ignoring it");
+            return;
+        };
+        let Some(store) = self.persistent_cache.as_mut() else {
+            return;
+        };
+        if offered.len() < pdu.cache_slots.len() {
+            warn!(
+                offered = offered.len(),
+                imported = pdu.cache_slots.len(),
+                "CacheImportReply names more entries than were offered; ignoring the excess"
+            );
+        }
+
+        // An offer only goes out once capabilities are confirmed, so these are the confirmed limits.
+        let (max_slots, _) = bitmap_cache_limits(&self.codec_caps);
+        let mut imported = 0usize;
+        let mut invalid_slots = 0usize;
+        for (&cache_key, &cache_slot) in offered.iter().zip(&pdu.cache_slots) {
+            // Cache slots are one-based (3.3.1.4).
+            if !(1..=max_slots).contains(&cache_slot) {
+                invalid_slots += 1;
+                continue;
+            }
+            match store.load(cache_key) {
+                Ok(Some(entry)) if entry.cache_key == cache_key => {
+                    if self
+                        .compositor
+                        .import_cache_entry(cache_slot, cache_key, entry.width, entry.height, entry.data)
+                    {
+                        imported += 1;
+                    } else {
+                        trace!(cache_key, cache_slot, "Persistent cache entry rejected");
+                    }
+                }
+                Ok(_) => trace!(cache_key, "Persistent cache entry is gone"),
+                Err(error) => {
+                    warn!(%error, "Failed to read the persistent bitmap cache; skipping the rest");
+                    break;
+                }
+            }
+        }
+
+        store.import_finished();
+        if invalid_slots > 0 {
+            warn!(
+                invalid_slots,
+                max_slots, "CacheImportReply assigned cache slots outside the bitmap cache"
+            );
+        }
+        debug!(
+            offered = offered.len(),
+            accepted = pdu.cache_slots.len(),
+            imported,
+            "Persistent bitmap cache imported"
+        );
+    }
+
+    /// Save the bitmap cache to the persistent store, most recently used first.
+    ///
+    /// An empty cache is not saved, so a session that ends before the server cached anything
+    /// keeps the entries a previous session stored.
+    fn save_persistent_cache(&mut self) {
+        let Some(store) = self.persistent_cache.as_mut() else {
+            return;
+        };
+
+        // Nothing past what one offer can carry, larger than an offered entry may be, or past the
+        // full cache's capacity, can be offered again, so it is not worth storing. As in the
+        // offer, an entry that does not fit the remaining capacity is skipped so smaller ones
+        // still can. A key cached in several slots is stored once, from its most recently used
+        // slot.
+        let mut seen = BTreeSet::new();
+        let mut bytes = 0usize;
+        let mut entries = Vec::new();
+        for entry in self.compositor.cache_entries() {
+            if entries.len() == MAX_CACHE_IMPORT_ENTRIES {
+                break;
+            }
+            if entry.data.is_empty() || entry.data.len() > MAX_CACHE_IMPORT_ENTRY_BYTES || !seen.insert(entry.cache_key)
+            {
+                continue;
+            }
+            let Some(total) = bytes
+                .checked_add(entry.data.len())
+                .filter(|total| *total <= CACHE_BYTES)
+            else {
+                continue;
+            };
+            bytes = total;
+            entries.push(entry);
+        }
+        if entries.is_empty() {
+            return;
+        }
+
+        match store.save(&entries) {
+            Ok(()) => debug!(entries = entries.len(), "Saved the persistent bitmap cache"),
+            Err(error) => warn!(%error, "Failed to save the persistent bitmap cache"),
+        }
+    }
+
     fn handle_uncompressed(&mut self, pdu: crate::pdu::WireToSurface1Pdu) {
         // MS-RDPEGFX 2.2.1.4.1: see decode_avc420 above for wire-format note.
         let dest_width = pdu.destination_rectangle.right - pdu.destination_rectangle.left;
@@ -1539,6 +1959,7 @@ impl DvcProcessor for GraphicsPipelineClient {
     }
 
     fn close(&mut self, _channel_id: u32) {
+        self.save_persistent_cache();
         self.state = ClientState::Closed;
         self.handler.on_close();
     }
@@ -1556,6 +1977,15 @@ impl DvcProcessor for GraphicsPipelineClient {
 }
 
 impl DvcClientProcessor for GraphicsPipelineClient {}
+
+/// Cache slot count and byte capacity of the bitmap cache under the confirmed capabilities.
+fn bitmap_cache_limits(caps: &CodecCapabilities) -> (u16, usize) {
+    if caps.small_cache {
+        (SMALL_CACHE_SLOTS, SMALL_CACHE_BYTES)
+    } else {
+        (CACHE_SLOTS, CACHE_BYTES)
+    }
+}
 
 // ============================================================================
 // Frame Cropping

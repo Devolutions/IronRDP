@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-core-v0.2.1...ironrdp-core-v0.3.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Add an `offset: Option<usize>` field to the `DecodeErrorKind` and `EncodeErrorKind` variants other than `Other`, shown as `at offset N` in `Display` ([#1266](https://github.com/Devolutions/IronRDP/issues/1266)) ([a1f9189c30](https://github.com/Devolutions/IronRDP/commit/a1f9189c307516361a8faff6ecb7c1690b267998))
+
+- [**breaking**] Add an `offset: Option<usize>` parameter to the `NotEnoughBytesErr`, `InvalidFieldErr`, `UnexpectedMessageTypeErr`, `UnsupportedVersionErr` and `UnsupportedValueErr` trait methods and to the matching `*_err` helper functions ([#1266](https://github.com/Devolutions/IronRDP/issues/1266)) ([a1f9189c30](https://github.com/Devolutions/IronRDP/commit/a1f9189c307516361a8faff6ecb7c1690b267998))
+
+- Accept `in: <cursor>` and `at: <offset>` forms in the error macros, `cast_length!` and `cast_int!`, report the cursor position from `ensure_size!` and `ensure_fixed_part_size!`, and add an `ensure_size!(slice: ..)` form for plain slices ([#1266](https://github.com/Devolutions/IronRDP/issues/1266)) ([a1f9189c30](https://github.com/Devolutions/IronRDP/commit/a1f9189c307516361a8faff6ecb7c1690b267998)) ([#1275](https://github.com/Devolutions/IronRDP/issues/1275)) ([8607ac5d1c](https://github.com/Devolutions/IronRDP/commit/8607ac5d1c2ea14efcac02921e54d951ab1045ec))
+
+- Add `NonEmpty<T>`, a collection that always holds at least one element ([#1444](https://github.com/Devolutions/IronRDP/issues/1444)) ([bdcc0ceec3](https://github.com/Devolutions/IronRDP/commit/bdcc0ceec3aaa19441917db02c36cd3be2f58465))
+
+- Add `MonotonicInstant`, a caller-supplied millisecond clock reading for sans-I/O state machines ([#1530](https://github.com/Devolutions/IronRDP/issues/1530)) ([6a499faece](https://github.com/Devolutions/IronRDP/commit/6a499faece8911e50a715a3fb08d4fd8e7d7dc87))
+
+### <!-- 4 -->Bug Fixes
+
+- [**breaking**] Rename the misspelled past-tense `rewind` methods of `ReadCursor` and `WriteCursor` to `rewound` ([#1529](https://github.com/Devolutions/IronRDP/issues/1529)) ([c85b089b46](https://github.com/Devolutions/IronRDP/commit/c85b089b4617176240b41482be65a77c9ad76a07))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
 ## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-core-v0.2.0...ironrdp-core-v0.2.1)] - 2026-07-10
 
 ### <!-- 1 -->Features

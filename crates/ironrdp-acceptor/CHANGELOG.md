@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.10.0...ironrdp-acceptor-v0.11.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] `Acceptor::set_honor_client_desktop_size` takes an `Option<DesktopSize>` maximum and clamps the client-requested desktop size to it ([#1404](https://github.com/Devolutions/IronRDP/issues/1404)) ([d3747a05b2](https://github.com/Devolutions/IronRDP/commit/d3747a05b202ba2d87ac19698354ae7e487850a2))
+
+- [**breaking**] Add server-side UDP multitransport bootstrapping: `Acceptor::set_multitransport_offer` advertises it and sends an Initiate Multitransport Request to clients that reciprocate, `Acceptor::multitransport_request`, `Acceptor::multitransport_soft_sync_negotiated` and `accept_finalize_with_multitransport` let the caller set up the sideband transport, `MultitransportSecurityRng` replaces the source of the request ID and cookie, and `AcceptorResult::multitransport_flags` and `AcceptorResult::multitransport_response_success` report the client's flags and response ([#1453](https://github.com/Devolutions/IronRDP/issues/1453)) ([f0fc215555](https://github.com/Devolutions/IronRDP/commit/f0fc215555394a89510ff85c7b8a93b20e878074)) ([#1951](https://github.com/Devolutions/IronRDP/issues/1951)) ([c36883027d](https://github.com/Devolutions/IronRDP/commit/c36883027de1975d22c0dbc7943a17b3f73bc5d0)) ([#1953](https://github.com/Devolutions/IronRDP/issues/1953)) ([22006ce1f9](https://github.com/Devolutions/IronRDP/commit/22006ce1f9dae8a052ae8b6131fb5f7f2fce663e)) ([#1954](https://github.com/Devolutions/IronRDP/issues/1954)) ([73dfa30e38](https://github.com/Devolutions/IronRDP/commit/73dfa30e3831e51cf8aa58f93e27b1b00102a7ec))
+
+- [**breaking**] `AcceptorState` is `#[non_exhaustive]` and gains the `MultitransportBootstrapping` state ([#1951](https://github.com/Devolutions/IronRDP/issues/1951)) ([c36883027d](https://github.com/Devolutions/IronRDP/commit/c36883027de1975d22c0dbc7943a17b3f73bc5d0))
+
+- [**breaking**] Add `AcceptorResult::auto_reconnect` with the Client Auto-Reconnect Packet, for the server to verify before resuming a session ([#1509](https://github.com/Devolutions/IronRDP/issues/1509)) ([44f675e244](https://github.com/Devolutions/IronRDP/commit/44f675e244ee76b5311756668ffbbe28e98c7175))
+
+- Add `Acceptor::attach_dynamic_static_channel` to attach several runtime-defined static virtual channels of the same processor type ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba))
+
+- `Acceptor::attach_static_channel` ignores a channel whose name is already registered or that exceeds the static channel limit ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba))
+
+- [**breaking**] `Acceptor`, `ChannelConnectionSequence` and `FinalizationSequence` implement the `Sequence::step` signature that takes the frame arrival time ([#1530](https://github.com/Devolutions/IronRDP/issues/1530)) ([6a499faece](https://github.com/Devolutions/IronRDP/commit/6a499faece8911e50a715a3fb08d4fd8e7d7dc87))
+
+- [**breaking**] Add `AcceptorResult::keyboard_type` and `AcceptorResult::ime_file_name` from the client's GCC Client Core Data ([#1691](https://github.com/Devolutions/IronRDP/issues/1691)) ([393869b30b](https://github.com/Devolutions/IronRDP/commit/393869b30b1078da7204c6bf20e8a5472e419070))
+
+- [**breaking**] Add `AcceptorResult::client_early_capability_flags` so servers can gate features such as Heartbeat PDUs on client support ([#1842](https://github.com/Devolutions/IronRDP/issues/1842)) ([8f57691a9a](https://github.com/Devolutions/IronRDP/commit/8f57691a9a6e497388dc2824bffe93eeed7bb698))
+
+- Add the `ConnectionSetupHandler` trait with `accept_credssp_with`, `accept_finalize_with` and `accept_finalize_with_handlers` to validate received credentials, exposed as `ReceivedCredentials` with their `CredentialOrigin`, before the handshake completes, and send a Set Error Info PDU when the handler rejects them ([#1413](https://github.com/Devolutions/IronRDP/issues/1413)) ([15bed4ee0e](https://github.com/Devolutions/IronRDP/commit/15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8))
+
+- [**breaking**] `CredsspSequence::handle_process_result` also returns the identity authenticated by CredSSP ([#1413](https://github.com/Devolutions/IronRDP/issues/1413)) ([15bed4ee0e](https://github.com/Devolutions/IronRDP/commit/15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8))
+
+- [**breaking**] Add `AcceptorResult::client_monitors` with the monitors from the client's GCC Client Monitor Data ([#2129](https://github.com/Devolutions/IronRDP/issues/2129)) ([da166aa488](https://github.com/Devolutions/IronRDP/commit/da166aa4883a4868638d3c65ecf44b8b3895acfb))
+
+- [**breaking**] Add `AcceptorResult::routing_token`, `AcceptorResult::client_cluster_data` and `AcceptorResult::password_cookie` so a server can accept a client redirected by a Server Redirection PDU ([#2208](https://github.com/Devolutions/IronRDP/issues/2208)) ([485657a6ec](https://github.com/Devolutions/IronRDP/commit/485657a6eca682a0356e100a9fda229342861fd7))
+
+### <!-- 4 -->Bug Fixes
+
+- Send the Monitor Layout PDU with inclusive right and bottom coordinates ([#1675](https://github.com/Devolutions/IronRDP/issues/1675)) ([063efcdc30](https://github.com/Devolutions/IronRDP/commit/063efcdc3088d8f44e423cc322077d40bf9aadf2))
+
+- Report a wrong password or unknown user during NLA to the client as `STATUS_LOGON_FAILURE`, so it can ask for new credentials ([#2138](https://github.com/Devolutions/IronRDP/issues/2138)) ([cddbe5f730](https://github.com/Devolutions/IronRDP/commit/cddbe5f73095ff9602a2f989a74a65e9ee272c21))
+
+- Pass the server credentials' domain to the CredSSP username instead of dropping it ([#2154](https://github.com/Devolutions/IronRDP/issues/2154)) ([bc64e60220](https://github.com/Devolutions/IronRDP/commit/bc64e60220bf0479e91fa24e3d4e1e9521d84182))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `sspi` to 0.23 ([#2080](https://github.com/Devolutions/IronRDP/issues/2080)) ([62246b364a](https://github.com/Devolutions/IronRDP/commit/62246b364a0282bab85087f658a81fe4207b6b31))
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-async` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-connector` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.9
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.9.0...ironrdp-acceptor-v0.10.0)] - 2026-07-10
 
 ### <!-- 1 -->Features

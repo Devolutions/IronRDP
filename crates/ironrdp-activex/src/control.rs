@@ -19,6 +19,7 @@ use ironrdp_client::camera::{CameraConfig, CameraEncodingQuality};
 use ironrdp_client::config::{
     AudioQualityMode, ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind,
 };
+use ironrdp_client::egfx_cache::default_cache_path;
 use ironrdp_client::output_channel::output_channel;
 use ironrdp_client::rail::RailInputEvent;
 use ironrdp_client::rdp::{
@@ -1556,6 +1557,7 @@ struct CompatibilitySettings {
     grab_focus_on_connect: bool,
     enable_credssp: Option<bool>,
     compression: Option<bool>,
+    bitmap_persistence: bool,
     min_input_send_interval_ms: i32,
     keep_alive_interval_seconds: i32,
     load_balance_info: String,
@@ -1641,6 +1643,9 @@ impl Default for CompatibilitySettings {
             grab_focus_on_connect: false,
             enable_credssp: None,
             compression: None,
+            // Off unless the host asks, unlike mstscax.dll, whose `BitmapPersistenceEnabled`
+            // defaults to on.
+            bitmap_persistence: false,
             min_input_send_interval_ms: DEFAULT_MIN_INPUT_SEND_INTERVAL_MS,
             keep_alive_interval_seconds: 0,
             load_balance_info: String::new(),
@@ -2714,7 +2719,6 @@ macro_rules! advanced_get_not_implemented {
 
 advanced_put_not_implemented!(
     (7, advanced_put_plugin_dlls, Bstr),
-    (93, advanced_put_bitmap_persistence, i32),
     (95, advanced_put_minutes_to_idle_timeout, i32),
     (150, advanced_put_redirect_devices, i16),
     (161, advanced_put_pcb, Bstr),
@@ -2724,7 +2728,6 @@ advanced_put_not_implemented!(
 );
 
 advanced_get_not_implemented!(
-    (94, advanced_get_bitmap_persistence, i32),
     (96, advanced_get_minutes_to_idle_timeout, i32),
     (151, advanced_get_redirect_devices, i16),
     (174, advanced_get_video_playback_mode, u32),
@@ -3214,6 +3217,23 @@ unsafe extern "system" fn advanced_put_compress(this: *mut c_void, value: i32) -
 unsafe extern "system" fn advanced_get_compress(this: *mut c_void, value: *mut i32) -> HRESULT {
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
     match write_out(value, i32::from(object.settings.borrow().compression.unwrap_or(true))) {
+        Ok(()) => S_OK,
+        Err(error) => error.code(),
+    }
+}
+
+// mstscax.dll stores any non-zero value as on and reads back 1 or 0.
+unsafe extern "system" fn advanced_put_bitmap_persistence(this: *mut c_void, value: i32) -> HRESULT {
+    trace_host_call("IMsTscAdvancedSettings::put_BitmapPeristence");
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    object.settings.borrow_mut().bitmap_persistence = value != 0;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_bitmap_persistence(this: *mut c_void, value: *mut i32) -> HRESULT {
+    trace_host_call("IMsTscAdvancedSettings::get_BitmapPeristence");
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    match write_out(value, i32::from(object.settings.borrow().bitmap_persistence)) {
         Ok(()) => S_OK,
         Err(error) => error.code(),
     }
@@ -8434,6 +8454,7 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
     properties.insert("redirectcomports", compatibility.redirect_ports);
     properties.insert("ironrdp_smartcard", compatibility.redirect_smart_cards);
     properties.insert("compression", compatibility.compression.unwrap_or(true));
+    properties.insert("bitmapcachepersistenable", compatibility.bitmap_persistence);
     properties
 }
 
@@ -8484,6 +8505,7 @@ fn is_boolean_modern_property(name: &str) -> bool {
             | "redirectcomports"
             | "enablecredsspsupport"
             | "compression"
+            | "bitmapcachepersistenable"
             | "administrative session"
             | "use redirection server name"
             | "remoteapplicationmode"
@@ -8524,6 +8546,7 @@ fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
         | "redirectcomports"
         | "enablecredsspsupport"
         | "compression"
+        | "bitmapcachepersistenable"
         | "administrative session"
         | "use redirection server name"
         | "remoteapplicationmode" => {
@@ -8721,6 +8744,9 @@ impl Control {
             }
             "compression" => {
                 self.compatibility.borrow_mut().compression = Some(value.as_int().unwrap_or_default() != 0);
+            }
+            "bitmapcachepersistenable" => {
+                self.compatibility.borrow_mut().bitmap_persistence = value.as_int().unwrap_or_default() != 0;
             }
             "administrative session" => {
                 self.compatibility.borrow_mut().administrative_session = value.as_int().unwrap_or_default() != 0;
@@ -11542,6 +11568,7 @@ impl Control {
             compatibility.enable_credssp = Some(connector.enable_credssp);
             compatibility.enable_tls = Some(connector.enable_tls);
             compatibility.compression = Some(connector.compression_type.is_some());
+            compatibility.bitmap_persistence = config.channels().egfx_persistent_cache.is_some();
             compatibility.compression_level = connector.compression_type.map(|compression| match compression {
                 ironrdp_pdu::rdp::client_info::CompressionType::K8 => 0,
                 ironrdp_pdu::rdp::client_info::CompressionType::K64 => 1,
@@ -11834,6 +11861,7 @@ impl Control {
 
         let enable_credssp = compatibility.enable_credssp;
         let compression = compatibility.compression;
+        let bitmap_persistence = compatibility.bitmap_persistence;
         let clipboard = compatibility.redirect_clipboard;
         let redirect_webauthn = compatibility.redirect_webauthn;
         let warn_about_credentials = compatibility.warn_about_sending_credentials;
@@ -12076,6 +12104,7 @@ impl Control {
             .with_administrative_session(administrative_session)
             .with_use_redirection_server_name(use_redirection_server_name)
             .with_certificate_validation(certificate_validation)
+            .with_egfx_persistent_cache(if bitmap_persistence { default_cache_path() } else { None })
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
             // composited into the decoded framebuffer before it receives image events.
             .with_pointer_software_rendering(true)
@@ -19894,6 +19923,43 @@ mod tests {
         assert!(settings_supports_interface::<TRANSPORT_SETTINGS_SLOTS>(
             &GUID::from_u128(0x011c3236_4d81_4515_9143_067ab630d299)
         ));
+    }
+
+    #[test]
+    fn bitmap_persistence_defaults_off_and_reaches_the_client_properties() {
+        // oracle: reference mstscax.dll 10.0.26100.9711 CMstscAdvSettings::put_BitmapPeristence /
+        // get_BitmapPeristence (any non-zero value is on, read back as 1); the default of 0 is
+        // mutant (desktop pixels written to disk without the host asking), unlike mstscax.dll,
+        // whose property table defaults BitmapPersistenceEnabled to 1
+        let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
+        let mut object = CompatibilitySettingsObject {
+            vtable: advanced_vtable(),
+            references: AtomicU32::new(1),
+            settings: Rc::clone(&settings),
+            native_mstsc_credential_bridge: None,
+            remote_program_bridge: None,
+            server_object: false,
+        };
+        let this = (&mut object as *mut AdvancedSettingsObject).cast::<c_void>();
+        let persistence = |this| {
+            let mut value = -1;
+            assert_eq!(unsafe { advanced_get_bitmap_persistence(this, &mut value) }, S_OK);
+            value
+        };
+        let snapshot_value = |settings: &Rc<RefCell<CompatibilitySettings>>| {
+            active_x_property_snapshot(&Settings::default(), &settings.borrow()).get::<i64>("bitmapcachepersistenable")
+        };
+
+        assert_eq!(persistence(this), 0);
+        assert_eq!(snapshot_value(&settings), Some(0));
+
+        assert_eq!(unsafe { advanced_put_bitmap_persistence(this, 5) }, S_OK);
+        assert_eq!(persistence(this), 1);
+        assert_eq!(snapshot_value(&settings), Some(1));
+
+        assert_eq!(unsafe { advanced_put_bitmap_persistence(this, 0) }, S_OK);
+        assert_eq!(persistence(this), 0);
+        assert_eq!(snapshot_value(&settings), Some(0));
     }
 
     #[test]

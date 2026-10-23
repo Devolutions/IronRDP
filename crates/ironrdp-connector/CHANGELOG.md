@@ -6,6 +6,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.10.0...ironrdp-connector-v0.11.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Implement multitransport bootstrapping: the connector pauses on each Initiate Multitransport Request until the caller answers it with `ClientConnector::complete_multitransport` or `ClientConnector::skip_multitransport`, and exposes `should_perform_multitransport`, `multitransport_request`, `multitransport_soft_sync_negotiated`, `MultitransportResult` and `ConnectionResult::multitransport_soft_sync` for callers that set up the UDP transport ([#1098](https://github.com/Devolutions/IronRDP/issues/1098)) ([e45fbfe0f5](https://github.com/Devolutions/IronRDP/commit/e45fbfe0f597011706e77fc174ca14e5e9d435b9)) ([#1858](https://github.com/Devolutions/IronRDP/issues/1858)) ([7036fb8c7e](https://github.com/Devolutions/IronRDP/commit/7036fb8c7ef32f71b456745902e14d34008c7add))
+
+- Add `ClientConnector::attach_dynamic_static_channel` and `ClientConnector::try_attach_dynamic_static_channel` to attach several runtime-defined static virtual channels of the same processor type ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba)) ([#1522](https://github.com/Devolutions/IronRDP/issues/1522)) ([57b1366650](https://github.com/Devolutions/IronRDP/commit/57b13666506dc40c15b4c4702d35150beee99133))
+
+- `ClientConnector::attach_static_channel` ignores a channel whose name is already registered or that exceeds the static channel limit ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba))
+
+- [**breaking**] Add `ConnectionResult::input_flags` with the server's Input capability flags, so clients can choose between fast-path and slow-path input ([#1488](https://github.com/Devolutions/IronRDP/issues/1488)) ([9bcf13438c](https://github.com/Devolutions/IronRDP/commit/9bcf13438cb068b53a8cb0dc23477c498727d49f))
+
+- [**breaking**] Add `ConnectionResult::refresh_rect_support` and `ConnectionResult::suppress_output_support` from the server's General capability set ([#1521](https://github.com/Devolutions/IronRDP/issues/1521)) ([20e2d414e5](https://github.com/Devolutions/IronRDP/commit/20e2d414e5ac060db25a100ed219f417e19f79b2))
+
+- [**breaking**] Add `Config::connection_type` to set the network profile advertised in the Client Core Data ([#1522](https://github.com/Devolutions/IronRDP/issues/1522)) ([57b1366650](https://github.com/Devolutions/IronRDP/commit/57b13666506dc40c15b4c4702d35150beee99133))
+
+- Add `ClientConnector::with_auto_reconnect_cookie` to resume a previous session by sending the Client Auto-Reconnect Packet derived from its cookie ([#1501](https://github.com/Devolutions/IronRDP/issues/1501)) ([74b3365c1f](https://github.com/Devolutions/IronRDP/commit/74b3365c1f98c0da6feed7507779c67e1b8e6d08))
+
+- Advertise `BitmapConfig::color_depth` as the preferred color depth in the Confirm Active PDU instead of always 32, and reject depths other than 15, 16, 24 and 32 ([#1523](https://github.com/Devolutions/IronRDP/issues/1523)) ([ee58b7c5f2](https://github.com/Devolutions/IronRDP/commit/ee58b7c5f283ef64be93a8483242f49070c6cdc9))
+
+- Add `ClientConnector::initiate_with_security_protocol` to start the connection with a chosen subset of the enabled security protocols, as Hyper-V VMConnect requires ([#1503](https://github.com/Devolutions/IronRDP/issues/1503)) ([a7cc067d50](https://github.com/Devolutions/IronRDP/commit/a7cc067d5069cbbcb13bae3e0561c0611da3bcf6))
+
+- Omit the X.224 `mstshash` cookie when the username is empty ([#1503](https://github.com/Devolutions/IronRDP/issues/1503)) ([a7cc067d50](https://github.com/Devolutions/IronRDP/commit/a7cc067d5069cbbcb13bae3e0561c0611da3bcf6))
+
+- [**breaking**] Add `Config::enable_standard_rdp_security` to allow Standard RDP Security without encryption, for trusted local transports such as Windows Sandbox named pipes ([#1580](https://github.com/Devolutions/IronRDP/issues/1580)) ([39b020343d](https://github.com/Devolutions/IronRDP/commit/39b020343d962962bfbefc89939be64d5c716196))
+
+- Split static virtual channel data using the server's negotiated chunk size, keeping 1600 bytes when the server sends none or an invalid one ([#1622](https://github.com/Devolutions/IronRDP/issues/1622)) ([4e3903fbbe](https://github.com/Devolutions/IronRDP/commit/4e3903fbbef2904505f35e3437a7106807ac5987))
+
+- [**breaking**] Echo the server's Window List capability in the Confirm Active PDU and add `ConnectionResult::window_support_level` ([#1631](https://github.com/Devolutions/IronRDP/issues/1631)) ([0c3fbe78b4](https://github.com/Devolutions/IronRDP/commit/0c3fbe78b4366533b9fcea046b2b53654e003a72))
+
+- [**breaking**] Add `Config::remote_application_mode` and `Config::rail_support_level` to connect in RemoteApp mode, which fails when the server does not support RAIL and windowing ([#1637](https://github.com/Devolutions/IronRDP/issues/1637)) ([ab48c6cb8c](https://github.com/Devolutions/IronRDP/commit/ab48c6cb8c017504f8a92799aeb91b821c50a13a))
+
+- [**breaking**] Add `Config::enable_audio_capture` to set `INFO_AUDIOCAPTURE` in the Client Info PDU ([#1642](https://github.com/Devolutions/IronRDP/issues/1642)) ([205fe038cc](https://github.com/Devolutions/IronRDP/commit/205fe038cc693598adf803fe181526b789b2ec3d))
+
+- [**breaking**] Add `Config::monitor_layout` to advertise a client monitor layout, advertise Monitor Layout PDU support, and expose the server's layout through `ConnectionResult::monitor_layout`, `ConnectionFinalizationSequence::monitor_layout` and `ConnectionActivationSequence::monitor_layout` ([#1675](https://github.com/Devolutions/IronRDP/issues/1675)) ([063efcdc30](https://github.com/Devolutions/IronRDP/commit/063efcdc3088d8f44e423cc322077d40bf9aadf2))
+
+- [**breaking**] `Sequence::step` takes the frame arrival time as an `Option<MonotonicInstant>`, now re-exported from `ironrdp-core` ([#1530](https://github.com/Devolutions/IronRDP/issues/1530)) ([6a499faece](https://github.com/Devolutions/IronRDP/commit/6a499faece8911e50a715a3fb08d4fd8e7d7dc87))
+
+- Add `ClientConnector::with_cluster_data` and `ClientConnector::with_load_balance_info` to send GCC Client Cluster Data and load-balancing info in the X.224 Connection Request ([#1781](https://github.com/Devolutions/IronRDP/issues/1781)) ([14ef4fd49f](https://github.com/Devolutions/IronRDP/commit/14ef4fd49fcf950169806866ee67db0c49662cfc))
+
+- [**breaking**] Add `Config::support_dyn_vc_gfx_protocol` to advertise Graphics Pipeline Extension support in the early capability flags ([#1237](https://github.com/Devolutions/IronRDP/issues/1237)) ([5bdb67980c](https://github.com/Devolutions/IronRDP/commit/5bdb67980cb98b070076acbff802254316e786de))
+
+- [**breaking**] End the connection sequence in the new `ClientConnectorState::Redirected` and `ConnectionActivationState::Redirected` states when the server sends a Server Redirection PDU, with `ConnectionOutcome`, `ClientConnectorState::take_outcome` and `ClientConnector::with_redirection_password_cookie` to follow it ([#2208](https://github.com/Devolutions/IronRDP/issues/2208)) ([485657a6ec](https://github.com/Devolutions/IronRDP/commit/485657a6eca682a0356e100a9fda229342861fd7))
+
+- [**breaking**] The `ConnectionActivationState::ConnectionFinalization` and `ConnectionActivationState::Finalized` variants carry the negotiated input flags, static channel chunk size, Refresh Rect and Suppress Output support, and window support level ([#1488](https://github.com/Devolutions/IronRDP/issues/1488)) ([9bcf13438c](https://github.com/Devolutions/IronRDP/commit/9bcf13438cb068b53a8cb0dc23477c498727d49f)) ([#1521](https://github.com/Devolutions/IronRDP/issues/1521)) ([20e2d414e5](https://github.com/Devolutions/IronRDP/commit/20e2d414e5ac060db25a100ed219f417e19f79b2)) ([#1622](https://github.com/Devolutions/IronRDP/issues/1622)) ([4e3903fbbe](https://github.com/Devolutions/IronRDP/commit/4e3903fbbef2904505f35e3437a7106807ac5987)) ([#1631](https://github.com/Devolutions/IronRDP/issues/1631)) ([0c3fbe78b4](https://github.com/Devolutions/IronRDP/commit/0c3fbe78b4366533b9fcea046b2b53654e003a72))
+
+### <!-- 4 -->Bug Fixes
+
+- During reactivation, keep waiting for Demand Active after a Set Error Info PDU without an error, and report the server's disconnect reason otherwise ([#1467](https://github.com/Devolutions/IronRDP/issues/1467)) ([f57d38ff74](https://github.com/Devolutions/IronRDP/commit/f57d38ff74624b99ebcc1369c220b646dd261b71))
+
+- Answer the connect-time Bandwidth Measure Stop, which FreeRDP-based servers such as GNOME Remote Desktop wait for before licensing, with a byte count and interval measured from frame arrival times, and ignore requests outside the connect-time phase ([#1465](https://github.com/Devolutions/IronRDP/issues/1465)) ([f736b4e8b9](https://github.com/Devolutions/IronRDP/commit/f736b4e8b901f8889435449c26421dd45ec05bf4)) ([#1530](https://github.com/Devolutions/IronRDP/issues/1530)) ([6a499faece](https://github.com/Devolutions/IronRDP/commit/6a499faece8911e50a715a3fb08d4fd8e7d7dc87)) ([#1559](https://github.com/Devolutions/IronRDP/issues/1559)) ([36a848e085](https://github.com/Devolutions/IronRDP/commit/36a848e08571c76c0c3d1ef9cce899e0c99c9001))
+
+- Advertise the surface command, bitmap codec and frame acknowledge capabilities only when the configuration includes a bitmap codec, so legacy servers keep sending basic bitmap updates ([#1860](https://github.com/Devolutions/IronRDP/issues/1860)) ([0d493e5aa0](https://github.com/Devolutions/IronRDP/commit/0d493e5aa070179f0ddc3cd548ebbd6ca5e1f349))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update the public `sspi` dependency to 0.23 ([#2080](https://github.com/Devolutions/IronRDP/issues/2080)) ([62246b364a](https://github.com/Devolutions/IronRDP/commit/62246b364a0282bab85087f658a81fe4207b6b31))
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.9
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.9.0...ironrdp-connector-v0.10.0)] - 2026-07-10
 
 ### <!-- 0 -->Security

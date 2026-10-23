@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.7.0...ironrdp-cliprdr-native-v0.8.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- Add the Linux `data_control` module, a Wayland clipboard client for compositors offering `ext-data-control-v1` or `wlr-data-control-unstable-v1`, with delayed rendering ([#2055](https://github.com/Devolutions/IronRDP/issues/2055)) ([a1efb0bb85](https://github.com/Devolutions/IronRDP/commit/a1efb0bb85e1654ba91f1407e77050082ee3d7d2))
+
+- Add `LinuxClipboard`, a Linux CLIPRDR backend for text and images over Wayland data-control with an X11/XWayland fallback ([#2016](https://github.com/Devolutions/IronRDP/issues/2016)) ([aed5ce8ba2](https://github.com/Devolutions/IronRDP/commit/aed5ce8ba225c6d2b17ab39b0d12b3fc65e565bd))
+
+- Add `WinClipboard::with_file_transfer` to copy files in both directions through the Windows clipboard; `WinClipboard::new` leaves file transfer off ([#2179](https://github.com/Devolutions/IronRDP/issues/2179)) ([b9d1400033](https://github.com/Devolutions/IronRDP/commit/b9d140003323f3ae3cd22f91be556e58ed43322e))
+
+### <!-- 4 -->Bug Fixes
+
+- Stop `WinClipboard` advertising handle-based formats, local paths, shell items and OLE storage formats, which it cannot deliver ([#2179](https://github.com/Devolutions/IronRDP/issues/2179)) ([b9d1400033](https://github.com/Devolutions/IronRDP/commit/b9d140003323f3ae3cd22f91be556e58ed43322e))
+
+- Queue backend events that arrive while `WinClipboard` waits for remote data instead of dropping them ([#2179](https://github.com/Devolutions/IronRDP/issues/2179)) ([b9d1400033](https://github.com/Devolutions/IronRDP/commit/b9d140003323f3ae3cd22f91be556e58ed43322e))
+
+- Free the `WinClipboard` window subclass state on drop, and no longer use it after `WM_DESTROY` freed it ([#2179](https://github.com/Devolutions/IronRDP/issues/2179)) ([b9d1400033](https://github.com/Devolutions/IronRDP/commit/b9d140003323f3ae3cd22f91be556e58ed43322e))
+
+- Treat `CLIPBRD_E_CANT_OPEN` as `WinCliprdrError::ClipboardAccessDenied` ([#2179](https://github.com/Devolutions/IronRDP/issues/2179)) ([b9d1400033](https://github.com/Devolutions/IronRDP/commit/b9d140003323f3ae3cd22f91be556e58ed43322e))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-cliprdr` public dependency to 0.8
+
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.6.0...ironrdp-cliprdr-native-v0.7.0)] - 2026-07-10
 
 ### <!-- 7 -->Build

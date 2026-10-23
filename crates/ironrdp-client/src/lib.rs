@@ -12,6 +12,7 @@ pub mod audio;
 #[cfg(feature = "camera")]
 pub mod camera;
 pub mod config;
+pub mod egfx_cache;
 pub mod h264;
 pub mod output_channel;
 pub mod rail;

@@ -6,6 +6,92 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.12.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.11.0...ironrdp-session-v0.12.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- [**breaking**] Add `ActiveStageOutput::ServerRedirection` and `x224::ProcessorOutput::ServerRedirection`, reported when the server sends a Server Redirection PDU during the session ([#2208](https://github.com/Devolutions/IronRDP/issues/2208)) ([485657a6ec](https://github.com/Devolutions/IronRDP/commit/485657a6eca682a0356e100a9fda229342861fd7))
+
+- [**breaking**] `ActiveStage::process` and `x224::Processor::process` take the frame arrival time as a new `received_at` parameter, used to answer continuous reliable bandwidth measurements during the session ([#2012](https://github.com/Devolutions/IronRDP/issues/2012)) ([9be90a7674](https://github.com/Devolutions/IronRDP/commit/9be90a767483cb4ac8153425a177da8ebfbde132))
+
+- [**breaking**] Add `ActiveStageOutput::AutoReconnectCookie` and `ActiveStageOutput::AutoReconnectFailed`, with matching `x224::ProcessorOutput` variants, to resume a session through `ClientConnector::with_auto_reconnect_cookie` ([#1501](https://github.com/Devolutions/IronRDP/issues/1501)) ([74b3365c1f](https://github.com/Devolutions/IronRDP/commit/74b3365c1f98c0da6feed7507779c67e1b8e6d08)) ([#1662](https://github.com/Devolutions/IronRDP/issues/1662)) ([34d7b31dc5](https://github.com/Devolutions/IronRDP/commit/34d7b31dc5039273dc5502d0ca3301f256eb6154))
+
+- [**breaking**] Add `ActiveStageOutput::SaveSessionInfo` and `x224::ProcessorOutput::SaveSessionInfo`, reporting whether a Save Session Info PDU signals a completed logon ([#1522](https://github.com/Devolutions/IronRDP/issues/1522)) ([57b1366650](https://github.com/Devolutions/IronRDP/commit/57b13666506dc40c15b4c4702d35150beee99133))
+
+- [**breaking**] Add `ActiveStageOutput::MonitorLayout` and `x224::ProcessorOutput::MonitorLayout` for the server-reported monitor layout ([#1675](https://github.com/Devolutions/IronRDP/issues/1675)) ([063efcdc30](https://github.com/Devolutions/IronRDP/commit/063efcdc3088d8f44e423cc322077d40bf9aadf2))
+
+- [**breaking**] Add `ActiveStage::set_window_support_level` and forward decoded windowing orders as `ActiveStageOutput::WindowingOrders` when window support is negotiated; `fast_path::UpdateKind` gains an `Orders` variant ([#1631](https://github.com/Devolutions/IronRDP/issues/1631)) ([0c3fbe78b4](https://github.com/Devolutions/IronRDP/commit/0c3fbe78b4366533b9fcea046b2b53654e003a72)) ([#2195](https://github.com/Devolutions/IronRDP/issues/2195)) ([2bc793ef3f](https://github.com/Devolutions/IronRDP/commit/2bc793ef3f5bb21b4a219175e653a2f65d6f5dac))
+
+- [**breaking**] `ActiveStage::get_dvc` and `x224::Processor::get_dvc` take `&self` and return a typed `DynamicChannelRef`, and `get_dvc_by_channel_id` takes the processor type ([#1377](https://github.com/Devolutions/IronRDP/issues/1377)) ([d43ecf9a54](https://github.com/Devolutions/IronRDP/commit/d43ecf9a54363d37e0c485a1e9e73da0d47ae540))
+
+- Add `ActiveStage::get_dvc_mut` and `x224::Processor::get_dvc_mut` ([#1778](https://github.com/Devolutions/IronRDP/issues/1778)) ([1cee7a8613](https://github.com/Devolutions/IronRDP/commit/1cee7a86135a0556c01965d0406233bd7df367a9))
+
+- [**breaking**] Remove `fast_path::ProcessorBuilder::bulk_decompressor`; the session owns one bulk decompressor shared by Fast-Path and slow-path output, which `fast_path::Processor::process` and `x224::Processor::process` now take as a parameter ([#1255](https://github.com/Devolutions/IronRDP/issues/1255)) ([0dc0194418](https://github.com/Devolutions/IronRDP/commit/0dc0194418375d504a8041b75ba250dc8eeb21ad)) ([#1518](https://github.com/Devolutions/IronRDP/issues/1518)) ([6151e21bf5](https://github.com/Devolutions/IronRDP/commit/6151e21bf58b7297e9b4abc2167aa36fc2ba77e4))
+
+- Add `ActiveStage::reactivate` to rebuild the session for a Deactivation-Reactivation Sequence without losing bulk decompression ([#1474](https://github.com/Devolutions/IronRDP/issues/1474)) ([8fcffb9e8f](https://github.com/Devolutions/IronRDP/commit/8fcffb9e8f1a2c468321c05a56ec96144316c90a))
+
+- Render the EGFX graphics pipeline: `ActiveStage::process` composites completed frames into the image, follows ResetGraphics, and reports exact changed regions through `ActiveStage::take_damage_regions` ([#1461](https://github.com/Devolutions/IronRDP/issues/1461)) ([d414622231](https://github.com/Devolutions/IronRDP/commit/d414622231ed3a944d8896118f409edead1d3df3)) ([#1874](https://github.com/Devolutions/IronRDP/issues/1874)) ([2b44c62bdb](https://github.com/Devolutions/IronRDP/commit/2b44c62bdbd997f4aa33bdbaf4749ac4ecc85140))
+
+- Add `ActiveStage::composite_rgba32` to composite pixels rendered outside the session, such as client-side video ([#2185](https://github.com/Devolutions/IronRDP/issues/2185)) ([ed65759d4a](https://github.com/Devolutions/IronRDP/commit/ed65759d4ac670f661fbacfb5e15d14ea98d9b38))
+
+- Add Soft-Sync tunnel support to `ActiveStage`: `enable_reliable_udp_dvc_tunnel`, `process_dvc_tunnel` (which also renders EGFX frames carried by the tunnel) and `prepare_*` methods returning a `DvcMessageBatch` for TCP or the tunnel ([#1857](https://github.com/Devolutions/IronRDP/issues/1857)) ([8369ea6989](https://github.com/Devolutions/IronRDP/commit/8369ea69897e6d6892d2c7d8f93f35b943467e9f)) ([#2008](https://github.com/Devolutions/IronRDP/issues/2008)) ([bfd16a2e55](https://github.com/Devolutions/IronRDP/commit/bfd16a2e5573d4cd6617dd71b2802b4e7b944a59))
+
+- Surface Initiate Multitransport Requests received on the message channel instead of the I/O channel, and add `encode_multitransport_response` on `ActiveStage` and `x224::Processor` ([#1836](https://github.com/Devolutions/IronRDP/issues/1836)) ([561aebd0d8](https://github.com/Devolutions/IronRDP/commit/561aebd0d85e1a01a5c7ae63e5befd71d55887e3))
+
+- Add `process_svc_messages_by_name` on `ActiveStage` and `x224::Processor` for runtime-defined static channels ([#1517](https://github.com/Devolutions/IronRDP/issues/1517)) ([8b4c483ba0](https://github.com/Devolutions/IronRDP/commit/8b4c483ba0c900a8de0b2718347754f56dd363ba))
+
+- Add `set_static_channel_chunk_size` and `static_channel_chunk_size` on `ActiveStage` and `x224::Processor` to send static channel data in chunks of the negotiated size ([#1622](https://github.com/Devolutions/IronRDP/issues/1622)) ([4e3903fbbe](https://github.com/Devolutions/IronRDP/commit/4e3903fbbef2904505f35e3437a7106807ac5987))
+
+- Add `ActiveStage::display_control_ready`, and return `None` from `ActiveStage::encode_resize` until the server sent its Display Control capabilities ([#1522](https://github.com/Devolutions/IronRDP/issues/1522)) ([57b1366650](https://github.com/Devolutions/IronRDP/commit/57b13666506dc40c15b4c4702d35150beee99133))
+
+- Add `ActiveStage::display_control_capabilities` and `ActiveStage::encode_monitor_layout` to send complete multi-monitor layouts ([#2182](https://github.com/Devolutions/IronRDP/issues/2182)) ([0784fceca8](https://github.com/Devolutions/IronRDP/commit/0784fceca8d1c29cdceda2c74339e13311f0b857))
+
+- Add touch and pen input over RDPEI to `ActiveStage`, including `rdpei_input_state`, `encode_rdpei_touch`, `encode_rdpei_pen` and `encode_rdpei_dismiss_hovering` ([#1647](https://github.com/Devolutions/IronRDP/issues/1647)) ([a912e19bd2](https://github.com/Devolutions/IronRDP/commit/a912e19bd2bb31f403fd7c35c8efd729a5ab5f6f)) ([#1652](https://github.com/Devolutions/IronRDP/issues/1652)) ([51f8738ea1](https://github.com/Devolutions/IronRDP/commit/51f8738ea156daeea292c63bba09d9137791af57)) ([#2198](https://github.com/Devolutions/IronRDP/issues/2198)) ([637f838ea0](https://github.com/Devolutions/IronRDP/commit/637f838ea0e2adcfbfddc94b147958ec672898ff))
+
+### <!-- 4 -->Bug Fixes
+
+- Decompress compressed slow-path share data, and report bulk decompression failures as `SessionErrorKind::FastPathBulkDecompression` ([#1518](https://github.com/Devolutions/IronRDP/issues/1518)) ([6151e21bf5](https://github.com/Devolutions/IronRDP/commit/6151e21bf58b7297e9b4abc2167aa36fc2ba77e4))
+
+- Discard malformed bitmap and pointer updates instead of terminating the session; `ActiveStage::take_bitmap_recovery_request` and `ActiveStage::request_full_redraw` let the caller request one full redraw ([#1521](https://github.com/Devolutions/IronRDP/issues/1521)) ([20e2d414e5](https://github.com/Devolutions/IronRDP/commit/20e2d414e5ac060db25a100ed219f417e19f79b2))
+
+- Preserve the source stride of bitmap updates ([#1486](https://github.com/Devolutions/IronRDP/issues/1486)) ([80bb81b344](https://github.com/Devolutions/IronRDP/commit/80bb81b344dba0197aa7b870c685f398dc4bcaee))
+
+- Decode indexed pointers with the current palette and apply slow-path palette updates ([#1519](https://github.com/Devolutions/IronRDP/issues/1519)) ([ad19280762](https://github.com/Devolutions/IronRDP/commit/ad192807620bcc3a0467eaeb07173a79cb1da257))
+
+- Compute RemoteFX update regions correctly for monitors at a non-zero framebuffer offset ([#1982](https://github.com/Devolutions/IronRDP/issues/1982)) ([ea5f247174](https://github.com/Devolutions/IronRDP/commit/ea5f247174eb4af18c3f9150c4263c7fbc785759))
+
+- Split Fast-Path input into several frames when it exceeds the 255-event limit ([#1630](https://github.com/Devolutions/IronRDP/issues/1630)) ([3818b48037](https://github.com/Devolutions/IronRDP/commit/3818b480375ec9411d5319d8e7af161f1d662cbf))
+
+- Draw the software cursor at the last mouse position of an input batch ([#1872](https://github.com/Devolutions/IronRDP/issues/1872)) ([ffb921c211](https://github.com/Devolutions/IronRDP/commit/ffb921c211477c6b77cccaf98eb500d627513374))
+
+- Report a standalone MCS Disconnect Provider Ultimatum as a graceful disconnect instead of a protocol error ([#1692](https://github.com/Devolutions/IronRDP/issues/1692)) ([75ea3b96f0](https://github.com/Devolutions/IronRDP/commit/75ea3b96f08a59e3b70fb75fedc4eb358aa8682c))
+
+- Ignore Server Heartbeat PDUs and unknown PDUs on the message channel instead of failing the session ([#1814](https://github.com/Devolutions/IronRDP/issues/1814)) ([4275b3d7fd](https://github.com/Devolutions/IronRDP/commit/4275b3d7fdf33c0aedeeb6bc9f58bfec83d0893d))
+
+- Decode several Share Control PDUs concatenated in one Send Data Indication on the I/O channel ([#1861](https://github.com/Devolutions/IronRDP/issues/1861)) ([2971839d59](https://github.com/Devolutions/IronRDP/commit/2971839d59e5269b511deba4e17868bc4710db84))
+
+- Set `CHANNEL_FLAG_SHOW_PROTOCOL` on the messages of a static channel defined with `CHANNEL_OPTION_SHOW_PROTOCOL` ([#2177](https://github.com/Devolutions/IronRDP/issues/2177)) ([8575afc308](https://github.com/Devolutions/IronRDP/commit/8575afc308ba7f67fced0b0f61ce07fa4aca5995))
+
+### <!-- 7 -->Build
+
+- Bump the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- `ironrdp-bulk` 0.2 is now a public dependency
+
+- `ironrdp-rdpei` 0.2 is a new public dependency
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.9
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.9
+
+- [**breaking**] Update `ironrdp-graphics` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.10.0...ironrdp-session-v0.11.0)] - 2026-07-10
 
 ### <!-- 0 -->Security

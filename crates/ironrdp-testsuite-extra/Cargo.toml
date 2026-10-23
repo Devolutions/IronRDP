@@ -56,6 +56,7 @@ ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
+proptest.workspace = true
 rcgen = "0.14"
 rstest.workspace = true
 semver = "1.0"

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.7.0...ironrdp-input-v0.8.0)] - 2026-10-23
+
+### <!-- 4 -->Bug Fixes
+
+- Clamp wheel rotation units to the wire's 9-bit range (`MousePdu::WHEEL_ROTATION_RANGE`) in `Database::apply` instead of sending a wrapped value ([#1818](https://github.com/Devolutions/IronRDP/issues/1818)) ([2685d85cc4](https://github.com/Devolutions/IronRDP/commit/2685d85cc4f95e2ee3294e4edda4d0ff41f9ff80))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.10
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.6.0...ironrdp-input-v0.7.0)] - 2026-07-10
 
 ### <!-- 7 -->Build
