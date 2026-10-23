@@ -116,7 +116,7 @@ fn partial_tiles_are_covered(#[case] width: u16, #[case] height: u16, #[case] ti
     );
 }
 
-// oracle: benches/README.md#fixtures and MS-RDPRFX 2.2.2.2.4 require video mode for headers sent once.
+// oracle: spec MS-RDPRFX 2.2.2.2.4 requires video mode for headers sent once.
 #[test]
 fn steady_state_frames_use_video_mode() {
     let fx = fixture(Pattern::Text, 64, 64, EntropyAlgorithm::Rlgr3);
@@ -139,6 +139,6 @@ fn steady_state_frames_use_video_mode() {
     driver.decode(&fx.frame);
     let first = driver.image().data().to_vec();
     driver.decode(&fx.frame);
-    // oracle: benches/README.md#fixtures requires deterministic workloads for repeated measurements.
+    // oracle: property idempotent, replaying this fixed frame leaves the decoded pixels unchanged.
     assert_eq!(driver.image().data(), first);
 }

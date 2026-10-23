@@ -226,7 +226,7 @@ mod tests {
 
     use super::*;
 
-    // oracle: reference model from Driver, bypassing the C-ABI state and frame selection.
+    // oracle: mutant guard against wrong frame selection, stale pixels, or incorrect checksum truncation in the C-ABI wrapper.
     #[rstest]
     fn frame_decode_matches_reference_and_repeats(#[values(0, 1)] rlgr3: u32) {
         let fx = fixture(Pattern::Text, 65, 65, entropy_algorithm(rlgr3));
@@ -255,7 +255,7 @@ mod tests {
         }
     }
 
-    // oracle: reference model from direct codec-stage calls, independent of the batched C-ABI driver.
+    // oracle: mutant guard against wrong stage dispatch or failed input restoration in the C-ABI wrapper.
     #[rstest]
     #[case::rlgr(STAGE_RLGR)]
     #[case::subband(STAGE_SUBBAND)]
@@ -296,7 +296,7 @@ mod tests {
         }
     }
 
-    // oracle: reference model from direct color conversion of the fixture's decoded planes.
+    // oracle: mutant guard against wrong color-plane selection or stale RGBA output in the C-ABI wrapper.
     #[rstest]
     fn ycbcr_batches_match_reference_and_repeat_after_prepare(#[values(0, 1)] rlgr3: u32) {
         let planes = stage_fixture(Pattern::Text, entropy_algorithm(rlgr3)).planes();

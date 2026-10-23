@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::NPM;
 use crate::prelude::*;
 use crate::target_directory;
@@ -46,19 +44,13 @@ pub fn rfx_decode_wasm(sh: &Shell, simd: bool) -> anyhow::Result<()> {
     }
     build.run()?;
 
-    let build_dir = PathBuf::from(RFX_DECODE_WASM_PATH).join("build");
-    sh.create_dir(&build_dir)?;
-    let module = build_dir.join(RFX_DECODE_WASM_ARTIFACT);
-    sh.copy_file(
-        target_directory(sh)?
-            .join(WASM_TARGET)
-            .join("release")
-            .join(RFX_DECODE_WASM_ARTIFACT),
-        &module,
-    )?;
+    let module = target_directory(sh)?
+        .join(WASM_TARGET)
+        .join("release")
+        .join(RFX_DECODE_WASM_ARTIFACT);
 
     let _guard = sh.push_dir(RFX_DECODE_WASM_PATH);
-    cmd!(sh, "node run.mjs build/{RFX_DECODE_WASM_ARTIFACT}").run()?;
+    cmd!(sh, "node run.mjs {module}").run()?;
 
     Ok(())
 }
