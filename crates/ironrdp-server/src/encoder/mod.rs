@@ -623,24 +623,28 @@ impl EncoderIter<'_> {
                         bitmap,
                         pos: pos + 1,
                     };
-                    let update = encoder.bitmap(sub).await;
-                    if let Ok(update) = &update
-                        && encoder.max_request_size < update.data.len()
-                    {
-                        // `max_tile_bytes` leaves room for this; a codec that still outgrew it
-                        // would overflow a client with that small a reassembly buffer.
-                        warn!(
-                            len = update.data.len(),
-                            max_request_size = encoder.max_request_size,
-                            "Encoded bitmap update exceeds the negotiated request size"
-                        );
-                    }
-                    update
+                    encoder.bitmap(sub).await
                 }
                 State::Ended => return None,
             };
 
-            return Some(res);
+            // The tiling allowance is an estimate, not a bound for every codec or
+            // pointer shape. Never send a fragmented update that could overflow the
+            // client's negotiated reassembly buffer, even if encoding expands it.
+            return Some(res.and_then(|update| {
+                if update.data.len() > encoder.max_request_size {
+                    Err(ServerError::reason(
+                        "fast-path update",
+                        format!(
+                            "encoded update of {} bytes exceeds negotiated maximum of {} bytes",
+                            update.data.len(),
+                            encoder.max_request_size
+                        ),
+                    ))
+                } else {
+                    Ok(update)
+                }
+            }));
         }
     }
 }
@@ -1050,6 +1054,37 @@ mod tests {
             largest = largest.max(update.expect("update").data.len());
         }
         largest
+    }
+
+    #[tokio::test]
+    async fn oversized_fast_path_update_is_rejected_before_fragmentation() {
+        let mut encoder = UpdateEncoder::new(
+            DesktopSize { width: 96, height: 96 },
+            CmdFlags::empty(),
+            UpdateEncoderCodecs::new(),
+            16_374,
+            1,
+            LargePointerSupportFlags::UP_TO_96X96_PIXELS,
+        )
+        .expect("encoder");
+        let pointer = ColorPointer {
+            cache_index: 0,
+            width: 96,
+            height: 96,
+            hot_x: 0,
+            hot_y: 0,
+            and_mask: vec![],
+            xor_mask: vec![0xAB; 96 * 96 * 4],
+        };
+        let result = encoder
+            .update(DisplayUpdate::ColorPointer(pointer))
+            .next()
+            .await
+            .expect("pointer update");
+        assert!(
+            result.is_err(),
+            "an update exceeding the negotiated reassembly size must not be emitted"
+        );
     }
 
     #[tokio::test]
