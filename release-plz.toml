@@ -12,9 +12,11 @@ release_commits = "^(feat|docs|fix|build|perf)"
 [[package]]
 name = "ironrdp-agent"
 git_release_enable = true
+release = false # depends on an excluded crate, see below
 [[package]]
 name = "ironrdp-viewer"
 git_release_enable = true
+release = false # depends on an excluded crate, see below
 
 # ironrdp-tls does not compile if no backend is specified, and the following crates depend on it
 # without enabling a backend by default. rustls is the most common backend, so we let cargo publish
@@ -25,6 +27,7 @@ publish_features = ["rustls"]
 [[package]]
 name = "ironrdp-client"
 publish_features = ["rustls"]
+release = false # depends on an excluded crate, see below
 [[package]]
 name = "ironrdp-mstsgu"
 publish_features = ["rustls"]
@@ -39,6 +42,49 @@ publish_no_verify = true
 [[package]]
 name = "ironrdp-rdpsnd-native"
 publish_no_verify = true
+release = false # depends on an excluded crate, see below
 [[package]]
 name = "ironrdp-cliprdr-native"
 publish_no_verify = true
+
+# These crates have never been published, and they build only against unreleased changes in the crates they depend on.
+# Trusted publishing cannot create a crate, so release-plz would fail on each of them and stop before releasing the rest.
+# Once their dependencies are released, publish each crate manually once, then remove its entry.
+# Crates that depend on them, directly or transitively and including optional dependencies, cannot be published either and are excluded too;
+# ironrdp-agent, ironrdp-viewer, ironrdp-client and ironrdp-rdpsnd-native are excluded in their entries above.
+[[package]]
+name = "ironrdp"
+release = false
+[[package]]
+name = "ironrdp-server"
+release = false
+[[package]]
+name = "ironrdp-rdpeudp"
+release = false
+[[package]]
+name = "ironrdp-rdpemt"
+release = false
+[[package]]
+name = "ironrdp-rdpeudp-tokio"
+release = false
+[[package]]
+name = "ironrdp-rdpeai"
+release = false
+[[package]]
+name = "ironrdp-rdpewa"
+release = false
+[[package]]
+name = "ironrdp-rdpewa-native"
+release = false
+[[package]]
+name = "ironrdp-rdpeusb"
+release = false
+[[package]]
+name = "ironrdp-rpc"
+release = false
+[[package]]
+name = "ironrdp-vmconnect"
+release = false
+[[package]]
+name = "ironrdp-daemon"
+release = false
