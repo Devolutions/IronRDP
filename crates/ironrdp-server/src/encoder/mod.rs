@@ -98,13 +98,13 @@ impl UpdateEncoderCodecs {
     }
 
     #[cfg(feature = "qoi")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_qoi(&mut self, qoi: Option<u8>) {
         self.qoi = qoi
     }
 
     #[cfg(feature = "qoiz")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_qoiz(&mut self, qoiz: Option<u8>) {
         self.qoiz = qoiz
     }
@@ -112,7 +112,7 @@ impl UpdateEncoderCodecs {
     /// Record the negotiated NsCodec codec id and color-loss level so the
     /// encoder selection path can build an `NsCodecHandler` for this session.
     #[cfg(feature = "nscodec")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_nscodec(&mut self, nscodec: Option<(u8, u8)>) {
         self.nscodec = nscodec
     }
@@ -999,116 +999,4 @@ fn surface_bits(
         UpdateCode::SurfaceCommands,
         encode_vec(&cmd).map_err(ServerError::encode)?,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use core::num::NonZeroUsize;
-
-    use bytes::Bytes;
-
-    use super::*;
-    use crate::PixelFormat;
-
-    /// The largest update the encoder emits for one full frame of pixels that compress badly.
-    async fn largest_update(
-        width: u16,
-        height: u16,
-        surface_flags: CmdFlags,
-        codecs: UpdateEncoderCodecs,
-        max_request_size: u32,
-    ) -> usize {
-        let mut encoder = UpdateEncoder::new(
-            DesktopSize { width, height },
-            surface_flags,
-            codecs,
-            max_request_size,
-            0,
-            LargePointerSupportFlags::empty(),
-        )
-        .expect("encoder");
-        let len = usize::from(width) * usize::from(height) * 4;
-        // xorshift64: no runs, repeats or small deltas for a codec to exploit.
-        let mut state = 0x2545_f491_4f6c_dd1du64;
-        let data: Vec<u8> = core::iter::repeat_with(|| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state.to_le_bytes()[0]
-        })
-        .take(len)
-        .collect();
-        let bitmap = BitmapUpdate {
-            x: 0,
-            y: 0,
-            width: NonZeroU16::new(width).expect("width"),
-            height: NonZeroU16::new(height).expect("height"),
-            format: PixelFormat::BgrA32,
-            data: Bytes::from(data),
-            stride: NonZeroUsize::new(usize::from(width) * 4).expect("stride"),
-        };
-
-        let mut updates = encoder.update(DisplayUpdate::Bitmap(bitmap));
-        let mut largest = 0;
-        while let Some(update) = updates.next().await {
-            largest = largest.max(update.expect("update").data.len());
-        }
-        largest
-    }
-
-    #[tokio::test]
-    async fn oversized_fast_path_update_is_rejected_before_fragmentation() {
-        let mut encoder = UpdateEncoder::new(
-            DesktopSize { width: 96, height: 96 },
-            CmdFlags::empty(),
-            UpdateEncoderCodecs::new(),
-            16_374,
-            1,
-            LargePointerSupportFlags::UP_TO_96X96_PIXELS,
-        )
-        .expect("encoder");
-        let pointer = ColorPointer {
-            cache_index: 0,
-            width: 96,
-            height: 96,
-            hot_x: 0,
-            hot_y: 0,
-            and_mask: vec![],
-            xor_mask: vec![0xAB; 96 * 96 * 4],
-        };
-        let result = encoder
-            .update(DisplayUpdate::ColorPointer(pointer))
-            .next()
-            .await
-            .expect("pointer update");
-        assert!(
-            result.is_err(),
-            "an update exceeding the negotiated reassembly size must not be emitted"
-        );
-    }
-
-    #[tokio::test]
-    async fn no_update_outgrows_the_negotiated_request_size() {
-        let raw = UpdateEncoderCodecs::new;
-        // 2048-pixel rows: a 2048x8 tile is exactly 65,536 pixel bytes, plus its headers.
-        assert!(largest_update(2048, 64, CmdFlags::SET_SURFACE_BITS, raw(), 65_536).await <= 65_536);
-        assert!(largest_update(1440, 900, CmdFlags::empty(), raw(), 65_536).await <= 65_536);
-        assert!(largest_update(1440, 900, CmdFlags::empty(), raw(), 16_374).await <= 16_374);
-
-        #[cfg(feature = "qoi")]
-        {
-            let mut qoi = raw();
-            qoi.set_qoi(Some(1));
-            assert!(largest_update(2048, 64, CmdFlags::SET_SURFACE_BITS, qoi, 65_536).await <= 65_536);
-        }
-        #[cfg(feature = "qoiz")]
-        {
-            let mut qoiz = raw();
-            qoiz.set_qoiz(Some(1));
-            assert!(largest_update(2048, 64, CmdFlags::SET_SURFACE_BITS, qoiz, 65_536).await <= 65_536);
-        }
-        let mut remotefx = raw();
-        remotefx.set_remotefx(Some((EntropyBits::Rlgr3, 1)));
-        assert!(largest_update(2048, 64, CmdFlags::SET_SURFACE_BITS, remotefx, 65_536).await <= 65_536);
-    }
 }
