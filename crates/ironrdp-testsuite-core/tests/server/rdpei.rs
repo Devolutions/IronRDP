@@ -45,7 +45,7 @@ async fn rdpei_factory_is_invoked_during_channel_setup() {
 
     let (client, server_side) = tokio::io::duplex(64);
     drop(client);
-    let _ = server.run_connection(server_side).await;
+    let _ = Box::pin(server.run_connection(server_side)).await;
 
     assert!(
         invoked.load(Ordering::Relaxed),

@@ -13,7 +13,7 @@ use ironrdp_pdu::rdp::client_info::PasswordCookie;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
-use pdu::rdp::client_info::{ClientAutoReconnect, Credentials};
+use pdu::rdp::client_info::{ClientAutoReconnect, ClientInfoFlags, Credentials};
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
@@ -53,6 +53,7 @@ pub struct Acceptor {
     routing_token: Option<String>,
     client_cluster_data: Option<gcc::ClientClusterData>,
     password_cookie: Option<PasswordCookie>,
+    client_info_flags: ClientInfoFlags,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
@@ -276,6 +277,14 @@ pub struct AcceptorResult {
     ///
     /// A client redirected by a Server Redirection PDU passes the cookie of that PDU to the target server.
     pub password_cookie: Option<PasswordCookie>,
+    /// Flags the client sent in its Info Packet (section 2.2.1.11.1.1, `flags`).
+    ///
+    /// Servers read the client's wishes from them, e.g. whether to redirect audio
+    /// (`INFO_NOAUDIOPLAYBACK`, `INFO_REMOTECONSOLEAUDIO`) and whether the client can
+    /// send its microphone (`INFO_AUDIOCAPTURE`). Unknown bits are kept as sent. Empty
+    /// until the Client Info PDU arrives, and carried over unchanged on reactivation,
+    /// since the client doesn't send the PDU again.
+    pub client_info_flags: ClientInfoFlags,
 }
 
 impl Acceptor {
@@ -301,6 +310,7 @@ impl Acceptor {
             routing_token: None,
             client_cluster_data: None,
             password_cookie: None,
+            client_info_flags: ClientInfoFlags::empty(),
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
@@ -541,6 +551,7 @@ impl Acceptor {
             routing_token: consumed.routing_token,
             client_cluster_data: consumed.client_cluster_data,
             password_cookie: consumed.password_cookie,
+            client_info_flags: consumed.client_info_flags,
             server_capabilities: consumed.server_capabilities,
             static_channels,
             saved_for_reactivation,
@@ -745,6 +756,7 @@ impl Acceptor {
                 routing_token: self.routing_token.clone(),
                 client_cluster_data: self.client_cluster_data.clone(),
                 password_cookie: self.password_cookie.clone(),
+                client_info_flags: self.client_info_flags,
             }),
             previous_state => {
                 self.state = previous_state;
@@ -1258,6 +1270,7 @@ impl Sequence for Acceptor {
                 self.received_auto_reconnect = auto_reconnect;
                 self.password_cookie
                     .clone_from(&client_info.client_info.password_cookie);
+                self.client_info_flags = client_info.client_info.flags;
 
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;

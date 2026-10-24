@@ -6,8 +6,8 @@ use std::io;
 use std::rc::Rc;
 
 use ironrdp_acceptor::{
-    Acceptor, ConnectionSetupHandler, MultitransportSecurityRng, ReceivedCredentials, accept_credssp_with,
-    accept_finalize_with,
+    Acceptor, AcceptorResult, ConnectionSetupHandler, MultitransportSecurityRng, ReceivedCredentials,
+    accept_credssp_with, accept_finalize_with,
 };
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
@@ -24,7 +24,7 @@ use ironrdp_pdu::gcc::{
 use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
 use ironrdp_pdu::rdp::ClientInfoPdu;
-use ironrdp_pdu::rdp::client_info::{CompressionType, Credentials};
+use ironrdp_pdu::rdp::client_info::{ClientInfoFlags, CompressionType, Credentials};
 use ironrdp_pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
@@ -262,6 +262,16 @@ fn drive_to_secure_settings_exchange(
     acceptor: &mut Acceptor,
     client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
 ) -> (u16, u16, Option<u16>, Option<MultiTransportFlags>) {
+    drive_to_secure_settings_exchange_with_client_info(acceptor, client_blocks, &CLIENT_INFO_PDU_BUFFER)
+}
+
+/// [`drive_to_secure_settings_exchange`], sending `client_info` as the encoded
+/// Client Info PDU.
+fn drive_to_secure_settings_exchange_with_client_info(
+    acceptor: &mut Acceptor,
+    client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
+    client_info: &[u8],
+) -> (u16, u16, Option<u16>, Option<MultiTransportFlags>) {
     let request_bytes = encode_connection_request(SecurityProtocol::SSL);
     acceptor.step(&request_bytes, None, &mut WriteBuf::new()).unwrap();
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
@@ -324,7 +334,7 @@ fn drive_to_secure_settings_exchange(
     // RdpSecurityCommencement (no input) -> SecureSettingsExchange, then the
     // Client Info PDU on the I/O channel.
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
-    let client_info = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_INFO_PDU_BUFFER);
+    let client_info = encode_send_data_request(user_channel_id, io_channel_id, client_info);
     acceptor.step(&client_info, None, &mut WriteBuf::new()).unwrap();
 
     (
@@ -746,6 +756,17 @@ fn multitransport_not_offered_when_client_does_not_reciprocate() {
 /// Client Monitor Data (MS-RDPBCGR 2.2.1.3.6), or with no such block when
 /// `None`, and returns the monitors the acceptor hands back in its result.
 fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monitor> {
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
+    result_after_accepting(client_blocks, &CLIENT_INFO_PDU_BUFFER).client_monitors
+}
+
+/// Drives a fresh acceptor through the whole connection sequence, from the
+/// Connection Request to `Connected`, with `client_blocks` as the client's GCC
+/// blocks and `client_info` as its encoded Client Info PDU, and returns the
+/// acceptor's result.
+fn result_after_accepting(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks, client_info: &[u8]) -> AcceptorResult {
     let mut acceptor = Acceptor::new(
         SecurityProtocol::SSL,
         DesktopSize {
@@ -756,10 +777,8 @@ fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monito
         None,
     );
 
-    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
-    client_blocks.network = None;
-    client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
-    let (user_channel_id, io_channel_id, ..) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+    let (user_channel_id, io_channel_id, ..) =
+        drive_to_secure_settings_exchange_with_client_info(&mut acceptor, client_blocks, client_info);
 
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: nothing to send
@@ -793,10 +812,7 @@ fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monito
     }
     assert_eq!(acceptor.state().name(), "Connected");
 
-    acceptor
-        .get_result()
-        .expect("a connected acceptor has a result")
-        .client_monitors
+    acceptor.get_result().expect("a connected acceptor has a result")
 }
 
 /// The client's monitors reach `AcceptorResult::client_monitors` as sent,
@@ -826,6 +842,29 @@ fn client_monitor_data_is_kept_in_the_order_sent() {
 #[test]
 fn a_client_without_monitor_data_announces_no_monitors() {
     assert!(client_monitors_after_accepting(None).is_empty());
+}
+
+/// The flags of the client's Info Packet (MS-RDPBCGR 2.2.1.11.1.1) reach
+/// `AcceptorResult::client_info_flags` as sent, the audio ones included.
+#[test]
+fn client_info_flags_are_kept_as_sent() {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    client_info.flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK | ClientInfoFlags::AUDIO_CAPTURE;
+    let flags = client_info.flags;
+    let client_info = encode_vec(&ClientInfoPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::INFO_PKT,
+        },
+        client_info,
+    })
+    .unwrap();
+
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    assert_eq!(
+        result_after_accepting(client_blocks, &client_info).client_info_flags,
+        flags
+    );
 }
 
 #[derive(Default)]
