@@ -190,6 +190,10 @@ pub struct ConnectionInfo {
     pub redirected_session_id: Option<u32>,
     /// See [`ironrdp_acceptor::AcceptorResult::password_cookie`].
     pub password_cookie: Option<rdp::client_info::PasswordCookie>,
+    /// See [`ironrdp_acceptor::AcceptorResult::client_info_flags`]. The server itself
+    /// doesn't start the rdpsnd channel when they ask for no audio redirection; the
+    /// rest, such as whether to offer a microphone, is the embedder's to act on.
+    pub client_info_flags: rdp::client_info::ClientInfoFlags,
 }
 
 impl ConnectionInfo {
@@ -207,6 +211,7 @@ impl ConnectionInfo {
             routing_token: None,
             redirected_session_id: None,
             password_cookie: None,
+            client_info_flags: rdp::client_info::ClientInfoFlags::empty(),
         }
     }
 }
@@ -5166,6 +5171,7 @@ impl RdpServer {
                         })
                         .map(|cluster| cluster.redirected_session_id),
                     password_cookie: result.password_cookie.clone(),
+                    client_info_flags: result.client_info_flags,
                 });
             });
         }
@@ -5189,12 +5195,29 @@ impl RdpServer {
         conn.client_supports_errinfo = result
             .client_early_capability_flags
             .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
+        // Under INFO_NOAUDIOPLAYBACK audio redirection MUST NOT take place, and
+        // INFO_REMOTECONSOLEAUDIO asks for the audio to be played on the server
+        // (MS-RDPBCGR 2.2.1.11.1.1). A client can join the rdpsnd channel all the
+        // same, as some do for device redirection, so the channel is left joined
+        // but never started: no Server Audio Formats PDU goes out, and the sound
+        // handler is never asked to start.
+        let audio_redirection = !result.client_info_flags.intersects(
+            rdp::client_info::ClientInfoFlags::NO_AUDIO_PLAYBACK
+                | rdp::client_info::ClientInfoFlags::REMOTE_CONSOLE_AUDIO,
+        );
         if !result.reactivation {
             for (_channel_key, channel, channel_id) in conn.static_channels.iter_by_key_mut() {
                 debug!(?channel, ?channel_id, "Start");
                 let Some(channel_id) = channel_id else {
                     continue;
                 };
+                if !audio_redirection && channel.channel_name() == RdpsndServer::NAME {
+                    debug!(
+                        flags = ?result.client_info_flags,
+                        "Not starting rdpsnd: the client asked for no audio redirection"
+                    );
+                    continue;
+                }
                 let svc_responses = channel.start().map_err_kind("svc start", ServerErrorKind::Pdu)?;
                 let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)
                     .map_err(ServerError::encode)?;

@@ -404,6 +404,14 @@ pub struct AcceptorResult {
     ///
     /// A client redirected by a Server Redirection PDU passes the cookie of that PDU to the target server.
     pub password_cookie: Option<PasswordCookie>,
+    /// Flags the client sent in its Info Packet (section 2.2.1.11.1.1, `flags`).
+    ///
+    /// Servers read the client's wishes from them, e.g. whether to redirect audio
+    /// (`INFO_NOAUDIOPLAYBACK`, `INFO_REMOTECONSOLEAUDIO`) and whether the client can
+    /// send its microphone (`INFO_AUDIOCAPTURE`). Unknown bits are kept as sent. Empty
+    /// until the Client Info PDU arrives, and carried over unchanged on reactivation,
+    /// since the client doesn't send the PDU again.
+    pub client_info_flags: ClientInfoFlags,
 }
 
 impl Acceptor {
@@ -942,6 +950,7 @@ impl Acceptor {
                 routing_token: self.routing_token.clone(),
                 client_cluster_data: self.client_cluster_data.clone(),
                 password_cookie: self.password_cookie.clone(),
+                client_info_flags: self.client_info_flags.unwrap_or_else(ClientInfoFlags::empty),
             }),
             previous_state => {
                 self.state = previous_state;
@@ -1464,6 +1473,7 @@ impl Sequence for Acceptor {
                 self.received_auto_reconnect = auto_reconnect;
                 self.password_cookie
                     .clone_from(&client_info.client_info.password_cookie);
+
 
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
