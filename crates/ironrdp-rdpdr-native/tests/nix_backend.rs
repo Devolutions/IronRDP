@@ -10,9 +10,10 @@ use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::efs::{
     Boolean, CreateDisposition, CreateOptions, DesiredAccess, DeviceCloseRequest, DeviceCreateRequest, DeviceIoRequest,
     DeviceReadRequest, DeviceWriteRequest, FileAttributes, FileDispositionInformation, FileInformationClass,
-    FileInformationClassLevel, FileRenameInformation, FileStandardInformation, MajorFunction, MinorFunction, NtStatus,
-    ServerDriveIoRequest, ServerDriveQueryDirectoryRequest, ServerDriveQueryInformationRequest,
-    ServerDriveSetInformationRequest, SharedAccess,
+    FileInformationClassLevel, FileRenameInformation, FileStandardInformation, LockOperation, MajorFunction,
+    MinorFunction, NtStatus, RdpLockInfo, ServerDriveIoRequest, ServerDriveLockControlRequest,
+    ServerDriveQueryDirectoryRequest, ServerDriveQueryInformationRequest, ServerDriveSetInformationRequest,
+    SharedAccess,
 };
 use ironrdp_rdpdr_native::backend::NixRdpdrBackend;
 use ironrdp_svc::SvcMessage;
@@ -1160,6 +1161,317 @@ fn a_directory_that_is_not_empty_cannot_be_marked_for_deletion() {
 
     assert_eq!(response_status(&response), NtStatus::DIRECTORY_NOT_EMPTY);
     assert!(fixture.share.join("full").join("child.txt").exists());
+}
+
+// oracle: spec MS-SMB2 §2.2.13.1
+#[test]
+fn opening_an_existing_file_for_write_allows_writes() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("doc.txt"), b"old").expect("write file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\doc.txt", CreateDisposition::FILE_OPEN);
+
+    let response = write(&mut backend, file_id, 0, b"new");
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(std::fs::read(fixture.share.join("doc.txt")).expect("read file"), b"new");
+}
+
+// oracle: spec MS-SMB2 §2.2.13.1
+#[test]
+fn a_handle_opened_for_reading_cannot_write() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("doc.txt"), b"old").expect("write file");
+    let mut backend = fixture.backend();
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            desired_access: DesiredAccess::FILE_READ_DATA_OR_FILE_LIST_DIRECTORY,
+            ..create_request(r"\doc.txt", CreateDisposition::FILE_OPEN)
+        },
+    );
+    let file_id = response_file_id(&response);
+
+    let response = write(&mut backend, file_id, 0, b"new");
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert_eq!(std::fs::read(fixture.share.join("doc.txt")).expect("read file"), b"old");
+}
+
+// oracle: spec MS-FSA §2.1.5.5
+#[test]
+fn delete_on_close_removes_the_file_when_its_handle_closes() {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            desired_access: DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE | DesiredAccess::DELETE,
+            create_options: CreateOptions::FILE_DELETE_ON_CLOSE,
+            ..create_request(r"\temp.tmp", CreateDisposition::FILE_CREATE)
+        },
+    );
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let reopened = create(&mut backend, r"\temp.tmp", CreateDisposition::FILE_OPEN);
+    close(&mut backend, reopened);
+    let exists_while_open = fixture.share.join("temp.tmp").exists();
+
+    close(&mut backend, response_file_id(&response));
+
+    assert!(exists_while_open);
+    assert!(!fixture.share.join("temp.tmp").exists());
+}
+
+// oracle: spec MS-SMB2 §2.2.13
+#[test]
+fn delete_on_close_needs_delete_access() {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            create_options: CreateOptions::FILE_DELETE_ON_CLOSE,
+            ..create_request(r"\temp.tmp", CreateDisposition::FILE_CREATE)
+        },
+    );
+
+    assert_eq!(response_status(&response), NtStatus::INVALID_PARAMETER);
+    assert!(!fixture.share.join("temp.tmp").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.15.3
+#[test]
+fn a_read_only_file_cannot_be_marked_for_deletion() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new();
+    let path = fixture.share.join("locked.txt");
+    std::fs::write(&path, b"locked").expect("write file");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).expect("make file read-only");
+    let mut backend = fixture.backend();
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            desired_access: DesiredAccess::FILE_READ_DATA_OR_FILE_LIST_DIRECTORY | DesiredAccess::DELETE,
+            ..create_request(r"\locked.txt", CreateDisposition::FILE_OPEN)
+        },
+    );
+    let file_id = response_file_id(&response);
+
+    let response = set_information(&mut backend, file_id, delete_pending(true));
+    close(&mut backend, file_id);
+
+    // oracle: spec MS-ERREF §2.3.1
+    assert_eq!(response_status(&response), NtStatus::from(0xC000_0121));
+    assert!(path.exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.6.3
+#[rstest]
+#[case::star_suffix(r"\dir\*.txt", &["B.TXT", "a.txt"])]
+#[case::dos_star_suffix(r"\dir\<.txt", &["B.TXT", "a.txt"])]
+#[case::question_mark(r"\dir\?.doc", &["c.doc"])]
+#[case::star_dot_star_includes_dot_entries(r"\dir\*.*", &[".", "..", "B.TXT", "a.txt", "c.doc"])]
+#[case::literal_name(r"\dir\c.doc", &["c.doc"])]
+fn query_directory_matches_wildcard_patterns(#[case] pattern: &str, #[case] expected: &[&str]) {
+    let fixture = Fixture::new();
+    let directory = fixture.share.join("dir");
+    std::fs::create_dir(&directory).expect("create directory");
+    for name in ["a.txt", "B.TXT", "c.doc"] {
+        std::fs::write(directory.join(name), name).expect("write file");
+    }
+    let mut backend = fixture.backend();
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+
+    let (mut names, status) = list_directory(&mut backend, directory_id, pattern);
+
+    names.sort();
+    assert_eq!(names, expected);
+    assert_eq!(status, NtStatus::NO_MORE_FILES);
+}
+
+// oracle: spec MS-FSA §2.1.5.8
+#[test]
+fn an_exclusive_lock_refuses_a_lock_through_another_handle() {
+    let (_fixture, mut backend, first_id, second_id) = two_handles();
+
+    let first = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 10);
+    let second = lock(&mut backend, second_id, 2, LockOperation::Shared, false, 5, 10);
+
+    assert_eq!(response_status(&first), NtStatus::SUCCESS);
+    assert_eq!(response_status(&second), NtStatus::LOCK_NOT_GRANTED);
+}
+
+// oracle: spec MS-FSA §2.1.5.3
+#[test]
+fn an_exclusive_lock_refuses_reads_through_another_handle() {
+    let (_fixture, mut backend, first_id, second_id) = two_handles();
+    let _ = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 10);
+
+    let owner_read = read(&mut backend, first_id, 0, 4);
+    let other_read = read(&mut backend, second_id, 0, 4);
+
+    assert_eq!(response_status(&owner_read), NtStatus::SUCCESS);
+    // oracle: spec MS-ERREF §2.3.1
+    assert_eq!(response_status(&other_read), NtStatus::from(0xC000_0054));
+}
+
+// oracle: spec MS-FSA §2.1.4.10
+#[test]
+fn a_shared_lock_refuses_writes_even_through_its_owner() {
+    let (_fixture, mut backend, first_id, _second_id) = two_handles();
+    let _ = lock(&mut backend, first_id, 1, LockOperation::Shared, false, 0, 10);
+
+    let response = write(&mut backend, first_id, 2, b"x");
+
+    // oracle: spec MS-ERREF §2.3.1
+    assert_eq!(response_status(&response), NtStatus::from(0xC000_0054));
+}
+
+// oracle: spec MS-FSA §2.1.4.10
+#[test]
+fn zero_length_locks_conflict_with_nothing() {
+    let (_fixture, mut backend, first_id, second_id) = two_handles();
+
+    let first = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 0);
+    let second = lock(&mut backend, second_id, 2, LockOperation::Exclusive, false, 0, 0);
+
+    assert_eq!(response_status(&first), NtStatus::SUCCESS);
+    assert_eq!(response_status(&second), NtStatus::SUCCESS);
+}
+
+// oracle: spec MS-FSA §2.1.5.9
+#[rstest]
+#[case::range_not_locked(LockOperation::Unlock, 0, 10, 0xC000_007E)]
+#[case::range_past_the_largest_offset(LockOperation::Exclusive, u64::MAX, 2, 0xC000_001E)]
+fn invalid_lock_requests_report_their_status(
+    #[case] operation: LockOperation,
+    #[case] offset: u64,
+    #[case] length: u64,
+    #[case] status: u32,
+) {
+    let (_fixture, mut backend, first_id, _second_id) = two_handles();
+
+    let response = lock(&mut backend, first_id, 1, operation, false, offset, length);
+
+    assert_eq!(response_status(&response), NtStatus::from(status));
+}
+
+// oracle: spec MS-FSA §2.1.5.8
+#[test]
+fn a_waiting_lock_is_granted_when_the_conflicting_lock_is_released() {
+    let (_fixture, mut backend, first_id, second_id) = two_handles();
+    let _ = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 10);
+
+    let waiting = lock(&mut backend, second_id, 2, LockOperation::Exclusive, true, 0, 10);
+    let released = lock(&mut backend, first_id, 3, LockOperation::Unlock, false, 0, 10);
+
+    assert!(waiting.is_empty());
+    assert_eq!(
+        released
+            .iter()
+            .map(|message| (completion_id(message), message_status(message)))
+            .collect::<Vec<_>>(),
+        [(3, NtStatus::SUCCESS), (2, NtStatus::SUCCESS)]
+    );
+}
+
+// oracle: spec MS-FSA §2.1.5.8
+#[test]
+fn closing_a_handle_cancels_its_waiting_lock() {
+    let (_fixture, mut backend, first_id, second_id) = two_handles();
+    let _ = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 10);
+    let _ = lock(&mut backend, second_id, 2, LockOperation::Exclusive, true, 0, 10);
+
+    let responses = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request_header(second_id, MajorFunction::Close),
+        }))
+        .expect("complete close");
+
+    assert_eq!(
+        responses
+            .iter()
+            .map(|message| (completion_id(message), message_status(message)))
+            .collect::<Vec<_>>(),
+        [(7, NtStatus::SUCCESS), (2, NtStatus::CANCELLED)]
+    );
+}
+
+// oracle: spec MS-FSA §2.1.5.8
+#[test]
+fn a_directory_cannot_be_locked() {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+    let root_id = create(&mut backend, r"\", CreateDisposition::FILE_OPEN);
+
+    let response = lock(&mut backend, root_id, 1, LockOperation::Exclusive, false, 0, 10);
+
+    assert_eq!(response_status(&response), NtStatus::INVALID_PARAMETER);
+}
+
+/// A share holding a 16-byte file opened through two handles.
+fn two_handles() -> (Fixture, NixRdpdrBackend, u32, u32) {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("data.bin"), [0; 16]).expect("write file");
+    let mut backend = fixture.backend();
+    let first_id = create(&mut backend, r"\data.bin", CreateDisposition::FILE_OPEN);
+    let second_id = create(&mut backend, r"\data.bin", CreateDisposition::FILE_OPEN);
+    (fixture, backend, first_id, second_id)
+}
+
+fn lock(
+    backend: &mut NixRdpdrBackend,
+    file_id: u32,
+    completion_id: u32,
+    operation: LockOperation,
+    wait: bool,
+    offset: u64,
+    length: u64,
+) -> Vec<SvcMessage> {
+    backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveLockControlRequest(
+            ServerDriveLockControlRequest {
+                device_io_request: DeviceIoRequest {
+                    completion_id,
+                    ..request_header(file_id, MajorFunction::LockControl)
+                },
+                operation,
+                wait,
+                locks: vec![RdpLockInfo { length, offset }],
+            },
+        ))
+        .expect("complete lock control")
+}
+
+fn read(backend: &mut NixRdpdrBackend, file_id: u32, offset: u64, length: u32) -> Vec<SvcMessage> {
+    backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceReadRequest(DeviceReadRequest {
+            device_io_request: request_header(file_id, MajorFunction::Read),
+            length,
+            offset,
+        }))
+        .expect("complete read")
+}
+
+fn write(backend: &mut NixRdpdrBackend, file_id: u32, offset: u64, data: &[u8]) -> Vec<SvcMessage> {
+    backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset,
+            write_data: data.to_vec(),
+        }))
+        .expect("complete write")
+}
+
+fn completion_id(message: &SvcMessage) -> u32 {
+    let response = message.encode_unframed_pdu().expect("encode RDPDR response");
+    u32::from_le_bytes(response[8..12].try_into().expect("completion ID"))
+}
+
+fn message_status(message: &SvcMessage) -> NtStatus {
+    response_status(std::slice::from_ref(message))
 }
 
 fn rename_to(file_name: &str, replace_if_exists: bool) -> FileInformationClass {
