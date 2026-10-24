@@ -183,6 +183,20 @@ fn reads_longer_than_the_limit_are_rejected(#[case] length: u32, #[case] status:
     CreateDisposition::FILE_OPEN,
     NtStatus::NOT_A_DIRECTORY
 )]
+// oracle: spec MS-SMB2 §2.2.13
+#[case::directory_and_non_directory(
+    r"\new",
+    CreateOptions::FILE_DIRECTORY_FILE.union(CreateOptions::FILE_NON_DIRECTORY_FILE),
+    CreateDisposition::FILE_CREATE,
+    NtStatus::INVALID_PARAMETER
+)]
+// oracle: spec MS-SMB2 §2.2.13
+#[case::directory_with_overwrite(
+    r"\new",
+    CreateOptions::FILE_DIRECTORY_FILE,
+    CreateDisposition::FILE_OVERWRITE_IF,
+    NtStatus::INVALID_PARAMETER
+)]
 fn create_reports_the_failure_status(
     #[case] path: &str,
     #[case] create_options: CreateOptions,
@@ -249,21 +263,62 @@ fn file_lifecycle_inside_the_share() {
 
     std::fs::write(fixture.share.join("docs").join("a.txt"), b"a").expect("write a.txt");
     let docs_id = create(&mut backend, r"\docs", CreateDisposition::FILE_OPEN);
-    // The directory holds `new` and `a.txt`, and enumeration then ends.
+    // The directory returns `.`, `..`, `new` and `a.txt`, and enumeration then ends.
     // oracle: spec MS-FSA §2.1.5.6.3
-    let mut statuses = vec![response_status(&query_directory(
-        &mut backend,
-        docs_id,
-        r"\docs\*",
-        true,
-    ))];
-    for _ in 0..2 {
-        statuses.push(response_status(&query_directory(&mut backend, docs_id, "", false)));
-    }
     assert_eq!(
-        statuses,
-        [NtStatus::SUCCESS, NtStatus::SUCCESS, NtStatus::NO_MORE_FILES]
+        list_directory(&mut backend, docs_id, r"\docs\*"),
+        [
+            NtStatus::SUCCESS,
+            NtStatus::SUCCESS,
+            NtStatus::SUCCESS,
+            NtStatus::SUCCESS,
+            NtStatus::NO_MORE_FILES
+        ]
     );
+}
+
+// oracle: spec MS-FSA §2.1.5.6.3
+#[test]
+fn the_shared_directory_lists_no_dot_entries() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("only.txt"), b"only").expect("write file");
+    let mut backend = fixture.backend();
+    let root_id = create(&mut backend, r"\", CreateDisposition::FILE_OPEN);
+
+    assert_eq!(
+        list_directory(&mut backend, root_id, r"\*"),
+        [NtStatus::SUCCESS, NtStatus::NO_MORE_FILES]
+    );
+}
+
+// oracle: spec MS-FSA §2.1.5.6.3
+#[test]
+fn a_failed_initial_query_restarts_enumeration() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("a.txt"), b"a").expect("write file");
+    std::fs::write(fixture.share.join("b.txt"), b"b").expect("write file");
+    let mut backend = fixture.backend();
+    let root_id = create(&mut backend, r"\", CreateDisposition::FILE_OPEN);
+
+    let first = query_directory(&mut backend, root_id, r"\*", true);
+    let invalid = query_directory(&mut backend, root_id, r"\..\*", true);
+    let next = query_directory(&mut backend, root_id, "", false);
+
+    assert_eq!(response_status(&first), NtStatus::SUCCESS);
+    assert_eq!(response_status(&invalid), NtStatus::OBJECT_NAME_INVALID);
+    assert_eq!(response_status(&next), NtStatus::NO_MORE_FILES);
+}
+
+// oracle: spec MS-FSA §2.1.5.1.2
+#[test]
+fn supersede_replaces_the_contents() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("old.txt"), b"old contents").expect("write file");
+    let mut backend = fixture.backend();
+
+    let _file_id = create(&mut backend, r"\old.txt", CreateDisposition::FILE_SUPERSEDE);
+
+    assert_eq!(std::fs::read(fixture.share.join("old.txt")).expect("read file"), b"");
 }
 
 // oracle: spec MS-FSCC §2.4.42
@@ -316,6 +371,92 @@ fn rename_with_replace_refuses_a_directory_target() {
     assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
     assert!(fixture.share.join("target").is_dir());
     assert!(fixture.share.join("source").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn rename_onto_the_same_file_is_not_a_collision() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("same.txt"), b"same").expect("write file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\same.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\same.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(fixture.share.join("same.txt").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.1
+#[test]
+fn rename_into_a_missing_directory_reports_the_path() {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\file.txt", CreateDisposition::FILE_CREATE);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\missing\file.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::OBJECT_PATH_NOT_FOUND);
+}
+
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn a_file_marked_for_deletion_cannot_be_renamed() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("doomed.txt"), b"doomed").expect("write file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\doomed.txt", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, file_id, delete_pending(true));
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\saved.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+}
+
+// oracle: spec MS-FSA §2.1.5.5
+#[test]
+fn delete_on_close_follows_a_rename_through_another_handle() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("doc.txt"), b"original").expect("write file");
+    let mut backend = fixture.backend();
+    let deleting_id = create(&mut backend, r"\doc.txt", CreateDisposition::FILE_OPEN);
+    let renaming_id = create(&mut backend, r"\doc.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, renaming_id, rename_to(r"\backup.tmp", false));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    std::fs::write(fixture.share.join("doc.txt"), b"replacement").expect("write replacement");
+    let _ = set_information(&mut backend, deleting_id, delete_pending(true));
+    close(&mut backend, deleting_id);
+    close(&mut backend, renaming_id);
+
+    assert_eq!(
+        std::fs::read(fixture.share.join("doc.txt")).expect("read replacement"),
+        b"replacement"
+    );
+    assert!(!fixture.share.join("backup.tmp").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.1
+#[test]
+fn a_file_marked_for_deletion_is_deleted_when_its_last_handle_closes() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("shared.txt"), b"shared").expect("write file");
+    let mut backend = fixture.backend();
+    let first_id = create(&mut backend, r"\shared.txt", CreateDisposition::FILE_OPEN);
+    let second_id = create(&mut backend, r"\shared.txt", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, first_id, delete_pending(true));
+
+    let reopen = create_with(
+        &mut backend,
+        create_request(r"\shared.txt", CreateDisposition::FILE_OPEN),
+    );
+    close(&mut backend, first_id);
+    let still_there = fixture.share.join("shared.txt").exists();
+    close(&mut backend, second_id);
+
+    assert_eq!(response_status(&reopen), NtStatus::DELETE_PENDING);
+    assert!(still_there);
+    assert!(!fixture.share.join("shared.txt").exists());
 }
 
 // oracle: spec MS-FSA §2.1.5.15.12
@@ -405,6 +546,15 @@ fn delete_pending(delete_pending: bool) -> FileInformationClass {
     FileInformationClass::Disposition(FileDispositionInformation {
         delete_pending: u8::from(delete_pending),
     })
+}
+
+/// Returns the status of an initial query for `pattern` followed by queries until enumeration ends.
+fn list_directory(backend: &mut NixRdpdrBackend, file_id: u32, pattern: &str) -> Vec<NtStatus> {
+    let mut statuses = vec![response_status(&query_directory(backend, file_id, pattern, true))];
+    while statuses.last() == Some(&NtStatus::SUCCESS) {
+        statuses.push(response_status(&query_directory(backend, file_id, "", false)));
+    }
+    statuses
 }
 
 fn create_with(backend: &mut NixRdpdrBackend, request: DeviceCreateRequest) -> Vec<SvcMessage> {

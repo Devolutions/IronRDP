@@ -70,9 +70,13 @@ impl Root {
             }
         };
 
-        let file = nix::fcntl::openat(parent, name, flags, mode)?;
+        // The device is checked before truncating, so a refused mount is left unchanged.
+        let file = nix::fcntl::openat(parent, name, flags.difference(OFlag::O_TRUNC), mode)?;
         if fstat(file.as_fd())?.st_dev != self.device {
             return Err(Errno::EXDEV);
+        }
+        if flags.contains(OFlag::O_TRUNC) {
+            nix::unistd::ftruncate(file.as_fd(), 0)?;
         }
         Ok(file)
     }
@@ -81,7 +85,7 @@ impl Root {
 /// A validated path relative to the shared directory.
 ///
 /// INVARIANT: no component is empty, `.` or `..`, or contains `/` or NUL.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RelativePath {
     components: Vec<String>,
 }
@@ -111,6 +115,11 @@ impl RelativePath {
     /// The final component, or `None` for the shared directory itself.
     pub(crate) fn file_name(&self) -> Option<&str> {
         self.components.last().map(String::as_str)
+    }
+
+    /// Whether the final component sits directly in the shared directory, or the path is the shared directory itself.
+    pub(crate) fn is_in_root(&self) -> bool {
+        self.components.len() <= 1
     }
 
     /// Whether this path names something below `ancestor`, excluding `ancestor` itself.
