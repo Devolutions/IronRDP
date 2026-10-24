@@ -1,7 +1,6 @@
-use std::collections::HashSet;
-use std::ffi::CString;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 
 use ironrdp_core::impl_as_any;
@@ -14,19 +13,101 @@ use ironrdp_rdpdr::{
 };
 use ironrdp_svc::SvcMessage;
 use nix::dir::{Dir, OwningIter};
+use nix::fcntl::{AtFlags, OFlag, openat, renameat};
+use nix::sys::resource::{Resource, getrlimit};
+use nix::sys::stat::{FileStat, Mode, SFlag, fstatat, mkdirat};
+use nix::unistd::{UnlinkatFlags, unlinkat};
 use tracing::{debug, warn};
 
+use super::path::{InvalidPath, RelativePath, io_to_errno, open_root};
 use super::printer::{PrintTarget, PrinterSpooler, unsupported_response, write_response};
 
-#[derive(Debug, Default)]
+/// The most files the server may hold open at once, however high the descriptor limit is.
+const MAX_OPEN_FILES: usize = 1_024;
+
+/// The largest read the server may request, so a single request cannot make the client allocate gigabytes.
+const MAX_READ_LENGTH: usize = 1_024 * 1_024;
+
+#[derive(Debug)]
 pub struct NixRdpdrBackend {
     file_id: u32,
+    /// The shared directory every server-supplied path resolves beneath.
     file_base: String,
-    file_map: std::collections::HashMap<u32, std::fs::File>,
-    file_path_map: std::collections::HashMap<u32, String>,
-    file_dir_map: std::collections::HashMap<u32, OwningIter>,
+    /// INVARIANT: holds at most `max_open_files` entries.
+    open_files: HashMap<u32, OpenFile>,
+    /// Bounds the open files, so the server cannot exhaust the descriptors of the client process.
+    max_open_files: usize,
     /// Print-job handling for the virtual printer, when one is announced.
     printer: Option<Printer>,
+}
+
+impl Default for NixRdpdrBackend {
+    fn default() -> Self {
+        Self::new(String::new())
+    }
+}
+
+/// Returns a quarter of the soft descriptor limit, at most `MAX_OPEN_FILES`.
+///
+/// An open file holds up to three descriptors: the file, and a directory being enumerated with its stream.
+/// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process.
+fn max_open_files() -> usize {
+    match getrlimit(Resource::RLIMIT_NOFILE) {
+        Ok((soft_limit, _)) => usize::try_from(soft_limit / 4)
+            .unwrap_or(usize::MAX)
+            .min(MAX_OPEN_FILES),
+        Err(error) => {
+            warn!(%error, "Failed to read the descriptor limit");
+            MAX_OPEN_FILES
+        }
+    }
+}
+
+#[derive(Debug)]
+struct OpenFile {
+    file: std::fs::File,
+    path: RelativePath,
+    /// The enumeration the last initial query-directory request started on this file.
+    listing: Option<DirectoryListing>,
+}
+
+#[derive(Debug)]
+struct DirectoryListing {
+    /// The enumerated directory, which entry names are resolved against.
+    directory: OwnedFd,
+    entries: OwningIter,
+}
+
+impl DirectoryListing {
+    fn open(directory: OwnedFd) -> nix::Result<Self> {
+        let entries = Dir::from_fd(directory.try_clone().map_err(io_to_errno)?)?.into_iter();
+        Ok(Self { directory, entries })
+    }
+
+    /// Returns the next entry other than `.` and `..`, skipping entries removed since enumeration started.
+    fn next_entry(&mut self) -> Option<DirectoryEntry> {
+        for entry in self.entries.by_ref() {
+            let entry = entry.ok()?;
+            let name = entry.file_name();
+            if matches!(name.to_bytes(), b"." | b"..") {
+                continue;
+            }
+            let Ok(stat) = fstatat(self.directory.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW) else {
+                continue;
+            };
+            return Some(DirectoryEntry {
+                name: name.to_string_lossy().into_owned(),
+                stat,
+            });
+        }
+        None
+    }
+}
+
+struct DirectoryEntry {
+    name: String,
+    /// The entry itself, not the target of a symbolic link.
+    stat: FileStat,
 }
 
 #[derive(Debug)]
@@ -36,10 +117,16 @@ struct Printer {
 }
 
 impl NixRdpdrBackend {
+    /// Creates a backend that serves drive requests from the `file_base` directory.
+    ///
+    /// Server-supplied paths are resolved beneath `file_base` and never follow symbolic links, so the server cannot reach files outside it.
     pub fn new(file_base: String) -> Self {
         Self {
+            file_id: 0,
             file_base,
-            ..Default::default()
+            open_files: HashMap::new(),
+            max_open_files: max_open_files(),
+            printer: None,
         }
     }
 
@@ -338,6 +425,14 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
             Ok(vec![SvcMessage::from(res)])
         },
         |file, request| match read_inner(file, req_inner.offset, usize::try_from(req_inner.length).unwrap()) {
+            Err(ReadError::TooLong) => {
+                warn!(length = req_inner.length, "Rejected an oversized read");
+                let res = RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
+                    device_io_reply: DeviceIoResponse::new(request, NtStatus::INVALID_PARAMETER),
+                    read_data: Vec::new(),
+                });
+                Ok(vec![SvcMessage::from(res)])
+            }
             Ok(buf) => {
                 let res = RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
                     device_io_reply: DeviceIoResponse::new(request, NtStatus::SUCCESS),
@@ -345,7 +440,7 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
                 });
                 Ok(vec![SvcMessage::from(res)])
             }
-            Err(error) => {
+            Err(ReadError::Io(error)) => {
                 warn!(?error, "Read error");
                 let res = RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
                     device_io_reply: DeviceIoResponse::new(request, NtStatus::UNSUCCESSFUL),
@@ -355,21 +450,27 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
             }
         },
     );
-    fn read_inner(file: &mut std::fs::File, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
+    fn read_inner(file: &mut std::fs::File, offset: u64, length: usize) -> Result<Vec<u8>, ReadError> {
+        if MAX_READ_LENGTH < length {
+            return Err(ReadError::TooLong);
+        }
         let sf = SeekFrom::Start(offset);
-        file.seek(sf)?;
+        file.seek(sf).map_err(ReadError::Io)?;
         let mut buf = vec![0; length];
 
-        let length = file.read(&mut buf)?;
+        let length = file.read(&mut buf).map_err(ReadError::Io)?;
         buf.resize(length, 0u8);
         Ok(buf)
+    }
+
+    enum ReadError {
+        TooLong,
+        Io(std::io::Error),
     }
 }
 
 pub(crate) fn close_device(backend: &mut NixRdpdrBackend, req_inner: DeviceCloseRequest) -> PduResult<Vec<SvcMessage>> {
-    backend.file_map.remove(&req_inner.device_io_request.file_id);
-    backend.file_path_map.remove(&req_inner.device_io_request.file_id);
-    backend.file_dir_map.remove(&req_inner.device_io_request.file_id);
+    backend.open_files.remove(&req_inner.device_io_request.file_id);
     let res = RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
         device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::SUCCESS),
     });
@@ -380,22 +481,11 @@ pub(crate) fn query_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.file_map.get(&req_inner.device_io_request.file_id) {
-        Some(file) => match file.metadata() {
+    match backend.open_files.get(&req_inner.device_io_request.file_id) {
+        Some(OpenFile { file, path, .. }) => match file.metadata() {
             Ok(meta) => {
-                let path = backend
-                    .file_path_map
-                    .get(&req_inner.device_io_request.file_id)
-                    .cloned()
-                    .unwrap_or_default();
-                let name_index = match path.rfind('/') {
-                    // in fact, index only needs to be different for existing requests
-                    #[expect(clippy::arithmetic_side_effects)]
-                    Some(index) => index + 1,
-                    None => 0,
-                };
-                let name = &path[name_index..];
-                let file_attribute = get_file_attributes(&meta, name);
+                let name = path.file_name().unwrap_or_default();
+                let file_attribute = get_file_attributes(meta.is_dir(), meta.permissions().readonly(), name);
                 if FileInformationClassLevel::FILE_BASIC_INFORMATION == req_inner.file_info_class_lvl {
                     let basic_info = FileBasicInformation {
                         creation_time: transform_to_filetime(meta.ctime()),
@@ -466,8 +556,8 @@ pub(crate) fn query_volume_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryVolumeInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.file_map.get(&req_inner.device_io_request.file_id) {
-        Some(file) => {
+    match backend.open_files.get(&req_inner.device_io_request.file_id) {
+        Some(OpenFile { file, .. }) => {
             if let Ok(statvfs) = nix::sys::statvfs::fstatvfs(file.as_fd()) {
                 if FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION == req_inner.fs_info_class_lvl {
                     #[cfg_attr(target_os = "macos", expect(clippy::unnecessary_fallible_conversions))]
@@ -584,73 +674,72 @@ pub(crate) fn set_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.file_path_map.get(&req_inner.device_io_request.file_id) {
-        Some(file) => {
-            match &req_inner.set_buffer {
-                FileInformationClass::Rename(info) => {
-                    let mut to = backend.file_base.clone();
-                    to.push_str(&info.file_name.replace('\\', "/"));
-                    if let Err(error) = std::fs::rename(file, to) {
-                        warn!(?error, "Rename file error");
-                        let res = RdpdrPdu::ClientDriveSetInformationResponse(
-                            ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)
-                                .map_err(|e| encode_err!(e))?,
-                        );
-                        return Ok(vec![SvcMessage::from(res)]);
+    let status = match backend.open_files.get_mut(&req_inner.device_io_request.file_id) {
+        Some(open_file) => match &req_inner.set_buffer {
+            FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name) {
+                Ok(to) => match rename(&backend.file_base, &open_file.path, &to) {
+                    Ok(()) => {
+                        open_file.path = to;
+                        NtStatus::SUCCESS
                     }
-                }
-                FileInformationClass::Allocation(_) => {
-                    //nothing to do
-                }
-                FileInformationClass::Disposition(_) => {
-                    if let Err(error) = std::fs::remove_file(file) {
-                        warn!(?error, "Remove file error");
-                        let res = RdpdrPdu::ClientDriveSetInformationResponse(
-                            ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)
-                                .map_err(|e| encode_err!(e))?,
-                        );
-                        return Ok(vec![SvcMessage::from(res)]);
+                    Err(error) => {
+                        warn!(%error, "Rename file error");
+                        NtStatus::UNSUCCESSFUL
                     }
+                },
+                Err(InvalidPath) => {
+                    warn!(file_name = %info.file_name, "Rejected a rename target outside the shared directory");
+                    NtStatus::OBJECT_NAME_INVALID
                 }
-                FileInformationClass::EndOfFile(info) => {
-                    if let Some(file) = backend.file_map.get(&req_inner.device_io_request.file_id) {
-                        // SAFETY: the file must has been opened with write access in the last steps, since rdp prepares to set information. In addition it is a regular file.
-                        let set_end_res = unsafe { nix::libc::ftruncate(file.as_raw_fd(), info.end_of_file) };
-                        if set_end_res < 0 {
-                            let error = nix::errno::Errno::last();
-                            warn!(%error, "Failed to set end of file");
-                            let res = RdpdrPdu::ClientDriveSetInformationResponse(
-                                ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)
-                                    .map_err(|e| encode_err!(e))?,
-                            );
-                            return Ok(vec![SvcMessage::from(res)]);
-                        }
-                    } else {
-                        warn!("no such file");
-                        let res = RdpdrPdu::ClientDriveSetInformationResponse(
-                            ClientDriveSetInformationResponse::new(&req_inner, NtStatus::NO_SUCH_FILE)
-                                .map_err(|e| encode_err!(e))?,
-                        );
-                        return Ok(vec![SvcMessage::from(res)]);
-                    }
+            },
+            FileInformationClass::Allocation(_) => {
+                //nothing to do
+                NtStatus::SUCCESS
+            }
+            FileInformationClass::Disposition(_) => match remove_file(&backend.file_base, &open_file.path) {
+                Ok(()) => NtStatus::SUCCESS,
+                Err(error) => {
+                    warn!(%error, "Remove file error");
+                    NtStatus::UNSUCCESSFUL
                 }
-                _ => {
-                    // TODO
+            },
+            FileInformationClass::EndOfFile(info) => {
+                // SAFETY: the file must has been opened with write access in the last steps, since rdp prepares to set information. In addition it is a regular file.
+                let set_end_res = unsafe { nix::libc::ftruncate(open_file.file.as_raw_fd(), info.end_of_file) };
+                if set_end_res < 0 {
+                    let error = nix::errno::Errno::last();
+                    warn!(%error, "Failed to set end of file");
+                    NtStatus::UNSUCCESSFUL
+                } else {
+                    NtStatus::SUCCESS
                 }
             }
-        }
+            _ => {
+                // TODO
+                NtStatus::SUCCESS
+            }
+        },
         None => {
             warn!("no such file");
-            let res = RdpdrPdu::ClientDriveSetInformationResponse(
-                ClientDriveSetInformationResponse::new(&req_inner, NtStatus::NO_SUCH_FILE)
-                    .map_err(|e| encode_err!(e))?,
-            );
-            return Ok(vec![SvcMessage::from(res)]);
+            NtStatus::NO_SUCH_FILE
         }
-    }
+    };
     Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveSetInformationResponse(
-        ClientDriveSetInformationResponse::new(&req_inner, NtStatus::SUCCESS).map_err(|e| encode_err!(e))?,
+        ClientDriveSetInformationResponse::new(&req_inner, status).map_err(|e| encode_err!(e))?,
     ))])
+}
+
+fn rename(file_base: &str, from: &RelativePath, to: &RelativePath) -> nix::Result<()> {
+    let root = open_root(file_base)?;
+    let (from_parent, from_name) = from.open_parent(&root)?;
+    let (to_parent, to_name) = to.open_parent(&root)?;
+    renameat(from_parent.as_fd(), from_name, to_parent.as_fd(), to_name)
+}
+
+fn remove_file(file_base: &str, path: &RelativePath) -> nix::Result<()> {
+    let root = open_root(file_base)?;
+    let (parent, name) = path.open_parent(&root)?;
+    unlinkat(parent.as_fd(), name, UnlinkatFlags::NoRemoveDir)
 }
 
 // in fact, it is time in secs which is very small
@@ -661,9 +750,9 @@ pub(crate) fn transform_to_filetime(time_in_secs: i64) -> i64 {
     time
 }
 
-pub(crate) fn get_file_attributes(meta: &std::fs::Metadata, file_name: &str) -> FileAttributes {
+pub(crate) fn get_file_attributes(is_dir: bool, readonly: bool, file_name: &str) -> FileAttributes {
     let mut file_attribute = FileAttributes::empty();
-    if meta.is_dir() {
+    if is_dir {
         file_attribute |= FileAttributes::FILE_ATTRIBUTE_DIRECTORY;
     }
     if file_attribute.is_empty() {
@@ -673,14 +762,14 @@ pub(crate) fn get_file_attributes(meta: &std::fs::Metadata, file_name: &str) -> 
     if file_name.len() > 1 && file_name.starts_with('.') && file_name.as_bytes()[1] != b'.' {
         file_attribute |= FileAttributes::FILE_ATTRIBUTE_HIDDEN;
     }
-    if meta.permissions().readonly() {
+    if readonly {
         file_attribute |= FileAttributes::FILE_ATTRIBUTE_READONLY;
     }
     file_attribute
 }
 
-pub(crate) fn make_query_dir_resp(
-    find_file_name: Option<String>,
+fn make_query_dir_resp(
+    entry: Option<DirectoryEntry>,
     device_io_request: DeviceIoRequest,
     file_class: FileInformationClassLevel,
     initial_query: bool,
@@ -690,61 +779,43 @@ pub(crate) fn make_query_dir_resp(
     } else {
         NtStatus::NO_MORE_FILES
     };
-    match find_file_name {
+    match entry {
         None => Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
             ClientDriveQueryDirectoryResponse {
                 device_io_reply: DeviceIoResponse::new(device_io_request, not_found_status),
                 buffer: None,
             },
         ))]),
-        Some(file_full_path) => {
-            // in fact, it represents file name, so it is not very large
-            #[expect(clippy::arithmetic_side_effects)]
-            let file_last_slash = if let Some(index) = file_full_path.rfind('/') {
-                index + 1
+        Some(DirectoryEntry { name, stat }) => {
+            if file_class == FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION {
+                let is_dir = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFDIR;
+                let readonly =
+                    !Mode::from_bits_truncate(stat.st_mode).intersects(Mode::S_IWUSR | Mode::S_IWGRP | Mode::S_IWOTH);
+                let file_attribute = get_file_attributes(is_dir, readonly, &name);
+                let info = FileBothDirectoryInformation::new(
+                    transform_to_filetime(stat.st_ctime),
+                    transform_to_filetime(stat.st_ctime),
+                    transform_to_filetime(stat.st_atime),
+                    transform_to_filetime(stat.st_mtime),
+                    stat.st_size,
+                    file_attribute,
+                    name,
+                );
+                let info2 = FileInformationClass::BothDirectory(info);
+                Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
+                    ClientDriveQueryDirectoryResponse {
+                        device_io_reply: DeviceIoResponse::new(device_io_request, NtStatus::SUCCESS),
+                        buffer: Some(info2),
+                    },
+                ))])
             } else {
-                0
-            };
-            let file_name = &file_full_path[file_last_slash..];
-            match std::fs::metadata(&file_full_path) {
-                Ok(meta) => {
-                    let file_attribute = get_file_attributes(&meta, file_name);
-                    if file_class == FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION {
-                        let info = FileBothDirectoryInformation::new(
-                            transform_to_filetime(meta.ctime()),
-                            transform_to_filetime(meta.ctime()),
-                            transform_to_filetime(meta.atime()),
-                            transform_to_filetime(meta.mtime()),
-                            i64::try_from(meta.size()).unwrap(),
-                            file_attribute,
-                            file_name.to_owned(),
-                        );
-                        let info2 = FileInformationClass::BothDirectory(info);
-                        Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
-                            ClientDriveQueryDirectoryResponse {
-                                device_io_reply: DeviceIoResponse::new(device_io_request, NtStatus::SUCCESS),
-                                buffer: Some(info2),
-                            },
-                        ))])
-                    } else {
-                        warn!("unsupported file class for query directory");
-                        Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
-                            ClientDriveQueryDirectoryResponse {
-                                device_io_reply: DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED),
-                                buffer: None,
-                            },
-                        ))])
-                    }
-                }
-                Err(error) => {
-                    warn!(%error, "Get metadata error");
-                    Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
-                        ClientDriveQueryDirectoryResponse {
-                            device_io_reply: DeviceIoResponse::new(device_io_request, not_found_status),
-                            buffer: None,
-                        },
-                    ))])
-                }
+                warn!("unsupported file class for query directory");
+                Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
+                    ClientDriveQueryDirectoryResponse {
+                        device_io_reply: DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED),
+                        buffer: None,
+                    },
+                ))])
             }
         }
     }
@@ -754,77 +825,59 @@ pub(crate) fn query_directory(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryDirectoryRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.file_path_map.get(&req_inner.device_io_request.file_id) {
-        Some(parent_pos_for_next) => {
-            let mut find_file_name = None;
-            if req_inner.initial_query > 0 {
-                if req_inner.path.ends_with('*') {
-                    let mut parent = backend.file_base.clone();
-                    let query_path = req_inner.path.replace('\\', "/");
-                    let len = query_path.len();
-                    // path ends with *, so its len > 0
-                    #[expect(clippy::arithmetic_side_effects)]
-                    parent.push_str(&query_path[0..len - 1]);
-                    if let Ok(dirp) = Dir::open(
-                        parent.as_str(),
-                        nix::fcntl::OFlag::O_RDONLY,
-                        nix::sys::stat::Mode::empty(),
-                    ) {
-                        let mut iter = dirp.into_iter();
-                        while let Some(Ok(first)) = iter.next() {
-                            let file_name = first.file_name();
-                            if CString::new(".").unwrap().as_c_str() == file_name
-                                || CString::new("..").unwrap().as_c_str() == file_name
-                            {
-                                continue;
-                            }
-                            parent.push_str(file_name.to_string_lossy().into_owned().as_str());
-                            find_file_name = Some(parent);
-                            break;
-                        }
-                        backend.file_dir_map.insert(req_inner.device_io_request.file_id, iter);
-                    }
-                } else {
-                    let mut full_path = backend.file_base.clone();
-                    let query_path = req_inner.path.replace('\\', "/");
-                    full_path.push_str(&query_path);
-                    find_file_name = Some(full_path);
-                }
-                make_query_dir_resp(
-                    find_file_name,
-                    req_inner.device_io_request,
-                    req_inner.file_info_class_lvl,
-                    true,
-                )
-            } else {
-                if let Some(dirp_iter) = backend.file_dir_map.get_mut(&req_inner.device_io_request.file_id) {
-                    if let Some(Ok(next)) = dirp_iter.next() {
-                        let file_name = next.file_name();
-                        let mut full_path = parent_pos_for_next.clone();
-                        if !full_path.ends_with('/') {
-                            full_path.push('/');
-                        }
-                        full_path.push_str(file_name.to_string_lossy().into_owned().as_str());
-                        find_file_name = Some(full_path);
-                    }
-                }
-                make_query_dir_resp(
-                    find_file_name,
-                    req_inner.device_io_request,
-                    req_inner.file_info_class_lvl,
-                    false,
-                )
-            }
+    let Some(open_file) = backend.open_files.get_mut(&req_inner.device_io_request.file_id) else {
+        warn!("no file to query directory");
+        return Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
+            ClientDriveQueryDirectoryResponse {
+                device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::NO_SUCH_FILE),
+                buffer: None,
+            },
+        ))]);
+    };
+
+    if req_inner.initial_query == 0 {
+        let entry = open_file.listing.as_mut().and_then(DirectoryListing::next_entry);
+        return make_query_dir_resp(entry, req_inner.device_io_request, req_inner.file_info_class_lvl, false);
+    }
+
+    let Ok(path) = RelativePath::parse(&req_inner.path) else {
+        warn!(path = %req_inner.path, "Rejected a query path outside the shared directory");
+        return Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
+            ClientDriveQueryDirectoryResponse {
+                device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::OBJECT_NAME_INVALID),
+                buffer: None,
+            },
+        ))]);
+    };
+    let entry = match start_query(&backend.file_base, open_file, &path) {
+        Ok(entry) => entry,
+        Err(error) => {
+            warn!(%error, "Query directory error");
+            None
         }
-        None => {
-            warn!("no file to query directory");
-            Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
-                ClientDriveQueryDirectoryResponse {
-                    device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::NO_SUCH_FILE),
-                    buffer: None,
-                },
-            ))])
+    };
+    return make_query_dir_resp(entry, req_inner.device_io_request, req_inner.file_info_class_lvl, true);
+
+    /// Returns the first match for `path`, where a final `*` component enumerates the directory that holds it.
+    fn start_query(
+        file_base: &str,
+        open_file: &mut OpenFile,
+        path: &RelativePath,
+    ) -> nix::Result<Option<DirectoryEntry>> {
+        let root = open_root(file_base)?;
+        if let (Some("*"), Some(directory)) = (path.file_name(), path.parent()) {
+            let mut listing = DirectoryListing::open(directory.open_directory(&root)?)?;
+            let entry = listing.next_entry();
+            open_file.listing = Some(listing);
+            return Ok(entry);
         }
+
+        let (parent, name) = path.open_parent(&root)?;
+        let stat = fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        Ok(Some(DirectoryEntry {
+            name: path.file_name().unwrap_or_default().to_owned(),
+            stat,
+        }))
     }
 }
 
@@ -856,111 +909,35 @@ pub(crate) fn create_drive(
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = backend.file_id;
     backend.file_id += 1;
-    let mut path = String::from(backend.file_base.as_str());
-    path.push_str(&req_inner.path.replace('\\', "/"));
-    // first process directory
-    match std::fs::metadata(&path) {
-        Ok(meta) => {
-            if meta.is_dir() {
-                if req_inner.create_disposition == CreateDisposition::FILE_CREATE {
-                    warn!("Attempt to create directory, but it exists");
-                    let io_response = DeviceIoResponse::new(req_inner.device_io_request, NtStatus::UNSUCCESSFUL);
-                    let res = RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
-                        device_io_reply: io_response,
-                        file_id,
-                        information: Information::empty(),
-                    });
-                    return Ok(vec![SvcMessage::from(res)]);
-                }
-                if req_inner.create_options.bits() & CreateOptions::FILE_NON_DIRECTORY_FILE.bits() != 0 {
-                    warn!("Attempt to create a file, but it is a directory");
-                    let io_response = DeviceIoResponse::new(req_inner.device_io_request, NtStatus::UNSUCCESSFUL);
-                    let res = RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
-                        device_io_reply: io_response,
-                        file_id,
-                        information: Information::empty(),
-                    });
-                    return Ok(vec![SvcMessage::from(res)]);
-                }
-                // Return afterwards
-                // This can be unified with the condition for opening the file.
-            } else if req_inner.create_options.bits() & CreateOptions::FILE_DIRECTORY_FILE.bits() != 0 {
-                warn!("Attempt to create a directory, but it is a file");
-                let io_response = DeviceIoResponse::new(req_inner.device_io_request, NtStatus::NOT_A_DIRECTORY);
-                let res = RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
-                    device_io_reply: io_response,
-                    file_id,
-                    information: Information::empty(),
-                });
-                return Ok(vec![SvcMessage::from(res)]);
+
+    let opened = if backend.max_open_files <= backend.open_files.len() {
+        warn!("Rejected a create request beyond the open file limit");
+        Err(NtStatus::INSUFFICIENT_RESOURCES)
+    } else {
+        match RelativePath::parse(&req_inner.path) {
+            Ok(path) => open_file(&backend.file_base, &req_inner, &path).map(|file| (file, path)),
+            Err(InvalidPath) => {
+                warn!(path = %req_inner.path, "Rejected a create path outside the shared directory");
+                Err(NtStatus::OBJECT_NAME_INVALID)
             }
         }
-        Err(_) => {
-            if req_inner.create_options.bits() & CreateOptions::FILE_DIRECTORY_FILE.bits() != 0 {
-                if (req_inner.create_disposition == CreateDisposition::FILE_CREATE
-                    || req_inner.create_disposition == CreateDisposition::FILE_OPEN_IF)
-                    && std::fs::create_dir_all(path.as_str()).is_ok()
-                {
-                    let mut fs = std::fs::OpenOptions::new();
-                    match fs.read(true).open(&path) {
-                        Ok(file) => {
-                            debug!("create drive file_id:{},path:{}", file_id, path);
-                            backend.file_map.insert(file_id, file);
-                            backend.file_path_map.insert(file_id, path.clone());
-                            return make_create_drive_resp(
-                                req_inner.device_io_request,
-                                req_inner.create_disposition,
-                                file_id,
-                            );
-                        }
-                        Err(error) => {
-                            warn!(%error, "Open file dir error");
-                            //return by downside
-                        }
-                    }
-                }
-                //create disposition is not correct
-                let io_response = DeviceIoResponse::new(req_inner.device_io_request, NtStatus::UNSUCCESSFUL);
-                let res = RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
-                    device_io_reply: io_response,
-                    file_id,
-                    information: Information::empty(),
-                });
-                return Ok(vec![SvcMessage::from(res)]);
-            }
-        }
-    }
+    };
 
-    let mut fs = std::fs::OpenOptions::new();
-    if CreateDisposition::FILE_OPEN_IF == req_inner.create_disposition {
-        fs.create(true).write(true).read(true);
-    }
-    if CreateDisposition::FILE_CREATE == req_inner.create_disposition {
-        fs.create_new(true).write(true).read(true);
-    }
-    if CreateDisposition::FILE_SUPERSEDE == req_inner.create_disposition {
-        fs.create(true).write(true).append(true).read(true);
-    }
-    if CreateDisposition::FILE_OPEN == req_inner.create_disposition {
-        fs.read(true);
-    }
-    if CreateDisposition::FILE_OVERWRITE == req_inner.create_disposition {
-        fs.write(true).truncate(true).read(true);
-    }
-    if CreateDisposition::FILE_OVERWRITE_IF == req_inner.create_disposition {
-        fs.write(true).truncate(true).create(true).read(true);
-    }
-
-    match fs.open(&path) {
-        Ok(file) => {
-            debug!("create drive file_id:{},path:{}", file_id, path);
-            backend.file_map.insert(file_id, file);
-            backend.file_path_map.insert(file_id, path.clone());
+    match opened {
+        Ok((file, path)) => {
+            debug!(file_id, ?path, "Opened drive file");
+            backend.open_files.insert(
+                file_id,
+                OpenFile {
+                    file,
+                    path,
+                    listing: None,
+                },
+            );
             make_create_drive_resp(req_inner.device_io_request, req_inner.create_disposition, file_id)
         }
-        Err(error) => {
-            warn!(?error, "Open file error for path:{}", path);
-            let io_response = DeviceIoResponse::new(req_inner.device_io_request, NtStatus::UNSUCCESSFUL);
+        Err(status) => {
+            let io_response = DeviceIoResponse::new(req_inner.device_io_request, status);
             let res = RdpdrPdu::DeviceCreateResponse(DeviceCreateResponse {
                 device_io_reply: io_response,
                 file_id,
@@ -971,15 +948,86 @@ pub(crate) fn create_drive(
     }
 }
 
+/// Opens or creates `path` beneath the shared directory as `req` asks.
+fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) -> Result<std::fs::File, NtStatus> {
+    let (parent, name) = open_root(file_base)
+        .and_then(|root| path.open_parent(&root))
+        .map_err(|error| {
+            warn!(%error, ?path, "Open parent directory error");
+            NtStatus::UNSUCCESSFUL
+        })?;
+    let is_directory_request = req.create_options.contains(CreateOptions::FILE_DIRECTORY_FILE);
+
+    // first process directory
+    match fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(stat) => {
+            if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFDIR {
+                if req.create_disposition == CreateDisposition::FILE_CREATE {
+                    warn!("Attempt to create directory, but it exists");
+                    return Err(NtStatus::UNSUCCESSFUL);
+                }
+                if req.create_options.contains(CreateOptions::FILE_NON_DIRECTORY_FILE) {
+                    warn!("Attempt to create a file, but it is a directory");
+                    return Err(NtStatus::UNSUCCESSFUL);
+                }
+                // Opened below with the requested disposition.
+            } else if is_directory_request {
+                warn!("Attempt to create a directory, but it is a file");
+                return Err(NtStatus::NOT_A_DIRECTORY);
+            }
+        }
+        Err(_) => {
+            if is_directory_request {
+                if !matches!(
+                    req.create_disposition,
+                    CreateDisposition::FILE_CREATE | CreateDisposition::FILE_OPEN_IF
+                ) {
+                    return Err(NtStatus::UNSUCCESSFUL);
+                }
+                mkdirat(parent.as_fd(), name, Mode::from_bits_truncate(0o777)).map_err(|error| {
+                    warn!(%error, ?path, "Create directory error");
+                    NtStatus::UNSUCCESSFUL
+                })?;
+                return open_at(&parent, name, OFlag::O_RDONLY | OFlag::O_DIRECTORY);
+            }
+        }
+    }
+
+    let flags = match req.create_disposition {
+        CreateDisposition::FILE_OPEN_IF => OFlag::O_CREAT | OFlag::O_RDWR,
+        CreateDisposition::FILE_CREATE => OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
+        CreateDisposition::FILE_SUPERSEDE => OFlag::O_CREAT | OFlag::O_APPEND | OFlag::O_RDWR,
+        CreateDisposition::FILE_OPEN => OFlag::O_RDONLY,
+        CreateDisposition::FILE_OVERWRITE => OFlag::O_TRUNC | OFlag::O_RDWR,
+        CreateDisposition::FILE_OVERWRITE_IF => OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
+        disposition => {
+            warn!(?disposition, "Unsupported create disposition");
+            return Err(NtStatus::UNSUCCESSFUL);
+        }
+    };
+    return open_at(&parent, name, flags);
+
+    /// Opens `name` in `parent`, refusing a symbolic link so it cannot lead outside the shared directory.
+    fn open_at(parent: &OwnedFd, name: &str, flags: OFlag) -> Result<std::fs::File, NtStatus> {
+        let flags = flags | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        openat(parent.as_fd(), name, flags, Mode::from_bits_truncate(0o666))
+            .map(std::fs::File::from)
+            .map_err(|error| {
+                warn!(%error, name, "Open file error");
+                NtStatus::UNSUCCESSFUL
+            })
+    }
+}
+
 pub(crate) fn process_dependent_file(
     backend: &mut NixRdpdrBackend,
     request: DeviceIoRequest,
     error_fx: impl Fn(DeviceIoRequest) -> PduResult<Vec<SvcMessage>>,
     fx: impl Fn(&mut std::fs::File, DeviceIoRequest) -> PduResult<Vec<SvcMessage>>,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.file_map.get_mut(&request.file_id) {
+    match backend.open_files.get_mut(&request.file_id) {
         None => error_fx(request),
-        Some(file) => fx(file, request),
+        Some(open_file) => fx(&mut open_file.file, request),
     }
 }
 
@@ -1024,6 +1072,45 @@ mod tests {
             build_error(&factory.with_printer(String::new(), PrintTarget::DefaultPrinter)),
             NixRdpdrBackendFactoryError::InvalidPrinterName
         );
+    }
+
+    #[test]
+    fn the_server_cannot_hold_more_files_open_than_the_cap() {
+        let mut backend = NixRdpdrBackend::new(std::env::temp_dir().to_str().expect("UTF-8 path").to_owned());
+        backend.max_open_files = 2;
+        let open_share = |backend: &mut NixRdpdrBackend| {
+            let request = DeviceCreateRequest {
+                device_io_request: DeviceIoRequest {
+                    device_id: 1,
+                    file_id: 0,
+                    completion_id: 0,
+                    major_function: MajorFunction::Create,
+                    minor_function: MinorFunction::from(0),
+                },
+                desired_access: DesiredAccess::empty(),
+                allocation_size: 0,
+                file_attributes: FileAttributes::empty(),
+                shared_access: SharedAccess::empty(),
+                create_disposition: CreateDisposition::FILE_OPEN,
+                create_options: CreateOptions::empty(),
+                path: r"\".to_owned(),
+            };
+            let response = create_drive(backend, request).expect("complete create");
+            let response = response[0].encode_unframed_pdu().expect("encode create response");
+            (
+                NtStatus::from(u32::from_le_bytes(response[12..16].try_into().expect("status"))),
+                u32::from_le_bytes(response[16..20].try_into().expect("file ID")),
+            )
+        };
+
+        let (status, first) = open_share(&mut backend);
+        assert_eq!(status, NtStatus::SUCCESS);
+        assert_eq!(open_share(&mut backend).0, NtStatus::SUCCESS);
+        // oracle: spec MS-ERREF §2.3.1
+        assert_eq!(open_share(&mut backend).0, NtStatus::INSUFFICIENT_RESOURCES);
+
+        backend.open_files.remove(&first);
+        assert_eq!(open_share(&mut backend).0, NtStatus::SUCCESS);
     }
 
     #[test]
