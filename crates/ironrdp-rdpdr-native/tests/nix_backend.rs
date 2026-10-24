@@ -72,7 +72,7 @@ fn symbolic_links_in_the_share_are_not_followed() {
     assert_eq!(std::fs::read(&sentinel).expect("read sentinel"), b"outside");
 }
 
-/// Opening a FIFO used to block until a writer appeared, stalling the whole channel.
+/// Opening a FIFO without a writer must not block, because a blocked open stalls the whole channel.
 #[test]
 fn opening_a_fifo_in_the_share_does_not_block() {
     let fixture = Fixture::new();
@@ -226,6 +226,82 @@ fn file_lifecycle_inside_the_share() {
         statuses,
         [NtStatus::SUCCESS, NtStatus::SUCCESS, NtStatus::NO_MORE_FILES]
     );
+}
+
+// oracle: spec MS-FSCC FileRenameInformation, ReplaceIfExists
+#[test]
+fn rename_without_replace_keeps_an_existing_target() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("target.txt"), b"keep").expect("write target");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\source.txt", CreateDisposition::FILE_CREATE);
+
+    let response = set_information(
+        &mut backend,
+        file_id,
+        FileInformationClass::Rename(FileRenameInformation {
+            replace_if_exists: Boolean::False,
+            file_name: r"\target.txt".to_owned(),
+        }),
+    );
+
+    assert_eq!(response_status(&response), NtStatus::OBJECT_NAME_COLLISION);
+    assert_eq!(
+        std::fs::read(fixture.share.join("target.txt")).expect("read target"),
+        b"keep"
+    );
+    assert!(fixture.share.join("source.txt").exists());
+}
+
+// oracle: spec MS-FSCC §2.4.11
+#[test]
+fn clearing_delete_pending_keeps_the_file() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("kept.txt"), b"kept").expect("write file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\kept.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(
+        &mut backend,
+        file_id,
+        FileInformationClass::Disposition(FileDispositionInformation { delete_pending: 0 }),
+    );
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(fixture.share.join("kept.txt").exists());
+}
+
+#[test]
+fn an_empty_directory_opened_with_open_if_can_be_deleted() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("empty")).expect("create directory");
+    let mut backend = fixture.backend();
+    let mut request = create_request(r"\empty", CreateDisposition::FILE_OPEN_IF);
+    request.create_options = CreateOptions::FILE_DIRECTORY_FILE;
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(request))
+        .expect("complete create");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+
+    let response = set_information(
+        &mut backend,
+        response_file_id(&response),
+        FileInformationClass::Disposition(FileDispositionInformation { delete_pending: 1 }),
+    );
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(!fixture.share.join("empty").exists());
+}
+
+fn set_information(backend: &mut NixRdpdrBackend, file_id: u32, set_buffer: FileInformationClass) -> Vec<SvcMessage> {
+    backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+            ServerDriveSetInformationRequest {
+                device_io_request: request_header(file_id, MajorFunction::SetInformation),
+                set_buffer,
+            },
+        ))
+        .expect("complete set information")
 }
 
 fn create(backend: &mut NixRdpdrBackend, path: &str, disposition: CreateDisposition) -> u32 {

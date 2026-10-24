@@ -51,41 +51,52 @@ impl Root {
     /// Never blocks, so a FIFO in the share cannot stall the client.
     pub(crate) fn open_at(&self, parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
         let flags = flags | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
-        let file = openat_same_mount(parent, name, flags, mode)?;
-        // Refuses a mount of another filesystem where `openat2` is unavailable.
+        self.openat_same_mount(parent, name, flags, mode)
+    }
+
+    /// Opens `name` in `parent` without crossing a mount point, bind mounts included.
+    ///
+    /// The device is not compared when `openat2` succeeds, because a Btrfs subvolume or an overlay file reports another device without being a mount.
+    #[cfg(target_os = "linux")]
+    fn openat_same_mount(&self, parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
+        use nix::fcntl::{OpenHow, ResolveFlag, openat2};
+
+        // `openat2` rejects a nonzero mode without `O_CREAT`.
+        let mode = if flags.contains(OFlag::O_CREAT) {
+            mode
+        } else {
+            Mode::empty()
+        };
+        let how = OpenHow::new()
+            .flags(flags)
+            .mode(mode)
+            .resolve(ResolveFlag::RESOLVE_NO_XDEV | ResolveFlag::RESOLVE_NO_SYMLINKS);
+        match openat2(parent, name, how) {
+            // Kernels before 5.6 lack `openat2`, and some sandboxes deny it.
+            Err(Errno::ENOSYS | Errno::EPERM) => self.openat_same_filesystem(parent, name, flags, mode),
+            result => result,
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn openat_same_mount(&self, parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
+        self.openat_same_filesystem(parent, name, flags, mode)
+    }
+
+    /// Opens `name` in `parent`, refusing a descriptor on another filesystem than the shared directory.
+    fn openat_same_filesystem(
+        &self,
+        parent: BorrowedFd<'_>,
+        name: &str,
+        flags: OFlag,
+        mode: Mode,
+    ) -> nix::Result<OwnedFd> {
+        let file = nix::fcntl::openat(parent, name, flags, mode)?;
         if fstat(file.as_fd())?.st_dev != self.device {
             return Err(Errno::EXDEV);
         }
         Ok(file)
     }
-}
-
-/// Opens `name` in `parent` without crossing a mount point, bind mounts included.
-#[cfg(target_os = "linux")]
-fn openat_same_mount(parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
-    use nix::fcntl::{OpenHow, ResolveFlag, openat2};
-
-    // `openat2` rejects a nonzero mode without `O_CREAT`.
-    let mode = if flags.contains(OFlag::O_CREAT) {
-        mode
-    } else {
-        Mode::empty()
-    };
-    let how = OpenHow::new()
-        .flags(flags)
-        .mode(mode)
-        .resolve(ResolveFlag::RESOLVE_NO_XDEV | ResolveFlag::RESOLVE_NO_SYMLINKS);
-    match openat2(parent, name, how) {
-        // Kernels before 5.6 lack `openat2`, and some sandboxes deny it.
-        Err(Errno::ENOSYS | Errno::EPERM) => nix::fcntl::openat(parent, name, flags, mode),
-        result => result,
-    }
-}
-
-/// Opens `name` in `parent`; the caller rejects a descriptor on another filesystem.
-#[cfg(not(target_os = "linux"))]
-fn openat_same_mount(parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
-    nix::fcntl::openat(parent, name, flags, mode)
 }
 
 /// A validated path relative to the shared directory.

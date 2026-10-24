@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 
 use ironrdp_core::impl_as_any;
@@ -13,10 +13,11 @@ use ironrdp_rdpdr::{
 };
 use ironrdp_svc::SvcMessage;
 use nix::dir::{Dir, OwningIter};
+use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag, renameat};
 use nix::sys::resource::{Resource, getrlimit};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstatat, mkdirat};
-use nix::unistd::{UnlinkatFlags, unlinkat};
+use nix::unistd::{UnlinkatFlags, ftruncate, unlinkat};
 use tracing::{debug, warn};
 
 use super::path::{InvalidPath, RelativePath, Root, io_to_errno};
@@ -677,11 +678,17 @@ pub(crate) fn set_information(
     let status = match backend.open_files.get_mut(&req_inner.device_io_request.file_id) {
         Some(open_file) => match &req_inner.set_buffer {
             FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name) {
-                Ok(to) => match rename(&backend.file_base, &open_file.path, &to) {
+                Ok(to) => match rename(
+                    &backend.file_base,
+                    &open_file.path,
+                    &to,
+                    info.replace_if_exists == Boolean::True,
+                ) {
                     Ok(()) => {
                         open_file.path = to;
                         NtStatus::SUCCESS
                     }
+                    Err(Errno::EEXIST) => NtStatus::OBJECT_NAME_COLLISION,
                     Err(error) => {
                         warn!(%error, "Rename file error");
                         NtStatus::UNSUCCESSFUL
@@ -696,24 +703,23 @@ pub(crate) fn set_information(
                 //nothing to do
                 NtStatus::SUCCESS
             }
-            FileInformationClass::Disposition(_) => match remove_file(&backend.file_base, &open_file.path) {
+            // A zero `delete_pending` cancels a pending delete; deletes happen at once, so there is nothing to undo.
+            FileInformationClass::Disposition(info) if info.delete_pending == 0 => NtStatus::SUCCESS,
+            FileInformationClass::Disposition(_) => match remove_file(&backend.file_base, open_file) {
                 Ok(()) => NtStatus::SUCCESS,
+                Err(Errno::ENOTEMPTY | Errno::EEXIST) => NtStatus::DIRECTORY_NOT_EMPTY,
                 Err(error) => {
                     warn!(%error, "Remove file error");
                     NtStatus::UNSUCCESSFUL
                 }
             },
-            FileInformationClass::EndOfFile(info) => {
-                // SAFETY: the file must has been opened with write access in the last steps, since rdp prepares to set information. In addition it is a regular file.
-                let set_end_res = unsafe { nix::libc::ftruncate(open_file.file.as_raw_fd(), info.end_of_file) };
-                if set_end_res < 0 {
-                    let error = nix::errno::Errno::last();
+            FileInformationClass::EndOfFile(info) => match ftruncate(open_file.file.as_fd(), info.end_of_file) {
+                Ok(()) => NtStatus::SUCCESS,
+                Err(error) => {
                     warn!(%error, "Failed to set end of file");
                     NtStatus::UNSUCCESSFUL
-                } else {
-                    NtStatus::SUCCESS
                 }
-            }
+            },
             _ => {
                 // TODO
                 NtStatus::SUCCESS
@@ -729,17 +735,33 @@ pub(crate) fn set_information(
     ))])
 }
 
-fn rename(file_base: &str, from: &RelativePath, to: &RelativePath) -> nix::Result<()> {
+/// Renames `from` to `to`, failing with `EEXIST` when `to` exists and `replace_if_exists` is false.
+///
+/// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
+fn rename(file_base: &str, from: &RelativePath, to: &RelativePath, replace_if_exists: bool) -> nix::Result<()> {
     let root = Root::open(file_base)?;
     let (from_parent, from_name) = from.open_parent(&root)?;
     let (to_parent, to_name) = to.open_parent(&root)?;
+    if !replace_if_exists {
+        match fstatat(to_parent.as_fd(), to_name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(_) => return Err(Errno::EEXIST),
+            Err(Errno::ENOENT) => {}
+            Err(error) => return Err(error),
+        }
+    }
     renameat(from_parent.as_fd(), from_name, to_parent.as_fd(), to_name)
 }
 
-fn remove_file(file_base: &str, path: &RelativePath) -> nix::Result<()> {
+/// Removes the file or empty directory `open_file` names.
+fn remove_file(file_base: &str, open_file: &OpenFile) -> nix::Result<()> {
+    let flags = if open_file.file.metadata().map_err(io_to_errno)?.is_dir() {
+        UnlinkatFlags::RemoveDir
+    } else {
+        UnlinkatFlags::NoRemoveDir
+    };
     let root = Root::open(file_base)?;
-    let (parent, name) = path.open_parent(&root)?;
-    unlinkat(parent.as_fd(), name, UnlinkatFlags::NoRemoveDir)
+    let (parent, name) = open_file.path.open_parent(&root)?;
+    unlinkat(parent.as_fd(), name, flags)
 }
 
 // in fact, it is time in secs which is very small
@@ -864,6 +886,8 @@ pub(crate) fn query_directory(
         open_file: &mut OpenFile,
         path: &RelativePath,
     ) -> nix::Result<Option<DirectoryEntry>> {
+        // An initial query restarts enumeration, so a failed or single-entry query must not resume an earlier listing.
+        open_file.listing = None;
         let root = Root::open(file_base)?;
         if let (Some("*"), Some(directory)) = (path.file_name(), path.parent()) {
             let mut listing = DirectoryListing::open(directory.open_directory(&root)?)?;
@@ -972,7 +996,15 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
                     warn!("Attempt to create a file, but it is a directory");
                     return Err(NtStatus::UNSUCCESSFUL);
                 }
-                // Opened below with the requested disposition.
+                // A directory cannot be opened for writing, created, or truncated, so only the open dispositions apply.
+                if !matches!(
+                    req.create_disposition,
+                    CreateDisposition::FILE_OPEN | CreateDisposition::FILE_OPEN_IF
+                ) {
+                    warn!(disposition = ?req.create_disposition, "Unsupported create disposition for a directory");
+                    return Err(NtStatus::UNSUCCESSFUL);
+                }
+                return open_at(&root, &parent, name, OFlag::O_RDONLY | OFlag::O_DIRECTORY);
             } else if is_directory_request {
                 warn!("Attempt to create a directory, but it is a file");
                 return Err(NtStatus::NOT_A_DIRECTORY);
@@ -998,7 +1030,7 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
     let flags = match req.create_disposition {
         CreateDisposition::FILE_OPEN_IF => OFlag::O_CREAT | OFlag::O_RDWR,
         CreateDisposition::FILE_CREATE => OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
-        CreateDisposition::FILE_SUPERSEDE => OFlag::O_CREAT | OFlag::O_APPEND | OFlag::O_RDWR,
+        CreateDisposition::FILE_SUPERSEDE => OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
         CreateDisposition::FILE_OPEN => OFlag::O_RDONLY,
         CreateDisposition::FILE_OVERWRITE => OFlag::O_TRUNC | OFlag::O_RDWR,
         CreateDisposition::FILE_OVERWRITE_IF => OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
