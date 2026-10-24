@@ -28,6 +28,7 @@ const IDDCX_SWAPCHAIN_FINISHED_PROCESSING_FRAME_TABLE_INDEX: usize = 14;
 const IDDCX_MONITOR_CREATE_TABLE_INDEX: usize = 3;
 const IDDCX_MONITOR_ARRIVAL_TABLE_INDEX: usize = 4;
 const IDDCX_MONITOR_DEPARTURE_TABLE_INDEX: usize = 5;
+const IDDCX_MONITOR_UPDATE_MODES_TABLE_INDEX: usize = 6;
 const IDDCX_GET_VERSION_TABLE_INDEX: usize = 19;
 const IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE_TABLE_INDEX: usize = 24;
 
@@ -94,6 +95,15 @@ pub(crate) struct IDARG_OUT_MONITORARRIVAL {
     pub(crate) OsTargetId: u32,
 }
 
+#[repr(C)]
+struct IDARG_IN_UPDATEMODES {
+    Reason: u32,
+    TargetModeCount: u32,
+    pTargetModes: *mut crate::monitor::IDDCX_TARGET_MODE,
+}
+
+const _: () = assert!(size_of::<IDARG_IN_UPDATEMODES>() == 16);
+
 const _: () = {
     assert!(
         size_of::<IDARG_OUT_MONITORARRIVAL>() == 12,
@@ -156,6 +166,9 @@ type PFN_IDDCX_MONITOR_ARRIVAL =
     unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, IDDCX_MONITOR, *mut IDARG_OUT_MONITORARRIVAL) -> NTSTATUS;
 
 type PFN_IDDCX_MONITOR_DEPARTURE = unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, IDDCX_MONITOR) -> NTSTATUS;
+
+type PFN_IDDCX_MONITOR_UPDATE_MODES =
+    unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, IDDCX_MONITOR, *const IDARG_IN_UPDATEMODES) -> NTSTATUS;
 
 type PFN_IDDCX_GET_VERSION = unsafe extern "system" fn(*mut IDD_DRIVER_GLOBALS, *mut IDARG_OUT_GETVERSION) -> NTSTATUS;
 type PFN_IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE = unsafe extern "system" fn(
@@ -252,6 +265,26 @@ pub(crate) unsafe fn monitor_departure(monitor: IDDCX_MONITOR) -> NTSTATUS {
     let globals = unsafe { IddDriverGlobals };
     // SAFETY: calls into the IddCx function table.
     unsafe { func(globals, monitor) }
+}
+
+pub(crate) unsafe fn monitor_update_modes(
+    monitor: IDDCX_MONITOR,
+    modes: &mut [crate::monitor::IDDCX_TARGET_MODE],
+) -> NTSTATUS {
+    const IDDCX_UPDATE_REASON_CONFIGURATION_CONSTRAINTS: u32 = 4;
+    let args = IDARG_IN_UPDATEMODES {
+        Reason: IDDCX_UPDATE_REASON_CONFIGURATION_CONSTRAINTS,
+        TargetModeCount: u32::try_from(modes.len()).expect("target mode count fits in u32"),
+        pTargetModes: modes.as_mut_ptr(),
+    };
+    // SAFETY: IddCx initializes this immutable function table before invoking driver callbacks.
+    let raw = unsafe { IddFunctions[IDDCX_MONITOR_UPDATE_MODES_TABLE_INDEX] };
+    // SAFETY: entry 6 has this signature in the bound IddCx 1.4 interface.
+    let func = unsafe { core::mem::transmute::<PFN_IDD_CX, PFN_IDDCX_MONITOR_UPDATE_MODES>(raw) };
+    // SAFETY: IddCx initializes the globals before invoking driver callbacks.
+    let globals = unsafe { IddDriverGlobals };
+    // SAFETY: the caller supplies a live monitor and the mode slice outlives this synchronous call.
+    unsafe { func(globals, monitor, &args) }
 }
 
 pub(crate) unsafe fn get_version(out_args: &mut IDARG_OUT_GETVERSION) -> NTSTATUS {

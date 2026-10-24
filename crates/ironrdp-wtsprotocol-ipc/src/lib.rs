@@ -3,6 +3,8 @@ use std::io::{self, Read, Write};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+pub mod display;
+
 pub const CONTROL_PIPE_ENV: &str = "IRONRDP_WTS_CONTROL_PIPE";
 pub const DEFAULT_CONTROL_PIPE_NAME: &str = "IronRdpWtsControl";
 pub const DEFAULT_MAX_FRAME_SIZE: usize = 64 * 1024;
@@ -50,6 +52,11 @@ pub enum ProviderCommand {
     NotifyIddDriverLoaded {
         session_id: u32,
     },
+    OpenVirtualChannel {
+        connection_id: u32,
+        session_id: u32,
+        endpoint_name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,6 +99,9 @@ pub enum ServiceEvent {
     /// the connection is not known.  The provider should fall back to showing the logon dialog.
     NoCredentials {
         connection_id: u32,
+    },
+    VirtualChannelReady {
+        pipe_name: String,
     },
     Error {
         message: String,

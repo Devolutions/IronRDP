@@ -87,6 +87,22 @@ Split larger batches at order boundaries before submitting them.
 Fields requiring extended Window List support are rejected when the client negotiated only basic support.
 The embedder remains responsible for RAIL channel messages and for respecting the reported icon-cache limits.
 
+## Custom dynamic channels
+
+Register a `DynamicChannelFactory` with `with_dynamic_channel_factory` to add connection-local processors alongside the built-in channels.
+Factories run in registration order before DRDYNVC negotiation.
+Stop each processor's background work when the processor is dropped.
+
+Use `ServerEvent::DynamicChannelWithCompletion` to send a validated `DvcMessageBatch` on an open, TCP-carried channel.
+Await completion before queuing another bounded batch.
+Completion confirms the transport write, not peer acceptance; a closed receiver indicates rejection, discard, or failure.
+Closed channels and channels migrated to a sideband transport are rejected without disconnecting the desktop.
+Use `ServerEvent::CreateDynamicChannel` to create or recreate a channel after DRDYNVC negotiation.
+Its factory receives the reserved ID; retain a cancellation guard that sends `ServerEvent::CloseDynamicChannel` if the caller stops waiting.
+Peer acceptance invokes the processor's `start` callback.
+Close releases the processor, cancels outstanding creation, and notifies the peer when appropriate.
+Backends can override `DvcServerProcessor::maximum_message_size` to reject oversized fragmented messages before reassembly.
+
 ## Echo RTT probes (feature `echo`)
 
 Enable the `echo` feature to use the ECHO dynamic virtual channel (`MS-RDPEECO`) and measure round-trip time.

@@ -7,6 +7,7 @@ use core::time::Duration;
 const IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE: u32 = 1;
 #[cfg(ironrdp_idd_link)]
 const IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER: u32 = 4;
+const IDDCX_ADAPTER_FLAGS_REMOTE_ALL_TARGET_MODES_MONITOR_COMPATIBLE: u32 = 0x80;
 #[cfg(ironrdp_idd_link)]
 const IDDCX_TRANSMISSION_TYPE_WIRED_OTHER: u32 = 0x0000_0003;
 const STATUS_INVALID_PARAMETER: NTSTATUS = crate::ntstatus_from_u32(0xC000_000D);
@@ -414,9 +415,23 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
         _pad: 0,
     };
 
+    let mut version_args = crate::iddcx::IDARG_OUT_GETVERSION { IddCxVersion: 0 };
+    // SAFETY: IddCx is bound and the output structure lives through the call.
+    let version_status = unsafe { crate::iddcx::get_version(&mut version_args) };
+    let mut flags = IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE | IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER;
+    const IDDCX_VERSION_SV2_SEPT23: u32 = 0x1A00;
+    if 0 <= version_status && IDDCX_VERSION_SV2_SEPT23 <= version_args.IddCxVersion {
+        flags |= IDDCX_ADAPTER_FLAGS_REMOTE_ALL_TARGET_MODES_MONITOR_COMPATIBLE;
+    } else if version_status < 0 {
+        tracing::warn!(
+            status = version_status,
+            "Failed to query IddCx version; retaining legacy adapter flags"
+        );
+    }
+
     let mut caps = IDDCX_ADAPTER_CAPS {
         Size: size_of::<IDDCX_ADAPTER_CAPS>() as u32,
-        Flags: IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE | IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER,
+        Flags: flags,
         MaxDisplayPipelineRate: 0,
         MaxMonitorsSupported: 1,
         _pad: 0,
@@ -435,8 +450,6 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
         AdapterObject: core::ptr::null_mut(),
     };
 
-    let mut version_args = crate::iddcx::IDARG_OUT_GETVERSION { IddCxVersion: 0 };
-    let version_status = unsafe { crate::iddcx::get_version(&mut version_args) };
     crate::debug_trace(&format!(
         "EvtDeviceD0Entry: adapter caps size={} flags=0x{:08X} max_pipeline_rate={} max_monitors={} transmission=0x{:08X} gamma_support={} version_status=0x{:08X} iddcx_version=0x{:08X}",
         caps.Size,

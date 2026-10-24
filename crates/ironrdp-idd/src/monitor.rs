@@ -1,10 +1,9 @@
-#[cfg(ironrdp_idd_link)]
-use crate::ntstatus_to_u32;
-use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, IDDCX_SWAPCHAIN, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS};
 use core::cmp::min;
 use core::ffi::c_void;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+
+use ironrdp_wtsprotocol_ipc::display::DisplaySize;
 #[cfg(ironrdp_idd_link)]
 use windows::Win32::Devices::Display::DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI;
 pub(crate) use windows::Win32::Devices::Display::DISPLAYCONFIG_VIDEO_SIGNAL_INFO;
@@ -14,11 +13,15 @@ use windows::Win32::Devices::Display::{
 };
 use windows::Win32::Foundation::{HANDLE, LUID};
 
-use crate::SwapChainProcessor;
 #[cfg(ironrdp_idd_link)]
 use crate::iddcx;
 #[cfg(ironrdp_idd_link)]
+use crate::ntstatus_to_u32;
+#[cfg(ironrdp_idd_link)]
 use crate::wdf;
+use crate::{
+    IDDCX_ADAPTER, IDDCX_MONITOR, IDDCX_SWAPCHAIN, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS, SwapChainProcessor,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct MonitorKey(IDDCX_MONITOR);
@@ -161,7 +164,7 @@ struct IDDCX_MONITOR_MODE {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct IDDCX_TARGET_MODE {
+pub(crate) struct IDDCX_TARGET_MODE {
     Size: u32,
     TargetVideoSignalInfo: DISPLAYCONFIG_TARGET_MODE,
     RequiredBandwidth: u64,
@@ -281,6 +284,37 @@ fn default_target_mode(mode: SampleMode) -> IDDCX_TARGET_MODE {
         },
         RequiredBandwidth: 0,
     }
+}
+
+fn target_modes(size: Option<DisplaySize>, previous: Option<DisplaySize>) -> Vec<IDDCX_TARGET_MODE> {
+    let mut modes: Vec<_> = TARGET_MODES.into_iter().map(default_target_mode).collect();
+    for size in [size, previous].into_iter().flatten() {
+        if !modes.iter().any(|mode| {
+            let signal = &mode.TargetVideoSignalInfo.targetVideoSignalInfo;
+            signal.activeSize.cx == u32::from(size.width())
+                && signal.activeSize.cy == u32::from(size.height())
+                && signal.vSyncFreq.Numerator == 60
+                && signal.vSyncFreq.Denominator == 1
+        }) {
+            modes.push(default_target_mode(SampleMode {
+                width: u32::from(size.width()),
+                height: u32::from(size.height()),
+                refresh_hz: 60,
+            }));
+        }
+    }
+    modes
+}
+
+#[cfg(ironrdp_idd_link)]
+pub(crate) fn update_target_modes(
+    monitor: IDDCX_MONITOR,
+    size: DisplaySize,
+    previous: Option<DisplaySize>,
+) -> NTSTATUS {
+    let mut modes = target_modes(Some(size), previous);
+    // SAFETY: the remote adapter owns this arrived monitor throughout the serialized update.
+    unsafe { iddcx::monitor_update_modes(monitor, &mut modes) }
 }
 
 fn write_mode_list<T: Copy>(buffer_input_count: u32, buffer_ptr: *mut T, modes: &[T]) -> (u32, bool) {
@@ -602,7 +636,7 @@ pub(crate) extern "system" fn monitor_query_target_modes(
     // SAFETY: pointers are validated above and owned by IddCx for callback duration.
     let out_args = unsafe { &mut *out_args };
 
-    let modes = TARGET_MODES.map(default_target_mode);
+    let modes = target_modes(crate::remote::requested_display_size(), None);
     let (output_count, copied_all) = write_mode_list(in_args.TargetModeBufferInputCount, in_args.pTargetModes, &modes);
 
     out_args.TargetModeBufferOutputCount = output_count;

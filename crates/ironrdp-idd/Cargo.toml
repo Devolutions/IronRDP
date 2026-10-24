@@ -21,6 +21,7 @@ doctest = false
 test = false
 
 [target.'cfg(windows)'.dependencies]
+ironrdp-wtsprotocol-ipc = { version = "0.1.0", path = "../ironrdp-wtsprotocol-ipc" }
 tracing = { version = "0.1", features = ["log"] }
 windows = { version = "0.62", features = [
     "Win32_Devices_Display",
