@@ -2,24 +2,91 @@
 //!
 //! The server names files with paths relative to the redirected drive root.
 //! Each path is split into validated components and opened one component at a
-//! time relative to a directory descriptor, refusing symbolic links, so no
-//! spelling or link inside the share resolves outside it.
+//! time relative to a directory descriptor, refusing symbolic links and mount
+//! points, so no spelling, link or mount inside the share resolves outside it.
 //!
-//! UNTESTED: every filesystem call on a server-supplied path works on a descriptor from `open_parent` or
-//! `open_directory`, never on a joined path string.
+//! UNTESTED: every filesystem call on a server-supplied path works on a descriptor from `Root::open_at`,
+//! `RelativePath::open_parent` or `RelativePath::open_directory`, never on a joined path string.
 //! A path string is resolved again by the kernel, so a symbolic link swapped in after validation would lead outside the share.
-//! A new operation resolves its parent with `open_parent` and uses the `*at` system call with `O_NOFOLLOW` or its equivalent.
+//! A new operation resolves its parent with `open_parent` and opens with `Root::open_at`, or uses an `*at` system call that does not follow the final component.
+//!
+//! UNTESTED: `Root::open_at` refuses a descriptor on another mount.
+//! The tests cannot create mounts, so after changing it, check by hand with a bind mount and a tmpfs mounted below a share, with and without `openat2`.
 
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
-use nix::fcntl::{OFlag, openat};
-use nix::sys::stat::Mode;
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::sys::stat::{Mode, dev_t, fstat};
 
 /// Flags for every directory descriptor taken while walking a path.
-const DIRECTORY_FLAGS: OFlag = OFlag::O_RDONLY
-    .union(OFlag::O_DIRECTORY)
-    .union(OFlag::O_NOFOLLOW)
-    .union(OFlag::O_CLOEXEC);
+const DIRECTORY_FLAGS: OFlag = OFlag::O_RDONLY.union(OFlag::O_DIRECTORY);
+
+/// The opened shared directory, which every server-supplied path resolves beneath.
+#[derive(Debug)]
+pub(crate) struct Root {
+    directory: OwnedFd,
+    /// The filesystem holding the shared directory.
+    device: dev_t,
+}
+
+impl Root {
+    /// Opens the shared directory.
+    ///
+    /// The shared directory is configured locally, so symbolic links in its own path are followed.
+    pub(crate) fn open(file_base: &str) -> nix::Result<Self> {
+        let directory = nix::fcntl::open(
+            file_base,
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )?;
+        let device = fstat(directory.as_fd())?.st_dev;
+        Ok(Self { directory, device })
+    }
+
+    /// Opens `name` in `parent`, a directory beneath this root.
+    ///
+    /// Refuses a symbolic link and a mount point, so the result stays inside the share.
+    /// Without `openat2`, as on macOS and Linux before 5.6, only a mount of another filesystem is refused, not a bind mount within the same one.
+    /// Never blocks, so a FIFO in the share cannot stall the client.
+    pub(crate) fn open_at(&self, parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
+        let flags = flags | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+        let file = openat_same_mount(parent, name, flags, mode)?;
+        // Refuses a mount of another filesystem where `openat2` is unavailable.
+        if fstat(file.as_fd())?.st_dev != self.device {
+            return Err(Errno::EXDEV);
+        }
+        Ok(file)
+    }
+}
+
+/// Opens `name` in `parent` without crossing a mount point, bind mounts included.
+#[cfg(target_os = "linux")]
+fn openat_same_mount(parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
+    use nix::fcntl::{OpenHow, ResolveFlag, openat2};
+
+    // `openat2` rejects a nonzero mode without `O_CREAT`.
+    let mode = if flags.contains(OFlag::O_CREAT) {
+        mode
+    } else {
+        Mode::empty()
+    };
+    let how = OpenHow::new()
+        .flags(flags)
+        .mode(mode)
+        .resolve(ResolveFlag::RESOLVE_NO_XDEV | ResolveFlag::RESOLVE_NO_SYMLINKS);
+    match openat2(parent, name, how) {
+        // Kernels before 5.6 lack `openat2`, and some sandboxes deny it.
+        Err(Errno::ENOSYS | Errno::EPERM) => nix::fcntl::openat(parent, name, flags, mode),
+        result => result,
+    }
+}
+
+/// Opens `name` in `parent`; the caller rejects a descriptor on another filesystem.
+#[cfg(not(target_os = "linux"))]
+fn openat_same_mount(parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
+    nix::fcntl::openat(parent, name, flags, mode)
+}
 
 /// A validated path relative to the shared directory.
 ///
@@ -66,10 +133,10 @@ impl RelativePath {
 
     /// Opens the directory that holds the final component, and returns it with that component.
     ///
-    /// For the shared directory itself, the directory is `root` and the component is `.`.
-    pub(crate) fn open_parent(&self, root: &OwnedFd) -> nix::Result<(OwnedFd, &str)> {
+    /// For the shared directory itself, the directory is the root and the component is `.`.
+    pub(crate) fn open_parent(&self, root: &Root) -> nix::Result<(OwnedFd, &str)> {
         let Some((file_name, parents)) = self.components.split_last() else {
-            return Ok((root.try_clone().map_err(io_to_errno)?, "."));
+            return Ok((root.directory.try_clone().map_err(io_to_errno)?, "."));
         };
 
         let parent = open_directories(root, parents)?;
@@ -77,7 +144,7 @@ impl RelativePath {
     }
 
     /// Opens this path as a directory.
-    pub(crate) fn open_directory(&self, root: &OwnedFd) -> nix::Result<OwnedFd> {
+    pub(crate) fn open_directory(&self, root: &Root) -> nix::Result<OwnedFd> {
         open_directories(root, &self.components)
     }
 }
@@ -86,29 +153,16 @@ impl RelativePath {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InvalidPath;
 
-/// Opens the shared directory, the anchor every server-supplied path resolves beneath.
-///
-/// The shared directory is configured locally, so symbolic links in its own path are followed.
-pub(crate) fn open_root(file_base: &str) -> nix::Result<OwnedFd> {
-    nix::fcntl::open(
-        file_base,
-        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
-        Mode::empty(),
-    )
-}
-
-fn open_directories(root: &OwnedFd, components: &[String]) -> nix::Result<OwnedFd> {
-    let mut directory = root.try_clone().map_err(io_to_errno)?;
+fn open_directories(root: &Root, components: &[String]) -> nix::Result<OwnedFd> {
+    let mut directory = root.directory.try_clone().map_err(io_to_errno)?;
     for component in components {
-        directory = openat(directory.as_fd(), component.as_str(), DIRECTORY_FLAGS, Mode::empty())?;
+        directory = root.open_at(directory.as_fd(), component, DIRECTORY_FLAGS, Mode::empty())?;
     }
     Ok(directory)
 }
 
-pub(crate) fn io_to_errno(error: std::io::Error) -> nix::errno::Errno {
-    error
-        .raw_os_error()
-        .map_or(nix::errno::Errno::EIO, nix::errno::Errno::from_raw)
+pub(crate) fn io_to_errno(error: std::io::Error) -> Errno {
+    error.raw_os_error().map_or(Errno::EIO, Errno::from_raw)
 }
 
 #[cfg(test)]

@@ -14,7 +14,6 @@ use ironrdp_rdpdr::pdu::efs::{
 };
 use ironrdp_rdpdr_native::backend::NixRdpdrBackend;
 use ironrdp_svc::SvcMessage;
-use nix as _;
 use rstest::rstest;
 use tracing as _;
 
@@ -71,6 +70,32 @@ fn symbolic_links_in_the_share_are_not_followed() {
         }
     }
     assert_eq!(std::fs::read(&sentinel).expect("read sentinel"), b"outside");
+}
+
+/// Opening a FIFO used to block until a writer appeared, stalling the whole channel.
+#[test]
+fn opening_a_fifo_in_the_share_does_not_block() {
+    let fixture = Fixture::new();
+    nix::unistd::mkfifo(
+        &fixture.share.join("fifo"),
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    )
+    .expect("create FIFO");
+    let mut backend = fixture.backend();
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let response = backend.handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create_request(
+            r"\fifo",
+            CreateDisposition::FILE_OPEN,
+        )));
+        let _ = sender.send(response.is_ok());
+    });
+
+    let completed = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the create request completes without waiting for a FIFO writer");
+    assert!(completed);
 }
 
 // oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs

@@ -13,13 +13,13 @@ use ironrdp_rdpdr::{
 };
 use ironrdp_svc::SvcMessage;
 use nix::dir::{Dir, OwningIter};
-use nix::fcntl::{AtFlags, OFlag, openat, renameat};
+use nix::fcntl::{AtFlags, OFlag, renameat};
 use nix::sys::resource::{Resource, getrlimit};
 use nix::sys::stat::{FileStat, Mode, SFlag, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
 use tracing::{debug, warn};
 
-use super::path::{InvalidPath, RelativePath, io_to_errno, open_root};
+use super::path::{InvalidPath, RelativePath, Root, io_to_errno};
 use super::printer::{PrintTarget, PrinterSpooler, unsupported_response, write_response};
 
 /// The most files the server may hold open at once, however high the descriptor limit is.
@@ -730,14 +730,14 @@ pub(crate) fn set_information(
 }
 
 fn rename(file_base: &str, from: &RelativePath, to: &RelativePath) -> nix::Result<()> {
-    let root = open_root(file_base)?;
+    let root = Root::open(file_base)?;
     let (from_parent, from_name) = from.open_parent(&root)?;
     let (to_parent, to_name) = to.open_parent(&root)?;
     renameat(from_parent.as_fd(), from_name, to_parent.as_fd(), to_name)
 }
 
 fn remove_file(file_base: &str, path: &RelativePath) -> nix::Result<()> {
-    let root = open_root(file_base)?;
+    let root = Root::open(file_base)?;
     let (parent, name) = path.open_parent(&root)?;
     unlinkat(parent.as_fd(), name, UnlinkatFlags::NoRemoveDir)
 }
@@ -864,7 +864,7 @@ pub(crate) fn query_directory(
         open_file: &mut OpenFile,
         path: &RelativePath,
     ) -> nix::Result<Option<DirectoryEntry>> {
-        let root = open_root(file_base)?;
+        let root = Root::open(file_base)?;
         if let (Some("*"), Some(directory)) = (path.file_name(), path.parent()) {
             let mut listing = DirectoryListing::open(directory.open_directory(&root)?)?;
             let entry = listing.next_entry();
@@ -950,12 +950,14 @@ pub(crate) fn create_drive(
 
 /// Opens or creates `path` beneath the shared directory as `req` asks.
 fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) -> Result<std::fs::File, NtStatus> {
-    let (parent, name) = open_root(file_base)
-        .and_then(|root| path.open_parent(&root))
-        .map_err(|error| {
-            warn!(%error, ?path, "Open parent directory error");
-            NtStatus::UNSUCCESSFUL
-        })?;
+    let root = Root::open(file_base).map_err(|error| {
+        warn!(%error, "Open shared directory error");
+        NtStatus::UNSUCCESSFUL
+    })?;
+    let (parent, name) = path.open_parent(&root).map_err(|error| {
+        warn!(%error, ?path, "Open parent directory error");
+        NtStatus::UNSUCCESSFUL
+    })?;
     let is_directory_request = req.create_options.contains(CreateOptions::FILE_DIRECTORY_FILE);
 
     // first process directory
@@ -988,7 +990,7 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
                     warn!(%error, ?path, "Create directory error");
                     NtStatus::UNSUCCESSFUL
                 })?;
-                return open_at(&parent, name, OFlag::O_RDONLY | OFlag::O_DIRECTORY);
+                return open_at(&root, &parent, name, OFlag::O_RDONLY | OFlag::O_DIRECTORY);
             }
         }
     }
@@ -1005,12 +1007,10 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
             return Err(NtStatus::UNSUCCESSFUL);
         }
     };
-    return open_at(&parent, name, flags);
+    return open_at(&root, &parent, name, flags);
 
-    /// Opens `name` in `parent`, refusing a symbolic link so it cannot lead outside the shared directory.
-    fn open_at(parent: &OwnedFd, name: &str, flags: OFlag) -> Result<std::fs::File, NtStatus> {
-        let flags = flags | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-        openat(parent.as_fd(), name, flags, Mode::from_bits_truncate(0o666))
+    fn open_at(root: &Root, parent: &OwnedFd, name: &str, flags: OFlag) -> Result<std::fs::File, NtStatus> {
+        root.open_at(parent.as_fd(), name, flags, Mode::from_bits_truncate(0o666))
             .map(std::fs::File::from)
             .map_err(|error| {
                 warn!(%error, name, "Open file error");
