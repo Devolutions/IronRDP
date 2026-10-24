@@ -178,7 +178,18 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<gcc::ConferenceCreateRequest>(data);
     let _ = decode::<gcc::ConferenceCreateResponse>(data);
 
-    let _ = decode::<server_license::LicensePdu>(data);
+    // The client answers a license request by encrypting with the public key from the server's certificate.
+    if let Ok(server_license::LicensePdu::ServerLicenseRequest(license_request)) =
+        decode::<server_license::LicensePdu>(data)
+    {
+        let _ = server_license::ClientNewLicenseRequest::from_server_license_request(
+            &license_request,
+            &[0; 32],
+            &[0; 48],
+            "user",
+            "machine",
+        );
+    }
 
     // Post-licensing multitransport bootstrapping: the connector try-decodes
     // arbitrary server bytes as a request to distinguish it from Demand Active.

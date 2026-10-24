@@ -3,6 +3,11 @@ use std::io;
 use der_parser::parse_der;
 use num_bigint::BigUint;
 
+/// The smallest RSA modulus accepted from a server, in bits, which is the size of a proprietary certificate key.
+///
+/// A modulus of zero would make `modpow` panic, and one of at least 512 bits is larger than the 48-byte premaster secret it encrypts.
+const MIN_MODULUS_BITS: u64 = 512;
+
 pub(crate) fn encrypt_with_public_key(message: &[u8], public_key_der: &[u8]) -> io::Result<Vec<u8>> {
     let (_, der_object) = parse_der(public_key_der).map_err(|err| {
         io::Error::new(
@@ -40,6 +45,12 @@ pub(crate) fn encrypt_with_public_key(message: &[u8], public_key_der: &[u8]) -> 
     })?;
 
     let n = BigUint::from_bytes_be(n);
+    if n.bits() < MIN_MODULUS_BITS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("RSA public key modulus is shorter than {MIN_MODULUS_BITS} bits"),
+        ));
+    }
     let e = BigUint::from_bytes_be(e);
     let m = BigUint::from_bytes_le(message);
     let c = m.modpow(&e, &n);
