@@ -560,7 +560,7 @@ impl Decode<'_> for TsUsbdInterfaceInfoResult {
         let class = src.read_u8();
         let sub_class = src.read_u8();
         let protocol = src.read_u8();
-        read_padding(&mut src, 1);
+        read_padding!(&mut src, 1);
         let interface_handle = src.read_u32();
         #[expect(clippy::map_with_unused_argument_over_ranges)]
         let pipes = (0..src.read_u32())

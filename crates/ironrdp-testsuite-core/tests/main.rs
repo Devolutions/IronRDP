@@ -24,6 +24,7 @@ mod error;
 mod fuzz_regression;
 mod graphics;
 mod input;
+mod padding;
 mod pcb;
 mod pdu;
 mod propertyset;

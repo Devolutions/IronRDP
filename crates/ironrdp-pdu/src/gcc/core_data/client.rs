@@ -450,11 +450,13 @@ impl<'de> Decode<'de> for ClientCoreOptionalData {
 
         optional_data.desktop_physical_width = Some(try_or_return!(src.try_read_u32(), optional_data));
         // physical height must be present, if the physical width is present
+        ensure_size!(in: src, size: DESKTOP_PHYSICAL_HEIGHT_SIZE);
         optional_data.desktop_physical_height = Some(src.read_u32());
 
         optional_data.desktop_orientation = Some(try_or_return!(src.try_read_u16(), optional_data));
         optional_data.desktop_scale_factor = Some(try_or_return!(src.try_read_u32(), optional_data));
         // device scale factor must be present, if the desktop scale factor is present
+        ensure_size!(in: src, size: DEVICE_SCALE_FACTOR_SIZE);
         optional_data.device_scale_factor = Some(src.read_u32());
 
         Ok(optional_data)

@@ -1987,6 +1987,26 @@ fn decode_io_completion_dispatches_directory_control_by_minor_function() {
 }
 
 #[test]
+fn empty_query_directory_response_padding_is_optional() {
+    // MS-RDPEFS 2.2.3.4.10: the trailing Padding byte is optional, so it is consumed when present
+    // and a response that ends right after Length is accepted.
+    for wire in [&[0u8, 0, 0, 0][..], &[0, 0, 0, 0, 0][..]] {
+        let mut src = ReadCursor::new(wire);
+        let decoded = RdpdrPdu::decode_io_completion(
+            MajorFunction::DirectoryControl,
+            MinorFunction::IRP_MN_QUERY_DIRECTORY,
+            Some(FileInformationClassLevel::FILE_BASIC_INFORMATION),
+            None,
+            some_device_io_response(),
+            &mut src,
+        )
+        .unwrap();
+        assert!(matches!(decoded, RdpdrPdu::ClientDriveQueryDirectoryResponse(_)));
+        assert!(src.is_empty());
+    }
+}
+
+#[test]
 fn decode_io_completion_requires_info_class_for_query_information() {
     let err = RdpdrPdu::decode_io_completion(
         MajorFunction::QueryInformation,

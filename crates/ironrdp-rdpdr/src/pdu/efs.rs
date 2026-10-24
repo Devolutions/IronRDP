@@ -4500,7 +4500,11 @@ impl ClientDriveQueryDirectoryResponse {
         ensure_size!(ctx: Self::NAME, in: src, size: 4);
         let length = cast_length!(Self::NAME, "Length", src.read_u32())?;
         let buffer = if length == 0 {
-            read_padding!(src, 1); // Padding, mirrors the encode-side FreeRDP interop quirk above.
+            // Padding, mirrors the encode-side FreeRDP interop quirk above. The field is optional per
+            // MS-RDPEFS 2.2.3.4.10, so it is only skipped when present.
+            if !src.is_empty() {
+                read_padding!(src, 1);
+            }
             None
         } else {
             ensure_size!(ctx: Self::NAME, in: src, size: length);
