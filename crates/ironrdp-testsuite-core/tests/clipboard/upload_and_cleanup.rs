@@ -10,13 +10,13 @@
 use std::sync::{Arc, Mutex};
 
 use ironrdp_cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardPdu, FileContentsFlags, FileContentsRequest, FileContentsResponse,
-    FileDescriptor, FormatList, FormatListResponse, LockDataId, PackedFileList,
+    Capabilities, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, ClipboardPdu,
+    ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor, FormatList,
+    FormatListResponse, LockDataId, PackedFileList,
 };
 use ironrdp_cliprdr::{Cliprdr, CliprdrClient, CliprdrState, FileTransferState};
-use ironrdp_core::Encode as _;
+use ironrdp_core::{Encode as _, encode_vec};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
-
 use ironrdp_testsuite_core::clipboard::{RecordingBackend, TestBackend, TimedRecordingBackend};
 
 /// Introduce `let` bindings for the encoded bytes and the decoded
@@ -179,7 +179,7 @@ fn format_list_response_fail_notifies_backend_for_pending_requests() {
     }
 
     let fail_pdu = ClipboardPdu::FormatListResponse(FormatListResponse::Fail);
-    let encoded = ironrdp_core::encode_vec(&fail_pdu).unwrap();
+    let encoded = encode_vec(&fail_pdu).unwrap();
     let result = cliprdr.process(&encoded);
     assert!(result.is_ok());
 
@@ -317,8 +317,9 @@ fn stale_request_cleanup_spares_recent_requests() {
 
 // ── Locked file list cleanup ────────────────────────────────────────
 
+// oracle: spec MS-RDPECLIP sections 3.1.5.3.2 and 3.1.5.3.4
 #[test]
-fn locked_file_list_cleaned_up_after_inactivity() {
+fn idle_locked_file_list_is_released_only_by_peer_unlock() {
     let responses = Arc::new(Mutex::new(Vec::new()));
     let unlocks = Arc::new(Mutex::new(Vec::new()));
     let backend = TimedRecordingBackend::new(Arc::clone(&responses), Arc::clone(&unlocks));
@@ -340,7 +341,6 @@ fn locked_file_list_cleaned_up_after_inactivity() {
     cliprdr.process(&buf).unwrap();
 
     assert_eq!(cliprdr.__test_locked_file_lists().len(), 1);
-    assert!(cliprdr.__test_locked_file_list_activity().contains_key(&42));
 
     // Advance past transfer timeout with no FileContentsRequest activity
     cliprdr
@@ -350,16 +350,21 @@ fn locked_file_list_cleaned_up_after_inactivity() {
 
     let _messages = cliprdr.drive_timeouts().unwrap();
 
-    assert_eq!(cliprdr.__test_locked_file_lists().len(), 0);
-    assert!(!cliprdr.__test_locked_file_list_activity().contains_key(&42));
+    assert!(unlocks.lock().unwrap().is_empty());
+    assert_eq!(cliprdr.__test_locked_file_lists().len(), 1);
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::UnlockData(LockDataId(42))).unwrap())
+        .unwrap();
+    assert!(cliprdr.__test_locked_file_lists().is_empty());
 
     let unlock_ids = unlocks.lock().unwrap();
     assert_eq!(unlock_ids.len(), 1);
     assert_eq!(unlock_ids[0], 42);
 }
 
+// oracle: spec MS-RDPECLIP sections 3.1.5.3.2 and 3.1.5.4.6
 #[test]
-fn locked_file_list_activity_prevents_cleanup() {
+fn locked_file_list_remains_available_between_reads() {
     let responses = Arc::new(Mutex::new(Vec::new()));
     let unlocks = Arc::new(Mutex::new(Vec::new()));
     let backend = TimedRecordingBackend::new(Arc::clone(&responses), Arc::clone(&unlocks));
@@ -380,7 +385,7 @@ fn locked_file_list_activity_prevents_cleanup() {
     lock_pdu.encode(&mut cursor).unwrap();
     cliprdr.process(&buf).unwrap();
 
-    // Advance 150ms, then send an incoming FileContentsRequest (updates activity)
+    // Read once before the transfer timeout.
     cliprdr
         .downcast_backend::<TimedRecordingBackend>()
         .unwrap()
@@ -400,23 +405,34 @@ fn locked_file_list_activity_prevents_cleanup() {
     fcr_pdu.encode(&mut cursor).unwrap();
     cliprdr.process(&fcr_buf).unwrap();
 
-    // Advance another 100ms (250ms total, but only 100ms since last activity)
+    // A delay between reads does not release the peer's lock.
+    cliprdr
+        .submit_file_contents(FileContentsResponse::new_size_response(1, 100))
+        .unwrap();
     cliprdr
         .downcast_backend::<TimedRecordingBackend>()
         .unwrap()
-        .advance_ms(100);
+        .advance_ms(10_000);
 
     let _messages = cliprdr.drive_timeouts().unwrap();
 
-    // Locked file list should NOT be cleaned up (100ms since activity < 200ms timeout)
-    assert_eq!(cliprdr.__test_locked_file_lists().len(), 1);
+    cliprdr.process(&fcr_buf).unwrap();
+    assert_eq!(
+        cliprdr
+            .downcast_backend::<TimedRecordingBackend>()
+            .unwrap()
+            .file_requests
+            .len(),
+        2
+    );
 
     let unlock_ids = unlocks.lock().unwrap();
     assert_eq!(unlock_ids.len(), 0);
 }
 
+// oracle: spec MS-RDPECLIP sections 3.1.5.3.2 and 3.1.5.3.4
 #[test]
-fn locked_file_list_cleanup_only_inactive_entries() {
+fn peer_unlock_releases_only_its_matching_snapshot() {
     let responses = Arc::new(Mutex::new(Vec::new()));
     let unlocks = Arc::new(Mutex::new(Vec::new()));
     let backend = TimedRecordingBackend::new(Arc::clone(&responses), Arc::clone(&unlocks));
@@ -460,15 +476,20 @@ fn locked_file_list_cleanup_only_inactive_entries() {
     fcr_pdu.encode(&mut cursor).unwrap();
     cliprdr.process(&fcr_buf).unwrap();
 
-    // Advance another 100ms: lock 10 is 250ms inactive, lock 20 is 100ms since activity
+    // Both snapshots must survive idle time, regardless of their read history.
     cliprdr
         .downcast_backend::<TimedRecordingBackend>()
         .unwrap()
-        .advance_ms(100);
+        .advance_ms(10_000);
 
     let _messages = cliprdr.drive_timeouts().unwrap();
 
-    // Only lock 10 should be cleaned up (inactive), lock 20 still active
+    assert!(unlocks.lock().unwrap().is_empty());
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::UnlockData(LockDataId(10))).unwrap())
+        .unwrap();
+
+    // Only the snapshot named by the peer's Unlock PDU is released.
     assert_eq!(cliprdr.__test_locked_file_lists().len(), 1);
     assert!(cliprdr.__test_locked_file_lists().contains_key(&20));
     assert!(!cliprdr.__test_locked_file_lists().contains_key(&10));
@@ -480,8 +501,9 @@ fn locked_file_list_cleanup_only_inactive_entries() {
 
 // ── Repaste after lock expiry ──────────────────────────────────────
 
+// oracle: spec MS-RDPECLIP sections 3.1.5.3.2 and 3.1.5.4.6
 #[test]
-fn file_contents_request_falls_back_to_local_file_list_after_lock_expires() {
+fn first_file_read_after_idle_uses_the_original_lock() {
     let responses = Arc::new(Mutex::new(Vec::new()));
     let unlocks = Arc::new(Mutex::new(Vec::new()));
     let backend = TimedRecordingBackend::new(Arc::clone(&responses), Arc::clone(&unlocks));
@@ -511,12 +533,9 @@ fn file_contents_request_falls_back_to_local_file_list_after_lock_expires() {
         .advance_ms(250);
     let _messages = cliprdr.drive_timeouts().unwrap();
 
-    // Lock snapshot is gone
-    assert_eq!(cliprdr.__test_locked_file_lists().len(), 0);
+    assert!(unlocks.lock().unwrap().is_empty());
 
-    // User opens a valid target and pastes again. The server sends a
-    // FileContentsRequest with the original clipDataId. This must succeed
-    // by falling back to local_file_list rather than returning an error.
+    // The first read still names the lock acquired before opening a paste destination.
     let fcr = FileContentsRequest {
         stream_id: 7,
         index: 0,
@@ -525,16 +544,121 @@ fn file_contents_request_falls_back_to_local_file_list_after_lock_expires() {
         requested_size: 8,
         data_id: Some(99),
     };
-    let fcr_pdu = ClipboardPdu::FileContentsRequest(fcr);
+    let fcr_pdu = ClipboardPdu::FileContentsRequest(fcr.clone());
     let mut fcr_buf = vec![0u8; fcr_pdu.size()];
     let mut cursor = ironrdp_core::WriteCursor::new(&mut fcr_buf);
     fcr_pdu.encode(&mut cursor).unwrap();
 
-    // process() returns Ok(empty) when the request is forwarded to the
-    // backend. A non-empty return would mean an error response was sent.
-    let result = cliprdr.process(&fcr_buf).unwrap();
+    cliprdr.process(&fcr_buf).unwrap();
+    assert_eq!(
+        cliprdr
+            .downcast_backend::<TimedRecordingBackend>()
+            .unwrap()
+            .file_requests,
+        [fcr]
+    );
+}
+
+// oracle: spec MS-RDPECLIP sections 3.1.5.3.2, 3.1.5.3.4, and 3.1.5.4.6
+#[test]
+fn incoming_lock_retains_its_snapshot_until_peer_unlock() {
+    let backend = TimedRecordingBackend::new(Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+    let mut cliprdr = CliprdrClient::new(Box::new(backend));
+    let capabilities = ClipboardPdu::Capabilities(Capabilities::new(
+        ClipboardProtocolVersion::V2,
+        ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+            | ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
+            | ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES,
+    ));
+    cliprdr.process(&encode_vec(&capabilities).unwrap()).unwrap();
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::MonitorReady).unwrap())
+        .unwrap();
+    cliprdr.initiate_copy(&[]).unwrap();
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::FormatListResponse(FormatListResponse::Ok)).unwrap())
+        .unwrap();
+    cliprdr
+        .initiate_file_copy(vec![
+            FileDescriptor::new("first.txt").with_file_size(10),
+            FileDescriptor::new("locked.txt").with_file_size(20),
+        ])
+        .unwrap();
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::LockData(LockDataId(42))).unwrap())
+        .unwrap();
+    cliprdr
+        .initiate_file_copy(vec![FileDescriptor::new("replacement.txt").with_file_size(30)])
+        .unwrap();
+    cliprdr
+        .downcast_backend::<TimedRecordingBackend>()
+        .unwrap()
+        .advance_ms(120_001);
+    cliprdr.drive_timeouts().unwrap();
     assert!(
-        result.is_empty(),
-        "Expected request to be forwarded to backend, but got error response PDU"
+        cliprdr
+            .downcast_backend::<TimedRecordingBackend>()
+            .unwrap()
+            .unlocks
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+
+    let request = FileContentsRequest {
+        stream_id: 7,
+        index: 1,
+        flags: FileContentsFlags::RANGE,
+        position: 0,
+        requested_size: 20,
+        data_id: Some(42),
+    };
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::FileContentsRequest(request.clone())).unwrap())
+        .unwrap();
+    assert_eq!(
+        cliprdr
+            .downcast_backend::<TimedRecordingBackend>()
+            .unwrap()
+            .file_requests,
+        [request]
+    );
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::UnlockData(LockDataId(42))).unwrap())
+        .unwrap();
+    assert_eq!(
+        *cliprdr
+            .downcast_backend::<TimedRecordingBackend>()
+            .unwrap()
+            .unlocks
+            .lock()
+            .unwrap(),
+        [42]
+    );
+
+    let request = FileContentsRequest {
+        stream_id: 8,
+        index: 0,
+        flags: FileContentsFlags::SIZE,
+        position: 0,
+        requested_size: 8,
+        data_id: Some(42),
+    };
+    let messages = cliprdr
+        .process(&encode_vec(&ClipboardPdu::FileContentsRequest(request)).unwrap())
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    decode_pdu!(messages[0] => _bytes, response);
+    assert!(matches!(
+        response,
+        ClipboardPdu::FileContentsResponse(response) if response.stream_id() == 8 && response.is_error()
+    ));
+    assert_eq!(
+        cliprdr
+            .downcast_backend::<TimedRecordingBackend>()
+            .unwrap()
+            .file_requests
+            .len(),
+        1
     );
 }

@@ -11,12 +11,11 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Write};
-use std::os::windows::io::AsRawHandle as _;
-use std::sync::mpsc;
-use std::sync::{Arc, OnceLock};
+use std::os::windows::fs::OpenOptionsExt as _;
+use std::os::windows::io::{AsRawHandle as _, IntoRawHandle as _};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 
 use ironrdp_wtsprotocol_ipc::{
@@ -34,8 +33,8 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 use windows::Win32::Foundation::{
     CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, CloseHandle, E_NOINTERFACE, E_NOTIMPL,
     E_OUTOFMEMORY as E_OUTOFMEMORY_WIN32, E_POINTER, E_UNEXPECTED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_IO_INCOMPLETE, ERROR_NO_DATA, ERROR_NO_MORE_ITEMS, ERROR_NO_TOKEN,
-    ERROR_PATH_NOT_FOUND, ERROR_SEM_TIMEOUT, GetLastError, HANDLE, HANDLE_PTR, HLOCAL, LocalFree, WIN32_ERROR,
+    ERROR_INSUFFICIENT_BUFFER, ERROR_NO_DATA, ERROR_NO_MORE_ITEMS, ERROR_NO_TOKEN, ERROR_PATH_NOT_FOUND,
+    ERROR_SEM_TIMEOUT, GetLastError, HANDLE, HANDLE_PTR, HLOCAL, LocalFree, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{
@@ -44,13 +43,14 @@ use windows::Win32::Security::{
     TokenImpersonation, TokenPrimary,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, QueryDosDeviceW,
+    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    QueryDosDeviceW, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
 };
 use windows::Win32::System::Com::{
     COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IAgileObject_Impl,
     IClassFactory, IClassFactory_Impl,
 };
-use windows::Win32::System::Pipes::PeekNamedPipe;
+use windows::Win32::System::Pipes::{PIPE_READMODE_MESSAGE, PeekNamedPipe, SetNamedPipeHandleState};
 use windows::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE, RegGetValueW,
 };
@@ -62,13 +62,10 @@ use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolManager, IWRdsProtocolManager_Impl, IWRdsProtocolSettings, IWRdsProtocolShadowConnection,
     IWRdsWddmIddProps, IWRdsWddmIddProps_Impl, IWRdsWddmIddProps1, IWRdsWddmIddProps1_Impl,
     WRDS_CONNECTION_SETTING_LEVEL, WRDS_CONNECTION_SETTINGS, WRDS_LISTENER_SETTING_LEVEL, WRDS_LISTENER_SETTINGS,
-    WRDS_LISTENER_SETTINGS_1, WRDS_SETTINGS, WTS_CERT_TYPE_INVALID, WTS_CHANNEL_OPTION_DYNAMIC,
-    WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED,
-    WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL, WTS_CLIENT_DATA, WTS_KEY_EXCHANGE_ALG_RSA, WTS_LICENSE_CAPABILITIES,
-    WTS_LICENSE_PREAMBLE_VERSION, WTS_LOGON_ERR_NOT_HANDLED, WTS_LOGON_ERROR_REDIRECTOR_RESPONSE, WTS_PROCESS_INFOW,
-    WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE, WTS_SESSION_ID, WTS_USER_CREDENTIAL,
-    WTSEnumerateProcessesW, WTSFreeMemory, WTSQueryUserToken, WTSVirtualChannelClose, WTSVirtualChannelOpenEx,
-    WTSVirtualChannelRead, WTSVirtualChannelWrite,
+    WRDS_LISTENER_SETTINGS_1, WRDS_SETTINGS, WTS_CERT_TYPE_INVALID, WTS_CLIENT_DATA, WTS_KEY_EXCHANGE_ALG_RSA,
+    WTS_LICENSE_CAPABILITIES, WTS_LICENSE_PREAMBLE_VERSION, WTS_LOGON_ERR_NOT_HANDLED,
+    WTS_LOGON_ERROR_REDIRECTOR_RESPONSE, WTS_PROCESS_INFOW, WTS_PROPERTY_VALUE, WTS_PROTOCOL_STATUS, WTS_SERVICE_STATE,
+    WTS_SESSION_ID, WTS_USER_CREDENTIAL, WTSEnumerateProcessesW, WTSFreeMemory, WTSQueryUserToken,
 };
 use windows::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS,
@@ -79,8 +76,7 @@ use windows::Win32::System::Threading::{
     SetThreadToken,
 };
 use windows::core::AgileReference;
-use windows_core::{BOOL, GUID, Interface as _, PCSTR, PCWSTR, PWSTR, implement};
-use windows_core::{HRESULT, IUnknown, IUnknownImpl};
+use windows_core::{BOOL, GUID, HRESULT, IUnknown, IUnknownImpl, Interface as _, PCSTR, PCWSTR, PWSTR, implement};
 
 use crate::connection::ProtocolConnection;
 use crate::listener::ProtocolListener;
@@ -578,6 +574,7 @@ fn command_kind(command: &ProviderCommand) -> &'static str {
         ProviderCommand::GetConnectionCredentials { .. } => "get_connection_credentials",
         ProviderCommand::SetCaptureSessionId { .. } => "set_capture_session_id",
         ProviderCommand::NotifyIddDriverLoaded { .. } => "notify_idd_driver_loaded",
+        ProviderCommand::OpenVirtualChannel { .. } => "open_virtual_channel",
     }
 }
 
@@ -728,6 +725,7 @@ fn event_kind(event: &ServiceEvent) -> &'static str {
         ServiceEvent::ConnectionBroken { .. } => "connection_broken",
         ServiceEvent::ConnectionCredentials { .. } => "connection_credentials",
         ServiceEvent::NoCredentials { .. } => "no_credentials",
+        ServiceEvent::VirtualChannelReady { .. } => "virtual_channel_ready",
         ServiceEvent::Error { .. } => "error",
     }
 }
@@ -738,16 +736,6 @@ pub const IRONRDP_PROTOCOL_MANAGER_CLSID_STR: &str = "{89C7ED1E-25E5-4B15-8F52-A
 static SERVER_LOCK_COUNT: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_OBJECT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-const IRONRDP_CLIPRDR_CHANNEL_NAME: &str = "cliprdr";
-const IRONRDP_RDPSND_CHANNEL_NAME: &str = "rdpsnd";
-const IRONRDP_DRDYNVC_CHANNEL_NAME: &str = "drdynvc";
-const IRONRDP_DISPLAYCONTROL_CHANNEL_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
-const IRONRDP_GRAPHICS_CHANNEL_NAME: &str = "Microsoft::Windows::RDS::Graphics";
-const IRONRDP_AINPUT_CHANNEL_NAME: &str = "FreeRDP::Advanced::Input";
-const IRONRDP_ECHO_CHANNEL_NAME: &str = "ECHO";
-const VIRTUAL_CHANNEL_FORWARDER_READ_TIMEOUT_MS: u32 = 100;
-const VIRTUAL_CHANNEL_FORWARDER_BUFFER_SIZE: usize = 64 * 1024;
-const VIRTUAL_CHANNEL_FORWARDER_OUTBOUND_QUEUE_SIZE: usize = 100;
 const VIRTUAL_CHANNEL_PIPE_BRIDGE_ENV: &str = "IRONRDP_WTS_VC_BRIDGE_PIPE_PREFIX";
 const VIRTUAL_CHANNEL_PIPE_BRIDGE_QUEUE_SIZE: usize = 200;
 const VIRTUAL_CHANNEL_PIPE_BRIDGE_RECONNECT_DELAY: Duration = Duration::from_millis(500);
@@ -837,156 +825,6 @@ fn virtual_channel_bridge_handler_slot() -> &'static Mutex<Option<SharedVirtualC
 
 fn get_virtual_channel_bridge_handler() -> Option<SharedVirtualChannelBridgeHandler> {
     virtual_channel_bridge_handler_slot().lock().clone()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IronRdpVirtualChannelServer {
-    Cliprdr,
-    Rdpsnd,
-    Drdynvc,
-    DisplayControl,
-    Graphics,
-    AdvancedInput,
-    Echo,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct VirtualChannelBridgePlan {
-    route_kind: VirtualChannelRouteKind,
-    hook_target: Option<IronRdpVirtualChannelServer>,
-    preferred_dynamic_priority: Option<u32>,
-}
-
-impl VirtualChannelBridgePlan {
-    fn for_endpoint(is_static: bool, hook_target: Option<IronRdpVirtualChannelServer>) -> Self {
-        let route_kind = match hook_target {
-            Some(IronRdpVirtualChannelServer::Cliprdr) | Some(IronRdpVirtualChannelServer::Rdpsnd) => {
-                VirtualChannelRouteKind::IronRdpStatic
-            }
-            Some(IronRdpVirtualChannelServer::Drdynvc) => VirtualChannelRouteKind::IronRdpDynamicBackbone,
-            Some(IronRdpVirtualChannelServer::DisplayControl)
-            | Some(IronRdpVirtualChannelServer::Graphics)
-            | Some(IronRdpVirtualChannelServer::AdvancedInput)
-            | Some(IronRdpVirtualChannelServer::Echo) => VirtualChannelRouteKind::IronRdpDynamicEndpoint,
-            None => VirtualChannelRouteKind::Unknown,
-        };
-
-        let preferred_dynamic_priority = if is_static {
-            None
-        } else {
-            hook_target.map(IronRdpVirtualChannelServer::default_dynamic_priority)
-        };
-
-        Self {
-            route_kind,
-            hook_target,
-            preferred_dynamic_priority,
-        }
-    }
-
-    fn should_prepare_forwarding(self) -> bool {
-        self.route_kind != VirtualChannelRouteKind::Unknown
-    }
-}
-
-impl IronRdpVirtualChannelServer {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Cliprdr => IRONRDP_CLIPRDR_CHANNEL_NAME,
-            Self::Rdpsnd => IRONRDP_RDPSND_CHANNEL_NAME,
-            Self::Drdynvc => IRONRDP_DRDYNVC_CHANNEL_NAME,
-            Self::DisplayControl => IRONRDP_DISPLAYCONTROL_CHANNEL_NAME,
-            Self::Graphics => IRONRDP_GRAPHICS_CHANNEL_NAME,
-            Self::AdvancedInput => IRONRDP_AINPUT_CHANNEL_NAME,
-            Self::Echo => IRONRDP_ECHO_CHANNEL_NAME,
-        }
-    }
-
-    fn requires_drdynvc_backbone(self) -> bool {
-        matches!(
-            self,
-            Self::DisplayControl | Self::Graphics | Self::AdvancedInput | Self::Echo
-        )
-    }
-
-    fn default_dynamic_priority(self) -> u32 {
-        match self {
-            Self::AdvancedInput => WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL,
-            Self::Graphics => WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH,
-            Self::DisplayControl => WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED,
-            Self::Echo => WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW,
-            Self::Cliprdr | Self::Rdpsnd | Self::Drdynvc => WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW,
-        }
-    }
-}
-
-fn endpoint_name_eq(lhs: &str, rhs: &str) -> bool {
-    lhs.eq_ignore_ascii_case(rhs)
-}
-
-fn ironrdp_virtual_channel_server(endpoint_name: &str, is_static: bool) -> Option<IronRdpVirtualChannelServer> {
-    if is_static {
-        if endpoint_name_eq(endpoint_name, IRONRDP_CLIPRDR_CHANNEL_NAME) {
-            return Some(IronRdpVirtualChannelServer::Cliprdr);
-        }
-        if endpoint_name_eq(endpoint_name, IRONRDP_RDPSND_CHANNEL_NAME) {
-            return Some(IronRdpVirtualChannelServer::Rdpsnd);
-        }
-        if endpoint_name_eq(endpoint_name, IRONRDP_DRDYNVC_CHANNEL_NAME) {
-            return Some(IronRdpVirtualChannelServer::Drdynvc);
-        }
-
-        return None;
-    }
-
-    if endpoint_name_eq(endpoint_name, IRONRDP_DISPLAYCONTROL_CHANNEL_NAME) {
-        return Some(IronRdpVirtualChannelServer::DisplayControl);
-    }
-    if endpoint_name_eq(endpoint_name, IRONRDP_GRAPHICS_CHANNEL_NAME) {
-        return Some(IronRdpVirtualChannelServer::Graphics);
-    }
-    if endpoint_name_eq(endpoint_name, IRONRDP_AINPUT_CHANNEL_NAME) {
-        return Some(IronRdpVirtualChannelServer::AdvancedInput);
-    }
-    if endpoint_name_eq(endpoint_name, IRONRDP_ECHO_CHANNEL_NAME) {
-        return Some(IronRdpVirtualChannelServer::Echo);
-    }
-
-    None
-}
-
-fn is_dynamic_channel_priority(value: u32) -> bool {
-    matches!(
-        value,
-        WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW
-            | WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED
-            | WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH
-            | WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL
-    )
-}
-
-fn virtual_channel_requested_priority(
-    is_static: bool,
-    requested_priority: u32,
-    hook_target: Option<IronRdpVirtualChannelServer>,
-) -> u32 {
-    if is_static {
-        return requested_priority;
-    }
-
-    if requested_priority == WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW {
-        return hook_target
-            .map(IronRdpVirtualChannelServer::default_dynamic_priority)
-            .unwrap_or(requested_priority);
-    }
-
-    if is_dynamic_channel_priority(requested_priority) {
-        return requested_priority;
-    }
-
-    hook_target
-        .map(IronRdpVirtualChannelServer::default_dynamic_priority)
-        .unwrap_or(requested_priority)
 }
 
 #[derive(Debug)]
@@ -2859,8 +2697,6 @@ struct ComProtocolConnection {
     ready_notified: Mutex<bool>,
     cached_credentials: Mutex<Option<(String, String, String)>>,
     last_input_time: Mutex<u64>,
-    virtual_channels: Mutex<Vec<VirtualChannelHandle>>,
-    virtual_channel_forwarders: Mutex<Vec<VirtualChannelForwarderWorker>>,
     video_handle: Mutex<Option<HANDLE>>,
     session_impersonation_token: Mutex<Option<(u32, HANDLE)>>,
     video_handle_source: Mutex<VideoHandleSource>,
@@ -3095,8 +2931,6 @@ impl ComProtocolConnection {
             ready_notified: Mutex::new(false),
             cached_credentials: Mutex::new(None),
             last_input_time: Mutex::new(0),
-            virtual_channels: Mutex::new(Vec::new()),
-            virtual_channel_forwarders: Mutex::new(Vec::new()),
             video_handle: Mutex::new(None),
             session_impersonation_token: Mutex::new(None),
             video_handle_source: Mutex::new(VideoHandleSource::Unknown),
@@ -4621,165 +4455,6 @@ impl ComProtocolConnection {
     fn release_connection_callback(&self) {
         *self.connection_callback.lock() = None;
     }
-
-    fn release_virtual_channels(&self) {
-        let mut channels = self.virtual_channels.lock();
-        channels.clear();
-    }
-
-    fn release_virtual_channel_forwarders(&self) {
-        let mut workers = self.virtual_channel_forwarders.lock();
-
-        for worker in workers.drain(..) {
-            let endpoint_name = worker.endpoint.endpoint_name.clone();
-
-            if let Err(error) = worker.stop_tx.send(()) {
-                warn!(
-                    endpoint = %endpoint_name,
-                    %error,
-                    "Failed to signal virtual channel forwarder stop"
-                );
-            }
-
-            if let Err(error) = worker.join_handle.join() {
-                warn!(
-                    endpoint = %endpoint_name,
-                    ?error,
-                    "Virtual channel forwarder thread panicked"
-                );
-            }
-        }
-    }
-
-    fn find_virtual_channel(&self, endpoint_name: &str, is_static: bool) -> Option<(HANDLE, VirtualChannelBridgePlan)> {
-        self.virtual_channels
-            .lock()
-            .iter()
-            .find(|channel| channel.matches(endpoint_name, is_static))
-            .map(|channel| (channel.raw(), channel.bridge_plan))
-    }
-
-    fn register_virtual_channel(
-        &self,
-        handle: HANDLE,
-        endpoint_name: Option<String>,
-        is_static: bool,
-        bridge_plan: VirtualChannelBridgePlan,
-    ) -> windows_core::Result<HANDLE> {
-        let endpoint_name_for_worker = endpoint_name.clone();
-        let mut channels = self.virtual_channels.lock();
-        channels.push(VirtualChannelHandle::new(handle, endpoint_name, is_static, bridge_plan));
-
-        let channel_handle = channels
-            .last()
-            .map(VirtualChannelHandle::raw)
-            .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "virtual channel storage failure"))?;
-
-        drop(channels);
-
-        if let Some(endpoint_name) = endpoint_name_for_worker {
-            self.maybe_start_virtual_channel_forwarder(channel_handle, endpoint_name, is_static, bridge_plan);
-        }
-
-        Ok(channel_handle)
-    }
-
-    fn maybe_start_virtual_channel_forwarder(
-        &self,
-        channel_handle: HANDLE,
-        endpoint_name: String,
-        is_static: bool,
-        bridge_plan: VirtualChannelBridgePlan,
-    ) {
-        if !bridge_plan.should_prepare_forwarding() {
-            return;
-        }
-
-        let Some(handler) = get_virtual_channel_bridge_handler() else {
-            return;
-        };
-
-        let endpoint = VirtualChannelBridgeEndpoint {
-            endpoint_name,
-            static_channel: is_static,
-            route_kind: bridge_plan.route_kind,
-        };
-
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let (outbound_tx, outbound_rx) = mpsc::sync_channel(VIRTUAL_CHANNEL_FORWARDER_OUTBOUND_QUEUE_SIZE);
-
-        let tx = VirtualChannelBridgeTx {
-            endpoint: endpoint.clone(),
-            outbound_tx,
-        };
-
-        handler.on_channel_opened(&endpoint, tx);
-
-        let endpoint_for_worker = endpoint.clone();
-        let handler_for_worker = Arc::clone(&handler);
-        let channel_handle_raw = handle_to_raw_usize(channel_handle);
-        let join_handle = thread::spawn(move || {
-            run_virtual_channel_forwarder(
-                channel_handle_raw,
-                endpoint_for_worker,
-                handler_for_worker,
-                outbound_rx,
-                stop_rx,
-            )
-        });
-
-        self.virtual_channel_forwarders
-            .lock()
-            .push(VirtualChannelForwarderWorker {
-                endpoint,
-                stop_tx,
-                join_handle,
-            });
-
-        info!("Started virtual channel forwarder");
-    }
-
-    fn open_virtual_channel_by_name(
-        &self,
-        session_id: u32,
-        endpoint_name: &str,
-        is_static: bool,
-        requested_priority: u32,
-        bridge_plan: VirtualChannelBridgePlan,
-    ) -> windows_core::Result<HANDLE> {
-        if let Some((existing, _existing_bridge_plan)) = self.find_virtual_channel(endpoint_name, is_static) {
-            return Ok(existing);
-        }
-
-        let endpoint_name_cstring = CString::new(endpoint_name)
-            .map_err(|_| windows_core::Error::new(E_UNEXPECTED, "virtual channel endpoint contains NUL byte"))?;
-        let endpoint = PCSTR::from_raw(endpoint_name_cstring.as_ptr().cast::<u8>());
-        let flags = virtual_channel_open_flags(is_static, requested_priority);
-
-        // SAFETY: `endpoint` points to a valid NUL-terminated string for the duration of the call.
-        let channel = unsafe { WTSVirtualChannelOpenEx(session_id, endpoint, flags) }?;
-
-        if let Some((existing, _existing_bridge_plan)) = self.find_virtual_channel(endpoint_name, is_static) {
-            // SAFETY: `channel` is a handle returned by `WTSVirtualChannelOpenEx`.
-            if let Err(error) = unsafe { WTSVirtualChannelClose(channel) } {
-                warn!(%error, "Failed to close duplicate virtual channel handle");
-            }
-
-            return Ok(existing);
-        }
-
-        self.register_virtual_channel(channel, Some(endpoint_name.to_owned()), is_static, bridge_plan)
-    }
-
-    fn ensure_ironrdp_drdynvc_channel(&self, session_id: u32) -> windows_core::Result<HANDLE> {
-        self.open_virtual_channel_by_name(
-            session_id,
-            IRONRDP_DRDYNVC_CHANNEL_NAME,
-            true,
-            0,
-            VirtualChannelBridgePlan::for_endpoint(true, Some(IronRdpVirtualChannelServer::Drdynvc)),
-        )
-    }
 }
 
 impl IWRdsProtocolConnectionSettings_Impl for ComProtocolConnection_Impl {
@@ -5613,15 +5288,8 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         ));
         self.inner.disconnect_notify().map_err(transition_error)?;
 
-        if let Err(error) = self.control_bridge.close_connection(self.inner.connection_id()) {
-            warn!(%error, connection_id = self.inner.connection_id(), "Failed to notify companion service on disconnect");
-        }
-
-        *self.ready_notified.lock() = false;
+        // Arbitration can reattach this connection to another session; Close owns transport and callback teardown.
         self.close_device_handles();
-        self.release_virtual_channel_forwarders();
-        self.release_virtual_channels();
-        self.release_connection_callback();
         Ok(())
     }
 
@@ -5637,8 +5305,6 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         *self.ready_notified.lock() = false;
         self.close_device_handles();
-        self.release_virtual_channel_forwarders();
-        self.release_virtual_channels();
         self.release_connection_callback();
         self.inner.close().map_err(transition_error)?;
         Ok(())
@@ -5697,104 +5363,61 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         bstatic: BOOL,
         requestedpriority: u32,
     ) -> windows_core::Result<usize> {
-        let session_id = self
-            .inner
-            .session_id()
-            .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "session id is not available for virtual channel"))?;
-
-        let endpoint = *szendpointname;
-        if endpoint.is_null() {
+        if szendpointname.is_null() {
             return Err(windows_core::Error::new(
                 E_POINTER,
                 "null virtual channel endpoint pointer",
             ));
         }
 
-        let is_static = bstatic.as_bool();
-        // SAFETY: `endpoint` is non-null (checked above) and points to a NUL-terminated
-        // string provided by the caller.
-        let endpoint_name = match unsafe { endpoint.to_string() } {
-            Ok(name) => Some(name),
-            Err(error) => {
-                warn!(%error, "Failed to decode virtual channel endpoint name");
-                None
+        // SAFETY: TermService supplies a valid NUL-terminated endpoint name.
+        let endpoint_name = unsafe { szendpointname.to_string() }?;
+        if bstatic.as_bool() || endpoint_name != "Devolutions::Now::Agent" {
+            debug!(%endpoint_name, requestedpriority, "Native virtual channel endpoint is not enabled");
+            return Err(windows_core::Error::new(
+                E_NOTIMPL,
+                "native virtual channel endpoint is not enabled",
+            ));
+        }
+        let session_id = self
+            .inner
+            .session_id()
+            .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "native channel session is not assigned"))?;
+        let event = self.control_bridge.send_command(&ProviderCommand::OpenVirtualChannel {
+            connection_id: self.inner.connection_id(),
+            session_id,
+            endpoint_name,
+        })?;
+        let pipe_name = match event {
+            Some(ServiceEvent::VirtualChannelReady { pipe_name }) => pipe_name,
+            Some(ServiceEvent::Error { message }) => return Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            _ => {
+                return Err(windows_core::Error::new(
+                    E_UNEXPECTED,
+                    "native channel transport did not become ready",
+                ));
             }
         };
-
-        let hook_target = endpoint_name
-            .as_deref()
-            .and_then(|name| ironrdp_virtual_channel_server(name, is_static));
-        let bridge_plan = VirtualChannelBridgePlan::for_endpoint(is_static, hook_target);
-
-        let effective_priority = virtual_channel_requested_priority(is_static, requestedpriority, hook_target);
-
-        if let Some(target) = hook_target {
-            if target.requires_drdynvc_backbone() {
-                if let Err(error) = self.ensure_ironrdp_drdynvc_channel(session_id) {
-                    warn!(
-                        %error,
-                        endpoint = target.name(),
-                        "Failed to pre-open DRDYNVC backbone for IronRDP dynamic channel"
-                    );
-                }
-            }
+        if !pipe_name.starts_with(r"\\.\pipe\IronRdpNativeDvc-") {
+            return Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                "invalid native channel pipe name",
+            ));
         }
-
-        if let Some(name) = endpoint_name.as_deref() {
-            if let Some((existing_channel, existing_bridge_plan)) = self.find_virtual_channel(name, is_static) {
-                debug!(
-                    session_id,
-                    endpoint = name,
-                    static_channel = is_static,
-                    route_kind = ?existing_bridge_plan.route_kind,
-                    "Reusing virtual channel handle"
-                );
-                return Ok(handle_to_raw_usize(existing_channel));
-            }
-        }
-
-        let flags = virtual_channel_open_flags(is_static, effective_priority);
-
-        let channel = if let Some(name) = endpoint_name.as_deref() {
-            self.open_virtual_channel_by_name(session_id, name, is_static, effective_priority, bridge_plan)?
-        } else {
-            // SAFETY: `endpoint` points to a valid NUL-terminated string for the duration of the call.
-            let channel = unsafe { WTSVirtualChannelOpenEx(session_id, endpoint, flags) }?;
-            self.register_virtual_channel(channel, None, is_static, bridge_plan)?
-        };
-
-        if bridge_plan.should_prepare_forwarding() {
-            info!(
-                session_id,
-                static_channel = is_static,
-                route_kind = ?bridge_plan.route_kind,
-                preferred_dynamic_priority = bridge_plan.preferred_dynamic_priority,
-                "Prepared virtual channel forwarding metadata"
-            );
-        }
-
-        if let Some(target) = hook_target {
-            info!(
-                session_id,
-                endpoint = target.name(),
-                static_channel = is_static,
-                requestedpriority,
-                effective_priority,
-                flags,
-                "Hooked IronRDP virtual channel server endpoint"
-            );
-        } else {
-            debug!(
-                session_id,
-                requestedpriority,
-                effective_priority,
-                static_channel = is_static,
-                flags,
-                "Created virtual channel"
-            );
-        }
-
-        Ok(handle_to_raw_usize(channel))
+        let pipe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED.0 | SECURITY_SQOS_PRESENT.0 | SECURITY_IDENTIFICATION.0)
+            .open(&pipe_name)
+            .map_err(|error| io_error_to_windows_error(error, "open native channel pipe"))?;
+        // SAFETY: The file owns a connected message-pipe handle for the duration of this call.
+        unsafe { SetNamedPipeHandleState(HANDLE(pipe.as_raw_handle()), Some(&PIPE_READMODE_MESSAGE), None, None) }?;
+        debug_log_line(&format!(
+            "IWRdsProtocolConnection::CreateVirtualChannel ready connection_id={} session_id={session_id}",
+            self.inner.connection_id()
+        ));
+        // TermService duplicates this handle into the authorized WTS caller and closes the original.
+        Ok(pipe.into_raw_handle() as usize)
     }
 
     fn QueryProperty(
@@ -6090,332 +5713,42 @@ fn handle_to_raw_usize(handle: HANDLE) -> usize {
     handle.0 as usize
 }
 
-#[expect(clippy::as_conversions)]
-fn raw_usize_to_handle(raw: usize) -> HANDLE {
-    HANDLE(raw as *mut c_void)
-}
-
-#[derive(Debug)]
-struct VirtualChannelHandle {
-    handle: HANDLE,
-    endpoint_name: Option<String>,
-    static_channel: bool,
-    bridge_plan: VirtualChannelBridgePlan,
-}
-
-struct VirtualChannelForwarderWorker {
-    endpoint: VirtualChannelBridgeEndpoint,
-    stop_tx: mpsc::Sender<()>,
-    join_handle: thread::JoinHandle<()>,
-}
-
-impl VirtualChannelHandle {
-    fn new(
-        handle: HANDLE,
-        endpoint_name: Option<String>,
-        static_channel: bool,
-        bridge_plan: VirtualChannelBridgePlan,
-    ) -> Self {
-        Self {
-            handle,
-            endpoint_name,
-            static_channel,
-            bridge_plan,
-        }
-    }
-
-    fn raw(&self) -> HANDLE {
-        self.handle
-    }
-
-    fn matches(&self, endpoint_name: &str, is_static: bool) -> bool {
-        self.static_channel == is_static
-            && self
-                .endpoint_name
-                .as_deref()
-                .is_some_and(|name| endpoint_name_eq(name, endpoint_name))
-    }
-}
-
-impl Drop for VirtualChannelHandle {
-    fn drop(&mut self) {
-        // SAFETY: `self.handle` is a handle returned by `WTSVirtualChannelOpenEx`.
-        if let Err(error) = unsafe { WTSVirtualChannelClose(self.handle) } {
-            warn!(%error, "Failed to close virtual channel handle");
-        }
-    }
-}
-
-fn virtual_channel_open_flags(is_static: bool, requested_priority: u32) -> u32 {
-    if is_static {
-        return 0;
-    }
-
-    let dynamic_priority = match requested_priority {
-        WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW
-        | WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED
-        | WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH
-        | WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL => requested_priority,
-        _ => WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW,
-    };
-
-    WTS_CHANNEL_OPTION_DYNAMIC | dynamic_priority
-}
-
-fn run_virtual_channel_forwarder(
-    channel_handle_raw: usize,
-    endpoint: VirtualChannelBridgeEndpoint,
-    bridge_handler: SharedVirtualChannelBridgeHandler,
-    outbound_rx: mpsc::Receiver<Vec<u8>>,
-    stop_rx: mpsc::Receiver<()>,
-) {
-    let channel_handle = raw_usize_to_handle(channel_handle_raw);
-    let mut read_buffer = vec![0u8; VIRTUAL_CHANNEL_FORWARDER_BUFFER_SIZE];
-
-    loop {
-        if stop_rx.try_recv().is_ok() {
-            break;
-        }
-
-        while let Ok(payload) = outbound_rx.try_recv() {
-            let mut bytes_written = 0;
-            // SAFETY: `channel_handle` is a live virtual channel handle, and `payload` points to
-            // a valid buffer for the duration of the call.
-            if let Err(error) = unsafe { WTSVirtualChannelWrite(channel_handle, &payload, &mut bytes_written) } {
-                warn!(
-                    endpoint = %endpoint.endpoint_name,
-                    ?error,
-                    "Failed to write virtual channel payload"
-                );
-                break;
-            }
-        }
-
-        let mut bytes_read = 0;
-        // SAFETY: `channel_handle` is a live virtual channel handle. `read_buffer` and `bytes_read`
-        // are valid out-buffers for the duration of the call.
-        match unsafe {
-            WTSVirtualChannelRead(
-                channel_handle,
-                VIRTUAL_CHANNEL_FORWARDER_READ_TIMEOUT_MS,
-                &mut read_buffer,
-                &mut bytes_read,
-            )
-        } {
-            Ok(()) => {
-                if bytes_read == 0 {
-                    continue;
-                }
-
-                let Ok(read_len) = usize::try_from(bytes_read) else {
-                    warn!(
-                        endpoint = %endpoint.endpoint_name,
-                        bytes_read,
-                        "Virtual channel forwarder read length does not fit in usize"
-                    );
-                    break;
-                };
-                bridge_handler.on_channel_data(&endpoint, &read_buffer[..read_len]);
-            }
-            Err(error) => {
-                if is_virtual_channel_read_timeout(&error) {
-                    continue;
-                }
-
-                warn!(
-                    endpoint = %endpoint.endpoint_name,
-                    ?error,
-                    "Virtual channel forwarder read failed"
-                );
-                break;
-            }
-        }
-    }
-
-    bridge_handler.on_channel_closed(&endpoint);
-}
-
-fn is_virtual_channel_read_timeout(error: &windows_core::Error) -> bool {
-    let code = error.code();
-
-    code == HRESULT::from_win32(ERROR_SEM_TIMEOUT.0)
-        || code == HRESULT::from_win32(ERROR_IO_INCOMPLETE.0)
-        || code == HRESULT::from_win32(ERROR_NO_DATA.0)
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
 
     use super::{
-        IronRdpVirtualChannelServer, VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE, VirtualChannelBridgeEndpoint,
-        VirtualChannelBridgePlan, VirtualChannelBridgeTx, VirtualChannelRouteKind, bridge_pipe_path,
-        drain_length_prefixed_pipe_frames, ironrdp_virtual_channel_server, sanitize_pipe_segment,
-        virtual_channel_open_flags, virtual_channel_requested_priority,
-    };
-    use windows::Win32::System::RemoteDesktop::{
-        WTS_CHANNEL_OPTION_DYNAMIC, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW,
-        WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL,
+        VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE, VirtualChannelBridgeEndpoint, VirtualChannelBridgeTx,
+        VirtualChannelRouteKind, bridge_pipe_path, drain_length_prefixed_pipe_frames, sanitize_pipe_segment,
     };
 
     #[test]
-    fn static_channels_use_zero_flags() {
-        assert_eq!(virtual_channel_open_flags(true, 123), 0);
-    }
+    fn native_channel_without_transport_is_not_implemented() {
+        use std::sync::Arc;
 
-    #[test]
-    fn dynamic_channels_map_priority_flags() {
-        assert_eq!(
-            virtual_channel_open_flags(false, WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW),
-            WTS_CHANNEL_OPTION_DYNAMIC | WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW
-        );
-        assert_eq!(
-            virtual_channel_open_flags(false, WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED),
-            WTS_CHANNEL_OPTION_DYNAMIC | WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED
-        );
-        assert_eq!(
-            virtual_channel_open_flags(false, WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH),
-            WTS_CHANNEL_OPTION_DYNAMIC | WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH
-        );
-        assert_eq!(
-            virtual_channel_open_flags(false, WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL),
-            WTS_CHANNEL_OPTION_DYNAMIC | WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL
-        );
-    }
+        use parking_lot::Mutex;
+        use windows::Win32::Foundation::E_NOTIMPL;
+        use windows::Win32::System::RemoteDesktop::IWRdsProtocolConnection;
+        use windows_core::s;
 
-    #[test]
-    fn dynamic_channels_fallback_to_low_for_unknown_priority() {
-        assert_eq!(
-            virtual_channel_open_flags(false, 1),
-            WTS_CHANNEL_OPTION_DYNAMIC | WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW
-        );
-        assert_eq!(
-            virtual_channel_open_flags(false, 123),
-            WTS_CHANNEL_OPTION_DYNAMIC | WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW
-        );
-        assert_eq!(
-            virtual_channel_open_flags(false, u32::MAX),
-            WTS_CHANNEL_OPTION_DYNAMIC | WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW
-        );
-    }
+        let inner = Arc::new(crate::ProtocolConnection::new(
+            1,
+            Arc::new(crate::SessionRegistry::default()),
+        ));
+        let connection: IWRdsProtocolConnection = super::ComProtocolConnection::new(
+            inner,
+            Arc::new(Mutex::new(None)),
+            super::ProviderControlBridge {
+                pipe_name: None,
+                optional_connection: true,
+            },
+        )
+        .into();
 
-    #[test]
-    fn recognizes_ironrdp_static_virtual_channel_servers() {
-        assert_eq!(
-            ironrdp_virtual_channel_server("cliprdr", true),
-            Some(IronRdpVirtualChannelServer::Cliprdr)
-        );
-        assert_eq!(
-            ironrdp_virtual_channel_server("RDPSND", true),
-            Some(IronRdpVirtualChannelServer::Rdpsnd)
-        );
-        assert_eq!(
-            ironrdp_virtual_channel_server("DrDyNvC", true),
-            Some(IronRdpVirtualChannelServer::Drdynvc)
-        );
-        assert_eq!(ironrdp_virtual_channel_server("cliprdr", false), None);
-    }
-
-    #[test]
-    fn recognizes_ironrdp_dynamic_virtual_channel_servers() {
-        assert_eq!(
-            ironrdp_virtual_channel_server("Microsoft::Windows::RDS::DisplayControl", false),
-            Some(IronRdpVirtualChannelServer::DisplayControl)
-        );
-        assert_eq!(
-            ironrdp_virtual_channel_server("microsoft::windows::rds::graphics", false),
-            Some(IronRdpVirtualChannelServer::Graphics)
-        );
-        assert_eq!(
-            ironrdp_virtual_channel_server("FreeRDP::Advanced::Input", false),
-            Some(IronRdpVirtualChannelServer::AdvancedInput)
-        );
-        assert_eq!(
-            ironrdp_virtual_channel_server("echo", false),
-            Some(IronRdpVirtualChannelServer::Echo)
-        );
-    }
-
-    #[test]
-    fn ironrdp_dynamic_channels_use_recommended_priorities_when_unknown() {
-        assert_eq!(
-            virtual_channel_requested_priority(false, 0, Some(IronRdpVirtualChannelServer::DisplayControl)),
-            WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED
-        );
-        assert_eq!(
-            virtual_channel_requested_priority(false, 0, Some(IronRdpVirtualChannelServer::Graphics)),
-            WTS_CHANNEL_OPTION_DYNAMIC_PRI_HIGH
-        );
-        assert_eq!(
-            virtual_channel_requested_priority(false, 0, Some(IronRdpVirtualChannelServer::AdvancedInput)),
-            WTS_CHANNEL_OPTION_DYNAMIC_PRI_REAL
-        );
-        assert_eq!(
-            virtual_channel_requested_priority(false, 0, Some(IronRdpVirtualChannelServer::Echo)),
-            WTS_CHANNEL_OPTION_DYNAMIC_PRI_LOW
-        );
-    }
-
-    #[test]
-    fn explicit_dynamic_priority_is_preserved() {
-        assert_eq!(
-            virtual_channel_requested_priority(
-                false,
-                WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED,
-                Some(IronRdpVirtualChannelServer::AdvancedInput)
-            ),
-            WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED
-        );
-    }
-
-    #[test]
-    fn dynamic_server_backbone_requirements_are_exposed() {
-        assert!(IronRdpVirtualChannelServer::DisplayControl.requires_drdynvc_backbone());
-        assert!(IronRdpVirtualChannelServer::Graphics.requires_drdynvc_backbone());
-        assert!(IronRdpVirtualChannelServer::AdvancedInput.requires_drdynvc_backbone());
-        assert!(IronRdpVirtualChannelServer::Echo.requires_drdynvc_backbone());
-        assert!(!IronRdpVirtualChannelServer::Cliprdr.requires_drdynvc_backbone());
-        assert!(!IronRdpVirtualChannelServer::Rdpsnd.requires_drdynvc_backbone());
-        assert!(!IronRdpVirtualChannelServer::Drdynvc.requires_drdynvc_backbone());
-    }
-
-    #[test]
-    fn bridge_plan_classifies_known_ironrdp_routes() {
-        assert_eq!(
-            VirtualChannelBridgePlan::for_endpoint(true, Some(IronRdpVirtualChannelServer::Cliprdr)).route_kind,
-            VirtualChannelRouteKind::IronRdpStatic
-        );
-        assert_eq!(
-            VirtualChannelBridgePlan::for_endpoint(true, Some(IronRdpVirtualChannelServer::Drdynvc)).route_kind,
-            VirtualChannelRouteKind::IronRdpDynamicBackbone
-        );
-        assert_eq!(
-            VirtualChannelBridgePlan::for_endpoint(false, Some(IronRdpVirtualChannelServer::DisplayControl)).route_kind,
-            VirtualChannelRouteKind::IronRdpDynamicEndpoint
-        );
-        assert_eq!(
-            VirtualChannelBridgePlan::for_endpoint(false, None).route_kind,
-            VirtualChannelRouteKind::Unknown
-        );
-    }
-
-    #[test]
-    fn bridge_plan_exposes_forwarding_preparation_and_priority() {
-        let unknown_plan = VirtualChannelBridgePlan::for_endpoint(false, None);
-        assert!(!unknown_plan.should_prepare_forwarding());
-        assert_eq!(unknown_plan.preferred_dynamic_priority, None);
-
-        let display_plan =
-            VirtualChannelBridgePlan::for_endpoint(false, Some(IronRdpVirtualChannelServer::DisplayControl));
-        assert!(display_plan.should_prepare_forwarding());
-        assert_eq!(
-            display_plan.preferred_dynamic_priority,
-            Some(WTS_CHANNEL_OPTION_DYNAMIC_PRI_MED)
-        );
-
-        let static_plan = VirtualChannelBridgePlan::for_endpoint(true, Some(IronRdpVirtualChannelServer::Rdpsnd));
-        assert!(static_plan.should_prepare_forwarding());
-        assert_eq!(static_plan.preferred_dynamic_priority, None);
+        // oracle: mutant a missing provider transport must not fall through to WTS client RPCs.
+        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+        let error = unsafe { connection.CreateVirtualChannel(s!("cliprdr"), true, 0) }.unwrap_err();
+        assert_eq!(error.code(), E_NOTIMPL);
     }
 
     #[test]

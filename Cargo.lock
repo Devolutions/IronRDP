@@ -3098,6 +3098,7 @@ dependencies = [
 name = "ironrdp-idd"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-wtsprotocol-ipc",
  "tracing",
  "windows",
  "windows-core",
@@ -3513,8 +3514,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "ironrdp-cliprdr",
+ "ironrdp-cliprdr-native",
+ "ironrdp-core 0.3.0",
+ "ironrdp-displaycontrol",
+ "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-server",
+ "ironrdp-svc",
  "ironrdp-wtsprotocol-ipc",
  "rustls-cng",
  "serde_json",

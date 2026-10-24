@@ -46,6 +46,12 @@ This crate is intentionally *safe-by-default* for normal workspace builds:
   - Declaring `IddCx0104` makes IddCx's `WdfDriverCreate` fail with `STATUS_INVALID_PARAMETER` and the session drop with `ERRINFO_CLOSE_STACK_ON_DRIVER_FAILURE`.
   - Remote-session strict e2e assumes the package advertises the IddCx 1.4 remote-IDD contract and `UmdfHostProcessSharing=ProcessSharingDisabled`.
 
+The companion publishes session-specific display requests in `C:\ProgramData\IronRDPDisplay`, separately from the diagnostic runtime files.
+`install-idd-remote.ps1` provisions this directory with write access restricted to SYSTEM and administrators and read access for LocalService and NetworkService.
+The driver updates target modes before applying a new display configuration and does not resubmit an unchanged request on every frame or inactive-path notification.
+IddCx 1.10 or newer enables arbitrary monitor-compatible target modes; older runtimes retain the legacy adapter flags.
+See [desktop resizing][termsrv-resize] for supported dimensions and capture behavior.
+
 ## Scripts
 
 All scripts live in [crates/ironrdp-idd/scripts](scripts).
@@ -101,3 +107,4 @@ Use `ironrdp-agent`, not `mstsc` or MsRdpEx, for VM RDP connections; see the [Te
 
 [psign-fixtures]: https://github.com/Devolutions/psign/tree/2a7a928a7db8479ca4c96273579aac8c85f60a09/tests/fixtures/devolutions-authenticode
 [termsrv-rdp]: ../ironrdp-termsrv/README.md#connect-with-ironrdp-agent
+[termsrv-resize]: ../ironrdp-termsrv/README.md#desktop-resizing

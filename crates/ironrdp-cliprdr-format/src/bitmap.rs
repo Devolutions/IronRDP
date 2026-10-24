@@ -560,15 +560,24 @@ fn bitmap_data<'a>(header: &BitmapInfoHeader, header_size: usize, input: &'a [u8
     input.get(..image_size).ok_or(BitmapError::InvalidSize)
 }
 
-fn decode_dib(input: &[u8]) -> Result<(BitmapInfoHeader, &[u8]), BitmapError> {
+fn decode_dib(input: &[u8]) -> Result<(BitmapInfoHeader, usize, &[u8]), BitmapError> {
     let mut src = ReadCursor::new(input);
     let header = BitmapInfoHeader::decode(&mut src).map_err(BitmapError::Decode)?;
     validate_v1_header(&header)?;
-    if header.compression != BitmapCompression::RGB {
-        return Err(BitmapError::Unsupported("unsupported compression"));
-    }
-    let bitmap = bitmap_data(&header, BitmapInfoHeader::FIXED_PART_SIZE, src.remaining())?;
-    Ok((header, bitmap))
+    let header_size = match header.compression {
+        BitmapCompression::RGB => BitmapInfoHeader::FIXED_PART_SIZE,
+        BitmapCompression::BITFIELDS if header.bit_count == 32 => {
+            let masks = src.remaining().get(..12).ok_or(BitmapError::InvalidSize)?;
+            if masks != [0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 0] {
+                return Err(BitmapError::Unsupported("non-standard BGR color masks"));
+            }
+            BitmapInfoHeader::FIXED_PART_SIZE + 4 /* RedMask */ + 4 /* GreenMask */ + 4 /* BlueMask */
+        }
+        _ => return Err(BitmapError::Unsupported("unsupported compression")),
+    };
+    let pixels = input.get(header_size..).ok_or(BitmapError::InvalidSize)?;
+    let bitmap = bitmap_data(&header, header_size, pixels)?;
+    Ok((header, header_size, bitmap))
 }
 
 fn decode_dibv5(input: &[u8]) -> Result<(BitmapV5Header, &[u8]), BitmapError> {
@@ -581,10 +590,8 @@ fn decode_dibv5(input: &[u8]) -> Result<(BitmapV5Header, &[u8]), BitmapError> {
 
 /// Validates a `CF_DIB` payload without allocating and returns its logical byte length.
 pub fn validate_dib(input: &[u8]) -> Result<usize, BitmapError> {
-    let (_, bitmap) = decode_dib(input)?;
-    BitmapInfoHeader::FIXED_PART_SIZE
-        .checked_add(bitmap.len())
-        .ok_or(BitmapError::BufferTooBig)
+    let (_, header_size, bitmap) = decode_dib(input)?;
+    header_size.checked_add(bitmap.len()).ok_or(BitmapError::BufferTooBig)
 }
 
 /// Validates a `CF_DIBV5` payload without allocating and returns its logical byte length.
@@ -699,8 +706,10 @@ fn encode_png(ctx: &PngEncoderContext) -> Result<Vec<u8>, BitmapError> {
 }
 
 /// Converts `CF_DIB` to PNG.
+///
+/// Supports 24/32-bit BI_RGB and 32-bit BI_BITFIELDS with standard BGR masks.
 pub fn dib_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
-    let (header, bitmap) = decode_dib(input)?;
+    let (header, _, bitmap) = decode_dib(input)?;
     let png_ctx = bgra_to_top_down_rgba(&header, bitmap, false)?;
     encode_png(&png_ctx)
 }

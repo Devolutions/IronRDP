@@ -1219,6 +1219,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
     /// Advanced Input owns mouse delivery while its DVC is active. Core mouse
     /// events from the overlapping FastPath path are then suppressed.
     advanced_input_active: Arc<AtomicBool>,
@@ -1414,6 +1415,28 @@ pub enum ServerEvent {
     /// See [`ServerRedirectionHandle::redirect`].
     Redirect(Box<ServerRedirectionPdu>),
     Clipboard(ClipboardMessage),
+    /// Signals completion after handling the event, including any transport write.
+    ///
+    /// Await the receiver before submitting another event to bound queued clipboard data.
+    /// The receiver returns an error if dispatch fails or the event is discarded.
+    /// Completion does not confirm that the peer accepted the clipboard data.
+    ClipboardWithCompletion(ClipboardMessage, oneshot::Sender<()>),
+    /// Writes data to an open dynamic channel over the main RDP transport.
+    ///
+    /// Await completion before submitting another batch to bound queued data.
+    /// A closed receiver means dispatch failed, the event was discarded, or the channel was unavailable.
+    /// Channels migrated to a sideband transport are rejected rather than sent over the wrong transport.
+    /// Completion confirms the transport write, not acceptance by the peer.
+    DynamicChannelWithCompletion(dvc::DvcMessageBatch, oneshot::Sender<()>),
+    /// Requests a dynamic channel after DRDYNVC negotiation.
+    ///
+    /// The factory receives the reserved ID so callers can cancel creation with `CloseDynamicChannel`.
+    /// Acceptance invokes the processor's `start` method.
+    /// A discarded request drops the factory without calling it.
+    CreateDynamicChannel(Box<dyn FnOnce(u32) -> Box<dyn dvc::DvcServerProcessor> + Send>),
+    /// Releases a dynamic channel and notifies the peer if creation was requested.
+    /// Also cancels pending creation; an unknown channel ID has no effect.
+    CloseDynamicChannel(u32),
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
     Rdpeai(RdpeaiServerMessage),
@@ -1439,6 +1462,14 @@ pub trait StaticChannelFactory: Send {
     fn attach(&self, acceptor: &mut Acceptor);
 }
 
+/// Extends the built-in dynamic channels with fresh processors for each connection.
+///
+/// Factories run in registration order before DRDYNVC negotiation.
+pub trait DynamicChannelFactory: Send {
+    /// Adds processors to the supplied channel set, preserving its existing channels.
+    fn attach(&self, channels: dvc::DrdynvcServer) -> dvc::DrdynvcServer;
+}
+
 impl fmt::Debug for ServerEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1447,6 +1478,13 @@ impl fmt::Debug for ServerEvent {
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
+            Self::ClipboardWithCompletion(..) => f.write_str("ClipboardWithCompletion(..)"),
+            Self::DynamicChannelWithCompletion(batch, _) => f
+                .debug_tuple("DynamicChannelWithCompletion")
+                .field(&batch.channel_id())
+                .finish(),
+            Self::CreateDynamicChannel(_) => f.write_str("CreateDynamicChannel(..)"),
+            Self::CloseDynamicChannel(channel_id) => f.debug_tuple("CloseDynamicChannel").field(channel_id).finish(),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
@@ -2229,6 +2267,7 @@ impl RdpServer {
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
         static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+        dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
@@ -2276,6 +2315,7 @@ impl RdpServer {
             bound_handler,
             bound_display,
             static_channel_factories,
+            dynamic_channel_factories,
             sound_factory,
             cliprdr_factory,
             rdpei_factory,
@@ -2811,6 +2851,10 @@ impl RdpServer {
             dvc
         };
 
+        let dvc = self
+            .dynamic_channel_factories
+            .iter()
+            .fold(dvc, |channels, factory| factory.attach(channels));
         acceptor.attach_static_channel(dvc);
 
         for factory in &self.static_channel_factories {
@@ -3827,6 +3871,47 @@ impl RdpServer {
     /// Set Error Info PDU to a client that did not set it, so the two arms below
     /// that carry a disconnect reason drop the PDU (and just disconnect) when it
     /// is `false`.
+    async fn dispatch_clipboard_event(
+        conn: &mut ConnectionState,
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+        message: ClipboardMessage,
+    ) -> ServerResult<()> {
+        let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
+            warn!("No clipboard channel, dropping event");
+            return Ok(());
+        };
+        let messages = match message {
+            ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
+            ClipboardMessage::SendInitiateFileCopy(files) => cliprdr.initiate_file_copy(files),
+            ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
+            ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
+            ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
+            ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
+            ClipboardMessage::Error(error) => {
+                error!(?error, "Handling clipboard event");
+                return Ok(());
+            }
+        };
+        let messages = match messages {
+            Ok(messages) => messages,
+            Err(error) => {
+                // A rejected clipboard request must not tear down a healthy desktop session.
+                error!(?error, "Failed to send clipboard event");
+                return Ok(());
+            }
+        };
+        let channel_id = conn
+            .get_channel_id_by_type::<CliprdrServer>()
+            .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+        let data =
+            server_encode_svc_messages(messages.into(), channel_id, user_channel_id).map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|error| ServerError::io("write_all", error))
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "private per-connection dispatch; the parameters are the connection's negotiated identifiers and transports"
@@ -4163,47 +4248,77 @@ impl RdpServer {
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Clipboard(c) => {
-                    let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
-                        warn!("No clipboard channel, dropping event");
+                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, c).await?;
+                }
+                ServerEvent::ClipboardWithCompletion(message, completion) => {
+                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                    if completion.send(()).is_err() {
+                        trace!("Clipboard producer stopped waiting for dispatch");
+                    }
+                }
+                ServerEvent::DynamicChannelWithCompletion(batch, completion) => {
+                    let channel_id = batch.channel_id();
+                    if !conn.get_svc_processor::<dvc::DrdynvcServer>().is_some_and(|drdynvc| {
+                        drdynvc.is_channel_opened(channel_id)
+                            && drdynvc.tunnel_for_outgoing_channel(channel_id).is_none()
+                    }) {
+                        warn!(
+                            channel_id,
+                            "Dynamic channel is not open on the main transport, rejecting write"
+                        );
+                        continue;
+                    }
+                    let Some(drdynvc_channel_id) = conn.get_channel_id_by_type::<dvc::DrdynvcServer>() else {
+                        warn!(channel_id, "No DRDYNVC channel, rejecting dynamic channel write");
                         continue;
                     };
-                    let msgs = match c {
-                        ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
-                        ClipboardMessage::SendInitiateFileCopy(files) => cliprdr.initiate_file_copy(files),
-                        ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
-                        ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
-                        ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
-                        ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
-                        ClipboardMessage::Error(error) => {
-                            error!(?error, "Handling clipboard event");
-                            continue;
-                        }
-                    };
-
-                    // A clipboard failure is a per-request problem at worst: a
-                    // stale or malformed request, a capability that was never
-                    // negotiated, backpressure on pending transfers. None of
-                    // that is a reason to disconnect a session whose display,
-                    // audio and input are healthy. The `ClipboardMessage::Error`
-                    // arm above already takes this view; propagating here made
-                    // the two paths disagree.
-                    let msgs = match msgs {
-                        Ok(msgs) => msgs,
-                        Err(error) => {
-                            error!(?error, "Failed to send clipboard event");
-                            continue;
-                        }
-                    };
-
-                    let channel_id = conn
-                        .get_channel_id_by_type::<CliprdrServer>()
-                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
-                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
+                    let data = server_encode_svc_messages(batch.into_messages(), drdynvc_channel_id, user_channel_id)
                         .map_err(ServerError::encode)?;
                     writer
                         .write_all(&data)
                         .await
-                        .map_err(|e| ServerError::io("write_all", e))?;
+                        .map_err(|error| ServerError::io("write dynamic channel data", error))?;
+                    if completion.send(()).is_err() {
+                        trace!(channel_id, "Dynamic channel producer stopped waiting for dispatch");
+                    }
+                }
+                ServerEvent::CreateDynamicChannel(build) => {
+                    let Some(drdynvc_channel_id) = conn.get_channel_id_by_type::<dvc::DrdynvcServer>() else {
+                        warn!("No DRDYNVC channel, rejecting dynamic channel creation");
+                        continue;
+                    };
+                    let Some(drdynvc) = conn
+                        .get_svc_processor::<dvc::DrdynvcServer>()
+                        .filter(|dvc| dvc.is_ready())
+                    else {
+                        warn!("DRDYNVC is not ready, rejecting dynamic channel creation");
+                        continue;
+                    };
+                    let message = drdynvc
+                        .create_channel_boxed_with(build)
+                        .map_err_kind("create dynamic channel", ServerErrorKind::Pdu)?;
+                    let data = server_encode_svc_messages(vec![message], drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|error| ServerError::io("create dynamic channel", error))?;
+                }
+                ServerEvent::CloseDynamicChannel(channel_id) => {
+                    let drdynvc_channel_id = conn.get_channel_id_by_type::<dvc::DrdynvcServer>();
+                    let message = conn
+                        .get_svc_processor::<dvc::DrdynvcServer>()
+                        .and_then(|drdynvc| drdynvc.close_channel(channel_id));
+                    let (Some(drdynvc_channel_id), Some(message)) = (drdynvc_channel_id, message) else {
+                        trace!(channel_id, "Dynamic channel is not open, ignoring close");
+                        continue;
+                    };
+                    let data = server_encode_svc_messages(vec![message], drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|error| ServerError::io("close dynamic channel", error))?;
                 }
                 ServerEvent::Echo(msg) => match msg {
                     EchoServerMessage::SendRequest { payload } => {
@@ -7197,6 +7312,53 @@ mod cliprdr_error_tests {
         }
     }
 
+    // oracle: mutant acknowledging clipboard dispatch before its transport write completes
+    #[tokio::test]
+    async fn clipboard_completion_waits_for_a_stalled_transport_write() {
+        use tokio::io::AsyncReadExt as _;
+
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let cliprdr: CliprdrServer = Cliprdr::new(Box::new(SilentBackend));
+        let mut conn = ConnectionState::default();
+        conn.static_channels.insert(cliprdr);
+        conn.static_channels
+            .attach_channel_id(TypeId::of::<CliprdrServer>(), 1004);
+        let (completion, mut processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::ClipboardWithCompletion(
+            ClipboardMessage::SendInitiateCopy(Vec::new()),
+            completion,
+        )];
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut writer = TokioFramed::new(stream);
+        let dispatch = server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None);
+        tokio::pin!(dispatch);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut dispatch)
+                .await
+                .is_err()
+        );
+        assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+
+        let state = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut bytes = [0; 128];
+            loop {
+                tokio::select! {
+                    result = &mut dispatch => break result.unwrap(),
+                    read = peer.read(&mut bytes) => assert_ne!(read.unwrap(), 0),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(state, RunState::Continue));
+        assert_eq!(processed.try_recv(), Ok(()));
+    }
+
     /// A clipboard message the channel refuses keeps the session alive.
     #[tokio::test]
     async fn a_refused_clipboard_message_does_not_end_the_client_loop() {
@@ -7653,12 +7815,76 @@ mod tests {
         // is the path an embedder's accept loop sees when a client vanishes.
         let (client, server_side) = tokio::io::duplex(64);
         drop(client);
-        let _ = server.run_connection(server_side).await;
+        let _ = Box::pin(server.run_connection(server_side)).await;
 
         assert!(
             released.load(Ordering::Relaxed),
             "the channel backends of a finished connection must be released, not held until the next client"
         );
+    }
+
+    #[tokio::test]
+    async fn dynamic_channel_factory_creates_and_releases_each_connections_backend() {
+        struct ResourceDvc(Arc<AtomicBool>);
+        ironrdp_core::impl_as_any!(ResourceDvc);
+
+        impl dvc::DvcProcessor for ResourceDvc {
+            fn channel_name(&self) -> &str {
+                "test::resource"
+            }
+
+            fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
+                Ok(Vec::new())
+            }
+
+            fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<dvc::DvcMessage>> {
+                Ok(Vec::new())
+            }
+        }
+
+        impl dvc::DvcServerProcessor for ResourceDvc {}
+
+        impl Drop for ResourceDvc {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        struct ResourceFactory(Arc<AtomicBool>);
+        impl DynamicChannelFactory for ResourceFactory {
+            fn attach(&self, channels: dvc::DrdynvcServer) -> dvc::DrdynvcServer {
+                assert!(channels.get_channel_id_by_type::<AInputHandler>().is_some());
+                assert!(channels.get_channel_id_by_type::<EchoDvcBridge>().is_some());
+                channels.with_dynamic_channel(ResourceDvc(Arc::clone(&self.0)))
+            }
+        }
+
+        let released = Arc::new(AtomicBool::new(false));
+        let mut server = RdpServer::builder()
+            .with_addr(([127, 0, 0, 1], 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .with_dynamic_channel_factory(Box::new(ResourceFactory(Arc::clone(&released))))
+            .build();
+
+        // oracle: mutant a configured factory is ignored or retains a previous connection's backend.
+        for _ in 0..2 {
+            released.store(false, Ordering::Relaxed);
+            let (client, server_side) = tokio::io::duplex(64);
+            let mut connection = Box::pin(server.run_connection(server_side));
+            assert!(tokio::time::timeout(Duration::ZERO, connection.as_mut()).await.is_err());
+            assert!(
+                !released.load(Ordering::Relaxed),
+                "DVC backend was released during negotiation"
+            );
+            drop(client);
+            let _ = connection.await;
+            assert!(
+                released.load(Ordering::Relaxed),
+                "connection-local DVC backend was not released"
+            );
+        }
     }
 
     #[test]
@@ -7889,5 +8115,321 @@ mod cliprdr_timeout_tests {
             .await
             .unwrap();
         assert!(writer.0.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod dynamic_channel_tests {
+    use core::any::TypeId;
+    use core::net::Ipv4Addr;
+
+    use dvc::pdu::{
+        CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DataPdu, DrdynvcClientPdu,
+        DrdynvcDataPdu,
+    };
+    use ironrdp_svc::SvcMessage;
+    use tokio::io::AsyncReadExt as _;
+
+    use super::cliprdr_error_tests::CapturingWriter;
+    use super::*;
+
+    // oracle: mutant acknowledging DVC dispatch before its transport write completes.
+    #[tokio::test]
+    async fn dynamic_channel_completion_waits_for_a_stalled_transport_write() {
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        let (completion, mut processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut writer = TokioFramed::new(stream);
+        let dispatch = server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None);
+        tokio::pin!(dispatch);
+        assert!(tokio::time::timeout(Duration::ZERO, &mut dispatch).await.is_err());
+        assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+
+        let state = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut bytes = [0; 128];
+            loop {
+                tokio::select! {
+                    result = &mut dispatch => break result.unwrap(),
+                    read = peer.read(&mut bytes) => assert_ne!(read.unwrap(), 0),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(state, RunState::Continue));
+        assert_eq!(processed.try_recv(), Ok(()));
+    }
+
+    // oracle: mutant transmitting queued data after the dynamic channel closes.
+    #[tokio::test]
+    async fn dynamic_channel_completion_rejects_a_closed_channel() {
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        conn.get_svc_processor::<dvc::DrdynvcServer>()
+            .unwrap()
+            .close_channel(channel_id)
+            .unwrap();
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let mut writer = CapturingWriter::default();
+
+        let state = server
+            .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
+            .await
+            .unwrap();
+        assert!(writer.0.is_empty(), "data for a closed DVC reached the transport");
+        assert!(matches!(state, RunState::Continue));
+        assert!(processed.await.is_err(), "a rejected write was acknowledged");
+    }
+
+    // oracle: spec MS-RDPEDYC §3.3.5.3.1.
+    #[tokio::test]
+    async fn dynamic_channel_completion_does_not_fall_back_from_a_migrated_channel() {
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        conn.get_svc_processor::<dvc::DrdynvcServer>()
+            .unwrap()
+            .request_reliable_udp(vec![channel_id])
+            .unwrap();
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let mut writer = CapturingWriter::default();
+
+        let state = server
+            .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
+            .await
+            .unwrap();
+        assert!(writer.0.is_empty(), "migrated DVC data fell back to the main transport");
+        assert!(matches!(state, RunState::Continue));
+        assert!(processed.await.is_err(), "an unsent write was acknowledged");
+    }
+
+    // oracle: spec MS-RDPEDYC §2.2.3.2.
+    #[tokio::test]
+    async fn dynamic_channel_completion_preserves_the_payload_and_destination() {
+        use ironrdp_core::{ReadCursor, decode_cursor};
+        use ironrdp_pdu::rdp::vc::ChannelPduHeader;
+
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let mut writer = CapturingWriter::default();
+        server
+            .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
+            .await
+            .unwrap();
+
+        let frame: X224<SendDataIndication<'_>> = decode(&writer.0).unwrap();
+        assert_eq!(frame.0.channel_id, 1004);
+        assert_eq!(frame.0.initiator_id, 1002);
+        let mut payload = ReadCursor::new(frame.0.user_data.as_ref());
+        let _: ChannelPduHeader = decode_cursor(&mut payload).unwrap();
+        let pdu: dvc::pdu::DrdynvcServerPdu = decode_cursor(&mut payload).unwrap();
+        let dvc::pdu::DrdynvcServerPdu::Data(data) = pdu else {
+            panic!("expected a DVC data PDU");
+        };
+        assert_eq!(data.channel_id(), channel_id);
+        let DrdynvcDataPdu::Data(data) = data else {
+            panic!("a short message must not be fragmented");
+        };
+        assert_eq!(data.data(), b"native channel data");
+        assert!(payload.is_empty());
+        processed.await.unwrap();
+    }
+
+    // oracle: mutant acknowledging data after a failed transport write.
+    #[tokio::test]
+    async fn dynamic_channel_completion_reports_transport_failure() {
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let (stream, peer) = tokio::io::duplex(1);
+        drop(peer);
+        let mut writer = TokioFramed::new(stream);
+
+        assert!(
+            server
+                .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
+                .await
+                .is_err()
+        );
+        assert!(processed.await.is_err(), "a failed transport write was acknowledged");
+    }
+
+    // oracle: mutant carrying a previous connection's DVC data through session takeover.
+    #[tokio::test]
+    async fn dynamic_channel_completion_reports_discarded_session_data() {
+        let (mut server, _conn, channel_id) = server_with_open_dvc();
+        let (completion, processed) = oneshot::channel();
+        server
+            .event_sender()
+            .send(ServerEvent::DynamicChannelWithCompletion(
+                data_batch(channel_id),
+                completion,
+            ))
+            .unwrap();
+        server.discard_stale_session_events().await;
+        assert!(processed.await.is_err(), "discarded session data was acknowledged");
+    }
+
+    // oracle: mutant leaving the peer and server channel open after its native endpoint closes.
+    #[tokio::test]
+    async fn closing_a_dynamic_channel_releases_it_and_notifies_the_peer_once() {
+        use ironrdp_core::{ReadCursor, decode_cursor};
+        use ironrdp_pdu::rdp::vc::ChannelPduHeader;
+
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        let mut events = vec![
+            ServerEvent::CloseDynamicChannel(channel_id),
+            ServerEvent::CloseDynamicChannel(channel_id),
+        ];
+        let mut writer = CapturingWriter::default();
+        server
+            .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
+            .await
+            .unwrap();
+        assert!(
+            !conn
+                .get_svc_processor::<dvc::DrdynvcServer>()
+                .unwrap()
+                .is_channel_opened(channel_id)
+        );
+        let mut frames = ReadCursor::new(&writer.0);
+        let frame: X224<SendDataIndication<'_>> = decode_cursor(&mut frames).unwrap();
+        let mut payload = ReadCursor::new(frame.0.user_data.as_ref());
+        let _: ChannelPduHeader = decode_cursor(&mut payload).unwrap();
+        let pdu: dvc::pdu::DrdynvcServerPdu = decode_cursor(&mut payload).unwrap();
+        assert_eq!(
+            pdu,
+            dvc::pdu::DrdynvcServerPdu::Close(dvc::pdu::ClosePdu::new(channel_id))
+        );
+        assert!(frames.is_empty(), "duplicate close notifications reached the peer");
+    }
+
+    // oracle: mutant discarding runtime creation or reporting allocation without sending the create request.
+    #[tokio::test]
+    async fn runtime_creation_sends_the_reserved_channel_to_the_peer() {
+        let (mut server, mut conn, _) = server_with_open_dvc();
+        let handle = server.echo_handle.clone();
+        let (allocated, channel_id) = oneshot::channel();
+        let mut events = vec![ServerEvent::CreateDynamicChannel(Box::new(move |id| {
+            allocated.send(id).unwrap();
+            Box::new(EchoDvcBridge::new(handle))
+        }))];
+        let mut writer = CapturingWriter::default();
+        server
+            .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
+            .await
+            .unwrap();
+        let id = channel_id.await.unwrap();
+        let frame: X224<SendDataIndication<'_>> = decode(&writer.0).unwrap();
+        let mut payload = ironrdp_core::ReadCursor::new(frame.0.user_data.as_ref());
+        let _: rdp::vc::ChannelPduHeader = ironrdp_core::decode_cursor(&mut payload).unwrap();
+        let pdu: dvc::pdu::DrdynvcServerPdu = ironrdp_core::decode_cursor(&mut payload).unwrap();
+        let dvc::pdu::DrdynvcServerPdu::Create(request) = pdu else {
+            panic!("expected create request");
+        };
+        assert_eq!(request.channel_id(), id);
+        assert!(
+            !conn
+                .get_svc_processor::<dvc::DrdynvcServer>()
+                .unwrap()
+                .is_channel_opened(id)
+        );
+        conn.get_svc_processor::<dvc::DrdynvcServer>()
+            .unwrap()
+            .process(
+                &encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(
+                    id,
+                    CreationStatus::OK,
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            conn.get_svc_processor::<dvc::DrdynvcServer>()
+                .unwrap()
+                .is_channel_opened(id)
+        );
+    }
+
+    // oracle: spec MS-RDPEDYC §3.3.5.1; capabilities precede runtime creation.
+    #[tokio::test]
+    async fn runtime_creation_before_capability_negotiation_drops_the_factory() {
+        let (mut server, mut conn, _) = server_with_open_dvc();
+        *conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap() = dvc::DrdynvcServer::new();
+        let handle = server.echo_handle.clone();
+        let (allocated, channel_id) = oneshot::channel();
+        let mut events = vec![ServerEvent::CreateDynamicChannel(Box::new(move |id| {
+            allocated.send(id).unwrap();
+            Box::new(EchoDvcBridge::new(handle))
+        }))];
+        let mut writer = CapturingWriter::default();
+        server
+            .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
+            .await
+            .unwrap();
+        assert!(writer.0.is_empty());
+        assert!(channel_id.await.is_err());
+    }
+
+    fn server_with_open_dvc() -> (RdpServer, ConnectionState, u32) {
+        let server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let mut drdynvc =
+            dvc::DrdynvcServer::new().with_dynamic_channel(EchoDvcBridge::new(server.echo_handle.clone()));
+        drdynvc.start().unwrap();
+        drdynvc
+            .process(
+                &encode_vec(&DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(
+                    CapsVersion::V3,
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+        let channel_id = drdynvc.get_channel_id_by_type::<EchoDvcBridge>().unwrap();
+        drdynvc
+            .process(
+                &encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(
+                    channel_id,
+                    CreationStatus::OK,
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+        let mut conn = ConnectionState::default();
+        conn.static_channels.insert(drdynvc);
+        conn.static_channels
+            .attach_channel_id(TypeId::of::<dvc::DrdynvcServer>(), 1004);
+        (server, conn, channel_id)
+    }
+
+    fn data_batch(channel_id: u32) -> dvc::DvcMessageBatch {
+        dvc::DvcMessageBatch::try_new(
+            channel_id,
+            vec![SvcMessage::from(DrdynvcDataPdu::Data(DataPdu::new(
+                channel_id,
+                b"native channel data".to_vec(),
+            )))],
+        )
+        .unwrap()
     }
 }

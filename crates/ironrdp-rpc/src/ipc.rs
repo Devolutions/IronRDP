@@ -286,9 +286,10 @@ fn touch_contact_from_request(contact: TouchContactRequest) -> Result<TouchConta
 
 /// Validates and converts an RPC pen request into an MS-RDPEI pen event PDU.
 ///
-/// Rejects empty frames/contacts, count limits, nonzero device IDs, a nonzero first-frame offset,
+/// Rejects empty frames/contacts, count limits, a nonzero first-frame offset,
 /// unknown or illegal flag combinations, optional-field semantic ranges, and values outside the
 /// MS-RDPEI varint ranges used on the wire.
+/// The RDPEI channel checks negotiated multipen support before transmitting nonzero device IDs.
 pub fn pen_event_from_request(encode_time: u32, frames: Vec<PenFrameRequest>) -> Result<PenEventPdu, Response> {
     if frames.is_empty() {
         return Err(Response::typed_error(
@@ -347,12 +348,6 @@ pub fn pen_event_from_request(encode_time: u32, frames: Vec<PenFrameRequest>) ->
 }
 
 fn pen_contact_from_request(contact: PenContactRequest) -> Result<PenContact, Response> {
-    if contact.device_id != 0 {
-        return Err(Response::typed_error(
-            AgentErrorCategory::InvalidRequest,
-            "pen device_id must be zero until multi-pen is negotiated",
-        ));
-    }
     if FourByteSigned::new(contact.x).is_err() || FourByteSigned::new(contact.y).is_err() {
         return Err(Response::typed_error(
             AgentErrorCategory::InvalidRequest,
@@ -3767,6 +3762,26 @@ mod rdpei_request_tests {
     }
 
     #[test]
+    // oracle: spec MS-RDPEI §2.2.3.7.1.1 permits nonzero device IDs when multipen is negotiated.
+    fn pen_conversion_preserves_device_id_for_channel_negotiation() {
+        let mut contact = pen_contact(pen_contact_flags(
+            PenContactFlags::DOWN | PenContactFlags::INRANGE | PenContactFlags::INCONTACT,
+        ));
+        contact.device_id = 11;
+        let result = pen_event_from_request(
+            0,
+            vec![PenFrameRequest {
+                frame_offset: 0,
+                contacts: vec![contact],
+            }],
+        );
+        assert!(
+            matches!(result, Ok(ref event) if event.frames[0].contacts[0].device_id == 11),
+            "stateless conversion discarded the pen identity: {result:?}"
+        );
+    }
+
+    #[test]
     fn pen_event_rejects_empty_frames_and_contacts() {
         assert!(pen_event_from_request(0, Vec::new()).is_err());
         assert!(
@@ -3781,8 +3796,9 @@ mod rdpei_request_tests {
         );
     }
 
+    // oracle: spec MS-RDPEI §2.2.3.7.1.1 lists the only permitted contact flag combinations.
     #[test]
-    fn pen_event_rejects_illegal_unknown_flags_and_device_id() {
+    fn pen_event_rejects_illegal_and_unknown_flags() {
         assert!(
             pen_event_from_request(
                 0,
@@ -3799,20 +3815,6 @@ mod rdpei_request_tests {
                 vec![PenFrameRequest {
                     frame_offset: 0,
                     contacts: vec![pen_contact(0x0040)], // unknown bit
-                }],
-            )
-            .is_err()
-        );
-        let mut nonzero_device = pen_contact(pen_contact_flags(
-            PenContactFlags::DOWN | PenContactFlags::INRANGE | PenContactFlags::INCONTACT,
-        ));
-        nonzero_device.device_id = 1;
-        assert!(
-            pen_event_from_request(
-                0,
-                vec![PenFrameRequest {
-                    frame_offset: 0,
-                    contacts: vec![nonzero_device],
                 }],
             )
             .is_err()

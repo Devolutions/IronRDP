@@ -14,7 +14,7 @@ This crate implements `IWRdsProtocolManager`, `IWRdsProtocolListener`, and `IWRd
 - CredSSP credential handoff from the companion service to Winlogon
 - Caller-buffer licensing capability negotiation for the RDS grace-period path
 - Input/video handle acquisition for keyboard, mouse, and video device paths
-- Virtual channel endpoint creation via `IWRdsProtocolConnection::CreateVirtualChannel`
+- Provider-owned native NOW dynamic channel transport; other native endpoints are rejected
 - In-proc COM class factory and DLL exports (`DllGetClassObject`, `DllCanUnloadNow`)
 - Side-by-side install and uninstall PowerShell scripts
 - Side-by-side preflight and registration verification PowerShell scripts
@@ -32,6 +32,13 @@ This crate implements `IWRdsProtocolManager`, `IWRdsProtocolListener`, and `IWRd
 - Portable package archive output (`<package>.zip` + `<package>.zip.sha256.txt`)
 - Diagnostics bundle collector for failed first-run attempts
 - WixSharp MSI project for `ironrdp-termsrv` service packaging (`package/CevicheServiceWindowsManaged`)
+
+## Session lifetime
+
+Windows session arbitration can detach a connection from a temporary session before attaching it to an existing user session.
+`DisconnectNotify` releases session-owned device handles but preserves the transport and connection callback for reassignment.
+`Close` terminates the transport and makes the connection permanently unavailable.
+Windows still controls single-session policy and session selection.
 
 ## Input and graphics handle notes
 
@@ -58,36 +65,33 @@ Override environment variables (read by the provider process):
 
 ## Virtual channel routing status
 
-`CreateVirtualChannel` now opens channel handles through `WTSVirtualChannelOpenEx` in the TermSrv process and returns those handles to the RDS stack.
+`IWRdsProtocolConnection::CreateVirtualChannel` supports the dynamic `Devolutions::Now::Agent` endpoint through the companion's connection-local broker.
+Other endpoints and static channels return `E_NOTIMPL`.
+After peer acceptance, the provider opens a private overlapped message-pipe handle and transfers ownership to TermService.
+TermService duplicates it into the authorized WTS caller and closes the original.
+The companion reconstructs native read headers and closes the transport when the assigned session changes.
 
-This enables protocol-provider-side channel endpoint creation with proper lifecycle cleanup.
+Calling `WTSVirtualChannelOpenEx` from this callback recursively asks TermService to create the same channel, exhausting its threads and the VM's memory during logon.
+Do not use WTS client APIs to implement the provider callback.
 
-The provider now also recognizes and hooks known IronRDP server channel endpoints:
-
-- Static virtual channels: `cliprdr`, `rdpsnd`, `drdynvc`
-- Dynamic virtual channels: `Microsoft::Windows::RDS::DisplayControl`, `Microsoft::Windows::RDS::Graphics`, `FreeRDP::Advanced::Input`, `ECHO`
-
-Hook behavior:
-
-- Reuses existing opened handles by endpoint name (avoids duplicate opens for the same endpoint)
-- Applies recommended dynamic priorities for known IronRDP dynamic channels when callers pass unknown/legacy priority values
-- Ensures the `drdynvc` static backbone is opened before known IronRDP dynamic channels
-- Starts per-channel forwarder workers for recognized IronRDP endpoints when a bridge handler is registered
+This restriction does not disable channel processors implemented directly in `ironrdp-termsrv`, such as its opt-in clipboard helper.
 
 ## Virtual channel bridge handler API
 
-The provider now exposes a process-wide bridge handler registration API:
+The provider retains a process-wide bridge handler registration API:
 
 - `set_virtual_channel_bridge_handler(...)`
 - `VirtualChannelBridgeHandler`
 - `VirtualChannelBridgeEndpoint`
 - `VirtualChannelBridgeTx`
 
-When registered, recognized IronRDP channel endpoints trigger:
+The API defines these notifications:
 
 1. `on_channel_opened(...)` with an endpoint descriptor and writable bridge tx.
-2. `on_channel_data(...)` for payload bytes read from the TermSrv channel handle.
-3. `on_channel_closed(...)` when the channel forwarder shuts down.
+2. `on_channel_data(...)` for incoming payload bytes.
+3. `on_channel_closed(...)` when the channel closes.
+
+Registration alone does not create a native transport, and `CreateVirtualChannel` does not currently issue these notifications.
 
 ## Default named-pipe bridge (env-based)
 
@@ -95,19 +99,16 @@ If no custom bridge handler is registered, the provider can install a default na
 
 - `IRONRDP_WTS_VC_BRIDGE_PIPE_PREFIX`
 
-Behavior:
+The handler supports:
 
 - One named-pipe worker is created per recognized channel endpoint.
 - Pipe path format: `\\.\pipe\<prefix>.<svc|dvc>.<sanitized-channel-name>`
 - Payload framing in both directions: little-endian `u32` length prefix + raw payload bytes.
-- Provider → pipe: forwards payload bytes read from the TermSrv virtual channel handle.
-- Pipe → provider: reads framed payloads from the pipe and forwards them back to the TermSrv virtual channel handle.
+- Provider → pipe: forwards payloads passed to `on_channel_data`.
+- Pipe → provider: reads framed payloads and sends them through `VirtualChannelBridgeTx`.
 
-This makes it possible to stand up an external broker/service quickly using only the env var, while keeping custom in-proc bridge handler registration available for advanced scenarios.
-
-However, there is no direct `IWRdsProtocolConnection*` callback API that streams virtual channel payload bytes into this provider implementation.
-
-To route channel payloads all the way through external `ironrdp-server` channel processors, an additional broker layer is still required (for example, a bridge that reads/writes channel handles and forwards frames over an internal transport to `ironrdp-server`).
+Setting this variable does not enable native virtual channels.
+The NOW broker uses its own connection-local transport, not this legacy handler.
 
 ## Protocol manager CLSID
 

@@ -41,6 +41,35 @@ fn dibv5_to_png_conversion_1() {
     assert_eq!(converted, input);
 }
 
+// oracle: spec MS-WMF §2.1.1.3, 32-bit BI_BITFIELDS stores three masks before bottom-up BGR pixels.
+#[test]
+fn dib_bitfields_preserves_pixels_and_logical_length() {
+    let input = [
+        40, 0, 0, 0, // Header size.
+        2, 0, 0, 0, // Width.
+        2, 0, 0, 0, // Height.
+        1, 0, 32, 0, // Planes and bit count.
+        3, 0, 0, 0, // BI_BITFIELDS.
+        16, 0, 0, 0, // Image size.
+        0, 0, 0, 0, 0, 0, 0, 0, // Resolution.
+        0, 0, 0, 0, 0, 0, 0, 0, // Color counts.
+        0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 0, // Red, green, and blue masks.
+        0, 255, 255, 0, 127, 63, 31, 0, // Bottom row.
+        255, 255, 0, 0, 255, 0, 255, 0, // Top row.
+        0xAA, 0xBB, // Allocator padding.
+    ];
+    let png = dib_to_png(&input).unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!((info.width, info.height, info.color_type), (2, 2, ColorType::Rgb));
+    assert_eq!(
+        &pixels[..info.buffer_size()],
+        [0, 255, 255, 255, 0, 255, 255, 255, 0, 31, 63, 127]
+    );
+    assert_eq!(validate_dib(&input).unwrap(), 68);
+}
+
 /// Reads the first pixel's RGBA bytes out of a PNG produced by `dibv5_to_png`, which always emits
 /// 8-bit RGBA (it is generated from the already-normalized, alpha-preserving BGRA `DIBV5` bitmap).
 fn first_pixel_rgba(png_bytes: &[u8]) -> [u8; 4] {

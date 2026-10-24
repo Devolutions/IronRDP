@@ -7,6 +7,7 @@ use ironrdp_pdu::pointer::{
     PointerPositionAttribute,
 };
 
+// oracle: reference independently decoded RDP masks with normalized premultiplied RGBA.
 fn expect_pointer_png(pointer: &DecodedPointer, expected_file_path: &str) {
     let path = format!("{}/test_data/{}", env!("CARGO_MANIFEST_DIR"), expected_file_path);
 
@@ -191,6 +192,24 @@ fn cached_pointer() {
     let encoded = ironrdp_core::encode_vec(&value).unwrap();
     let decoded = ironrdp_core::decode::<CachedPointerAttribute>(&encoded).unwrap();
     assert_eq!(&decoded, &value);
+}
+
+// oracle: reference normalized premultiplied RGBA, RGB = round(straight RGB * alpha / 255).
+#[test]
+fn software_pointer_multiplies_by_alpha_not_by_color() {
+    let pointer = PointerAttribute {
+        xor_bpp: 32,
+        color_pointer: ColorPointerAttribute {
+            cache_index: 0,
+            hot_spot: Point16 { x: 0, y: 0 },
+            width: 3,
+            height: 1,
+            xor_mask: &[80, 40, 200, 128, 80, 40, 200, 255, 80, 40, 200, 0],
+            and_mask: &[0, 0],
+        },
+    };
+    let decoded = DecodedPointer::decode_pointer_attribute(&pointer, PointerBitmapTarget::Software).unwrap();
+    assert_eq!(decoded.bitmap_data, [100, 20, 40, 128, 200, 40, 80, 255, 0, 0, 0, 0]);
 }
 
 #[test]

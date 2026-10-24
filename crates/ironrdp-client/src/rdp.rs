@@ -2072,16 +2072,19 @@ fn build_connector(
         let pipe_name = proxy.pipe_name.clone();
         trace!(%channel_name, %pipe_name, "Creating DVC pipe proxy");
         let sender = input_sender.clone();
-        drdynvc = drdynvc.with_dynamic_channel(DvcNamedPipeProxy::new(
-            &channel_name,
-            &pipe_name,
-            move |channel_id, messages| {
-                sender
-                    .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                    .map_err(|_| pdu_other_err!("send DVC messages to the event loop"))?;
-                Ok(())
-            },
-        ));
+        drdynvc = drdynvc.with_dynamic_channel_factory(channel_name.clone(), move || {
+            let sender = sender.clone();
+            DvcNamedPipeProxy::new_async(&channel_name, &pipe_name, move |channel_id, messages| {
+                let sender = sender.input_sender.clone();
+                async move {
+                    sender
+                        .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                        .await
+                        .map_err(|_| pdu_other_err!("send DVC messages to the event loop"))?;
+                    Ok(())
+                }
+            })
+        });
     }
 
     // WebAuthn redirection (Windows + webauthn feature).
@@ -6414,6 +6417,168 @@ mod tests {
             expected_name.len()
         );
         assert_eq!(&wire[28..], expected_name);
+    }
+
+    // oracle: mutant consuming a pipe proxy listener on its first opening, rejecting every subsequent DVC.
+    #[cfg(all(windows, feature = "rdpdr", feature = "dvc-pipe-proxy"))]
+    #[test]
+    fn configured_pipe_proxy_can_be_reopened_on_the_same_connection() {
+        use ironrdp_core::impl_as_any;
+        use ironrdp_dvc::pdu::{CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu};
+        use ironrdp_dvc::{DrdynvcClient, DrdynvcServer, DvcMessage, DvcProcessor, DvcServerProcessor};
+        use ironrdp_pdu::PduResult;
+        use ironrdp_svc::SvcProcessor as _;
+
+        let mut config = test_config();
+        config.dvc_pipe_proxies.push(crate::config::DvcProxyInfo {
+            channel_name: "factory-proxy".to_owned(),
+            pipe_name: format!("ironrdp-proxy-reopen-{}", std::process::id()),
+        });
+        let (input, _input_rx) = RdpInputSender::channel(4);
+        let (output, _output_rx) = crate::output_channel::output_channel(4);
+        let mut connector = build_connector(
+            &config,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            (&input, &output),
+            no_cliprdr_factory(),
+            None,
+            RdpdrDevicePolicy::ALLOW_ALL,
+            false,
+            None,
+        )
+        .unwrap();
+        let client = connector.get_static_channel_processor_mut::<DrdynvcClient>().unwrap();
+        let mut server = DrdynvcServer::new();
+        for request in server.start().unwrap() {
+            for response in client.process(&request.encode_unframed_pdu().unwrap()).unwrap() {
+                server.process(&response.encode_unframed_pdu().unwrap()).unwrap();
+            }
+        }
+        for _ in 0..2 {
+            let request = server.create_channel(Peer).unwrap();
+            let wire = request.encode_unframed_pdu().unwrap();
+            let DrdynvcServerPdu::Create(request) = ironrdp_core::decode(&wire).unwrap() else {
+                panic!("expected create request");
+            };
+            let id = request.channel_id();
+            let responses = client.process(&wire).unwrap();
+            assert_eq!(responses.len(), 1);
+            let response = responses[0].encode_unframed_pdu().unwrap();
+            let DrdynvcClientPdu::Create(response_pdu) = ironrdp_core::decode(&response).unwrap() else {
+                panic!("expected create response");
+            };
+            assert_eq!(response_pdu.creation_status(), CreationStatus::OK);
+            server.process(&response).unwrap();
+            assert!(server.is_channel_opened(id));
+            let close = server.close_channel(id).unwrap();
+            client.process(&close.encode_unframed_pdu().unwrap()).unwrap();
+        }
+        struct Peer;
+        impl_as_any!(Peer);
+        impl DvcProcessor for Peer {
+            fn channel_name(&self) -> &str {
+                "factory-proxy"
+            }
+            fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+                Ok(Vec::new())
+            }
+            fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+                Ok(Vec::new())
+            }
+        }
+        impl DvcServerProcessor for Peer {}
+    }
+
+    // oracle: mutant dropping stream bytes when the bounded RDP input queue is full.
+    #[cfg(all(windows, feature = "rdpdr", feature = "dvc-pipe-proxy"))]
+    #[tokio::test]
+    async fn configured_pipe_proxy_waits_for_input_capacity_without_losing_bytes() {
+        use ironrdp_dvc::pdu::{CreateRequestPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu};
+        use ironrdp_dvc::{DrdynvcClient, DrdynvcServer};
+        use ironrdp_svc::SvcProcessor as _;
+        use tokio::io::AsyncWriteExt as _;
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        let mut config = test_config();
+        let name = format!("ironrdp-proxy-backpressure-{}", std::process::id());
+        config.dvc_pipe_proxies.push(crate::config::DvcProxyInfo {
+            channel_name: "backpressure-proxy".to_owned(),
+            pipe_name: name.clone(),
+        });
+        let (input, mut input_rx) = RdpInputSender::channel(1);
+        input
+            .try_send(RdpInputEvent::SendDvcMessages {
+                channel_id: 99,
+                messages: Vec::new(),
+            })
+            .unwrap();
+        let (output, _output_rx) = crate::output_channel::output_channel(1);
+        let mut connector = build_connector(
+            &config,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            (&input, &output),
+            no_cliprdr_factory(),
+            None,
+            RdpdrDevicePolicy::ALLOW_ALL,
+            false,
+            None,
+        )
+        .unwrap();
+        let client = connector.get_static_channel_processor_mut::<DrdynvcClient>().unwrap();
+        let mut server = DrdynvcServer::new();
+        for request in server.start().unwrap() {
+            for response in client.process(&request.encode_unframed_pdu().unwrap()).unwrap() {
+                server.process(&response.encode_unframed_pdu().unwrap()).unwrap();
+            }
+        }
+        let create = DrdynvcServerPdu::Create(CreateRequestPdu::new(7, "backpressure-proxy".to_owned()));
+        client.process(&encode_vec(&create).unwrap()).unwrap();
+        let mut pipe = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match ClientOptions::new().open(format!(r"\\.\pipe\{name}")) {
+                    Ok(pipe) => break pipe,
+                    Err(error) if error.raw_os_error() == Some(2) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(error) => panic!("open local proxy pipe: {error}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let expected: Vec<u8> = (0..=250).cycle().take(1024 * 1024).collect();
+        let payload = expected.clone();
+        let write = tokio::spawn(async move {
+            pipe.write_all(&payload).await.unwrap();
+            pipe.flush().await.unwrap();
+            pipe
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        input_rx.recv().await.unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut received = Vec::new();
+            while received.len() < expected.len() {
+                let RdpInputEvent::SendDvcMessages { channel_id, messages } = input_rx.recv().await.unwrap() else {
+                    panic!("expected forwarded pipe bytes");
+                };
+                assert_eq!(channel_id, 7);
+                for message in messages {
+                    let pdu = ironrdp_core::decode(&message.encode_unframed_pdu().unwrap()).unwrap();
+                    match pdu {
+                        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(data)) => {
+                            received.extend_from_slice(data.data())
+                        }
+                        DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(data)) => received.extend_from_slice(data.data()),
+                        _ => panic!("expected uncompressed DVC data"),
+                    }
+                }
+            }
+            received
+        })
+        .await
+        .unwrap();
+        assert_eq!(received, expected);
+        let _pipe = write.await.unwrap();
     }
 
     #[cfg(feature = "rdpdr")]

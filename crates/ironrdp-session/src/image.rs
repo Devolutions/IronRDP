@@ -483,15 +483,14 @@ impl DecodedImage {
 
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn update_pointer(&mut self, pointer: Arc<DecodedPointer>) -> SessionResult<Option<InclusiveRectangle>> {
-        self.show_pointer = true;
-
         // Remove old pointer from frame buffer
-        let old_rect = if self.pointer.is_some() {
+        let old_rect = if self.pointer.is_some() && self.show_pointer {
             self.apply_pointer_layer(PointerLayer::Background)?
         } else {
             None
         };
 
+        self.show_pointer = true;
         self.pointer = Some(pointer);
         self.recalculate_pointer_geometry();
 

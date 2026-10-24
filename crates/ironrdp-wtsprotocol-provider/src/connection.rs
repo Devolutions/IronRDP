@@ -52,7 +52,9 @@ impl ProtocolConnection {
         let mut state = self.state.lock();
         if !matches!(
             *state,
-            ConnectionLifecycleState::Accepted | ConnectionLifecycleState::SessionNotified
+            ConnectionLifecycleState::Accepted
+                | ConnectionLifecycleState::SessionNotified
+                | ConnectionLifecycleState::Disconnected
         ) {
             return Err(self.invalid_transition("NotifySessionId", *state));
         }
@@ -102,7 +104,7 @@ impl ProtocolConnection {
         let mut state = self.state.lock();
         if matches!(
             *state,
-            ConnectionLifecycleState::Created | ConnectionLifecycleState::Accepted
+            ConnectionLifecycleState::Created | ConnectionLifecycleState::Accepted | ConnectionLifecycleState::Closed
         ) {
             return Err(self.invalid_transition("DisconnectNotify", *state));
         }
@@ -146,5 +148,43 @@ impl ProtocolConnection {
         );
 
         "invalid connection lifecycle transition"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{ConnectionLifecycleState, ProtocolConnection, SessionRegistry};
+
+    // oracle: reference Windows session arbitration disconnects the temporary session before reassignment.
+    #[test]
+    fn disconnected_connection_can_attach_to_existing_session() {
+        let connection = ProtocolConnection::new(7, Arc::new(SessionRegistry::default()));
+        connection.accept_connection().unwrap();
+        connection.notify_session_id(4).unwrap();
+        connection.connect_notify().unwrap();
+        connection.disconnect_notify().unwrap();
+
+        connection.notify_session_id(3).unwrap();
+        connection.connect_notify().unwrap();
+        connection.logon_notify().unwrap();
+        assert_eq!(connection.session_id(), Some(3));
+        assert_eq!(connection.state(), ConnectionLifecycleState::LoggedOn);
+    }
+
+    // oracle: spec IWRdsProtocolConnection::Close closes the connection, not just its session attachment.
+    #[test]
+    fn closed_connection_cannot_be_reopened_by_disconnect_notification() {
+        let connection = ProtocolConnection::new(7, Arc::new(SessionRegistry::default()));
+        connection.accept_connection().unwrap();
+        connection.notify_session_id(4).unwrap();
+        connection.connect_notify().unwrap();
+        connection.close().unwrap();
+
+        assert!(connection.disconnect_notify().is_err());
+        assert!(connection.notify_session_id(3).is_err());
+        assert_eq!(connection.state(), ConnectionLifecycleState::Closed);
+        assert_eq!(connection.session_id(), None);
     }
 }

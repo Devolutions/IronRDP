@@ -61,10 +61,10 @@ pub use server::autodetect_sub_header;
 pub use server::{
     AuthenticatedConnection, AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler,
     ConnectionInfo, ConnectionPolicy, ConnectionSource, CredentialDecision, CredentialValidationError,
-    CredentialValidator, Credentials, ErrorInfoDisconnectHandle, ExactMatchCredentialValidator, IncomingConnection,
-    NextConnection, PendingSession, PostConnectionAction, RdpServer, RdpServerHandle, RdpServerOptions,
-    RdpServerSecurity, ServerEvent, ServerEventSender, ServerRedirectionHandle, SessionOutcome, StaticChannelFactory,
-    TransportTls, pick_remotefx_entropy_coder,
+    CredentialValidator, Credentials, DynamicChannelFactory, ErrorInfoDisconnectHandle, ExactMatchCredentialValidator,
+    IncomingConnection, NextConnection, PendingSession, PostConnectionAction, RdpServer, RdpServerHandle,
+    RdpServerOptions, RdpServerSecurity, ServerEvent, ServerEventSender, ServerRedirectionHandle, SessionOutcome,
+    StaticChannelFactory, TransportTls, pick_remotefx_entropy_coder,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]

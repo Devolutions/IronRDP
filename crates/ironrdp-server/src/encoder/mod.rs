@@ -46,7 +46,7 @@ impl CodecId {
     }
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
     remotefx: Option<(EntropyBits, u8)>,
@@ -120,7 +120,7 @@ impl Default for UpdateEncoderCodecs {
     }
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
@@ -151,7 +151,7 @@ impl fmt::Debug for UpdateEncoder {
 }
 
 impl UpdateEncoder {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn new(
         desktop_size: DesktopSize,
         surface_flags: CmdFlags,
@@ -226,7 +226,7 @@ impl UpdateEncoder {
             .contains(LargePointerSupportFlags::UP_TO_384X384_PIXELS)
     }
 
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) fn update(&mut self, update: DisplayUpdate) -> EncoderIter<'_> {
         EncoderIter {
             encoder: self,
@@ -291,7 +291,7 @@ impl UpdateEncoder {
         ))
     }
 
-    fn color_pointer(ptr: ColorPointer) -> ServerResult<UpdateFragmenter> {
+    fn color_pointer(ptr: ColorPointer, large: bool) -> ServerResult<UpdateFragmenter> {
         let hot_spot = Point16 {
             x: ptr.hot_x,
             y: ptr.hot_y,
@@ -304,10 +304,26 @@ impl UpdateEncoder {
             xor_mask: &ptr.xor_mask,
             and_mask: &ptr.and_mask,
         };
-        Ok(UpdateFragmenter::new(
-            UpdateCode::ColorPointer,
-            encode_vec(&ptr).map_err(ServerError::encode)?,
-        ))
+        if large {
+            let ptr = LargePointerAttribute {
+                xor_bpp: 24,
+                cache_index: ptr.cache_index,
+                hot_spot: ptr.hot_spot,
+                width: ptr.width,
+                height: ptr.height,
+                xor_mask: ptr.xor_mask,
+                and_mask: ptr.and_mask,
+            };
+            Ok(UpdateFragmenter::new(
+                UpdateCode::LargePointer,
+                encode_vec(&ptr).map_err(ServerError::encode)?,
+            ))
+        } else {
+            Ok(UpdateFragmenter::new(
+                UpdateCode::ColorPointer,
+                encode_vec(&ptr).map_err(ServerError::encode)?,
+            ))
+        }
     }
 
     fn cached_pointer(cache_index: u16) -> ServerResult<UpdateFragmenter> {
@@ -482,14 +498,14 @@ enum State {
     Ended,
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
 pub(crate) struct EncoderIter<'a> {
     encoder: &'a mut UpdateEncoder,
     state: State,
 }
 
 impl EncoderIter<'_> {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__bench", feature = "__test"), visibility::make(pub))]
     pub(crate) async fn next(&mut self) -> Option<ServerResult<UpdateFragmenter>> {
         loop {
             let state = core::mem::take(&mut self.state);
@@ -519,6 +535,16 @@ impl EncoderIter<'_> {
                             continue;
                         }
                         if !encoder.color_or_new_pointer_size_ok(ptr.width, ptr.height) {
+                            if encoder.large_pointer_update_supported() && ptr.width <= 384 && ptr.height <= 384 {
+                                return Some(UpdateEncoder::large_pointer(LargePointer {
+                                    cache_index: ptr.cache_index,
+                                    width: ptr.width,
+                                    height: ptr.height,
+                                    hot_x: ptr.hot_x,
+                                    hot_y: ptr.hot_y,
+                                    data: ptr.data,
+                                }));
+                            }
                             debug!(
                                 "Dropping RGBAPointer update: {}x{} exceeds the client's negotiated pointer size \
                                  ceiling",
@@ -549,7 +575,23 @@ impl EncoderIter<'_> {
                         }
                         UpdateEncoder::large_pointer(ptr)
                     }
-                    DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),
+                    DisplayUpdate::ColorPointer(ptr) => {
+                        let large = !encoder.color_or_new_pointer_size_ok(ptr.width, ptr.height);
+                        if large
+                            && !(encoder.pointer_cache_size != 0
+                                && encoder.large_pointer_update_supported()
+                                && ptr.width <= 384
+                                && ptr.height <= 384)
+                        {
+                            debug!(
+                                width = ptr.width,
+                                height = ptr.height,
+                                "Dropping ColorPointer update exceeding the negotiated pointer size"
+                            );
+                            continue;
+                        }
+                        UpdateEncoder::color_pointer(ptr, large)
+                    }
                     DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),
                     DisplayUpdate::DefaultPointer => UpdateEncoder::default_pointer(),
                     DisplayUpdate::CachedPointer(idx) => {

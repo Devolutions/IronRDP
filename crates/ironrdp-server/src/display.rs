@@ -112,6 +112,10 @@ impl core::fmt::Debug for LargePointer {
     }
 }
 
+/// A bottom-up 24-bpp XOR image and 1-bpp AND mask, with scanlines padded to two bytes.
+///
+/// The encoder uses a Large Pointer Update when the image exceeds the negotiated Color Pointer
+/// size limit and the client supports it, preserving transparent and inverted pixels.
 #[derive(Debug, Clone)]
 pub struct ColorPointer {
     pub cache_index: u16,

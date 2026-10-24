@@ -6,6 +6,7 @@ mod fast_path;
 mod finalize_timeout;
 mod multitransport_finalize;
 mod pointer_mask;
+mod pointer_updates;
 mod rdpdr;
 mod rdpei;
 mod remotefx_entropy_coder;

@@ -1,19 +1,24 @@
 #[cfg(ironrdp_idd_link)]
-use crate::ntstatus_to_u32;
-use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_SUCCESS};
-#[cfg(ironrdp_idd_link)]
 use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+
+#[cfg(ironrdp_idd_link)]
+use ironrdp_wtsprotocol_ipc::display::DISPLAY_REQUEST_DIRECTORY;
+use ironrdp_wtsprotocol_ipc::display::DisplaySize;
 #[cfg(ironrdp_idd_link)]
 use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_2DREGION, DISPLAYCONFIG_RATIONAL, DISPLAYCONFIG_ROTATION_IDENTITY,
 };
 #[cfg(ironrdp_idd_link)]
 use windows::Win32::Foundation::POINT;
+
+#[cfg(ironrdp_idd_link)]
+use crate::ntstatus_to_u32;
+use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_SUCCESS};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RuntimeConfig {
@@ -35,6 +40,7 @@ struct AdapterRuntimeState {
     last_monitor_os_target_id: Option<u32>,
     display_config_requested: bool,
     display_config_request_session_id: Option<u32>,
+    display_config_request_size: Option<DisplaySize>,
     last_path_count: usize,
     last_changed_paths: u32,
     last_active_paths: u32,
@@ -46,6 +52,8 @@ struct AdapterRuntimeState {
 static ADAPTER_RUNTIME_STATE: OnceLock<Mutex<AdapterRuntimeState>> = OnceLock::new();
 static ACTIVE_ADAPTER_RAW: AtomicUsize = AtomicUsize::new(0);
 static REMOTE_STATE_MONITOR_RUNNING: AtomicBool = AtomicBool::new(false);
+#[cfg(ironrdp_idd_link)]
+static DISPLAY_CONFIG_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 
 fn adapter_runtime_state() -> &'static Mutex<AdapterRuntimeState> {
     ADAPTER_RUNTIME_STATE.get_or_init(|| Mutex::new(AdapterRuntimeState::default()))
@@ -100,6 +108,7 @@ fn reset_display_config_state(config: &RuntimeConfig, state: &mut AdapterRuntime
 
     state.display_config_requested = false;
     state.display_config_request_session_id = None;
+    state.display_config_request_size = None;
     state.last_path_count = 0;
     state.last_changed_paths = 0;
     state.last_active_paths = 0;
@@ -222,6 +231,11 @@ fn maybe_request_display_config_update(_adapter: IDDCX_ADAPTER, _source: &str) {
 
 #[cfg(ironrdp_idd_link)]
 fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
+    let _update_guard = match DISPLAY_CONFIG_UPDATE_LOCK.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => return,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+    };
     ACTIVE_ADAPTER_RAW.store(adapter as usize, Ordering::Release);
 
     let config = load_runtime_config();
@@ -232,11 +246,22 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
         return;
     }
 
+    let size = match DisplaySize::read(std::path::Path::new(DISPLAY_REQUEST_DIRECTORY), session_id) {
+        Ok(size) => size,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            DisplaySize::new(1024, 768).expect("valid default display size")
+        }
+        Err(error) => {
+            tracing::error!(%error, session_id, "Failed to read session display size");
+            return;
+        }
+    };
+
     let Some((monitor, connector_index, os_target_id)) = crate::monitor::current_monitor() else {
         return;
     };
 
-    {
+    let previous = {
         let mut state = match adapter_runtime_state().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -249,19 +274,28 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
         // The OS stores one display configuration per remote session and reapplies it on its own,
         // for example on RedrawWindow after StopScreenUpdates deactivated every path.
         // Re-sending it while paths are inactive makes the OS recommit modes in a loop.
-        if state.display_config_requested && state.display_config_request_session_id == Some(session_id) {
+        if state.display_config_requested
+            && state.display_config_request_session_id == Some(session_id)
+            && state.display_config_request_size == Some(size)
+        {
             return;
         }
 
+        let previous = state.display_config_request_size;
         state.display_config_requested = true;
         state.display_config_request_session_id = Some(session_id);
-    }
+        state.display_config_request_size = Some(size);
+        previous
+    };
 
     let mut path = crate::iddcx::IDDCX_DISPLAYCONFIGPATH {
         Size: size_of::<crate::iddcx::IDDCX_DISPLAYCONFIGPATH>() as u32,
         MonitorObject: monitor,
         Position: POINT { x: 0, y: 0 },
-        Resolution: DISPLAYCONFIG_2DREGION { cx: 1024, cy: 768 },
+        Resolution: DISPLAYCONFIG_2DREGION {
+            cx: u32::from(size.width()),
+            cy: u32::from(size.height()),
+        },
         Rotation: DISPLAYCONFIG_ROTATION_IDENTITY,
         RefreshRate: DISPLAYCONFIG_RATIONAL {
             Numerator: 60,
@@ -300,7 +334,17 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
         "SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_REQUEST"
     );
 
-    let status = unsafe { crate::iddcx::adapter_display_config_update(adapter, &mut in_args) };
+    let status = crate::monitor::update_target_modes(monitor, size, previous);
+    crate::debug_trace(&format!(
+        "SESSION_PROOF_IDD_TARGET_MODES_UPDATE session_id={session_id} status=0x{:08X}",
+        ntstatus_to_u32(status)
+    ));
+    let status = if status < 0 {
+        status
+    } else {
+        // SAFETY: the adapter and monitor are initialized, and the path lives through this synchronous call.
+        unsafe { crate::iddcx::adapter_display_config_update(adapter, &mut in_args) }
+    };
 
     {
         let mut state = match adapter_runtime_state().lock() {
@@ -308,7 +352,7 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        if status < 0 {
+        if status < 0 && status != crate::ntstatus_from_u32(0xC000_000D) {
             state.display_config_requested = false;
             state.display_config_request_session_id = None;
         }
@@ -335,6 +379,13 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
             "SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_RESULT"
         );
     }
+}
+
+pub(crate) fn requested_display_size() -> Option<DisplaySize> {
+    adapter_runtime_state()
+        .lock()
+        .expect("adapter runtime state poisoned")
+        .display_config_request_size
 }
 
 pub(crate) fn note_adapter_init_finished(adapter: IDDCX_ADAPTER) {

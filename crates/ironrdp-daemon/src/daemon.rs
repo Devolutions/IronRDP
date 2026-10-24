@@ -484,6 +484,7 @@ struct Live {
     /// Most recent frame (with the cursor already composited in by the session). Replaced on every
     /// graphics update; `None` until the first frame arrives.
     frame: Option<Frame>,
+    pending_pointer_position: Option<MousePosition>,
     rail_initial_execute: Option<(u16, String)>,
     rail: RailLedger,
     /// Set by the certificate callback when strict validation rejects an untrusted certificate, so
@@ -1119,6 +1120,7 @@ impl Daemon {
             state: ConnState::Connecting,
             error: None,
             frame: None,
+            pending_pointer_position: None,
             rail_initial_execute: initial_rail_execute.clone(),
             rail: RailLedger::new(
                 self.next_rail_generation.fetch_add(1, Ordering::Relaxed),
@@ -2065,6 +2067,16 @@ impl Daemon {
                 );
             }
         };
+        if let Some(position) = session
+            .live
+            .lock()
+            .expect("session live state poisoned")
+            .pending_pointer_position
+            .take()
+        {
+            // Update click coordinates without echoing the server's movement.
+            let _ = session.input_db.apply([Operation::MouseMove(position)]);
+        }
         let events = session.input_db.apply(operations);
         if events.is_empty() {
             return Response::ok();
@@ -2353,6 +2365,10 @@ async fn consume_output(
                 if previous != ConnState::Connected {
                     info!(width, height, "Session connected");
                 }
+                false
+            }
+            RdpOutputEvent::PointerPosition { x, y } => {
+                guard.pending_pointer_position = Some(MousePosition { x, y });
                 false
             }
             RdpOutputEvent::ConnectionFailure(error) => {
@@ -2769,6 +2785,7 @@ mod tests {
             state: ConnState::Connected,
             error: None,
             frame: None,
+            pending_pointer_position: None,
             rail_initial_execute: Some((0, "notepad.exe".to_owned())),
             rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
             certificate_rejection: Arc::default(),
@@ -2830,6 +2847,7 @@ mod tests {
             state: ConnState::Connected,
             error: None,
             frame: None,
+            pending_pointer_position: None,
             rail_initial_execute: None,
             rail: RailLedger::new(1, 1, None),
             certificate_rejection: Arc::default(),
@@ -2875,6 +2893,66 @@ mod tests {
             live.lock().expect("session live state poisoned").state,
             ConnState::Disconnecting
         );
+    }
+
+    // oracle: regression a native application warp must change the next coordinate-less click without echoing a move.
+    #[tokio::test]
+    async fn server_pointer_position_updates_clicks_without_overriding_later_local_moves() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+        use ironrdp_input::{MouseButton, MousePosition};
+        use ironrdp_pdu::input::MousePdu;
+        use ironrdp_pdu::input::mouse::PointerFlags;
+
+        let (daemon, mut receiver, live, rail_notify) = active_rail_session(false);
+        let original = MousePosition { x: 10, y: 20 };
+        assert!(daemon.input(Operation::MouseMove(original)).is_ok());
+        receiver.try_recv().expect("initial local movement");
+        let (output_tx, output_rx) = output_channel(1);
+        let (notification_tx, mut notification_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            Some(notification_tx),
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(RdpOutputEvent::PointerPosition { x: 713, y: 338 })
+            .await
+            .unwrap();
+        notification_rx.recv().await.expect("server position consumed");
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        assert!(daemon.input(Operation::MouseButtonPressed(MouseButton::Left)).is_ok());
+        let RdpInputEvent::FastPath(events) = receiver.try_recv().expect("click after server warp") else {
+            panic!("expected FastPath input");
+        };
+        assert_eq!(
+            events.as_slice(),
+            [FastPathInputEvent::MouseEvent(MousePdu {
+                flags: PointerFlags::DOWN | PointerFlags::LEFT_BUTTON,
+                number_of_wheel_rotation_units: 0,
+                x_position: 713,
+                y_position: 338,
+            })]
+        );
+
+        assert!(daemon.input(Operation::MouseMove(original)).is_ok());
+        receiver.try_recv().expect("movement back to original position");
+        assert!(daemon.input(Operation::MouseButtonReleased(MouseButton::Left)).is_ok());
+        let RdpInputEvent::FastPath(events) = receiver.try_recv().expect("release after local movement") else {
+            panic!("expected FastPath input");
+        };
+        assert_eq!(
+            events.as_slice(),
+            [FastPathInputEvent::MouseEvent(MousePdu {
+                flags: PointerFlags::LEFT_BUTTON,
+                number_of_wheel_rotation_units: 0,
+                x_position: 10,
+                y_position: 20,
+            })]
+        );
+        drop(output_tx);
+        consumer.await.unwrap();
     }
 
     #[tokio::test]

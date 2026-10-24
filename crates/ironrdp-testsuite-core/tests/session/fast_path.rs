@@ -13,9 +13,12 @@ use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::pointer::{
+    ColorPointerAttribute, LargePointerAttribute, Point16, PointerAttribute, PointerUpdateData,
+};
 use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::CompressionFlags;
-use ironrdp_session::fast_path::{Processor, ProcessorBuilder};
+use ironrdp_session::fast_path::{Processor, ProcessorBuilder, UpdateKind};
 use ironrdp_session::image::DecodedImage;
 
 const IMAGE_DIM: u16 = 64;
@@ -30,6 +33,164 @@ fn processor() -> Processor {
         pointer_software_rendering: false,
     }
     .build()
+}
+
+const CURSOR_IMAGE: ColorPointerAttribute<'static> = ColorPointerAttribute {
+    cache_index: 0,
+    hot_spot: Point16 { x: 0, y: 0 },
+    width: 1,
+    height: 1,
+    xor_mask: &[20, 40, 200, 0],
+    and_mask: &[0, 0],
+};
+
+// oracle: spec MS-RDPBCGR §3.2.5.9.2 and §3.2.5.9.3; shapes activate without a Cached Pointer Update.
+#[rstest::rstest]
+#[case::color(PointerUpdateData::Color(CURSOR_IMAGE))]
+#[case::new(PointerUpdateData::New(PointerAttribute { xor_bpp: 24, color_pointer: CURSOR_IMAGE }))]
+#[case::large(PointerUpdateData::Large(LargePointerAttribute {
+    xor_bpp: 24,
+    cache_index: 0,
+    hot_spot: Point16 { x: 0, y: 0 },
+    width: 1,
+    height: 1,
+    xor_mask: &[20, 40, 200, 0],
+    and_mask: &[0, 0],
+}))]
+fn pointer_shape_reactivates_software_movement_and_hiding(#[case] shape: PointerUpdateData<'_>) {
+    let mut processor = ProcessorBuilder {
+        io_channel_id: 0,
+        user_channel_id: 0,
+        share_id: 0,
+        enable_server_pointer: true,
+        pointer_software_rendering: true,
+    }
+    .build();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
+        .unwrap();
+    processor.process_pointer_update(&mut image, shape).unwrap();
+    let updates = processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetPosition(Point16 { x: 2, y: 1 }))
+        .unwrap();
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, UpdateKind::PointerPosition { x: 2, y: 1 })),
+        "software rendering must also report the server's position to input consumers"
+    );
+    let mut expected = [0; 48];
+    expected[18..21].copy_from_slice(&[200, 40, 20]);
+    let visible: Vec<_> = image
+        .data()
+        .chunks_exact(4)
+        .flat_map(|pixel| pixel[..3].iter().copied())
+        .collect();
+    assert_eq!(visible, expected);
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
+        .unwrap();
+    assert!(image.data().chunks_exact(4).all(|pixel| pixel[..3] == [0; 3]));
+}
+
+// oracle: regression hide, warp, and restore must draw at the hidden position without another position update.
+#[test]
+fn hidden_pointer_position_is_retained_when_shape_returns() {
+    let mut processor = ProcessorBuilder {
+        io_channel_id: 0,
+        user_channel_id: 0,
+        share_id: 0,
+        enable_server_pointer: true,
+        pointer_software_rendering: true,
+    }
+    .build();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
+        .unwrap();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
+        .unwrap();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetPosition(Point16 { x: 2, y: 1 }))
+        .unwrap();
+    assert!(image.data().chunks_exact(4).all(|pixel| pixel[..3] == [0; 3]));
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
+        .unwrap();
+    let mut expected = [0; 48];
+    expected[18..21].copy_from_slice(&[200, 40, 20]);
+    let visible: Vec<_> = image
+        .data()
+        .chunks_exact(4)
+        .flat_map(|pixel| pixel[..3].iter().copied())
+        .collect();
+    assert_eq!(visible, expected);
+}
+
+// oracle: spec MS-RDPBCGR §3.2.5.9.2; restoring a pointer must preserve desktop updates received while hidden.
+#[test]
+fn restored_pointer_preserves_background_changes_while_hidden() {
+    let mut processor = ProcessorBuilder {
+        io_channel_id: 0,
+        user_channel_id: 0,
+        share_id: 0,
+        enable_server_pointer: true,
+        pointer_software_rendering: true,
+    }
+    .build();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
+        .unwrap();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
+        .unwrap();
+    let bitmap = encode_vec(&BitmapUpdateData {
+        rectangles: vec![BitmapData {
+            rectangle: InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 3,
+                bottom: 3,
+            },
+            width: 4,
+            height: 4,
+            bits_per_pixel: 32,
+            compression_flags: Compression::empty(),
+            compressed_data_header: None,
+            bitmap_data: &[100, 80, 30, 255].repeat(16),
+        }],
+    })
+    .unwrap();
+    let frame = fastpath_frame(
+        &encode_vec(&FastPathUpdatePdu {
+            fragmentation: Fragmentation::Single,
+            update_code: UpdateCode::Bitmap,
+            compression_flags: None,
+            compression_type: None,
+            data: &bitmap,
+        })
+        .unwrap(),
+    );
+    processor
+        .process(&mut image, &frame, &mut WriteBuf::new(), &mut None)
+        .unwrap();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetPosition(Point16 { x: 2, y: 1 }))
+        .unwrap();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
+        .unwrap();
+    let mut expected = [30, 80, 100].repeat(16);
+    expected[18..21].copy_from_slice(&[200, 40, 20]);
+    let visible: Vec<_> = image
+        .data()
+        .chunks_exact(4)
+        .flat_map(|pixel| pixel[..3].iter().copied())
+        .collect();
+    assert_eq!(visible, expected);
 }
 
 /// Encodes the inner FastPath Bitmap update: a single uncompressed 8x8 32bpp

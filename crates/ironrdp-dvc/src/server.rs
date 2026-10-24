@@ -9,7 +9,7 @@ use ironrdp_pdu::{self as pdu, PduError, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::pdu::{
     CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DrdynvcClientPdu,
@@ -17,7 +17,14 @@ use crate::pdu::{
 };
 use crate::{CompleteData, DvcProcessor, DynamicChannelMut, DynamicChannelRef, encode_dvc_messages};
 
-pub trait DvcServerProcessor: DvcProcessor {}
+pub trait DvcServerProcessor: DvcProcessor {
+    /// Maximum complete message size accepted by this backend.
+    ///
+    /// Oversized fragmented messages close the channel before reassembly.
+    fn maximum_message_size(&self) -> usize {
+        usize::MAX
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ChannelState {
@@ -53,6 +60,7 @@ impl Drop for DynamicChannel {
 
 struct DynamicChannelAllocator {
     dynamic_channels: BTreeMap<u32, DynamicChannel>,
+    /// INVARIANT: Issued channel IDs are below this counter and are never reused.
     next_channel_id: u32,
 }
 
@@ -96,14 +104,11 @@ impl DynamicChannelAllocator {
         T: DvcServerProcessor + 'static,
     {
         let channel_id = self.reserve_channel();
-        self.insert_channel_with_id(processor, state, channel_id);
+        self.insert_channel_with_id(Box::new(processor), state, channel_id);
         channel_id
     }
 
-    fn insert_channel_with_id<T>(&mut self, processor: T, state: ChannelState, channel_id: u32)
-    where
-        T: DvcServerProcessor + 'static,
-    {
+    fn insert_channel_with_id(&mut self, processor: Box<dyn DvcServerProcessor>, state: ChannelState, channel_id: u32) {
         self.dynamic_channels
             .insert(channel_id, DynamicChannel::new(processor, channel_id, state));
     }
@@ -122,13 +127,10 @@ impl DynamicChannelAllocator {
 }
 
 impl DynamicChannel {
-    fn new<T>(processor: T, channel_id: u32, state: ChannelState) -> Self
-    where
-        T: DvcServerProcessor + 'static,
-    {
+    fn new(processor: Box<dyn DvcServerProcessor>, channel_id: u32, state: ChannelState) -> Self {
         Self {
             state,
-            processor: Box::new(processor),
+            processor,
             complete_data: CompleteData::new(),
             channel_id,
         }
@@ -143,6 +145,7 @@ impl DynamicChannel {
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcServer {
     dynamic_channels: DynamicChannelAllocator,
+    ready: bool,
     type_id_to_channel_id: BTreeMap<TypeId, u32>,
     soft_sync_state: SoftSyncState,
     outgoing_tunnel_channels: BTreeMap<u32, SoftSyncTunnelType>,
@@ -170,6 +173,7 @@ impl DrdynvcServer {
     pub fn new() -> Self {
         Self {
             dynamic_channels: DynamicChannelAllocator::new(),
+            ready: false,
             type_id_to_channel_id: BTreeMap::new(),
             soft_sync_state: SoftSyncState::Idle,
             outgoing_tunnel_channels: BTreeMap::new(),
@@ -190,6 +194,11 @@ impl DrdynvcServer {
         self.dynamic_channels
             .get(channel_id)
             .is_some_and(|c| c.state == ChannelState::Opened)
+    }
+
+    /// Returns whether the client has answered DRDYNVC capability negotiation.
+    pub fn is_ready(&self) -> bool {
+        self.ready
     }
 
     /// Registers a dynamic channel with the server.
@@ -249,7 +258,22 @@ impl DrdynvcServer {
         T: DvcServerProcessor + 'static,
     {
         let channel_id = self.dynamic_channels.reserve_channel();
-        self.create_channel_with_id(channel, channel_id)
+        self.create_channel_with_id(Box::new(channel), channel_id)
+    }
+
+    /// Creates a runtime-selected DVC using its reserved ID.
+    ///
+    /// The caller must wait for capability negotiation before calling this method.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
+    pub fn create_channel_boxed_with(
+        &mut self,
+        build: Box<dyn FnOnce(u32) -> Box<dyn DvcServerProcessor> + Send>,
+    ) -> PduResult<SvcMessage> {
+        let channel_id = self.dynamic_channels.reserve_channel();
+        self.create_channel_with_id(build(channel_id), channel_id)
     }
 
     /// Creates a new DVC using a processor built with its assigned channel ID.
@@ -268,13 +292,15 @@ impl DrdynvcServer {
     {
         let channel_id = self.dynamic_channels.reserve_channel();
         let channel = build(channel_id)?;
-        self.create_channel_with_id(channel, channel_id).map_err(E::from)
+        self.create_channel_with_id(Box::new(channel), channel_id)
+            .map_err(E::from)
     }
 
-    fn create_channel_with_id<T>(&mut self, channel: T, channel_id: u32) -> PduResult<SvcMessage>
-    where
-        T: DvcServerProcessor + 'static,
-    {
+    fn create_channel_with_id(
+        &mut self,
+        channel: Box<dyn DvcServerProcessor>,
+        channel_id: u32,
+    ) -> PduResult<SvcMessage> {
         let channel_name = channel.channel_name().into();
         let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(channel_id, channel_name));
         let svc_msg = as_svc_msg_with_flag(req)?;
@@ -297,9 +323,12 @@ impl DrdynvcServer {
     }
 
     pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
-        self.remove_by_channel_id(channel_id)?;
+        let channel = self.remove_by_channel_id(channel_id)?;
         self.outgoing_tunnel_channels.remove(&channel_id);
         self.incoming_tunnel_channels.remove(&channel_id);
+        if matches!(channel.state, ChannelState::Pending | ChannelState::CreationFailed(_)) {
+            return None;
+        }
         Some(
             SvcMessage::from(DrdynvcServerPdu::Close(ClosePdu::new(channel_id)))
                 .with_flags(ChannelFlags::SHOW_PROTOCOL),
@@ -398,13 +427,40 @@ impl DrdynvcServer {
 
     fn process_data(&mut self, data: crate::pdu::DrdynvcDataPdu) -> PduResult<Vec<SvcMessage>> {
         let channel_id = data.channel_id();
+        // Data already sent by the peer can arrive after a server-initiated close.
+        if channel_id < self.dynamic_channels.next_channel_id && self.dynamic_channels.get(channel_id).is_none() {
+            trace!(channel_id, "Discarding data for a closed dynamic channel");
+            return Ok(Vec::new());
+        }
         let c = self.channel_by_id(channel_id).map_err(|e| decode_err!(e))?;
         if c.state != ChannelState::Opened {
             debug!(?channel_id, ?c.state, "Invalid channel state");
             return Err(pdu_other_err!("invalid channel state"));
         }
+        let declared_size = match &data {
+            crate::pdu::DrdynvcDataPdu::DataFirst(first) => Some(u64::from(first.length())),
+            crate::pdu::DrdynvcDataPdu::DataFirstCompressed(first) => Some(u64::from(first.length())),
+            _ => None,
+        };
+        if declared_size
+            .is_some_and(|size| u64::try_from(c.processor.maximum_message_size()).unwrap_or(u64::MAX) < size)
+        {
+            debug!(
+                channel_id,
+                ?declared_size,
+                "Closing dynamic channel because its message limit was exceeded"
+            );
+            return Ok(self.close_channel(channel_id).into_iter().collect());
+        }
         let mut resp = Vec::new();
         if let Some(complete) = c.complete_data.process_data(data).map_err(|e| decode_err!(e))? {
+            if c.processor.maximum_message_size() < complete.len() {
+                debug!(
+                    channel_id,
+                    "Closing dynamic channel because its message limit was exceeded"
+                );
+                return Ok(self.close_channel(channel_id).into_iter().collect());
+            }
             let msg = c.processor.process(channel_id, &complete)?;
             resp.extend(encode_dvc_messages(channel_id, msg, ChannelFlags::SHOW_PROTOCOL).map_err(|e| encode_err!(e))?);
         }
@@ -481,6 +537,7 @@ impl SvcProcessor for DrdynvcServer {
         match pdu {
             DrdynvcClientPdu::Capabilities(caps_resp) => {
                 debug!("Got DVC Capabilities Response PDU: {caps_resp:?}");
+                self.ready = true;
                 for (id, c) in &mut self.dynamic_channels {
                     if c.state != ChannelState::Pending {
                         continue;
@@ -493,6 +550,13 @@ impl SvcProcessor for DrdynvcServer {
             DrdynvcClientPdu::Create(create_resp) => {
                 debug!("Got DVC Create Response PDU: {create_resp:?}");
                 let id = create_resp.channel_id();
+                if id < self.dynamic_channels.next_channel_id && self.dynamic_channels.get(id).is_none() {
+                    trace!(
+                        channel_id = id,
+                        "Discarding response to cancelled dynamic channel creation"
+                    );
+                    return Ok(resp);
+                }
                 let c = self.channel_by_id(id).map_err(|e| decode_err!(e))?;
                 if c.state != ChannelState::Creation {
                     return Err(pdu_other_err!("invalid channel state"));

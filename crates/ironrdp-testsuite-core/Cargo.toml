@@ -15,6 +15,7 @@ test = false
 # Don't rely on these whatsoever. They may disappear at any time.
 # Added here because it includes/link to some files from other crates
 __bench = ["dep:visibility"]
+__test = ["dep:visibility"]
 openh264-bundled = ["ironrdp-egfx/openh264-bundled", "dep:openh264"]
 
 [[test]]

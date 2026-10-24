@@ -105,6 +105,28 @@ try {
 
         $ErrorActionPreference = 'Stop'
 
+        $displayDirectory = 'C:\ProgramData\IronRDPDisplay'
+        if (Test-Path -LiteralPath $displayDirectory) {
+            $directory = Get-Item -LiteralPath $displayDirectory
+            $owner = (Get-Acl -LiteralPath $displayDirectory).GetOwner([Security.Principal.SecurityIdentifier]).Value
+            if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                $owner -notin @('S-1-5-18', 'S-1-5-32-544')) {
+                throw 'The display request directory is not owned by SYSTEM or Administrators'
+            }
+        } else {
+            New-Item -ItemType Directory -Path $displayDirectory | Out-Null
+        }
+        $acl = [Security.AccessControl.DirectorySecurity]::new()
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($sid in 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-19', 'S-1-5-20') {
+            $rights = if ($sid -in @('S-1-5-18', 'S-1-5-32-544')) { 'FullControl' } else { 'ReadAndExecute' }
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new($sid), $rights,
+                'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            $acl.AddAccessRule($rule)
+        }
+        Set-Acl -LiteralPath $displayDirectory -AclObject $acl
+
         $infPath = Join-Path $RemotePath 'IronRdpIdd.inf'
         $rootCertPath = Join-Path $RemotePath 'authenticode-test-ca.crt'
         $codeSignCertPath = Join-Path $RemotePath 'authenticode-test-cert.cer'
