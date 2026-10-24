@@ -1279,7 +1279,8 @@ fn demand_active_uses_rdp_source_descriptor() {
     assert_eq!(demand_active.pdu.source_descriptor, "RDP");
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: stepping an acceptor after a failed step panicked instead of returning an error)
+// oracle: regression Devolutions/IronRDP#1325 (stepping an acceptor after a failed step panicked instead of returning
+// an error, https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
 #[test]
 fn stepping_a_failed_acceptor_returns_an_error() {
     let mut acceptor = multitransport_acceptor(None);
@@ -1290,7 +1291,8 @@ fn stepping_a_failed_acceptor_returns_an_error() {
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: stepping an accepted acceptor panicked instead of returning an error)
+// oracle: regression Devolutions/IronRDP#1325 (stepping an accepted acceptor panicked instead of returning an error,
+// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
 #[test]
 fn stepping_an_accepted_acceptor_returns_an_error() {
     let mut acceptor = accept(None);
@@ -1298,7 +1300,9 @@ fn stepping_an_accepted_acceptor_returns_an_error() {
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: the fix of the reported acceptor panic was requested to cover channel_connection.rs, whose sequence reached the same unreachable!() after a failed step)
+// oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
+// channel_connection.rs, whose sequence reached the same unreachable!() after a failed step,
+// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
 #[test]
 fn stepping_a_failed_channel_connection_returns_an_error() {
     let mut sequence = ChannelConnectionSequence::skip_channel_join(USER_CHANNEL_ID);
@@ -1309,7 +1313,9 @@ fn stepping_a_failed_channel_connection_returns_an_error() {
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: the fix of the reported acceptor panic was requested to cover channel_connection.rs, whose sequence reached the same unreachable!() once every channel was joined)
+// oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
+// channel_connection.rs, whose sequence reached the same unreachable!() once every channel was joined,
+// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
 #[test]
 fn stepping_a_finished_channel_connection_returns_an_error() {
     // A channel connection that skips the channel joins ends with the Attach User Confirm.
@@ -1328,7 +1334,9 @@ fn stepping_a_finished_channel_connection_returns_an_error() {
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: the fix of the reported acceptor panic was requested to cover finalization.rs, whose sequence reached the same unreachable!() once it finished)
+// oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
+// finalization.rs, whose sequence reached the same unreachable!() once it finished,
+// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
 #[test]
 fn stepping_a_finished_finalization_returns_an_error() {
     // The client's four PDUs and the server's four answers finish the finalization.
@@ -1345,7 +1353,9 @@ fn stepping_a_finished_finalization_returns_an_error() {
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: the fix of the reported acceptor panic was requested to cover finalization.rs, whose sequence reached the same unreachable!() after a failed step)
+// oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
+// finalization.rs, whose sequence reached the same unreachable!() after a failed step,
+// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
 #[test]
 fn stepping_a_failed_finalization_returns_an_error() {
     // The Synchronize and Control Cooperate states ignore what they read, so the Request Control state is the first
