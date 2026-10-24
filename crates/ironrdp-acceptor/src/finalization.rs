@@ -189,6 +189,7 @@ impl Sequence for FinalizationSequence {
             }
 
             FinalizationState::Finished => {
+                // UNTESTED: the finished state is put back so that `is_done` stays true after a stray step.
                 self.state = FinalizationState::Finished;
                 return Err(general_err!("finalization already finished"));
             }

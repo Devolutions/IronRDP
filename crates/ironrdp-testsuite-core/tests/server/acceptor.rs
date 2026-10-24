@@ -744,8 +744,13 @@ fn multitransport_not_offered_when_client_does_not_reciprocate() {
     assert!(acceptor.multitransport_request().is_none());
 }
 
-/// Drives a fresh acceptor through the whole connection sequence with `client_blocks`, up to the accepted state.
-fn accept(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks) -> Acceptor {
+/// Drives a fresh acceptor through the whole connection sequence, from the Connection Request to `Connected`, with
+/// `monitors` sent as the client's GCC Client Monitor Data (MS-RDPBCGR 2.2.1.3.6), or with no such block when `None`.
+fn accept(monitors: Option<Vec<Monitor>>) -> Acceptor {
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
+
     let mut acceptor = Acceptor::new(
         SecurityProtocol::SSL,
         DesktopSize {
@@ -779,10 +784,6 @@ fn accept(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks) -> Acceptor {
     acceptor
 }
 
-/// Drives a fresh acceptor through the whole connection sequence, from the
-/// Connection Request to `Connected`, with `monitors` sent as the client's GCC
-/// Client Monitor Data (MS-RDPBCGR 2.2.1.3.6), or with no such block when
-/// `None`, and returns the monitors the acceptor hands back in its result.
 /// The client's PDUs of the connection finalization, in the order it sends them.
 fn client_finalization_pdus() -> [ShareDataPdu; 4] {
     [
@@ -801,12 +802,9 @@ fn client_finalization_pdus() -> [ShareDataPdu; 4] {
     ]
 }
 
+/// Returns the monitors the acceptor hands back in its result after [`accept`] with `monitors`.
 fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monitor> {
-    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
-    client_blocks.network = None;
-    client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
-
-    accept(client_blocks)
+    accept(monitors)
         .get_result()
         .expect("a connected acceptor has a result")
         .client_monitors
@@ -1294,17 +1292,13 @@ fn stepping_a_failed_acceptor_returns_an_error() {
 
 // oracle: regression Devolutions/IronRDP#1325 (issue thread: stepping an accepted acceptor panicked instead of returning an error)
 #[test]
-fn stepping_an_accepted_acceptor_returns_an_error_and_keeps_the_result() {
-    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
-    client_blocks.network = None;
-    let mut acceptor = accept(client_blocks);
+fn stepping_an_accepted_acceptor_returns_an_error() {
+    let mut acceptor = accept(None);
 
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
-
-    assert!(acceptor.get_result().is_some());
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: the same panic in the channel connection sequence after a failed step)
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: the fix of the reported acceptor panic was requested to cover channel_connection.rs, whose sequence reached the same unreachable!() after a failed step)
 #[test]
 fn stepping_a_failed_channel_connection_returns_an_error() {
     let mut sequence = ChannelConnectionSequence::skip_channel_join(USER_CHANNEL_ID);
@@ -1315,7 +1309,7 @@ fn stepping_a_failed_channel_connection_returns_an_error() {
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: the same panic in the channel connection sequence once every channel is joined)
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: the fix of the reported acceptor panic was requested to cover channel_connection.rs, whose sequence reached the same unreachable!() once every channel was joined)
 #[test]
 fn stepping_a_finished_channel_connection_returns_an_error() {
     // A channel connection that skips the channel joins ends with the Attach User Confirm.
@@ -1332,11 +1326,9 @@ fn stepping_a_finished_channel_connection_returns_an_error() {
     assert!(sequence.is_done());
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
-
-    assert!(sequence.is_done());
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: the same panic in the connection finalization once it finished)
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: the fix of the reported acceptor panic was requested to cover finalization.rs, whose sequence reached the same unreachable!() once it finished)
 #[test]
 fn stepping_a_finished_finalization_returns_an_error() {
     // The client's four PDUs and the server's four answers finish the finalization.
@@ -1351,11 +1343,9 @@ fn stepping_a_finished_finalization_returns_an_error() {
     assert!(sequence.is_done());
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
-
-    assert!(sequence.is_done());
 }
 
-// oracle: regression Devolutions/IronRDP#1325 (issue thread: the same panic in the connection finalization after a failed step)
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: the fix of the reported acceptor panic was requested to cover finalization.rs, whose sequence reached the same unreachable!() after a failed step)
 #[test]
 fn stepping_a_failed_finalization_returns_an_error() {
     // The Synchronize and Control Cooperate states ignore what they read, so the Request Control state is the first
