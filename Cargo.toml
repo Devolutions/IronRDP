@@ -2,6 +2,8 @@
 members = [
   "crates/*",
   "benches",
+  "benches/rfx-decode-fixtures",
+  "benches/rfx-decode-wasm",
   "xtask",
   "ffi",
 ]

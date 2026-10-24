@@ -1,0 +1,18 @@
+[package]
+name = "rfx-decode-fixtures"
+version = "0.0.0"
+description = "Fixtures and driver for the IronRDP RemoteFX decode benchmarks"
+publish = false
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+ironrdp = { path = "../../crates/ironrdp", features = ["core", "graphics", "pdu", "session"] } # public (Quant, EntropyAlgorithm, DecodedImage)
+
+[dev-dependencies]
+rstest.workspace = true
+
+[lints]
+workspace = true
