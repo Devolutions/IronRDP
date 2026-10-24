@@ -8,9 +8,11 @@ use tracing::debug;
 
 use crate::util::{self, wrap_share_data};
 
-/// Server side of the connection finalization.
+/// Server side of the Connection Finalization phase of the [1.3.1.1] Connection Sequence.
 ///
 /// Once a step fails, or once the finalization is finished, further steps return an error.
+///
+/// [1.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/023f1e69-cfe8-4ee6-9ee0-7e759fb4e4ee
 #[derive(Debug)]
 pub struct FinalizationSequence {
     state: FinalizationState,

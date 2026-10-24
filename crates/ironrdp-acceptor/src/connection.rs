@@ -32,10 +32,12 @@ const IO_CHANNEL_ID: u16 = 1003;
 // per 3.3.5.15.1) rather than the user's own MCS channel ID.
 const USER_CHANNEL_ID: u16 = 1002;
 
-/// Server side of the RDP connection sequence.
+/// Server side of the [1.3.1.1] Connection Sequence.
 ///
 /// Once a step fails, or once the connection is accepted, further steps return an error.
 /// An accepted acceptor keeps its result for [`Acceptor::get_result`].
+///
+/// [1.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/023f1e69-cfe8-4ee6-9ee0-7e759fb4e4ee
 pub struct Acceptor {
     pub(crate) state: AcceptorState,
     security: SecurityProtocol,

@@ -9,9 +9,11 @@ use ironrdp_pdu::mcs;
 use ironrdp_pdu::x224::X224;
 use tracing::debug;
 
-/// Server side of the MCS channel connection.
+/// Server side of the Channel Connection phase of the [1.3.1.1] Connection Sequence.
 ///
 /// Once a step fails, or once every channel is joined, further steps return an error.
+///
+/// [1.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/023f1e69-cfe8-4ee6-9ee0-7e759fb4e4ee
 #[derive(Debug)]
 pub struct ChannelConnectionSequence {
     state: ChannelConnectionState,

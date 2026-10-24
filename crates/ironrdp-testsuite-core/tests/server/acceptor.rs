@@ -744,10 +744,6 @@ fn multitransport_not_offered_when_client_does_not_reciprocate() {
     assert!(acceptor.multitransport_request().is_none());
 }
 
-/// Drives a fresh acceptor through the whole connection sequence, from the
-/// Connection Request to `Connected`, with `monitors` sent as the client's GCC
-/// Client Monitor Data (MS-RDPBCGR 2.2.1.3.6), or with no such block when
-/// `None`, and returns the monitors the acceptor hands back in its result.
 /// Drives a fresh acceptor through the whole connection sequence with `client_blocks`, up to the accepted state.
 fn accept(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks) -> Acceptor {
     let mut acceptor = Acceptor::new(
@@ -769,7 +765,27 @@ fn accept(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks) -> Acceptor {
     let confirm_active = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
     acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
 
-    let finalization = [
+    for pdu in client_finalization_pdus() {
+        let request = encode_send_data_request(user_channel_id, io_channel_id, &encode_client_share_data(pdu));
+        acceptor.step(&request, None, &mut WriteBuf::new()).unwrap();
+    }
+
+    // The server's four confirmation sends, completing finalization.
+    for _ in 0..4 {
+        acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    }
+    assert_eq!(acceptor.state().name(), "Connected");
+
+    acceptor
+}
+
+/// Drives a fresh acceptor through the whole connection sequence, from the
+/// Connection Request to `Connected`, with `monitors` sent as the client's GCC
+/// Client Monitor Data (MS-RDPBCGR 2.2.1.3.6), or with no such block when
+/// `None`, and returns the monitors the acceptor hands back in its result.
+/// The client's PDUs of the connection finalization, in the order it sends them.
+fn client_finalization_pdus() -> [ShareDataPdu; 4] {
+    [
         ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0 }),
         ShareDataPdu::Control(ControlPdu {
             action: ControlAction::Cooperate,
@@ -782,19 +798,7 @@ fn accept(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks) -> Acceptor {
             control_id: 0,
         }),
         ShareDataPdu::FontList(Default::default()),
-    ];
-    for pdu in finalization {
-        let request = encode_send_data_request(user_channel_id, io_channel_id, &encode_client_share_data(pdu));
-        acceptor.step(&request, None, &mut WriteBuf::new()).unwrap();
-    }
-
-    // The server's four confirmation sends, completing finalization.
-    for _ in 0..4 {
-        acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
-    }
-    assert_eq!(acceptor.state().name(), "Connected");
-
-    acceptor
+    ]
 }
 
 fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monitor> {
@@ -1277,7 +1281,7 @@ fn demand_active_uses_rdp_source_descriptor() {
     assert_eq!(demand_active.pdu.source_descriptor, "RDP");
 }
 
-// oracle: contract crates/ironrdp-acceptor/src/connection.rs §Acceptor (stepping a failed acceptor returns an error)
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: stepping an acceptor after a failed step panicked instead of returning an error)
 #[test]
 fn stepping_a_failed_acceptor_returns_an_error() {
     let mut acceptor = multitransport_acceptor(None);
@@ -1288,7 +1292,7 @@ fn stepping_a_failed_acceptor_returns_an_error() {
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
 
-// oracle: contract crates/ironrdp-acceptor/src/connection.rs §Acceptor (stepping an accepted acceptor returns an error and keeps its result)
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: stepping an accepted acceptor panicked instead of returning an error)
 #[test]
 fn stepping_an_accepted_acceptor_returns_an_error_and_keeps_the_result() {
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
@@ -1300,8 +1304,21 @@ fn stepping_an_accepted_acceptor_returns_an_error_and_keeps_the_result() {
     assert!(acceptor.get_result().is_some());
 }
 
-/// Drives a channel connection sequence that skips the channel joins to its end.
-fn joined_channel_connection() -> ChannelConnectionSequence {
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: the same panic in the channel connection sequence after a failed step)
+#[test]
+fn stepping_a_failed_channel_connection_returns_an_error() {
+    let mut sequence = ChannelConnectionSequence::skip_channel_join(USER_CHANNEL_ID);
+    sequence
+        .step(b"not an erect domain request", None, &mut WriteBuf::new())
+        .unwrap_err();
+
+    sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+}
+
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: the same panic in the channel connection sequence once every channel is joined)
+#[test]
+fn stepping_a_finished_channel_connection_returns_an_error() {
+    // A channel connection that skips the channel joins ends with the Attach User Confirm.
     let mut sequence = ChannelConnectionSequence::skip_channel_join(USER_CHANNEL_ID);
     let erect_domain = encode_vec(&X224(mcs::ErectDomainPdu {
         sub_height: 0,
@@ -1314,48 +1331,17 @@ fn joined_channel_connection() -> ChannelConnectionSequence {
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap(); // Attach User Confirm
     assert!(sequence.is_done());
 
-    sequence
-}
-
-// oracle: contract crates/ironrdp-acceptor/src/channel_connection.rs §ChannelConnectionSequence (stepping a failed sequence returns an error)
-#[test]
-fn stepping_a_failed_channel_connection_returns_an_error() {
-    let mut sequence = ChannelConnectionSequence::skip_channel_join(USER_CHANNEL_ID);
-    sequence
-        .step(b"not an erect domain request", None, &mut WriteBuf::new())
-        .unwrap_err();
-
-    sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
-}
-
-// oracle: contract crates/ironrdp-acceptor/src/channel_connection.rs §ChannelConnectionSequence (stepping a finished sequence returns an error and leaves it finished)
-#[test]
-fn stepping_a_finished_channel_connection_returns_an_error() {
-    let mut sequence = joined_channel_connection();
-
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 
     assert!(sequence.is_done());
 }
 
-/// Drives a finalization sequence through the client's four PDUs and the server's four answers.
-fn finished_finalization() -> FinalizationSequence {
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: the same panic in the connection finalization once it finished)
+#[test]
+fn stepping_a_finished_finalization_returns_an_error() {
+    // The client's four PDUs and the server's four answers finish the finalization.
     let mut sequence = FinalizationSequence::new(USER_CHANNEL_ID, IO_CHANNEL_ID);
-    let client_pdus = [
-        ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0 }),
-        ShareDataPdu::Control(ControlPdu {
-            action: ControlAction::Cooperate,
-            grant_id: 0,
-            control_id: 0,
-        }),
-        ShareDataPdu::Control(ControlPdu {
-            action: ControlAction::RequestControl,
-            grant_id: 0,
-            control_id: 0,
-        }),
-        ShareDataPdu::FontList(Default::default()),
-    ];
-    for pdu in client_pdus {
+    for pdu in client_finalization_pdus() {
         let request = encode_send_data_request(USER_CHANNEL_ID, IO_CHANNEL_ID, &encode_client_share_data(pdu));
         sequence.step(&request, None, &mut WriteBuf::new()).unwrap();
     }
@@ -1364,39 +1350,21 @@ fn finished_finalization() -> FinalizationSequence {
     }
     assert!(sequence.is_done());
 
-    sequence
-}
-
-// oracle: contract crates/ironrdp-acceptor/src/finalization.rs §FinalizationSequence (stepping a finished sequence returns an error and leaves it finished)
-#[test]
-fn stepping_a_finished_finalization_returns_an_error() {
-    let mut sequence = finished_finalization();
-
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 
     assert!(sequence.is_done());
 }
 
-// oracle: contract crates/ironrdp-acceptor/src/finalization.rs §FinalizationSequence (stepping a failed sequence returns an error)
+// oracle: regression Devolutions/IronRDP#1325 (issue thread: the same panic in the connection finalization after a failed step)
 #[test]
 fn stepping_a_failed_finalization_returns_an_error() {
+    // The Synchronize and Control Cooperate states ignore what they read, so the Request Control state is the first
+    // that a bad PDU fails.
     let mut sequence = FinalizationSequence::new(USER_CHANNEL_ID, IO_CHANNEL_ID);
-    let synchronize = encode_send_data_request(
-        USER_CHANNEL_ID,
-        IO_CHANNEL_ID,
-        &encode_client_share_data(ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0 })),
-    );
-    sequence.step(&synchronize, None, &mut WriteBuf::new()).unwrap();
-    let cooperate = encode_send_data_request(
-        USER_CHANNEL_ID,
-        IO_CHANNEL_ID,
-        &encode_client_share_data(ShareDataPdu::Control(ControlPdu {
-            action: ControlAction::Cooperate,
-            grant_id: 0,
-            control_id: 0,
-        })),
-    );
-    sequence.step(&cooperate, None, &mut WriteBuf::new()).unwrap();
+    for pdu in client_finalization_pdus().into_iter().take(2) {
+        let request = encode_send_data_request(USER_CHANNEL_ID, IO_CHANNEL_ID, &encode_client_share_data(pdu));
+        sequence.step(&request, None, &mut WriteBuf::new()).unwrap();
+    }
     sequence
         .step(b"not a request control PDU", None, &mut WriteBuf::new())
         .unwrap_err();
