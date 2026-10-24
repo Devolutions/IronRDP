@@ -1356,10 +1356,7 @@ impl ProgressiveDecoder {
         // deletes the previous one, and never repeats SYNC + CONTEXT, so a per-context lookup
         // alone rejects the new context. The retained value is scoped to its surface and
         // released with it. Only error when no source is available at all.
-        let signalled = blocks.iter().find_map(|block| match block {
-            ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
-            _ => None,
-        });
+        let signalled = signalled_context_flag(&blocks);
         if let Some(flag) = signalled {
             self.surface_context_flags.insert(surface_id, flag);
         }
@@ -1523,6 +1520,18 @@ impl ProgressiveDecoder {
         }
 
         Ok(decoded_tiles)
+    }
+
+    /// Take in a progressive bitmap stream for a surface whose tiles aren't
+    /// kept, such as one the caller has no pixels for. Only its CONTEXT
+    /// band-layout flag is recorded, for later streams on the surface that
+    /// omit the block, as [`Self::decode_bitmap`] records it.
+    pub fn skip_bitmap(&mut self, surface_id: u16, bitmap_data: &[u8]) -> Result<(), ProgressiveDecodeError> {
+        let blocks = ironrdp_pdu::codecs::rfx::progressive::decode_progressive_stream(bitmap_data)?;
+        if let Some(flag) = signalled_context_flag(&blocks) {
+            self.surface_context_flags.insert(surface_id, flag);
+        }
+        Ok(())
     }
 
     /// Delete a codec context, freeing its progressive tile state.
@@ -1760,6 +1769,14 @@ impl Default for ProgressiveDecoder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The band-layout flag a stream's CONTEXT block sets, if it has one.
+fn signalled_context_flag(blocks: &[ironrdp_pdu::codecs::rfx::progressive::ProgressiveBlock<'_>]) -> Option<bool> {
+    blocks.iter().find_map(|block| match block {
+        ironrdp_pdu::codecs::rfx::progressive::ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
+        _ => None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2252,6 +2269,19 @@ mod tests {
         decoder.delete_surface(1);
         assert_eq!(decoder.contexts.len(), 1);
         assert!(decoder.contexts.contains_key(&(2, 0)));
+    }
+
+    #[test]
+    fn skipped_stream_keeps_only_the_context_flag() {
+        let mut decoder = ProgressiveDecoder::new();
+
+        decoder.skip_bitmap(1, &minimal_progressive_stream(true)).unwrap();
+        assert!(decoder.contexts.is_empty());
+        assert!(decoder.references.is_empty());
+
+        // A later stream for the surface that omits CONTEXT still decodes.
+        let stream_without_context = minimal_progressive_stream(false);
+        assert!(decoder.decode_bitmap(1, 0, 640, 480, &stream_without_context).is_ok());
     }
 
     #[test]
