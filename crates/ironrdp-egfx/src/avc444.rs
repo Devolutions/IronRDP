@@ -458,7 +458,7 @@ fn rgb_to_yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     )
 }
 
-fn clamp_channel(value: i32) -> u8 {
+pub(crate) fn clamp_channel(value: i32) -> u8 {
     // The clamped value is its own low byte.
     let [low, ..] = value.clamp(0, 255).to_le_bytes();
     low
