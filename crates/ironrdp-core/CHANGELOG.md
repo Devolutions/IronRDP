@@ -6,6 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-core-v0.3.0...ironrdp-core-v0.3.1)] - 2026-10-24
+
+### <!-- 4 -->Bug Fixes
+
+- Check remaining length when skipping padding and reading client core data ([#2130](https://github.com/Devolutions/IronRDP/issues/2130)) ([b69cda22ec](https://github.com/Devolutions/IronRDP/commit/b69cda22ec692e212caffdbb9fe0c4e5ff1d2696)) 
+
+  ## Summary
+  
+  - `read_padding!` now checks the remaining length and returns a "not
+  enough bytes" decode error from the enclosing function, like
+  `ensure_size!`, instead of advancing the read cursor past the end of the
+  buffer (which made a later read panic). All existing call sites are
+  covered without modification; the error carries the caller's name and
+  the cursor offset.
+  - The two remaining direct `ironrdp_core::read_padding` calls
+  (ironrdp-rdpeusb) use `read_padding!` too. The function itself keeps its
+  signature and behavior, now documented as unchecked.
+  - Removes the duplicate PER `read_padding`;
+  `ConferenceCreateRequest::decode` uses `read_padding!`.
+  - `ReadCursor::len()` saturates at zero instead of overflowing when the
+  cursor was advanced past the end, and `ReadCursor::advance` gains a
+  debug assertion so debug, test and fuzz builds report such an advance
+  where it happens.
+  - `ClientCoreOptionalData::decode` checks the remaining length before
+  reading `desktopPhysicalHeight` and `deviceScaleFactor`. Both are
+  required by [MS-RDPBCGR] 2.2.1.3.2 once their predecessor is present, so
+  a block ending in between is rejected with a "not enough bytes" error.
+  - The optional Padding byte of `DR_DRIVE_QUERY_DIRECTORY_RSP`
+  ([MS-RDPEFS] 2.2.3.4.10) is only skipped when present, so a length-0
+  response without it is accepted.
+  
+  ## Compatibility
+  
+  - No public item is added, removed or changed: `cargo-semver-checks` on
+  the `ironrdp` facade, with the feature set used by PR automation,
+  reports no semver update required.
+  - `read_padding!` changes its contract: it now returns early with a
+  `DecodeError`, so it must be used in a function returning `Result<_,
+  DecodeError>`, the same requirement as `ensure_size!`.
+  `cargo-semver-checks` cannot see macro bodies. All uses in the workspace
+  already satisfy this, but a downstream crate using `read_padding!`
+  elsewhere would stop compiling, so this may warrant treating the change
+  as breaking for the macro.
+  
+  ## Tests
+  
+  - `pdu::mcs`: decoding every prefix of a valid Connect Initial returns a
+  result instead of panicking; snapshot of the error for the prefix ending
+  before the PER padding byte.
+  - `pdu::gcc`: same for Client Core Data prefixes, plus blocks ending
+  right after `desktopPhysicalWidth` / `desktopScaleFactor`.
+  - `padding`: `read_padding!` on truncated input; the `advance` debug
+  assertion.
+  - `rdpdr`: empty query-directory response with and without the trailing
+  padding byte.
+  
+  `cargo xtask check fmt -v`, `cargo xtask check lints -v` and the
+  workspace test suite pass locally (the IPv6 loopback test is skipped: no
+  IPv6 on the test machine).
+  
+  ---------
+
+
+
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-core-v0.2.1...ironrdp-core-v0.3.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

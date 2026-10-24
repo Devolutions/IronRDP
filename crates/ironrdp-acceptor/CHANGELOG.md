@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.11.0...ironrdp-acceptor-v0.11.1)] - 2026-10-24
+
+### <!-- 4 -->Bug Fixes
+
+- Send RDP as the Demand Active source descriptor ([#2119](https://github.com/Devolutions/IronRDP/issues/2119)) ([d921607fc8](https://github.com/Devolutions/IronRDP/commit/d921607fc817b72298cf7434e2bba887ebaf5674)) 
+
+  The server Demand Active PDU used an empty source descriptor, which
+  `DemandActive` encodes as a single NUL byte. Jump Desktop rejects it
+  (`bad packet - source Descriptor not set to RDP`) and drops the
+  connection right after the TLS upgrade.
+  
+  Send `RDP` instead. It encodes as `RDP\0`, the same four bytes the
+  FreeRDP server writes, and the value already used by the server Demand
+  Active fixture in `ironrdp-testsuite-core`.
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.10.0...ironrdp-acceptor-v0.11.0)] - 2026-10-23
 
 ### <!-- 1 -->Features
