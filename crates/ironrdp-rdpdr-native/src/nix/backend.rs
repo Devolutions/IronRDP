@@ -37,6 +37,10 @@ pub struct NixRdpdrBackend {
     /// INVARIANT: holds at most `max_open_files` entries.
     open_files: HashMap<u32, OpenFile>,
     /// Bounds the open files, so the server cannot exhaust the descriptors of the client process.
+    ///
+    /// A quarter of the soft descriptor limit, at most `MAX_OPEN_FILES`.
+    /// An open file holds up to three descriptors: the file, and a directory being enumerated with its stream.
+    /// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process.
     max_open_files: usize,
     /// Print-job handling for the virtual printer, when one is announced.
     printer: Option<Printer>,
@@ -48,26 +52,12 @@ impl Default for NixRdpdrBackend {
     }
 }
 
-/// Returns a quarter of the soft descriptor limit, at most `MAX_OPEN_FILES`.
-///
-/// An open file holds up to three descriptors: the file, and a directory being enumerated with its stream.
-/// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process.
-fn max_open_files() -> usize {
-    match getrlimit(Resource::RLIMIT_NOFILE) {
-        Ok((soft_limit, _)) => usize::try_from(soft_limit / 4)
-            .unwrap_or(usize::MAX)
-            .min(MAX_OPEN_FILES),
-        Err(error) => {
-            warn!(%error, "Failed to read the descriptor limit");
-            MAX_OPEN_FILES
-        }
-    }
-}
-
 #[derive(Debug)]
 struct OpenFile {
     file: std::fs::File,
     path: RelativePath,
+    /// Whether closing the file deletes it.
+    delete_pending: bool,
     /// The enumeration the last initial query-directory request started on this file.
     listing: Option<DirectoryListing>,
 }
@@ -126,7 +116,15 @@ impl NixRdpdrBackend {
             file_id: 0,
             file_base,
             open_files: HashMap::new(),
-            max_open_files: max_open_files(),
+            max_open_files: match getrlimit(Resource::RLIMIT_NOFILE) {
+                Ok((soft_limit, _)) => usize::try_from(soft_limit / 4)
+                    .unwrap_or(usize::MAX)
+                    .min(MAX_OPEN_FILES),
+                Err(error) => {
+                    warn!(%error, "Failed to read the descriptor limit");
+                    MAX_OPEN_FILES
+                }
+            },
             printer: None,
         }
     }
@@ -471,7 +469,14 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
 }
 
 pub(crate) fn close_device(backend: &mut NixRdpdrBackend, req_inner: DeviceCloseRequest) -> PduResult<Vec<SvcMessage>> {
-    backend.open_files.remove(&req_inner.device_io_request.file_id);
+    if let Some(open_file) = backend.open_files.remove(&req_inner.device_io_request.file_id) {
+        if open_file.delete_pending {
+            // The handle is closed whether or not the delete succeeds, so the close still reports success.
+            if let Err(error) = remove_file(&backend.file_base, &open_file) {
+                warn!(%error, "Delete on close error");
+            }
+        }
+    }
     let res = RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
         device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::SUCCESS),
     });
@@ -675,8 +680,19 @@ pub(crate) fn set_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    let status = match backend.open_files.get_mut(&req_inner.device_io_request.file_id) {
+    let file_id = req_inner.device_io_request.file_id;
+    let has_open_descendants = backend.open_files.get(&file_id).is_some_and(|open_file| {
+        backend
+            .open_files
+            .values()
+            .any(|other| other.path.is_inside(&open_file.path))
+    });
+    let status = match backend.open_files.get_mut(&file_id) {
         Some(open_file) => match &req_inner.set_buffer {
+            // [MS-FSA] 2.1.5.15.12 refuses to rename a file marked for deletion or a directory holding open files.
+            FileInformationClass::Rename(_) if open_file.delete_pending || has_open_descendants => {
+                NtStatus::ACCESS_DENIED
+            }
             FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name) {
                 Ok(to) => match rename(
                     &backend.file_base,
@@ -691,28 +707,25 @@ pub(crate) fn set_information(
                     Err(Errno::EEXIST) => NtStatus::OBJECT_NAME_COLLISION,
                     Err(error) => {
                         warn!(%error, "Rename file error");
-                        NtStatus::UNSUCCESSFUL
+                        status_from_errno(error)
                     }
                 },
                 Err(InvalidPath) => {
-                    warn!(file_name = %info.file_name, "Rejected a rename target outside the shared directory");
+                    warn!(file_name = ?info.file_name, "Rejected a rename target outside the shared directory");
                     NtStatus::OBJECT_NAME_INVALID
                 }
             },
-            FileInformationClass::Allocation(_) => {
-                //nothing to do
-                NtStatus::SUCCESS
-            }
-            // A zero `delete_pending` cancels a pending delete; deletes happen at once, so there is nothing to undo.
-            FileInformationClass::Disposition(info) if info.delete_pending == 0 => NtStatus::SUCCESS,
-            FileInformationClass::Disposition(_) => match remove_file(&backend.file_base, open_file) {
-                Ok(()) => NtStatus::SUCCESS,
-                Err(Errno::ENOTEMPTY | Errno::EEXIST) => NtStatus::DIRECTORY_NOT_EMPTY,
-                Err(error) => {
-                    warn!(%error, "Remove file error");
-                    NtStatus::UNSUCCESSFUL
+            // The allocation size is only a hint, so there is nothing to do.
+            FileInformationClass::Allocation(_) => NtStatus::SUCCESS,
+            FileInformationClass::Disposition(info) => {
+                match set_delete_pending(&backend.file_base, open_file, info.delete_pending != 0) {
+                    Ok(()) => NtStatus::SUCCESS,
+                    Err(error) => {
+                        warn!(%error, "Set delete pending error");
+                        status_from_errno(error)
+                    }
                 }
-            },
+            }
             FileInformationClass::EndOfFile(info) => match ftruncate(open_file.file.as_fd(), info.end_of_file) {
                 Ok(()) => NtStatus::SUCCESS,
                 Err(error) => {
@@ -726,7 +739,7 @@ pub(crate) fn set_information(
             }
         },
         None => {
-            warn!("no such file");
+            warn!("No such file");
             NtStatus::NO_SUCH_FILE
         }
     };
@@ -735,21 +748,60 @@ pub(crate) fn set_information(
     ))])
 }
 
-/// Renames `from` to `to`, failing with `EEXIST` when `to` exists and `replace_if_exists` is false.
+/// Renames `from` to `to`, as [MS-FSA] 2.1.5.15.12 describes.
 ///
+/// Fails with `EEXIST` when `to` exists and `replace_if_exists` is false, and with `EACCES` when `to` is a directory.
 /// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
+///
+/// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/87f86c9b-6c2a-4803-84b7-131a74a434fa
 fn rename(file_base: &str, from: &RelativePath, to: &RelativePath, replace_if_exists: bool) -> nix::Result<()> {
     let root = Root::open(file_base)?;
     let (from_parent, from_name) = from.open_parent(&root)?;
     let (to_parent, to_name) = to.open_parent(&root)?;
-    if !replace_if_exists {
-        match fstatat(to_parent.as_fd(), to_name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-            Ok(_) => return Err(Errno::EEXIST),
-            Err(Errno::ENOENT) => {}
-            Err(error) => return Err(error),
+    match fstatat(to_parent.as_fd(), to_name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(_) if !replace_if_exists => return Err(Errno::EEXIST),
+        Ok(stat) if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFDIR => {
+            return Err(Errno::EACCES);
         }
+        Ok(_) | Err(Errno::ENOENT) => {}
+        Err(error) => return Err(error),
     }
     renameat(from_parent.as_fd(), from_name, to_parent.as_fd(), to_name)
+}
+
+/// Marks `open_file` for deletion when it is closed, or clears the mark.
+///
+/// A directory is marked only when it is empty, as [MS-FSA] 2.1.5.15.3 requires.
+///
+/// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/386d9ec5-e0f6-4853-b175-c05be01419e0
+fn set_delete_pending(file_base: &str, open_file: &mut OpenFile, delete_pending: bool) -> nix::Result<()> {
+    if delete_pending && open_file.file.metadata().map_err(io_to_errno)?.is_dir() {
+        let root = Root::open(file_base)?;
+        let mut listing = DirectoryListing::open(open_file.path.open_directory(&root)?)?;
+        if listing.next_entry().is_some() {
+            return Err(Errno::ENOTEMPTY);
+        }
+    }
+    open_file.delete_pending = delete_pending;
+    Ok(())
+}
+
+/// Maps a filesystem error to the status the Windows drive backend reports for the same condition.
+fn status_from_errno(error: Errno) -> NtStatus {
+    match error {
+        Errno::ENOENT => NtStatus::NO_SUCH_FILE,
+        Errno::EEXIST => NtStatus::OBJECT_NAME_COLLISION,
+        Errno::ENOTDIR => NtStatus::NOT_A_DIRECTORY,
+        Errno::EISDIR => NtStatus::FILE_IS_A_DIRECTORY,
+        Errno::ENOTEMPTY => NtStatus::DIRECTORY_NOT_EMPTY,
+        Errno::ENAMETOOLONG => NtStatus::OBJECT_NAME_INVALID,
+        // A refused symbolic link or mount point is reported like a refused reparse point.
+        Errno::EACCES | Errno::EPERM | Errno::ELOOP | Errno::EXDEV => NtStatus::ACCESS_DENIED,
+        Errno::EROFS => NtStatus::MEDIA_WRITE_PROTECTED,
+        Errno::ENOSPC | Errno::EDQUOT => NtStatus::DISK_FULL,
+        Errno::EMFILE | Errno::ENFILE => NtStatus::INSUFFICIENT_RESOURCES,
+        _ => NtStatus::UNSUCCESSFUL,
+    }
 }
 
 /// Removes the file or empty directory `open_file` names.
@@ -831,7 +883,7 @@ fn make_query_dir_resp(
                     },
                 ))])
             } else {
-                warn!("unsupported file class for query directory");
+                warn!("Unsupported file class for query directory");
                 Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
                     ClientDriveQueryDirectoryResponse {
                         device_io_reply: DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED),
@@ -848,7 +900,7 @@ pub(crate) fn query_directory(
     req_inner: ServerDriveQueryDirectoryRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     let Some(open_file) = backend.open_files.get_mut(&req_inner.device_io_request.file_id) else {
-        warn!("no file to query directory");
+        warn!("No file to query directory");
         return Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
             ClientDriveQueryDirectoryResponse {
                 device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::NO_SUCH_FILE),
@@ -863,7 +915,7 @@ pub(crate) fn query_directory(
     }
 
     let Ok(path) = RelativePath::parse(&req_inner.path) else {
-        warn!(path = %req_inner.path, "Rejected a query path outside the shared directory");
+        warn!(path = ?req_inner.path, "Rejected a query path outside the shared directory");
         return Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveQueryDirectoryResponse(
             ClientDriveQueryDirectoryResponse {
                 device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::OBJECT_NAME_INVALID),
@@ -941,7 +993,7 @@ pub(crate) fn create_drive(
         match RelativePath::parse(&req_inner.path) {
             Ok(path) => open_file(&backend.file_base, &req_inner, &path).map(|file| (file, path)),
             Err(InvalidPath) => {
-                warn!(path = %req_inner.path, "Rejected a create path outside the shared directory");
+                warn!(path = ?req_inner.path, "Rejected a create path outside the shared directory");
                 Err(NtStatus::OBJECT_NAME_INVALID)
             }
         }
@@ -955,6 +1007,7 @@ pub(crate) fn create_drive(
                 OpenFile {
                     file,
                     path,
+                    delete_pending: false,
                     listing: None,
                 },
             );
@@ -980,47 +1033,55 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
     })?;
     let (parent, name) = path.open_parent(&root).map_err(|error| {
         warn!(%error, ?path, "Open parent directory error");
-        NtStatus::UNSUCCESSFUL
+        match error {
+            Errno::ENOENT | Errno::ENOTDIR => NtStatus::OBJECT_PATH_NOT_FOUND,
+            error => status_from_errno(error),
+        }
     })?;
     let is_directory_request = req.create_options.contains(CreateOptions::FILE_DIRECTORY_FILE);
 
-    // first process directory
+    // Statuses follow [MS-FSA] 2.1.5.1 and 2.1.5.1.2.
     match fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW) {
         Ok(stat) => {
             if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFDIR {
-                if req.create_disposition == CreateDisposition::FILE_CREATE {
-                    warn!("Attempt to create directory, but it exists");
-                    return Err(NtStatus::UNSUCCESSFUL);
-                }
                 if req.create_options.contains(CreateOptions::FILE_NON_DIRECTORY_FILE) {
-                    warn!("Attempt to create a file, but it is a directory");
-                    return Err(NtStatus::UNSUCCESSFUL);
+                    warn!("Attempt to open a directory as a file");
+                    return Err(NtStatus::FILE_IS_A_DIRECTORY);
                 }
-                // A directory cannot be opened for writing, created, or truncated, so only the open dispositions apply.
+                // An existing directory cannot be created, overwritten or superseded.
                 if !matches!(
                     req.create_disposition,
                     CreateDisposition::FILE_OPEN | CreateDisposition::FILE_OPEN_IF
                 ) {
-                    warn!(disposition = ?req.create_disposition, "Unsupported create disposition for a directory");
-                    return Err(NtStatus::UNSUCCESSFUL);
+                    warn!(disposition = ?req.create_disposition, "Attempt to replace an existing directory");
+                    return Err(if path.file_name().is_none() {
+                        NtStatus::ACCESS_DENIED
+                    } else {
+                        NtStatus::OBJECT_NAME_COLLISION
+                    });
                 }
                 return open_at(&root, &parent, name, OFlag::O_RDONLY | OFlag::O_DIRECTORY);
             } else if is_directory_request {
-                warn!("Attempt to create a directory, but it is a file");
-                return Err(NtStatus::NOT_A_DIRECTORY);
+                warn!("Attempt to open a file as a directory");
+                return Err(if req.create_disposition == CreateDisposition::FILE_CREATE {
+                    NtStatus::OBJECT_NAME_COLLISION
+                } else {
+                    NtStatus::NOT_A_DIRECTORY
+                });
             }
         }
         Err(_) => {
             if is_directory_request {
-                if !matches!(
-                    req.create_disposition,
-                    CreateDisposition::FILE_CREATE | CreateDisposition::FILE_OPEN_IF
-                ) {
-                    return Err(NtStatus::UNSUCCESSFUL);
+                match req.create_disposition {
+                    CreateDisposition::FILE_CREATE | CreateDisposition::FILE_OPEN_IF => {}
+                    CreateDisposition::FILE_OPEN | CreateDisposition::FILE_OVERWRITE => {
+                        return Err(NtStatus::NO_SUCH_FILE);
+                    }
+                    _ => return Err(NtStatus::UNSUCCESSFUL),
                 }
                 mkdirat(parent.as_fd(), name, Mode::from_bits_truncate(0o777)).map_err(|error| {
                     warn!(%error, ?path, "Create directory error");
-                    NtStatus::UNSUCCESSFUL
+                    status_from_errno(error)
                 })?;
                 return open_at(&root, &parent, name, OFlag::O_RDONLY | OFlag::O_DIRECTORY);
             }
@@ -1045,8 +1106,8 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
         root.open_at(parent.as_fd(), name, flags, Mode::from_bits_truncate(0o666))
             .map(std::fs::File::from)
             .map_err(|error| {
-                warn!(%error, name, "Open file error");
-                NtStatus::UNSUCCESSFUL
+                warn!(%error, ?name, "Open file error");
+                status_from_errno(error)
             })
     }
 }
@@ -1138,10 +1199,22 @@ mod tests {
         let (status, first) = open_share(&mut backend);
         assert_eq!(status, NtStatus::SUCCESS);
         assert_eq!(open_share(&mut backend).0, NtStatus::SUCCESS);
-        // oracle: spec MS-ERREF §2.3.1
+        // oracle: mutant cap check removed or off by one
         assert_eq!(open_share(&mut backend).0, NtStatus::INSUFFICIENT_RESOURCES);
 
-        backend.open_files.remove(&first);
+        close_device(
+            &mut backend,
+            DeviceCloseRequest {
+                device_io_request: DeviceIoRequest {
+                    device_id: 1,
+                    file_id: first,
+                    completion_id: 0,
+                    major_function: MajorFunction::Close,
+                    minor_function: MinorFunction::from(0),
+                },
+            },
+        )
+        .expect("complete close");
         assert_eq!(open_share(&mut backend).0, NtStatus::SUCCESS);
     }
 

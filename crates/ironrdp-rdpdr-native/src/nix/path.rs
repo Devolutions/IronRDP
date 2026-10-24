@@ -1,9 +1,8 @@
 //! Server-supplied RDPDR filesystem paths, resolved beneath the shared directory.
 //!
 //! The server names files with paths relative to the redirected drive root.
-//! Each path is split into validated components and opened one component at a
-//! time relative to a directory descriptor, refusing symbolic links and mount
-//! points, so no spelling, link or mount inside the share resolves outside it.
+//! Each path is split into validated components and opened one component at a time relative to a directory descriptor.
+//! Symbolic links and mount points are refused, so no spelling, link or mount inside the share resolves outside it.
 //!
 //! UNTESTED: every filesystem call on a server-supplied path works on a descriptor from `Root::open_at`,
 //! `RelativePath::open_parent` or `RelativePath::open_directory`, never on a joined path string.
@@ -142,6 +141,11 @@ impl RelativePath {
         })
     }
 
+    /// Whether this path names something below `ancestor`, excluding `ancestor` itself.
+    pub(crate) fn is_inside(&self, ancestor: &Self) -> bool {
+        ancestor.components.len() < self.components.len() && self.components.starts_with(&ancestor.components)
+    }
+
     /// Opens the directory that holds the final component, and returns it with that component.
     ///
     /// For the shared directory itself, the directory is the root and the component is `.`.
@@ -178,8 +182,11 @@ pub(crate) fn io_to_errno(error: std::io::Error) -> Errno {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
+    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs
     #[test]
     fn accepts_protocol_root_relative_paths() {
         let path = RelativePath::parse(r"\Documents\report.txt").expect("valid RDPDR path");
@@ -187,30 +194,29 @@ mod tests {
         assert_eq!(path.components, ["Documents", "report.txt"]);
     }
 
-    #[test]
-    fn accepts_the_shared_directory_itself() {
-        for path in ["", r"\"] {
-            let path = RelativePath::parse(path).expect("shared directory");
+    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs
+    #[rstest]
+    #[case::empty("")]
+    #[case::single_backslash(r"\")]
+    fn accepts_the_shared_directory_itself(#[case] path: &str) {
+        let path = RelativePath::parse(path).expect("shared directory");
 
-            assert!(path.file_name().is_none());
-        }
+        assert!(path.file_name().is_none());
     }
 
-    #[test]
-    fn rejects_traversal_rooted_and_empty_components() {
-        for path in [
-            r"\..",
-            r"\..\..\.bashrc",
-            r"\dir\..\..\outside",
-            r"\.\file",
-            r"\\server\share",
-            r"\dir\\file",
-            r"\dir\",
-            r"\/etc/passwd",
-            r"\dir/../../outside",
-            "\\embedded\0nul",
-        ] {
-            assert_eq!(RelativePath::parse(path), Err(InvalidPath), "{path:?}");
-        }
+    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs
+    #[rstest]
+    #[case::parent(r"\..")]
+    #[case::parents_then_name(r"\..\..\.bashrc")]
+    #[case::parents_below_a_directory(r"\dir\..\..\outside")]
+    #[case::current_directory(r"\.\file")]
+    #[case::unc_prefix(r"\\server\share")]
+    #[case::empty_component(r"\dir\\file")]
+    #[case::trailing_backslash(r"\dir\")]
+    #[case::forward_slash_root(r"\/etc/passwd")]
+    #[case::forward_slash_traversal(r"\dir/../../outside")]
+    #[case::embedded_nul("\\embedded\0nul")]
+    fn rejects_traversal_rooted_and_empty_components(#[case] path: &str) {
+        assert_eq!(RelativePath::parse(path), Err(InvalidPath));
     }
 }
