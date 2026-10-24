@@ -376,7 +376,7 @@ version = "0.2.0"
 
 [[package]]
 name = "ironrdp-cliprdr"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -395,14 +395,14 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ironrdp-error",
 ]
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ironrdp-bulk",
  "ironrdp-core",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-egfx"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bit_field",
  "bitflags",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -512,7 +512,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "bitflags",
  "getrandom 0.3.4",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpel"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-str"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "ironrdp-core",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bitflags",
  "ironrdp-core",

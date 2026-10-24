@@ -17,7 +17,7 @@ categories.workspace = true
 doctest = false
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.4" } # public
+ironrdp-egfx = { path = "../ironrdp-egfx", version = "0.5" } # public
 tracing = { version = "0.1", features = ["log"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
