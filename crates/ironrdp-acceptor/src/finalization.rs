@@ -1,5 +1,5 @@
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written, general_err,
 };
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp;
@@ -8,6 +8,9 @@ use tracing::debug;
 
 use crate::util::{self, wrap_share_data};
 
+/// Server side of the connection finalization.
+///
+/// Once a step fails, or once the finalization is finished, further steps return an error.
 #[derive(Debug)]
 pub struct FinalizationSequence {
     state: FinalizationState,
@@ -179,7 +182,14 @@ impl Sequence for FinalizationSequence {
                 (Written::from_size(written)?, FinalizationState::Finished)
             }
 
-            _ => unreachable!(),
+            FinalizationState::Consumed => {
+                return Err(general_err!("finalization state consumed by a failed step"));
+            }
+
+            FinalizationState::Finished => {
+                self.state = FinalizationState::Finished;
+                return Err(general_err!("finalization already finished"));
+            }
         };
 
         self.state = next_state;

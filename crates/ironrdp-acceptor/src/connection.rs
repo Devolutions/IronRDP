@@ -32,6 +32,10 @@ const IO_CHANNEL_ID: u16 = 1003;
 // per 3.3.5.15.1) rather than the user's own MCS channel ID.
 const USER_CHANNEL_ID: u16 = 1002;
 
+/// Server side of the RDP connection sequence.
+///
+/// Once a step fails, or once the connection is accepted, further steps return an error.
+/// An accepted acceptor keeps its result for [`Acceptor::get_result`].
 pub struct Acceptor {
     pub(crate) state: AcceptorState,
     security: SecurityProtocol,
@@ -1563,7 +1567,16 @@ impl Sequence for Acceptor {
                 }
             }
 
-            _ => unreachable!(),
+            AcceptorState::Consumed => {
+                return Err(general_err!(
+                    "acceptor state consumed by a failed step or by taking the result"
+                ));
+            }
+
+            state @ AcceptorState::Accepted { .. } => {
+                self.state = state;
+                return Err(general_err!("connection already accepted"));
+            }
         };
 
         self.state = next_state;
