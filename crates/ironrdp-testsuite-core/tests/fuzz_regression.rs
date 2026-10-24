@@ -57,6 +57,12 @@ fn check_pdu_round_trip() {
     check!(pdu_round_trip);
 }
 
+// oracle: spec crates/ironrdp-pdu/src/lib.rs §PduHint (find_size returns None only while the input is too short to hold the size)
+#[test]
+fn check_pdu_hint() {
+    check!(pdu_hint);
+}
+
 #[test]
 fn check_channel_process() {
     check!(channel_process);

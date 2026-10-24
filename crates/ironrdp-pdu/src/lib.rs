@@ -178,7 +178,8 @@ pub trait PduHint: Send + Sync + fmt::Debug + 'static {
     /// Finds next PDU size by reading the next few bytes.
     ///
     /// Returns `Some((hint_matching, size))` if the size is known.
-    /// Returns `None` if the size cannot be determined yet.
+    /// Returns `None` only while `bytes` is too short to hold the size, and an error for bytes that can never frame a
+    /// PDU, because a framer reads more input for as long as the hint returns `None`, up to a limit.
     fn find_size(&self, bytes: &[u8]) -> DecodeResult<Option<(bool, usize)>>;
 }
 
@@ -224,6 +225,31 @@ impl PduHint for FastPathHint {
                 Ok(Some(res))
             }
             None => Ok(None),
+        }
+    }
+}
+
+/// Matches a CredSSP TSRequest, which is a DER-encoded SEQUENCE.
+///
+/// Defined in [\[MS-CSSP\] 2.2.1 TSRequest].
+///
+/// A length of more than two octets is rejected, as `sspi` encodes and decodes a TSRequest with 16-bit lengths and
+/// could not decode a longer one.
+///
+/// [\[MS-CSSP\] 2.2.1 TSRequest]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/6aac4dea-08ef-47a6-8747-22ea7f6d8685
+#[derive(Clone, Copy, Debug)]
+pub struct CredsspTsRequestHint;
+
+pub const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
+
+impl PduHint for CredsspTsRequestHint {
+    fn find_size(&self, bytes: &[u8]) -> DecodeResult<Option<(bool, usize)>> {
+        let mut src = ReadCursor::new(bytes);
+
+        match ber::read_sequence_tag(&mut src) {
+            Ok(length) => Ok(Some((true, src.pos() + usize::from(length)))),
+            Err(e) if matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 }

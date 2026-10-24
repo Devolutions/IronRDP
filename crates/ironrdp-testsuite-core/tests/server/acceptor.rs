@@ -2026,6 +2026,35 @@ async fn credssp_failed_logon_is_reported_as_logon_failure(
     assert_eq!(ts_request.error_code, Some(NStatusCode::LOGON_FAILURE));
 }
 
+/// A first CredSSP message that cannot start a TSRequest is rejected at its first byte.
+///
+/// Waiting for more bytes instead lets an unauthenticated client make the server buffer everything it sends.
+// oracle: spec MS-CSSP §2.2.1
+// A TSRequest is a DER-encoded SEQUENCE, so its first byte is the SEQUENCE tag 0x30 and 0x00 can never start one.
+#[tokio::test]
+async fn credssp_rejects_a_first_message_that_is_not_a_ts_request() {
+    let mut acceptor = negotiated_acceptor(SecurityProtocol::HYBRID);
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [vec![0x00], vec![0xAA; 1024]].into(),
+        ..HandshakeStream::default()
+    });
+
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "client.example.com".to_owned().into(),
+        vec![0x42; 32],
+        None,
+        &mut SetupHandler::default(),
+    )
+    .await;
+
+    assert!(result.is_err());
+    let unread_chunks = framed.get_inner().0.incoming.len();
+    assert_eq!(unread_chunks, 1, "the server must not read past the first byte");
+}
+
 /// The server Demand Active carries `RDP` as its source descriptor, as the FreeRDP
 /// server does; some clients (Jump Desktop) refuse an empty one.
 #[test]

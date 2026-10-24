@@ -5,6 +5,17 @@ use ironrdp_connector::MonotonicInstant;
 use ironrdp_pdu::PduHint;
 use tracing::debug;
 
+/// Most bytes `read_by_hint` buffers while the hint cannot determine a PDU size.
+///
+/// A correct hint determines the size from a header of a few bytes, so a hint still undecided past this point
+/// is fed input that never frames, and reading on would buffer whatever the peer sends.
+/// The largest TPKT frame fits, which leaves room for a hint that needs a whole frame to decide.
+// UNTESTED: this limit is the only bound on the RDCleanPath hints in `ironrdp-client` and `ironrdp-web`.
+// `RDCleanPathPdu::detect` reports `NotEnoughBytes` for a complete header whose first element is not `[0]`, and the
+// `pdu_hint` fuzz target covers only the `ironrdp-pdu` hints.
+// When raising or removing this limit, or adding a hint, check which hints can stay undecided on complete input.
+const MAX_UNSIZED_BUFFER_LEN: usize = 64 * 1024;
+
 pub struct Framed<S> {
     stream: S,
     buf: BytesMut,
@@ -102,6 +113,8 @@ where
     }
 
     /// Reads a frame using the provided PduHint.
+    ///
+    /// Fails with [`io::ErrorKind::InvalidData`] once 64 KiB are buffered without the hint determining a PDU size.
     pub fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
         loop {
             match hint.find_size(self.peek()).map_err(io::Error::other)? {
@@ -114,6 +127,13 @@ where
                     }
                 }
                 None => {
+                    if MAX_UNSIZED_BUFFER_LEN <= self.buf.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "PduHint found no PDU size within the buffer limit",
+                        ));
+                    }
+
                     let len = self.read()?;
 
                     // Handle EOF

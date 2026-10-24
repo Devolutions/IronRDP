@@ -9,6 +9,7 @@ mod client;
 mod cliprdr_native;
 mod dvc_pipe_proxy;
 mod e2e;
+mod framed_limits;
 mod gateway_detect;
 mod rdpeudp_tokio;
 mod static_channel;

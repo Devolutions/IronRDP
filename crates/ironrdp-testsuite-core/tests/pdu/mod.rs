@@ -1,5 +1,6 @@
 mod autodetect;
 mod client_auto_reconnect;
+mod credssp_hint;
 mod gcc;
 mod gfx;
 mod input;

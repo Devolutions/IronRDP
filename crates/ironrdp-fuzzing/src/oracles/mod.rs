@@ -144,6 +144,29 @@ pub fn bulk_round_trip(data: &[u8]) {
     assert_eq!(decompressed, src, "bulk round-trip byte-equality failed for {algo:?}",);
 }
 
+/// Checks that every PDU hint reports a size or an error once its header is complete.
+///
+/// A framer reads more input for as long as its hint returns `None`, so a hint that does so for complete input that
+/// can never frame a PDU lets the peer make the framer buffer whatever it sends.
+pub fn pdu_hint(data: &[u8]) {
+    use ironrdp_pdu::{CREDSSP_TS_REQUEST_HINT, FAST_PATH_HINT, PduHint, RDP_HINT, X224_HINT};
+
+    // The longest header any of these hints reads: a TPKT header, or a BER SEQUENCE tag with two length octets.
+    const MAX_HEADER_LEN: usize = 4;
+
+    let hints: [&dyn PduHint; 4] = [&RDP_HINT, &X224_HINT, &FAST_PATH_HINT, &CREDSSP_TS_REQUEST_HINT];
+
+    for hint in hints {
+        if let Ok(None) = hint.find_size(data) {
+            assert!(
+                data.len() < MAX_HEADER_LEN,
+                "{hint:?} found no size in {} bytes, which hold a whole header",
+                data.len()
+            );
+        }
+    }
+}
+
 pub fn pdu_decode(data: &[u8]) {
     use ironrdp_core::decode;
     use ironrdp_egfx::pdu::{
