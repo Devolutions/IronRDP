@@ -42,6 +42,8 @@ pub struct Acceptor {
     keyboard_layout: u32,
     keyboard_type: gcc::KeyboardType,
     ime_file_name: String,
+    desktop_scale_factor: Option<u32>,
+    device_scale_factor: Option<u32>,
     /// The client's MultiTransportChannelData block flags (MS-RDPBCGR
     /// 2.2.1.3.8), when it sent one. `None` when the client did not send the
     /// block at all, distinct from `Some(empty())` (block present, no flags
@@ -139,6 +141,17 @@ fn validate_desktop_size(width: u16, height: u16) -> Option<DesktopSize> {
 ///
 /// The server advertises its desktop size in the Bitmap capability set of the
 /// Demand Active PDU; this keeps that advertisement in sync with `size`.
+/// The client's `(desktopScaleFactor, deviceScaleFactor)`, or `(None, None)`
+/// when the specification says to ignore them. Each field MUST be ignored if
+/// it is out of range, if the other field is out of range, or if the other
+/// field is absent (MS-RDPBCGR 2.2.1.3.2), so the two are valid only together.
+fn validate_scale_factors(desktop: Option<u32>, device: Option<u32>) -> (Option<u32>, Option<u32>) {
+    match (desktop, device) {
+        (Some(desktop @ 100..=500), Some(device @ (100 | 140 | 180))) => (Some(desktop), Some(device)),
+        _ => (None, None),
+    }
+}
+
 fn set_bitmap_desktop_size(capabilities: &mut [CapabilitySet], size: DesktopSize) {
     for cap in capabilities.iter_mut() {
         if let CapabilitySet::Bitmap(cap) = cap {
@@ -214,6 +227,22 @@ pub struct AcceptorResult {
     ///
     /// Populated for East Asian IME-based input locales; empty otherwise.
     pub ime_file_name: String,
+    /// Desktop scale factor announced by the client in its GCC Client Core Data
+    /// (section 2.2.1.3.2, `desktopScaleFactor`): the scale, as a percentage,
+    /// the client wants applied to the session's UI, e.g. 200 for a client on a
+    /// 2x (Retina) display that is requesting a desktop in physical pixels.
+    ///
+    /// `None` when the specification says to ignore it: the client did not send
+    /// the optional field, sent a value outside 100..=500, or did not send a
+    /// valid `device_scale_factor` alongside it. The two are `Some` only together.
+    pub desktop_scale_factor: Option<u32>,
+    /// Device scale factor announced by the client in its GCC Client Core Data
+    /// (section 2.2.1.3.2, `deviceScaleFactor`): 100, 140 or 180 percent.
+    ///
+    /// `None` when the specification says to ignore it: the client did not send
+    /// the optional field, sent any other value, or did not send a valid
+    /// `desktop_scale_factor` alongside it. The two are `Some` only together.
+    pub device_scale_factor: Option<u32>,
     /// Early capability flags announced by the client in its GCC Client Core
     /// Data (section 2.2.1.3.2, `earlyCapabilityFlags`).
     ///
@@ -295,6 +324,8 @@ impl Acceptor {
             keyboard_layout: 0,
             keyboard_type: gcc::KeyboardType(0),
             ime_file_name: String::new(),
+            desktop_scale_factor: None,
+            device_scale_factor: None,
             multitransport_flags: None,
             early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
             client_monitors: Vec::new(),
@@ -535,6 +566,8 @@ impl Acceptor {
             keyboard_layout: consumed.keyboard_layout,
             keyboard_type: consumed.keyboard_type,
             ime_file_name: consumed.ime_file_name,
+            desktop_scale_factor: consumed.desktop_scale_factor,
+            device_scale_factor: consumed.device_scale_factor,
             multitransport_flags: consumed.multitransport_flags,
             early_capability_flags: consumed.early_capability_flags,
             client_monitors: consumed.client_monitors,
@@ -733,6 +766,8 @@ impl Acceptor {
                 keyboard_layout: self.keyboard_layout,
                 keyboard_type: self.keyboard_type,
                 ime_file_name: self.ime_file_name.clone(),
+                desktop_scale_factor: self.desktop_scale_factor,
+                device_scale_factor: self.device_scale_factor,
                 multitransport_flags: self
                     .multitransport_flags
                     .unwrap_or_else(gcc::MultiTransportFlags::empty),
@@ -1055,6 +1090,10 @@ impl Sequence for Acceptor {
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;
                 self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
+                (self.desktop_scale_factor, self.device_scale_factor) = validate_scale_factors(
+                    gcc_blocks.core.optional_data.desktop_scale_factor,
+                    gcc_blocks.core.optional_data.device_scale_factor,
+                );
                 self.multitransport_flags = gcc_blocks.multi_transport_channel.as_ref().map(|m| m.flags);
 
                 // Adopt the client's requested desktop size (from its Client
@@ -1610,6 +1649,21 @@ fn create_gcc_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scale_factors_are_reported_only_as_a_valid_pair() {
+        assert_eq!(validate_scale_factors(Some(200), Some(100)), (Some(200), Some(100)));
+        assert_eq!(validate_scale_factors(Some(100), Some(180)), (Some(100), Some(180)));
+        assert_eq!(validate_scale_factors(Some(500), Some(140)), (Some(500), Some(140)));
+        // A valid desktop scale is ignored when the device scale is invalid or absent.
+        assert_eq!(validate_scale_factors(Some(200), Some(250)), (None, None));
+        assert_eq!(validate_scale_factors(Some(200), None), (None, None));
+        // A valid device scale is ignored when the desktop scale is out of range or absent.
+        assert_eq!(validate_scale_factors(Some(50), Some(140)), (None, None));
+        assert_eq!(validate_scale_factors(Some(501), Some(100)), (None, None));
+        assert_eq!(validate_scale_factors(None, Some(100)), (None, None));
+        assert_eq!(validate_scale_factors(None, None), (None, None));
+    }
 
     fn credentials(username: &str) -> Credentials {
         Credentials {
