@@ -50,25 +50,15 @@ impl Root {
         // `openat2` refuses every mount point, bind mounts included.
         // The device is not compared when it succeeds, because a Btrfs subvolume or an overlay file reports another device without being a mount.
         #[cfg(target_os = "linux")]
-        let mode = {
-            use nix::fcntl::{OpenHow, ResolveFlag, openat2};
-
+        if openat2::is_available(self.directory.as_fd()) {
             // `openat2` rejects a nonzero mode without `O_CREAT`.
             let mode = if flags.contains(OFlag::O_CREAT) {
                 mode
             } else {
                 Mode::empty()
             };
-            let how = OpenHow::new()
-                .flags(flags)
-                .mode(mode)
-                .resolve(ResolveFlag::RESOLVE_NO_XDEV | ResolveFlag::RESOLVE_NO_SYMLINKS);
-            match openat2(parent, name, how) {
-                // Kernels before 5.6 lack `openat2`, and some sandboxes deny it.
-                Err(Errno::ENOSYS | Errno::EPERM) => mode,
-                result => return result,
-            }
-        };
+            return nix::fcntl::openat2(parent, name, openat2::how(flags).mode(mode));
+        }
 
         // The device is checked before truncating, so a refused mount is left unchanged.
         let file = nix::fcntl::openat(parent, name, flags.difference(OFlag::O_TRUNC), mode)?;
@@ -79,6 +69,43 @@ impl Root {
             nix::unistd::ftruncate(file.as_fd(), 0)?;
         }
         Ok(file)
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod openat2 {
+    use std::os::fd::BorrowedFd;
+    use std::sync::OnceLock;
+
+    use nix::errno::Errno;
+    use nix::fcntl::{OFlag, OpenHow, ResolveFlag};
+
+    use super::DIRECTORY_FLAGS;
+
+    pub(super) fn how(flags: OFlag) -> OpenHow {
+        OpenHow::new()
+            .flags(flags)
+            .resolve(ResolveFlag::RESOLVE_NO_XDEV | ResolveFlag::RESOLVE_NO_SYMLINKS)
+    }
+
+    /// Whether the process can call `openat2`, probed once by opening `directory` itself.
+    ///
+    /// Kernels before 5.6 lack it, and some sandboxes deny it with EPERM.
+    /// That is a property of the process, so once the probe succeeds, an error from `openat2` is the answer for that path and never falls back to the weaker device check.
+    ///
+    /// UNTESTED: an `openat2` error after a successful probe is returned, never retried with `openat`.
+    /// A retry would let a bind mount inside the share through for any path whose open fails with EPERM, such as an immutable file opened for writing.
+    /// The tests cannot make `openat2` fail, so after changing this, check that `Root::open_at` returns the `openat2` result unchanged.
+    pub(super) fn is_available(directory: BorrowedFd<'_>) -> bool {
+        static AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+        *AVAILABLE.get_or_init(|| match nix::fcntl::openat2(directory, ".", how(DIRECTORY_FLAGS | OFlag::O_CLOEXEC)) {
+            Err(error @ (Errno::ENOSYS | Errno::EPERM)) => {
+                tracing::warn!(%error, "openat2 is unavailable, so drive redirection refuses mounts of other filesystems only");
+                false
+            }
+            _ => true,
+        })
     }
 }
 
@@ -172,6 +199,11 @@ mod tests {
     #[case::empty("", &[])]
     #[case::single_backslash(r"\", &[])]
     #[case::root_relative(r"\Documents\report.txt", &["Documents", "report.txt"])]
+    #[case::without_leading_backslash(r"Documents\report.txt", &["Documents", "report.txt"])]
+    #[case::leading_dot(r"\.hidden", &[".hidden"])]
+    // Unix has no DOS device aliases, so unlike on the Windows backend, these name ordinary files.
+    // oracle: mutant DOS device names refused
+    #[case::device_names(r"\CON\aux.c", &["CON", "aux.c"])]
     fn accepts_protocol_root_relative_paths(#[case] path: &str, #[case] components: &[&str]) {
         let path = RelativePath::parse(path).expect("valid RDPDR path");
 
@@ -190,6 +222,9 @@ mod tests {
     #[case::forward_slash_root(r"\/etc/passwd")]
     #[case::forward_slash_traversal(r"\dir/../../outside")]
     #[case::embedded_nul("\\embedded\0nul")]
+    #[case::parent_without_leading_backslash(r"..\outside")]
+    #[case::trailing_current_directory(r"\dir\.")]
+    #[case::trailing_parent(r"\dir\..")]
     fn rejects_traversal_rooted_and_empty_components(#[case] path: &str) {
         assert_eq!(RelativePath::parse(path), Err(InvalidPath));
     }

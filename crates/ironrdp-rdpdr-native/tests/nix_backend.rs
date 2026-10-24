@@ -1,9 +1,10 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use ironrdp_core as _;
+use ironrdp_core::ReadCursor;
 use ironrdp_pdu as _;
 use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::efs::{
@@ -263,18 +264,11 @@ fn file_lifecycle_inside_the_share() {
 
     std::fs::write(fixture.share.join("docs").join("a.txt"), b"a").expect("write a.txt");
     let docs_id = create(&mut backend, r"\docs", CreateDisposition::FILE_OPEN);
-    // The directory returns `.`, `..`, `new` and `a.txt`, and enumeration then ends.
     // oracle: spec MS-FSA §2.1.5.6.3
-    assert_eq!(
-        list_directory(&mut backend, docs_id, r"\docs\*"),
-        [
-            NtStatus::SUCCESS,
-            NtStatus::SUCCESS,
-            NtStatus::SUCCESS,
-            NtStatus::SUCCESS,
-            NtStatus::NO_MORE_FILES
-        ]
-    );
+    let (names, end) = list_directory(&mut backend, docs_id, r"\docs\*");
+    assert_eq!(names[..2], [".", ".."]);
+    assert_eq!(sorted(&names[2..]), ["a.txt", "new"]);
+    assert_eq!(end, NtStatus::NO_MORE_FILES);
 }
 
 // oracle: spec MS-FSA §2.1.5.6.3
@@ -287,7 +281,7 @@ fn the_shared_directory_lists_no_dot_entries() {
 
     assert_eq!(
         list_directory(&mut backend, root_id, r"\*"),
-        [NtStatus::SUCCESS, NtStatus::NO_MORE_FILES]
+        (vec!["only.txt".to_owned()], NtStatus::NO_MORE_FILES)
     );
 }
 
@@ -475,6 +469,21 @@ fn a_directory_holding_open_files_cannot_be_renamed() {
     assert!(fixture.share.join("dir").join("open.txt").exists());
 }
 
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn an_open_directory_without_open_files_can_be_renamed() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    std::fs::write(fixture.share.join("dir").join("closed.txt"), b"closed").expect("write file");
+    let mut backend = fixture.backend();
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, directory_id, rename_to(r"\moved", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(fixture.share.join("moved").join("closed.txt").exists());
+}
+
 // oracle: spec MS-FSA §2.1.5.15.3
 #[test]
 fn clearing_delete_pending_before_close_keeps_the_file() {
@@ -548,13 +557,21 @@ fn delete_pending(delete_pending: bool) -> FileInformationClass {
     })
 }
 
-/// Returns the status of an initial query for `pattern` followed by queries until enumeration ends.
-fn list_directory(backend: &mut NixRdpdrBackend, file_id: u32, pattern: &str) -> Vec<NtStatus> {
-    let mut statuses = vec![response_status(&query_directory(backend, file_id, pattern, true))];
-    while statuses.last() == Some(&NtStatus::SUCCESS) {
-        statuses.push(response_status(&query_directory(backend, file_id, "", false)));
+/// Queries `pattern` and then continues until enumeration ends, returning the names in order and the final status.
+fn list_directory(backend: &mut NixRdpdrBackend, file_id: u32, pattern: &str) -> (Vec<String>, NtStatus) {
+    let mut names = Vec::new();
+    let mut response = query_directory(backend, file_id, pattern, true);
+    while response_status(&response) == NtStatus::SUCCESS {
+        names.push(response_file_name(&response));
+        response = query_directory(backend, file_id, "", false);
     }
-    statuses
+    (names, response_status(&response))
+}
+
+fn sorted(names: &[String]) -> Vec<&str> {
+    let mut names: Vec<_> = names.iter().map(String::as_str).collect();
+    names.sort_unstable();
+    names
 }
 
 fn create_with(backend: &mut NixRdpdrBackend, request: DeviceCreateRequest) -> Vec<SvcMessage> {
@@ -624,16 +641,43 @@ fn request_header(file_id: u32, major_function: MajorFunction) -> DeviceIoReques
     }
 }
 
+// Every response starts with an RDPDR_HEADER, Component and PacketId, followed by DeviceId, CompletionId and IoStatus,
+// all four bytes ([MS-RDPEFS] 2.2.1.1 Shared Header (RDPDR_HEADER) and 2.2.1.5 Device I/O Response (DR_DEVICE_IOCOMPLETION)).
+const IO_STATUS: Range<usize> = 12..16;
+// [MS-RDPEFS] 2.2.1.5.1 Device Create Response (DR_CREATE_RSP) continues with FileId.
+const CREATE_FILE_ID: Range<usize> = 16..20;
+// [MS-RDPEFS] 2.2.3.4.10 Client Drive Query Directory Response (DR_DRIVE_QUERY_DIRECTORY_RSP) continues with Length
+// and the entry it describes.
+const DIRECTORY_ENTRY: usize = 20;
+
 fn response_status(messages: &[SvcMessage]) -> NtStatus {
-    let response = messages[0].encode_unframed_pdu().expect("encode RDPDR response");
-    NtStatus::from(u32::from_le_bytes(
-        response[12..16].try_into().expect("response status"),
-    ))
+    NtStatus::from(read_u32(messages, IO_STATUS))
 }
 
 fn response_file_id(messages: &[SvcMessage]) -> u32 {
-    let response = messages[0].encode_unframed_pdu().expect("encode create response");
-    u32::from_le_bytes(response[16..20].try_into().expect("create file ID"))
+    read_u32(messages, CREATE_FILE_ID)
+}
+
+fn response_file_name(messages: &[SvcMessage]) -> String {
+    let response = messages[0]
+        .encode_unframed_pdu()
+        .expect("encode query directory response");
+    let entry = &response[DIRECTORY_ENTRY..];
+    let entry = FileInformationClass::decode(
+        FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION,
+        entry.len(),
+        &mut ReadCursor::new(entry),
+    )
+    .expect("decode directory entry");
+    let FileInformationClass::BothDirectory(entry) = entry else {
+        panic!("expected a FileBothDirectoryInformation entry, got {entry:?}");
+    };
+    entry.file_name
+}
+
+fn read_u32(messages: &[SvcMessage], field: Range<usize>) -> u32 {
+    let response = messages[0].encode_unframed_pdu().expect("encode RDPDR response");
+    u32::from_le_bytes(response[field].try_into().expect("four-byte field"))
 }
 
 /// A temporary directory holding the shared directory, so escapes land next to it.

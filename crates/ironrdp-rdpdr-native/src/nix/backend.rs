@@ -18,7 +18,7 @@ use nix::fcntl::{AtFlags, OFlag, renameat};
 use nix::sys::resource::{Resource, getrlimit};
 use nix::sys::stat::{FileStat, Mode, SFlag, dev_t, fstat, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, ftruncate, unlinkat};
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use super::path::{InvalidPath, RelativePath, Root, io_to_errno};
 use super::printer::{PrintTarget, PrinterSpooler, unsupported_response, write_response};
@@ -42,7 +42,7 @@ pub struct NixRdpdrBackend {
     /// An open file holds up to three descriptors: the file, and a directory being enumerated with its stream.
     /// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process.
     max_open_files: usize,
-    /// Files to delete when their last open handle closes, as [MS-FSA] 2.1.5.5 describes.
+    /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open).
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/d142c93a-72bc-4b05-9d96-8e00371c3308
     pending_deletes: HashSet<FileIdentity>,
@@ -85,7 +85,7 @@ impl FileIdentity {
 struct DirectoryListing {
     /// The enumerated directory, which entry names are resolved against.
     directory: OwnedFd,
-    /// `.` and `..`, still to be returned first, as [MS-FSA] 2.1.5.6.3 requires for every directory but the root.
+    /// `.` and `..`, still to be returned first, which every directory but the root lists ([MS-FSA] 2.1.5.6.3 Directory Information Queries).
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/fa8194e0-53ec-413b-8315-e8fa85396fd8
     dot_entries: &'static [&'static str],
@@ -102,18 +102,18 @@ impl DirectoryListing {
         })
     }
 
-    /// Returns the next entry, skipping entries removed since enumeration started.
-    fn next_entry(&mut self) -> Option<DirectoryEntry> {
+    /// Returns the next entry, or `None` once enumeration ends, skipping entries removed since it started.
+    fn next_entry(&mut self) -> nix::Result<Option<DirectoryEntry>> {
         if let Some((name, rest)) = self.dot_entries.split_first() {
             self.dot_entries = rest;
-            let stat = fstatat(self.directory.as_fd(), *name, AtFlags::AT_SYMLINK_NOFOLLOW).ok()?;
-            return Some(DirectoryEntry {
+            let stat = fstatat(self.directory.as_fd(), *name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+            return Ok(Some(DirectoryEntry {
                 name: (*name).to_owned(),
                 stat,
-            });
+            }));
         }
         for entry in self.entries.by_ref() {
-            let entry = entry.ok()?;
+            let entry = entry?;
             let name = entry.file_name();
             if matches!(name.to_bytes(), b"." | b"..") {
                 continue;
@@ -121,12 +121,12 @@ impl DirectoryListing {
             let Ok(stat) = fstatat(self.directory.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW) else {
                 continue;
             };
-            return Some(DirectoryEntry {
+            return Ok(Some(DirectoryEntry {
                 name: name.to_string_lossy().into_owned(),
                 stat,
-            });
+            }));
         }
-        None
+        Ok(None)
     }
 }
 
@@ -483,31 +483,23 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
         },
         |file, request| {
             let length = usize::try_from(req_inner.length).unwrap();
-            if MAX_READ_LENGTH < length {
+            let (status, read_data) = if MAX_READ_LENGTH < length {
                 warn!(length, "Rejected an oversized read");
-                let res = RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
-                    device_io_reply: DeviceIoResponse::new(request, NtStatus::INVALID_PARAMETER),
-                    read_data: Vec::new(),
-                });
-                return Ok(vec![SvcMessage::from(res)]);
-            }
-            match read_inner(file, req_inner.offset, length) {
-                Ok(buf) => {
-                    let res = RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
-                        device_io_reply: DeviceIoResponse::new(request, NtStatus::SUCCESS),
-                        read_data: buf,
-                    });
-                    Ok(vec![SvcMessage::from(res)])
+                (NtStatus::INVALID_PARAMETER, Vec::new())
+            } else {
+                match read_inner(file, req_inner.offset, length) {
+                    Ok(buf) => (NtStatus::SUCCESS, buf),
+                    Err(error) => {
+                        warn!(?error, "Read error");
+                        (NtStatus::UNSUCCESSFUL, Vec::new())
+                    }
                 }
-                Err(error) => {
-                    warn!(?error, "Read error");
-                    let res = RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
-                        device_io_reply: DeviceIoResponse::new(request, NtStatus::UNSUCCESSFUL),
-                        read_data: Vec::new(),
-                    });
-                    Ok(vec![SvcMessage::from(res)])
-                }
-            }
+            };
+            let res = RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
+                device_io_reply: DeviceIoResponse::new(request, status),
+                read_data,
+            });
+            Ok(vec![SvcMessage::from(res)])
         },
     );
     fn read_inner(file: &mut std::fs::File, offset: u64, length: usize) -> std::io::Result<Vec<u8>> {
@@ -734,14 +726,15 @@ pub(crate) fn set_information(
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = req_inner.device_io_request.file_id;
-    // [MS-FSA] 2.1.5.15.12 refuses to rename a file marked for deletion or a directory holding open files.
-    let rename_denied = backend.open_files.get(&file_id).is_some_and(|open_file| {
-        backend.pending_deletes.contains(&open_file.identity)
-            || backend
-                .open_files
-                .values()
-                .any(|other| other.path.is_inside(&open_file.path))
-    });
+    // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
+    let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
+        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+            backend.pending_deletes.contains(&open_file.identity)
+                || backend
+                    .open_files
+                    .values()
+                    .any(|other| other.path.is_inside(&open_file.path))
+        });
     let mut renamed = None;
     let status = match backend.open_files.get_mut(&file_id) {
         Some(open_file) => match &req_inner.set_buffer {
@@ -758,7 +751,7 @@ pub(crate) fn set_information(
                         NtStatus::SUCCESS
                     }
                     Err(status) => {
-                        debug!(?status, "Rename file failed");
+                        trace!(?status, "Rename file failed");
                         status
                     }
                 },
@@ -813,7 +806,7 @@ pub(crate) fn set_information(
     ))])
 }
 
-/// Renames `from` to `to`, as [MS-FSA] 2.1.5.15.12 describes.
+/// Renames `from` to `to` ([MS-FSA] 2.1.5.15.12 FileRenameInformation).
 ///
 /// An existing `to` is a collision unless `replace_if_exists` is set, and a directory `to` is never replaced.
 /// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision.
@@ -837,7 +830,7 @@ fn rename(file_base: &str, from: &RelativePath, to: &RelativePath, replace_if_ex
 
 /// Marks `open_file` for deletion when its last handle closes, or clears the mark.
 ///
-/// A directory is marked only when it is empty, as [MS-FSA] 2.1.5.15.3 requires.
+/// A directory is marked only when it is empty ([MS-FSA] 2.1.5.15.3 FileDispositionInformation).
 ///
 /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/386d9ec5-e0f6-4853-b175-c05be01419e0
 fn set_delete_pending(
@@ -853,7 +846,7 @@ fn set_delete_pending(
     if is_directory(&fstat(open_file.file.as_fd())?) {
         let root = Root::open(file_base)?;
         let mut listing = DirectoryListing::open(open_file.path.open_directory(&root)?, true)?;
-        if listing.next_entry().is_some() {
+        if listing.next_entry()?.is_some() {
             return Err(Errno::ENOTEMPTY);
         }
     }
@@ -989,11 +982,20 @@ pub(crate) fn query_directory(
             warn!("No file to query directory");
             Err(NtStatus::NO_SUCH_FILE)
         }
-        Some(open_file) if req_inner.initial_query == 0 => open_file
-            .listing
-            .as_mut()
-            .and_then(DirectoryListing::next_entry)
-            .ok_or(NtStatus::NO_MORE_FILES),
+        Some(open_file) if req_inner.initial_query == 0 => {
+            match open_file
+                .listing
+                .as_mut()
+                .map_or(Ok(None), DirectoryListing::next_entry)
+            {
+                Ok(entry) => entry.ok_or(NtStatus::NO_MORE_FILES),
+                // An error is not the end of the listing, so the server does not take a partial listing for a complete one.
+                Err(error) => {
+                    warn!(%error, "Query directory error");
+                    Err(status_from_errno(error))
+                }
+            }
+        }
         Some(open_file) => {
             // An initial query restarts enumeration, so a failed or single-entry query must not resume an earlier listing.
             open_file.listing = None;
@@ -1023,7 +1025,7 @@ pub(crate) fn query_directory(
         let (parent, name) = path.open_parent(&root)?;
         if name == "*" {
             let mut listing = DirectoryListing::open(parent, path.is_in_root())?;
-            let entry = listing.next_entry();
+            let entry = listing.next_entry()?;
             open_file.listing = Some(listing);
             return Ok(entry);
         }
@@ -1072,7 +1074,7 @@ pub(crate) fn create_drive(
         match RelativePath::parse(&req_inner.path) {
             Ok(path) => open_file(&backend.file_base, &req_inner, &path).and_then(|file| {
                 let identity = FileIdentity::of(&fstat(file.as_fd()).map_err(status_from_errno)?);
-                // [MS-FSA] 2.1.5.1 refuses to open a file marked for deletion.
+                // [MS-FSA] 2.1.5.1 Server Requests an Open of a File refuses a file marked for deletion.
                 if backend.pending_deletes.contains(&identity) {
                     return Err(NtStatus::DELETE_PENDING);
                 }
@@ -1087,7 +1089,7 @@ pub(crate) fn create_drive(
 
     match opened {
         Ok((file, path, identity)) => {
-            debug!(file_id, ?path, "Opened drive file");
+            trace!(file_id, ?path, "Opened drive file");
             backend.open_files.insert(
                 file_id,
                 OpenFile {
@@ -1118,7 +1120,7 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
         NtStatus::UNSUCCESSFUL
     })?;
     let is_directory_request = req.create_options.contains(CreateOptions::FILE_DIRECTORY_FILE);
-    // [MS-SMB2] 2.2.13 makes a directory request invalid with FILE_NON_DIRECTORY_FILE or a replacing disposition.
+    // [MS-SMB2] 2.2.13 SMB2 CREATE Request makes a directory request invalid with FILE_NON_DIRECTORY_FILE or a replacing disposition.
     if is_directory_request
         && (req.create_options.contains(CreateOptions::FILE_NON_DIRECTORY_FILE)
             || !matches!(
@@ -1134,7 +1136,7 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
         status_from_parent_errno(error)
     })?;
 
-    // Statuses follow [MS-FSA] 2.1.5.1 and 2.1.5.1.2.
+    // Statuses follow [MS-FSA] 2.1.5.1 Server Requests an Open of a File and 2.1.5.1.2 Open of an Existing File.
     let flags = match fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW) {
         Ok(stat) if is_directory(&stat) => {
             if req.create_options.contains(CreateOptions::FILE_NON_DIRECTORY_FILE) {
@@ -1253,35 +1255,42 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_server_cannot_hold_more_files_open_than_the_cap() {
-        let mut backend = NixRdpdrBackend::new(std::env::temp_dir().to_str().expect("UTF-8 path").to_owned());
-        backend.max_open_files = 2;
-        let header = |file_id, major_function| DeviceIoRequest {
+    fn header(file_id: u32, major_function: MajorFunction) -> DeviceIoRequest {
+        DeviceIoRequest {
             device_id: 1,
             file_id,
             completion_id: 0,
             major_function,
             minor_function: MinorFunction::from(0),
+        }
+    }
+
+    /// Opens the shared directory, returning the status and file ID of the Device Create Response.
+    fn open_share(backend: &mut NixRdpdrBackend) -> (NtStatus, u32) {
+        let request = DeviceCreateRequest {
+            device_io_request: header(0, MajorFunction::Create),
+            desired_access: DesiredAccess::empty(),
+            allocation_size: 0,
+            file_attributes: FileAttributes::empty(),
+            shared_access: SharedAccess::empty(),
+            create_disposition: CreateDisposition::FILE_OPEN,
+            create_options: CreateOptions::empty(),
+            path: r"\".to_owned(),
         };
-        let open_share = |backend: &mut NixRdpdrBackend| {
-            let request = DeviceCreateRequest {
-                device_io_request: header(0, MajorFunction::Create),
-                desired_access: DesiredAccess::empty(),
-                allocation_size: 0,
-                file_attributes: FileAttributes::empty(),
-                shared_access: SharedAccess::empty(),
-                create_disposition: CreateDisposition::FILE_OPEN,
-                create_options: CreateOptions::empty(),
-                path: r"\".to_owned(),
-            };
-            let response = create_drive(backend, request).expect("complete create");
-            let response = response[0].encode_unframed_pdu().expect("encode create response");
-            (
-                NtStatus::from(u32::from_le_bytes(response[12..16].try_into().expect("status"))),
-                u32::from_le_bytes(response[16..20].try_into().expect("file ID")),
-            )
-        };
+        let response = create_drive(backend, request).expect("complete create");
+        let response = response[0].encode_unframed_pdu().expect("encode create response");
+        // RDPDR_HEADER (4 bytes), DeviceId and CompletionId precede IoStatus, and FileId follows it
+        // ([MS-RDPEFS] 2.2.1.5.1 Device Create Response (DR_CREATE_RSP)).
+        (
+            NtStatus::from(u32::from_le_bytes(response[12..16].try_into().expect("status"))),
+            u32::from_le_bytes(response[16..20].try_into().expect("file ID")),
+        )
+    }
+
+    #[test]
+    fn the_server_cannot_hold_more_files_open_than_the_cap() {
+        let mut backend = NixRdpdrBackend::new(std::env::temp_dir().to_str().expect("UTF-8 path").to_owned());
+        backend.max_open_files = 2;
 
         let (status, first) = open_share(&mut backend);
         assert_eq!(status, NtStatus::SUCCESS);
@@ -1304,32 +1313,11 @@ mod tests {
     fn reset_closes_the_files_the_server_forgot() {
         let mut backend = NixRdpdrBackend::new(std::env::temp_dir().to_str().expect("UTF-8 path").to_owned());
         backend.max_open_files = 1;
-        let open_share = |backend: &mut NixRdpdrBackend| {
-            let request = DeviceCreateRequest {
-                device_io_request: DeviceIoRequest {
-                    device_id: 1,
-                    file_id: 0,
-                    completion_id: 0,
-                    major_function: MajorFunction::Create,
-                    minor_function: MinorFunction::from(0),
-                },
-                desired_access: DesiredAccess::empty(),
-                allocation_size: 0,
-                file_attributes: FileAttributes::empty(),
-                shared_access: SharedAccess::empty(),
-                create_disposition: CreateDisposition::FILE_OPEN,
-                create_options: CreateOptions::empty(),
-                path: r"\".to_owned(),
-            };
-            let response = create_drive(backend, request).expect("complete create");
-            let response = response[0].encode_unframed_pdu().expect("encode create response");
-            NtStatus::from(u32::from_le_bytes(response[12..16].try_into().expect("status")))
-        };
-        assert_eq!(open_share(&mut backend), NtStatus::SUCCESS);
+        assert_eq!(open_share(&mut backend).0, NtStatus::SUCCESS);
 
         backend.reset().expect("reset");
 
-        assert_eq!(open_share(&mut backend), NtStatus::SUCCESS);
+        assert_eq!(open_share(&mut backend).0, NtStatus::SUCCESS);
     }
 
     #[test]
