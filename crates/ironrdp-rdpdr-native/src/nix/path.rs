@@ -34,11 +34,7 @@ impl Root {
     ///
     /// The shared directory is configured locally, so symbolic links in its own path are followed.
     pub(crate) fn open(file_base: &str) -> nix::Result<Self> {
-        let directory = nix::fcntl::open(
-            file_base,
-            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )?;
+        let directory = nix::fcntl::open(file_base, DIRECTORY_FLAGS | OFlag::O_CLOEXEC, Mode::empty())?;
         let device = fstat(directory.as_fd())?.st_dev;
         Ok(Self { directory, device })
     }
@@ -50,46 +46,30 @@ impl Root {
     /// Never blocks, so a FIFO in the share cannot stall the client.
     pub(crate) fn open_at(&self, parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
         let flags = flags | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
-        self.openat_same_mount(parent, name, flags, mode)
-    }
 
-    /// Opens `name` in `parent` without crossing a mount point, bind mounts included.
-    ///
-    /// The device is not compared when `openat2` succeeds, because a Btrfs subvolume or an overlay file reports another device without being a mount.
-    #[cfg(target_os = "linux")]
-    fn openat_same_mount(&self, parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
-        use nix::fcntl::{OpenHow, ResolveFlag, openat2};
+        // `openat2` refuses every mount point, bind mounts included.
+        // The device is not compared when it succeeds, because a Btrfs subvolume or an overlay file reports another device without being a mount.
+        #[cfg(target_os = "linux")]
+        let mode = {
+            use nix::fcntl::{OpenHow, ResolveFlag, openat2};
 
-        // `openat2` rejects a nonzero mode without `O_CREAT`.
-        let mode = if flags.contains(OFlag::O_CREAT) {
-            mode
-        } else {
-            Mode::empty()
+            // `openat2` rejects a nonzero mode without `O_CREAT`.
+            let mode = if flags.contains(OFlag::O_CREAT) {
+                mode
+            } else {
+                Mode::empty()
+            };
+            let how = OpenHow::new()
+                .flags(flags)
+                .mode(mode)
+                .resolve(ResolveFlag::RESOLVE_NO_XDEV | ResolveFlag::RESOLVE_NO_SYMLINKS);
+            match openat2(parent, name, how) {
+                // Kernels before 5.6 lack `openat2`, and some sandboxes deny it.
+                Err(Errno::ENOSYS | Errno::EPERM) => mode,
+                result => return result,
+            }
         };
-        let how = OpenHow::new()
-            .flags(flags)
-            .mode(mode)
-            .resolve(ResolveFlag::RESOLVE_NO_XDEV | ResolveFlag::RESOLVE_NO_SYMLINKS);
-        match openat2(parent, name, how) {
-            // Kernels before 5.6 lack `openat2`, and some sandboxes deny it.
-            Err(Errno::ENOSYS | Errno::EPERM) => self.openat_same_filesystem(parent, name, flags, mode),
-            result => result,
-        }
-    }
 
-    #[cfg(not(target_os = "linux"))]
-    fn openat_same_mount(&self, parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
-        self.openat_same_filesystem(parent, name, flags, mode)
-    }
-
-    /// Opens `name` in `parent`, refusing a descriptor on another filesystem than the shared directory.
-    fn openat_same_filesystem(
-        &self,
-        parent: BorrowedFd<'_>,
-        name: &str,
-        flags: OFlag,
-        mode: Mode,
-    ) -> nix::Result<OwnedFd> {
         let file = nix::fcntl::openat(parent, name, flags, mode)?;
         if fstat(file.as_fd())?.st_dev != self.device {
             return Err(Errno::EXDEV);
@@ -101,7 +81,7 @@ impl Root {
 /// A validated path relative to the shared directory.
 ///
 /// INVARIANT: no component is empty, `.` or `..`, or contains `/` or NUL.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RelativePath {
     components: Vec<String>,
 }
@@ -133,14 +113,6 @@ impl RelativePath {
         self.components.last().map(String::as_str)
     }
 
-    /// The path without its final component, or `None` for the shared directory itself.
-    pub(crate) fn parent(&self) -> Option<Self> {
-        let (_, parent) = self.components.split_last()?;
-        Some(Self {
-            components: parent.to_vec(),
-        })
-    }
-
     /// Whether this path names something below `ancestor`, excluding `ancestor` itself.
     pub(crate) fn is_inside(&self, ancestor: &Self) -> bool {
         ancestor.components.len() < self.components.len() && self.components.starts_with(&ancestor.components)
@@ -165,7 +137,7 @@ impl RelativePath {
 }
 
 /// A path the backend refuses to resolve beneath the shared directory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct InvalidPath;
 
 fn open_directories(root: &Root, components: &[String]) -> nix::Result<OwnedFd> {
@@ -187,21 +159,14 @@ mod tests {
     use super::*;
 
     // oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs
-    #[test]
-    fn accepts_protocol_root_relative_paths() {
-        let path = RelativePath::parse(r"\Documents\report.txt").expect("valid RDPDR path");
-
-        assert_eq!(path.components, ["Documents", "report.txt"]);
-    }
-
-    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs
     #[rstest]
-    #[case::empty("")]
-    #[case::single_backslash(r"\")]
-    fn accepts_the_shared_directory_itself(#[case] path: &str) {
-        let path = RelativePath::parse(path).expect("shared directory");
+    #[case::empty("", &[])]
+    #[case::single_backslash(r"\", &[])]
+    #[case::root_relative(r"\Documents\report.txt", &["Documents", "report.txt"])]
+    fn accepts_protocol_root_relative_paths(#[case] path: &str, #[case] components: &[&str]) {
+        let path = RelativePath::parse(path).expect("valid RDPDR path");
 
-        assert!(path.file_name().is_none());
+        assert_eq!(path.components, components);
     }
 
     // oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs

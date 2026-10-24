@@ -213,9 +213,16 @@ fn file_lifecycle_inside_the_share() {
     let mut backend = fixture.backend();
 
     // oracle: spec MS-FSA §2.1.5.1.1
-    let directory_id = create_directory(&mut backend, r"\docs\new");
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            create_options: CreateOptions::FILE_DIRECTORY_FILE,
+            ..create_request(r"\docs\new", CreateDisposition::FILE_CREATE)
+        },
+    );
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
     assert!(fixture.share.join("docs").join("new").is_dir());
-    close(&mut backend, directory_id);
+    close(&mut backend, response_file_id(&response));
 
     let file_id = create(&mut backend, r"\docs\report.txt", CreateDisposition::FILE_CREATE);
     let response = backend
@@ -275,6 +282,40 @@ fn rename_without_replace_keeps_an_existing_target() {
         b"keep"
     );
     assert!(fixture.share.join("source.txt").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn rename_with_replace_overwrites_an_existing_file() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("target.txt"), b"old").expect("write target");
+    std::fs::write(fixture.share.join("source.txt"), b"new").expect("write source");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\source.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\target.txt", true));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(
+        std::fs::read(fixture.share.join("target.txt")).expect("read target"),
+        b"new"
+    );
+    assert!(!fixture.share.join("source.txt").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn rename_with_replace_refuses_a_directory_target() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("target")).expect("create target directory");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\source", CreateDisposition::FILE_CREATE);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\target", true));
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert!(fixture.share.join("target").is_dir());
+    assert!(fixture.share.join("source").exists());
 }
 
 // oracle: spec MS-FSA §2.1.5.15.12
@@ -384,23 +425,8 @@ fn set_information(backend: &mut NixRdpdrBackend, file_id: u32, set_buffer: File
 }
 
 fn create(backend: &mut NixRdpdrBackend, path: &str, disposition: CreateDisposition) -> u32 {
-    let response = backend
-        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create_request(
-            path,
-            disposition,
-        )))
-        .expect("complete create");
+    let response = create_with(backend, create_request(path, disposition));
     assert_eq!(response_status(&response), NtStatus::SUCCESS, "create {path}");
-    response_file_id(&response)
-}
-
-fn create_directory(backend: &mut NixRdpdrBackend, path: &str) -> u32 {
-    let mut request = create_request(path, CreateDisposition::FILE_CREATE);
-    request.create_options = CreateOptions::FILE_DIRECTORY_FILE;
-    let response = backend
-        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(request))
-        .expect("complete create");
-    assert_eq!(response_status(&response), NtStatus::SUCCESS, "create directory {path}");
     response_file_id(&response)
 }
 
