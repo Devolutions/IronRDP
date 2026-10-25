@@ -5235,7 +5235,11 @@ impl RdpServer {
                                 let offered = c.caps_data.0.0.iter().map(|caps| caps.entropy_bits);
                                 let preferred = self.opts.remotefx_entropy_coder;
                                 if let Some(entropy_bits) = pick_remotefx_entropy_coder(preferred, offered) {
-                                    update_codecs.set_remotefx(Some((entropy_bits, codec.id)));
+                                    // UNTESTED: ImageRemoteFX must select `set_image_remotefx`, not `set_remotefx`,
+                                    // so that its data keeps the Set Surface Bits command; Windows 10 mstsc reports an
+                                    // internal error for ImageRemoteFX in Stream Surface Bits. Keep the two codec arms
+                                    // on their own setters when changing this negotiation.
+                                    update_codecs.set_image_remotefx(Some((entropy_bits, codec.id)));
                                     update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
                                 }
                             }
