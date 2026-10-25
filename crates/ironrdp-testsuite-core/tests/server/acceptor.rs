@@ -754,15 +754,7 @@ fn accept(monitors: Option<Vec<Monitor>>) -> Acceptor {
     client_blocks.network = None;
     client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
 
-    let mut acceptor = Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    );
+    let mut acceptor = multitransport_acceptor(None);
 
     let (user_channel_id, io_channel_id, ..) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
 
@@ -1309,14 +1301,17 @@ fn stepping_a_failed_acceptor_returns_an_error() {
 }
 
 // oracle: regression Devolutions/IronRDP#1325 (stepping an accepted acceptor panicked instead of returning an error,
-// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
-// oracle: the `Acceptor` rustdoc contract: an accepted acceptor keeps its result for `get_result` after a stray step.
+// and after its result was taken, https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
 #[test]
 fn stepping_an_accepted_acceptor_returns_an_error() {
     let mut acceptor = accept(None);
 
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    // oracle: mutant the Accepted arm of `Acceptor::step` not putting the state back, losing the accepted result
     assert!(acceptor.get_result().is_some());
+
+    // Taking the result leaves the acceptor consumed, and a step then errors as after a failed step.
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
 
 // oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
@@ -1335,7 +1330,6 @@ fn stepping_a_failed_channel_connection_returns_an_error() {
 // oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
 // channel_connection.rs, whose sequence reached the same unreachable!() once every channel was joined,
 // https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
-// oracle: the `ChannelConnectionSequence` rustdoc contract: a finished sequence stays finished after a stray step.
 #[test]
 fn stepping_a_finished_channel_connection_returns_an_error() {
     // A channel connection that skips the channel joins ends with the Attach User Confirm.
@@ -1352,13 +1346,13 @@ fn stepping_a_finished_channel_connection_returns_an_error() {
     assert!(sequence.is_done());
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    // oracle: mutant the AllJoined arm of `ChannelConnectionSequence::step` not putting the state back
     assert!(sequence.is_done());
 }
 
 // oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
 // finalization.rs, whose sequence reached the same unreachable!() once it finished,
 // https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
-// oracle: the `FinalizationSequence` rustdoc contract: a finished sequence stays finished after a stray step.
 #[test]
 fn stepping_a_finished_finalization_returns_an_error() {
     // The client's four PDUs and the server's four answers finish the finalization.
@@ -1367,6 +1361,7 @@ fn stepping_a_finished_finalization_returns_an_error() {
     assert!(sequence.is_done());
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    // oracle: mutant the Finished arm of `FinalizationSequence::step` not putting the state back
     assert!(sequence.is_done());
 }
 
