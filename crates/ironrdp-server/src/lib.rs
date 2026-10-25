@@ -33,10 +33,10 @@ pub use display::{
     RGBAPointer, RdpServerDisplay, RdpServerDisplayUpdates,
 };
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
-#[cfg(feature = "__test")]
-pub use encoder::RemoteFxCodec;
 #[cfg(all(feature = "__test", feature = "qoiz"))]
 pub use encoder::qoiz::Compressor as QoizCompressor;
+#[cfg(feature = "__test")]
+pub use encoder::{RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
 pub use error::{ServerError, ServerErrorExt, ServerErrorKind, ServerResult, ServerResultExt};
 #[cfg(feature = "egfx")]
 pub use gfx::{EgfxServerMessage, GfxDvcBridge, GfxServerFactory, GfxServerHandle};

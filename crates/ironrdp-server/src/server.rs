@@ -5248,9 +5248,9 @@ impl RdpServer {
                 CapabilitySet::BitmapCodecs(BitmapCodecs(codecs)) => {
                     // FIXME: The encoder operates in image mode only.
                     //
-                    // See [MS-RDPRFX] 3.1.1.1 "State Machine" for
-                    // implementation of the video mode. which allows to
-                    // skip sending Header for each image.
+                    // See [MS-RDPRFX] 3.1.1.1 "State Machine" for the
+                    // implementation of the video mode, which allows
+                    // skipping the header for each image.
                     //
                     // We should distinguish parameters for both modes.
                     if let Some(remotefx) = pick_remotefx_codec(

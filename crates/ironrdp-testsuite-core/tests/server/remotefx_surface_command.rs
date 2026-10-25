@@ -3,8 +3,9 @@ use core::num::{NonZeroU16, NonZeroUsize};
 use ironrdp_core::decode;
 use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits, LargePointerSupportFlags};
 use ironrdp_pdu::surface_commands::SurfaceCommand;
-use ironrdp_server::bench::encoder::{RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
-use ironrdp_server::{BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat};
+use ironrdp_server::{
+    BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat, RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs,
+};
 
 const SIZE: DesktopSize = DesktopSize { width: 64, height: 64 };
 
@@ -62,7 +63,7 @@ async fn remotefx_uses_stream_surface_bits_when_the_client_supports_it() {
     );
 }
 
-// oracle: spec MS-RDPBCGR §2.2.7.2.9
+// oracle: spec MS-RDPBCGR §2.2.7.2.9 (STREAM_SURFACE_BITS flag), spec MS-RDPRFX §3.1.8.3.1 (RemoteFX surface command)
 #[tokio::test]
 async fn remotefx_uses_set_surface_bits_when_the_client_lacks_stream_surface_bits() {
     assert_eq!(

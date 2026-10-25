@@ -3,6 +3,8 @@ use ironrdp_pdu::rdp::capability_sets::{
     RfxICap, RfxICapFlags,
 };
 use ironrdp_server::{RemoteFxCodec, pick_remotefx_codec};
+use proptest::collection::vec;
+use proptest::prelude::*;
 
 fn client_codec(id: u8, codec: RemoteFxCodec) -> Codec {
     let caps = RfxClientCapsContainer {
@@ -29,29 +31,58 @@ fn image_remotefx_alone_is_picked_as_image_remotefx() {
     );
 }
 
-// oracle: mutant the picked codec, and so the surface command, follows the client's codec order
-#[test]
-fn remotefx_wins_over_image_remotefx_in_either_order() {
-    let image = client_codec(5, RemoteFxCodec::ImageRemoteFx);
-    let remotefx = client_codec(3, RemoteFxCodec::RemoteFx);
-    let expected = Some((EntropyBits::Rlgr3, 3, RemoteFxCodec::RemoteFx));
-    assert_eq!(
-        pick_remotefx_codec(&[image.clone(), remotefx.clone()], true, true, None),
-        expected
-    );
-    assert_eq!(pick_remotefx_codec(&[remotefx, image], true, true, None), expected);
+/// A codec of the client's list: a RemoteFX codec, or `None` for a codec of another kind.
+fn listed_codec(id: u8, codec: Option<RemoteFxCodec>) -> Codec {
+    match codec {
+        Some(codec) => client_codec(id, codec),
+        None => Codec {
+            id,
+            property: CodecProperty::Ignore,
+        },
+    }
 }
 
-// oracle: mutant a codec the server does not enable is picked
-#[test]
-fn a_codec_the_server_disables_is_not_picked() {
-    let codecs = [
-        client_codec(5, RemoteFxCodec::ImageRemoteFx),
-        client_codec(3, RemoteFxCodec::RemoteFx),
+/// Client codec lists with distinct codec ids, each with a shuffled copy.
+fn codec_lists() -> impl Strategy<Value = (Vec<Codec>, Vec<Codec>)> {
+    let kind = prop_oneof![
+        Just(Some(RemoteFxCodec::RemoteFx)),
+        Just(Some(RemoteFxCodec::ImageRemoteFx)),
+        Just(None),
     ];
-    assert_eq!(
-        pick_remotefx_codec(&codecs, false, true, None),
-        Some((EntropyBits::Rlgr3, 5, RemoteFxCodec::ImageRemoteFx))
-    );
-    assert_eq!(pick_remotefx_codec(&codecs, false, false, None), None);
+    vec(kind, 0..6).prop_flat_map(|kinds| {
+        let codecs: Vec<Codec> = (1u8..).zip(kinds).map(|(id, codec)| listed_codec(id, codec)).collect();
+        (Just(codecs.clone()), Just(codecs).prop_shuffle())
+    })
+}
+
+fn lists(codecs: &[Codec], codec: RemoteFxCodec) -> bool {
+    codecs.iter().any(|c| match &c.property {
+        CodecProperty::RemoteFx(_) => codec == RemoteFxCodec::RemoteFx,
+        CodecProperty::ImageRemoteFx(_) => codec == RemoteFxCodec::ImageRemoteFx,
+        _ => false,
+    })
+}
+
+fn picked_codec(codecs: &[Codec], remote_fx: bool, image_remote_fx: bool) -> Option<RemoteFxCodec> {
+    pick_remotefx_codec(codecs, remote_fx, image_remote_fx, None).map(|(_, _, codec)| codec)
+}
+
+// oracle: mutant the picked codec, and so the surface command, follows the client's codec order, or a codec the server does not enable is picked
+#[test]
+fn remotefx_wins_over_image_remotefx_in_any_order() {
+    proptest!(|(
+        (codecs, shuffled) in codec_lists(),
+        remote_fx in any::<bool>(),
+        image_remote_fx in any::<bool>(),
+    )| {
+        let expected = if remote_fx && lists(&codecs, RemoteFxCodec::RemoteFx) {
+            Some(RemoteFxCodec::RemoteFx)
+        } else if image_remote_fx && lists(&codecs, RemoteFxCodec::ImageRemoteFx) {
+            Some(RemoteFxCodec::ImageRemoteFx)
+        } else {
+            None
+        };
+        prop_assert_eq!(picked_codec(&codecs, remote_fx, image_remote_fx), expected);
+        prop_assert_eq!(picked_codec(&shuffled, remote_fx, image_remote_fx), expected);
+    });
 }

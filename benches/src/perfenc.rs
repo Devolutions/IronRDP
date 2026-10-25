@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use ironrdp::pdu::rdp::capability_sets::{CmdFlags, EntropyBits, LargePointerSupportFlags};
-use ironrdp::server::bench::encoder::{UpdateEncoder, UpdateEncoderCodecs};
+use ironrdp::server::bench::encoder::{RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
 use ironrdp::server::{BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat, RdpServerDisplayUpdates};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt as _;
@@ -48,7 +48,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut update_codecs = UpdateEncoderCodecs::new();
 
     match codec {
-        OptCodec::RemoteFX => update_codecs.set_remotefx(Some((EntropyBits::Rlgr3, 0))),
+        OptCodec::RemoteFX => update_codecs.set_remotefx_codec(Some((EntropyBits::Rlgr3, 0, RemoteFxCodec::RemoteFx))),
         OptCodec::Bitmap => {
             flags -= CmdFlags::SET_SURFACE_BITS;
         }

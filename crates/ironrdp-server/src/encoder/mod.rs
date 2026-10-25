@@ -48,7 +48,7 @@ impl CodecId {
     }
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
     remotefx: Option<(EntropyBits, u8, RemoteFxCodec)>,
@@ -67,7 +67,7 @@ pub(crate) struct UpdateEncoderCodecs {
 }
 
 impl UpdateEncoderCodecs {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn new() -> Self {
         Self {
             remotefx: None,
@@ -81,21 +81,14 @@ impl UpdateEncoderCodecs {
         }
     }
 
-    /// Selects `CODEC_GUID_REMOTEFX`; the server picks the codec with [`Self::set_remotefx_codec`].
-    #[cfg(feature = "__bench")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
-    pub(crate) fn set_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
-        self.remotefx = remotefx.map(|(algo, id)| (algo, id, RemoteFxCodec::RemoteFx))
-    }
-
     /// Selects the RemoteFX codec the client listed, with its entropy coder and codec id.
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_remotefx_codec(&mut self, remotefx: Option<(EntropyBits, u8, RemoteFxCodec)>) {
         self.remotefx = remotefx
     }
 
     /// Set the quantization values the RemoteFX encoder uses once selected.
-    /// Has no effect unless `set_remotefx` also selects RemoteFX; kept
+    /// Has no effect unless `set_remotefx_codec` also selects RemoteFX; kept
     /// separate because quantization is server policy, not part of codec
     /// selection.
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
@@ -130,7 +123,7 @@ impl Default for UpdateEncoderCodecs {
     }
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
@@ -161,7 +154,7 @@ impl fmt::Debug for UpdateEncoder {
 }
 
 impl UpdateEncoder {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn new(
         desktop_size: DesktopSize,
         surface_flags: CmdFlags,
@@ -239,7 +232,7 @@ impl UpdateEncoder {
             .contains(LargePointerSupportFlags::UP_TO_384X384_PIXELS)
     }
 
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn update(&mut self, update: DisplayUpdate) -> EncoderIter<'_> {
         EncoderIter {
             encoder: self,
@@ -469,14 +462,14 @@ enum State {
     Ended,
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
 pub(crate) struct EncoderIter<'a> {
     encoder: &'a mut UpdateEncoder,
     state: State,
 }
 
 impl EncoderIter<'_> {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) async fn next(&mut self) -> Option<ServerResult<UpdateFragmenter>> {
         loop {
             let state = core::mem::take(&mut self.state);
