@@ -271,8 +271,8 @@ fn compressed_bitmap_fastpath_frame(compressor: &mut BulkCompressor) -> (Vec<u8>
     (frame, flags)
 }
 
-/// Reads one PDU from the server, waiting at most 150 ms, processes it and
-/// writes back whatever the client answers. Returns whether a PDU arrived.
+/// Reads one PDU from the server, waiting at most 150 ms, processes it and writes back whatever the client answers.
+/// Returns whether a PDU arrived.
 async fn serve_one_pdu(
     stage: &mut ActiveStage,
     framed: &mut Framed<TokioStream<TlsStream<TcpStream>>>,
@@ -465,20 +465,24 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
     )
 }
 
-/// A client that sets neither INFO_NOAUDIOPLAYBACK nor INFO_REMOTECONSOLEAUDIO
-/// gets its audio redirected (MS-RDPBCGR 2.2.1.11.1.1), so the server starts
-/// rdpsnd. This fails if the no-audio check ever holds rdpsnd back from every
-/// client, and it shows the probe sees a start at all, which the test below
-/// relies on to mean anything.
+/// A client that sets neither INFO_NOAUDIOPLAYBACK nor INFO_REMOTECONSOLEAUDIO gets its audio redirected, per
+/// MS-RDPBCGR [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET): "If the INFO_NOAUDIOPLAYBACK flag is not set, then audio
+/// redirection SHOULD take place if the INFO_REMOTECONSOLEAUDIO (0x00002000) flag is also not set."
+/// So the server starts rdpsnd.
+/// This fails if the no-audio check ever holds rdpsnd back from every client, and it shows the probe sees a start at
+/// all, which the test below relies on to mean anything.
+///
+/// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
 // oracle: spec MS-RDPBCGR §2.2.1.11.1.1
 #[tokio::test]
 async fn rdpsnd_starts_for_a_client_that_wants_audio() {
     assert!(run_rdpsnd_probe(true).await, "the server never started rdpsnd");
 }
 
-/// A client that sets INFO_NOAUDIOPLAYBACK still joins the rdpsnd channel here,
-/// and the server leaves it unstarted, since audio redirection MUST NOT take
-/// place then (MS-RDPBCGR 2.2.1.11.1.1).
+/// A client that sets INFO_NOAUDIOPLAYBACK still joins the rdpsnd channel here, and the server leaves it unstarted,
+/// since audio redirection MUST NOT take place then, per MS-RDPBCGR [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET).
+///
+/// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
 // oracle: spec MS-RDPBCGR §2.2.1.11.1.1
 #[tokio::test]
 async fn rdpsnd_is_not_started_for_a_client_that_asked_for_no_audio() {
@@ -488,13 +492,11 @@ async fn rdpsnd_is_not_started_for_a_client_that_asked_for_no_audio() {
     );
 }
 
-/// Connects a client that joins the rdpsnd channel, with `enable_audio_playback`
-/// as given, and returns whether the server started the channel, which is when
-/// it asks its sound handler for the formats to offer.
+/// Connects a client that joins the rdpsnd channel, with `enable_audio_playback` as given, and returns whether the
+/// server started the channel, which is when it asks its sound handler for the formats to offer.
 ///
-/// The client's echo channel opening is the sign that the connection has
-/// settled: the server starts its static channels, rdpsnd among them, before
-/// any dynamic channel exists.
+/// The client's echo channel opening is the sign that the connection has settled: the server starts its static
+/// channels, rdpsnd among them, before any dynamic channel exists.
 async fn run_rdpsnd_probe(enable_audio_playback: bool) -> bool {
     let rdpsnd_started = Arc::new(AtomicBool::new(false));
     let echo_started = Arc::new(AtomicBool::new(false));
@@ -541,8 +543,7 @@ impl StaticChannelFactory for RdpsndProbeFactory {
     }
 }
 
-/// Records whether the rdpsnd server asked for its formats, which it does only
-/// when the channel starts.
+/// Records whether the rdpsnd server asked for its formats, which it does only when the channel starts.
 #[derive(Debug)]
 struct RdpsndProbe(Arc<AtomicBool>);
 

@@ -57,6 +57,8 @@ pub use rdpei::{
     TouchEventPdu, TouchFrame,
 };
 #[cfg(feature = "__test")]
+pub use server::audio_redirection_wanted;
+#[cfg(feature = "__test")]
 pub use server::autodetect_response_from_sub_header;
 #[cfg(all(feature = "__test", feature = "egfx"))]
 pub use server::autodetect_sub_header;
