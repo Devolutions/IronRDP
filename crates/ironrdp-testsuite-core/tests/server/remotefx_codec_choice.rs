@@ -45,7 +45,7 @@ fn lists(codecs: &[Codec], codec: RemoteFxCodec) -> bool {
 }
 
 fn picked_codec(codecs: &[Codec], remote_fx: bool, image_remote_fx: bool) -> Option<RemoteFxCodec> {
-    pick_remotefx_codec(codecs, remote_fx, image_remote_fx, None).map(|(_, _, codec)| codec)
+    pick_remotefx_codec(None, codecs, remote_fx, image_remote_fx).map(|(_, _, codec)| codec)
 }
 
 // oracle: mutant the picked codec, and so the surface command, follows the client's codec order, or a codec the server does not enable is picked

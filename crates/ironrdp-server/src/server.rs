@@ -820,10 +820,10 @@ pub fn pick_remotefx_entropy_coder(
 /// [2.2.7.2.10.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/86507fed-a0ee-4242-b802-237534a8f65e
 #[cfg_attr(feature = "__test", visibility::make(pub))]
 fn pick_remotefx_codec(
+    preferred: Option<EntropyBits>,
     codecs: &[Codec],
     remote_fx: bool,
     image_remote_fx: bool,
-    preferred: Option<EntropyBits>,
 ) -> Option<(EntropyBits, u8, RemoteFxCodec)> {
     let pick = |wanted: RemoteFxCodec| {
         codecs.iter().find_map(|codec| {
@@ -5257,10 +5257,10 @@ impl RdpServer {
                     //
                     // We should distinguish parameters for both modes.
                     if let Some(remotefx) = pick_remotefx_codec(
+                        self.opts.remotefx_entropy_coder,
                         &codecs,
                         self.opts.has_remote_fx(),
                         self.opts.has_image_remote_fx(),
-                        self.opts.remotefx_entropy_coder,
                     ) {
                         update_codecs.set_remotefx_codec(Some(remotefx));
                         update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
