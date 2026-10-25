@@ -81,17 +81,17 @@ impl UpdateEncoderCodecs {
         }
     }
 
+    /// Selects `CODEC_GUID_REMOTEFX`; the server picks the codec with [`Self::set_remotefx_codec`].
+    #[cfg(feature = "__bench")]
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn set_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
         self.remotefx = remotefx.map(|(algo, id)| (algo, id, RemoteFxCodec::RemoteFx))
     }
 
-    /// Like [`Self::set_remotefx`], for the codec the client listed as ImageRemoteFX
-    /// (`CODEC_GUID_IMAGE_REMOTEFX`, MS-RDPBCGR 2.2.7.2.10.1.1). Its data keeps the Set Surface
-    /// Bits command.
+    /// Selects the RemoteFX codec the client listed, with its entropy coder and codec id.
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
-    pub(crate) fn set_image_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
-        self.remotefx = remotefx.map(|(algo, id)| (algo, id, RemoteFxCodec::ImageRemoteFx))
+    pub(crate) fn set_remotefx_codec(&mut self, remotefx: Option<(EntropyBits, u8, RemoteFxCodec)>) {
+        self.remotefx = remotefx
     }
 
     /// Set the quantization values the RemoteFX encoder uses once selected.
@@ -725,9 +725,12 @@ impl BitmapUpdateHandler for BitmapHandler {
     }
 }
 
-/// The RemoteFX codec the client listed in its Bitmap Codecs Capability Set.
+/// A RemoteFX codec GUID from the client's [2.2.7.2.10.1.1] Bitmap Codec (TS_BITMAPCODEC) list.
+///
+/// [2.2.7.2.10.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/86507fed-a0ee-4242-b802-237534a8f65e
+#[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RemoteFxCodec {
+pub(crate) enum RemoteFxCodec {
     /// `CODEC_GUID_REMOTEFX`
     RemoteFx,
     /// `CODEC_GUID_IMAGE_REMOTEFX`
@@ -737,11 +740,15 @@ enum RemoteFxCodec {
 impl RemoteFxCodec {
     /// The surface command that carries this codec's data.
     ///
-    /// A RemoteFX stream is sent in a Stream Surface Bits command (MS-RDPRFX 3.1.8.3.1), when
-    /// the client supports that command (MS-RDPBCGR 2.2.7.2.9). Windows 10 mstsc shows a black
-    /// session when RemoteFX data comes in a Set Surface Bits command. The same client reports
-    /// an internal error when ImageRemoteFX data comes in a Stream Surface Bits command, so
+    /// [3.1.8.3.1] Encode Message Sequencing puts a RemoteFX stream in a Stream Surface Bits
+    /// command; it is sent when the client sets `STREAM_SURFACE_BITS` in its [2.2.7.2.9]
+    /// Surface Commands Capability Set (TS_SURFCMDS_CAPABILITYSET). Windows 10 mstsc shows a
+    /// black session when RemoteFX data comes in a Set Surface Bits command, and reports an
+    /// internal error when ImageRemoteFX data comes in a Stream Surface Bits command, so
     /// ImageRemoteFX keeps Set Surface Bits.
+    ///
+    /// [3.1.8.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/028ed301-385c-4b17-84ec-0a158a22c1b2
+    /// [2.2.7.2.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/aa953018-c0a8-4761-bb12-86586c2cd56a
     fn surface_bits_command(self, surface_flags: CmdFlags) -> SurfaceBitsCommand {
         match self {
             Self::RemoteFx if surface_flags.contains(CmdFlags::STREAM_SURFACE_BITS) => SurfaceBitsCommand::Stream,
@@ -750,12 +757,18 @@ impl RemoteFxCodec {
     }
 }
 
-/// The command that carries bitmap data in a surface command (MS-RDPBCGR 2.2.9.2).
+/// The command that carries bitmap data, one of the [2.2.9.2] Surface Commands.
+///
+/// [2.2.9.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/397d6c54-a897-498d-933b-300fed41ec8c
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SurfaceBitsCommand {
-    /// Set Surface Bits (MS-RDPBCGR 2.2.9.2.1)
+    /// [2.2.9.2.1] Set Surface Bits Command (TS_SURFCMD_SET_SURF_BITS)
+    ///
+    /// [2.2.9.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/776dbdaf-7619-45fd-9a90-ebfd07802b24
     Set,
-    /// Stream Surface Bits (MS-RDPBCGR 2.2.9.2.2)
+    /// [2.2.9.2.2] Stream Surface Bits Command (TS_SURFCMD_STREAM_SURF_BITS)
+    ///
+    /// [2.2.9.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b2218638-3cf9-4f2f-be61-b096ec3c8dc5
     Stream,
 }
 
@@ -965,87 +978,4 @@ fn surface_bits(
         UpdateCode::SurfaceCommands,
         encode_vec(&cmd).map_err(ServerError::encode)?,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use core::num::NonZeroUsize;
-
-    use bytes::Bytes;
-    use ironrdp_core::decode;
-
-    use super::*;
-    use crate::PixelFormat;
-
-    const SIZE: DesktopSize = DesktopSize { width: 64, height: 64 };
-
-    fn bitmap() -> BitmapUpdate {
-        BitmapUpdate {
-            x: 0,
-            y: 0,
-            width: NonZeroU16::new(SIZE.width).unwrap(),
-            height: NonZeroU16::new(SIZE.height).unwrap(),
-            format: PixelFormat::BgrX32,
-            data: Bytes::from(vec![0x80; usize::from(SIZE.width) * usize::from(SIZE.height) * 4]),
-            stride: NonZeroUsize::new(usize::from(SIZE.width) * 4).unwrap(),
-        }
-    }
-
-    /// Encodes one bitmap and returns the surface command that carries it and its codec id.
-    fn first_surface_command(surface_flags: CmdFlags, codecs: UpdateEncoderCodecs) -> (SurfaceBitsCommand, u8) {
-        let encoder = UpdateEncoder::new(
-            SIZE,
-            surface_flags,
-            codecs,
-            16 * 1024 * 1024,
-            0,
-            LargePointerSupportFlags::empty(),
-        )
-        .unwrap();
-        let fragmenter = encoder.bitmap_updater.unwrap().handle(&bitmap()).unwrap();
-        let command: SurfaceCommand<'_> = decode(&fragmenter.data).unwrap();
-        match command {
-            SurfaceCommand::SetSurfaceBits(pdu) => (SurfaceBitsCommand::Set, pdu.extended_bitmap_data.codec_id),
-            SurfaceCommand::StreamSurfaceBits(pdu) => (SurfaceBitsCommand::Stream, pdu.extended_bitmap_data.codec_id),
-            SurfaceCommand::FrameMarker(_) => panic!("expected a surface bits command, got a frame marker"),
-        }
-    }
-
-    fn remotefx(id: u8) -> UpdateEncoderCodecs {
-        let mut codecs = UpdateEncoderCodecs::new();
-        codecs.set_remotefx(Some((EntropyBits::Rlgr3, id)));
-        codecs
-    }
-
-    fn image_remotefx(id: u8) -> UpdateEncoderCodecs {
-        let mut codecs = UpdateEncoderCodecs::new();
-        codecs.set_image_remotefx(Some((EntropyBits::Rlgr3, id)));
-        codecs
-    }
-
-    #[test]
-    fn remotefx_uses_stream_surface_bits_when_the_client_supports_it() {
-        let flags = CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS;
-        assert_eq!(
-            first_surface_command(flags, remotefx(3)),
-            (SurfaceBitsCommand::Stream, 3)
-        );
-    }
-
-    #[test]
-    fn remotefx_uses_set_surface_bits_when_the_client_lacks_stream_surface_bits() {
-        assert_eq!(
-            first_surface_command(CmdFlags::SET_SURFACE_BITS, remotefx(3)),
-            (SurfaceBitsCommand::Set, 3)
-        );
-    }
-
-    #[test]
-    fn image_remotefx_uses_set_surface_bits() {
-        let flags = CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS;
-        assert_eq!(
-            first_surface_command(flags, image_remotefx(5)),
-            (SurfaceBitsCommand::Set, 5)
-        );
-    }
 }

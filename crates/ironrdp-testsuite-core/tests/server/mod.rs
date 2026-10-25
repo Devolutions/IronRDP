@@ -8,5 +8,7 @@ mod multitransport_finalize;
 mod pointer_mask;
 mod rdpdr;
 mod rdpei;
+mod remotefx_codec_choice;
 mod remotefx_entropy_coder;
+mod remotefx_surface_command;
 mod tunnel_autodetect;

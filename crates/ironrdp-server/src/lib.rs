@@ -33,6 +33,8 @@ pub use display::{
     RGBAPointer, RdpServerDisplay, RdpServerDisplayUpdates,
 };
 pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoServerMessage};
+#[cfg(feature = "__test")]
+pub use encoder::RemoteFxCodec;
 #[cfg(all(feature = "__test", feature = "qoiz"))]
 pub use encoder::qoiz::Compressor as QoizCompressor;
 pub use error::{ServerError, ServerErrorExt, ServerErrorKind, ServerResult, ServerResultExt};
@@ -58,6 +60,8 @@ pub use rdpei::{
 pub use server::autodetect_response_from_sub_header;
 #[cfg(all(feature = "__test", feature = "egfx"))]
 pub use server::autodetect_sub_header;
+#[cfg(feature = "__test")]
+pub use server::pick_remotefx_codec;
 pub use server::{
     AuthenticatedConnection, AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler,
     ConnectionInfo, ConnectionPolicy, ConnectionSource, CredentialDecision, CredentialValidationError,
@@ -79,6 +83,6 @@ pub mod bench {
             pub use crate::encoder::rfx::bench::{rfx_enc, rfx_enc_tile};
         }
 
-        pub use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
+        pub use crate::encoder::{RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
     }
 }
