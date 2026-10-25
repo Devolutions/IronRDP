@@ -15,7 +15,7 @@ use ironrdp_connector::credssp::CredsspSequence;
 use ironrdp_connector::sspi::credssp::{NStatusCode, TsRequest};
 use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
-use ironrdp_connector::{DesktopSize, Sequence as _, Written, encode_x224_packet};
+use ironrdp_connector::{DesktopSize, Sequence, Written, encode_x224_packet};
 use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc::{
     ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientMessageChannelData, ClientMonitorData, Monitor,
@@ -348,10 +348,10 @@ pub(super) fn client_gcc_with_message_channel_and_multitransport(
     blocks
 }
 
-/// Builds an `Acceptor` for the multitransport tests below, at a common
-/// 1920x1080 desktop size with no static channels or credentials. `offer` is
-/// passed straight through to `set_multitransport_offer`; pass `None` to
-/// exercise the default-disabled path.
+/// Builds a fresh `Acceptor` at a common 1920x1080 desktop size with no static
+/// channels or credentials. `offer` is passed straight through to
+/// `set_multitransport_offer`; pass `None` to exercise the default-disabled
+/// path, which is also what tests unrelated to multitransport use.
 fn multitransport_acceptor(offer: Option<MultiTransportFlags>) -> Acceptor {
     let mut acceptor = Acceptor::new(
         SecurityProtocol::SSL,
@@ -773,15 +773,7 @@ fn accept(monitors: Option<Vec<Monitor>>) -> Acceptor {
     let confirm_active = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
     acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
 
-    for pdu in client_finalization_pdus() {
-        let request = encode_send_data_request(user_channel_id, io_channel_id, &encode_client_share_data(pdu));
-        acceptor.step(&request, None, &mut WriteBuf::new()).unwrap();
-    }
-
-    // The server's four confirmation sends, completing finalization.
-    for _ in 0..4 {
-        acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
-    }
+    finish_finalization(&mut acceptor, user_channel_id, io_channel_id);
     assert_eq!(acceptor.state().name(), "Connected");
 
     acceptor
@@ -803,6 +795,28 @@ fn client_finalization_pdus() -> [ShareDataPdu; 4] {
         }),
         ShareDataPdu::FontList(Default::default()),
     ]
+}
+
+/// Steps `sequence` through `pdus`, each sent as a client Share Data PDU on the given channels.
+fn send_client_finalization_pdus(
+    sequence: &mut impl Sequence,
+    user_channel_id: u16,
+    io_channel_id: u16,
+    pdus: impl IntoIterator<Item = ShareDataPdu>,
+) {
+    for pdu in pdus {
+        let request = encode_send_data_request(user_channel_id, io_channel_id, &encode_client_share_data(pdu));
+        sequence.step(&request, None, &mut WriteBuf::new()).unwrap();
+    }
+}
+
+/// Steps `sequence` through the whole connection finalization: the client's four PDUs, then the server's four
+/// confirmation sends.
+fn finish_finalization(sequence: &mut impl Sequence, user_channel_id: u16, io_channel_id: u16) {
+    send_client_finalization_pdus(sequence, user_channel_id, io_channel_id, client_finalization_pdus());
+    for _ in 0..4 {
+        sequence.step(&[], None, &mut WriteBuf::new()).unwrap();
+    }
 }
 
 /// Returns the monitors the acceptor hands back in its result after [`accept`] with `monitors`.
@@ -1296,6 +1310,7 @@ fn stepping_a_failed_acceptor_returns_an_error() {
 
 // oracle: regression Devolutions/IronRDP#1325 (stepping an accepted acceptor panicked instead of returning an error,
 // https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
+// oracle: the `Acceptor` rustdoc contract: an accepted acceptor keeps its result for `get_result` after a stray step.
 #[test]
 fn stepping_an_accepted_acceptor_returns_an_error() {
     let mut acceptor = accept(None);
@@ -1320,6 +1335,7 @@ fn stepping_a_failed_channel_connection_returns_an_error() {
 // oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
 // channel_connection.rs, whose sequence reached the same unreachable!() once every channel was joined,
 // https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
+// oracle: the `ChannelConnectionSequence` rustdoc contract: a finished sequence stays finished after a stray step.
 #[test]
 fn stepping_a_finished_channel_connection_returns_an_error() {
     // A channel connection that skips the channel joins ends with the Attach User Confirm.
@@ -1342,17 +1358,12 @@ fn stepping_a_finished_channel_connection_returns_an_error() {
 // oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
 // finalization.rs, whose sequence reached the same unreachable!() once it finished,
 // https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
+// oracle: the `FinalizationSequence` rustdoc contract: a finished sequence stays finished after a stray step.
 #[test]
 fn stepping_a_finished_finalization_returns_an_error() {
     // The client's four PDUs and the server's four answers finish the finalization.
     let mut sequence = FinalizationSequence::new(USER_CHANNEL_ID, IO_CHANNEL_ID);
-    for pdu in client_finalization_pdus() {
-        let request = encode_send_data_request(USER_CHANNEL_ID, IO_CHANNEL_ID, &encode_client_share_data(pdu));
-        sequence.step(&request, None, &mut WriteBuf::new()).unwrap();
-    }
-    for _ in 0..4 {
-        sequence.step(&[], None, &mut WriteBuf::new()).unwrap();
-    }
+    finish_finalization(&mut sequence, USER_CHANNEL_ID, IO_CHANNEL_ID);
     assert!(sequence.is_done());
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
@@ -1367,10 +1378,12 @@ fn stepping_a_failed_finalization_returns_an_error() {
     // The Synchronize and Control Cooperate states ignore what they read, so the Request Control state is the first
     // that a bad PDU fails.
     let mut sequence = FinalizationSequence::new(USER_CHANNEL_ID, IO_CHANNEL_ID);
-    for pdu in client_finalization_pdus().into_iter().take(2) {
-        let request = encode_send_data_request(USER_CHANNEL_ID, IO_CHANNEL_ID, &encode_client_share_data(pdu));
-        sequence.step(&request, None, &mut WriteBuf::new()).unwrap();
-    }
+    send_client_finalization_pdus(
+        &mut sequence,
+        USER_CHANNEL_ID,
+        IO_CHANNEL_ID,
+        client_finalization_pdus().into_iter().take(2),
+    );
     sequence
         .step(b"not a request control PDU", None, &mut WriteBuf::new())
         .unwrap_err();

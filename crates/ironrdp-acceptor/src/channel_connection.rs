@@ -12,6 +12,7 @@ use tracing::debug;
 /// Server side of the Channel Connection phase of the [1.3.1.1] Connection Sequence.
 ///
 /// Once a step fails, or once every channel is joined, further steps return an error.
+/// A finished sequence stays finished: [`ChannelConnectionSequence::is_done`] still returns true after such a step.
 ///
 /// [1.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/023f1e69-cfe8-4ee6-9ee0-7e759fb4e4ee
 #[derive(Debug)]
