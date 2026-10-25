@@ -758,7 +758,7 @@ fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monito
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     client_blocks.network = None;
     client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
-    result_after_accepting(client_blocks, &CLIENT_INFO_PDU_BUFFER).client_monitors
+    accepted(client_blocks, &CLIENT_INFO_PDU_BUFFER).1.client_monitors
 }
 
 const DESKTOP_SIZE: DesktopSize = DesktopSize {
@@ -767,14 +767,9 @@ const DESKTOP_SIZE: DesktopSize = DesktopSize {
 };
 
 /// Drives a fresh acceptor through the whole connection sequence, from the Connection Request to `Connected`, with
-/// `client_blocks` as the client's GCC blocks and `client_info` as its encoded Client Info PDU, and returns the
-/// acceptor's result.
-fn result_after_accepting(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks, client_info: &[u8]) -> AcceptorResult {
-    accepted(client_blocks, client_info).1
-}
-
-/// [`result_after_accepting`], also returning the connected acceptor and the user and I/O channel ids, for a test that
-/// goes on to reactivate it.
+/// `client_blocks` as the client's GCC blocks and `client_info` as its encoded Client Info PDU.
+/// Returns the connected acceptor, its result, and the user and I/O channel ids, which a test that reactivates the
+/// acceptor needs.
 fn accepted(
     client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
     client_info: &[u8],
@@ -886,10 +881,7 @@ fn client_info_flags_are_kept_as_sent() {
 
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     client_blocks.network = None;
-    assert_eq!(
-        result_after_accepting(client_blocks, &client_info).client_info_flags,
-        flags
-    );
+    assert_eq!(accepted(client_blocks, &client_info).1.client_info_flags, flags);
 }
 
 /// An MS-RDPBCGR [1.3.1.3] Deactivation-Reactivation Sequence re-runs only the Capability Exchange and Connection
