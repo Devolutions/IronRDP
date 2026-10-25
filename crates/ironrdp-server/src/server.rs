@@ -839,10 +839,13 @@ fn pick_remotefx_codec(
         })
     };
 
-    remote_fx
-        .then(|| pick(RemoteFxCodec::RemoteFx))
-        .flatten()
-        .or_else(|| image_remote_fx.then(|| pick(RemoteFxCodec::ImageRemoteFx)).flatten())
+    [
+        (RemoteFxCodec::RemoteFx, remote_fx),
+        (RemoteFxCodec::ImageRemoteFx, image_remote_fx),
+    ]
+    .into_iter()
+    .filter(|&(_, enabled)| enabled)
+    .find_map(|(codec, _)| pick(codec))
 }
 
 #[derive(Clone)]

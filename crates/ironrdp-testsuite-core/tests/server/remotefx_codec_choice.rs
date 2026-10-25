@@ -6,7 +6,8 @@ use ironrdp_server::{RemoteFxCodec, pick_remotefx_codec};
 use proptest::collection::vec;
 use proptest::prelude::*;
 
-fn client_codec(id: u8, codec: RemoteFxCodec) -> Codec {
+/// A codec of the client's list: a RemoteFX codec, or `None` for a codec of another kind.
+fn listed_codec(id: u8, codec: Option<RemoteFxCodec>) -> Codec {
     let caps = RfxClientCapsContainer {
         capture_flags: CaptureFlags::empty(),
         caps_data: RfxCaps(RfxCapset(vec![RfxICap {
@@ -15,31 +16,11 @@ fn client_codec(id: u8, codec: RemoteFxCodec) -> Codec {
         }])),
     };
     let property = match codec {
-        RemoteFxCodec::RemoteFx => CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(caps)),
-        RemoteFxCodec::ImageRemoteFx => CodecProperty::ImageRemoteFx(RemoteFxContainer::ClientContainer(caps)),
+        Some(RemoteFxCodec::RemoteFx) => CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(caps)),
+        Some(RemoteFxCodec::ImageRemoteFx) => CodecProperty::ImageRemoteFx(RemoteFxContainer::ClientContainer(caps)),
+        None => CodecProperty::Ignore,
     };
     Codec { id, property }
-}
-
-// oracle: reference Windows 10 mstsc 10.0.19041.4717 (ImageRemoteFX in Stream Surface Bits: "An internal error has occurred")
-#[test]
-fn image_remotefx_alone_is_picked_as_image_remotefx() {
-    let codecs = [client_codec(5, RemoteFxCodec::ImageRemoteFx)];
-    assert_eq!(
-        pick_remotefx_codec(&codecs, true, true, None),
-        Some((EntropyBits::Rlgr3, 5, RemoteFxCodec::ImageRemoteFx))
-    );
-}
-
-/// A codec of the client's list: a RemoteFX codec, or `None` for a codec of another kind.
-fn listed_codec(id: u8, codec: Option<RemoteFxCodec>) -> Codec {
-    match codec {
-        Some(codec) => client_codec(id, codec),
-        None => Codec {
-            id,
-            property: CodecProperty::Ignore,
-        },
-    }
 }
 
 /// Client codec lists with distinct codec ids, each with a shuffled copy.

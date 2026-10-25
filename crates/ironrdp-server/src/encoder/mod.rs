@@ -738,7 +738,8 @@ impl RemoteFxCodec {
     /// Surface Commands Capability Set (TS_SURFCMDS_CAPABILITYSET). Windows 10 mstsc shows a
     /// black session when RemoteFX data comes in a Set Surface Bits command, and reports an
     /// internal error when ImageRemoteFX data comes in a Stream Surface Bits command, so
-    /// ImageRemoteFX keeps Set Surface Bits.
+    /// ImageRemoteFX keeps Set Surface Bits. A client that does not set `STREAM_SURFACE_BITS`
+    /// also keeps getting RemoteFX data in Set Surface Bits, as before this command choice.
     ///
     /// [3.1.8.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/028ed301-385c-4b17-84ec-0a158a22c1b2
     /// [2.2.7.2.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/aa953018-c0a8-4761-bb12-86586c2cd56a
