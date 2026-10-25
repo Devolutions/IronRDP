@@ -745,7 +745,10 @@ fn multitransport_not_offered_when_client_does_not_reciprocate() {
 }
 
 /// Drives a fresh acceptor through the whole connection sequence, from the Connection Request to `Connected`, with
-/// `monitors` sent as the client's GCC Client Monitor Data (MS-RDPBCGR 2.2.1.3.6), or with no such block when `None`.
+/// `monitors` sent as the client's GCC [2.2.1.3.6] Client Monitor Data (TS_UD_CS_MONITOR), or with no such block
+/// when `None`.
+///
+/// [2.2.1.3.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
 fn accept(monitors: Option<Vec<Monitor>>) -> Acceptor {
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     client_blocks.network = None;
@@ -1298,6 +1301,7 @@ fn stepping_an_accepted_acceptor_returns_an_error() {
     let mut acceptor = accept(None);
 
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    assert!(acceptor.get_result().is_some());
 }
 
 // oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
@@ -1332,6 +1336,7 @@ fn stepping_a_finished_channel_connection_returns_an_error() {
     assert!(sequence.is_done());
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    assert!(sequence.is_done());
 }
 
 // oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
@@ -1351,6 +1356,7 @@ fn stepping_a_finished_finalization_returns_an_error() {
     assert!(sequence.is_done());
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    assert!(sequence.is_done());
 }
 
 // oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover

@@ -1576,8 +1576,8 @@ impl Sequence for Acceptor {
             }
 
             state @ AcceptorState::Accepted { .. } => {
-                // UNTESTED: the accepted state is put back so that `get_result` still returns the result after a
-                // stray step; leaving it consumed would lose a connection the server already accepted.
+                // The accepted state is put back so that `get_result` still returns the result after a stray step;
+                // leaving it consumed would lose a connection the server already accepted.
                 self.state = state;
                 return Err(general_err!("connection already accepted"));
             }

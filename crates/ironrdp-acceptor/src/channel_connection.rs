@@ -178,7 +178,7 @@ impl Sequence for ChannelConnectionSequence {
             }
 
             ChannelConnectionState::AllJoined => {
-                // UNTESTED: the finished state is put back so that `is_done` stays true after a stray step.
+                // The finished state is put back so that `is_done` stays true after a stray step.
                 self.state = ChannelConnectionState::AllJoined;
                 return Err(general_err!("all channels are already joined"));
             }
