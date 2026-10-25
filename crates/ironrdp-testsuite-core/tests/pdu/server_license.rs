@@ -41,10 +41,12 @@ impl LicenseResponse {
     }
 }
 
-// oracle: reference crates/ironrdp-pdu/src/rdp/server_license/server_license_request/tests.rs
 #[rstest]
+// oracle: regression crates/ironrdp-testsuite-core/test_data/fuzz_regression/pdu_decode/crash-3639648ab6730a3d8617bc39badcc741c56bdc4f
 #[case::zero_modulus(vec![0; 64], false)]
+// oracle: mutant a guard that rejects only a zero modulus, accepting a 256-bit key
 #[case::modulus_below_512_bits(vec![0xff; 32], false)]
+// oracle: spec MS-RDPBCGR §4.1.4
 #[case::modulus_of_512_bits(vec![0xff; 64], true)]
 fn licensing_accepts_only_moduli_of_at_least_512_bits(
     #[case] modulus: Vec<u8>,

@@ -178,7 +178,8 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<gcc::ConferenceCreateRequest>(data);
     let _ = decode::<gcc::ConferenceCreateResponse>(data);
 
-    // The client answers a license request by encrypting with the public key from the server's certificate.
+    // The client answers a license request with either reply, both encrypting with the public key from the server's
+    // certificate.
     if let Ok(server_license::LicensePdu::ServerLicenseRequest(license_request)) =
         decode::<server_license::LicensePdu>(data)
     {
@@ -188,6 +189,13 @@ pub fn pdu_decode(data: &[u8]) {
             &[0; 48],
             "user",
             "machine",
+        );
+        let _ = server_license::ClientLicenseInfo::from_server_license_request(
+            &license_request,
+            &[0; 32],
+            &[0; 48],
+            [0; 4],
+            Vec::new(),
         );
     }
 
