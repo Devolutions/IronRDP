@@ -2941,7 +2941,9 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        let result = self.run_connection_inner(stream, tls).await;
+        // Boxed to keep this future, and `run_connection`'s, under
+        // `clippy::large_futures`, so a caller awaiting either doesn't have to.
+        let result = Box::pin(self.run_connection_inner(stream, tls)).await;
         // Given for this connection only; see `set_connection_local_addr`.
         self.connection_local_addr = None;
         result
@@ -7378,7 +7380,7 @@ mod tests {
         // is the path an embedder's accept loop sees when a client vanishes.
         let (client, server_side) = tokio::io::duplex(64);
         drop(client);
-        let _ = Box::pin(server.run_connection(server_side)).await;
+        let _ = server.run_connection(server_side).await;
 
         assert!(
             released.load(Ordering::Relaxed),

@@ -762,26 +762,43 @@ fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monito
     result_after_accepting(client_blocks, &CLIENT_INFO_PDU_BUFFER).client_monitors
 }
 
+const DESKTOP_SIZE: DesktopSize = DesktopSize {
+    width: 1920,
+    height: 1080,
+};
+
 /// Drives a fresh acceptor through the whole connection sequence, from the
 /// Connection Request to `Connected`, with `client_blocks` as the client's GCC
 /// blocks and `client_info` as its encoded Client Info PDU, and returns the
 /// acceptor's result.
 fn result_after_accepting(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks, client_info: &[u8]) -> AcceptorResult {
-    let mut acceptor = Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    );
+    accepted(client_blocks, client_info).1
+}
+
+/// [`result_after_accepting`], also returning the connected acceptor and the
+/// user and I/O channel ids, for a test that goes on to reactivate it.
+fn accepted(
+    client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
+    client_info: &[u8],
+) -> (Acceptor, AcceptorResult, u16, u16) {
+    let mut acceptor = Acceptor::new(SecurityProtocol::SSL, DESKTOP_SIZE, Vec::new(), None);
 
     let (user_channel_id, io_channel_id, ..) =
         drive_to_secure_settings_exchange_with_client_info(&mut acceptor, client_blocks, client_info);
 
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: nothing to send
+
+    let result = result_after_activation(&mut acceptor, user_channel_id, io_channel_id);
+    (acceptor, result, user_channel_id, io_channel_id)
+}
+
+/// Runs the Capability Exchange and Connection Finalization phases
+/// (MS-RDPBCGR 1.3.1.1) on an acceptor about to send its Demand Active, where
+/// a fresh connection stands after licensing and where
+/// `Acceptor::new_deactivation_reactivation` puts a reactivated one, and
+/// returns the acceptor's result.
+fn result_after_activation(acceptor: &mut Acceptor, user_channel_id: u16, io_channel_id: u16) -> AcceptorResult {
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
 
     let confirm_active = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
@@ -844,20 +861,29 @@ fn a_client_without_monitor_data_announces_no_monitors() {
     assert!(client_monitors_after_accepting(None).is_empty());
 }
 
-/// The flags of the client's Info Packet (MS-RDPBCGR 2.2.1.11.1.1) reach
-/// `AcceptorResult::client_info_flags` as sent, the audio ones included.
-#[test]
-fn client_info_flags_are_kept_as_sent() {
+/// The encoded Client Info PDU of [`CLIENT_INFO_UNICODE`] with `flags` added,
+/// and the flags it then carries.
+fn client_info_with_flags(flags: ClientInfoFlags) -> (Vec<u8>, ClientInfoFlags) {
     let mut client_info = CLIENT_INFO_UNICODE.clone();
-    client_info.flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK | ClientInfoFlags::AUDIO_CAPTURE;
-    let flags = client_info.flags;
-    let client_info = encode_vec(&ClientInfoPdu {
+    client_info.flags |= flags;
+    let sent = client_info.flags;
+    let pdu = encode_vec(&ClientInfoPdu {
         security_header: BasicSecurityHeader {
             flags: BasicSecurityHeaderFlags::INFO_PKT,
         },
         client_info,
     })
     .unwrap();
+    (pdu, sent)
+}
+
+/// The flags of the client's Info Packet (MS-RDPBCGR 2.2.1.11.1.1) reach
+/// `AcceptorResult::client_info_flags` as sent, the audio ones included.
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1
+#[test]
+fn client_info_flags_are_kept_as_sent() {
+    let (client_info, flags) =
+        client_info_with_flags(ClientInfoFlags::NO_AUDIO_PLAYBACK | ClientInfoFlags::AUDIO_CAPTURE);
 
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     client_blocks.network = None;
@@ -865,6 +891,28 @@ fn client_info_flags_are_kept_as_sent() {
         result_after_accepting(client_blocks, &client_info).client_info_flags,
         flags
     );
+}
+
+/// A Deactivation-Reactivation Sequence re-runs only the Capability Exchange
+/// and Connection Finalization phases, so the client doesn't send its Client
+/// Info PDU again, and the reactivated acceptor hands back the flags it sent
+/// the first time.
+// oracle: spec MS-RDPBCGR §1.3.1.3
+#[test]
+fn client_info_flags_survive_reactivation() {
+    let (client_info, flags) =
+        client_info_with_flags(ClientInfoFlags::NO_AUDIO_PLAYBACK | ClientInfoFlags::AUDIO_CAPTURE);
+
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    let (acceptor, result, user_channel_id, io_channel_id) = accepted(client_blocks, &client_info);
+
+    let mut acceptor = Acceptor::new_deactivation_reactivation(acceptor, result.static_channels, DESKTOP_SIZE)
+        .expect("rebuild the acceptor for reactivation");
+    let result = result_after_activation(&mut acceptor, user_channel_id, io_channel_id);
+
+    assert!(result.reactivation);
+    assert_eq!(result.client_info_flags, flags);
 }
 
 #[derive(Default)]

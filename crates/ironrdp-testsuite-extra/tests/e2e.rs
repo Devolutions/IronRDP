@@ -270,6 +270,27 @@ fn compressed_bitmap_fastpath_frame(compressor: &mut BulkCompressor) -> (Vec<u8>
     (frame, flags)
 }
 
+/// Reads one PDU from the server, waiting at most 150 ms, processes it and
+/// writes back whatever the client answers. Returns whether a PDU arrived.
+async fn serve_one_pdu(
+    stage: &mut ActiveStage,
+    framed: &mut Framed<TokioStream<TlsStream<TcpStream>>>,
+    image: &mut DecodedImage,
+) -> bool {
+    let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
+    let Ok(Ok((action, frame))) = read_result else {
+        return false;
+    };
+
+    let outputs = stage.process(image, action, &frame, None).expect("stage process");
+    for output in outputs {
+        if let ActiveStageOutput::ResponseFrame(frame) = output {
+            framed.write_all(&frame).await.expect("write response frame");
+        }
+    }
+    true
+}
+
 /// Sends echo requests and serves the client session until the server reports
 /// the round trip for `payload`, or five seconds pass.
 async fn drive_echo_round_trip(
@@ -293,17 +314,7 @@ async fn drive_echo_round_trip(
                 return Some(measurement);
             }
 
-            let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
-            let Ok(Ok((action, frame))) = read_result else {
-                continue;
-            };
-
-            let outputs = stage.process(&mut image, action, &frame, None).expect("stage process");
-            for output in outputs {
-                if let ActiveStageOutput::ResponseFrame(frame) = output {
-                    framed.write_all(&frame).await.expect("write response frame");
-                }
-            }
+            serve_one_pdu(stage, framed, &mut image).await;
         }
     }
 
@@ -438,18 +449,8 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut settled = false;
             while !settled && Instant::now() < deadline {
-                let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
-                let Ok(Ok((action, frame))) = read_result else {
-                    settled = observed_echo.load(Ordering::Relaxed);
-                    continue;
-                };
-
-                let outputs = stage.process(&mut image, action, &frame, None).expect("stage process");
-                for output in outputs {
-                    if let ActiveStageOutput::ResponseFrame(frame) = output {
-                        framed.write_all(&frame).await.expect("write response frame");
-                    }
-                }
+                settled =
+                    !serve_one_pdu(&mut stage, &mut framed, &mut image).await && observed_echo.load(Ordering::Relaxed);
             }
 
             (stage, framed)
@@ -463,6 +464,12 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
     )
 }
 
+/// A client that sets neither INFO_NOAUDIOPLAYBACK nor INFO_REMOTECONSOLEAUDIO
+/// gets its audio redirected (MS-RDPBCGR 2.2.1.11.1.1), so the server starts
+/// rdpsnd. This fails if the no-audio check ever holds rdpsnd back from every
+/// client, and it shows the probe sees a start at all, which the test below
+/// relies on to mean anything.
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1
 #[tokio::test]
 async fn rdpsnd_starts_for_a_client_that_wants_audio() {
     assert!(run_rdpsnd_probe(true).await, "the server never started rdpsnd");
@@ -471,6 +478,7 @@ async fn rdpsnd_starts_for_a_client_that_wants_audio() {
 /// A client that sets INFO_NOAUDIOPLAYBACK still joins the rdpsnd channel here,
 /// and the server leaves it unstarted, since audio redirection MUST NOT take
 /// place then (MS-RDPBCGR 2.2.1.11.1.1).
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1
 #[tokio::test]
 async fn rdpsnd_is_not_started_for_a_client_that_asked_for_no_audio() {
     assert!(
@@ -512,17 +520,7 @@ async fn run_rdpsnd_probe(enable_audio_playback: bool) -> bool {
 
             let deadline = Instant::now() + Duration::from_secs(5);
             while !echo_started.load(Ordering::Relaxed) && Instant::now() < deadline {
-                let read_result = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await;
-                let Ok(Ok((action, frame))) = read_result else {
-                    continue;
-                };
-
-                let outputs = stage.process(&mut image, action, &frame, None).expect("stage process");
-                for output in outputs {
-                    if let ActiveStageOutput::ResponseFrame(frame) = output {
-                        framed.write_all(&frame).await.expect("write response frame");
-                    }
-                }
+                serve_one_pdu(&mut stage, &mut framed, &mut image).await;
             }
             assert!(echo_started.load(Ordering::Relaxed), "the connection never settled");
 
