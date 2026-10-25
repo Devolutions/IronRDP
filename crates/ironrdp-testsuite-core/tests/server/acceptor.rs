@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use ironrdp_acceptor::{
     Acceptor, ChannelConnectionSequence, ConnectionSetupHandler, FinalizationSequence, MultitransportSecurityRng,
-    ReceivedCredentials, accept_credssp_with, accept_finalize_with,
+    ReceivedCredentials, accept_begin, accept_credssp_with, accept_finalize, accept_finalize_with,
 };
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
@@ -955,13 +955,8 @@ impl ConnectionSetupHandler for SetupHandler {
 }
 
 fn negotiated_acceptor(protocol: SecurityProtocol) -> Acceptor {
-    let mut acceptor = Acceptor::new(
+    negotiated_acceptor_expecting(
         protocol,
-        DesktopSize {
-            width: 1024,
-            height: 768,
-        },
-        Vec::new(),
         protocol
             .intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX)
             .then(|| Credentials {
@@ -969,6 +964,19 @@ fn negotiated_acceptor(protocol: SecurityProtocol) -> Acceptor {
                 password: "secret".to_owned(),
                 domain: None,
             }),
+    )
+}
+
+/// Returns an acceptor for `protocol` that expects `creds`, past the security upgrade.
+fn negotiated_acceptor_expecting(protocol: SecurityProtocol, creds: Option<Credentials>) -> Acceptor {
+    let mut acceptor = Acceptor::new(
+        protocol,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        Vec::new(),
+        creds,
     );
     acceptor
         .step(&encode_connection_request(protocol), None, &mut WriteBuf::new())
@@ -1384,4 +1392,72 @@ fn stepping_a_failed_finalization_returns_an_error() {
         .unwrap_err();
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.2.2 (the server informs the client of a security negotiation failure with an RDP
+// Negotiation Failure)
+// oracle: mutant driver dropping what a failing step wrote
+#[tokio::test]
+async fn accept_begin_sends_the_negotiation_failure() {
+    let mut acceptor = Acceptor::new(
+        SecurityProtocol::SSL,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        Vec::new(),
+        None,
+    );
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [encode_connection_request(SecurityProtocol::HYBRID)].into(),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+
+    let result = accept_begin(framed, &mut acceptor).await;
+    assert!(
+        result.is_err(),
+        "a security protocol mismatch should fail the handshake"
+    );
+
+    let outgoing = outgoing.borrow();
+    let [failure] = outgoing.as_slice() else {
+        panic!("expected only the RDP Negotiation Failure, got {} PDUs", outgoing.len());
+    };
+    assert_eq!(
+        decode::<X224<nego::ConnectionConfirm>>(failure).unwrap().0,
+        nego::ConnectionConfirm::Failure {
+            code: nego::FailureCode::SSL_REQUIRED_BY_SERVER,
+        }
+    );
+}
+
+// oracle: spec MS-RDPBCGR §2.2.5.1.1 (the fields of the Set Error Info PDU that `assert_access_denied` checks)
+// oracle: mutant driver dropping what a failing step wrote
+#[tokio::test]
+async fn accept_finalize_sends_the_error_info_for_other_credentials() {
+    let mut acceptor = negotiated_acceptor_expecting(
+        SecurityProtocol::SSL,
+        Some(Credentials {
+            username: "mallory".to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        }),
+    );
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: post_credssp_messages(Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU)),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+
+    let error = accept_finalize(framed, &mut acceptor)
+        .await
+        .err()
+        .expect("other credentials should fail the handshake");
+    assert!(error.to_string().contains("invalid credentials"));
+
+    // The Connect Response, the Attach User Confirm and two Channel Join Confirms come first.
+    let outgoing = outgoing.borrow();
+    assert_eq!(outgoing.len(), 5);
+    assert_access_denied(&outgoing[4]);
 }

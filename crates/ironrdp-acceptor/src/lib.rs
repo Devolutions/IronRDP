@@ -1,7 +1,7 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step};
+use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step_read};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
 use ironrdp_connector::{ServerName, custom_err, general_err};
@@ -73,7 +73,7 @@ where
             return Ok(result);
         }
 
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        acceptor_step(&mut framed, acceptor, &mut buf).await?;
     }
 }
 
@@ -234,7 +234,7 @@ where
             return Ok((framed, result));
         }
 
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        acceptor_step(&mut framed, acceptor, &mut buf).await?;
         if acceptor.credentials_need_handling() {
             if let Err(error) = credentials_handler
                 .handle_credentials(acceptor.received_credentials().cloned())
@@ -276,6 +276,43 @@ where
                 .expect("multitransport_request() just returned Some, so a request was sent");
             multitransport_handler(request, soft_sync).await;
             notified = true;
+        }
+    }
+}
+
+/// Runs one acceptor step and sends what it writes, also when the step fails.
+///
+/// A failing step can write a PDU that tells the client why the server ends the connection: the [2.2.1.2.2] RDP
+/// Negotiation Failure when no security protocol is common, or the [2.2.5.1.1] Set Error Info PDU when the Client Info
+/// PDU carries credentials other than the expected ones.
+///
+/// [2.2.1.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/1b3920e7-0116-4345-bc45-f2c4ad012761
+/// [2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
+async fn acceptor_step<S>(framed: &mut Framed<S>, acceptor: &mut Acceptor, buf: &mut WriteBuf) -> ConnectorResult<()>
+where
+    S: FramedRead + FramedWrite,
+{
+    match single_sequence_step_read(framed, acceptor, buf).await {
+        Ok(written) => {
+            if let Some(response_len) = written.size() {
+                trace!(response_len, "Send response");
+                framed
+                    .write_all(&buf[..response_len])
+                    .await
+                    .map_err(|e| custom_err!("write all", e))?;
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if 0 < buf.filled_len() {
+                trace!(response_len = buf.filled_len(), "Send response of the failed step");
+                // UNTESTED: the step error is returned even when sending the PDU that reports it fails, because it says
+                // why the connection ends and the write error would hide that.
+                if let Err(write_error) = framed.write_all(buf.filled()).await {
+                    debug!(%write_error, "Failed to send the response of the failed step");
+                }
+            }
+            Err(error)
         }
     }
 }
