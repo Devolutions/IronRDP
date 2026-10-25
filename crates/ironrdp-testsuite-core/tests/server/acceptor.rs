@@ -265,8 +265,7 @@ fn drive_to_secure_settings_exchange(
     drive_to_secure_settings_exchange_with_client_info(acceptor, client_blocks, &CLIENT_INFO_PDU_BUFFER)
 }
 
-/// [`drive_to_secure_settings_exchange`], sending `client_info` as the encoded
-/// Client Info PDU.
+/// [`drive_to_secure_settings_exchange`], sending `client_info` as the encoded Client Info PDU.
 fn drive_to_secure_settings_exchange_with_client_info(
     acceptor: &mut Acceptor,
     client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
@@ -767,16 +766,15 @@ const DESKTOP_SIZE: DesktopSize = DesktopSize {
     height: 1080,
 };
 
-/// Drives a fresh acceptor through the whole connection sequence, from the
-/// Connection Request to `Connected`, with `client_blocks` as the client's GCC
-/// blocks and `client_info` as its encoded Client Info PDU, and returns the
+/// Drives a fresh acceptor through the whole connection sequence, from the Connection Request to `Connected`, with
+/// `client_blocks` as the client's GCC blocks and `client_info` as its encoded Client Info PDU, and returns the
 /// acceptor's result.
 fn result_after_accepting(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks, client_info: &[u8]) -> AcceptorResult {
     accepted(client_blocks, client_info).1
 }
 
-/// [`result_after_accepting`], also returning the connected acceptor and the
-/// user and I/O channel ids, for a test that goes on to reactivate it.
+/// [`result_after_accepting`], also returning the connected acceptor and the user and I/O channel ids, for a test that
+/// goes on to reactivate it.
 fn accepted(
     client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
     client_info: &[u8],
@@ -793,11 +791,11 @@ fn accepted(
     (acceptor, result, user_channel_id, io_channel_id)
 }
 
-/// Runs the Capability Exchange and Connection Finalization phases
-/// (MS-RDPBCGR 1.3.1.1) on an acceptor about to send its Demand Active, where
-/// a fresh connection stands after licensing and where
-/// `Acceptor::new_deactivation_reactivation` puts a reactivated one, and
-/// returns the acceptor's result.
+/// Runs the Capability Exchange and Connection Finalization phases of the MS-RDPBCGR [1.3.1.1] Connection Sequence on
+/// an acceptor about to send its Demand Active, where a fresh connection stands after licensing and where
+/// `Acceptor::new_deactivation_reactivation` puts a reactivated one, and returns the acceptor's result.
+///
+/// [1.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/023f1e69-cfe8-4ee6-9ee0-7e759fb4e4ee
 fn result_after_activation(acceptor: &mut Acceptor, user_channel_id: u16, io_channel_id: u16) -> AcceptorResult {
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
 
@@ -861,8 +859,7 @@ fn a_client_without_monitor_data_announces_no_monitors() {
     assert!(client_monitors_after_accepting(None).is_empty());
 }
 
-/// The encoded Client Info PDU of [`CLIENT_INFO_UNICODE`] with `flags` added,
-/// and the flags it then carries.
+/// The encoded Client Info PDU of [`CLIENT_INFO_UNICODE`] with `flags` added, and the flags it then carries.
 fn client_info_with_flags(flags: ClientInfoFlags) -> (Vec<u8>, ClientInfoFlags) {
     let mut client_info = CLIENT_INFO_UNICODE.clone();
     client_info.flags |= flags;
@@ -877,8 +874,10 @@ fn client_info_with_flags(flags: ClientInfoFlags) -> (Vec<u8>, ClientInfoFlags) 
     (pdu, sent)
 }
 
-/// The flags of the client's Info Packet (MS-RDPBCGR 2.2.1.11.1.1) reach
+/// The flags of the client's Info Packet, MS-RDPBCGR [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET), reach
 /// `AcceptorResult::client_info_flags` as sent, the audio ones included.
+///
+/// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
 // oracle: spec MS-RDPBCGR §2.2.1.11.1.1
 #[test]
 fn client_info_flags_are_kept_as_sent() {
@@ -893,10 +892,11 @@ fn client_info_flags_are_kept_as_sent() {
     );
 }
 
-/// A Deactivation-Reactivation Sequence re-runs only the Capability Exchange
-/// and Connection Finalization phases, so the client doesn't send its Client
-/// Info PDU again, and the reactivated acceptor hands back the flags it sent
-/// the first time.
+/// An MS-RDPBCGR [1.3.1.3] Deactivation-Reactivation Sequence re-runs only the Capability Exchange and Connection
+/// Finalization phases, so the client doesn't send its Client Info PDU again, and the reactivated acceptor hands back
+/// the flags it sent the first time.
+///
+/// [1.3.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
 // oracle: spec MS-RDPBCGR §1.3.1.3
 #[test]
 fn client_info_flags_survive_reactivation() {
