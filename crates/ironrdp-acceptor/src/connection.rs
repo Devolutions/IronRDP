@@ -404,13 +404,16 @@ pub struct AcceptorResult {
     ///
     /// A client redirected by a Server Redirection PDU passes the cookie of that PDU to the target server.
     pub password_cookie: Option<PasswordCookie>,
-    /// Flags the client sent in its Info Packet (section 2.2.1.11.1.1, `flags`).
+    /// Flags the client sent in the `flags` field of its Info Packet, MS-RDPBCGR
+    /// [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET).
     ///
     /// Servers read the client's wishes from them, e.g. whether to redirect audio
     /// (`INFO_NOAUDIOPLAYBACK`, `INFO_REMOTECONSOLEAUDIO`) and whether the client can
     /// send its microphone (`INFO_AUDIOCAPTURE`). Unknown bits are kept as sent. Empty
     /// until the Client Info PDU arrives, and carried over unchanged on reactivation,
     /// since the client doesn't send the PDU again.
+    ///
+    /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
     pub client_info_flags: ClientInfoFlags,
 }
 

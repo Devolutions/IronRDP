@@ -973,14 +973,12 @@ fn accept(monitors: Option<Vec<Monitor>>) -> Acceptor {
 
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping: nothing to send
-    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
 
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
     let confirm_active = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
     acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
-
     finish_finalization(&mut acceptor, user_channel_id, io_channel_id);
     assert_eq!(acceptor.state().name(), "Connected");
-
     acceptor
 }
 
@@ -1032,38 +1030,37 @@ fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monito
         .client_monitors
 }
 
-/// Drives the acceptor through connection finalization with an encoded Client Info PDU.
-fn accepted_with_client_info(
+const DESKTOP_SIZE: DesktopSize = DesktopSize {
+    width: 1920,
+    height: 1080,
+};
+
+/// Drives the acceptor through the full connection sequence using an encoded Client Info PDU.
+fn result_after_accepting(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks, client_info: &[u8]) -> AcceptorResult {
+    accepted(client_blocks, client_info).1
+}
+
+fn accepted(
     client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
     client_info: &[u8],
 ) -> (Acceptor, AcceptorResult, u16, u16) {
-    let mut acceptor = Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    );
+    let mut acceptor = Acceptor::new(SecurityProtocol::SSL, DESKTOP_SIZE, Vec::new(), None);
     let (user_channel_id, io_channel_id, ..) =
         drive_to_secure_settings_exchange_with_info(&mut acceptor, client_blocks, client_info);
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
-    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
-    let confirm_active = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
-    acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
-    finish_finalization(&mut acceptor, user_channel_id, io_channel_id);
-    assert_eq!(acceptor.state().name(), "Connected");
-    let result = acceptor.get_result().expect("a connected acceptor has a result");
+    let result = result_after_activation(&mut acceptor, user_channel_id, io_channel_id);
     (acceptor, result, user_channel_id, io_channel_id)
 }
 
-fn result_after_accepting(
-    client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
-    client_info: &[u8],
-) -> AcceptorResult {
-    accepted_with_client_info(client_blocks, client_info).1
+/// Runs the Capability Exchange and Connection Finalization phases on an acceptor about to send its Demand Active.
+fn result_after_activation(acceptor: &mut Acceptor, user_channel_id: u16, io_channel_id: u16) -> AcceptorResult {
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    let confirm_active = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
+    acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
+    finish_finalization(acceptor, user_channel_id, io_channel_id);
+    assert_eq!(acceptor.state().name(), "Connected");
+    acceptor.get_result().expect("a connected acceptor has a result")
 }
 
 /// The client's monitors reach `AcceptorResult::client_monitors` as sent,
@@ -1210,6 +1207,7 @@ fn reactivation_backlog_rejects_frames_beyond_sixteen_mib() {
     assert!(error.to_string().contains("backlog"));
 /// The flags of the client's Info Packet (MS-RDPBCGR 2.2.1.11.1.1) reach
 /// `AcceptorResult::client_info_flags` as sent, the audio ones included.
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1
 #[test]
 fn client_info_flags_are_kept_as_sent() {
     let mut client_info = CLIENT_INFO_UNICODE.clone();
@@ -1229,6 +1227,42 @@ fn client_info_flags_are_kept_as_sent() {
         result_after_accepting(client_blocks, &client_info).client_info_flags,
         flags
     );
+}
+
+fn client_info_with_flags(flags: ClientInfoFlags) -> (Vec<u8>, ClientInfoFlags) {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    client_info.flags |= flags;
+    let sent = client_info.flags;
+    let pdu = encode_vec(&ClientInfoPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::INFO_PKT,
+        },
+        client_info,
+    })
+    .unwrap();
+    (pdu, sent)
+}
+
+/// A Deactivation-Reactivation Sequence re-runs only the Capability Exchange
+/// and Connection Finalization phases, so the client doesn't send its Client
+/// Info PDU again, and the reactivated acceptor hands back the flags it sent
+/// the first time.
+// oracle: spec MS-RDPBCGR §1.3.1.3
+#[test]
+fn client_info_flags_survive_reactivation() {
+    let (client_info, flags) =
+        client_info_with_flags(ClientInfoFlags::NO_AUDIO_PLAYBACK | ClientInfoFlags::AUDIO_CAPTURE);
+
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    let (acceptor, result, user_channel_id, io_channel_id) = accepted(client_blocks, &client_info);
+
+    let mut acceptor = Acceptor::new_deactivation_reactivation(acceptor, result.static_channels, DESKTOP_SIZE)
+        .expect("rebuild the acceptor for reactivation");
+    let result = result_after_activation(&mut acceptor, user_channel_id, io_channel_id);
+
+    assert!(result.reactivation);
+    assert_eq!(result.client_info_flags, flags);
 }
 
 #[derive(Default)]
