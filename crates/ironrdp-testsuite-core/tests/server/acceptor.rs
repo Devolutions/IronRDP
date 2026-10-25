@@ -967,7 +967,6 @@ fn accept(monitors: Option<Vec<Monitor>>) -> Acceptor {
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     client_blocks.network = None;
     client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
-
     let mut acceptor = multitransport_acceptor(None);
 
     let (user_channel_id, io_channel_id, ..) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
@@ -988,12 +987,10 @@ const DESKTOP_SIZE: DesktopSize = DesktopSize {
     height: 1080,
 };
 
-/// Drives a fresh acceptor through the whole connection sequence using an encoded Client Info PDU.
-fn result_after_accepting(client_blocks: ironrdp_pdu::gcc::ClientGccBlocks, client_info: &[u8]) -> AcceptorResult {
-    accepted(client_blocks, client_info).1
-}
-
-/// Also returns the connected acceptor and channel ids for tests that reactivate it.
+/// Drives a fresh acceptor through the whole connection sequence, from the Connection Request to `Connected`, with
+/// `client_blocks` as the client's GCC blocks and `client_info` as its encoded Client Info PDU.
+/// Returns the connected acceptor, its result, and the user and I/O channel ids, which a test that reactivates the
+/// acceptor needs.
 fn accepted(
     client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
     client_info: &[u8],
@@ -1059,10 +1056,10 @@ fn finish_finalization(sequence: &mut impl Sequence, user_channel_id: u16, io_ch
 
 /// Returns the monitors the acceptor hands back in its result after [`accept`] with `monitors`.
 fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monitor> {
-    accept(monitors)
-        .get_result()
-        .expect("a connected acceptor has a result")
-        .client_monitors
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
+    accepted(client_blocks, &CLIENT_INFO_PDU_BUFFER).1.client_monitors
 }
 
 /// The client's monitors reach `AcceptorResult::client_monitors` as sent,
@@ -1236,10 +1233,7 @@ fn client_info_flags_are_kept_as_sent() {
 
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     client_blocks.network = None;
-    assert_eq!(
-        result_after_accepting(client_blocks, &client_info).client_info_flags,
-        flags
-    );
+    assert_eq!(accepted(client_blocks, &client_info).1.client_info_flags, flags);
 }
 
 /// An MS-RDPBCGR [1.3.1.3] Deactivation-Reactivation Sequence re-runs only the Capability Exchange and Connection

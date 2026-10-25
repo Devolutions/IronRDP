@@ -410,8 +410,8 @@ pub struct AcceptorResult {
     /// Servers read the client's wishes from them, e.g. whether to redirect audio (`INFO_NOAUDIOPLAYBACK`,
     /// `INFO_REMOTECONSOLEAUDIO`) and whether the client can send its microphone (`INFO_AUDIOCAPTURE`).
     /// Unknown bits are kept as sent.
-    /// Empty until the Client Info PDU arrives, and carried over unchanged on reactivation, since the client doesn't
-    /// send the PDU again.
+    /// After a reactivation they are still the flags of the connection's Client Info PDU, since the client doesn't
+    /// send it again.
     ///
     /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
     pub client_info_flags: ClientInfoFlags,
