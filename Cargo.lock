@@ -2324,6 +2324,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -2803,6 +2804,7 @@ name = "ironrdp-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "futures-util",
  "ironrdp-cfg",
  "ironrdp-cliprdr",
@@ -2843,12 +2845,18 @@ dependencies = [
  "ironrdp-tls",
  "ironrdp-tokio",
  "ironrdp-vmconnect",
+ "picky",
+ "rand 0.9.5",
+ "reqwest",
+ "serde",
+ "serde_json",
  "smallvec",
  "tokio",
  "tokio-tungstenite",
  "tracing",
  "url",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]
@@ -2901,6 +2909,7 @@ dependencies = [
  "picky-asn1-der",
  "picky-asn1-x509",
  "rand 0.9.5",
+ "serde_json",
  "sspi",
  "tracing",
  "url",
@@ -5688,6 +5697,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",

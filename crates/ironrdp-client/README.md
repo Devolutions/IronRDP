@@ -19,10 +19,25 @@ The library is winit-agnostic. Output events are emitted on a bounded
 `tokio::sync::mpsc::Sender<RdpOutputEvent>` channel: the embedder is responsible
 for consuming them and dispatching them to whatever event loop or runtime it wishes.
 
+The optional `entra-auth` feature provides an experimental implementation of the [MS-RDPBCGR] RDS AAD authorization-code and proof-of-possession flow.
+Call `EntraAuthorization::begin(client_id, redirect_uri, resource)` with an application client ID you are authorized to use and its registered redirect URI; there are no first-party registration defaults.
+The method returns a browser URL; the embedder must capture the `form_post` response at its redirect URI and pass the authorization code and state to `complete`.
+This module does not implement browser callback capture or Windows Web Account Manager (WAM).
+An app registration and redirect URI alone do not establish permission to obtain RDP resource tokens; third-party registration acceptance has not been verified.
+Attach the resulting `EntraAuthSession` with `ConfigBuilder::with_entra_auth` to authenticate the RDP session using RDS AAD over strictly validated TLS, without a CredSSP or password fallback.
+The high-level client supports direct and RDS Gateway transports for Entra authentication; it rejects RDCleanPath because that path does not validate the RDP server's TLS certificate.
+Entra authentication also rejects certificate-validation override callbacks.
+Certificate validation uses platform trust and the server's DNS name; Entra P2P certificate validation using tenant roots and a device ID is not implemented.
+The embedder owns browser UI and must choose the target host name or device ID that matches the RDP server.
+This flow uses Microsoft's documented public-cloud authority and requires a new authorization flow after the access token expires.
+Live Entra host interoperability has not been verified.
+
 TLS peer-certificate validation remains disabled by default for compatibility with
 existing deployments. `ConfigBuilder` exposes an explicit
 `CertificateValidation::Strict` policy for callers that require platform-root and
 server-name validation.
+
+Entra HTTP requests use platform-root validation and the client's selected TLS backend.
 
 The optional `camera` feature enables MS-RDPECAM camera redirection, selected with `ConfigBuilder::with_cameras` or the `camerastoredirect` `.rdp` property.
 Capture uses Media Foundation and is only available on Windows; cameras attached or removed during the session are advertised or withdrawn as they come and go.
@@ -54,3 +69,4 @@ For the end-user RDP client binary, see [`ironrdp-viewer`](../ironrdp-viewer).
 This crate is part of the [IronRDP] project.
 
 [IronRDP]: https://github.com/Devolutions/IronRDP
+[MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
