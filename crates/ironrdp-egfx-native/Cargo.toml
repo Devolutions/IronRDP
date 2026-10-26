@@ -1,7 +1,6 @@
 [package]
 name = "ironrdp-egfx-native"
-version = "0.0.0"
-publish = false
+version = "0.1.0"
 readme = "README.md"
 description = "Native H.264 decoders for the IronRDP graphics and video channels"
 edition.workspace = true

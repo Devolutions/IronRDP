@@ -1,7 +1,6 @@
 [package]
 name = "ironrdp-rdpecam"
-version = "0.0.0"
-publish = false
+version = "0.1.0"
 readme = "README.md"
 description = "Video capture dynamic channel client as described in MS-RDPECAM"
 edition.workspace = true

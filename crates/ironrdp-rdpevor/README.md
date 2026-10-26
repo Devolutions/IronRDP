@@ -4,7 +4,7 @@
 
 The server streams content it classifies as video as H.264 over two dynamic channels:
 `Microsoft::Windows::RDS::Video::Control::v08.01` starts and stops presentations, and `Microsoft::Windows::RDS::Video::Data::v08.01` carries the samples.
-The video is placed on the desktop with the geometry mapping it names on the [MS-RDPEGT] channel (see [`ironrdp-rdpegt`](../ironrdp-rdpegt)).
+The video is placed on the desktop with the geometry mapping it names on the [MS-RDPEGT] channel (see [`ironrdp-rdpegt`](https://docs.rs/ironrdp-rdpegt)).
 
 The crate provides the PDU codecs, `VideoControlClient` and `VideoDataClient`, and `VideoPresenter`, which they share:
 

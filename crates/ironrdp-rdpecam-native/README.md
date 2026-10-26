@@ -1,6 +1,6 @@
 # IronRDP RDPECAM native backends
 
-Native camera capture backends for [`ironrdp-rdpecam`](../ironrdp-rdpecam).
+Native camera capture backends for [`ironrdp-rdpecam`](https://docs.rs/ironrdp-rdpecam).
 
 On Windows, `MediaFoundationCamera` implements `CameraBackend` with a Media Foundation source reader
 (`IMFSourceReader`) opened on a video capture device:

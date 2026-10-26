@@ -22,6 +22,6 @@ The state machine accepts uncompressed YUY2, NV12, I420, RGB24, and RGB32 sample
 Compressed samples are bounded and must start with an Annex B start code (H.264) or a JPEG start-of-image marker (MJPEG); their payload is decoded by the server.
 Media-type lists are bounded to 4,096 entries, property lists to 256 entries, and sample messages to 64 MiB.
 
-The Windows Media Foundation capture backend lives in [`ironrdp-rdpecam-native`](../ironrdp-rdpecam-native).
+The Windows Media Foundation capture backend lives in [`ironrdp-rdpecam-native`](https://docs.rs/ironrdp-rdpecam-native).
 
 [MS-RDPECAM]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
