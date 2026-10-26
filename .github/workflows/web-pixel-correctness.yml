@@ -1,0 +1,73 @@
+name: Web pixel correctness
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-pixel-correctness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pixels:
+    name: Canvas pixels (${{ matrix.simd }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        simd: ['+simd128', '-simd128']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install WASM test tools
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-bindgen-cli --version 0.2.126 --locked
+      - name: Install Chromium and its driver
+        id: chromium
+        run: |
+          browser_dir="$RUNNER_TEMP/chrome-for-testing"
+          mkdir -p "$browser_dir"
+          # Resolve both assets from one release so their versions stay in sync.
+          curl --fail --silent --show-error --location --retry 3 \
+            https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
+            --output "$browser_dir/versions.json"
+          for binary in chrome chromedriver; do
+            url="$(jq --exit-status --raw-output --arg binary "$binary" \
+              '.channels.Stable.downloads[$binary][] | select(.platform == "linux64") | .url' \
+              "$browser_dir/versions.json")"
+            curl --fail --silent --show-error --location --retry 3 \
+              "$url" --output "$browser_dir/$binary.zip"
+            unzip -q "$browser_dir/$binary.zip" -d "$browser_dir"
+          done
+          echo "chrome-path=$browser_dir/chrome-linux64/chrome" >> "$GITHUB_OUTPUT"
+          echo "chromedriver-path=$browser_dir/chromedriver-linux64/chromedriver" >> "$GITHUB_OUTPUT"
+      - name: Run production Canvas tests
+        working-directory: crates/ironrdp-web
+        env:
+          CHROMIUM_BINARY: ${{ steps.chromium.outputs.chrome-path }}
+          CHROMEDRIVER: ${{ steps.chromium.outputs.chromedriver-path }}
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          WASM_BINDGEN_TEST_TIMEOUT: '180'
+          RUSTFLAGS: '-Ctarget-feature=${{ matrix.simd }} --cfg getrandom_backend="wasm_js"'
+        run: |
+          unset CARGO_ENCODED_RUSTFLAGS NO_HEADLESS
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path("webdriver.json").write_text(json.dumps({
+              "goog:chromeOptions": {
+                  "binary": os.environ["CHROMIUM_BINARY"],
+                  "args": ["--no-sandbox", "--disable-dev-shm-usage"]
+              }
+          }))
+          PY
+          cargo test --locked --target wasm32-unknown-unknown --test canvas_pixels
