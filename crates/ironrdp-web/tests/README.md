@@ -33,6 +33,14 @@ RUSTFLAGS='-Ctarget-feature=-simd128 --cfg getrandom_backend="wasm_js"' \
 ```
 
 The `--chrome` option selects the Chromium WebDriver protocol. To select a custom
-Chromium binary, supply its path as `goog:chromeOptions.binary` in `webdriver.json`;
-set `CHROMEDRIVER` to the matching driver path. Clear `CARGO_ENCODED_RUSTFLAGS` if
-set, since Cargo otherwise gives it precedence over `RUSTFLAGS`.
+Chromium binary, supply its path as `goog:chromeOptions.binary` in `webdriver.json`.
+Pass the matching driver with `--chromedriver` before the trailing Cargo arguments:
+
+```sh
+RUSTFLAGS='-Ctarget-feature=+simd128 --cfg getrandom_backend="wasm_js"' \
+    wasm-pack test --headless --chrome --chromedriver /path/to/chromedriver --test canvas_pixels
+```
+
+`wasm-pack` overwrites an inherited `CHROMEDRIVER` value with its selected driver.
+Clear `CARGO_ENCODED_RUSTFLAGS` if set, since Cargo otherwise gives it precedence
+over `RUSTFLAGS`.
