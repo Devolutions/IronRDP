@@ -1,13 +1,20 @@
 use std::collections::HashSet;
 
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written, reason_err,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written, general_err,
+    reason_err,
 };
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::mcs;
 use ironrdp_pdu::x224::X224;
 use tracing::debug;
 
+/// Server side of the Channel Connection phase of the [1.3.1.1] Connection Sequence.
+///
+/// Once a step fails, or once every channel is joined, further steps return an error.
+/// A finished sequence stays finished: [`ChannelConnectionSequence::is_done`] still returns true after such a step.
+///
+/// [1.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/023f1e69-cfe8-4ee6-9ee0-7e759fb4e4ee
 #[derive(Debug)]
 pub struct ChannelConnectionSequence {
     state: ChannelConnectionState,
@@ -167,7 +174,15 @@ impl Sequence for ChannelConnectionSequence {
                 (Written::from_size(written)?, next_state)
             }
 
-            _ => unreachable!(),
+            ChannelConnectionState::Consumed => {
+                return Err(general_err!("channel connection state consumed by a failed step"));
+            }
+
+            ChannelConnectionState::AllJoined => {
+                // The finished state is put back so that `is_done` stays true after a stray step.
+                self.state = ChannelConnectionState::AllJoined;
+                return Err(general_err!("all channels are already joined"));
+            }
         };
 
         self.state = next_state;

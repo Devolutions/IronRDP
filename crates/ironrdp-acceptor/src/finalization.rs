@@ -1,5 +1,5 @@
 use ironrdp_connector::{
-    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written,
+    ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written, general_err,
 };
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp;
@@ -8,6 +8,12 @@ use tracing::debug;
 
 use crate::util::{self, wrap_share_data};
 
+/// Server side of the Connection Finalization phase of the [1.3.1.1] Connection Sequence.
+///
+/// Once a step fails, or once the finalization is finished, further steps return an error.
+/// A finished sequence stays finished: [`FinalizationSequence::is_done`] still returns true after such a step.
+///
+/// [1.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/023f1e69-cfe8-4ee6-9ee0-7e759fb4e4ee
 #[derive(Debug)]
 pub struct FinalizationSequence {
     state: FinalizationState,
@@ -179,7 +185,15 @@ impl Sequence for FinalizationSequence {
                 (Written::from_size(written)?, FinalizationState::Finished)
             }
 
-            _ => unreachable!(),
+            FinalizationState::Consumed => {
+                return Err(general_err!("finalization state consumed by a failed step"));
+            }
+
+            FinalizationState::Finished => {
+                // The finished state is put back so that `is_done` stays true after a stray step.
+                self.state = FinalizationState::Finished;
+                return Err(general_err!("finalization already finished"));
+            }
         };
 
         self.state = next_state;

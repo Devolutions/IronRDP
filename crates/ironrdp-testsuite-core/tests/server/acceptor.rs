@@ -6,8 +6,8 @@ use std::io;
 use std::rc::Rc;
 
 use ironrdp_acceptor::{
-    Acceptor, ConnectionSetupHandler, MultitransportSecurityRng, ReceivedCredentials, accept_credssp_with,
-    accept_finalize_with,
+    Acceptor, ChannelConnectionSequence, ConnectionSetupHandler, FinalizationSequence, MultitransportSecurityRng,
+    ReceivedCredentials, accept_credssp_with, accept_finalize_with,
 };
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
@@ -15,7 +15,7 @@ use ironrdp_connector::credssp::CredsspSequence;
 use ironrdp_connector::sspi::credssp::{NStatusCode, TsRequest};
 use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
-use ironrdp_connector::{DesktopSize, Sequence as _, Written, encode_x224_packet};
+use ironrdp_connector::{DesktopSize, Sequence, Written, encode_x224_packet};
 use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc::{
     ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientMessageChannelData, ClientMonitorData, Monitor,
@@ -36,6 +36,9 @@ use ironrdp_pdu::x224::{X224, X224Data};
 use ironrdp_testsuite_core::client_info::CLIENT_INFO_UNICODE;
 use ironrdp_testsuite_core::gcc::CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS;
 use ironrdp_testsuite_core::rdp::{CLIENT_DEMAND_ACTIVE_PDU_BUFFER, CLIENT_INFO_PDU_BUFFER};
+
+const USER_CHANNEL_ID: u16 = 1002;
+const IO_CHANNEL_ID: u16 = 1003;
 
 /// Build a minimal ConnectionRequest with the given protocols and encode it.
 fn encode_connection_request(protocol: SecurityProtocol) -> Vec<u8> {
@@ -345,10 +348,10 @@ pub(super) fn client_gcc_with_message_channel_and_multitransport(
     blocks
 }
 
-/// Builds an `Acceptor` for the multitransport tests below, at a common
-/// 1920x1080 desktop size with no static channels or credentials. `offer` is
-/// passed straight through to `set_multitransport_offer`; pass `None` to
-/// exercise the default-disabled path.
+/// Builds a fresh `Acceptor` at a common 1920x1080 desktop size with no static
+/// channels or credentials. `offer` is passed straight through to
+/// `set_multitransport_offer`; pass `None` to exercise the default-disabled
+/// path, which is also what tests unrelated to multitransport use.
 fn multitransport_acceptor(offer: Option<MultiTransportFlags>) -> Acceptor {
     let mut acceptor = Acceptor::new(
         SecurityProtocol::SSL,
@@ -741,24 +744,18 @@ fn multitransport_not_offered_when_client_does_not_reciprocate() {
     assert!(acceptor.multitransport_request().is_none());
 }
 
-/// Drives a fresh acceptor through the whole connection sequence, from the
-/// Connection Request to `Connected`, with `monitors` sent as the client's GCC
-/// Client Monitor Data (MS-RDPBCGR 2.2.1.3.6), or with no such block when
-/// `None`, and returns the monitors the acceptor hands back in its result.
-fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monitor> {
-    let mut acceptor = Acceptor::new(
-        SecurityProtocol::SSL,
-        DesktopSize {
-            width: 1920,
-            height: 1080,
-        },
-        Vec::new(),
-        None,
-    );
-
+/// Drives a fresh acceptor through the whole connection sequence, from the Connection Request to `Connected`, with
+/// `monitors` sent as the client's GCC [2.2.1.3.6] Client Monitor Data (TS_UD_CS_MONITOR), or with no such block
+/// when `None`.
+///
+/// [2.2.1.3.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
+fn accept(monitors: Option<Vec<Monitor>>) -> Acceptor {
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     client_blocks.network = None;
     client_blocks.monitor = monitors.map(|monitors| ClientMonitorData { monitors });
+
+    let mut acceptor = multitransport_acceptor(None);
+
     let (user_channel_id, io_channel_id, ..) = drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
 
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
@@ -768,7 +765,15 @@ fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monito
     let confirm_active = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
     acceptor.step(&confirm_active, None, &mut WriteBuf::new()).unwrap();
 
-    let finalization = [
+    finish_finalization(&mut acceptor, user_channel_id, io_channel_id);
+    assert_eq!(acceptor.state().name(), "Connected");
+
+    acceptor
+}
+
+/// The client's PDUs of the connection finalization, in the order it sends them.
+fn client_finalization_pdus() -> [ShareDataPdu; 4] {
+    [
         ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0 }),
         ShareDataPdu::Control(ControlPdu {
             action: ControlAction::Cooperate,
@@ -781,19 +786,34 @@ fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monito
             control_id: 0,
         }),
         ShareDataPdu::FontList(Default::default()),
-    ];
-    for pdu in finalization {
+    ]
+}
+
+/// Steps `sequence` through `pdus`, each sent as a client Share Data PDU on the given channels.
+fn send_client_finalization_pdus(
+    sequence: &mut impl Sequence,
+    user_channel_id: u16,
+    io_channel_id: u16,
+    pdus: impl IntoIterator<Item = ShareDataPdu>,
+) {
+    for pdu in pdus {
         let request = encode_send_data_request(user_channel_id, io_channel_id, &encode_client_share_data(pdu));
-        acceptor.step(&request, None, &mut WriteBuf::new()).unwrap();
+        sequence.step(&request, None, &mut WriteBuf::new()).unwrap();
     }
+}
 
-    // The server's four confirmation sends, completing finalization.
+/// Steps `sequence` through the whole connection finalization: the client's four PDUs, then the server's four
+/// confirmation sends.
+fn finish_finalization(sequence: &mut impl Sequence, user_channel_id: u16, io_channel_id: u16) {
+    send_client_finalization_pdus(sequence, user_channel_id, io_channel_id, client_finalization_pdus());
     for _ in 0..4 {
-        acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+        sequence.step(&[], None, &mut WriteBuf::new()).unwrap();
     }
-    assert_eq!(acceptor.state().name(), "Connected");
+}
 
-    acceptor
+/// Returns the monitors the acceptor hands back in its result after [`accept`] with `monitors`.
+fn client_monitors_after_accepting(monitors: Option<Vec<Monitor>>) -> Vec<Monitor> {
+    accept(monitors)
         .get_result()
         .expect("a connected acceptor has a result")
         .client_monitors
@@ -1266,4 +1286,102 @@ fn demand_active_uses_rdp_source_descriptor() {
         panic!("expected a Server Demand Active PDU");
     };
     assert_eq!(demand_active.pdu.source_descriptor, "RDP");
+}
+
+// oracle: regression Devolutions/IronRDP#1325 (stepping an acceptor after a failed step panicked instead of returning
+// an error, https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
+#[test]
+fn stepping_a_failed_acceptor_returns_an_error() {
+    let mut acceptor = multitransport_acceptor(None);
+    acceptor
+        .step(b"not a connection request", None, &mut WriteBuf::new())
+        .unwrap_err();
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+}
+
+// oracle: regression Devolutions/IronRDP#1325 (stepping an accepted acceptor panicked instead of returning an error,
+// and after its result was taken, https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
+#[test]
+fn stepping_an_accepted_acceptor_returns_an_error() {
+    let mut acceptor = accept(None);
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    // oracle: mutant the Accepted arm of `Acceptor::step` not putting the state back, losing the accepted result
+    assert!(acceptor.get_result().is_some());
+
+    // Taking the result leaves the acceptor consumed, and a step then errors as after a failed step.
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+}
+
+// oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
+// channel_connection.rs, whose sequence reached the same unreachable!() after a failed step,
+// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
+#[test]
+fn stepping_a_failed_channel_connection_returns_an_error() {
+    let mut sequence = ChannelConnectionSequence::skip_channel_join(USER_CHANNEL_ID);
+    sequence
+        .step(b"not an erect domain request", None, &mut WriteBuf::new())
+        .unwrap_err();
+
+    sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+}
+
+// oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
+// channel_connection.rs, whose sequence reached the same unreachable!() once every channel was joined,
+// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
+#[test]
+fn stepping_a_finished_channel_connection_returns_an_error() {
+    // A channel connection that skips the channel joins ends with the Attach User Confirm.
+    let mut sequence = ChannelConnectionSequence::skip_channel_join(USER_CHANNEL_ID);
+    let erect_domain = encode_vec(&X224(mcs::ErectDomainPdu {
+        sub_height: 0,
+        sub_interval: 0,
+    }))
+    .unwrap();
+    sequence.step(&erect_domain, None, &mut WriteBuf::new()).unwrap();
+    let attach_user = encode_vec(&X224(mcs::AttachUserRequest)).unwrap();
+    sequence.step(&attach_user, None, &mut WriteBuf::new()).unwrap();
+    sequence.step(&[], None, &mut WriteBuf::new()).unwrap(); // Attach User Confirm
+    assert!(sequence.is_done());
+
+    sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    // oracle: mutant the AllJoined arm of `ChannelConnectionSequence::step` not putting the state back
+    assert!(sequence.is_done());
+}
+
+// oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
+// finalization.rs, whose sequence reached the same unreachable!() once it finished,
+// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
+#[test]
+fn stepping_a_finished_finalization_returns_an_error() {
+    // The client's four PDUs and the server's four answers finish the finalization.
+    let mut sequence = FinalizationSequence::new(USER_CHANNEL_ID, IO_CHANNEL_ID);
+    finish_finalization(&mut sequence, USER_CHANNEL_ID, IO_CHANNEL_ID);
+    assert!(sequence.is_done());
+
+    sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    // oracle: mutant the Finished arm of `FinalizationSequence::step` not putting the state back
+    assert!(sequence.is_done());
+}
+
+// oracle: regression Devolutions/IronRDP#1325 (the fix of the reported acceptor panic was requested to cover
+// finalization.rs, whose sequence reached the same unreachable!() after a failed step,
+// https://github.com/Devolutions/IronRDP/issues/1325#issuecomment-6052032954)
+#[test]
+fn stepping_a_failed_finalization_returns_an_error() {
+    // The Synchronize and Control Cooperate states ignore what they read, so the Request Control state is the first
+    // that a bad PDU fails.
+    let mut sequence = FinalizationSequence::new(USER_CHANNEL_ID, IO_CHANNEL_ID);
+    send_client_finalization_pdus(
+        &mut sequence,
+        USER_CHANNEL_ID,
+        IO_CHANNEL_ID,
+        client_finalization_pdus().into_iter().take(2),
+    );
+    sequence
+        .step(b"not a request control PDU", None, &mut WriteBuf::new())
+        .unwrap_err();
+
+    sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
