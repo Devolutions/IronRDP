@@ -11,6 +11,8 @@
 pub mod audio;
 #[cfg(feature = "camera")]
 pub mod camera;
+#[cfg(feature = "cloud")]
+pub mod cloud;
 pub mod config;
 pub mod egfx_cache;
 #[cfg(feature = "entra-auth")]
