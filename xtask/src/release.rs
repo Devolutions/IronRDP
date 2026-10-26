@@ -14,6 +14,7 @@ struct Version {
 }
 
 impl Version {
+    /// Parses `major.minor.patch`, rejecting pre-release and build metadata, which release tags never carry.
     fn parse(value: &str) -> Option<Self> {
         let mut parts = value.split('.');
         let version = Self {
@@ -71,7 +72,9 @@ struct Release {
     name: String,
     previous: Version,
     current: Version,
-    /// Workspace dependencies marked `# public` in the crate's manifest.
+    /// Workspace dependencies marked `# public` in the crate's manifest, as described in [the public-dependency guidance].
+    ///
+    /// [the public-dependency guidance]: ../../.agents/skills/public-dependency/SKILL.md
     public_deps: BTreeSet<String>,
 }
 
@@ -135,6 +138,10 @@ fn plan(releases: &[Release]) -> Vec<Bump> {
 }
 
 /// Returns the names of the dependencies marked `# public` in a manifest's non-dev dependency tables.
+///
+/// The marker and its meaning are described in [the public-dependency guidance].
+///
+/// [the public-dependency guidance]: ../../.agents/skills/public-dependency/SKILL.md
 fn public_dependencies(manifest: &str) -> BTreeSet<String> {
     let mut section = "";
     let mut deps = BTreeSet::new();
@@ -165,13 +172,12 @@ fn public_dependencies(manifest: &str) -> BTreeSet<String> {
     deps
 }
 
+/// Whether a table header such as `dependencies` or `target.'cfg(windows)'.dev-dependencies` names a dependency table.
 fn is_dependency_table(section: &str) -> bool {
-    section == "dependencies"
-        || section == "build-dependencies"
-        || section == "dev-dependencies"
-        || section.ends_with(".dependencies")
-        || section.ends_with(".build-dependencies")
-        || section.ends_with(".dev-dependencies")
+    matches!(
+        section.rsplit('.').next().unwrap_or_default(),
+        "dependencies" | "build-dependencies" | "dev-dependencies"
+    )
 }
 
 /// Splits a manifest line at its comment, ignoring `#` inside strings.
@@ -281,7 +287,7 @@ fn set_requirement(manifest: &str, name: &str, to: Version) -> String {
     out
 }
 
-/// Rewrites the generated release header of a changelog, including its compare link.
+/// Rewrites the release header that release-plz generates from `cliff.toml`, including its compare link.
 fn set_changelog_version(changelog: &str, name: &str, bump: &Bump) -> Option<String> {
     let (previous, current, required) = (bump.previous, bump.current, bump.required);
     let old = format!(
@@ -305,9 +311,8 @@ pub fn check_public_deps(sh: &Shell, fix: bool) -> anyhow::Result<()> {
     let _s = Section::new("RELEASE-PUBLIC-DEPS");
 
     let packages = workspace_packages(sh)?;
-    let tags = released_versions(sh)?;
-
     let workspace_names: BTreeSet<&str> = packages.iter().map(|package| package.name.as_str()).collect();
+    let tags = released_versions(sh, &workspace_names)?;
     let mut releases = Vec::new();
 
     for package in packages.iter().filter(|package| package.publish) {
@@ -389,10 +394,9 @@ fn apply(sh: &Shell, packages: &[Package], bumps: &[Bump]) -> anyhow::Result<()>
         if sh.path_exists(&changelog_path) {
             let changelog = sh.read_file(&changelog_path)?;
 
-            match set_changelog_version(&changelog, &bump.name, bump) {
-                Some(changelog) => sh.write_file(&changelog_path, changelog)?,
-                None => println!("No generated release header to update in {}", changelog_path.display()),
-            }
+            let changelog = set_changelog_version(&changelog, &bump.name, bump)
+                .with_context(|| format!("find the generated release header in {}", changelog_path.display()))?;
+            sh.write_file(&changelog_path, changelog)?;
         }
     }
 
@@ -414,8 +418,7 @@ fn apply(sh: &Shell, packages: &[Package], bumps: &[Bump]) -> anyhow::Result<()>
 }
 
 fn workspace_packages(sh: &Shell) -> anyhow::Result<Vec<Package>> {
-    let metadata = cmd!(sh, "{CARGO} metadata --format-version 1 --no-deps").read()?;
-    let metadata: JsonValue = metadata.parse().context("parse cargo metadata")?;
+    let metadata = crate::cargo_metadata(sh)?;
     let packages: &Vec<JsonValue> = metadata["packages"].get().context("cargo metadata has no packages")?;
 
     packages
@@ -424,6 +427,7 @@ fn workspace_packages(sh: &Shell) -> anyhow::Result<Vec<Package>> {
             let name: &String = package["name"].get().context("package has no name")?;
             let version: &String = package["version"].get().context("package has no version")?;
             let manifest_path: &String = package["manifest_path"].get().context("package has no manifest_path")?;
+            let manifest_path = Path::new(manifest_path);
             // `publish = false` is reported as an empty registry list.
             let publish = match &package["publish"] {
                 JsonValue::Array(registries) => !registries.is_empty(),
@@ -434,21 +438,18 @@ fn workspace_packages(sh: &Shell) -> anyhow::Result<Vec<Package>> {
                 name: name.clone(),
                 version: Version::parse(version)
                     .with_context(|| format!("unsupported version of `{name}`: {version}"))?,
-                manifest_path: relative_to(sh.current_dir().as_path(), Path::new(manifest_path)),
+                manifest_path: manifest_path
+                    .strip_prefix(sh.current_dir())
+                    .unwrap_or(manifest_path)
+                    .to_path_buf(),
                 publish,
             })
         })
         .collect()
 }
 
-fn relative_to(base: &Path, path: &Path) -> PathBuf {
-    path.strip_prefix(base)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|_| path.to_path_buf())
-}
-
-/// Returns the latest released version of each crate, from its `<name>-v<version>` tags.
-fn released_versions(sh: &Shell) -> anyhow::Result<BTreeMap<String, Version>> {
+/// Returns the latest released version of each workspace crate, from its `<name>-v<version>` tags.
+fn released_versions(sh: &Shell, workspace_names: &BTreeSet<&str>) -> anyhow::Result<BTreeMap<String, Version>> {
     let tags = cmd!(sh, "git tag --list *-v*").read()?;
     let mut versions = BTreeMap::new();
 
@@ -456,7 +457,13 @@ fn released_versions(sh: &Shell) -> anyhow::Result<BTreeMap<String, Version>> {
         let Some((name, version)) = tag.rsplit_once("-v") else {
             continue;
         };
+
+        if !workspace_names.contains(name) {
+            continue;
+        }
+
         let Some(version) = Version::parse(version) else {
+            println!("Ignoring tag `{tag}`: its version is not `major.minor.patch`");
             continue;
         };
 
@@ -471,6 +478,8 @@ fn released_versions(sh: &Shell) -> anyhow::Result<BTreeMap<String, Version>> {
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     fn v(value: &str) -> Version {
@@ -487,21 +496,33 @@ mod tests {
     }
 
     // oracle: spec Cargo Book, Specifying Dependencies §Caret requirements
-    #[test]
-    fn caret_compatibility() {
-        assert!(!v("1.2.3").is_incompatible_with(v("1.9.0")));
-        assert!(v("1.2.3").is_incompatible_with(v("2.0.0")));
-        assert!(!v("0.2.3").is_incompatible_with(v("0.2.9")));
-        assert!(v("0.2.3").is_incompatible_with(v("0.3.0")));
-        assert!(v("0.0.3").is_incompatible_with(v("0.0.4")));
+    #[rstest]
+    #[case::minor_after_1_0("1.2.3", "1.9.0", false)]
+    #[case::major_after_1_0("1.2.3", "2.0.0", true)]
+    #[case::patch_before_1_0("0.2.3", "0.2.9", false)]
+    #[case::minor_before_1_0("0.2.3", "0.3.0", true)]
+    #[case::patch_before_0_1("0.0.3", "0.0.4", true)]
+    fn caret_compatibility(#[case] from: &str, #[case] to: &str, #[case] incompatible: bool) {
+        assert_eq!(v(from).is_incompatible_with(v(to)), incompatible);
     }
 
     // oracle: spec Cargo Book, Specifying Dependencies §Caret requirements
-    #[test]
-    fn next_breaking_version() {
-        assert_eq!(v("1.2.3").next_breaking(), v("2.0.0"));
-        assert_eq!(v("0.10.1").next_breaking(), v("0.11.0"));
-        assert_eq!(v("0.0.2").next_breaking(), v("0.0.3"));
+    #[rstest]
+    #[case::after_1_0("1.2.3", "2.0.0")]
+    #[case::before_1_0("0.10.1", "0.11.0")]
+    #[case::before_0_1("0.0.2", "0.0.3")]
+    fn next_breaking_version(#[case] from: &str, #[case] expected: &str) {
+        assert_eq!(v(from).next_breaking(), v(expected));
+    }
+
+    // oracle: mutant accepting a pre-release, build metadata, or a version with too few or too many components
+    #[rstest]
+    #[case::pre_release("0.10.0-rc.1")]
+    #[case::build_metadata("0.10.0+build")]
+    #[case::two_components("0.10")]
+    #[case::four_components("0.10.0.1")]
+    fn versions_other_than_major_minor_patch_are_rejected(#[case] value: &str) {
+        assert_eq!(Version::parse(value), None);
     }
 
     // oracle: regression Devolutions/IronRDP#2240
@@ -577,22 +598,65 @@ ironrdp-svc = { path = "../ironrdp-svc", version = "0.9" } # public
         );
     }
 
-    // oracle: mutant matching a crate whose name only starts with the bumped one, dropping the trailing comment, or skipping dev-dependencies
+    // oracle: mutant dropping the trailing comment or the requirement's precision
     #[test]
-    fn requirements_keep_their_precision_and_comments() {
-        let manifest = "[dependencies]\n\
-            ironrdp-pdu = { path = \"../ironrdp-pdu\", version = \"0.10\" } # public\n\
-            ironrdp-pdu-extra = { version = \"0.1\" }\n\
-            [dev-dependencies]\n\
-            ironrdp-pdu = \"0.10.1\"\n";
+    fn requirement_keeps_its_precision_and_comment() {
+        let manifest = "[dependencies]\nironrdp-pdu = { path = \"../ironrdp-pdu\", version = \"0.10\" } # public\n";
 
         assert_eq!(
             set_requirement(manifest, "ironrdp-pdu", v("0.11.0")),
-            "[dependencies]\n\
-            ironrdp-pdu = { path = \"../ironrdp-pdu\", version = \"0.11\" } # public\n\
-            ironrdp-pdu-extra = { version = \"0.1\" }\n\
-            [dev-dependencies]\n\
-            ironrdp-pdu = \"0.11.0\"\n"
+            "[dependencies]\nironrdp-pdu = { path = \"../ironrdp-pdu\", version = \"0.11\" } # public\n"
+        );
+    }
+
+    // oracle: mutant matching a crate whose name only starts with the bumped one
+    #[test]
+    fn requirement_on_a_crate_sharing_the_name_prefix_is_kept() {
+        let manifest = "[dependencies]\nironrdp-pdu-extra = { version = \"0.1\" }\n";
+
+        assert_eq!(set_requirement(manifest, "ironrdp-pdu", v("0.11.0")), manifest);
+    }
+
+    // oracle: mutant skipping dev-dependencies, which would then no longer resolve to the workspace crate
+    #[test]
+    fn dev_dependency_requirement_is_updated() {
+        let manifest = "[dev-dependencies]\nironrdp-pdu = \"0.10.1\"\n";
+
+        assert_eq!(
+            set_requirement(manifest, "ironrdp-pdu", v("0.11.0")),
+            "[dev-dependencies]\nironrdp-pdu = \"0.11.0\"\n"
+        );
+    }
+
+    fn svc_bump() -> Bump {
+        Bump {
+            name: "ironrdp-svc".to_owned(),
+            previous: v("0.9.0"),
+            current: v("0.9.1"),
+            required: v("0.10.0"),
+            because_of: vec!["ironrdp-pdu".to_owned()],
+        }
+    }
+
+    // oracle: reference crates/ironrdp-svc/CHANGELOG.md, whose release headers release-plz renders from cliff.toml
+    #[test]
+    fn changelog_header_and_compare_link_take_the_required_version() {
+        let changelog = "## [[0.9.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.9.0...ironrdp-svc-v0.9.1)] - 2026-10-26\n";
+
+        assert_eq!(
+            set_changelog_version(changelog, "ironrdp-svc", &svc_bump()).as_deref(),
+            Some(
+                "## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-svc-v0.9.0...ironrdp-svc-v0.10.0)] - 2026-10-26\n"
+            )
+        );
+    }
+
+    // oracle: mutant reporting success when the generated header is missing, which would leave a stale version in the changelog
+    #[test]
+    fn changelog_without_the_generated_header_is_reported() {
+        assert_eq!(
+            set_changelog_version("## [Unreleased]\n", "ironrdp-svc", &svc_bump()),
+            None
         );
     }
 

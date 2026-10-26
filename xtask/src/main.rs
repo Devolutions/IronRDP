@@ -227,9 +227,13 @@ pub fn local_bin() -> PathBuf {
     path
 }
 
-fn target_directory(sh: &Shell) -> anyhow::Result<PathBuf> {
+fn cargo_metadata(sh: &Shell) -> anyhow::Result<JsonValue> {
     let metadata = cmd!(sh, "{CARGO} metadata --format-version 1 --no-deps").read()?;
-    let metadata: JsonValue = metadata.parse().context("parse cargo metadata")?;
+    metadata.parse().context("parse cargo metadata")
+}
+
+fn target_directory(sh: &Shell) -> anyhow::Result<PathBuf> {
+    let metadata = cargo_metadata(sh)?;
 
     let directory: &String = metadata["target_directory"]
         .get()
