@@ -13,6 +13,8 @@ pub mod audio;
 pub mod camera;
 pub mod config;
 pub mod egfx_cache;
+#[cfg(feature = "entra-auth")]
+pub mod entra;
 pub mod h264;
 pub mod output_channel;
 pub mod rail;

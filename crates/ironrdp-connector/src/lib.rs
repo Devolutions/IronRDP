@@ -8,6 +8,7 @@ mod connection;
 pub mod connection_activation;
 mod connection_finalization;
 pub mod credssp;
+mod entra;
 mod license_exchange;
 mod server_name;
 
@@ -75,6 +76,12 @@ impl fmt::Display for NegotiationFailure {
                 write!(
                     f,
                     "server requires Enhanced RDP Security with TLS and client certificate"
+                )
+            }
+            FailureCode::ENTRA_AUTH_REQUIRED_BY_SERVER => {
+                write!(
+                    f,
+                    "server requires Enhanced RDP Security with Microsoft Entra authentication"
                 )
             }
             _ => write!(f, "unknown negotiation failure (code: 0x{:08x})", u32::from(self.0)),
@@ -436,6 +443,7 @@ pub enum ConnectorErrorKind {
     Encode(ironrdp_core::EncodeError),
     Decode(ironrdp_core::DecodeError),
     Credssp(sspi::Error),
+    EntraAuth(u32),
     Reason(String),
     AccessDenied,
     General,
@@ -449,6 +457,7 @@ impl fmt::Display for ConnectorErrorKind {
             ConnectorErrorKind::Encode(_) => write!(f, "encode error"),
             ConnectorErrorKind::Decode(_) => write!(f, "decode error"),
             ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
+            ConnectorErrorKind::EntraAuth(code) => write!(f, "Entra authentication failed (HRESULT 0x{code:08x})"),
             ConnectorErrorKind::Reason(description) => write!(f, "reason: {description}"),
             ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
             ConnectorErrorKind::General => write!(f, "general error"),
@@ -464,6 +473,7 @@ impl core::error::Error for ConnectorErrorKind {
             ConnectorErrorKind::Encode(e) => Some(e),
             ConnectorErrorKind::Decode(e) => Some(e),
             ConnectorErrorKind::Credssp(e) => Some(e),
+            ConnectorErrorKind::EntraAuth(_) => None,
             ConnectorErrorKind::Reason(_) => None,
             ConnectorErrorKind::AccessDenied => None,
             ConnectorErrorKind::Custom => None,

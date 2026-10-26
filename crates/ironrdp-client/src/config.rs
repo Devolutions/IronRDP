@@ -103,6 +103,8 @@ pub struct Config {
     pub(crate) udp_offer_version: UdpVersion,
     pub(crate) certificate_validation: ironrdp_tls::CertificateValidation,
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+    #[cfg(feature = "entra-auth")]
+    pub(crate) entra_auth: Option<Arc<crate::entra::EntraAuthSession>>,
 
     #[cfg(feature = "vmconnect")]
     /// Hyper-V VM ID when connecting to a VM console (port [`ironrdp_vmconnect::PORT`]).
@@ -891,6 +893,8 @@ pub struct ConfigBuilder {
     #[cfg(all(windows, feature = "vmconnect"))]
     vmconnect_current_user: bool,
     rdcleanpath_token: Option<String>,
+    #[cfg(feature = "entra-auth")]
+    entra_auth: Option<Arc<crate::entra::EntraAuthSession>>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     input_send_interval: Option<Duration>,
     input_keepalive_interval: Option<Duration>,
@@ -1243,6 +1247,17 @@ impl ConfigBuilder {
     pub fn with_tls(mut self, enabled: bool) -> Self {
         self.enable_tls = Some(enabled);
         self.properties.set_enable_tls(enabled);
+        self
+    }
+
+    /// Require Microsoft Entra RDS AAD session authentication.
+    ///
+    /// Create the session with [`crate::entra::EntraAuthorization`] and pass it here.
+    /// This requires strictly validated TLS and never falls back to CredSSP or password authentication.
+    #[cfg(feature = "entra-auth")]
+    #[must_use]
+    pub fn with_entra_auth(mut self, auth: Arc<crate::entra::EntraAuthSession>) -> Self {
+        self.entra_auth = Some(auth);
         self
     }
 
@@ -1862,6 +1877,10 @@ impl ConfigBuilder {
     /// because [`build`](Self::build) resolves them from the RDP server account.
     pub fn missing(&self) -> Vec<MissingField> {
         let mut missing = Vec::new();
+        #[cfg(feature = "entra-auth")]
+        let uses_entra_auth = self.entra_auth.is_some();
+        #[cfg(not(feature = "entra-auth"))]
+        let uses_entra_auth = false;
         #[cfg(all(windows, feature = "vmconnect"))]
         let uses_current_vmconnect_credentials = self.vm_id.is_some() && self.vmconnect_current_user;
         #[cfg(not(all(windows, feature = "vmconnect")))]
@@ -1879,13 +1898,15 @@ impl ConfigBuilder {
         if self.destination.is_none() {
             missing.push(MissingField::ServerAddress);
         }
-        if self.username.is_none()
+        if !uses_entra_auth
+            && self.username.is_none()
             && (!uses_current_vmconnect_credentials
                 || (gateway_uses_server_credentials && self.gateway_username.is_none()))
         {
             missing.push(MissingField::Username);
         }
-        if self.password.is_none()
+        if !uses_entra_auth
+            && self.password.is_none()
             && (!uses_current_vmconnect_credentials
                 || (gateway_uses_server_credentials && self.gateway_password.is_none()))
         {
@@ -1960,6 +1981,10 @@ impl ConfigBuilder {
                 .context("invalid gateway credential source")?
             {
                 Some(GatewayCredentialsSource::UseServerCredentials) => {
+                    #[cfg(feature = "entra-auth")]
+                    if self.entra_auth.is_some() {
+                        anyhow::bail!("gateway UseServerCredentials requires RDP username and password credentials");
+                    }
                     if self.gateway_username.is_none() {
                         self.gateway_username = self.username.as_deref().map(|username| match self.domain.as_deref() {
                             Some(domain)
@@ -2061,6 +2086,11 @@ impl ConfigBuilder {
             self.properties.set_server_port(ironrdp_vmconnect::PORT);
         }
 
+        #[cfg(feature = "entra-auth")]
+        let entra_auth_enabled = self.entra_auth.is_some();
+        #[cfg(not(feature = "entra-auth"))]
+        let entra_auth_enabled = false;
+
         if self.certificate_validation == Some(ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate)
             && self.certificate_validation_callback.is_some()
         {
@@ -2086,6 +2116,31 @@ impl ConfigBuilder {
         let enable_standard_rdp_security = matches!(&self.transport, TransportKind::NamedPipe { .. });
         #[cfg(not(windows))]
         let enable_standard_rdp_security = false;
+
+        #[cfg(feature = "entra-auth")]
+        if self.entra_auth.is_some() {
+            anyhow::ensure!(
+                self.enable_tls.unwrap_or(true),
+                "Entra RDS AAD authentication requires TLS"
+            );
+            anyhow::ensure!(
+                self.certificate_validation_callback.is_none(),
+                "Entra RDS AAD authentication does not support certificate-validation overrides"
+            );
+            anyhow::ensure!(
+                !matches!(self.transport, TransportKind::RDCleanPath { .. }),
+                "Entra RDS AAD authentication requires a validated TLS connection to the RDP server and is not supported with RDCleanPath"
+            );
+            anyhow::ensure!(
+                !enable_standard_rdp_security,
+                "Entra RDS AAD authentication is not supported over standard-security transports"
+            );
+            #[cfg(feature = "vmconnect")]
+            anyhow::ensure!(
+                self.vm_id.is_none(),
+                "Entra RDS AAD authentication is not supported with VMConnect"
+            );
+        }
 
         // Resolve the granular transport selection into the bundled form, folding in the separately
         // tracked secrets (gateway credentials, RDCleanPath token).
@@ -2137,13 +2192,22 @@ impl ConfigBuilder {
         let kerberos_config = self
             .kerberos_config
             .or_else(|| kerberos_config_from_properties(&self.properties, &client_name));
-        let certificate_validation = self.certificate_validation.unwrap_or_else(|| {
-            if self.certificate_validation_callback.is_some() {
-                ironrdp_tls::CertificateValidation::Strict
-            } else {
-                ironrdp_tls::CertificateValidation::default()
-            }
-        });
+        let certificate_validation = if entra_auth_enabled {
+            anyhow::ensure!(
+                self.certificate_validation
+                    != Some(ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate),
+                "Entra RDS AAD authentication requires TLS certificate validation"
+            );
+            ironrdp_tls::CertificateValidation::Strict
+        } else {
+            self.certificate_validation.unwrap_or_else(|| {
+                if self.certificate_validation_callback.is_some() {
+                    ironrdp_tls::CertificateValidation::Strict
+                } else {
+                    ironrdp_tls::CertificateValidation::default()
+                }
+            })
+        };
 
         // Bulk compression is enabled by default. We default to MPPC 64K (RDP5) rather than the
         // richer XCRUSH (RDP6.1) because it is the most universally supported and lowest-state
@@ -2159,16 +2223,15 @@ impl ConfigBuilder {
             None
         };
 
-        let enable_tls = if enable_standard_rdp_security {
+        let enable_tls = if entra_auth_enabled {
+            true
+        } else if enable_standard_rdp_security {
             false
         } else {
             self.enable_tls.unwrap_or(true)
         };
-        let enable_credssp = if enable_standard_rdp_security {
-            false
-        } else {
-            self.enable_credssp.unwrap_or(true)
-        };
+        let enable_credssp =
+            !entra_auth_enabled && !enable_standard_rdp_security && self.enable_credssp.unwrap_or(true);
 
         let remote_application_mode = self.remote_application_mode.unwrap_or(false);
         let rail_support_level = self
@@ -2276,6 +2339,8 @@ impl ConfigBuilder {
             udp_offer_version: self.udp_offer_version.unwrap_or(UdpVersion::V3),
             certificate_validation,
             certificate_validation_callback: self.certificate_validation_callback,
+            #[cfg(feature = "entra-auth")]
+            entra_auth: self.entra_auth,
             #[cfg(feature = "vmconnect")]
             vm_id: self.vm_id,
             #[cfg(feature = "vmconnect")]
