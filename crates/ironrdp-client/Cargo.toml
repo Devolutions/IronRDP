@@ -64,6 +64,15 @@ udp = [
     "dep:ironrdp-rdpeudp-tokio",
     "ironrdp-rdpeudp-tokio/rustls-aws-lc-rs",
 ]
+entra-auth = [
+    "dep:base64",
+    "dep:picky",
+    "dep:rand",
+    "dep:reqwest",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:zeroize",
+]
 
 all = [
     "sound",
@@ -133,8 +142,15 @@ futures-util = { version = "0.3", features = ["sink"] }
 # Utils
 anyhow = "1"
 smallvec = "1.15"
-url = "2"
+url = "2" # public
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream"], optional = true }
+picky = { version = "=7.0.0-rc.26", optional = true }
+base64 = { version = "0.22", optional = true }
+rand = { version = "0.9", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+zeroize = { version = "1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.2", optional = true }
