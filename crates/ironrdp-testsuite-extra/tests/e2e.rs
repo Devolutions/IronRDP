@@ -1768,6 +1768,7 @@ async fn core_frame_ack_capability_does_not_cap_the_egfx_window_by_default() {
     assert_eq!(Box::pin(egfx_windows(false)).await, (30, 30));
 }
 
+// oracle: reference crates/ironrdp-connector/src/connection_activation.rs (max_unacknowledged_frame_count 20, FIXME(#447))
 // oracle: mutant the option to apply the core Frame Acknowledge capability to EGFX has no effect, or is not applied again after a reactivation
 #[tokio::test]
 async fn core_frame_ack_capability_caps_the_egfx_window_when_enabled() {
