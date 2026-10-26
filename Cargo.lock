@@ -3030,7 +3030,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-egfx-native"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-egfx",
  "tracing",
@@ -3226,7 +3226,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpecam"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core 0.3.0",
  "ironrdp-dvc",
@@ -3238,7 +3238,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpecam-native"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-rdpecam",
  "tracing",
@@ -3247,7 +3247,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpegt"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core 0.3.0",
  "ironrdp-dvc",
@@ -3346,7 +3346,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpevor"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core 0.3.0",
  "ironrdp-dvc",

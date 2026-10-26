@@ -1,7 +1,6 @@
 [package]
 name = "ironrdp-rdpegt"
-version = "0.0.0"
-publish = false
+version = "0.1.0"
 readme = "README.md"
 description = "Geometry tracking dynamic channel client as described in MS-RDPEGT"
 edition.workspace = true
