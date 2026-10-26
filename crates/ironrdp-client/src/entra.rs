@@ -615,6 +615,7 @@ mod tests {
             resource_uri: RdpResource::HostName("desktop.example.com".to_owned())
                 .uri()
                 .expect("valid target resource"),
+            authority: AUTHORITY.to_owned(),
         });
 
         let builder = || {
