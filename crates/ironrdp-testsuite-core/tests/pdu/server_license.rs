@@ -9,6 +9,14 @@ use rstest::rstest;
 /// The zero padding that follows the modulus bytes of a proprietary certificate's public key.
 const MODULUS_PADDING: [u8; 8] = [0; 8];
 
+/// The 512-bit modulus of the proprietary certificate in MS-RDPBCGR 4.1.4, in little-endian order without its padding.
+const SPEC_EXAMPLE_MODULUS: [u8; 64] = [
+    0xcb, 0x81, 0xfe, 0xba, 0x6d, 0x61, 0xc3, 0x55, 0x05, 0xd5, 0x5f, 0x2e, 0x87, 0xf8, 0x71, 0x94, 0xd6, 0xf1, 0xa5,
+    0xcb, 0xf1, 0x5f, 0x0c, 0x3d, 0xf8, 0x70, 0x02, 0x96, 0xc4, 0xfb, 0x9b, 0xc8, 0x3c, 0x2d, 0x55, 0xae, 0xe8, 0xff,
+    0x32, 0x75, 0xea, 0x68, 0x79, 0xe5, 0xa2, 0x01, 0xfd, 0x31, 0xa0, 0xb1, 0x1f, 0x55, 0xa6, 0x1f, 0xc1, 0xf6, 0xd1,
+    0x83, 0x88, 0x63, 0x26, 0x56, 0x12, 0xbc,
+];
+
 #[derive(Debug, Clone, Copy)]
 enum LicenseResponse {
     NewLicenseRequest,
@@ -47,20 +55,14 @@ impl LicenseResponse {
 // oracle: mutant a guard that rejects only a zero modulus, accepting a 256-bit key
 #[case::modulus_below_512_bits(vec![0xff; 32], false)]
 // oracle: spec MS-RDPBCGR §4.1.4
-#[case::modulus_of_512_bits(vec![0xff; 64], true)]
+#[case::modulus_of_512_bits(SPEC_EXAMPLE_MODULUS.to_vec(), true)]
 fn licensing_accepts_only_moduli_of_at_least_512_bits(
     #[case] modulus: Vec<u8>,
     #[case] accepted: bool,
     #[values(LicenseResponse::NewLicenseRequest, LicenseResponse::LicenseInfo)] response: LicenseResponse,
 ) {
-    let license_request = license_request_with_modulus(modulus);
-
-    assert_eq!(response.build(&license_request), accepted);
-}
-
-/// A license request whose proprietary certificate carries `modulus`, in little-endian order without its padding.
-fn license_request_with_modulus(modulus: Vec<u8>) -> ServerLicenseRequest {
-    ServerLicenseRequest {
+    // The certificate carries `modulus` in little-endian order, followed by its padding.
+    let license_request = ServerLicenseRequest {
         license_header: LicenseHeader {
             security_header: BasicSecurityHeader {
                 flags: BasicSecurityHeaderFlags::LICENSE_PKT,
@@ -87,5 +89,7 @@ fn license_request_with_modulus(modulus: Vec<u8>) -> ServerLicenseRequest {
             }),
         }),
         scope_list: Vec::new(),
-    }
+    };
+
+    assert_eq!(response.build(&license_request), accepted);
 }

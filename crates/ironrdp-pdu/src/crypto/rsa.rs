@@ -5,10 +5,10 @@ use num_bigint::BigUint;
 
 /// The smallest RSA modulus accepted from a server, in bits.
 ///
-/// A modulus of zero would make `modpow` panic. 512 bits is the size of the proprietary certificate key in
-/// [4.1.4] Server MCS Connect Response PDU with GCC Conference Create Response, whose [2.2.1.4.3.1.1.1] RSA Public Key
-/// (RSA_PUBLIC_KEY) has a `bitlen` of 512, and a modulus of at least 512 bits is larger than the 48-byte premaster
-/// secret it encrypts.
+/// A modulus of zero would make `modpow` panic.
+/// 512 bits is the size of the proprietary certificate key in [4.1.4] Server MCS Connect Response PDU with GCC
+/// Conference Create Response, whose [2.2.1.4.3.1.1.1] RSA Public Key (RSA_PUBLIC_KEY) has a `bitlen` of 512, and a
+/// modulus of at least 512 bits is larger than the 48-byte premaster secret it encrypts.
 ///
 /// [4.1.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/d23f7725-876c-48d4-9e41-8288896a19d3
 /// [2.2.1.4.3.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/fe93545c-772a-4ade-9d02-ad1e0d81b6af
