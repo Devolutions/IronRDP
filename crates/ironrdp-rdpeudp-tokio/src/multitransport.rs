@@ -113,7 +113,9 @@ impl MultitransportBootstrap {
         config.connection_config = connection_config;
         config.tls = tls_config;
 
-        self.run_connect(server_addr, connect_udp(config)).await
+        self.log_connect_start(server_addr);
+        let result = connect_udp(config).await;
+        self.finish_connect(result)
     }
 
     /// Attempt multitransport over an ICE-nominated UDP path.
@@ -135,10 +137,10 @@ impl MultitransportBootstrap {
         timeout: Duration,
     ) -> Result<(), IceTransportError> {
         config.tunnel_config = self.prepare_tunnel_config().map_err(IceTransportError::Transport)?;
-        let peer = config.server_addr;
 
-        self.run_connect(peer, connect_udp_with_ice(config, local, remote, role, timeout))
-            .await
+        self.log_connect_start(config.server_addr);
+        let result = connect_udp_with_ice(config, local, remote, role, timeout).await;
+        self.finish_connect(result)
     }
 
     fn prepare_tunnel_config(&mut self) -> Result<TunnelConfig, UdpTransportError> {
@@ -166,18 +168,19 @@ impl MultitransportBootstrap {
         })
     }
 
-    async fn run_connect<E, F>(&mut self, peer: SocketAddr, connect_future: F) -> Result<(), E>
-    where
-        E: core::fmt::Display,
-        F: Future<Output = Result<UdpTransport, E>>,
-    {
+    fn log_connect_start(&self, peer: SocketAddr) {
         debug!(
             request_id = self.request.request_id,
             %peer,
             "Starting multitransport UDP connection"
         );
+    }
 
-        match connect_future.await {
+    fn finish_connect<E>(&mut self, result: Result<UdpTransport, E>) -> Result<(), E>
+    where
+        E: core::fmt::Display,
+    {
+        match result {
             Ok(transport) => {
                 debug!(
                     request_id = self.request.request_id,
