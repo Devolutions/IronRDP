@@ -6,12 +6,13 @@
 use core::fmt;
 use core::time::Duration;
 
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderValue};
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderValue, USER_AGENT};
 use serde::Deserialize;
 use url::Url;
 
 const CLOUD_PCS_URL: &str = "https://graph.microsoft.com/v1.0/me/cloudPCs";
 const MAX_PAGE_BYTES: usize = 1024 * 1024;
+const AVD_FEED_USER_AGENT: &str = "TSWorkspace/2.0";
 
 #[derive(Debug)]
 pub enum Error {
@@ -22,6 +23,7 @@ pub enum Error {
     HttpStatus(u16),
     ResponseTooLarge,
     InvalidResponse(serde_json::Error),
+    InvalidXml(&'static str),
     InvalidLaunchUrl,
     LaunchDetailMismatch,
 }
@@ -36,6 +38,7 @@ impl fmt::Display for Error {
             Self::HttpStatus(status) => write!(f, "Cloud PC service returned HTTP {status}"),
             Self::ResponseTooLarge => f.write_str("Cloud PC response exceeds 1 MiB"),
             Self::InvalidResponse(_) => f.write_str("invalid Cloud PC response"),
+            Self::InvalidXml(reason) => write!(f, "invalid AVD feed XML: {reason}"),
             Self::InvalidLaunchUrl => f.write_str("invalid Cloud PC launch URL"),
             Self::LaunchDetailMismatch => f.write_str("Cloud PC launch detail does not match the requested device"),
         }
@@ -243,7 +246,67 @@ impl CloudPcClient {
         })
     }
 
+    /// Discover AVD workspace feed URLs from an RDWeb `api/arm/feeddiscovery` endpoint.
+    ///
+    /// Supply an Entra bearer token for the AVD RDWeb resource (e.g. `https://www.wvd.microsoft.com`).
+    pub async fn discover_avd_feeds(
+        &self,
+        discovery_url: Url,
+        access_token: &str,
+    ) -> Result<Vec<AvdFeedSubscription>, Error> {
+        validate_avd_service_url(&discovery_url)?;
+        let body = self
+            .get_with_accept(
+                discovery_url,
+                access_token,
+                "application/x-msts-radc-discovery+xml, application/xml, text/xml",
+                Some(AVD_FEED_USER_AGENT),
+            )
+            .await?;
+        let xml = core::str::from_utf8(&body).map_err(|_| Error::InvalidXml("response is not valid UTF-8"))?;
+        parse_avd_feed_discovery_xml(xml)
+    }
+
+    /// Fetch and parse an AVD workspace webfeed (`application/x-msts-radc+xml`).
+    pub async fn fetch_avd_workspace_feed(&self, feed_url: Url, access_token: &str) -> Result<AvdWorkspaceFeed, Error> {
+        validate_avd_service_url(&feed_url)?;
+        let body = self
+            .get_with_accept(
+                feed_url,
+                access_token,
+                "application/x-msts-radc+xml, application/xml, text/xml",
+                Some(AVD_FEED_USER_AGENT),
+            )
+            .await?;
+        let xml = core::str::from_utf8(&body).map_err(|_| Error::InvalidXml("response is not valid UTF-8"))?;
+        parse_avd_workspace_feed_xml(xml)
+    }
+
+    /// Download an `.rdp` file from an AVD workspace resource URL.
+    pub async fn download_avd_rdp_file(&self, rdp_url: Url, access_token: &str) -> Result<String, Error> {
+        validate_avd_service_url(&rdp_url)?;
+        let body = self
+            .get_with_accept(
+                rdp_url,
+                access_token,
+                "application/x-rdp, text/plain, */*",
+                Some(AVD_FEED_USER_AGENT),
+            )
+            .await?;
+        String::from_utf8(body).map_err(|_| Error::InvalidXml("RDP file is not valid UTF-8"))
+    }
+
     async fn get(&self, url: Url, access_token: &str) -> Result<Vec<u8>, Error> {
+        self.get_with_accept(url, access_token, "application/json", None).await
+    }
+
+    async fn get_with_accept(
+        &self,
+        url: Url,
+        access_token: &str,
+        accept: &'static str,
+        user_agent: Option<&'static str>,
+    ) -> Result<Vec<u8>, Error> {
         if access_token.is_empty()
             || !access_token
                 .bytes()
@@ -254,11 +317,15 @@ impl CloudPcClient {
         let mut authorization = HeaderValue::from_str(&format!("Bearer {access_token}"))
             .map_err(|_| Error::InvalidInput("Graph bearer token"))?;
         authorization.set_sensitive(true);
-        let mut response = self
+        let mut req = self
             .http
             .get(url)
             .header(AUTHORIZATION, authorization)
-            .header(ACCEPT, "application/json")
+            .header(ACCEPT, accept);
+        if let Some(ua) = user_agent {
+            req = req.header(USER_AGENT, ua);
+        }
+        let mut response = req
             .send()
             .await
             .map_err(|error| Error::Transport(error.without_url()))?;
@@ -354,6 +421,334 @@ fn launch_url(segments: &[&str], tenant_id: Option<&str>) -> Result<String, Erro
         url.query_pairs_mut().append_pair("tenant", tenant_id);
     }
     Ok(url.into())
+}
+
+/// Azure Virtual Desktop / Windows 365 cloud sovereign environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvdCloudEnvironment {
+    /// Azure Public Cloud (`https://www.wvd.microsoft.com/`).
+    Public,
+    /// Azure US Government (`https://www.wvd.azure.us/`).
+    UsGovernment,
+    /// Azure China 21Vianet (`https://www.wvd.azure.cn/`).
+    China,
+    /// Microsoft Selfhost (`https://www.wvdselfhost.microsoft.com/`).
+    Selfhost,
+}
+
+impl AvdCloudEnvironment {
+    /// Base URL for RDWeb feed discovery in this cloud environment.
+    pub fn base_url(self) -> &'static str {
+        match self {
+            Self::Public => "https://www.wvd.microsoft.com/",
+            Self::UsGovernment => "https://www.wvd.azure.us/",
+            Self::China => "https://www.wvd.azure.cn/",
+            Self::Selfhost => "https://www.wvdselfhost.microsoft.com/",
+        }
+    }
+
+    /// Build the `api/arm/feeddiscovery` URL for this environment and optional Entra tenant ID.
+    pub fn feed_discovery_url(self, tenant_id: Option<&str>) -> Result<Url, Error> {
+        if let Some(tid) = tenant_id
+            && (tid.is_empty() || !tid.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)))
+        {
+            return Err(Error::InvalidInput("cloud resource or tenant ID"));
+        }
+        let mut url = Url::parse(self.base_url()).map_err(|_| Error::InvalidInput("AVD feed discovery URL"))?;
+        url.set_path("api/arm/feeddiscovery");
+        if let Some(tid) = tenant_id {
+            url.query_pairs_mut().append_pair("aadtenant", tid);
+        }
+        Ok(url)
+    }
+}
+
+/// One tenant/workspace feed entry returned by RDWeb `/api/arm/feeddiscovery`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvdFeedSubscription {
+    pub tenant_id: String,
+    pub tenant_display_name: Option<String>,
+    pub feed_url: Url,
+    pub hub_discovery_geo_url: Option<Url>,
+    pub diagnostic_service_url: Option<Url>,
+    pub activity_hint: Option<String>,
+    pub conditional_access_claims: Option<String>,
+}
+
+/// Kind of published AVD resource in a workspace feed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvdResourceKind {
+    /// Full session desktop (`Desktop`).
+    Desktop,
+    /// Published RemoteApp program (`RemoteApp`).
+    RemoteApp,
+}
+
+/// One published desktop or RemoteApp resource from an AVD workspace webfeed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvdResource {
+    pub id: String,
+    pub alias: Option<String>,
+    pub title: String,
+    pub kind: AvdResourceKind,
+    pub arm_path: Option<String>,
+    pub device_state: Option<String>,
+    pub rdp_file_url: Option<Url>,
+    pub rdp_etag: Option<String>,
+    pub embedded_rdp: Option<String>,
+}
+
+/// Parsed AVD workspace webfeed (`ResourceCollection`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvdWorkspaceFeed {
+    pub workspace_id: Option<String>,
+    pub workspace_name: Option<String>,
+    pub resources: Vec<AvdResource>,
+}
+
+fn validate_avd_service_url(url: &Url) -> Result<(), Error> {
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port_or_known_default() != Some(443)
+        || url.fragment().is_some()
+    {
+        return Err(Error::InvalidLaunchUrl);
+    }
+    Ok(())
+}
+
+/// Parse an RDWeb `/api/arm/feeddiscovery` XML document into workspace feed subscriptions.
+pub fn parse_avd_feed_discovery_xml(xml: &str) -> Result<Vec<AvdFeedSubscription>, Error> {
+    if xml.len() > MAX_PAGE_BYTES {
+        return Err(Error::ResponseTooLarge);
+    }
+    let mut subscriptions = Vec::new();
+    for tag in find_xml_open_tags(xml) {
+        let Some(feed_url_str) = xml_attr(tag, "FeedURL") else {
+            continue;
+        };
+        let feed_url = Url::parse(&feed_url_str).map_err(|_| Error::InvalidXml("invalid FeedURL"))?;
+        validate_avd_service_url(&feed_url).map_err(|_| Error::InvalidXml("untrusted FeedURL"))?;
+        let tenant_id = xml_attr(tag, "TenantId").unwrap_or_default();
+        if tenant_id.is_empty() {
+            return Err(Error::InvalidXml("missing TenantId on FeedURL element"));
+        }
+        let hub_discovery_geo_url = match xml_attr(tag, "HubDiscoveryGeoURL") {
+            Some(s) if !s.is_empty() => {
+                let u = Url::parse(&s).map_err(|_| Error::InvalidXml("invalid HubDiscoveryGeoURL"))?;
+                validate_avd_service_url(&u).map_err(|_| Error::InvalidXml("untrusted HubDiscoveryGeoURL"))?;
+                Some(u)
+            }
+            _ => None,
+        };
+        let diagnostic_service_url = match xml_attr(tag, "DiagnosticServiceURL") {
+            Some(s) if !s.is_empty() => {
+                let u = Url::parse(&s).map_err(|_| Error::InvalidXml("invalid DiagnosticServiceURL"))?;
+                validate_avd_service_url(&u).map_err(|_| Error::InvalidXml("untrusted DiagnosticServiceURL"))?;
+                Some(u)
+            }
+            _ => None,
+        };
+        subscriptions.push(AvdFeedSubscription {
+            tenant_id,
+            tenant_display_name: xml_attr(tag, "TenantDisplayName"),
+            feed_url,
+            hub_discovery_geo_url,
+            diagnostic_service_url,
+            activity_hint: xml_attr(tag, "ActivityHint"),
+            conditional_access_claims: xml_attr(tag, "ConditionalAccessClaims"),
+        });
+    }
+    if subscriptions.is_empty() {
+        return Err(Error::InvalidXml("no FeedURL entries found"));
+    }
+    Ok(subscriptions)
+}
+
+/// Parse an RDWeb `application/x-msts-radc+xml` workspace webfeed XML document.
+pub fn parse_avd_workspace_feed_xml(xml: &str) -> Result<AvdWorkspaceFeed, Error> {
+    if xml.len() > MAX_PAGE_BYTES {
+        return Err(Error::ResponseTooLarge);
+    }
+    if !xml.contains("<ResourceCollection") && !xml.contains("<Publisher") {
+        return Err(Error::InvalidXml("missing ResourceCollection or Publisher element"));
+    }
+
+    let mut workspace_id = None;
+    let mut workspace_name = None;
+    for tag in find_xml_open_tags(xml) {
+        if tag_name(tag).eq_ignore_ascii_case("Publisher") {
+            workspace_id = xml_attr(tag, "ID");
+            workspace_name = xml_attr(tag, "Name");
+            break;
+        }
+    }
+
+    let mut resources = Vec::new();
+    let mut search_rest = xml;
+    while let Some(res_start) = find_tag_start(search_rest, "Resource") {
+        let after_start = &search_rest[res_start..];
+        let Some(open_end) = after_start.find('>') else {
+            return Err(Error::InvalidXml("unclosed Resource tag"));
+        };
+        let open_tag = &after_start[..=open_end];
+        let close_needle = "</Resource>";
+        let (inner, next_offset) = if open_tag.ends_with("/>") {
+            ("", res_start + open_end + 1)
+        } else {
+            let Some(close_pos) = after_start[open_end + 1..].find(close_needle) else {
+                return Err(Error::InvalidXml("missing closing </Resource> tag"));
+            };
+            let body_start = open_end + 1;
+            let body_end = body_start + close_pos;
+            (
+                &after_start[body_start..body_end],
+                res_start + body_end + close_needle.len(),
+            )
+        };
+        search_rest = &search_rest[next_offset..];
+
+        let id = xml_attr(open_tag, "ID").ok_or(Error::InvalidXml("Resource missing ID attribute"))?;
+        let title = xml_attr(open_tag, "Title").unwrap_or_else(|| id.clone());
+        let alias = xml_attr(open_tag, "Alias");
+        let kind = match xml_attr(open_tag, "Type").as_deref() {
+            Some(t) if t.eq_ignore_ascii_case("RemoteApp") => AvdResourceKind::RemoteApp,
+            _ => AvdResourceKind::Desktop,
+        };
+        let mut arm_path = xml_attr(open_tag, "ArmPath");
+        let mut device_state = xml_attr(open_tag, "DeviceState");
+        let mut rdp_file_url = None;
+        let mut rdp_etag = None;
+
+        for child_tag in find_xml_open_tags(inner) {
+            let name = tag_name(child_tag);
+            if arm_path.is_none() {
+                arm_path = xml_attr(child_tag, "ArmPath");
+            }
+            if device_state.is_none() {
+                device_state = xml_attr(child_tag, "DeviceState");
+            }
+            if name.eq_ignore_ascii_case("ResourceFile") {
+                let ext = xml_attr(child_tag, "FileExtension").unwrap_or_default();
+                if ext.is_empty() || ext.eq_ignore_ascii_case(".rdp") || ext.eq_ignore_ascii_case("rdp") {
+                    if let Some(url_str) = xml_attr(child_tag, "URL") {
+                        let parsed = Url::parse(&url_str).map_err(|_| Error::InvalidXml("invalid ResourceFile URL"))?;
+                        validate_avd_service_url(&parsed)
+                            .map_err(|_| Error::InvalidXml("untrusted ResourceFile URL"))?;
+                        rdp_file_url = Some(parsed);
+                    }
+                    rdp_etag = xml_attr(child_tag, "ETag");
+                }
+            }
+        }
+
+        let embedded_rdp = extract_xml_element_text(inner, "RDPFile").map(unescape_xml);
+
+        resources.push(AvdResource {
+            id,
+            alias,
+            title,
+            kind,
+            arm_path,
+            device_state,
+            rdp_file_url,
+            rdp_etag,
+            embedded_rdp,
+        });
+    }
+
+    Ok(AvdWorkspaceFeed {
+        workspace_id,
+        workspace_name,
+        resources,
+    })
+}
+
+fn find_tag_start(haystack: &str, name: &str) -> Option<usize> {
+    let mut offset = 0;
+    while let Some(pos) = haystack[offset..].find('<') {
+        let idx = offset + pos;
+        let rest = &haystack[idx + 1..];
+        if rest.len() > name.len()
+            && rest[..name.len()].eq_ignore_ascii_case(name)
+            && matches!(rest.as_bytes()[name.len()], b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
+        {
+            return Some(idx);
+        }
+        offset = idx + 1;
+    }
+    None
+}
+
+fn find_xml_open_tags(xml: &str) -> Vec<&str> {
+    let mut tags = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find('<') {
+        let after = &rest[start..];
+        let Some(end) = after.find('>') else {
+            break;
+        };
+        let tag = &after[..=end];
+        if !tag.starts_with("</") && !tag.starts_with("<?") && !tag.starts_with("<!") {
+            tags.push(tag);
+        }
+        rest = &after[end + 1..];
+    }
+    tags
+}
+
+fn tag_name(tag: &str) -> &str {
+    let inner = tag.trim_start_matches('<').trim_end_matches('>').trim_end_matches('/');
+    inner.split_whitespace().next().unwrap_or("")
+}
+
+fn xml_attr(tag: &str, attr_name: &str) -> Option<String> {
+    let inner = tag.trim_start_matches('<').trim_end_matches('>').trim_end_matches('/');
+    let mut rest = inner;
+    while let Some(eq_pos) = rest.find('=') {
+        let before = rest[..eq_pos].trim_end();
+        let key = before
+            .rsplit_once(|c: char| c.is_whitespace())
+            .map_or(before, |(_, k)| k);
+        let after = rest[eq_pos + 1..].trim_start();
+        let quote = after.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            rest = after;
+            continue;
+        }
+        let value_rest = &after[1..];
+        let end_quote = value_rest.find(quote)?;
+        let raw_val = &value_rest[..end_quote];
+        if key.eq_ignore_ascii_case(attr_name) {
+            return Some(unescape_xml(raw_val));
+        }
+        rest = &value_rest[end_quote + 1..];
+    }
+    None
+}
+
+fn extract_xml_element_text<'a>(xml: &'a str, element_name: &str) -> Option<&'a str> {
+    let start_idx = find_tag_start(xml, element_name)?;
+    let after = &xml[start_idx..];
+    let open_end = after.find('>')?;
+    if after[..=open_end].ends_with("/>") {
+        return None;
+    }
+    let body = &after[open_end + 1..];
+    let close_tag = format!("</{element_name}>");
+    let close_pos = body.find(&close_tag)?;
+    Some(&body[..close_pos])
+}
+
+fn unescape_xml(input: &str) -> String {
+    input
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
 }
 
 #[cfg(test)]
@@ -645,5 +1040,79 @@ mod tests {
             String::from_utf8(request).unwrap()
         });
         (Url::parse(&format!("http://{addr}/v1.0/me/cloudPCs")).unwrap(), task)
+    }
+
+    #[test]
+    fn avd_cloud_environment_feed_discovery_urls() {
+        assert_eq!(
+            AvdCloudEnvironment::Public
+                .feed_discovery_url(Some("4c5a5ec1-9ac5-4612-9b4c-6bed178bb65a"))
+                .unwrap()
+                .as_str(),
+            "https://www.wvd.microsoft.com/api/arm/feeddiscovery?aadtenant=4c5a5ec1-9ac5-4612-9b4c-6bed178bb65a"
+        );
+        assert_eq!(
+            AvdCloudEnvironment::UsGovernment
+                .feed_discovery_url(None)
+                .unwrap()
+                .as_str(),
+            "https://www.wvd.azure.us/api/arm/feeddiscovery"
+        );
+        assert_eq!(
+            AvdCloudEnvironment::China.feed_discovery_url(None).unwrap().as_str(),
+            "https://www.wvd.azure.cn/api/arm/feeddiscovery"
+        );
+    }
+
+    #[test]
+    fn parse_avd_feed_discovery_and_workspace_feed() {
+        let discovery_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<FeedDiscovery>
+  <Publisher TenantId="ada6b91e-20af-4bb3-aea1-111328fd1811"
+             TenantDisplayName="AvdLabWorkspace"
+             FeedURL="https://rdweb-r1.wvd.microsoft.com/api/arm/feeddiscovery/tenants/ada6b91e-20af-4bb3-aea1-111328fd1811/webfeed?geo=CA&amp;showInFeedMonikers=CloudPC"
+             HubDiscoveryGeoURL="https://rdweb-g-ca-r1.wvd.microsoft.com/api/arm/hubdiscovery?resourceId=47ddc51c-2ce6-466a-8ee9-453f7b2072ee"
+             DiagnosticServiceURL="https://rdweb-g-ca-r1.wvd.microsoft.com/api/arm/DiagnosticEvents/v1"
+             ActivityHint="ms-wvd-hp:47ddc51c-2ce6-466a-8ee9-453f7b2072ee" />
+</FeedDiscovery>"#;
+        let feeds = parse_avd_feed_discovery_xml(discovery_xml).unwrap();
+        assert_eq!(feeds.len(), 1);
+        assert_eq!(feeds[0].tenant_id, "ada6b91e-20af-4bb3-aea1-111328fd1811");
+        assert_eq!(feeds[0].tenant_display_name.as_deref(), Some("AvdLabWorkspace"));
+        assert_eq!(
+            feeds[0].feed_url.as_str(),
+            "https://rdweb-r1.wvd.microsoft.com/api/arm/feeddiscovery/tenants/ada6b91e-20af-4bb3-aea1-111328fd1811/webfeed?geo=CA&showInFeedMonikers=CloudPC"
+        );
+        assert!(feeds[0].hub_discovery_geo_url.is_some());
+        assert!(feeds[0].diagnostic_service_url.is_some());
+
+        let workspace_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<ResourceCollection PubDate="2026-10-26T18:00:00Z" SchemaVersion="2.1">
+  <Publisher LastUpdated="2026-10-26T18:00:00Z" Name="AvdLabWorkspace" ID="ada6b91e-20af-4bb3-aea1-111328fd1811" Description="">
+    <Resources>
+      <Resource ID="20842633-c909-4aeb-3199-08db09107d3b" Alias="SessionDesktop" Title="SessionDesktop" Type="Desktop"
+                ArmPath="/subscriptions/6fe9553e-226e-4185-9cc2-da3c31036ca8/resourcegroups/AVD/providers/Microsoft.DesktopVirtualization/applicationgroups/AvdLab-DAG/applications/SessionDesktop"
+                DeviceState="Available">
+        <HostingTerminalServers>
+          <HostingTerminalServer>
+            <ResourceFile FileExtension=".rdp" URL="https://rdweb-r1.wvd.microsoft.com/api/arm/feeddiscovery/tenants/ada6b91e-20af-4bb3-aea1-111328fd1811/rdps/20842633-c909-4aeb-3199-08db09107d3b.rdp?geo=CA" ETag="etag-123" />
+          </HostingTerminalServer>
+        </HostingTerminalServers>
+      </Resource>
+    </Resources>
+  </Publisher>
+</ResourceCollection>"#;
+        let ws = parse_avd_workspace_feed_xml(workspace_xml).unwrap();
+        assert_eq!(ws.workspace_id.as_deref(), Some("ada6b91e-20af-4bb3-aea1-111328fd1811"));
+        assert_eq!(ws.workspace_name.as_deref(), Some("AvdLabWorkspace"));
+        assert_eq!(ws.resources.len(), 1);
+        assert_eq!(ws.resources[0].id, "20842633-c909-4aeb-3199-08db09107d3b");
+        assert_eq!(ws.resources[0].kind, AvdResourceKind::Desktop);
+        assert_eq!(ws.resources[0].device_state.as_deref(), Some("Available"));
+        assert_eq!(ws.resources[0].rdp_etag.as_deref(), Some("etag-123"));
+        assert_eq!(
+            ws.resources[0].rdp_file_url.as_ref().unwrap().as_str(),
+            "https://rdweb-r1.wvd.microsoft.com/api/arm/feeddiscovery/tenants/ada6b91e-20af-4bb3-aea1-111328fd1811/rdps/20842633-c909-4aeb-3199-08db09107d3b.rdp?geo=CA"
+        );
     }
 }

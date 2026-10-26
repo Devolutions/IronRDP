@@ -105,6 +105,8 @@ pub struct Config {
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
     #[cfg(feature = "entra-auth")]
     pub(crate) entra_auth: Option<Arc<crate::entra::EntraAuthSession>>,
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    pub(crate) avd_token_provider: Option<Arc<dyn crate::avd::AvdTokenProvider>>,
 
     #[cfg(feature = "vmconnect")]
     /// Hyper-V VM ID when connecting to a VM console (port [`ironrdp_vmconnect::PORT`]).
@@ -919,6 +921,8 @@ pub struct ConfigBuilder {
     rdcleanpath_token: Option<String>,
     #[cfg(feature = "entra-auth")]
     entra_auth: Option<Arc<crate::entra::EntraAuthSession>>,
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    avd_token_provider: Option<Arc<dyn crate::avd::AvdTokenProvider>>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     input_send_interval: Option<Duration>,
     input_keepalive_interval: Option<Duration>,
@@ -1329,6 +1333,17 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_entra_auth(mut self, auth: Arc<crate::entra::EntraAuthSession>) -> Self {
         self.entra_auth = Some(auth);
+        self
+    }
+
+    /// Supply a custom cross-platform token provider for Azure Virtual Desktop (`gatewaybrokeringtype:i:1`)
+    /// orchestration and session-host PoP authentication.
+    ///
+    /// On Windows, when omitted, IronRDP defaults to Windows Web Account Manager (`WebAuthenticationCoreManager`).
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    #[must_use]
+    pub fn with_avd_token_provider(mut self, provider: Arc<dyn crate::avd::AvdTokenProvider>) -> Self {
+        self.avd_token_provider = Some(provider);
         self
     }
 
@@ -1991,13 +2006,16 @@ impl ConfigBuilder {
     pub fn missing(&self) -> Vec<MissingField> {
         let mut missing = Vec::new();
         #[cfg(feature = "entra-auth")]
-        let uses_entra_auth = self.entra_auth.is_some();
+        let uses_entra_auth =
+            self.entra_auth.is_some() || self.properties.get::<bool>("enablerdsaadauth").unwrap_or(false);
         #[cfg(not(feature = "entra-auth"))]
         let uses_entra_auth = false;
         #[cfg(all(windows, feature = "vmconnect"))]
         let uses_current_vmconnect_credentials = self.vm_id.is_some() && self.vmconnect_current_user;
         #[cfg(not(all(windows, feature = "vmconnect")))]
         let uses_current_vmconnect_credentials = false;
+        #[cfg(feature = "gateway")]
+        let is_avd_gateway = self.properties.get::<i64>("gatewaybrokeringtype") == Some(1);
         #[cfg(feature = "gateway")]
         let gateway_uses_server_credentials = matches!(
             self.transport,
@@ -2030,6 +2048,7 @@ impl ConfigBuilder {
             self.transport,
             TransportKind::Gateway { .. } | TransportKind::GatewayRpch { .. }
         ) && !gateway_uses_server_credentials
+            && !is_avd_gateway
         {
             if self.gateway_username.is_none() {
                 missing.push(MissingField::GatewayUsername);
@@ -2214,7 +2233,8 @@ impl ConfigBuilder {
         }
 
         #[cfg(feature = "entra-auth")]
-        let entra_auth_enabled = self.entra_auth.is_some();
+        let entra_auth_enabled =
+            self.entra_auth.is_some() || self.properties.get::<bool>("enablerdsaadauth").unwrap_or(false);
         #[cfg(not(feature = "entra-auth"))]
         let entra_auth_enabled = false;
 
@@ -2283,8 +2303,8 @@ impl ConfigBuilder {
                 prefer_direct,
             } => Transport::Gateway(GatewayConfig {
                 endpoint,
-                username: self.gateway_username.unwrap(),
-                password: self.gateway_password.unwrap(),
+                username: self.gateway_username.unwrap_or_default(),
+                password: self.gateway_password.unwrap_or_default(),
                 prefer_direct,
             }),
             #[cfg(feature = "gateway")]
@@ -2473,6 +2493,8 @@ impl ConfigBuilder {
             certificate_validation_callback: self.certificate_validation_callback,
             #[cfg(feature = "entra-auth")]
             entra_auth: self.entra_auth,
+            #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+            avd_token_provider: self.avd_token_provider,
             #[cfg(feature = "vmconnect")]
             vm_id: self.vm_id,
             #[cfg(feature = "vmconnect")]
@@ -2509,6 +2531,22 @@ impl ConfigBuilder {
     /// property unset (query [`missing`](Self::missing) to resolve the rest).
     pub fn from_property_set(ps: &PropertySet) -> anyhow::Result<Self> {
         ConfigBuilder::new().with_property_set(ps)
+    }
+
+    /// Applies companion metadata from a sibling `<rdp_file>.json` file (such as Windows App / AVD
+    /// launch files) onto `properties` when not already set in the `.rdp` file.
+    pub fn apply_rdp_launch_companion(rdp_file: &std::path::Path, properties: &mut PropertySet) {
+        #[cfg(any(feature = "cloud", feature = "entra-auth"))]
+        if properties.username().is_none()
+            && let Ok(json_text) = std::fs::read_to_string(rdp_file.with_extension("json"))
+            && let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_text)
+            && let Some(user) = val.get("UserName").and_then(serde_json::Value::as_str)
+            && !user.is_empty()
+        {
+            properties.set_username(user.to_owned());
+        }
+        #[cfg(not(any(feature = "cloud", feature = "entra-auth")))]
+        let _ = (rdp_file, properties);
     }
 
     /// Overlay a `.rdp` [`PropertySet`] on top of the current builder.

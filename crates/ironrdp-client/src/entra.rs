@@ -157,8 +157,7 @@ impl EntraAuthorization {
         ensure!(!code.is_empty(), "Entra authorization code is empty");
         ensure!(self.state == returned_state, "Entra authorization state did not match");
 
-        let req_cnf_json = serde_json::to_vec(&serde_json::json!({ "kid": self.key.key_id }))?;
-        let req_cnf = URL_SAFE_NO_PAD.encode(req_cnf_json);
+        let req_cnf = self.key.req_cnf()?;
         let mut form = url::form_urlencoded::Serializer::new(String::new());
         form.append_pair("client_id", &self.client_id)
             .append_pair("grant_type", "authorization_code")
@@ -201,6 +200,7 @@ impl EntraAuthorization {
             http: self.http,
             key: self.key,
             resource_uri: self.resource_uri,
+            authority: AUTHORITY.to_owned(),
         })
     }
 }
@@ -216,6 +216,7 @@ pub struct EntraAuthSession {
     http: reqwest::Client,
     key: EntraPopKey,
     resource_uri: String,
+    authority: String,
 }
 
 impl fmt::Debug for EntraAuthSession {
@@ -230,6 +231,40 @@ impl fmt::Debug for EntraAuthSession {
 }
 
 impl EntraAuthSession {
+    #[cfg(feature = "gateway")]
+    pub(crate) fn from_pop_token(
+        access_token: String,
+        key: EntraPopKey,
+        resource_uri: String,
+        tenant_id: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        ensure!(!access_token.is_empty(), "Entra returned an empty access token");
+        let http = crate::http_client_builder()
+            .context("configure Entra HTTPS client")?
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(HTTP_TIMEOUT)
+            .build()
+            .context("create Entra HTTPS client")?;
+        let authority = match tenant_id.filter(|id| !id.is_empty()) {
+            Some(tenant_id) => format!("https://login.microsoftonline.com/{tenant_id}"),
+            None => AUTHORITY.to_owned(),
+        };
+        Ok(Self {
+            access_token: Zeroizing::new(access_token),
+            expires_at: tokio::time::Instant::now() + Duration::from_secs(3600),
+            http,
+            key,
+            resource_uri,
+            authority,
+        })
+    }
+
+    /// Whether the PoP access token has reached its expiration timestamp.
+    pub fn is_expired(&self) -> bool {
+        tokio::time::Instant::now() >= self.expires_at
+    }
+
     /// Acquire the fresh AAD nonce required for an RDS AAD authentication handshake.
     ///
     /// Call this before the TLS handshake, as required by the RDS AAD connection sequence.
@@ -256,7 +291,7 @@ impl EntraAuthSession {
     async fn request_aad_nonce(&self) -> anyhow::Result<String> {
         let response = self
             .http
-            .post(format!("{AUTHORITY}/oauth2/token"))
+            .post(format!("{}/oauth2/token", self.authority))
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body("grant_type=srv_challenge")
             .send()
@@ -285,7 +320,7 @@ impl fmt::Debug for EntraAssertion {
     }
 }
 
-struct EntraPopKey {
+pub(crate) struct EntraPopKey {
     private_key: PrivateKey,
     public_jwk: Jwk,
     key_id: String,
@@ -300,7 +335,7 @@ impl fmt::Debug for EntraPopKey {
 }
 
 impl EntraPopKey {
-    fn generate() -> anyhow::Result<Self> {
+    pub(crate) fn generate() -> anyhow::Result<Self> {
         let private_key = PrivateKey::generate_rsa(2048).context("generate Entra RSA PoP key")?;
         let public_key = private_key.to_public_key().context("derive Entra PoP public key")?;
         let public_jwk = Jwk::from_public_key(&public_key).context("encode Entra PoP public JWK")?;
@@ -323,6 +358,11 @@ impl EntraPopKey {
         })
     }
 
+    pub(crate) fn req_cnf(&self) -> anyhow::Result<String> {
+        let req_cnf_json = serde_json::to_vec(&serde_json::json!({ "kid": self.key_id }))?;
+        Ok(URL_SAFE_NO_PAD.encode(req_cnf_json))
+    }
+
     fn sign_assertion(
         &self,
         access_token: &str,
@@ -335,17 +375,21 @@ impl EntraPopKey {
             .context("system clock predates the Unix epoch")?
             .as_secs();
         let client_claims = serde_json::to_string(&ClientClaims { aad_nonce })?;
+        let mut jwk = serde_json::to_value(&self.public_jwk)?;
+        if let Some(obj) = jwk.as_object_mut() {
+            obj.insert("alg".to_owned(), serde_json::Value::String("RS256".to_owned()));
+        }
         let claims = RdpAssertionClaims {
             ts: timestamp.to_string(),
             at: access_token,
             u: resource_uri,
             nonce: server_nonce,
-            cnf: Confirmation { jwk: &self.public_jwk },
+            cnf: Confirmation { jwk },
             client_claims,
         };
         let payload = Zeroizing::new(serde_json::to_vec(&claims)?);
         let mut jws = Jws::new(JwsAlg::RS256, payload.to_vec());
-        jws.header.kid = Some(self.key_id.clone());
+        jws.header.kid = Some(self.req_cnf()?);
         let encoded = jws.encode(&self.private_key);
         jws.payload.zeroize();
         Ok(EntraAssertion(Zeroizing::new(encoded?)))
@@ -358,8 +402,8 @@ struct ClientClaims<'a> {
 }
 
 #[derive(Serialize)]
-struct Confirmation<'a> {
-    jwk: &'a Jwk,
+struct Confirmation {
+    jwk: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -368,7 +412,7 @@ struct RdpAssertionClaims<'a> {
     at: &'a str,
     u: &'a str,
     nonce: &'a str,
-    cnf: Confirmation<'a>,
+    cnf: Confirmation,
     client_claims: String,
 }
 
@@ -452,6 +496,7 @@ mod tests {
             key,
             resource_uri: "ms-device-service://termsrv.wvd.microsoft.com/name/desktop.example.com/user_impersonation"
                 .to_owned(),
+            authority: AUTHORITY.to_owned(),
         };
         let before = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -1494,6 +1494,16 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
                 eprintln!("warning: skipped entry in {}: {error}", path.display());
             }
         }
+        if properties.username().is_none() {
+            let companion_json = path.with_extension("json");
+            if let Ok(json_text) = std::fs::read_to_string(&companion_json)
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_text)
+                && let Some(user) = val.get("UserName").and_then(serde_json::Value::as_str)
+                && !user.is_empty()
+            {
+                properties.set_username(user.to_owned());
+            }
+        }
     }
 
     // `--prop` overrides win over the .rdp file but lose to the named flags below.

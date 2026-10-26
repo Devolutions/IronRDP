@@ -107,7 +107,7 @@ fn entra_nonce_assertion_and_success_gate_basic_settings() {
 
     let written = connector.submit_entra_assertion(ASSERTION, &mut output).unwrap();
     assert_eq!(written.size(), Some(output.filled_len()));
-    assert_eq!(output.filled(), br#"{"rdp_assertion":"e30.e30.c2ln"}"#);
+    assert_eq!(output.filled(), b"{\"rdp_assertion\":\"e30.e30.c2ln\"}\0");
     assert!(matches!(connector.state, ClientConnectorState::EntraAuthWaitResult));
     assert!(connector.entra_server_nonce().is_none());
     assert!(connector.submit_entra_assertion(ASSERTION, &mut output).is_err());
@@ -255,7 +255,7 @@ fn entra_rejects_invalid_assertions_without_advancing_or_writing() {
 
 #[test]
 fn entra_assertion_message_size_limit_includes_json_envelope() {
-    let envelope_len = br#"{"rdp_assertion":""}"#.len();
+    let envelope_len = b"{\"rdp_assertion\":\"\"}\0".len();
     let signature_len = 64 * 1024 - envelope_len - "e30.e30.".len();
     let mut connector = after_tls();
     let mut output = WriteBuf::new();

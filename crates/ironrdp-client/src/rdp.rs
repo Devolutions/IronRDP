@@ -1783,13 +1783,13 @@ async fn send_active_output_event(
 /// Collapses to a zero-sized placeholder when the `clipboard` feature is disabled, so the
 /// connect-helper signatures don't need `#[cfg]` on this parameter.
 #[cfg(feature = "clipboard")]
-type CliprdrFactoryRef<'a> = Option<&'a (dyn CliprdrBackendFactory + Send)>;
+pub(crate) type CliprdrFactoryRef<'a> = Option<&'a (dyn CliprdrBackendFactory + Send)>;
 #[cfg(not(feature = "clipboard"))]
-type CliprdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
+pub(crate) type CliprdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
 #[cfg(feature = "rdpdr")]
-type RdpdrFactoryRef<'a> = Option<&'a (dyn RdpdrBackendFactory + Send)>;
+pub(crate) type RdpdrFactoryRef<'a> = Option<&'a (dyn RdpdrBackendFactory + Send)>;
 #[cfg(not(feature = "rdpdr"))]
-type RdpdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
+pub(crate) type RdpdrFactoryRef<'a> = core::marker::PhantomData<&'a ()>;
 
 /// RDPDR device classes permitted on one connection after any gateway policy.
 #[cfg(feature = "rdpdr")]
@@ -2572,9 +2572,9 @@ fn build_connector(
 
 // ── Transport-specific connect helpers ────────────────────────────────────────
 
-trait AsyncReadWrite: AsyncRead + AsyncWrite {}
+pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite {}
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite {}
-type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>;
+pub(crate) type UpgradedFramed = ironrdp_tokio::TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>;
 
 // mstsc's input handler reads this threshold from the `EventsAtOnce` property, whose default is 10.
 const INPUT_BATCH_EVENT_LIMIT: usize = 10;
@@ -2650,7 +2650,7 @@ impl FastPathInputBatcher {
 }
 
 #[derive(Default)]
-struct UdpTunnel {
+pub(crate) struct UdpTunnel {
     #[cfg(feature = "udp")]
     transport: Option<ironrdp_rdpeudp_tokio::UdpTransport>,
     #[cfg(feature = "udp")]
@@ -2716,7 +2716,7 @@ async fn bootstrap_udp_transport(
         .ok_or_else(|| ironrdp_connector::general_err!("successful UDP bootstrap did not produce a transport"))
 }
 
-type ConnectOutput = (ConnectionOutcome, UpgradedFramed, UdpTunnel);
+pub(crate) type ConnectOutput = (ConnectionOutcome, UpgradedFramed, UdpTunnel);
 
 /// Opens a TCP connection, abandoning each resolved address after `attempt_timeout`.
 async fn connect_tcp(dest: &str, attempt_timeout: Option<Duration>) -> io::Result<TcpStream> {
@@ -2906,6 +2906,20 @@ async fn connect_gateway(
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ConnectOutput> {
+    #[cfg(feature = "entra-auth")]
+    if config.properties.get::<i64>("gatewaybrokeringtype") == Some(1) {
+        return crate::avd::connect_avd_gateway(
+            config,
+            gw,
+            input_sender,
+            output_event_sender,
+            cliprdr_factory,
+            rdpdr_factory,
+            auto_reconnect_cookie,
+        )
+        .await;
+    }
+
     let gw_target = gateway_connect_target(config, gw);
 
     let (gw_stream, client_addr) = ironrdp_mstsgu::GwClient::connect_with_port_and_certificate_validation(
@@ -2925,6 +2939,7 @@ async fn connect_gateway(
         GatewayConnectionInfo {
             client_addr,
             tunnel_policy: GatewayTunnelPolicy::Http(tunnel_policy),
+            udp_peer: None,
         },
         (input_sender, output_event_sender),
         cliprdr_factory,
@@ -2962,6 +2977,7 @@ async fn connect_gateway_rpch(
         GatewayConnectionInfo {
             client_addr,
             tunnel_policy: GatewayTunnelPolicy::Rpch(redirection_flags),
+            udp_peer: None,
         },
         (input_sender, output_event_sender),
         cliprdr_factory,
@@ -2983,19 +2999,20 @@ fn gateway_connect_target(config: &Config, gw: &crate::config::GatewayConfig) ->
 }
 
 #[cfg(feature = "gateway")]
-enum GatewayTunnelPolicy {
+pub(crate) enum GatewayTunnelPolicy {
     Http(ironrdp_mstsgu::GwTunnelPolicy),
     Rpch(ironrdp_mstsgu::GwRpchRedirectionFlags),
 }
 
 #[cfg(feature = "gateway")]
-struct GatewayConnectionInfo {
-    client_addr: SocketAddr,
-    tunnel_policy: GatewayTunnelPolicy,
+pub(crate) struct GatewayConnectionInfo {
+    pub(crate) client_addr: SocketAddr,
+    pub(crate) tunnel_policy: GatewayTunnelPolicy,
+    pub(crate) udp_peer: Option<SocketAddr>,
 }
 
 #[cfg(feature = "gateway")]
-struct SyncGatewayStream<S>(std::sync::Mutex<S>);
+pub(crate) struct SyncGatewayStream<S>(pub(crate) std::sync::Mutex<S>);
 
 #[cfg(feature = "gateway")]
 impl<S> SyncGatewayStream<S> {
@@ -3041,7 +3058,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for SyncGatewayStream<S> {
 }
 
 #[cfg(feature = "gateway")]
-async fn finish_gateway_connection<S>(
+pub(crate) async fn finish_gateway_connection<S>(
     config: &Config,
     gw_stream: S,
     connection_info: GatewayConnectionInfo,
@@ -3056,6 +3073,7 @@ where
     let GatewayConnectionInfo {
         client_addr,
         tunnel_policy,
+        udp_peer,
     } = connection_info;
     let (input_sender, output_event_sender) = event_senders;
     #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb"))]
@@ -3146,7 +3164,7 @@ where
         rdpdr_factory,
         rdpdr_policy,
         usb_allowed,
-        false,
+        udp_peer.is_some(),
         auto_reconnect_cookie,
     )?;
     #[cfg(feature = "vmconnect")]
@@ -3162,7 +3180,7 @@ where
         ))
         .await;
     }
-    Box::pin(security_upgrade_and_finalize(framed, connector, config, None)).await
+    Box::pin(security_upgrade_and_finalize(framed, connector, config, udp_peer)).await
 }
 
 /// RDCleanPath WebSocket → RDCleanPath handshake connection.

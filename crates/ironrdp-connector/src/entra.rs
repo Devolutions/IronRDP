@@ -21,10 +21,17 @@ pub(crate) const ENTRA_JSON_HINT: EntraJsonHint = EntraJsonHint;
 
 impl PduHint for EntraJsonHint {
     fn find_size(&self, bytes: &[u8]) -> DecodeResult<Option<(bool, usize)>> {
-        let mut stream =
-            serde_json::Deserializer::from_slice(&bytes[..bytes.len().min(MAX_MESSAGE_SIZE)]).into_iter::<Value>();
+        let capped = &bytes[..bytes.len().min(MAX_MESSAGE_SIZE)];
+        let offset = json_whitespace_len(capped);
+        let mut stream = serde_json::Deserializer::from_slice(&capped[offset..]).into_iter::<Value>();
         match stream.next() {
-            Some(Ok(Value::Object(_))) => Ok(Some((true, stream.byte_offset()))),
+            Some(Ok(Value::Object(_))) => {
+                let mut end = offset + stream.byte_offset();
+                if bytes.get(end) == Some(&0) {
+                    end += 1;
+                }
+                Ok(Some((true, end)))
+            }
             Some(Ok(_)) => Err(other_err!("EntraAuth", "expected a JSON object")),
             Some(Err(e)) if !e.is_eof() => Err(other_err!("EntraAuth", "invalid JSON message")),
             _ if bytes.len() >= MAX_MESSAGE_SIZE => Err(other_err!("EntraAuth", "JSON message exceeds size limit")),
@@ -55,7 +62,7 @@ pub(crate) fn skip_json_whitespace(bytes: &[u8]) -> &[u8] {
 fn json_whitespace_len(bytes: &[u8]) -> usize {
     bytes
         .iter()
-        .take_while(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r'))
+        .take_while(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0))
         .count()
 }
 
@@ -94,7 +101,10 @@ fn message(input: &[u8]) -> ConnectorResult<Value> {
     if input.len() > MAX_MESSAGE_SIZE {
         return Err(reason_err!("EntraAuth", "JSON message exceeds size limit"));
     }
-    let value: Value = serde_json::from_slice(input).map_err(|e| custom_err!("invalid Entra JSON message", e))?;
+    let start = json_whitespace_len(input);
+    let trimmed = &input[start..];
+    let trimmed = trimmed.strip_suffix(&[0]).unwrap_or(trimmed);
+    let value: Value = serde_json::from_slice(trimmed).map_err(|e| custom_err!("invalid Entra JSON message", e))?;
     if !value.is_object() {
         return Err(reason_err!("EntraAuth", "expected a JSON object"));
     }
@@ -123,8 +133,9 @@ pub(crate) fn write_assertion(assertion: &str, output: &mut WriteBuf) -> Connect
     if parts.next().is_some() {
         return Err(reason_err!("EntraAuth", "expected three compact JWS segments"));
     }
-    let message = serde_json::to_vec(&serde_json::json!({ "rdp_assertion": assertion }))
+    let mut message = serde_json::to_vec(&serde_json::json!({ "rdp_assertion": assertion }))
         .map_err(|e| custom_err!("encoding RDP assertion", e))?;
+    message.push(0);
     if message.len() > MAX_MESSAGE_SIZE {
         return Err(reason_err!("EntraAuth", "JSON message exceeds size limit"));
     }
