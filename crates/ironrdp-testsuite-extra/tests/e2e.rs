@@ -1926,14 +1926,17 @@ impl ServerEventSender for WindowGfxFactory {
 }
 
 impl GfxServerFactory for WindowGfxFactory {
-    fn build_gfx_handler(&self) -> Box<dyn ironrdp_egfx::server::GraphicsPipelineHandler> {
+    fn build_gfx_handler(&self, _: GfxContext) -> Box<dyn ironrdp_egfx::server::GraphicsPipelineHandler> {
         Box::new(TestGfxHandler {
             caps_tx: mpsc::unbounded_channel().0,
         })
     }
 
-    fn build_server_with_handle(&self) -> Option<(ironrdp_server::GfxDvcBridge, ironrdp_server::GfxServerHandle)> {
-        let mut server = ironrdp_egfx::server::GraphicsPipelineServer::new(self.build_gfx_handler());
+    fn build_server_with_handle(
+        &self,
+        ctx: GfxContext,
+    ) -> Option<(ironrdp_server::GfxDvcBridge, ironrdp_server::GfxServerHandle)> {
+        let mut server = ironrdp_egfx::server::GraphicsPipelineServer::new(self.build_gfx_handler(ctx));
         server.set_max_frames_in_flight(30);
         let handle = Arc::new(StdMutex::new(server));
         self.handles.lock().unwrap().push(Arc::clone(&handle));
