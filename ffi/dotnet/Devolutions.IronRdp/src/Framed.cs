@@ -28,8 +28,8 @@ public class Framed<TS> where TS : Stream
             // Don't remove, FindSize is generated and can return null
             if (null != pduInfo)
             {
-                var frame = await this.ReadExact(pduInfo.GetLength());
-                var action = pduInfo.GetAction();
+                var frame = await this.ReadExact(pduInfo.Length);
+                var action = pduInfo.Action;
                 return (action, frame);
             }
             else
@@ -102,8 +102,8 @@ public class Framed<TS> where TS : Stream
 
     public async Task Write(WriteBuf buf)
     {
-        var vecU8 = buf.GetFilled();
-        var size = vecU8.GetSize();
+        var vecU8 = buf.Filled;
+        var size = vecU8.Size;
         var bytesArray = new byte[size];
         vecU8.Fill(bytesArray);
         await Write(bytesArray);

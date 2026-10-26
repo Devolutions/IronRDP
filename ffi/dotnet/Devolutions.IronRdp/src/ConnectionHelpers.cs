@@ -65,9 +65,9 @@ internal static class ConnectionHelpers
             writeBuf.Clear();
             var written = credsspSequence.HandleProcessResult(clientState, writeBuf);
 
-            if (written.GetSize().IsSome())
+            if (written.Size.IsSome())
             {
-                var actualSize = (int)written.GetSize().Get();
+                var actualSize = (int)written.Size.Get();
                 var response = new byte[actualSize];
                 writeBuf.ReadIntoBuf(response);
                 await framed.Write(response);
@@ -109,18 +109,18 @@ internal static class ConnectionHelpers
             await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey);
         }
 
-        while (!connector.GetDynState().IsTerminal())
+        while (!connector.DynState.IsTerminal())
         {
             await Connection.SingleSequenceStep(connector, writeBuf, framedSsl);
         }
 
         ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();
 
-        if (state.GetEnumType() == ClientConnectorStateType.Connected)
+        if (state.EnumType == ClientConnectorStateType.Connected)
         {
             return state.GetConnectedResult();
         }
-        else if (state.GetEnumType() == ClientConnectorStateType.Redirected)
+        else if (state.EnumType == ClientConnectorStateType.Redirected)
         {
             // The redirecting server waits for the client to close this connection (MS-RDPBCGR 3.2.5.13.1).
             // The connection sequence owns the framed stream alone: no session reader or writer exists yet.

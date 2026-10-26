@@ -24,7 +24,7 @@ namespace Devolutions.IronRdp.ConnectExample
             try
             {
                 var (res, framed) = await Connection.Connect(buildConfig(username, password, domain, 1980, 1080), serverName, null);
-                var decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(), res.GetDesktopSize().GetHeight());
+                var decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.DesktopSize.Width, res.DesktopSize.Height);
                 var activeState = ActiveStage.New(res);
                 var keepLooping = true;
                 while (keepLooping)
@@ -50,16 +50,16 @@ namespace Devolutions.IronRdp.ConnectExample
                     {
                         var output = outputIterator.Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
                         Console.WriteLine($"Output type: {output.GetType()}");
-                        if (output.GetEnumType() == ActiveStageOutputType.Terminate)
+                        if (output.EnumType == ActiveStageOutputType.Terminate)
                         {
                             Console.WriteLine("Connection terminated.");
                             keepLooping = false;
                         }
 
-                        if (output.GetEnumType() == ActiveStageOutputType.ResponseFrame)
+                        if (output.EnumType == ActiveStageOutputType.ResponseFrame)
                         {
-                            var responseFrame = output.GetResponseFrame()!;
-                            byte[] responseFrameBytes = new byte[responseFrame.GetSize()];
+                            var responseFrame = output.ResponseFrame!;
+                            byte[] responseFrameBytes = new byte[responseFrame.Size];
                             responseFrame.Fill(responseFrameBytes);
                             await framed.Write(responseFrameBytes);
                         }
@@ -77,11 +77,11 @@ namespace Devolutions.IronRdp.ConnectExample
 
         private static void saveImage(DecodedImage decodedImage, string v)
         {
-            int width = decodedImage.GetWidth();
-            int height = decodedImage.GetHeight();
-            var data = decodedImage.GetData();
+            int width = decodedImage.Width;
+            int height = decodedImage.Height;
+            var data = decodedImage.Data;
 
-            var bytes = new byte[data.GetSize()];
+            var bytes = new byte[data.Size];
             data.Fill(bytes);
 
             using Image<Rgba32> image = new Image<Rgba32>(width, height);
@@ -180,11 +180,11 @@ namespace Devolutions.IronRdp.ConnectExample
             ConfigBuilder configBuilder = ConfigBuilder.New();
 
             configBuilder.WithUsernameAndPassword(username, password);
-            configBuilder.SetDomain(domain);
+            configBuilder.Domain = domain;
             configBuilder.SetDesktopSize((ushort)height, (ushort)width);
-            configBuilder.SetClientName("IronRdp");
-            configBuilder.SetClientDir("C:\\");
-            configBuilder.SetPerformanceFlags(PerformanceFlags.NewDefault());
+            configBuilder.ClientName = "IronRdp";
+            configBuilder.ClientDir = "C:\\";
+            configBuilder.PerformanceFlags = PerformanceFlags.NewDefault();
 
             return configBuilder.Build();
         }
