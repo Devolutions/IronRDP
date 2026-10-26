@@ -25,15 +25,11 @@ impl Version {
         parts.next().is_none().then_some(version)
     }
 
-    /// Whether a caret requirement on `self` rejects `other`, which is when Cargo treats the change as breaking.
+    /// Whether a caret requirement on `self` rejects `other`, a version no older than `self`, which is when Cargo treats the change as breaking.
+    ///
+    /// A caret requirement on `self` accepts exactly the versions from `self` up to, excluding, `self.next_breaking()`.
     fn is_incompatible_with(self, other: Self) -> bool {
-        if self.major != 0 {
-            self.major != other.major
-        } else if self.minor != 0 {
-            other.major != 0 || self.minor != other.minor
-        } else {
-            other.major != 0 || other.minor != 0 || self.patch != other.patch
-        }
+        self.next_breaking() <= other
     }
 
     /// The smallest version that a caret requirement on `self` rejects.
@@ -175,8 +171,8 @@ fn public_dependencies(manifest: &str) -> BTreeSet<String> {
 /// Whether a table header such as `dependencies` or `target.'cfg(windows)'.dev-dependencies` names a dependency table.
 fn is_dependency_table(section: &str) -> bool {
     matches!(
-        section.rsplit('.').next().unwrap_or_default(),
-        "dependencies" | "build-dependencies" | "dev-dependencies"
+        section.rsplit('.').next(),
+        Some("dependencies" | "build-dependencies" | "dev-dependencies")
     )
 }
 
@@ -223,6 +219,44 @@ fn set_package_version(manifest: &str, from: Version, to: Version) -> Option<Str
     done.then_some(out)
 }
 
+/// Returns the index just past the opening quote of the `version` key's value in an inline dependency table.
+///
+/// Only a key outside strings counts, so a path or feature containing `version` is skipped.
+#[expect(
+    clippy::string_slice,
+    reason = "every index comes from `char_indices` or follows an ASCII token, so it is a character boundary"
+)]
+fn inline_table_version_start(value: &str) -> Option<usize> {
+    let mut in_string = false;
+    let mut previous = None;
+
+    for (idx, ch) in value.char_indices() {
+        if ch == '"' {
+            in_string = !in_string;
+        }
+
+        if !in_string && matches!(previous, Some('{' | ',')) {
+            if let Some(rest) = value[idx..].strip_prefix("version") {
+                let after_key = rest.trim_start();
+
+                if let Some(after_equals) = after_key.strip_prefix('=') {
+                    let after_equals = after_equals.trim_start();
+
+                    if after_equals.starts_with('"') {
+                        return Some(value.len() - after_equals.len() + 1);
+                    }
+                }
+            }
+        }
+
+        if !ch.is_whitespace() {
+            previous = Some(ch);
+        }
+    }
+
+    None
+}
+
 /// Rewrites every requirement on `name` in a manifest's dependency tables so that it accepts `to`.
 ///
 /// The requirement keeps its operator and its number of components, as in `"0.9"` becoming `"0.10"`.
@@ -253,9 +287,7 @@ fn set_requirement(manifest: &str, name: &str, to: Version) -> String {
 
         let (value, _) = split_comment(line);
         let requirement_start = if value.contains('{') {
-            value
-                .find("version")
-                .and_then(|idx| value[idx..].find('"').map(|quote| idx + quote + 1))
+            inline_table_version_start(value)
         } else {
             value.find('"').map(|quote| quote + 1)
         };
@@ -400,15 +432,11 @@ fn apply(sh: &Shell, packages: &[Package], bumps: &[Bump]) -> anyhow::Result<()>
         }
     }
 
-    for path in manifests.iter().filter(|path| sh.path_exists(path)) {
-        let original = sh.read_file(path)?;
-        let updated = bumps.iter().fold(original.clone(), |manifest, bump| {
+    for path in &manifests {
+        let manifest = bumps.iter().fold(sh.read_file(path)?, |manifest, bump| {
             set_requirement(&manifest, &bump.name, bump.required)
         });
-
-        if updated != original {
-            sh.write_file(path, updated)?;
-        }
+        sh.write_file(path, manifest)?;
     }
 
     cmd!(sh, "{CARGO} update --workspace").run()?;
@@ -448,9 +476,13 @@ fn workspace_packages(sh: &Shell) -> anyhow::Result<Vec<Package>> {
         .collect()
 }
 
-/// Returns the latest released version of each workspace crate, from its `<name>-v<version>` tags.
 fn released_versions(sh: &Shell, workspace_names: &BTreeSet<&str>) -> anyhow::Result<BTreeMap<String, Version>> {
     let tags = cmd!(sh, "git tag --list *-v*").read()?;
+    Ok(latest_versions(&tags, workspace_names))
+}
+
+/// Returns the latest released version of each workspace crate, from its `<name>-v<version>` tags, one per line.
+fn latest_versions(tags: &str, workspace_names: &BTreeSet<&str>) -> BTreeMap<String, Version> {
     let mut versions = BTreeMap::new();
 
     for tag in tags.lines() {
@@ -473,7 +505,7 @@ fn released_versions(sh: &Shell, workspace_names: &BTreeSet<&str>) -> anyhow::Re
             .or_insert(version);
     }
 
-    Ok(versions)
+    versions
 }
 
 #[cfg(test)]
@@ -607,6 +639,49 @@ ironrdp-svc = { path = "../ironrdp-svc", version = "0.9" } # public
             set_requirement(manifest, "ironrdp-pdu", v("0.11.0")),
             "[dependencies]\nironrdp-pdu = { path = \"../ironrdp-pdu\", version = \"0.11\" } # public\n"
         );
+    }
+
+    // oracle: regression review of Devolutions/IronRDP#2241, a `version` substring inside an earlier quoted value
+    #[test]
+    fn requirement_after_a_value_containing_version_is_found() {
+        let manifest = "[dependencies]\nironrdp-pdu = { path = \"../a-version-b\", version = \"0.10\" }\n";
+
+        assert_eq!(
+            set_requirement(manifest, "ironrdp-pdu", v("0.11.0")),
+            "[dependencies]\nironrdp-pdu = { path = \"../a-version-b\", version = \"0.11\" }\n"
+        );
+    }
+
+    // oracle: mutant comparing tag versions as strings, which ranks 0.9.0 above 0.10.0
+    #[test]
+    fn latest_tag_is_chosen_by_version() {
+        let names = BTreeSet::from(["ironrdp-pdu"]);
+        let tags = "ironrdp-pdu-v0.9.0\nironrdp-pdu-v0.10.0\nironrdp-pdu-v0.2.0\n";
+
+        assert_eq!(
+            latest_versions(tags, &names),
+            BTreeMap::from([("ironrdp-pdu".to_owned(), v("0.10.0"))])
+        );
+    }
+
+    // oracle: mutant splitting at the first `-v`, which would cut a crate named like `ironrdp-vmconnect`
+    #[test]
+    fn tag_name_is_split_at_the_last_version_marker() {
+        let names = BTreeSet::from(["ironrdp-vmconnect"]);
+
+        assert_eq!(
+            latest_versions("ironrdp-vmconnect-v0.1.0\n", &names),
+            BTreeMap::from([("ironrdp-vmconnect".to_owned(), v("0.1.0"))])
+        );
+    }
+
+    // oracle: mutant keeping tags of crates outside the workspace or with versions that do not parse
+    #[test]
+    fn foreign_and_unparseable_tags_are_ignored() {
+        let names = BTreeSet::from(["ironrdp-pdu"]);
+        let tags = "other-crate-v1.0.0\nironrdp-pdu-v0.10.0-rc.1\n";
+
+        assert_eq!(latest_versions(tags, &names), BTreeMap::new());
     }
 
     // oracle: mutant matching a crate whose name only starts with the bumped one
