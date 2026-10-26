@@ -19,9 +19,10 @@ mod section;
 mod wasm;
 mod web;
 
+use anyhow::Context as _;
 use std::path::{Path, PathBuf};
-
-use xshell::Shell;
+use tinyjson::JsonValue;
+use xshell::{Shell, cmd};
 
 use crate::cli::Action;
 use crate::macros::trace;
@@ -30,6 +31,11 @@ use crate::macros::trace;
 pub const LOCAL_CARGO_ROOT: &str = ".cargo\\local_root\\";
 #[cfg(not(target_os = "windows"))]
 pub const LOCAL_CARGO_ROOT: &str = ".cargo/local_root/";
+
+#[cfg(target_os = "windows")]
+const NPM: &str = "npm.cmd";
+#[cfg(not(target_os = "windows"))]
+const NPM: &str = "npm";
 
 pub const CARGO: &str = env!("CARGO");
 
@@ -120,6 +126,23 @@ fn main() -> anyhow::Result<()> {
             cli::ListFormat::GithubMatrix => fuzz::list_github_matrix()?,
         },
         Action::FuzzRun { duration, target } => fuzz::run(&sh, duration, target)?,
+        Action::BenchRfxDecode {
+            filter,
+            save_baseline,
+            baseline,
+        } => {
+            let args = filter
+                .into_iter()
+                .chain(
+                    save_baseline
+                        .into_iter()
+                        .flat_map(|name| ["--save-baseline".to_owned(), name]),
+                )
+                .chain(baseline.into_iter().flat_map(|name| ["--baseline".to_owned(), name]))
+                .collect();
+            bench::rfx_decode(&sh, args)?
+        }
+        Action::BenchRfxDecodeWasm { simd } => bench::rfx_decode_wasm(&sh, simd)?,
         Action::WasmCheck => wasm::check(&sh)?,
         Action::WasmInstall => wasm::install(&sh)?,
         Action::WebCheck => web::check(&sh)?,
@@ -200,6 +223,17 @@ pub fn local_bin() -> PathBuf {
     let mut path = local_cargo_root();
     path.push("bin");
     path
+}
+
+fn target_directory(sh: &Shell) -> anyhow::Result<PathBuf> {
+    let metadata = cmd!(sh, "{CARGO} metadata --format-version 1 --no-deps").read()?;
+    let metadata: JsonValue = metadata.parse().context("parse cargo metadata")?;
+
+    let directory: &String = metadata["target_directory"]
+        .get()
+        .context("cargo metadata has no target_directory")?;
+
+    Ok(PathBuf::from(directory))
 }
 
 static VERBOSE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);

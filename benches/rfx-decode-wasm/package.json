@@ -1,0 +1,8 @@
+{
+  "name": "rfx-decode-wasm",
+  "version": "0.0.0",
+  "private": true,
+  "devDependencies": {
+    "wabt": "^1.0.39"
+  }
+}
