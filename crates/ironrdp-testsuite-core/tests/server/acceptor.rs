@@ -1384,6 +1384,8 @@ fn stepping_a_failed_finalization_returns_an_error() {
         .unwrap_err();
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+}
+
 // oracle: spec MS-RDPBCGR §2.2.12.1 (the pduSource field of the Monitor Layout PDU MUST be set to zero)
 #[test]
 fn monitor_layout_pdu_source_is_zero() {
