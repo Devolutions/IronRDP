@@ -49,6 +49,7 @@ dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
 webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
 vmconnect = ["dep:ironrdp-vmconnect"]
 location = ["dep:ironrdp-rdpel"]
+cloud = ["dep:reqwest", "dep:serde", "dep:serde_json"]
 udp = [
     "dep:ironrdp-rdpeudp",
     "dep:ironrdp-rdpeudp-tokio",
@@ -67,6 +68,7 @@ all = [
     "vmconnect",
     "location",
     "udp",
+    "cloud",
 ]
 
 [dependencies]
@@ -116,8 +118,11 @@ futures-util = { version = "0.3", features = ["sink"] }
 # Utils
 anyhow = "1"
 smallvec = "1.15"
-url = "2"
+url = "2" # public
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots", "system-proxy"], optional = true } # public
+serde = { version = "1", features = ["derive"], optional = true } # public
+serde_json = { version = "1", optional = true } # public
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.1", optional = true }

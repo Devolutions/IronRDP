@@ -1,3 +1,4 @@
+mod cloud;
 mod config;
 mod input;
 mod output_channel;

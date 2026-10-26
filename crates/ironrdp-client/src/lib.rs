@@ -7,6 +7,8 @@
 #![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::cast_sign_loss)]
 
+#[cfg(feature = "cloud")]
+pub mod cloud;
 pub mod config;
 pub mod output_channel;
 pub mod rail;
