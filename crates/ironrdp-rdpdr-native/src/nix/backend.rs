@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 
 use ironrdp_core::impl_as_any;
@@ -42,10 +42,13 @@ pub struct NixRdpdrBackend {
     /// An open file holds up to three descriptors: the file, and a directory being enumerated with its stream.
     /// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process.
     max_open_files: usize,
-    /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open).
+    /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open), each with the name it was marked through.
+    ///
+    /// That name is removed rather than the path of whichever handle closes last, so a file with several hard links loses the link the server marked.
+    /// [MS-FSA] marks each link separately, while one name is kept per file here: marking through another link replaces it, and every link of a marked file refuses new opens.
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/d142c93a-72bc-4b05-9d96-8e00371c3308
-    pending_deletes: HashSet<FileIdentity>,
+    pending_deletes: HashMap<FileIdentity, RelativePath>,
     /// Print-job handling for the virtual printer, when one is announced.
     printer: Option<Printer>,
 }
@@ -61,6 +64,10 @@ struct OpenFile {
     file: std::fs::File,
     path: RelativePath,
     identity: FileIdentity,
+    /// The directories from the shared directory down to the one holding this file, as the server last reached it.
+    ///
+    /// A directory holding open files is found by these rather than by path, so another spelling of a name or a local rename does not hide one.
+    ancestors: Vec<FileIdentity>,
     /// The enumeration the last initial query-directory request started on this file.
     listing: Option<DirectoryListing>,
 }
@@ -118,8 +125,13 @@ impl DirectoryListing {
             if matches!(name.to_bytes(), b"." | b"..") {
                 continue;
             }
-            let Ok(stat) = fstatat(self.directory.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW) else {
-                continue;
+            // UNTESTED: only an entry removed since enumeration started is skipped, and any other error fails the listing.
+            // Skipping an entry that cannot be inspected, as in a directory the process may not search, would make the directory look empty, so a delete could be marked on it.
+            // The tests can run as root, which no permission stops, so after changing this, check that only ENOENT is skipped.
+            let stat = match fstatat(self.directory.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+                Ok(stat) => stat,
+                Err(Errno::ENOENT) => continue,
+                Err(error) => return Err(error),
             };
             return Ok(Some(DirectoryEntry {
                 name: name.to_string_lossy().into_owned(),
@@ -160,7 +172,7 @@ impl NixRdpdrBackend {
                     MAX_OPEN_FILES
                 }
             },
-            pending_deletes: HashSet::new(),
+            pending_deletes: HashMap::new(),
             printer: None,
         }
     }
@@ -175,10 +187,31 @@ impl NixRdpdrBackend {
             .values()
             .any(|other| other.identity == open_file.identity);
         if !still_open
-            && self.pending_deletes.remove(&open_file.identity)
-            && let Err(error) = remove_file(&self.file_base, &open_file)
+            && let Some(path) = self.pending_deletes.remove(&open_file.identity)
+            && let Err(error) = remove_file(&self.file_base, &path, open_file.identity)
         {
             warn!(%error, "Delete on close error");
+        }
+    }
+
+    /// Returns an ID no open file holds, counting up and wrapping around after the last one.
+    ///
+    /// At most `max_open_files` files are open, far fewer than there are IDs, so the search ends.
+    fn next_file_id(&mut self) -> u32 {
+        loop {
+            let file_id = self.file_id;
+            self.file_id = self.file_id.wrapping_add(1);
+            if !self.open_files.contains_key(&file_id) {
+                return file_id;
+            }
+        }
+    }
+
+    /// Closes every open file as if the server had closed it, so pending deletes run.
+    fn close_all_files(&mut self) {
+        let file_ids = self.open_files.keys().copied().collect::<Vec<_>>();
+        for file_id in file_ids {
+            self.close_file(file_id);
         }
     }
 
@@ -191,6 +224,13 @@ impl NixRdpdrBackend {
             spooler: PrinterSpooler::new(target),
         });
         self
+    }
+}
+
+impl Drop for NixRdpdrBackend {
+    /// The session is over, so the handles the server left open are closed and their pending deletes run.
+    fn drop(&mut self) {
+        self.close_all_files();
     }
 }
 
@@ -330,10 +370,7 @@ impl RdpdrBackend for NixRdpdrBackend {
             printer.spooler.reset();
         }
         // The server forgets its handles when the channel restarts, so they are closed as if it had closed them.
-        let file_ids = self.open_files.keys().copied().collect::<Vec<_>>();
-        for file_id in file_ids {
-            self.close_file(file_id);
-        }
+        self.close_all_files();
         Ok(())
     }
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
@@ -514,7 +551,8 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
 }
 
 pub(crate) fn close_device(backend: &mut NixRdpdrBackend, req_inner: DeviceCloseRequest) -> PduResult<Vec<SvcMessage>> {
-    // The handle is closed whether or not a pending delete succeeds, so the close still reports success.
+    // A failed delete on close is only logged, and the close still reports success.
+    // [MS-FSA] 2.1.5.5 Server Requests Closing an Open defines no failure status, and Windows does not report a failed delete on close to the caller closing the handle either.
     backend.close_file(req_inner.device_io_request.file_id);
     let res = RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
         device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::SUCCESS),
@@ -548,11 +586,18 @@ pub(crate) fn query_information(
                     Ok(vec![SvcMessage::from(res)])
                 } else if FileInformationClassLevel::FILE_STANDARD_INFORMATION == req_inner.file_info_class_lvl {
                     let dir = if meta.is_dir() { Boolean::True } else { Boolean::False };
+                    let is_delete_pending = backend.pending_deletes.contains_key(identity);
                     let standard_info = FileStandardInformation {
                         allocation_size: i64::try_from(meta.size()).unwrap(),
                         end_of_file: i64::try_from(meta.size()).unwrap(),
-                        number_of_links: u32::try_from(meta.nlink()).unwrap(),
-                        delete_pending: if backend.pending_deletes.contains(identity) {
+                        // A directory has one link, whatever Unix counts for `.` and subdirectories, and the link marked for deletion is not counted ([MS-FSA] 2.1.5.12.27 FileStandardInformation).
+                        number_of_links: if meta.is_dir() {
+                            1
+                        } else {
+                            u32::try_from(meta.nlink()).unwrap()
+                        }
+                        .saturating_sub(u32::from(is_delete_pending)),
+                        delete_pending: if is_delete_pending {
                             Boolean::True
                         } else {
                             Boolean::False
@@ -729,25 +774,40 @@ pub(crate) fn set_information(
     // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
     let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
         && backend.open_files.get(&file_id).is_some_and(|open_file| {
-            backend.pending_deletes.contains(&open_file.identity)
+            backend.pending_deletes.contains_key(&open_file.identity)
                 || backend
                     .open_files
                     .values()
-                    .any(|other| other.path.is_inside(&open_file.path))
+                    .any(|other| other.ancestors.contains(&open_file.identity))
         });
+    // A rename target that is open cannot be replaced, so the open files are collected before one of them is borrowed mutably.
+    let open_identities = if matches!(req_inner.set_buffer, FileInformationClass::Rename(_)) {
+        backend
+            .open_files
+            .values()
+            .map(|open_file| open_file.identity)
+            .collect()
+    } else {
+        HashSet::new()
+    };
     let mut renamed = None;
     let status = match backend.open_files.get_mut(&file_id) {
         Some(open_file) => match &req_inner.set_buffer {
             FileInformationClass::Rename(_) if rename_denied => NtStatus::ACCESS_DENIED,
-            FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name) {
+            // The shared directory itself is no name to rename to.
+            FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name)
+                .and_then(|to| to.file_name().is_some().then_some(to).ok_or(InvalidPath))
+            {
                 Ok(to) => match rename(
                     &backend.file_base,
-                    &open_file.path,
+                    open_file,
                     &to,
                     info.replace_if_exists == Boolean::True,
+                    &backend.pending_deletes,
+                    &open_identities,
                 ) {
-                    Ok(()) => {
-                        renamed = Some((open_file.identity, to));
+                    Ok(ancestors) => {
+                        renamed = Some((open_file.identity, open_file.path.clone(), to, ancestors));
                         NtStatus::SUCCESS
                     }
                     Err(status) => {
@@ -756,24 +816,21 @@ pub(crate) fn set_information(
                     }
                 },
                 Err(InvalidPath) => {
-                    warn!(file_name = ?info.file_name, "Rejected a rename target outside the shared directory");
+                    trace!(file_name = ?info.file_name, "Rejected an invalid rename target");
                     NtStatus::OBJECT_NAME_INVALID
                 }
             },
             // The allocation size is only a hint, so there is nothing to do.
             FileInformationClass::Allocation(_) => NtStatus::SUCCESS,
-            FileInformationClass::Disposition(info) => match set_delete_pending(
-                &backend.file_base,
-                open_file,
-                &mut backend.pending_deletes,
-                info.delete_pending != 0,
-            ) {
-                Ok(()) => NtStatus::SUCCESS,
-                Err(error) => {
-                    warn!(%error, "Set delete pending error");
-                    status_from_errno(error)
+            FileInformationClass::Disposition(info) => {
+                match set_delete_pending(open_file, &mut backend.pending_deletes, info.delete_pending != 0) {
+                    Ok(()) => NtStatus::SUCCESS,
+                    Err(error) => {
+                        trace!(%error, "Set delete pending failed");
+                        status_from_errno(error)
+                    }
                 }
-            },
+            }
             FileInformationClass::EndOfFile(info) => match ftruncate(open_file.file.as_fd(), info.end_of_file) {
                 Ok(()) => NtStatus::SUCCESS,
                 Err(error) => {
@@ -791,14 +848,19 @@ pub(crate) fn set_information(
             NtStatus::NO_SUCH_FILE
         }
     };
-    // Every handle to the renamed file follows it, so a later delete removes this file and not whatever takes the old name.
-    if let Some((identity, to)) = renamed {
+    // Every handle opened through the renamed link follows it, so a later delete removes this file and not whatever takes the old name.
+    // A handle whose path no longer names the file was opened through that link, possibly spelled differently on a case-insensitive filesystem.
+    // A handle opened through another hard link of the file still finds it at its path, and keeps that link.
+    if let Some((identity, from, to, ancestors)) = renamed {
         for open_file in backend
             .open_files
             .values_mut()
             .filter(|open_file| open_file.identity == identity)
         {
-            open_file.path = to.clone();
+            if open_file.path == from || !names_file(&backend.file_base, &open_file.path, identity) {
+                open_file.path = to.clone();
+                open_file.ancestors = ancestors.clone();
+            }
         }
     }
     Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveSetInformationResponse(
@@ -806,26 +868,84 @@ pub(crate) fn set_information(
     ))])
 }
 
-/// Renames `from` to `to` ([MS-FSA] 2.1.5.15.12 FileRenameInformation).
+/// Renames the file `open_file` holds to `to` ([MS-FSA] 2.1.5.15.12 FileRenameInformation), and returns the directories leading to `to`.
 ///
-/// An existing `to` is a collision unless `replace_if_exists` is set, and a directory `to` is never replaced.
-/// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision.
+/// The handle's path is resolved again, so it fails with STATUS_NO_SUCH_FILE once that name refers to another file than the handle's.
+/// An existing `to` is a collision unless `replace_if_exists` is set.
+/// A directory `to`, or one with open handles, is never replaced, and one marked for deletion fails with STATUS_DELETE_PENDING.
+/// A `to` naming the source itself, as a case-only rename on a case-insensitive filesystem does, is not a collision, and a `to` naming another hard link of the source removes the source link.
 /// The existence check and the rename are separate calls, so a local process creating `to` in between is overwritten.
+/// The target directory is opened as a create opens it, so a path through a directory marked for deletion is refused with STATUS_DELETE_PENDING.
 ///
 /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/87f86c9b-6c2a-4803-84b7-131a74a434fa
-fn rename(file_base: &str, from: &RelativePath, to: &RelativePath, replace_if_exists: bool) -> Result<(), NtStatus> {
+fn rename(
+    file_base: &str,
+    open_file: &OpenFile,
+    to: &RelativePath,
+    replace_if_exists: bool,
+    pending_deletes: &HashMap<FileIdentity, RelativePath>,
+    open_identities: &HashSet<FileIdentity>,
+) -> Result<Vec<FileIdentity>, NtStatus> {
     let root = Root::open(file_base).map_err(status_from_errno)?;
-    let (from_parent, from_name) = from.open_parent(&root).map_err(status_from_parent_errno)?;
-    let (to_parent, to_name) = to.open_parent(&root).map_err(status_from_parent_errno)?;
+    let (from_parent, from_name) = open_file.path.open_parent(&root).map_err(status_from_parent_errno)?;
+    let (to_parent, to_name, to_ancestors) = to.open_parent_with_ancestors(&root).map_err(status_from_parent_errno)?;
+    let to_ancestors = to_ancestors.iter().map(FileIdentity::of).collect::<Vec<_>>();
+    if to_ancestors
+        .iter()
+        .any(|ancestor| pending_deletes.contains_key(ancestor))
+    {
+        return Err(NtStatus::DELETE_PENDING);
+    }
+    let to_parent_identity = FileIdentity::of(&fstat(to_parent.as_fd()).map_err(status_from_errno)?);
     let source = fstatat(from_parent.as_fd(), from_name, AtFlags::AT_SYMLINK_NOFOLLOW).map_err(status_from_errno)?;
+    if FileIdentity::of(&source) != open_file.identity {
+        return Err(NtStatus::NO_SUCH_FILE);
+    }
     match fstatat(to_parent.as_fd(), to_name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-        Ok(target) if FileIdentity::of(&target) == FileIdentity::of(&source) => {}
+        Ok(target) if FileIdentity::of(&target) == open_file.identity => {
+            // `to` is either the source link under another spelling, as a case- or normalization-insensitive filesystem resolves it, or another hard link of the same file.
+            // POSIX rename leaves two hard links of one file both in place, while [MS-FSA] removes the source link.
+            // A link lives in one directory, so in another directory `to` is another link; in the same one it is only if an entry is stored under exactly that name.
+            // Otherwise the rename goes ahead, which at most changes the spelling of the only link and never removes it.
+            let same_directory =
+                FileIdentity::of(&fstat(from_parent.as_fd()).map_err(status_from_errno)?) == to_parent_identity;
+            let is_another_link = source.st_nlink >= 2
+                && (!same_directory
+                    || from_name != to_name
+                        && contains_entry(to_parent.as_fd(), to_name).map_err(status_from_errno)?);
+            if is_another_link {
+                unlinkat(from_parent.as_fd(), from_name, UnlinkatFlags::NoRemoveDir).map_err(status_from_errno)?;
+                return Ok(to_ancestors);
+            }
+        }
         Ok(_) if !replace_if_exists => return Err(NtStatus::OBJECT_NAME_COLLISION),
         Ok(target) if is_directory(&target) => return Err(NtStatus::ACCESS_DENIED),
+        Ok(target) if pending_deletes.contains_key(&FileIdentity::of(&target)) => {
+            return Err(NtStatus::DELETE_PENDING);
+        }
+        Ok(target) if open_identities.contains(&FileIdentity::of(&target)) => return Err(NtStatus::ACCESS_DENIED),
         Ok(_) | Err(Errno::ENOENT) => {}
         Err(error) => return Err(status_from_errno(error)),
     }
-    renameat(from_parent.as_fd(), from_name, to_parent.as_fd(), to_name).map_err(status_from_errno)
+    renameat(from_parent.as_fd(), from_name, to_parent.as_fd(), to_name).map_err(status_from_errno)?;
+    Ok(to_ancestors)
+}
+
+/// Whether `directory` holds an entry stored under exactly the bytes of `name`, whatever spellings the filesystem treats as equal.
+fn contains_entry(directory: BorrowedFd<'_>, name: &str) -> nix::Result<bool> {
+    // A fresh descriptor reads the directory from its start without moving the caller's read position.
+    let directory = nix::fcntl::openat(
+        directory,
+        ".",
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?;
+    for entry in Dir::from_fd(directory)? {
+        if entry?.file_name().to_bytes() == name.as_bytes() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Marks `open_file` for deletion when its last handle closes, or clears the mark.
@@ -834,23 +954,33 @@ fn rename(file_base: &str, from: &RelativePath, to: &RelativePath, replace_if_ex
 ///
 /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/386d9ec5-e0f6-4853-b175-c05be01419e0
 fn set_delete_pending(
-    file_base: &str,
     open_file: &OpenFile,
-    pending_deletes: &mut HashSet<FileIdentity>,
+    pending_deletes: &mut HashMap<FileIdentity, RelativePath>,
     delete_pending: bool,
 ) -> nix::Result<()> {
     if !delete_pending {
         pending_deletes.remove(&open_file.identity);
         return Ok(());
     }
+    // The shared directory cannot be removed through the share, and a mark on it would refuse every create in it until its handles close.
+    if open_file.path.file_name().is_none() {
+        return Err(Errno::EACCES);
+    }
     if is_directory(&fstat(open_file.file.as_fd())?) {
-        let root = Root::open(file_base)?;
-        let mut listing = DirectoryListing::open(open_file.path.open_directory(&root)?, true)?;
+        // The open directory itself is read, not whatever its path names now.
+        // A duplicate of the handle would share its read position, so a second mark would read on from the end of the first.
+        let directory = nix::fcntl::openat(
+            open_file.file.as_fd(),
+            ".",
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )?;
+        let mut listing = DirectoryListing::open(directory, true)?;
         if listing.next_entry()?.is_some() {
             return Err(Errno::ENOTEMPTY);
         }
     }
-    pending_deletes.insert(open_file.identity);
+    pending_deletes.insert(open_file.identity, open_file.path.clone());
     Ok(())
 }
 
@@ -884,12 +1014,22 @@ fn status_from_parent_errno(error: Errno) -> NtStatus {
     }
 }
 
-/// Removes the file or empty directory `open_file` names, unless that name now refers to another file.
-fn remove_file(file_base: &str, open_file: &OpenFile) -> nix::Result<()> {
+/// Whether `path` still names the file `identity`.
+fn names_file(file_base: &str, path: &RelativePath, identity: FileIdentity) -> bool {
+    Root::open(file_base)
+        .and_then(|root| {
+            let (parent, name) = path.open_parent(&root)?;
+            fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW)
+        })
+        .is_ok_and(|stat| FileIdentity::of(&stat) == identity)
+}
+
+/// Removes the file or empty directory `path` names, unless that name now refers to another file than `identity`.
+fn remove_file(file_base: &str, path: &RelativePath, identity: FileIdentity) -> nix::Result<()> {
     let root = Root::open(file_base)?;
-    let (parent, name) = open_file.path.open_parent(&root)?;
+    let (parent, name) = path.open_parent(&root)?;
     let stat = fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
-    if FileIdentity::of(&stat) != open_file.identity {
+    if FileIdentity::of(&stat) != identity {
         return Err(Errno::ESTALE);
     }
     let flags = if is_directory(&stat) {
@@ -999,15 +1139,17 @@ pub(crate) fn query_directory(
         Some(open_file) => {
             // An initial query restarts enumeration, so a failed or single-entry query must not resume an earlier listing.
             open_file.listing = None;
-            match RelativePath::parse(&req_inner.path) {
-                Ok(path) => start_query(&backend.file_base, open_file, &path)
-                    .unwrap_or_else(|error| {
-                        warn!(%error, "Query directory error");
-                        None
-                    })
-                    .ok_or(NtStatus::NO_SUCH_FILE),
+            match RelativePath::parse_query(&req_inner.path) {
+                // Only a missing name or an empty listing is no match; any other error is reported, so the server does not take it for an empty directory.
+                Ok((directory, pattern)) => match start_query(&backend.file_base, open_file, &directory, pattern) {
+                    Ok(entry) => entry.ok_or(NtStatus::NO_SUCH_FILE),
+                    Err(error) => {
+                        trace!(%error, "Initial query directory failed");
+                        Err(status_from_errno(error))
+                    }
+                },
                 Err(InvalidPath) => {
-                    warn!(path = ?req_inner.path, "Rejected a query path outside the shared directory");
+                    trace!(path = ?req_inner.path, "Rejected an invalid query path");
                     Err(NtStatus::OBJECT_NAME_INVALID)
                 }
             }
@@ -1015,24 +1157,25 @@ pub(crate) fn query_directory(
     };
     return make_query_dir_resp(entry, req_inner.device_io_request, req_inner.file_info_class_lvl);
 
-    /// Returns the first match for `path`, where a final `*` component enumerates the directory that holds it.
+    /// Returns the first match for `pattern` in `directory`, where a `*` pattern enumerates the directory.
     fn start_query(
         file_base: &str,
         open_file: &mut OpenFile,
-        path: &RelativePath,
+        directory: &RelativePath,
+        pattern: &str,
     ) -> nix::Result<Option<DirectoryEntry>> {
         let root = Root::open(file_base)?;
-        let (parent, name) = path.open_parent(&root)?;
-        if name == "*" {
-            let mut listing = DirectoryListing::open(parent, path.is_in_root())?;
+        let opened = directory.open_directory(&root)?;
+        if pattern == "*" {
+            let mut listing = DirectoryListing::open(opened, directory.file_name().is_none())?;
             let entry = listing.next_entry()?;
             open_file.listing = Some(listing);
             return Ok(entry);
         }
 
-        let stat = fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        let stat = fstatat(opened.as_fd(), pattern, AtFlags::AT_SYMLINK_NOFOLLOW)?;
         Ok(Some(DirectoryEntry {
-            name: path.file_name().unwrap_or_default().to_owned(),
+            name: pattern.to_owned(),
             stat,
         }))
     }
@@ -1058,37 +1201,28 @@ fn make_create_drive_resp(
     });
     Ok(vec![SvcMessage::from(res)])
 }
-// in fact, index only needs to be different, so it is ok
-#[expect(clippy::arithmetic_side_effects)]
 pub(crate) fn create_drive(
     backend: &mut NixRdpdrBackend,
     req_inner: DeviceCreateRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    let file_id = backend.file_id;
-    backend.file_id += 1;
+    let file_id = backend.next_file_id();
 
     let opened = if backend.max_open_files <= backend.open_files.len() {
         warn!("Rejected a create request beyond the open file limit");
         Err(NtStatus::INSUFFICIENT_RESOURCES)
     } else {
         match RelativePath::parse(&req_inner.path) {
-            Ok(path) => open_file(&backend.file_base, &req_inner, &path).and_then(|file| {
-                let identity = FileIdentity::of(&fstat(file.as_fd()).map_err(status_from_errno)?);
-                // [MS-FSA] 2.1.5.1 Server Requests an Open of a File refuses a file marked for deletion.
-                if backend.pending_deletes.contains(&identity) {
-                    return Err(NtStatus::DELETE_PENDING);
-                }
-                Ok((file, path, identity))
-            }),
+            Ok(path) => open_file(&backend.file_base, &req_inner, &path, &backend.pending_deletes)
+                .map(|(file, identity, ancestors)| (file, path, identity, ancestors)),
             Err(InvalidPath) => {
-                warn!(path = ?req_inner.path, "Rejected a create path outside the shared directory");
+                trace!(path = ?req_inner.path, "Rejected an invalid create path");
                 Err(NtStatus::OBJECT_NAME_INVALID)
             }
         }
     };
 
     match opened {
-        Ok((file, path, identity)) => {
+        Ok((file, path, identity, ancestors)) => {
             trace!(file_id, ?path, "Opened drive file");
             backend.open_files.insert(
                 file_id,
@@ -1096,6 +1230,7 @@ pub(crate) fn create_drive(
                     file,
                     path,
                     identity,
+                    ancestors,
                     listing: None,
                 },
             );
@@ -1113,14 +1248,34 @@ pub(crate) fn create_drive(
     }
 }
 
-/// Opens or creates `path` beneath the shared directory as `req` asks.
-fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) -> Result<std::fs::File, NtStatus> {
+/// Opens or creates `path` beneath the shared directory as `req` asks, and returns it with its identity and the directories leading to it.
+///
+/// A file marked for deletion is refused before it is overwritten, so a failed open leaves its contents intact.
+fn open_file(
+    file_base: &str,
+    req: &DeviceCreateRequest,
+    path: &RelativePath,
+    pending_deletes: &HashMap<FileIdentity, RelativePath>,
+) -> Result<(std::fs::File, FileIdentity, Vec<FileIdentity>), NtStatus> {
     let root = Root::open(file_base).map_err(|error| {
         warn!(%error, "Open shared directory error");
         NtStatus::UNSUCCESSFUL
     })?;
+    // [MS-SMB2] 2.2.13 SMB2 CREATE Request makes any disposition but the six it lists invalid.
+    if !matches!(
+        req.create_disposition,
+        CreateDisposition::FILE_SUPERSEDE
+            | CreateDisposition::FILE_OPEN
+            | CreateDisposition::FILE_CREATE
+            | CreateDisposition::FILE_OPEN_IF
+            | CreateDisposition::FILE_OVERWRITE
+            | CreateDisposition::FILE_OVERWRITE_IF
+    ) {
+        warn!(disposition = ?req.create_disposition, "Rejected an invalid create disposition");
+        return Err(NtStatus::INVALID_PARAMETER);
+    }
     let is_directory_request = req.create_options.contains(CreateOptions::FILE_DIRECTORY_FILE);
-    // [MS-SMB2] 2.2.13 SMB2 CREATE Request makes a directory request invalid with FILE_NON_DIRECTORY_FILE or a replacing disposition.
+    // It also makes a directory request invalid with FILE_NON_DIRECTORY_FILE or a replacing disposition.
     if is_directory_request
         && (req.create_options.contains(CreateOptions::FILE_NON_DIRECTORY_FILE)
             || !matches!(
@@ -1131,16 +1286,22 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
         warn!(disposition = ?req.create_disposition, "Rejected an invalid directory create request");
         return Err(NtStatus::INVALID_PARAMETER);
     }
-    let (parent, name) = path.open_parent(&root).map_err(|error| {
-        warn!(%error, ?path, "Open parent directory error");
+    let (parent, name, ancestors) = path.open_parent_with_ancestors(&root).map_err(|error| {
+        trace!(%error, ?path, "Open parent directory failed");
         status_from_parent_errno(error)
     })?;
+    let ancestors = ancestors.iter().map(FileIdentity::of).collect::<Vec<_>>();
+    // [MS-FSA] 2.1.5.1 Server Requests an Open of a File refuses a path through any directory marked for deletion, so nothing is created in it.
+    // A local process can still add entries to such a directory, and its delete then fails when its last handle closes.
+    if ancestors.iter().any(|ancestor| pending_deletes.contains_key(ancestor)) {
+        return Err(NtStatus::DELETE_PENDING);
+    }
 
     // Statuses follow [MS-FSA] 2.1.5.1 Server Requests an Open of a File and 2.1.5.1.2 Open of an Existing File.
     let flags = match fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW) {
         Ok(stat) if is_directory(&stat) => {
             if req.create_options.contains(CreateOptions::FILE_NON_DIRECTORY_FILE) {
-                warn!("Attempt to open a directory as a file");
+                trace!("Refused to open a directory as a file");
                 return Err(NtStatus::FILE_IS_A_DIRECTORY);
             }
             // An existing directory cannot be created, overwritten or superseded.
@@ -1148,7 +1309,7 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
                 req.create_disposition,
                 CreateDisposition::FILE_OPEN | CreateDisposition::FILE_OPEN_IF
             ) {
-                warn!(disposition = ?req.create_disposition, "Attempt to replace an existing directory");
+                trace!(disposition = ?req.create_disposition, "Refused to replace an existing directory");
                 return Err(if path.file_name().is_none() {
                     NtStatus::ACCESS_DENIED
                 } else {
@@ -1158,7 +1319,7 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
             OFlag::O_RDONLY | OFlag::O_DIRECTORY
         }
         Ok(_) if is_directory_request => {
-            warn!("Attempt to open a file as a directory");
+            trace!("Refused to open a file as a directory");
             return Err(if req.create_disposition == CreateDisposition::FILE_CREATE {
                 NtStatus::OBJECT_NAME_COLLISION
             } else {
@@ -1170,34 +1331,55 @@ fn open_file(file_base: &str, req: &DeviceCreateRequest, path: &RelativePath) ->
                 return Err(NtStatus::NO_SUCH_FILE);
             }
             mkdirat(parent.as_fd(), name, Mode::from_bits_truncate(0o777)).map_err(|error| {
-                warn!(%error, ?path, "Create directory error");
+                trace!(%error, ?path, "Create directory failed");
                 status_from_errno(error)
             })?;
             OFlag::O_RDONLY | OFlag::O_DIRECTORY
         }
         Err(error) if error != Errno::ENOENT => {
-            warn!(%error, ?path, "Look up file error");
+            trace!(%error, ?path, "Look up file failed");
             return Err(status_from_errno(error));
         }
         _ => match req.create_disposition {
             CreateDisposition::FILE_OPEN_IF => OFlag::O_CREAT | OFlag::O_RDWR,
             CreateDisposition::FILE_CREATE => OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
-            CreateDisposition::FILE_SUPERSEDE => OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
+            CreateDisposition::FILE_SUPERSEDE => OFlag::O_CREAT | OFlag::O_RDWR,
             CreateDisposition::FILE_OPEN => OFlag::O_RDONLY,
-            CreateDisposition::FILE_OVERWRITE => OFlag::O_TRUNC | OFlag::O_RDWR,
-            CreateDisposition::FILE_OVERWRITE_IF => OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
-            disposition => {
-                warn!(?disposition, "Unsupported create disposition");
-                return Err(NtStatus::UNSUCCESSFUL);
-            }
+            CreateDisposition::FILE_OVERWRITE => OFlag::O_RDWR,
+            CreateDisposition::FILE_OVERWRITE_IF => OFlag::O_CREAT | OFlag::O_RDWR,
+            // Refused before the lookup.
+            _ => return Err(NtStatus::INVALID_PARAMETER),
         },
     };
-    root.open_at(parent.as_fd(), name, flags, Mode::from_bits_truncate(0o666))
-        .map(std::fs::File::from)
+    let file = root
+        .open_at(parent.as_fd(), name, flags, Mode::from_bits_truncate(0o666))
         .map_err(|error| {
-            warn!(%error, ?name, "Open file error");
+            trace!(%error, ?name, "Open file failed");
             status_from_errno(error)
-        })
+        })?;
+    let stat = fstat(file.as_fd()).map_err(status_from_errno)?;
+    let identity = FileIdentity::of(&stat);
+    // Windows refuses to open a file marked for deletion, where [MS-FSA] 2.1.5.1 Server Requests an Open of a File states this only for the directories on the path.
+    if pending_deletes.contains_key(&identity) {
+        return Err(NtStatus::DELETE_PENDING);
+    }
+    // Truncating only once the open can no longer fail keeps a refused file intact, where O_TRUNC would empty it first.
+    // Like O_TRUNC, this leaves anything but a regular file, such as a FIFO, unchanged.
+    let is_regular_file = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFREG;
+    if is_regular_file
+        && matches!(
+            req.create_disposition,
+            CreateDisposition::FILE_SUPERSEDE
+                | CreateDisposition::FILE_OVERWRITE
+                | CreateDisposition::FILE_OVERWRITE_IF
+        )
+    {
+        ftruncate(file.as_fd(), 0).map_err(|error| {
+            warn!(%error, ?name, "Truncate file error");
+            status_from_errno(error)
+        })?;
+    }
+    Ok((std::fs::File::from(file), identity, ancestors))
 }
 
 pub(crate) fn process_dependent_file(
@@ -1306,6 +1488,31 @@ mod tests {
         )
         .expect("complete close");
         assert_eq!(open_share(&mut backend).0, NtStatus::SUCCESS);
+    }
+
+    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file_table.rs
+    #[test]
+    fn a_new_file_never_takes_the_id_of_an_open_one() {
+        let mut backend = NixRdpdrBackend::new(std::env::temp_dir().to_str().expect("UTF-8 path").to_owned());
+        let (status, first) = open_share(&mut backend);
+        assert_eq!(status, NtStatus::SUCCESS);
+        // The counter has come round to an ID that is still open.
+        backend.file_id = first;
+
+        let (status, second) = open_share(&mut backend);
+
+        assert_eq!(status, NtStatus::SUCCESS);
+        assert_ne!(second, first);
+    }
+
+    // oracle: mutant file ID counter overflows instead of wrapping
+    #[test]
+    fn file_ids_wrap_around_after_the_last_one() {
+        let mut backend = NixRdpdrBackend::new(std::env::temp_dir().to_str().expect("UTF-8 path").to_owned());
+        backend.file_id = u32::MAX;
+
+        assert_eq!(open_share(&mut backend), (NtStatus::SUCCESS, u32::MAX));
+        assert_eq!(open_share(&mut backend), (NtStatus::SUCCESS, 0));
     }
 
     // oracle: reference crates/ironrdp-rdpdr-native/src/windows/backend.rs

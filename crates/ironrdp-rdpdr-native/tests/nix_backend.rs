@@ -10,8 +10,9 @@ use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::efs::{
     Boolean, CreateDisposition, CreateOptions, DesiredAccess, DeviceCloseRequest, DeviceCreateRequest, DeviceIoRequest,
     DeviceReadRequest, DeviceWriteRequest, FileAttributes, FileDispositionInformation, FileInformationClass,
-    FileInformationClassLevel, FileRenameInformation, MajorFunction, MinorFunction, NtStatus, ServerDriveIoRequest,
-    ServerDriveQueryDirectoryRequest, ServerDriveSetInformationRequest, SharedAccess,
+    FileInformationClassLevel, FileRenameInformation, FileStandardInformation, MajorFunction, MinorFunction, NtStatus,
+    ServerDriveIoRequest, ServerDriveQueryDirectoryRequest, ServerDriveQueryInformationRequest,
+    ServerDriveSetInformationRequest, SharedAccess,
 };
 use ironrdp_rdpdr_native::backend::NixRdpdrBackend;
 use ironrdp_svc::SvcMessage;
@@ -69,6 +70,117 @@ fn symbolic_links_in_the_share_are_not_followed(
     assert_eq!(std::fs::read(&sentinel).expect("read sentinel"), b"outside");
 }
 
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs
+#[rstest]
+#[case::asterisk(r"\a*b")]
+#[case::question_mark(r"\a?b")]
+// Windows takes `a:b` for a data stream, which Unix files lack, so the backend refuses it rather than create a file named so.
+// oracle: mutant colon accepted, creating a file whose name holds the stream
+#[case::colon(r"\a:b")]
+#[case::less_than(r"\a<b")]
+#[case::greater_than(r"\a>b")]
+#[case::pipe(r"\a|b")]
+#[case::quote("\\a\"b")]
+#[case::control_character("\\a\u{1}b")]
+#[case::trailing_dot(r"\name.")]
+#[case::trailing_space(r"\name ")]
+#[case::longer_than_255_units(&format!(r"\{}", "n".repeat(256)))]
+fn names_windows_cannot_hold_are_refused(
+    #[case] path: &str,
+    #[values(CreateOptions::empty(), CreateOptions::FILE_DIRECTORY_FILE)] create_options: CreateOptions,
+) {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            create_options,
+            ..create_request(path, CreateDisposition::FILE_CREATE)
+        },
+    );
+
+    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/status.rs
+    assert_eq!(response_status(&response), NtStatus::OBJECT_NAME_INVALID);
+    assert_eq!(std::fs::read_dir(&fixture.share).expect("list share").count(), 0);
+}
+
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs
+#[test]
+fn rename_refuses_a_name_windows_cannot_hold() {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\file.txt", CreateDisposition::FILE_CREATE);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\a*b", false));
+
+    assert_eq!(response_status(&response), NtStatus::OBJECT_NAME_INVALID);
+    assert!(fixture.share.join("file.txt").exists());
+}
+
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
+#[rstest]
+fn rename_refuses_a_target_without_a_name(
+    #[values("", r"\")] file_name: &str,
+    #[values(false, true)] replace_if_exists: bool,
+) {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\file.txt", CreateDisposition::FILE_CREATE);
+
+    let response = set_information(&mut backend, file_id, rename_to(file_name, replace_if_exists));
+
+    assert_eq!(response_status(&response), NtStatus::OBJECT_NAME_INVALID);
+    assert!(fixture.share.join("file.txt").exists());
+}
+
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/directory.rs
+#[rstest]
+#[case::pipe(r"\a|b")]
+#[case::colon(r"\a:b")]
+#[case::empty_pattern(r"\dir\")]
+fn query_directory_refuses_an_invalid_pattern(#[case] path: &str) {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    let mut backend = fixture.backend();
+    let root_id = create(&mut backend, r"\", CreateDisposition::FILE_OPEN);
+
+    let response = query_directory(&mut backend, root_id, path, true);
+
+    assert_eq!(response_status(&response), NtStatus::OBJECT_NAME_INVALID);
+}
+
+/// The DOS wildcards are valid in a pattern, so a pattern without a match reports no match rather than an invalid name.
+// oracle: spec MS-FSA §2.1.5.6.3
+#[rstest]
+#[case::dos_star(r"\<.none")]
+#[case::dos_question_mark(r"\>.none")]
+#[case::dos_dot("\\a\"none")]
+fn a_dos_wildcard_pattern_without_a_match_finds_no_file(#[case] path: &str) {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("a.txt"), b"a").expect("write file");
+    let mut backend = fixture.backend();
+    let root_id = create(&mut backend, r"\", CreateDisposition::FILE_OPEN);
+
+    let response = query_directory(&mut backend, root_id, path, true);
+
+    assert_eq!(response_status(&response), NtStatus::NO_SUCH_FILE);
+}
+
+/// An initial query that cannot open its directory reports why, rather than an empty match.
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/directory.rs
+#[test]
+fn an_initial_query_through_a_file_reports_it_is_not_a_directory() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("file.txt"), b"file").expect("write file");
+    let mut backend = fixture.backend();
+    let root_id = create(&mut backend, r"\", CreateDisposition::FILE_OPEN);
+
+    let response = query_directory(&mut backend, root_id, r"\file.txt\*", true);
+
+    assert_eq!(response_status(&response), NtStatus::NOT_A_DIRECTORY);
+}
+
 /// Opening a FIFO without a writer must not block, because a blocked open stalls the whole channel.
 // oracle: mutant open without O_NONBLOCK
 #[test]
@@ -105,7 +217,7 @@ fn rename_cannot_move_a_file_outside_the_share() {
 
     let response = set_information(&mut backend, file_id, rename_to(r"\..\moved.txt", false));
 
-    // oracle: spec MS-FSA §2.1.5.15.12
+    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/status.rs
     assert_eq!(response_status(&response), NtStatus::OBJECT_NAME_INVALID);
     assert!(fixture.share.join("inside.txt").exists());
     assert!(!fixture.sandbox.join("moved.txt").exists());
@@ -147,12 +259,14 @@ fn reads_longer_than_the_limit_are_rejected(#[case] length: u32, #[case] status:
 
 // oracle: spec MS-FSA §2.1.5.1
 #[rstest]
+// oracle: spec MS-FSA §2.1.5.1.2
 #[case::existing_file_with_create(
     r"\file.txt",
     CreateOptions::empty(),
     CreateDisposition::FILE_CREATE,
     NtStatus::OBJECT_NAME_COLLISION
 )]
+// oracle: spec MS-FSA §2.1.5.1.2
 #[case::existing_directory_with_create(
     r"\dir",
     CreateOptions::empty(),
@@ -198,6 +312,20 @@ fn reads_longer_than_the_limit_are_rejected(#[case] length: u32, #[case] status:
     CreateDisposition::FILE_OVERWRITE_IF,
     NtStatus::INVALID_PARAMETER
 )]
+// oracle: spec MS-SMB2 §2.2.13
+#[case::invalid_disposition_for_a_missing_name(
+    r"\missing.txt",
+    CreateOptions::empty(),
+    CreateDisposition::from(6),
+    NtStatus::INVALID_PARAMETER
+)]
+// oracle: spec MS-SMB2 §2.2.13
+#[case::invalid_disposition_for_a_directory(
+    r"\dir",
+    CreateOptions::empty(),
+    CreateDisposition::from(6),
+    NtStatus::INVALID_PARAMETER
+)]
 fn create_reports_the_failure_status(
     #[case] path: &str,
     #[case] create_options: CreateOptions,
@@ -220,9 +348,9 @@ fn create_reports_the_failure_status(
     assert_eq!(response_status(&response), status);
 }
 
-/// Each operation that resolves a server-supplied path works on paths inside the share.
+/// Each operation that resolves a server-supplied path works on paths inside a subdirectory of the share.
 #[test]
-fn file_lifecycle_inside_the_share() {
+fn file_lifecycle_inside_a_subdirectory() {
     let fixture = Fixture::new();
     std::fs::create_dir(fixture.share.join("docs")).expect("create subdirectory");
     let mut backend = fixture.backend();
@@ -247,6 +375,7 @@ fn file_lifecycle_inside_the_share() {
             write_data: b"hello".to_vec(),
         }))
         .expect("complete write");
+    // oracle: spec MS-FSA §2.1.5.4
     assert_eq!(response_status(&response), NtStatus::SUCCESS);
 
     // oracle: spec MS-FSA §2.1.5.15.12
@@ -261,14 +390,25 @@ fn file_lifecycle_inside_the_share() {
     assert_eq!(response_status(&response), NtStatus::SUCCESS);
     close(&mut backend, file_id);
     assert!(!renamed.exists());
+}
 
-    std::fs::write(fixture.share.join("docs").join("a.txt"), b"a").expect("write a.txt");
+// MS-FSA §2.1.5.6.3 omits `.` and `..` for a pattern that matches ".", as `*` does, but Windows lists them.
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/directory.rs
+#[test]
+fn a_subdirectory_lists_dot_entries_first() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("docs")).expect("create subdirectory");
+    std::fs::write(fixture.share.join("docs").join("a.txt"), b"a").expect("write file");
+    let mut backend = fixture.backend();
     let docs_id = create(&mut backend, r"\docs", CreateDisposition::FILE_OPEN);
-    // oracle: spec MS-FSA §2.1.5.6.3
-    let (names, end) = list_directory(&mut backend, docs_id, r"\docs\*");
-    assert_eq!(names[..2], [".", ".."]);
-    assert_eq!(sorted(&names[2..]), ["a.txt", "new"]);
-    assert_eq!(end, NtStatus::NO_MORE_FILES);
+
+    assert_eq!(
+        list_directory(&mut backend, docs_id, r"\docs\*"),
+        (
+            vec![".".to_owned(), "..".to_owned(), "a.txt".to_owned()],
+            NtStatus::NO_MORE_FILES
+        )
+    );
 }
 
 // oracle: spec MS-FSA §2.1.5.6.3
@@ -285,7 +425,9 @@ fn the_shared_directory_lists_no_dot_entries() {
     );
 }
 
-// oracle: spec MS-FSA §2.1.5.6.3
+// oracle: mutant a rejected initial query lets a continuation resume the earlier listing
+// No specification decides this: MS-FSA §2.1.5.6.3 fails an invalid pattern before it resets the enumeration position,
+// and the rejected path, which leaves the share, is a client policy rather than a pattern MS-FSA describes.
 #[test]
 fn a_failed_initial_query_restarts_enumeration() {
     let fixture = Fixture::new();
@@ -303,7 +445,7 @@ fn a_failed_initial_query_restarts_enumeration() {
     assert_eq!(response_status(&next), NtStatus::NO_MORE_FILES);
 }
 
-// oracle: spec MS-FSA §2.1.5.1.2
+// oracle: spec MS-SMB2 §2.2.14
 #[test]
 fn supersede_replaces_the_contents() {
     let fixture = Fixture::new();
@@ -381,7 +523,9 @@ fn rename_onto_the_same_file_is_not_a_collision() {
     assert!(fixture.share.join("same.txt").exists());
 }
 
-// oracle: spec MS-FSA §2.1.5.1
+// oracle: mutant missing rename target directory reported as a missing file
+// No source decides this status: MS-FSA §2.1.5.15.12 read literally, and the Windows backend, report STATUS_OBJECT_NAME_NOT_FOUND.
+// STATUS_OBJECT_PATH_NOT_FOUND is kept to match a create below a missing directory.
 #[test]
 fn rename_into_a_missing_directory_reports_the_path() {
     let fixture = Fixture::new();
@@ -407,7 +551,8 @@ fn a_file_marked_for_deletion_cannot_be_renamed() {
     assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
 }
 
-// oracle: spec MS-FSA §2.1.5.5
+// MS-FSA §2.1.5.15.12 moves only the renaming handle to the new link, but Windows deletes the renamed file.
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
 #[test]
 fn delete_on_close_follows_a_rename_through_another_handle() {
     let fixture = Fixture::new();
@@ -430,7 +575,296 @@ fn delete_on_close_follows_a_rename_through_another_handle() {
     assert!(!fixture.share.join("backup.tmp").exists());
 }
 
-// oracle: spec MS-FSA §2.1.5.1
+/// Renaming one hard link leaves a handle opened through another link on that other link.
+// oracle: spec MS-FSA §2.1.5.15.3
+#[test]
+fn renaming_a_hard_link_does_not_move_handles_opened_through_another_link() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("a.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("a.txt"), fixture.share.join("b.txt")).expect("link file");
+    let mut backend = fixture.backend();
+    let a_id = create(&mut backend, r"\a.txt", CreateDisposition::FILE_OPEN);
+    let b_id = create(&mut backend, r"\b.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, a_id, rename_to(r"\c.txt", false));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let _ = set_information(&mut backend, b_id, delete_pending(true));
+    close(&mut backend, a_id);
+    close(&mut backend, b_id);
+
+    assert!(!fixture.share.join("b.txt").exists());
+    assert_eq!(
+        std::fs::read(fixture.share.join("c.txt")).expect("read c.txt"),
+        b"linked"
+    );
+}
+
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn rename_with_replace_refuses_a_target_marked_for_deletion() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("target.txt"), b"old").expect("write target");
+    std::fs::write(fixture.share.join("source.txt"), b"new").expect("write source");
+    let mut backend = fixture.backend();
+    let target_id = create(&mut backend, r"\target.txt", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, target_id, delete_pending(true));
+    let source_id = create(&mut backend, r"\source.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, source_id, rename_to(r"\target.txt", true));
+
+    assert_eq!(response_status(&response), NtStatus::DELETE_PENDING);
+    assert_eq!(
+        std::fs::read(fixture.share.join("target.txt")).expect("read target"),
+        b"old"
+    );
+    assert!(fixture.share.join("source.txt").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn rename_with_replace_refuses_a_target_with_open_handles() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("target.txt"), b"old").expect("write target");
+    std::fs::write(fixture.share.join("source.txt"), b"new").expect("write source");
+    let mut backend = fixture.backend();
+    let _target_id = create(&mut backend, r"\target.txt", CreateDisposition::FILE_OPEN);
+    let source_id = create(&mut backend, r"\source.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, source_id, rename_to(r"\target.txt", true));
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert_eq!(
+        std::fs::read(fixture.share.join("target.txt")).expect("read target"),
+        b"old"
+    );
+    assert!(fixture.share.join("source.txt").exists());
+}
+
+/// Renaming onto another hard link of the same file removes the source link, where POSIX rename changes nothing.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn rename_onto_another_link_of_the_same_file_removes_the_source() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("a.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("a.txt"), fixture.share.join("b.txt")).expect("link file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\a.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\b.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(!fixture.share.join("a.txt").exists());
+    assert_eq!(
+        std::fs::read(fixture.share.join("b.txt")).expect("read b.txt"),
+        b"linked"
+    );
+}
+
+/// A rename moves only the file the handle holds, never a file that took its name since it was opened.
+/// On a case-sensitive filesystem, a link whose name differs from the source only in case is another link, so the source goes.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[cfg(target_os = "linux")]
+#[test]
+fn rename_onto_a_link_differing_only_in_case_removes_the_source() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("a.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("a.txt"), fixture.share.join("A.txt"))
+        .expect("the share must be on a case-sensitive filesystem");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\a.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\A.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(!fixture.share.join("a.txt").exists());
+    assert_eq!(
+        std::fs::read(fixture.share.join("A.txt")).expect("read A.txt"),
+        b"linked"
+    );
+}
+
+/// On a filesystem that ignores Unicode normalization, another normalization of the source name is the source itself, so the file stays.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[cfg(target_os = "macos")]
+#[test]
+fn rename_to_another_normalization_of_the_name_keeps_the_file() {
+    let decomposed = "e\u{301}.txt";
+    let composed = "\u{e9}.txt";
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join(decomposed), b"accented").expect("write file");
+    assert!(
+        fixture.share.join(composed).exists(),
+        "the share must be on a normalization-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, &format!(r"\{decomposed}"), CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(&format!(r"\{composed}"), false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(
+        std::fs::read(fixture.share.join(composed)).expect("read file"),
+        b"accented"
+    );
+}
+
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn rename_never_moves_a_file_that_replaced_the_handle_name() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("doc.txt"), b"original").expect("write file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\doc.txt", CreateDisposition::FILE_OPEN);
+    std::fs::rename(fixture.share.join("doc.txt"), fixture.share.join("moved.txt")).expect("rename locally");
+    std::fs::write(fixture.share.join("doc.txt"), b"replacement").expect("write replacement");
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\renamed.txt", false));
+
+    assert_eq!(
+        std::fs::read(fixture.share.join("doc.txt")).expect("read replacement"),
+        b"replacement"
+    );
+    // MS-FSA would rename the handle's file, which no longer has a name the backend can reach.
+    // oracle: mutant rename reports success without moving the handle's file
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+}
+
+// oracle: spec MS-FSA §2.1.5.12.27
+#[test]
+fn a_link_marked_for_deletion_is_not_counted() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("a.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("a.txt"), fixture.share.join("b.txt")).expect("link file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\a.txt", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, file_id, delete_pending(true));
+
+    let information = query_standard_information(&mut backend, file_id);
+
+    assert_eq!(information.number_of_links, 1);
+    assert_eq!(information.delete_pending, Boolean::True);
+}
+
+/// A directory has one link, however many entries Unix counts for `.` and subdirectories.
+// oracle: spec MS-FSA §2.1.5.12.27
+#[rstest]
+#[case::unmarked(false, 1)]
+#[case::marked_for_deletion(true, 0)]
+fn a_directory_counts_one_link(#[case] marked: bool, #[case] links: u32) {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    let mut backend = fixture.backend();
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, directory_id, delete_pending(marked));
+
+    assert_eq!(
+        query_standard_information(&mut backend, directory_id).number_of_links,
+        links
+    );
+}
+
+/// The shared directory cannot be removed through the share, so it is never marked, and creates in it keep working.
+// oracle: mutant marking the shared directory blocks every create in it
+#[test]
+fn the_shared_directory_cannot_be_marked_for_deletion() {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+    let root_id = create(&mut backend, r"\", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, root_id, delete_pending(true));
+    let created = create_with(
+        &mut backend,
+        create_request(r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert_eq!(response_status(&created), NtStatus::SUCCESS);
+}
+
+/// Dropping the backend closes every handle the server left open, so their pending deletes run.
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/handles.rs
+#[test]
+fn dropping_the_backend_runs_pending_deletes() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("doc.txt"), b"doc").expect("write file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\doc.txt", CreateDisposition::FILE_OPEN);
+    let response = set_information(&mut backend, file_id, delete_pending(true));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+
+    drop(backend);
+
+    assert!(!fixture.share.join("doc.txt").exists());
+}
+
+/// A delete on close never removes a file that took the marked name after the handle was opened.
+// oracle: spec MS-FSA §2.1.5.5
+#[test]
+fn a_delete_on_close_keeps_a_file_that_replaced_the_marked_name() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("doc.txt"), b"original").expect("write file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\doc.txt", CreateDisposition::FILE_OPEN);
+    std::fs::rename(fixture.share.join("doc.txt"), fixture.share.join("moved.txt")).expect("rename locally");
+    std::fs::write(fixture.share.join("doc.txt"), b"replacement").expect("write replacement");
+
+    let _ = set_information(&mut backend, file_id, delete_pending(true));
+    close(&mut backend, file_id);
+
+    assert_eq!(
+        std::fs::read(fixture.share.join("doc.txt")).expect("read replacement"),
+        b"replacement"
+    );
+}
+
+/// The delete removes the hard link it was marked through, whichever handle to the file closes last.
+// oracle: spec MS-FSA §2.1.5.15.3
+#[test]
+fn a_delete_removes_the_hard_link_it_was_marked_through() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("a.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("a.txt"), fixture.share.join("b.txt")).expect("link file");
+    let mut backend = fixture.backend();
+    let a_id = create(&mut backend, r"\a.txt", CreateDisposition::FILE_OPEN);
+    let b_id = create(&mut backend, r"\b.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, b_id, delete_pending(true));
+    close(&mut backend, b_id);
+    close(&mut backend, a_id);
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(!fixture.share.join("b.txt").exists());
+    assert_eq!(
+        std::fs::read(fixture.share.join("a.txt")).expect("read a.txt"),
+        b"linked"
+    );
+}
+
+/// On a case-insensitive filesystem, a handle opened under another spelling of the renamed name follows the rename.
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
+#[cfg(target_os = "macos")]
+#[test]
+fn a_handle_opened_under_another_spelling_follows_a_rename() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("doc.txt"), b"doc").expect("write file");
+    assert!(
+        fixture.share.join("DOC.TXT").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let deleting_id = create(&mut backend, r"\Doc.txt", CreateDisposition::FILE_OPEN);
+    let renaming_id = create(&mut backend, r"\doc.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, renaming_id, rename_to(r"\renamed.txt", false));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let _ = set_information(&mut backend, deleting_id, delete_pending(true));
+    close(&mut backend, renaming_id);
+    close(&mut backend, deleting_id);
+
+    assert!(!fixture.share.join("renamed.txt").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.5
 #[test]
 fn a_file_marked_for_deletion_is_deleted_when_its_last_handle_closes() {
     let fixture = Fixture::new();
@@ -448,9 +882,37 @@ fn a_file_marked_for_deletion_is_deleted_when_its_last_handle_closes() {
     let still_there = fixture.share.join("shared.txt").exists();
     close(&mut backend, second_id);
 
+    // MS-FSA §2.1.5.1 refuses only the directories on the path, but Windows also refuses the marked file itself.
+    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
     assert_eq!(response_status(&reopen), NtStatus::DELETE_PENDING);
     assert!(still_there);
     assert!(!fixture.share.join("shared.txt").exists());
+}
+
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
+#[rstest]
+fn overwriting_a_file_marked_for_deletion_keeps_its_contents(
+    #[values(
+        CreateDisposition::FILE_SUPERSEDE,
+        CreateDisposition::FILE_OVERWRITE,
+        CreateDisposition::FILE_OVERWRITE_IF
+    )]
+    disposition: CreateDisposition,
+) {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("held.txt"), b"held").expect("write file");
+    let mut backend = fixture.backend();
+    let marking_id = create(&mut backend, r"\held.txt", CreateDisposition::FILE_OPEN);
+    let _holding_id = create(&mut backend, r"\held.txt", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, marking_id, delete_pending(true));
+
+    let response = create_with(&mut backend, create_request(r"\held.txt", disposition));
+
+    assert_eq!(response_status(&response), NtStatus::DELETE_PENDING);
+    assert_eq!(
+        std::fs::read(fixture.share.join("held.txt")).expect("read file"),
+        b"held"
+    );
 }
 
 // oracle: spec MS-FSA §2.1.5.15.12
@@ -467,6 +929,64 @@ fn a_directory_holding_open_files_cannot_be_renamed() {
 
     assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
     assert!(fixture.share.join("dir").join("open.txt").exists());
+}
+
+/// The open files are found by the directory that holds them, not by the paths they were opened by.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn a_directory_holding_open_files_cannot_be_renamed_after_a_local_rename() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    std::fs::write(fixture.share.join("dir").join("open.txt"), b"open").expect("write file");
+    let mut backend = fixture.backend();
+    let _file_id = create(&mut backend, r"\dir\open.txt", CreateDisposition::FILE_OPEN);
+    std::fs::rename(fixture.share.join("dir"), fixture.share.join("renamed")).expect("rename locally");
+    let directory_id = create(&mut backend, r"\renamed", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, directory_id, rename_to(r"\moved", false));
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert!(fixture.share.join("renamed").join("open.txt").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn a_directory_holding_a_file_renamed_into_it_cannot_be_renamed() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("a")).expect("create directory");
+    std::fs::create_dir(fixture.share.join("b")).expect("create directory");
+    std::fs::write(fixture.share.join("a").join("open.txt"), b"open").expect("write file");
+    let mut backend = fixture.backend();
+    let file_id = create(&mut backend, r"\a\open.txt", CreateDisposition::FILE_OPEN);
+    let response = set_information(&mut backend, file_id, rename_to(r"\b\open.txt", false));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let directory_id = create(&mut backend, r"\b", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, directory_id, rename_to(r"\moved", false));
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert!(fixture.share.join("b").join("open.txt").exists());
+}
+
+/// On a case-insensitive filesystem, a file opened under another spelling of its directory still keeps that directory from being renamed.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[cfg(target_os = "macos")]
+#[test]
+fn a_directory_holding_files_open_under_another_spelling_cannot_be_renamed() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    std::fs::write(fixture.share.join("dir").join("open.txt"), b"open").expect("write file");
+    assert!(
+        fixture.share.join("DIR").exists(),
+        "the share must be on a case-insensitive filesystem"
+    );
+    let mut backend = fixture.backend();
+    let _file_id = create(&mut backend, r"\DIR\open.txt", CreateDisposition::FILE_OPEN);
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, directory_id, rename_to(r"\moved", false));
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
 }
 
 // oracle: spec MS-FSA §2.1.5.15.12
@@ -524,6 +1044,108 @@ fn an_empty_directory_opened_with_open_if_is_deleted_on_close() {
     assert!(!fixture.share.join("empty").exists());
 }
 
+// oracle: spec MS-FSA §2.1.5.1
+#[rstest]
+fn nothing_can_be_created_in_a_directory_marked_for_deletion(
+    #[values(CreateOptions::empty(), CreateOptions::FILE_DIRECTORY_FILE)] create_options: CreateOptions,
+) {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    let mut backend = fixture.backend();
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, directory_id, delete_pending(true));
+
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            create_options,
+            ..create_request(r"\dir\x", CreateDisposition::FILE_CREATE)
+        },
+    );
+    let created = fixture.share.join("dir").join("x").exists();
+    close(&mut backend, directory_id);
+
+    assert_eq!(response_status(&response), NtStatus::DELETE_PENDING);
+    assert!(!created);
+    assert!(!fixture.share.join("dir").exists());
+}
+
+/// Every directory on the path counts, so a subdirectory a local process created in a marked directory gains nothing either.
+// oracle: spec MS-FSA §2.1.5.1
+#[test]
+fn nothing_can_be_created_below_a_directory_marked_for_deletion() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    let mut backend = fixture.backend();
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, directory_id, delete_pending(true));
+    std::fs::create_dir(fixture.share.join("dir").join("sub")).expect("create subdirectory locally");
+
+    let response = create_with(
+        &mut backend,
+        create_request(r"\dir\sub\x.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(response_status(&response), NtStatus::DELETE_PENDING);
+    assert!(!fixture.share.join("dir").join("sub").join("x.txt").exists());
+}
+
+/// A rename opens its target directory like a create does, so it cannot move a file into a directory marked for deletion.
+// The target directory is the last component of that open, which MS-FSA §2.1.5.1 does not refuse, but Windows does.
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
+#[test]
+fn nothing_can_be_renamed_into_a_directory_marked_for_deletion() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    std::fs::write(fixture.share.join("file.txt"), b"file").expect("write file");
+    let mut backend = fixture.backend();
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, directory_id, delete_pending(true));
+    let file_id = create(&mut backend, r"\file.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, file_id, rename_to(r"\dir\file.txt", false));
+    close(&mut backend, directory_id);
+
+    assert_eq!(response_status(&response), NtStatus::DELETE_PENDING);
+    assert!(fixture.share.join("file.txt").exists());
+    assert!(!fixture.share.join("dir").exists());
+}
+
+/// The emptiness check applies to the open directory, not to whatever now holds the name it was opened by.
+// oracle: spec MS-FSA §2.1.5.15.3
+#[test]
+fn marking_a_directory_checks_the_open_directory_after_a_local_rename() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    let mut backend = fixture.backend();
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+    std::fs::rename(fixture.share.join("dir"), fixture.share.join("moved")).expect("rename directory");
+    std::fs::create_dir(fixture.share.join("dir")).expect("create replacement");
+    std::fs::write(fixture.share.join("dir").join("child.txt"), b"child").expect("write child");
+
+    let response = set_information(&mut backend, directory_id, delete_pending(true));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+}
+
+/// Each mark reads the directory from its start, so an earlier mark does not hide entries added since.
+// oracle: spec MS-FSA §2.1.5.15.3
+#[test]
+fn marking_a_directory_again_sees_entries_added_since() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    let mut backend = fixture.backend();
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+    let first = set_information(&mut backend, directory_id, delete_pending(true));
+    let _ = set_information(&mut backend, directory_id, delete_pending(false));
+    std::fs::write(fixture.share.join("dir").join("child.txt"), b"child").expect("write child");
+
+    let second = set_information(&mut backend, directory_id, delete_pending(true));
+
+    assert_eq!(response_status(&first), NtStatus::SUCCESS);
+    assert_eq!(response_status(&second), NtStatus::DIRECTORY_NOT_EMPTY);
+}
+
 // oracle: spec MS-FSA §2.1.5.15.3
 #[test]
 fn a_directory_that_is_not_empty_cannot_be_marked_for_deletion() {
@@ -568,10 +1190,30 @@ fn list_directory(backend: &mut NixRdpdrBackend, file_id: u32, pattern: &str) ->
     (names, response_status(&response))
 }
 
-fn sorted(names: &[String]) -> Vec<&str> {
-    let mut names: Vec<_> = names.iter().map(String::as_str).collect();
-    names.sort_unstable();
-    names
+fn query_standard_information(backend: &mut NixRdpdrBackend, file_id: u32) -> FileStandardInformation {
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveQueryInformationRequest(
+            ServerDriveQueryInformationRequest {
+                device_io_request: request_header(file_id, MajorFunction::QueryInformation),
+                file_info_class_lvl: FileInformationClassLevel::FILE_STANDARD_INFORMATION,
+            },
+        ))
+        .expect("complete query information");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let response = response[0]
+        .encode_unframed_pdu()
+        .expect("encode query information response");
+    let buffer = &response[INFORMATION_BUFFER..];
+    let information = FileInformationClass::decode(
+        FileInformationClassLevel::FILE_STANDARD_INFORMATION,
+        buffer.len(),
+        &mut ReadCursor::new(buffer),
+    )
+    .expect("decode FileStandardInformation");
+    let FileInformationClass::Standard(information) = information else {
+        panic!("expected FileStandardInformation, got {information:?}");
+    };
+    information
 }
 
 fn create_with(backend: &mut NixRdpdrBackend, request: DeviceCreateRequest) -> Vec<SvcMessage> {
@@ -649,6 +1291,9 @@ const CREATE_FILE_ID: Range<usize> = 16..20;
 // [MS-RDPEFS] 2.2.3.4.10 Client Drive Query Directory Response (DR_DRIVE_QUERY_DIRECTORY_RSP) continues with Length
 // and the entry it describes.
 const DIRECTORY_ENTRY: usize = 20;
+// [MS-RDPEFS] 2.2.3.4.8 Client Drive Query Information Response (DR_DRIVE_QUERY_INFORMATION_RSP) continues with Length
+// and the information it describes.
+const INFORMATION_BUFFER: usize = 20;
 
 fn response_status(messages: &[SvcMessage]) -> NtStatus {
     NtStatus::from(read_u32(messages, IO_STATUS))
