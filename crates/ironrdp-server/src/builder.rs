@@ -59,6 +59,8 @@ pub struct BuilderDone {
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
     auto_reconnect_on_request: bool,
+    #[cfg(feature = "egfx")]
+    egfx_core_frame_ack_limit: bool,
     connection_policy: ConnectionPolicy,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
@@ -173,6 +175,8 @@ impl RdpServerBuilder<WantsDisplay> {
                 connection_policy,
                 auto_reconnect_cookie: None,
                 auto_reconnect_on_request: false,
+                #[cfg(feature = "egfx")]
+                egfx_core_frame_ack_limit: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
@@ -207,6 +211,8 @@ impl RdpServerBuilder<WantsDisplay> {
                 connection_policy,
                 auto_reconnect_cookie: None,
                 auto_reconnect_on_request: false,
+                #[cfg(feature = "egfx")]
+                egfx_core_frame_ack_limit: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
@@ -397,6 +403,14 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Let the client's core Frame Acknowledge capability cap the EGFX frame
+    /// window. Off by default. See [`RdpServer::set_egfx_core_frame_ack_limit`].
+    #[cfg(feature = "egfx")]
+    pub fn with_egfx_core_frame_ack_limit(mut self, enabled: bool) -> Self {
+        self.state.egfx_core_frame_ack_limit = enabled;
+        self
+    }
+
     /// Set the quantization values the RemoteFX encoder uses once selected.
     /// Defaults to [`Quant::default`], the same values Windows RDP servers
     /// send. Build a validated [`Quant`] with [`Quant::try_new`].
@@ -487,6 +501,8 @@ impl RdpServerBuilder<BuilderDone> {
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
         server.set_auto_reconnect_on_request(self.state.auto_reconnect_on_request);
+        #[cfg(feature = "egfx")]
+        server.set_egfx_core_frame_ack_limit(self.state.egfx_core_frame_ack_limit);
         server.set_connection_binder(self.state.connection_binder);
         server
     }

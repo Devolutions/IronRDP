@@ -1288,6 +1288,10 @@ pub struct RdpServer {
     /// client that came back with a verified one; see
     /// [`Self::set_auto_reconnect_on_request`].
     auto_reconnect_on_request: bool,
+    /// Whether the client's core Frame Acknowledge capability caps the EGFX
+    /// frame window; see [`Self::set_egfx_core_frame_ack_limit`].
+    #[cfg(feature = "egfx")]
+    egfx_core_frame_ack_limit: bool,
 }
 
 /// Cloneable handle for updating the Server Auto-Reconnect Cookie while
@@ -2219,6 +2223,8 @@ impl RdpServer {
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
             auto_reconnect_on_request: false,
+            #[cfg(feature = "egfx")]
+            egfx_core_frame_ack_limit: false,
         }
     }
 
@@ -2309,6 +2315,25 @@ impl RdpServer {
     /// effect there.
     pub fn set_auto_reconnect_on_request(&mut self, on_request: bool) {
         self.auto_reconnect_on_request = on_request;
+    }
+
+    /// Choose whether the client's `maxUnacknowledgedFrameCount` caps the EGFX
+    /// frame window. Off by default.
+    ///
+    /// The value comes from the [2.2.1.3] Frame Acknowledge Capability Set
+    /// (TS_FRAME_ACKNOWLEDGE_CAPABILITYSET), which is defined for surface-command
+    /// frames acknowledged with TS_FRAME_ACKNOWLEDGE_PDU. EGFX acknowledges its
+    /// frames with its own [2.2.2.13] RDPGFX_FRAME_ACKNOWLEDGE_PDU, and Windows 10
+    /// mstsc sends 1, which would allow one EGFX frame per round trip. When on,
+    /// the value caps [`GraphicsPipelineServer::set_max_frames_in_flight`] for
+    /// each capability exchange, including reactivation.
+    ///
+    /// [2.2.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/e4d498fd-822b-408d-b8b3-1c216f21265b
+    /// [2.2.2.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0241e258-77ef-4a58-b426-5039ed6296ce
+    /// [`GraphicsPipelineServer::set_max_frames_in_flight`]: ironrdp_egfx::server::GraphicsPipelineServer::set_max_frames_in_flight
+    #[cfg(feature = "egfx")]
+    pub fn set_egfx_core_frame_ack_limit(&mut self, enabled: bool) {
+        self.egfx_core_frame_ack_limit = enabled;
     }
 
     /// Returns a handle for replacing the cookie while [`Self::run`] owns this
@@ -5144,7 +5169,12 @@ impl RdpServer {
             let mut server = gfx_handle
                 .lock()
                 .map_err(|_| ServerError::reason("graphics server", "GfxServerHandle mutex poisoned"))?;
-            server.set_client_frame_ack_limit(client_core_frame_ack_limit(&result.capabilities));
+            let core_limit = if self.egfx_core_frame_ack_limit {
+                client_core_frame_ack_limit(&result.capabilities)
+            } else {
+                None
+            };
+            server.set_client_frame_ack_limit(core_limit);
         }
         conn.static_channels = result.static_channels;
         conn.client_supports_heartbeat = result
