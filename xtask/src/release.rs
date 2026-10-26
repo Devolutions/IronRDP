@@ -27,12 +27,16 @@ impl Version {
 
     /// Whether a caret requirement on `self` rejects `other`, a version no older than `self`, which is when Cargo treats the change as breaking.
     ///
-    /// A caret requirement on `self` accepts exactly the versions from `self` up to, excluding, `self.next_breaking()`.
+    /// A caret requirement on `self` accepts exactly the versions from `self` up to, excluding, `self.next_breaking()`, as described in [Caret requirements].
+    ///
+    /// [Caret requirements]: https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#caret-requirements
     fn is_incompatible_with(self, other: Self) -> bool {
         self.next_breaking() <= other
     }
 
-    /// The smallest version that a caret requirement on `self` rejects.
+    /// The smallest version that a caret requirement on `self` rejects, as described in [Caret requirements].
+    ///
+    /// [Caret requirements]: https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#caret-requirements
     fn next_breaking(self) -> Self {
         if self.major != 0 {
             Self {
@@ -200,6 +204,8 @@ fn set_package_version(manifest: &str, from: Version, to: Version) -> Option<Str
     let mut section = "";
     let mut done = false;
     let mut out = String::with_capacity(manifest.len());
+    let expected = format!("version = \"{from}\"");
+    let (from, to) = (from.to_string(), to.to_string());
 
     for line in manifest.split_inclusive('\n') {
         let trimmed = line.trim();
@@ -208,8 +214,8 @@ fn set_package_version(manifest: &str, from: Version, to: Version) -> Option<Str
             section = header.trim_end_matches(']');
         }
 
-        if !done && section == "package" && trimmed == format!("version = \"{from}\"") {
-            out.push_str(&line.replacen(&from.to_string(), &to.to_string(), 1));
+        if !done && section == "package" && trimmed == expected {
+            out.push_str(&line.replacen(&from, &to, 1));
             done = true;
         } else {
             out.push_str(line);
@@ -403,9 +409,6 @@ pub fn check_public_deps(sh: &Shell, fix: bool) -> anyhow::Result<()> {
 }
 
 fn apply(sh: &Shell, packages: &[Package], bumps: &[Bump]) -> anyhow::Result<()> {
-    let mut manifests: Vec<PathBuf> = packages.iter().map(|package| package.manifest_path.clone()).collect();
-    manifests.push(PathBuf::from("fuzz/Cargo.toml"));
-
     for bump in bumps {
         let package = packages
             .iter()
@@ -432,7 +435,12 @@ fn apply(sh: &Shell, packages: &[Package], bumps: &[Bump]) -> anyhow::Result<()>
         }
     }
 
-    for path in &manifests {
+    let manifests = packages
+        .iter()
+        .map(|package| package.manifest_path.as_path())
+        .chain(core::iter::once(Path::new("fuzz/Cargo.toml")));
+
+    for path in manifests {
         let manifest = bumps.iter().fold(sh.read_file(path)?, |manifest, bump| {
             set_requirement(&manifest, &bump.name, bump.required)
         });
@@ -692,15 +700,47 @@ ironrdp-svc = { path = "../ironrdp-svc", version = "0.9" } # public
         assert_eq!(set_requirement(manifest, "ironrdp-pdu", v("0.11.0")), manifest);
     }
 
-    // oracle: mutant skipping dev-dependencies, which would then no longer resolve to the workspace crate
-    #[test]
-    fn dev_dependency_requirement_is_updated() {
-        let manifest = "[dev-dependencies]\nironrdp-pdu = \"0.10.1\"\n";
+    // oracle: mutant skipping a dependency table, whose requirement would then no longer resolve to the workspace crate
+    #[rstest]
+    #[case::dev_dependencies("dev-dependencies")]
+    #[case::build_dependencies("build-dependencies")]
+    #[case::target_dependencies("target.'cfg(windows)'.dependencies")]
+    fn requirement_in_every_dependency_table_is_updated(#[case] table: &str) {
+        let manifest = format!("[{table}]\nironrdp-pdu = \"0.10.1\"\n");
 
         assert_eq!(
-            set_requirement(manifest, "ironrdp-pdu", v("0.11.0")),
-            "[dev-dependencies]\nironrdp-pdu = \"0.11.0\"\n"
+            set_requirement(&manifest, "ironrdp-pdu", v("0.11.0")),
+            format!("[{table}]\nironrdp-pdu = \"0.11.0\"\n")
         );
+    }
+
+    // oracle: spec Cargo Book, Specifying Dependencies, whose caret, tilde and exact operators prefix the version
+    #[rstest]
+    #[case::caret("^0.10", "^0.11")]
+    #[case::tilde("~0.10.1", "~0.11.0")]
+    #[case::exact("=0.10.1", "=0.11.0")]
+    fn requirement_keeps_its_operator(#[case] from: &str, #[case] expected: &str) {
+        let manifest = format!("[dependencies]\nironrdp-pdu = {{ version = \"{from}\" }}\n");
+
+        assert_eq!(
+            set_requirement(&manifest, "ironrdp-pdu", v("0.11.0")),
+            format!("[dependencies]\nironrdp-pdu = {{ version = \"{expected}\" }}\n")
+        );
+    }
+
+    // oracle: mutant whose `Display` and `parse` disagree on the component order or separator
+    #[test]
+    fn version_display_round_trips_through_parse() {
+        let components = [0, 1, 9, 10, u64::MAX];
+
+        for major in components {
+            for minor in components {
+                for patch in components {
+                    let version = Version { major, minor, patch };
+                    assert_eq!(Version::parse(&version.to_string()), Some(version));
+                }
+            }
+        }
     }
 
     fn svc_bump() -> Bump {
