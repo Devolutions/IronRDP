@@ -15,6 +15,7 @@ mod ffi;
 mod fuzz;
 mod pr;
 mod prelude;
+mod release;
 mod section;
 mod wasm;
 mod web;
@@ -116,6 +117,7 @@ fn main() -> anyhow::Result<()> {
         }
         Action::Clean => clean::workspace(&sh)?,
         Action::PrCheckMessage { event_file } => pr::check_message(event_file.as_deref())?,
+        Action::ReleaseCheckPublicDeps { fix } => release::check_public_deps(&sh, fix)?,
         Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
         Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
