@@ -1,8 +1,10 @@
 //! ICE candidate gathering and connectivity checks for RDPEUDP2.
 //!
-//! This module uses ICE (RFC 8445) with UDP host, server-reflexive, and TURN
-//! relay candidates. Candidate signaling remains the caller's responsibility.
+//! This module uses ICE ([RFC 8445]) with UDP host, server-reflexive, and TURN relay candidates.
+//! Candidate signaling remains the caller's responsibility.
 //! The API does not define or imply an AVD Shortpath signaling contract.
+//!
+//! [RFC 8445]: https://www.rfc-editor.org/rfc/rfc8445
 
 use core::error::Error;
 use core::fmt;
@@ -244,7 +246,7 @@ async fn gather_ice_candidates_with_types(
     candidate_types: Vec<CandidateType>,
 ) -> Result<IceGatheredCandidates, IceTransportError> {
     validate_timeout(config.timeout)?;
-    if config.servers.len() > MAX_ICE_SERVERS {
+    if MAX_ICE_SERVERS < config.servers.len() {
         return Err(IceTransportError::InvalidConfiguration("too many ICE servers"));
     }
 
@@ -378,7 +380,7 @@ async fn connect_ice_candidates(
             "remote candidate list is empty",
         ));
     }
-    if remote.candidates.len() > MAX_ICE_CANDIDATES {
+    if MAX_ICE_CANDIDATES < remote.candidates.len() {
         return Err(IceTransportError::InvalidConfiguration(
             "too many remote ICE candidates",
         ));
@@ -387,7 +389,7 @@ async fn connect_ice_candidates(
 
     let agent = local.agent.agent();
     for raw_candidate in &remote.candidates {
-        if raw_candidate.len() > MAX_ICE_CANDIDATE_LENGTH {
+        if MAX_ICE_CANDIDATE_LENGTH < raw_candidate.len() {
             return Err(IceTransportError::InvalidConfiguration(
                 "remote ICE candidate is too long",
             ));
@@ -482,7 +484,7 @@ impl DatagramIo for IceDatagramIo {
             let sent = Conn::send(self.connection.as_ref(), buf)
                 .await
                 .map_err(io::Error::other)?;
-            if sent == buf.len() || (self.uses_relay && sent > buf.len()) {
+            if sent == buf.len() || (self.uses_relay && buf.len() < sent) {
                 // TURN may report the size of its encapsulating packet instead of the payload.
                 return Ok(buf.len());
             }
@@ -543,42 +545,18 @@ impl IceAgentGuard {
     }
 }
 
-#[expect(
-    clippy::manual_async_fn,
-    reason = "The driver requires Send futures for tokio::spawn"
-)]
-impl<C> DatagramIo for Arc<C>
-where
-    C: Conn + Send + Sync + 'static + ?Sized,
-{
-    fn local_addr(&self) -> Option<SocketAddr> {
-        Conn::local_addr(self.as_ref()).ok()
-    }
-
-    fn peer_addr(&self) -> Option<SocketAddr> {
-        Conn::remote_addr(self.as_ref())
-    }
-
-    fn send<'a>(&'a self, buf: &'a [u8]) -> impl Future<Output = io::Result<usize>> + Send + 'a {
-        async move {
-            let sent = Conn::send(self.as_ref(), buf).await.map_err(io::Error::other)?;
-            if sent != buf.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "ICE datagram send completed with a partial write",
-                ));
-            }
-            Ok(sent)
+impl Drop for IceAgentGuard {
+    fn drop(&mut self) {
+        // Signal the spawned cleanup task and leave its JoinHandle detached so
+        // `cleanup_agent.close().await` completes asynchronously on drop paths.
+        if let Some(close_tx) = self.close_tx.take() {
+            let _ = close_tx.send(());
         }
-    }
-
-    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> impl Future<Output = io::Result<usize>> + Send + 'a {
-        async move { Conn::recv(self.as_ref(), buf).await.map_err(io::Error::other) }
     }
 }
 
 fn parse_ice_server(server: IceServerConfig) -> Result<Url, IceTransportError> {
-    if server.url.len() > 1024 {
+    if 1024 < server.url.len() {
         return Err(IceTransportError::InvalidConfiguration("ICE server URL is too long"));
     }
     let mut url = Url::parse_url(&server.url).map_err(agent_error)?;
@@ -608,7 +586,7 @@ fn parse_ice_server(server: IceServerConfig) -> Result<Url, IceTransportError> {
 }
 
 fn validate_timeout(timeout: Duration) -> Result<(), IceTransportError> {
-    if timeout < Duration::from_millis(1) || timeout > MAX_ICE_TIMEOUT {
+    if timeout < Duration::from_millis(1) || MAX_ICE_TIMEOUT < timeout {
         return Err(IceTransportError::InvalidConfiguration(
             "ICE timeout must be between 1 ms and 120 s",
         ));
@@ -638,9 +616,13 @@ fn agent_error(error: impl Error + Send + Sync + 'static) -> IceTransportError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "rustls-ring")]
     use ironrdp_rdpemt::TunnelConfig;
+    #[cfg(feature = "rustls-ring")]
     use ironrdp_rdpeudp::ConnectionConfig;
+    use rstest::rstest;
 
+    // oracle: mutant leaked TURN or ICE credentials in Debug output
     #[test]
     fn hides_server_and_password_credentials_from_debug_output() {
         let server = IceServerConfig::turn(
@@ -660,8 +642,9 @@ mod tests {
         assert!(debug.contains("[redacted]"));
     }
 
+    // oracle: spec RFC 8656 §3.1
     #[test]
-    fn accepts_udp_turn_and_rejects_unsupported_server_urls() {
+    fn accepts_udp_turn_server_url() {
         let url = parse_ice_server(IceServerConfig::turn(
             "turn:turn.example.net:3478?transport=udp",
             "user",
@@ -671,21 +654,20 @@ mod tests {
         assert_eq!(url.scheme, SchemeType::Turn);
         assert_eq!(url.proto, ProtoType::Udp);
         assert_eq!(url.username, "user");
-
-        assert!(parse_ice_server(IceServerConfig::stun("turns:turn.example.net:5349")).is_err());
-        assert!(parse_ice_server(IceServerConfig::stun("turn:turn.example.net:3478")).is_err());
-        assert!(
-            parse_ice_server(IceServerConfig::turn(
-                "turn:turn.example.net:3478?transport=tcp",
-                "user",
-                "credential",
-            ))
-            .is_err()
-        );
     }
 
+    // oracle: spec RFC 8656 §3.1
+    #[rstest]
+    #[case::turns_scheme(IceServerConfig::stun("turns:turn.example.net:5349"))]
+    #[case::turn_without_credentials(IceServerConfig::stun("turn:turn.example.net:3478"))]
+    #[case::turn_over_tcp(IceServerConfig::turn("turn:turn.example.net:3478?transport=tcp", "user", "credential"))]
+    fn rejects_unsupported_ice_server_url(#[case] server: IceServerConfig) {
+        assert!(parse_ice_server(server).is_err());
+    }
+
+    // oracle: spec RFC 5245 §15.4
     #[test]
-    fn validates_remote_ice_credentials() {
+    fn accepts_valid_remote_ice_credentials() {
         assert!(
             validate_credentials(&IceCredentials {
                 username_fragment: "abcd".into(),
@@ -693,29 +675,24 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    // oracle: spec RFC 5245 §15.4
+    #[rstest]
+    #[case::short_ufrag("abc", "abcdefghijklmnopqrstuv")]
+    #[case::short_password("abcd", "short")]
+    #[case::disallowed_ufrag_character("abc d", "abcdefghijklmnopqrstuv")]
+    fn rejects_invalid_remote_ice_credentials(#[case] username_fragment: &str, #[case] password: &str) {
         assert!(
             validate_credentials(&IceCredentials {
-                username_fragment: "abc".into(),
-                password: "abcdefghijklmnopqrstuv".into(),
-            })
-            .is_err()
-        );
-        assert!(
-            validate_credentials(&IceCredentials {
-                username_fragment: "abcd".into(),
-                password: "short".into(),
-            })
-            .is_err()
-        );
-        assert!(
-            validate_credentials(&IceCredentials {
-                username_fragment: "abc d".into(),
-                password: "abcdefghijklmnopqrstuv".into(),
+                username_fragment: username_fragment.into(),
+                password: password.into(),
             })
             .is_err()
         );
     }
 
+    // oracle: spec RFC 8445 §6
     #[tokio::test]
     async fn gathers_candidates_and_establishes_an_ice_datagram_path() {
         let config = IceGatherConfig {
@@ -754,6 +731,7 @@ mod tests {
         right_connection.agent.close().await;
     }
 
+    // oracle: spec MS-RDPEUDP2 §3.1.3
     #[cfg(feature = "rustls-ring")]
     #[tokio::test]
     async fn establishes_an_rdpeudp2_tunnel_over_the_selected_ice_path() {
@@ -858,6 +836,7 @@ mod tests {
         server.shutdown().await.expect("server shutdown");
     }
 
+    // oracle: spec RFC 8656 §2
     #[cfg(feature = "rustls-ring")]
     #[tokio::test]
     async fn establishes_an_rdpeudp2_tunnel_over_relay_only_turn_path() -> Result<(), Box<dyn Error + Send + Sync>> {

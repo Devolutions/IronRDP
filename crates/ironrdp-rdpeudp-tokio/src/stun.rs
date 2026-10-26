@@ -66,6 +66,9 @@ impl core::error::Error for StunError {
 ///
 /// The returned address is a STUN server-reflexive mapping, not proof that a remote peer can reach it.
 /// NATs can map the same local socket differently for different remote endpoints.
+/// When a response contains both `XOR-MAPPED-ADDRESS` and legacy `MAPPED-ADDRESS`, `XOR-MAPPED-ADDRESS` takes precedence ([RFC 8489] §§14.1–14.2).
+///
+/// [RFC 8489]: https://www.rfc-editor.org/rfc/rfc8489
 ///
 /// # Errors
 ///
@@ -211,6 +214,7 @@ fn decode_address(value: &[u8], xor_cookie: Option<u32>, transaction_id: [u8; 12
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     const TRANSACTION_ID: [u8; 12] = [0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x32, 0x54, 0x76];
 
@@ -244,6 +248,22 @@ mod tests {
         value
     }
 
+    fn xor_mapped_v6(address: Ipv6Addr, port: u16, transaction_id: [u8; 12]) -> Vec<u8> {
+        let mut value = vec![0, 2];
+        let port_mask = xor_port_mask(STUN_MAGIC_COOKIE);
+        value.extend_from_slice(&(port ^ port_mask).to_be_bytes());
+        for (index, octet) in address.octets().into_iter().enumerate() {
+            let mask = if index < 4 {
+                STUN_MAGIC_COOKIE.to_be_bytes()[index]
+            } else {
+                transaction_id[index - 4]
+            };
+            value.push(octet ^ mask);
+        }
+        value
+    }
+
+    // oracle: spec RFC 8489 §14.2
     #[test]
     fn decodes_xor_mapped_ipv4_address() {
         let response = binding_response(
@@ -258,6 +278,7 @@ mod tests {
         );
     }
 
+    // oracle: spec RFC 8489 §14.1
     #[test]
     fn decodes_mapped_ipv4_address_when_xor_attribute_is_absent() {
         let response = binding_response(MAPPED_ADDRESS, &[0, 1, 0x13, 0x88, 192, 0, 2, 1], TRANSACTION_ID);
@@ -268,20 +289,11 @@ mod tests {
         );
     }
 
+    // oracle: spec RFC 8489 §14.2
     #[test]
     fn decodes_xor_mapped_ipv6_address() {
         let address = Ipv6Addr::new(0x2001, 0xdb8, 0x1234, 0x5678, 0x9abc, 0xdef0, 0x1122, 0x3344);
-        let mut value = vec![0, 2];
-        let port_mask = xor_port_mask(STUN_MAGIC_COOKIE);
-        value.extend_from_slice(&(49_152u16 ^ port_mask).to_be_bytes());
-        for (index, octet) in address.octets().into_iter().enumerate() {
-            let mask = if index < 4 {
-                STUN_MAGIC_COOKIE.to_be_bytes()[index]
-            } else {
-                TRANSACTION_ID[index - 4]
-            };
-            value.push(octet ^ mask);
-        }
+        let value = xor_mapped_v6(address, 49_152, TRANSACTION_ID);
         let response = binding_response(XOR_MAPPED_ADDRESS, &value, TRANSACTION_ID);
 
         assert_eq!(
@@ -290,6 +302,7 @@ mod tests {
         );
     }
 
+    // oracle: spec RFC 8489 §14.2
     #[test]
     fn prefers_xor_mapped_address_over_mapped_address() {
         let fallback = [0, 1, 0x13, 0x88, 192, 0, 2, 1];
@@ -310,6 +323,7 @@ mod tests {
         );
     }
 
+    // oracle: spec RFC 8489 §5
     #[test]
     fn rejects_truncated_attributes_and_mismatched_transaction_ids() {
         let valid = binding_response(
@@ -383,6 +397,53 @@ mod tests {
         );
     }
 
+    // oracle: property round-trip
+    proptest! {
+        #[test]
+        fn roundtrips_xor_mapped_socket_addresses(
+            is_v6 in any::<bool>(),
+            octets in any::<[u8; 16]>(),
+            port in any::<u16>(),
+            transaction_id in any::<[u8; 12]>(),
+        ) {
+            let expected = if is_v6 {
+                let address = Ipv6Addr::from(octets);
+                let value = xor_mapped_v6(address, port, transaction_id);
+                let response = binding_response(XOR_MAPPED_ADDRESS, &value, transaction_id);
+                let decoded = parse_binding_success_response(&response, transaction_id)
+                    .expect("valid IPv6 XOR-MAPPED-ADDRESS response");
+                prop_assert_eq!(decoded, SocketAddr::new(address.into(), port));
+                decoded
+            } else {
+                let address = Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
+                let value = xor_mapped_v4(address, port);
+                let response = binding_response(XOR_MAPPED_ADDRESS, &value, transaction_id);
+                let decoded = parse_binding_success_response(&response, transaction_id)
+                    .expect("valid IPv4 XOR-MAPPED-ADDRESS response");
+                prop_assert_eq!(decoded, SocketAddr::new(address.into(), port));
+                decoded
+            };
+            prop_assert_eq!(expected.port(), port);
+        }
+    }
+
+    // oracle: spec RFC 8489 §5
+    proptest! {
+        #[test]
+        fn rejects_arbitrary_malformed_packets_without_panicking(
+            bytes in prop::collection::vec(any::<u8>(), 0..=256),
+            transaction_id in any::<[u8; 12]>(),
+        ) {
+            if let Ok(_address) = parse_binding_success_response(&bytes, transaction_id) {
+                prop_assert!(STUN_HEADER_LENGTH <= bytes.len());
+                prop_assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), BINDING_SUCCESS_RESPONSE);
+                prop_assert_eq!(u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), STUN_MAGIC_COOKIE);
+                prop_assert_eq!(&bytes[8..STUN_HEADER_LENGTH], &transaction_id);
+            }
+        }
+    }
+
+    // oracle: spec RFC 8489 §6.3
     #[tokio::test]
     async fn binding_probe_uses_the_supplied_socket_and_transaction_id() {
         let server = UdpSocket::bind("127.0.0.1:0").await.expect("bind STUN server");

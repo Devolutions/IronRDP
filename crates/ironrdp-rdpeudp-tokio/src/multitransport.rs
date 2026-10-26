@@ -108,28 +108,7 @@ impl MultitransportBootstrap {
         connection_config: ConnectionConfig,
         tls_config: UdpTlsConfig,
     ) -> Result<(), UdpTransportError> {
-        // This driver only implements the reliable transport (RDPEUDP2 + TLS).
-        // UdpFecL (lossy RDPEUDP + DTLS) is a distinct wire protocol this crate
-        // does not speak; connecting the reliable stack anyway and reporting
-        // S_OK would tell the server a different transport succeeded than the
-        // one it asked for, so reject it before attempting a connection.
-        if self.request.requested_protocol != RequestedProtocol::UdpFecR {
-            debug!(
-                request_id = self.request.request_id,
-                requested_protocol = ?self.request.requested_protocol,
-                "Declined multitransport request for an unsupported protocol"
-            );
-            self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
-            return Err(UdpTransportError::unsupported_protocol(
-                "multitransport connect",
-                self.request.requested_protocol,
-            ));
-        }
-
-        let tunnel_config = TunnelConfig {
-            request_id: self.request.request_id,
-            security_cookie: self.request.security_cookie,
-        };
+        let tunnel_config = self.prepare_tunnel_config()?;
         let mut config = UdpTransportConfig::new(server_addr, server_name, tunnel_config);
         config.connection_config = connection_config;
         config.tls = tls_config;
@@ -140,32 +119,19 @@ impl MultitransportBootstrap {
             "Starting multitransport UDP connection"
         );
 
-        match connect_udp(config).await {
-            Ok(transport) => {
-                debug!(
-                    request_id = self.request.request_id,
-                    "Multitransport UDP connection succeeded"
-                );
-                self.transport = Some(transport);
-                self.response = Some(MultitransportResponsePdu::success(self.request.request_id));
-                Ok(())
-            }
-            Err(e) => {
-                debug!(
-                    request_id = self.request.request_id,
-                    error = %e,
-                    "Multitransport UDP connection failed"
-                );
-                // A stale transport from an earlier successful call must not
-                // survive a failed reconnect: the response below tells the
-                // server the connection is down, so is_connected() and
-                // take_transport() must agree, not keep handing out a
-                // transport the server was just told doesn't exist.
-                self.transport = None;
-                self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
-                Err(e)
-            }
+        let result = connect_udp(config).await;
+        match &result {
+            Ok(_) => debug!(
+                request_id = self.request.request_id,
+                "Multitransport UDP connection succeeded"
+            ),
+            Err(error) => debug!(
+                request_id = self.request.request_id,
+                %error,
+                "Multitransport UDP connection failed"
+            ),
         }
+        self.finish_connect(result)
     }
 
     /// Attempt multitransport over an ICE-nominated UDP path.
@@ -186,46 +152,67 @@ impl MultitransportBootstrap {
         role: IceRole,
         timeout: Duration,
     ) -> Result<(), IceTransportError> {
-        // The direct path accepts only reliable RDP-UDP2 + TLS.
-        if self.request.requested_protocol != RequestedProtocol::UdpFecR {
-            debug!(
-                request_id = self.request.request_id,
-                requested_protocol = ?self.request.requested_protocol,
-                "Declined ICE multitransport request for an unsupported protocol"
-            );
-            self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
-            return Err(IceTransportError::Transport(UdpTransportError::unsupported_protocol(
-                "multitransport connect",
-                self.request.requested_protocol,
-            )));
-        }
-
-        config.tunnel_config = TunnelConfig {
-            request_id: self.request.request_id,
-            security_cookie: self.request.security_cookie,
-        };
+        config.tunnel_config = self.prepare_tunnel_config().map_err(IceTransportError::Transport)?;
         debug!(
             request_id = self.request.request_id,
             peer = %config.server_addr,
             "Starting ICE multitransport UDP connection"
         );
 
-        match connect_udp_with_ice(config, local, remote, role, timeout).await {
+        let result = connect_udp_with_ice(config, local, remote, role, timeout).await;
+        match &result {
+            Ok(_) => debug!(
+                request_id = self.request.request_id,
+                "ICE multitransport UDP connection succeeded"
+            ),
+            Err(error) => debug!(
+                request_id = self.request.request_id,
+                %error,
+                "ICE multitransport UDP connection failed"
+            ),
+        }
+        self.finish_connect(result)
+    }
+
+    fn prepare_tunnel_config(&mut self) -> Result<TunnelConfig, UdpTransportError> {
+        // This driver only implements the reliable transport (RDPEUDP2 + TLS).
+        // UdpFecL (lossy RDPEUDP + DTLS) is a distinct wire protocol this crate
+        // does not speak; connecting the reliable stack anyway and reporting
+        // S_OK would tell the server a different transport succeeded than the
+        // one it asked for, so reject it before attempting a connection.
+        if self.request.requested_protocol != RequestedProtocol::UdpFecR {
+            debug!(
+                request_id = self.request.request_id,
+                requested_protocol = ?self.request.requested_protocol,
+                "Declined multitransport request for an unsupported protocol"
+            );
+            self.transport = None;
+            self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
+            return Err(UdpTransportError::unsupported_protocol(
+                "multitransport connect",
+                self.request.requested_protocol,
+            ));
+        }
+
+        Ok(TunnelConfig {
+            request_id: self.request.request_id,
+            security_cookie: self.request.security_cookie,
+        })
+    }
+
+    fn finish_connect<E>(&mut self, result: Result<UdpTransport, E>) -> Result<(), E> {
+        match result {
             Ok(transport) => {
-                debug!(
-                    request_id = self.request.request_id,
-                    "ICE multitransport UDP connection succeeded"
-                );
                 self.transport = Some(transport);
                 self.response = Some(MultitransportResponsePdu::success(self.request.request_id));
                 Ok(())
             }
             Err(error) => {
-                debug!(
-                    request_id = self.request.request_id,
-                    %error,
-                    "ICE multitransport UDP connection failed"
-                );
+                // A stale transport from an earlier successful call must not
+                // survive a failed reconnect: the response below tells the
+                // server the connection is down, so is_connected() and
+                // take_transport() must agree, not keep handing out a
+                // transport the server was just told doesn't exist.
                 self.transport = None;
                 self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
                 Err(error)

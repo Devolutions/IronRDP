@@ -1,9 +1,6 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![forbid(unsafe_code)]
 
-#[cfg(test)]
-use {rcgen as _, turn as _};
-
 pub mod error;
 pub mod framed;
 #[cfg(feature = "ice")]
@@ -29,3 +26,6 @@ pub use self::transport::{
     TunnelMessage, UdpAcceptConfig, UdpTlsConfig, UdpTransport, UdpTransportConfig, UdpTransportSender, accept_udp,
     connect_udp, connect_udp_with_socket,
 };
+
+#[cfg(test)]
+use {rcgen as _, rstest as _, turn as _};
