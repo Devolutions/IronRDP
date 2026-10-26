@@ -1,6 +1,7 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
 use core::net::SocketAddr;
+use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::path::Path;
@@ -1754,6 +1755,190 @@ async fn egfx_moves_onto_the_udp_tunnel_with_soft_sync() {
             tokio::try_join!(server, client).expect("join");
         })
         .await;
+}
+
+/// The client's core Frame Acknowledge capability (MS-RDPRFX 2.2.1.3) is defined
+/// for surface-command frames; by default it does not cap the EGFX window, at
+/// activation or after a reactivation.
+// oracle: spec MS-RDPRFX §2.2.1.3 (TS_FRAME_ACKNOWLEDGE_CAPABILITYSET is for TS_FRAME_ACKNOWLEDGE_PDU)
+// oracle: spec MS-RDPEGFX §2.2.2.13 (EGFX frames are acknowledged with RDPGFX_FRAME_ACKNOWLEDGE_PDU)
+// oracle: regression #2237
+#[tokio::test]
+async fn core_frame_ack_capability_does_not_cap_the_egfx_window_by_default() {
+    assert_eq!(Box::pin(egfx_windows(None)).await, (30, 30));
+}
+
+// oracle: reference crates/ironrdp-connector/src/connection_activation.rs (max_unacknowledged_frame_count 20, FIXME(#447))
+// oracle: mutant the option to apply the core Frame Acknowledge capability to EGFX has no effect, or is not applied again after a reactivation
+#[tokio::test]
+async fn core_frame_ack_capability_caps_the_egfx_window_when_enabled() {
+    // The IronRDP client advertises maxUnacknowledgedFrameCount 20 with a bitmap
+    // codec: `ironrdp-connector` `connection_activation.rs`, a temporary value
+    // under FIXME(#447). Update this test when that value changes.
+    assert_eq!(Box::pin(egfx_windows(Some(true))).await, (20, 20));
+}
+
+/// Connects a client that advertises EGFX and a bitmap codec to a server whose
+/// EGFX window is 30, and returns the window once the EGFX channel is created,
+/// then again after a Deactivation-Reactivation Sequence (a display resize).
+/// Before the reactivation the window is set to a stale value, so the second
+/// result shows what the reactivation applied. `core_frame_ack_limit` is passed
+/// to the builder when given; `None` keeps the library default.
+async fn egfx_windows(core_frame_ack_limit: Option<bool>) -> (u32, u32) {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let handles = Arc::new(StdMutex::new(Vec::new()));
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let builder = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .with_gfx_factory(Some(Box::new(WindowGfxFactory {
+            handles: Arc::clone(&handles),
+        })));
+    let mut server = match core_frame_ack_limit {
+        Some(enabled) => builder.with_egfx_core_frame_ack_limit(enabled),
+        None => builder,
+    }
+    .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let client_config = connector::Config {
+        support_dyn_vc_gfx_protocol: true,
+        bitmap: Some(connector::BitmapConfig {
+            lossy_compression: true,
+            color_depth: 32,
+            codecs: pdu::rdp::capability_sets::client_codecs_capabilities(&["remotefx:on"]).expect("codecs"),
+        }),
+        ..default_client_config()
+    };
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(Box::pin(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+
+            let server_addr = local_addr_of(&ev).await;
+            let egfx = TestEgfxClient::default();
+            let egfx_channel = Arc::clone(&egfx.channel_id);
+            let (mut framed, connection_result) = connect_client(server_addr, |client_addr| {
+                connector::ClientConnector::new(client_config, client_addr)
+                    .with_static_channel(DrdynvcClient::new().with_dynamic_channel(egfx))
+            })
+            .await;
+            let activation_factory = connection_result.activation_factory;
+            let mut stage = ActiveStageBuilder {
+                static_channels: connection_result.static_channels,
+                user_channel_id: connection_result.user_channel_id,
+                io_channel_id: connection_result.io_channel_id,
+                message_channel_id: connection_result.message_channel_id,
+                share_id: connection_result.share_id,
+                compression_type: connection_result.compression_type,
+                enable_server_pointer: connection_result.enable_server_pointer,
+                pointer_software_rendering: connection_result.pointer_software_rendering,
+            }
+            .build();
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+            // The server applies the window at activation, before it creates the
+            // EGFX channel.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while egfx_channel.lock().unwrap().is_none() {
+                assert!(Instant::now() < deadline, "the server did not create the EGFX channel");
+                let Ok(read) = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await else {
+                    continue;
+                };
+                let (action, frame) = read.expect("read PDU");
+                for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
+                    if let ActiveStageOutput::ResponseFrame(frame) = output {
+                        framed.write_all(&frame).await.expect("write response frame");
+                    }
+                }
+            }
+
+            let pipeline = || Arc::clone(handles.lock().unwrap().last().expect("an EGFX pipeline"));
+            let first = pipeline().lock().unwrap().max_frames_in_flight();
+
+            pipeline()
+                .lock()
+                .unwrap()
+                .set_client_frame_ack_limit(NonZeroU32::new(1));
+            display_tx
+                .send(DisplayUpdate::Resize(DesktopSize {
+                    width: 2048,
+                    height: 2048,
+                }))
+                .unwrap();
+            'deactivated: loop {
+                let (action, frame) = tokio::time::timeout(Duration::from_secs(10), framed.read_pdu())
+                    .await
+                    .expect("the server deactivated the session")
+                    .expect("read PDU");
+                for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
+                    match output {
+                        ActiveStageOutput::ResponseFrame(frame) => {
+                            framed.write_all(&frame).await.expect("write response frame");
+                        }
+                        ActiveStageOutput::DeactivateAll => break 'deactivated,
+                        _ => {}
+                    }
+                }
+            }
+            run_reactivation(&mut stage, &activation_factory, &mut framed).await;
+
+            // The server applies the window when it accepts the reactivated
+            // client, after the client's side of the sequence completes.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut second = pipeline().lock().unwrap().max_frames_in_flight();
+            while second != first && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                second = pipeline().lock().unwrap().max_frames_in_flight();
+            }
+
+            drop(framed);
+            server_task.abort();
+            (first, second)
+        }))
+        .await
+}
+
+/// EGFX factory that keeps each pipeline it builds, with a window of 30 frames.
+struct WindowGfxFactory {
+    handles: Arc<StdMutex<Vec<ironrdp_server::GfxServerHandle>>>,
+}
+
+impl ServerEventSender for WindowGfxFactory {
+    fn set_sender(&mut self, _sender: UnboundedSender<ServerEvent>) {}
+}
+
+impl GfxServerFactory for WindowGfxFactory {
+    fn build_gfx_handler(&self) -> Box<dyn ironrdp_egfx::server::GraphicsPipelineHandler> {
+        Box::new(TestGfxHandler {
+            caps_tx: mpsc::unbounded_channel().0,
+        })
+    }
+
+    fn build_server_with_handle(&self) -> Option<(ironrdp_server::GfxDvcBridge, ironrdp_server::GfxServerHandle)> {
+        let mut server = ironrdp_egfx::server::GraphicsPipelineServer::new(self.build_gfx_handler());
+        server.set_max_frames_in_flight(30);
+        let handle = Arc::new(StdMutex::new(server));
+        self.handles.lock().unwrap().push(Arc::clone(&handle));
+        Some((ironrdp_server::GfxDvcBridge::new(Arc::clone(&handle)), handle))
+    }
 }
 
 /// Server EGFX handler that reports the client's advertised capabilities.
