@@ -1219,6 +1219,17 @@ impl core::fmt::Display for ProgressiveDecodeError {
     }
 }
 
+impl core::error::Error for ProgressiveDecodeError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Pdu(e) => Some(e),
+            Self::Rlgr(e) => Some(e),
+            Self::Srl(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 impl From<ironrdp_core::DecodeError> for ProgressiveDecodeError {
     fn from(e: ironrdp_core::DecodeError) -> Self {
         Self::Pdu(e)
@@ -1546,6 +1557,21 @@ impl ProgressiveDecoder {
         self.frame_tiles
             .retain(|(context_surface_id, _), _| *context_surface_id != surface_id);
         self.surface_context_flags.remove(&surface_id);
+    }
+
+    /// Total retained difference-tile coefficient buffers across all surfaces.
+    #[must_use]
+    pub fn total_reference_count(&self) -> usize {
+        self.references.len()
+    }
+
+    /// Drop every surface's difference-tile coefficient buffers.
+    ///
+    /// `ResetGraphics` implicitly destroys all surfaces (MS-RDPEGFX 2.2.2.14)
+    /// but does not re-negotiate progressive CONTEXT. Tile references belong
+    /// to the destroyed surfaces; CONTEXT does not.
+    pub fn clear_tile_references(&mut self) {
+        self.references.clear();
     }
 
     /// Reset codec-context state while retaining surface sub-band references.
@@ -2095,6 +2121,32 @@ mod tests {
                 &mut sign,
             ),
             Err(SrlError::InvalidBitCount(16))
+        );
+    }
+
+    #[test]
+    fn upgrade_pass_completes_when_the_srl_stream_ends_early() {
+        let mut coefficients = [0i16; COEFFICIENTS_PER_COMPONENT];
+        let mut sign = [SIGN_POSITIVE; COEFFICIENTS_PER_COMPONENT];
+        sign[0] = SIGN_ZERO;
+
+        let mut prev_prog_quant = ComponentCodecQuant::LOSSLESS;
+        prev_prog_quant.hl1 = 4;
+
+        // Windows stops emitting once the remaining coefficients are all zero, so the SRL
+        // stream is shorter than the band's coefficient count. This used to drop the whole
+        // tile update, which on screen is a block that never refreshes.
+        assert_eq!(
+            decode_upgrade_pass(
+                &[0x80, 0x00],
+                &[],
+                &prev_prog_quant,
+                &ComponentCodecQuant::LOSSLESS,
+                false,
+                &mut coefficients,
+                &mut sign,
+            ),
+            Ok(())
         );
     }
 

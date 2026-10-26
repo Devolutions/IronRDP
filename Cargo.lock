@@ -3509,6 +3509,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-stress"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "ironrdp",
+ "ironrdp-blocking",
+ "ironrdp-displaycontrol",
+ "ironrdp-dvc",
+ "ironrdp-egfx",
+ "ironrdp-pdu",
+ "pico-args",
+ "rand 0.9.5",
+ "sspi",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "x509-cert",
+]
+
+[[package]]
 name = "ironrdp-svc"
 version = "0.9.0"
 dependencies = [
@@ -3718,6 +3739,7 @@ dependencies = [
  "ironrdp",
  "ironrdp-cliprdr-format",
  "ironrdp-core 0.3.0",
+ "ironrdp-egfx",
  "ironrdp-futures",
  "ironrdp-pdu",
  "ironrdp-propertyset",
