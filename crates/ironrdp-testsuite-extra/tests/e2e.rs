@@ -2498,7 +2498,9 @@ async fn hooks_reaching_handler_under(policy: server::ConnectionPolicy) -> (bool
         .await
 }
 
-// oracle: spec MS-RDPBCGR §2.2.8.1.1.3.1.1.3 (PTRFLAGS_HWHEEL MUST NOT be sent to a server that does not set TS_INPUT_FLAG_MOUSE_HWHEEL)
+// A client must not send PTRFLAGS_HWHEEL to a server that does not set TS_INPUT_FLAG_MOUSE_HWHEEL.
+// oracle: spec MS-RDPBCGR §2.2.8.1.1.3.1.1.3
+// oracle: regression #2235
 #[tokio::test]
 async fn server_advertises_horizontal_mouse_wheel_input() {
     let (mut server, _counts, _display_tx) = hook_recording_server(server::ConnectionPolicy::Queue);
