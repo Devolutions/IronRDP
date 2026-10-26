@@ -1,8 +1,9 @@
-#![cfg(target_arch = "wasm32")]
+// Keep this before cfg so native builds retain the lint expectation for the empty crate.
 #![expect(
     unused_crate_dependencies,
     reason = "only production canvas and image modules are under test"
 )]
+#![cfg(target_arch = "wasm32")]
 
 use core::num::NonZeroU32;
 
