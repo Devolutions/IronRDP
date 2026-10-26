@@ -3093,6 +3093,7 @@ dependencies = [
  "ironrdp-pdu",
  "num-derive 0.5.1",
  "num-traits",
+ "visibility",
  "wide 0.7.33",
  "yuv",
 ]
