@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 #[cfg(test)]
-use rcgen as _;
+use {rcgen as _, turn as _};
 
 pub mod error;
 pub mod framed;

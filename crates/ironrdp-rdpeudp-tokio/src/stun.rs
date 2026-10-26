@@ -144,22 +144,23 @@ fn parse_binding_success_response(bytes: &[u8], transaction_id: [u8; 12]) -> Res
 
         match attribute_type {
             MAPPED_ADDRESS => {
-                if mapped_address.is_some() {
-                    return Err(StunError::InvalidResponse("duplicate MAPPED-ADDRESS attribute"));
+                if mapped_address.is_none() {
+                    mapped_address = Some(decode_address(&bytes[value_start..value_end], None, transaction_id)?);
                 }
-                mapped_address = Some(decode_address(&bytes[value_start..value_end], None, transaction_id)?);
             }
             XOR_MAPPED_ADDRESS => {
-                if xor_mapped_address.is_some() {
-                    return Err(StunError::InvalidResponse("duplicate XOR-MAPPED-ADDRESS attribute"));
+                if xor_mapped_address.is_none() {
+                    xor_mapped_address = Some(decode_address(
+                        &bytes[value_start..value_end],
+                        Some(STUN_MAGIC_COOKIE),
+                        transaction_id,
+                    )?);
                 }
-                xor_mapped_address = Some(decode_address(
-                    &bytes[value_start..value_end],
-                    Some(STUN_MAGIC_COOKIE),
-                    transaction_id,
-                )?);
             }
-            _ => {}
+            0x0000..=0x7FFF => {
+                return Err(StunError::InvalidResponse("unknown comprehension-required attribute"));
+            }
+            0x8000..=0xFFFF => {}
         }
     }
 
@@ -169,7 +170,7 @@ fn parse_binding_success_response(bytes: &[u8], transaction_id: [u8; 12]) -> Res
 }
 
 fn decode_address(value: &[u8], xor_cookie: Option<u32>, transaction_id: [u8; 12]) -> Result<SocketAddr, StunError> {
-    if value.len() < 4 || value[0] != 0 {
+    if value.len() < 4 {
         return Err(StunError::InvalidResponse("address attribute header is invalid"));
     }
 
@@ -318,6 +319,68 @@ mod tests {
         );
         assert!(parse_binding_success_response(&valid[..valid.len() - 1], TRANSACTION_ID).is_err());
         assert!(parse_binding_success_response(&valid, [0; 12]).is_err());
+    }
+
+    // oracle: spec RFC 8489 §14
+    #[test]
+    fn retains_first_address_and_ignores_duplicate_attributes() {
+        let first = xor_mapped_v4(Ipv4Addr::new(203, 0, 113, 10), 49_152);
+        let second = xor_mapped_v4(Ipv4Addr::new(192, 0, 2, 99), 5000);
+        let mut response = binding_response(XOR_MAPPED_ADDRESS, &first, TRANSACTION_ID);
+        response.extend_from_slice(&XOR_MAPPED_ADDRESS.to_be_bytes());
+        let second_length = u16::try_from(second.len()).expect("test attribute length fits in the STUN field");
+        response.extend_from_slice(&second_length.to_be_bytes());
+        response.extend_from_slice(&second);
+        let body_length =
+            u16::try_from(response.len() - STUN_HEADER_LENGTH).expect("test message length fits in the STUN field");
+        response[2..4].copy_from_slice(&body_length.to_be_bytes());
+
+        assert_eq!(
+            parse_binding_success_response(&response, TRANSACTION_ID).expect("valid STUN response"),
+            "203.0.113.10:49152".parse().expect("valid socket address")
+        );
+    }
+
+    // oracle: spec RFC 8489 §6.3.3
+    #[test]
+    fn rejects_unknown_comprehension_required_attributes_and_ignores_optional_ones() {
+        let mapped = xor_mapped_v4(Ipv4Addr::new(203, 0, 113, 10), 49_152);
+        let mut with_optional = binding_response(0x8022, b"test", TRANSACTION_ID);
+        with_optional.extend_from_slice(&XOR_MAPPED_ADDRESS.to_be_bytes());
+        let mapped_length = u16::try_from(mapped.len()).expect("test attribute length fits in the STUN field");
+        with_optional.extend_from_slice(&mapped_length.to_be_bytes());
+        with_optional.extend_from_slice(&mapped);
+        let optional_body_length = u16::try_from(with_optional.len() - STUN_HEADER_LENGTH)
+            .expect("test message length fits in the STUN field");
+        with_optional[2..4].copy_from_slice(&optional_body_length.to_be_bytes());
+
+        assert_eq!(
+            parse_binding_success_response(&with_optional, TRANSACTION_ID).expect("valid STUN response"),
+            "203.0.113.10:49152".parse().expect("valid socket address")
+        );
+
+        let mut with_required = binding_response(0x7FFF, b"test", TRANSACTION_ID);
+        with_required.extend_from_slice(&XOR_MAPPED_ADDRESS.to_be_bytes());
+        with_required.extend_from_slice(&mapped_length.to_be_bytes());
+        with_required.extend_from_slice(&mapped);
+        let required_body_length = u16::try_from(with_required.len() - STUN_HEADER_LENGTH)
+            .expect("test message length fits in the STUN field");
+        with_required[2..4].copy_from_slice(&required_body_length.to_be_bytes());
+
+        assert!(parse_binding_success_response(&with_required, TRANSACTION_ID).is_err());
+    }
+
+    // oracle: spec RFC 8489 §14.1
+    #[test]
+    fn ignores_nonzero_reserved_byte_in_address_attribute() {
+        let mut value = xor_mapped_v4(Ipv4Addr::new(203, 0, 113, 10), 49_152);
+        value[0] = 0xFF;
+        let response = binding_response(XOR_MAPPED_ADDRESS, &value, TRANSACTION_ID);
+
+        assert_eq!(
+            parse_binding_success_response(&response, TRANSACTION_ID).expect("valid STUN response"),
+            "203.0.113.10:49152".parse().expect("valid socket address")
+        );
     }
 
     #[tokio::test]
