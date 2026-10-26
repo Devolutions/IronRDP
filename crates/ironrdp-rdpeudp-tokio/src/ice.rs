@@ -8,7 +8,7 @@
 
 use core::error::Error;
 use core::fmt;
-use core::net::SocketAddr;
+use core::net::{IpAddr, Ipv6Addr, SocketAddr};
 use core::time::Duration;
 use std::io;
 use std::sync::Arc;
@@ -323,6 +323,9 @@ pub async fn connect_udp_with_ice(
     let (io, agent) = connect_ice_candidates(local, remote, role, timeout).await?;
     let peer = io.peer_addr().ok_or(IceTransportError::NoSelectedCandidatePair)?;
     let mut config = config;
+    if config.tls.certificate_validation_endpoint == config.server_addr.to_string() {
+        config.tls.certificate_validation_endpoint = peer.to_string();
+    }
     config.server_addr = peer;
     let mut transport = connect_udp_with_datagram_io(config, io)
         .await
@@ -345,11 +348,8 @@ pub async fn accept_udp_with_ice(
     validate_timeout(config.accept_timeout)
         .map_err(|_| IceTransportError::InvalidConfiguration("accept timeout must be between 1 ms and 120 s"))?;
     let accept_timeout = config.accept_timeout;
-    let deadline = Instant::now() + accept_timeout;
-    let (io, agent) = tokio::time::timeout_at(deadline, connect_ice_candidates(local, remote, role, timeout))
-        .await
-        .map_err(|_| IceTransportError::ConnectivityTimeout)??;
-    let mut transport = tokio::time::timeout_at(deadline, accept_udp_with_datagram_io(io, config))
+    let (io, agent) = connect_ice_candidates(local, remote, role, timeout).await?;
+    let mut transport = tokio::time::timeout(accept_timeout, accept_udp_with_datagram_io(io, config))
         .await
         .map_err(|_| IceTransportError::Transport(crate::UdpTransportError::handshake_timeout("accept udp with ice")))?
         .map_err(IceTransportError::Transport)?;
@@ -387,6 +387,11 @@ async fn connect_ice_candidates(
         if !candidate.network_type().is_udp() || candidate.component() != 1 {
             return Err(IceTransportError::InvalidConfiguration(
                 "RDPEUDP2 requires UDP candidates for component 1",
+            ));
+        }
+        if candidate.address().parse::<IpAddr>().is_err() {
+            return Err(IceTransportError::InvalidConfiguration(
+                "remote ICE candidate address must be an IP literal",
             ));
         }
         let candidate: Arc<dyn Candidate + Send + Sync> = Arc::new(candidate);
@@ -529,6 +534,11 @@ fn parse_ice_server(server: IceServerConfig) -> Result<Url, IceTransportError> {
     match url.scheme {
         SchemeType::Stun if server.username.is_none() && server.password.is_none() => {}
         SchemeType::Turn if url.proto == ProtoType::Udp => {
+            if url.host.parse::<Ipv6Addr>().is_ok() {
+                return Err(IceTransportError::InvalidConfiguration(
+                    "IPv6 TURN server URLs are not supported",
+                ));
+            }
             let (Some(username), Some(password)) = (server.username, server.password) else {
                 return Err(IceTransportError::InvalidConfiguration(
                     "UDP TURN servers require a username and credential",
@@ -627,6 +637,7 @@ mod tests {
     #[case::turns_scheme(IceServerConfig::stun("turns:turn.example.net:5349"))]
     #[case::turn_without_credentials(IceServerConfig::stun("turn:turn.example.net:3478"))]
     #[case::turn_over_tcp(IceServerConfig::turn("turn:turn.example.net:3478?transport=tcp", "user", "credential"))]
+    #[case::ipv6_turn_host(IceServerConfig::turn("turn:[2001:db8::1]:3478?transport=udp", "user", "credential"))]
     fn rejects_unsupported_ice_server_url(#[case] server: IceServerConfig) {
         assert!(parse_ice_server(server).is_err());
     }

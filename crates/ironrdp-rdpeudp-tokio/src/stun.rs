@@ -94,6 +94,9 @@ pub async fn query_server_reflexive_address(
             if source != stun_server || length < STUN_HEADER_LENGTH {
                 continue;
             }
+            if response[0] & 0b1100_0000 != 0 || response[4..8] != STUN_MAGIC_COOKIE.to_be_bytes() {
+                continue;
+            }
             if response[8..STUN_HEADER_LENGTH] != transaction_id {
                 continue;
             }
@@ -108,6 +111,9 @@ pub async fn query_server_reflexive_address(
 fn parse_binding_success_response(bytes: &[u8], transaction_id: [u8; 12]) -> Result<SocketAddr, StunError> {
     if bytes.len() < STUN_HEADER_LENGTH {
         return Err(StunError::InvalidResponse("header is truncated"));
+    }
+    if bytes[0] & 0b1100_0000 != 0 {
+        return Err(StunError::InvalidResponse("STUN header bits are invalid"));
     }
     if u16::from_be_bytes([bytes[0], bytes[1]]) != BINDING_SUCCESS_RESPONSE {
         return Err(StunError::InvalidResponse("message is not a Binding success response"));
