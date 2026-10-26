@@ -677,7 +677,7 @@ ironrdp-svc = { path = "../ironrdp-svc", version = "0.9" } # public
 
     // oracle: mutant keeping tags of crates outside the workspace or with versions that do not parse
     #[test]
-    fn foreign_and_unparseable_tags_are_ignored() {
+    fn foreign_and_unparsable_tags_are_ignored() {
         let names = BTreeSet::from(["ironrdp-pdu"]);
         let tags = "other-crate-v1.0.0\nironrdp-pdu-v0.10.0-rc.1\n";
 
