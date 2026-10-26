@@ -12,12 +12,16 @@
 //! `MultitransportBootstrap` owns the sideband connection attempt between those connector steps.
 
 use core::net::SocketAddr;
+#[cfg(feature = "ice")]
+use core::time::Duration;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_rdpemt::{RdpemtError, RdpemtErrorExt as _, TunnelConfig};
 use ironrdp_rdpeudp::ConnectionConfig;
 use tracing::debug;
 
 use crate::error::{UdpTransportError, UdpTransportErrorExt as _};
+#[cfg(feature = "ice")]
+use crate::ice::{IceGatheredCandidates, IceRole, IceTransportError, RemoteIceDescription, connect_udp_with_ice};
 use crate::transport::{UdpTlsConfig, UdpTransport, UdpTransportConfig, connect_udp};
 
 /// Orchestrates the multitransport connection sequence.
@@ -164,6 +168,71 @@ impl MultitransportBootstrap {
         }
     }
 
+    /// Attempt multitransport over an ICE-nominated UDP path.
+    ///
+    /// The caller supplies candidates and credentials through its own signaling mechanism.
+    /// On success, this stores the tunnel and prepares an `S_OK` response; on failure, it prepares `E_ABORT`.
+    /// `config.tunnel_config` is replaced with the request ID and security cookie from this bootstrap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IceTransportError::Transport`] for RDPEUDP2, TLS, or RDPEMT failures, and another `IceTransportError` variant for ICE failures or invalid inputs.
+    #[cfg(feature = "ice")]
+    pub async fn connect_with_ice(
+        &mut self,
+        mut config: UdpTransportConfig,
+        local: IceGatheredCandidates,
+        remote: RemoteIceDescription,
+        role: IceRole,
+        timeout: Duration,
+    ) -> Result<(), IceTransportError> {
+        // The direct path accepts only reliable RDP-UDP2 + TLS.
+        if self.request.requested_protocol != RequestedProtocol::UdpFecR {
+            debug!(
+                request_id = self.request.request_id,
+                requested_protocol = ?self.request.requested_protocol,
+                "Declined ICE multitransport request for an unsupported protocol"
+            );
+            self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
+            return Err(IceTransportError::Transport(UdpTransportError::unsupported_protocol(
+                "multitransport connect",
+                self.request.requested_protocol,
+            )));
+        }
+
+        config.tunnel_config = TunnelConfig {
+            request_id: self.request.request_id,
+            security_cookie: self.request.security_cookie,
+        };
+        debug!(
+            request_id = self.request.request_id,
+            peer = %config.server_addr,
+            "Starting ICE multitransport UDP connection"
+        );
+
+        match connect_udp_with_ice(config, local, remote, role, timeout).await {
+            Ok(transport) => {
+                debug!(
+                    request_id = self.request.request_id,
+                    "ICE multitransport UDP connection succeeded"
+                );
+                self.transport = Some(transport);
+                self.response = Some(MultitransportResponsePdu::success(self.request.request_id));
+                Ok(())
+            }
+            Err(error) => {
+                debug!(
+                    request_id = self.request.request_id,
+                    %error,
+                    "ICE multitransport UDP connection failed"
+                );
+                self.transport = None;
+                self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
+                Err(error)
+            }
+        }
+    }
+
     /// Get the response PDU bytes to send back on the TCP connection.
     ///
     /// Returns `None` if [`connect()`] hasn't been called yet.
@@ -201,6 +270,7 @@ impl MultitransportBootstrap {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "ice"))]
     use core::time::Duration;
 
     use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
