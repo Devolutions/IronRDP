@@ -17,6 +17,7 @@ const MAX_PAGE_BYTES: usize = 1024 * 1024;
 pub enum Error {
     InvalidInput(&'static str),
     InvalidContinuation,
+    TlsConfiguration(std::io::Error),
     Transport(reqwest::Error),
     HttpStatus(u16),
     ResponseTooLarge,
@@ -30,6 +31,7 @@ impl fmt::Display for Error {
         match self {
             Self::InvalidInput(field) => write!(f, "invalid {field}"),
             Self::InvalidContinuation => f.write_str("invalid Cloud PC continuation URL"),
+            Self::TlsConfiguration(_) => f.write_str("TLS client configuration failed"),
             Self::Transport(_) => f.write_str("Cloud PC service request failed"),
             Self::HttpStatus(status) => write!(f, "Cloud PC service returned HTTP {status}"),
             Self::ResponseTooLarge => f.write_str("Cloud PC response exceeds 1 MiB"),
@@ -43,6 +45,7 @@ impl fmt::Display for Error {
 impl core::error::Error for Error {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
+            Self::TlsConfiguration(error) => Some(error),
             Self::Transport(error) => Some(error),
             Self::InvalidResponse(error) => Some(error),
             _ => None,
@@ -163,16 +166,17 @@ pub struct CloudPcClient {
 
 impl CloudPcClient {
     pub fn new() -> Result<Self, Error> {
-        let http = Self::client_builder()
+        let http = Self::client_builder()?
             .build()
             .map_err(|error| Error::Transport(error.without_url()))?;
         Ok(Self { http })
     }
 
-    fn client_builder() -> reqwest::ClientBuilder {
-        reqwest::Client::builder()
+    fn client_builder() -> Result<reqwest::ClientBuilder, Error> {
+        Ok(crate::http_client_builder()
+            .map_err(Error::TlsConfiguration)?
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(30)))
     }
 
     /// List [Cloud PCs attributed to the signed-in user].
@@ -615,7 +619,7 @@ mod tests {
 
     fn test_client() -> CloudPcClient {
         CloudPcClient {
-            http: CloudPcClient::client_builder().no_proxy().build().unwrap(),
+            http: CloudPcClient::client_builder().unwrap().no_proxy().build().unwrap(),
         }
     }
 

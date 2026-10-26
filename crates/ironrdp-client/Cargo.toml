@@ -28,6 +28,7 @@ native-tls = [
     "ironrdp-tls/native-tls",
     "tokio-tungstenite/native-tls",
     "ironrdp-mstsgu?/native-tls",
+    "reqwest?/native-tls",
 ]
 
 sound = [
@@ -146,7 +147,7 @@ anyhow = "1"
 smallvec = "1.15"
 url = "2" # public
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots", "stream", "system-proxy"], optional = true } # public
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots-no-provider", "stream", "system-proxy"], optional = true } # public
 picky = { version = "=7.0.0-rc.26", optional = true }
 base64 = { version = "0.22", optional = true }
 rand = { version = "0.9", optional = true }

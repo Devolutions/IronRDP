@@ -24,6 +24,18 @@ pub mod rdp;
 #[cfg(feature = "video")]
 pub mod video;
 
+#[cfg(any(feature = "cloud", feature = "entra-auth"))]
+fn http_client_builder() -> std::io::Result<reqwest::ClientBuilder> {
+    let builder = reqwest::Client::builder();
+    #[cfg(feature = "rustls")]
+    let builder = builder.use_preconfigured_tls(ironrdp_tls::rustls_client_config(
+        ironrdp_tls::CertificateValidation::Strict,
+        "",
+        None,
+    )?);
+    Ok(builder)
+}
+
 /// USB device redirection backend (MS-RDPEUSB), re-exported for device selection.
 #[cfg(feature = "usb")]
 pub use ironrdp_rdpeusb_native as usb;

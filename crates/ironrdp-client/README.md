@@ -37,6 +37,8 @@ existing deployments. `ConfigBuilder` exposes an explicit
 `CertificateValidation::Strict` policy for callers that require platform-root and
 server-name validation.
 
+Cloud PC and Entra HTTP requests use platform-root validation and the client's selected TLS backend.
+
 The optional `camera` feature enables MS-RDPECAM camera redirection, selected with `ConfigBuilder::with_cameras` or the `camerastoredirect` `.rdp` property.
 Capture uses Media Foundation and is only available on Windows; cameras attached or removed during the session are advertised or withdrawn as they come and go.
 Raw camera frames are encoded to H.264 unless the camera produces H.264 or MJPEG itself or `CameraConfig::encode_video` is off.

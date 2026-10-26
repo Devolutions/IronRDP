@@ -119,7 +119,8 @@ impl EntraAuthorization {
             .append_pair("code_challenge", &code_challenge)
             .append_pair("code_challenge_method", "S256");
 
-        let http = reqwest::Client::builder()
+        let http = crate::http_client_builder()
+            .context("configure Entra HTTPS client")?
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(HTTP_TIMEOUT)
@@ -418,8 +419,9 @@ async fn authority_response_body(response: reqwest::Response) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
+
+    use super::*;
 
     #[test]
     fn builds_host_and_device_resource_uris_as_single_path_segments() {
@@ -446,7 +448,7 @@ mod tests {
         let auth = EntraAuthSession {
             access_token: Zeroizing::new("pop-access-token".to_owned()),
             expires_at: tokio::time::Instant::now() + Duration::from_secs(60),
-            http: reqwest::Client::new(),
+            http: crate::http_client_builder().unwrap().build().unwrap(),
             key,
             resource_uri: "ms-device-service://termsrv.wvd.microsoft.com/name/desktop.example.com/user_impersonation"
                 .to_owned(),
@@ -563,7 +565,7 @@ mod tests {
         let auth = Arc::new(EntraAuthSession {
             access_token: Zeroizing::new("test-pop-token".to_owned()),
             expires_at: tokio::time::Instant::now() + Duration::from_secs(60),
-            http: reqwest::Client::new(),
+            http: crate::http_client_builder().unwrap().build().unwrap(),
             key,
             resource_uri: RdpResource::HostName("desktop.example.com".to_owned())
                 .uri()
