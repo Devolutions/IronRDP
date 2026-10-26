@@ -40,8 +40,8 @@ const MAX_ICE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// STUN or UDP TURN server configuration.
 ///
-/// TURN credentials are supplied by the caller and are never included in
-/// debug output. Only UDP STUN and TURN URLs are accepted.
+/// TURN credentials are supplied by the caller and are never included in debug output.
+/// Only UDP STUN and TURN URLs are accepted.
 #[derive(Clone)]
 pub struct IceServerConfig {
     /// Server URL, such as `stun:stun.example.net:3478` or `turn:turn.example.net:3478?transport=udp`.
@@ -120,9 +120,8 @@ impl fmt::Debug for IceCredentials {
 
 /// Gathered local candidates and credentials, ready for caller-defined signaling.
 ///
-/// This value owns the ICE agent and must be passed to [`connect_udp_with_ice`]
-/// or [`accept_udp_with_ice`] to establish a transport. Dropping it cancels the
-/// agent and schedules its asynchronous cleanup.
+/// This value owns the ICE agent and must be passed to [`connect_udp_with_ice`] or [`accept_udp_with_ice`] to establish a transport.
+/// Dropping it cancels the agent and schedules its asynchronous cleanup.
 pub struct IceGatheredCandidates {
     credentials: IceCredentials,
     candidates: Vec<String>,
@@ -168,8 +167,7 @@ pub enum IceRole {
     Controlled,
 }
 
-/// Failure while gathering candidates, checking a remote candidate pair, or
-/// establishing the RDPEUDP2 transport over the selected ICE connection.
+/// Failure while gathering candidates, checking a remote candidate pair, or establishing the RDPEUDP2 transport over the selected ICE connection.
 #[derive(Debug)]
 pub enum IceTransportError {
     /// A caller-supplied value exceeded the documented limit or was unsupported.
@@ -216,19 +214,14 @@ impl Error for IceTransportError {
     }
 }
 
-/// Gather host candidates and, when configured, STUN server-reflexive and TURN
-/// relay candidates.
+/// Gather host candidates and, when configured, STUN server-reflexive and TURN relay candidates.
 ///
-/// The caller must signal the returned credentials and candidates to a remote
-/// ICE agent using its own established signaling contract. This function
-/// gathers UDP candidates only; it does not implement application signaling.
+/// The caller must signal the returned credentials and candidates to a remote ICE agent using its own established signaling contract.
+/// This function gathers UDP candidates only; it does not implement application signaling.
 ///
 /// # Errors
 ///
-/// Returns [`IceTransportError::InvalidConfiguration`] for unsupported
-/// server URLs or input limits, [`IceTransportError::GatheringTimeout`] if
-/// gathering exceeds `config.timeout`, and [`IceTransportError::Agent`] if
-/// the ICE agent rejects its configuration or encounters a network error.
+/// Returns [`IceTransportError::InvalidConfiguration`] for unsupported server URLs or input limits, [`IceTransportError::GatheringTimeout`] if gathering exceeds `config.timeout`, and [`IceTransportError::Agent`] if the ICE agent rejects its configuration or encounters a network error.
 pub async fn gather_ice_candidates(config: IceGatherConfig) -> Result<IceGatheredCandidates, IceTransportError> {
     gather_ice_candidates_with_types(
         config,
@@ -285,10 +278,9 @@ async fn gather_ice_candidates_with_types(
         loop {
             match candidate_rx.recv().await {
                 Some(Some(candidate)) => {
-                    if candidates.len() == MAX_ICE_CANDIDATES {
-                        return Err(IceTransportError::InvalidConfiguration("too many local ICE candidates"));
+                    if candidates.len() < MAX_ICE_CANDIDATES {
+                        candidates.push(candidate);
                     }
-                    candidates.push(candidate);
                 }
                 Some(None) => return Ok(candidates),
                 None => {
@@ -319,9 +311,8 @@ async fn gather_ice_candidates_with_types(
 
 /// Establish an RDPEUDP2 transport over the nominated ICE candidate pair.
 ///
-/// ICE uses the caller-supplied remote credentials and candidate attribute
-/// values. The returned transport keeps the ICE agent alive for consent
-/// freshness, TURN allocation maintenance, and ongoing data transfer.
+/// ICE uses the caller-supplied remote credentials and candidate attribute values.
+/// The returned transport keeps the ICE agent alive for consent freshness, TURN allocation maintenance, and ongoing data transfer.
 pub async fn connect_udp_with_ice(
     config: UdpTransportConfig,
     local: IceGatheredCandidates,
@@ -329,8 +320,7 @@ pub async fn connect_udp_with_ice(
     role: IceRole,
     timeout: Duration,
 ) -> Result<UdpTransport, IceTransportError> {
-    let connection = connect_ice_candidates(local, remote, role, timeout).await?;
-    let (io, agent) = connection.into_parts();
+    let (io, agent) = connect_ice_candidates(local, remote, role, timeout).await?;
     let peer = io.peer_addr().ok_or(IceTransportError::NoSelectedCandidatePair)?;
     let mut config = config;
     config.server_addr = peer;
@@ -356,10 +346,9 @@ pub async fn accept_udp_with_ice(
         .map_err(|_| IceTransportError::InvalidConfiguration("accept timeout must be between 1 ms and 120 s"))?;
     let accept_timeout = config.accept_timeout;
     let deadline = Instant::now() + accept_timeout;
-    let connection = tokio::time::timeout_at(deadline, connect_ice_candidates(local, remote, role, timeout))
+    let (io, agent) = tokio::time::timeout_at(deadline, connect_ice_candidates(local, remote, role, timeout))
         .await
         .map_err(|_| IceTransportError::ConnectivityTimeout)??;
-    let (io, agent) = connection.into_parts();
     let mut transport = tokio::time::timeout_at(deadline, accept_udp_with_datagram_io(io, config))
         .await
         .map_err(|_| IceTransportError::Transport(crate::UdpTransportError::handshake_timeout("accept udp with ice")))?
@@ -373,7 +362,7 @@ async fn connect_ice_candidates(
     remote: RemoteIceDescription,
     role: IceRole,
     timeout: Duration,
-) -> Result<IceConnection, IceTransportError> {
+) -> Result<(IceDatagramIo, IceAgentGuard), IceTransportError> {
     validate_timeout(timeout)?;
     if remote.candidates.is_empty() {
         return Err(IceTransportError::InvalidConfiguration(
@@ -430,40 +419,15 @@ async fn connect_ice_candidates(
         .map_err(agent_error)?,
     };
     drop(cancel_tx);
-    let selected_pair = agent
+    let _selected_pair = agent
         .get_selected_candidate_pair()
         .ok_or(IceTransportError::NoSelectedCandidatePair)?;
-    let uses_relay = selected_pair.local.candidate_type() == CandidateType::Relay
-        || selected_pair.remote.candidate_type() == CandidateType::Relay;
 
-    Ok(IceConnection {
-        io: connection,
-        uses_relay,
-        agent: local.agent,
-    })
-}
-
-struct IceConnection {
-    io: Arc<dyn Conn + Send + Sync>,
-    uses_relay: bool,
-    agent: IceAgentGuard,
-}
-
-impl IceConnection {
-    fn into_parts(self) -> (IceDatagramIo, IceAgentGuard) {
-        (
-            IceDatagramIo {
-                connection: self.io,
-                uses_relay: self.uses_relay,
-            },
-            self.agent,
-        )
-    }
+    Ok((IceDatagramIo { connection }, local.agent))
 }
 
 struct IceDatagramIo {
     connection: Arc<dyn Conn + Send + Sync>,
-    uses_relay: bool,
 }
 
 #[expect(
@@ -484,8 +448,8 @@ impl DatagramIo for IceDatagramIo {
             let sent = Conn::send(self.connection.as_ref(), buf)
                 .await
                 .map_err(io::Error::other)?;
-            if sent == buf.len() || (self.uses_relay && buf.len() < sent) {
-                // TURN may report the size of its encapsulating packet instead of the payload.
+            if buf.len() <= sent {
+                // Direct sockets report `buf.len()`, whereas TURN relay sockets may report the encapsulating packet size.
                 return Ok(buf.len());
             }
             Err(io::Error::new(
@@ -533,10 +497,14 @@ impl IceAgentGuard {
         &self.agent
     }
 
-    pub(crate) async fn close(mut self) {
+    fn signal_close(&mut self) {
         if let Some(close_tx) = self.close_tx.take() {
             let _ = close_tx.send(());
         }
+    }
+
+    pub(crate) async fn close(mut self) {
+        self.signal_close();
         if let Some(close_task) = self.close_task.take() {
             if let Err(error) = close_task.await {
                 warn!(%error, "ICE agent cleanup task failed");
@@ -549,9 +517,7 @@ impl Drop for IceAgentGuard {
     fn drop(&mut self) {
         // Signal the spawned cleanup task and leave its JoinHandle detached so
         // `cleanup_agent.close().await` completes asynchronously on drop paths.
-        if let Some(close_tx) = self.close_tx.take() {
-            let _ = close_tx.send(());
-        }
+        self.signal_close();
     }
 }
 
@@ -642,7 +608,7 @@ mod tests {
         assert!(debug.contains("[redacted]"));
     }
 
-    // oracle: spec RFC 8656 §3.1
+    // oracle: spec RFC 7065 §3.1
     #[test]
     fn accepts_udp_turn_server_url() {
         let url = parse_ice_server(IceServerConfig::turn(
@@ -656,7 +622,7 @@ mod tests {
         assert_eq!(url.username, "user");
     }
 
-    // oracle: spec RFC 8656 §3.1
+    // oracle: mutant accepts non-UDP TURN or unauthenticated TURN server URLs
     #[rstest]
     #[case::turns_scheme(IceServerConfig::stun("turns:turn.example.net:5349"))]
     #[case::turn_without_credentials(IceServerConfig::stun("turn:turn.example.net:3478"))]
@@ -665,7 +631,7 @@ mod tests {
         assert!(parse_ice_server(server).is_err());
     }
 
-    // oracle: spec RFC 5245 §15.4
+    // oracle: spec RFC 8445 §16.4
     #[test]
     fn accepts_valid_remote_ice_credentials() {
         assert!(
@@ -677,7 +643,7 @@ mod tests {
         );
     }
 
-    // oracle: spec RFC 5245 §15.4
+    // oracle: spec RFC 8445 §16.4
     #[rstest]
     #[case::short_ufrag("abc", "abcdefghijklmnopqrstuv")]
     #[case::short_password("abcd", "short")]
@@ -715,20 +681,17 @@ mod tests {
             connect_ice_candidates(left, left_remote, IceRole::Controlling, Duration::from_secs(10)),
             connect_ice_candidates(right, right_remote, IceRole::Controlled, Duration::from_secs(10))
         );
-        let left_connection = left_connection.expect("left ICE connection established");
-        let right_connection = right_connection.expect("right ICE connection established");
+        let (left_io, left_agent) = left_connection.expect("left ICE connection established");
+        let (right_io, right_agent) = right_connection.expect("right ICE connection established");
 
         let mut received = [0; 5];
-        let (sent, received_len) = tokio::join!(
-            left_connection.io.as_ref().send(b"rdp2!"),
-            right_connection.io.as_ref().recv(&mut received)
-        );
+        let (sent, received_len) = tokio::join!(left_io.send(b"rdp2!"), right_io.recv(&mut received));
         assert_eq!(sent.expect("datagram sent"), 5);
         assert_eq!(received_len.expect("datagram received"), 5);
         assert_eq!(&received, b"rdp2!");
 
-        left_connection.agent.close().await;
-        right_connection.agent.close().await;
+        left_agent.close().await;
+        right_agent.close().await;
     }
 
     // oracle: spec MS-RDPEUDP2 §3.1.3

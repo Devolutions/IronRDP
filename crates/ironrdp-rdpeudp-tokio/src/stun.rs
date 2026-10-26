@@ -302,7 +302,7 @@ mod tests {
         );
     }
 
-    // oracle: spec RFC 8489 §14.2
+    // oracle: mutant fallback MAPPED-ADDRESS overrides XOR-MAPPED-ADDRESS
     #[test]
     fn prefers_xor_mapped_address_over_mapped_address() {
         let fallback = [0, 1, 0x13, 0x88, 192, 0, 2, 1];
@@ -335,6 +335,7 @@ mod tests {
         assert!(parse_binding_success_response(&valid, [0; 12]).is_err());
     }
 
+    // RFC 8489 Section 14: "only the first occurrence needs to be processed by a receiver, and any duplicates MAY be ignored by a receiver."
     // oracle: spec RFC 8489 §14
     #[test]
     fn retains_first_address_and_ignores_duplicate_attributes() {
@@ -355,6 +356,7 @@ mod tests {
         );
     }
 
+    // RFC 8489 Section 6.3.3: "If the success response contains unknown comprehension-required attributes, the response is discarded and the transaction is considered to have failed."
     // oracle: spec RFC 8489 §6.3.3
     #[test]
     fn rejects_unknown_comprehension_required_attributes_and_ignores_optional_ones() {
@@ -397,7 +399,7 @@ mod tests {
         );
     }
 
-    // oracle: property round-trip
+    // oracle: reference RFC 8489 §14.2 XOR-MAPPED-ADDRESS encoder
     proptest! {
         #[test]
         fn roundtrips_xor_mapped_socket_addresses(

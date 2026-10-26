@@ -113,25 +113,7 @@ impl MultitransportBootstrap {
         config.connection_config = connection_config;
         config.tls = tls_config;
 
-        debug!(
-            request_id = self.request.request_id,
-            peer = %server_addr,
-            "Starting multitransport UDP connection"
-        );
-
-        let result = connect_udp(config).await;
-        match &result {
-            Ok(_) => debug!(
-                request_id = self.request.request_id,
-                "Multitransport UDP connection succeeded"
-            ),
-            Err(error) => debug!(
-                request_id = self.request.request_id,
-                %error,
-                "Multitransport UDP connection failed"
-            ),
-        }
-        self.finish_connect(result)
+        self.run_connect(server_addr, connect_udp(config)).await
     }
 
     /// Attempt multitransport over an ICE-nominated UDP path.
@@ -153,25 +135,10 @@ impl MultitransportBootstrap {
         timeout: Duration,
     ) -> Result<(), IceTransportError> {
         config.tunnel_config = self.prepare_tunnel_config().map_err(IceTransportError::Transport)?;
-        debug!(
-            request_id = self.request.request_id,
-            peer = %config.server_addr,
-            "Starting ICE multitransport UDP connection"
-        );
+        let peer = config.server_addr;
 
-        let result = connect_udp_with_ice(config, local, remote, role, timeout).await;
-        match &result {
-            Ok(_) => debug!(
-                request_id = self.request.request_id,
-                "ICE multitransport UDP connection succeeded"
-            ),
-            Err(error) => debug!(
-                request_id = self.request.request_id,
-                %error,
-                "ICE multitransport UDP connection failed"
-            ),
-        }
-        self.finish_connect(result)
+        self.run_connect(peer, connect_udp_with_ice(config, local, remote, role, timeout))
+            .await
     }
 
     fn prepare_tunnel_config(&mut self) -> Result<TunnelConfig, UdpTransportError> {
@@ -186,7 +153,6 @@ impl MultitransportBootstrap {
                 requested_protocol = ?self.request.requested_protocol,
                 "Declined multitransport request for an unsupported protocol"
             );
-            self.transport = None;
             self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
             return Err(UdpTransportError::unsupported_protocol(
                 "multitransport connect",
@@ -200,14 +166,33 @@ impl MultitransportBootstrap {
         })
     }
 
-    fn finish_connect<E>(&mut self, result: Result<UdpTransport, E>) -> Result<(), E> {
-        match result {
+    async fn run_connect<E, F>(&mut self, peer: SocketAddr, connect_future: F) -> Result<(), E>
+    where
+        E: core::fmt::Display,
+        F: Future<Output = Result<UdpTransport, E>>,
+    {
+        debug!(
+            request_id = self.request.request_id,
+            %peer,
+            "Starting multitransport UDP connection"
+        );
+
+        match connect_future.await {
             Ok(transport) => {
+                debug!(
+                    request_id = self.request.request_id,
+                    "Multitransport UDP connection succeeded"
+                );
                 self.transport = Some(transport);
                 self.response = Some(MultitransportResponsePdu::success(self.request.request_id));
                 Ok(())
             }
             Err(error) => {
+                debug!(
+                    request_id = self.request.request_id,
+                    %error,
+                    "Multitransport UDP connection failed"
+                );
                 // A stale transport from an earlier successful call must not
                 // survive a failed reconnect: the response below tells the
                 // server the connection is down, so is_connected() and

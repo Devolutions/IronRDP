@@ -14,7 +14,7 @@ Pass the peer's ICE credentials and candidate strings to `connect_udp_with_ice` 
 Existing multitransport clients can use `MultitransportBootstrap::connect_with_ice` to preserve the request/response flow.
 IronRDP does not define a signaling protocol or claim interoperability with AVD Shortpath.
 The ICE API accepts only UDP candidates for component 1, STUN URLs, and UDP TURN URLs.
-Gathering is limited to 8 ICE servers and 64 candidates, and each ICE operation has a deadline of at most 120 seconds.
+Gathering is limited to 8 ICE servers and retains at most 64 candidates, and each ICE operation has a deadline of at most 120 seconds.
 The relay-only integration test uses a local UDP TURN fixture and verifies an RDPEUDP2 transfer over a nominated relay-to-relay pair.
 Interoperability with a deployed TURN service has not been validated.
 

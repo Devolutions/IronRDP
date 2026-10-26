@@ -21,6 +21,9 @@ doctest = false
 # `ClientConfig::builder()` is called.
 rustls-aws-lc-rs = ["tokio-rustls/aws_lc_rs"]
 rustls-ring = ["tokio-rustls/ring"]
+# `webrtc-ice` 0.17 pulls `webrtc-util` 0.17 and `webrtc-mdns` 0.17, which
+# transitively depend on `nix` 0.26 and `socket2` 0.5 alongside the workspace's
+# newer major versions until upstream `webrtc-rs` updates its dependencies.
 ice = ["dep:webrtc-ice", "dep:webrtc-util"]
 
 [dependencies]
@@ -43,9 +46,9 @@ webrtc-ice = { version = "0.17.2", optional = true }
 webrtc-util = { version = "0.17.1", default-features = false, features = ["conn"], optional = true }
 
 [dev-dependencies]
-proptest = "1.4"
+proptest.workspace = true
 rcgen = "0.14"
-rstest = "0.26"
+rstest.workspace = true
 turn = "0.17.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 

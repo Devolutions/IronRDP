@@ -1021,6 +1021,7 @@ mod tests {
 
     use super::*;
 
+    // oracle: mutant connect_udp_with_socket allows mismatched socket and peer address families
     #[tokio::test]
     async fn connect_with_socket_rejects_a_peer_with_another_address_family() {
         let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind IPv4 socket");
