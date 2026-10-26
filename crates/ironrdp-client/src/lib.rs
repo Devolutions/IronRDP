@@ -31,6 +31,13 @@ fn http_client_builder() -> std::io::Result<reqwest::ClientBuilder> {
         "",
         None,
     )?);
+    #[cfg(all(not(feature = "rustls"), feature = "native-tls"))]
+    let builder = builder.use_native_tls();
+    #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
+    return Err(std::io::Error::other(
+        "either the `rustls` or `native-tls` feature must be enabled for HTTPS requests",
+    ));
+    #[cfg(any(feature = "rustls", feature = "native-tls"))]
     Ok(builder)
 }
 

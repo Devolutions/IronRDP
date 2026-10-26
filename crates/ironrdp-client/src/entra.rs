@@ -247,7 +247,20 @@ impl EntraAuthSession {
             .build()
             .context("create Entra HTTPS client")?;
         let authority = match tenant_id.filter(|id| !id.is_empty()) {
-            Some(tenant_id) => format!("https://login.microsoftonline.com/{tenant_id}"),
+            Some(tenant_id) => {
+                ensure!(
+                    !tenant_id
+                        .chars()
+                        .any(|c| c.is_control() || matches!(c, '/' | '\\' | '?' | '#')),
+                    "Entra tenant ID contains invalid URL characters"
+                );
+                let mut url = Url::parse("https://login.microsoftonline.com/")?;
+                url.path_segments_mut()
+                    .map_err(|()| anyhow::anyhow!("invalid Entra authority URL"))?
+                    .pop_if_empty()
+                    .push(tenant_id);
+                url.into()
+            }
             None => AUTHORITY.to_owned(),
         };
         Ok(Self {
@@ -547,6 +560,15 @@ mod tests {
         assert_eq!(
             auth.key.key_id,
             URL_SAFE_NO_PAD.encode(HashAlgorithm::SHA2_256.digest(thumbprint_input.as_bytes()))
+        );
+        assert!(
+            EntraAuthSession::from_pop_token(
+                "pop-access-token".to_owned(),
+                EntraPopKey::generate().expect("generate PoP key"),
+                "ms-device-service://termsrv.wvd.microsoft.com/name/desktop.example.com/user_impersonation".to_owned(),
+                Some("tenant/../../other"),
+            )
+            .is_err()
         );
     }
 
