@@ -534,17 +534,11 @@ macro_rules! write_padding {
 
 /// Moves read cursor, ignoring padding bytes.
 ///
-/// Like `ensure_size!`, it returns a "not enough bytes" error from the enclosing function when fewer than `n` bytes
-/// remain, instead of moving the cursor past the end of the buffer. The error carries the name of the enclosing
-/// function and the current cursor position.
-///
-/// The enclosing function must therefore return a `Result` whose error type is `DecodeError`, as for `ensure_size!`.
+/// Like `ReadCursor::read_u8` and the other cursor reads, this does not check that `n` bytes remain.
+/// Check the remaining length first with `ensure_size!` or `ensure_fixed_part_size!`.
 #[macro_export]
 macro_rules! read_padding {
-    ($src:expr, $n:expr) => {{
-        let n: usize = $n;
-        let src: &mut $crate::ReadCursor<'_> = $src;
-        $crate::ensure_size!(in: src, size: n);
-        src.advance(n);
-    }};
+    ($src:expr, $n:expr) => {
+        $crate::read_padding($src, $n)
+    };
 }
