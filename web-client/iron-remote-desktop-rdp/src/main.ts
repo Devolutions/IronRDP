@@ -76,6 +76,10 @@ export function legacyGraphics(enable: boolean): Extension {
     return new Extension('legacy_graphics', enable);
 }
 
+// --- RDCleanPath ---
+
+export { RDCleanPathErrorCode } from './RDCleanPathErrorCode';
+
 // --- File transfer (RDP-specific) ---
 
 export { RdpFileTransferProvider } from './RdpFileTransferProvider';
