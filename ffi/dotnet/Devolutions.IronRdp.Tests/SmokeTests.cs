@@ -9,6 +9,12 @@ internal static class SmokeTests
         0x02, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
     };
 
+    private static readonly byte[] TpktX224ConfirmWithoutNegotiation =
+    {
+        0x03, 0x00, 0x00, 0x0b,
+        0x06, 0xd0, 0x00, 0x00, 0x56, 0x78, 0x00,
+    };
+
     internal static IEnumerable<(string Name, System.Action Run)> Cases()
     {
         // oracle: ffi/INTENT.md "Copying into caller buffers" (bytes past the image)
@@ -185,14 +191,15 @@ internal static class SmokeTests
 
         yield return ("framed reads back-to-back PDUs", () =>
         {
-            var stream = new MemoryStream(TpktX224ConfirmSelectingTls.Concat(TpktX224ConfirmSelectingTls).ToArray());
-            var framed = new Framed<MemoryStream>(stream);
+            var bytes = TpktX224ConfirmSelectingTls.Concat(TpktX224ConfirmWithoutNegotiation).ToArray();
+            var stream = new ChunkedReadStream(bytes, 2, 21, 7);
+            var framed = new Framed<ChunkedReadStream>(stream);
 
-            for (int i = 0; i < 2; i++)
-            {
-                var (_, frame) = framed.ReadPdu().GetAwaiter().GetResult();
-                True(frame.SequenceEqual(TpktX224ConfirmSelectingTls), $"PDU {i} bytes");
-            }
+            var (_, first) = framed.ReadPdu().GetAwaiter().GetResult();
+            True(first.SequenceEqual(TpktX224ConfirmSelectingTls), "first PDU bytes");
+
+            var (_, second) = framed.ReadPdu().GetAwaiter().GetResult();
+            True(second.SequenceEqual(TpktX224ConfirmWithoutNegotiation), "second PDU bytes");
 
             True(framed.Peek().IsEmpty, "nothing left in the buffer");
         });
@@ -367,6 +374,22 @@ internal static class SmokeTests
         builder.EnableCredssp = false;
         builder.PerformanceFlags = PerformanceFlags.NewDefault();
         return builder.Build();
+    }
+
+    private sealed class ChunkedReadStream : MemoryStream
+    {
+        private readonly Queue<int> _chunkSizes;
+
+        public ChunkedReadStream(byte[] buffer, params int[] chunkSizes) : base(buffer)
+        {
+            _chunkSizes = new Queue<int>(chunkSizes);
+        }
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var maxCount = _chunkSizes.Count > 0 ? Math.Min(buffer.Length, _chunkSizes.Dequeue()) : buffer.Length;
+            return base.ReadAsync(buffer[..maxCount], cancellationToken);
+        }
     }
 
     private sealed class PendingWriteStream : MemoryStream
