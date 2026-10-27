@@ -3401,7 +3401,7 @@ mod tests {
                 bitmap_data,
             })
         };
-        let seed = wire(progressive_tile_stream(0, 0, 64, 64));
+        let seed = wire(progressive_tile_stream(0, 0, rect(0, 0, 64, 64)));
         let upgrade = wire(progressive_upgrade_stream());
         for pdu in [&confirm, &create, &seed, &upgrade] {
             process(&mut client, pdu);
