@@ -16,6 +16,7 @@ use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, Surfa
 use tracing::{debug, warn};
 
 use self::bitmap::BitmapEncoder;
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 pub(crate) use self::fast_path::MAX_FASTPATH_UPDATE_SIZE;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
@@ -632,7 +633,7 @@ impl EncoderIter<'_> {
             // pointer shape. Never send a fragmented update that could overflow the
             // client's negotiated reassembly buffer, even if encoding expands it.
             return Some(res.and_then(|update| {
-                if update.data.len() > encoder.max_request_size {
+                if encoder.max_request_size < update.data.len() {
                     Err(ServerError::reason(
                         "fast-path update",
                         format!(

@@ -102,14 +102,24 @@ fn client_core_frame_ack_limit(capabilities: &[CapabilitySet]) -> Option<NonZero
 /// fragmented Fast-Path Update it can take. A client that sends no Multifragment Update
 /// Capability Set, or a zero size, leaves the server's in place.
 ///
-/// The client's value is not taken below one Fast-Path fragment: an update that size is
-/// sent unfragmented and never reaches the reassembly buffer, and a smaller value would
-/// only make the encoder cut every frame into tiny tiles.
+/// Neither value is taken below one Fast-Path fragment: an update that size is sent
+/// unfragmented and never reaches the reassembly buffer, and a smaller value would only make
+/// the encoder cut every frame into tiny tiles, or refuse every update at zero.
 ///
 /// [MaxRequestSize]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
 #[cfg_attr(feature = "__test", visibility::make(pub))]
 fn client_max_request_size(server_max_request_size: u32, capabilities: &[CapabilitySet]) -> u32 {
-    let one_fragment = u32::try_from(MAX_FASTPATH_UPDATE_SIZE).unwrap_or(u32::MAX);
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "try_from is not const; the assertion fails the build if the fragment size outgrows a u32"
+    )]
+    const ONE_FRAGMENT: u32 = {
+        assert!(MAX_FASTPATH_UPDATE_SIZE <= u32::MAX as usize);
+        MAX_FASTPATH_UPDATE_SIZE as u32
+    };
+
+    let server_max_request_size = server_max_request_size.max(ONE_FRAGMENT);
     capabilities
         .iter()
         .find_map(|capability| match capability {
@@ -119,7 +129,7 @@ fn client_max_request_size(server_max_request_size: u32, capabilities: &[Capabil
             _ => None,
         })
         .map_or(server_max_request_size, |client| {
-            client.max(one_fragment).min(server_max_request_size)
+            client.max(ONE_FRAGMENT).min(server_max_request_size)
         })
 }
 

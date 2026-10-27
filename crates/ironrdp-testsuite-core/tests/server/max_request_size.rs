@@ -4,9 +4,10 @@ use ironrdp_pdu::rdp::capability_sets::{
     CapabilitySet, CmdFlags, EntropyBits, LargePointerSupportFlags, MultifragmentUpdate,
 };
 use ironrdp_server::{
-    BitmapUpdate, ColorPointer, DesktopSize, DisplayUpdate, PixelFormat, RemoteFxCodec, UpdateEncoder,
-    UpdateEncoderCodecs, client_max_request_size,
+    BitmapUpdate, ColorPointer, DesktopSize, DisplayUpdate, MAX_FASTPATH_UPDATE_SIZE, PixelFormat, RemoteFxCodec,
+    ServerErrorKind, UpdateEncoder, UpdateEncoderCodecs, client_max_request_size,
 };
+use proptest::prelude::*;
 use rstest::rstest;
 
 fn multifragment_update(max_request_size: u32) -> CapabilitySet {
@@ -28,10 +29,18 @@ fn negotiated_max_request_size_is_the_smaller_of_both(
     assert_eq!(client_max_request_size(server, &capabilities), expected);
 }
 
-// oracle: spec MS-RDPBCGR §2.2.9.1.2.1 (an update sent as a single FASTPATH_FRAGMENT_SINGLE is never reassembled; the server's fragments carry 16,374 bytes)
-#[test]
-fn a_tiny_client_max_request_size_does_not_go_below_one_fragment() {
-    assert_eq!(client_max_request_size(65_536, &[multifragment_update(1)]), 16_374);
+fn one_fragment() -> u32 {
+    u32::try_from(MAX_FASTPATH_UPDATE_SIZE).unwrap()
+}
+
+// oracle: spec MS-RDPBCGR §2.2.9.1.2.1 (an update sent as a single FASTPATH_FRAGMENT_SINGLE is never reassembled)
+#[rstest]
+#[case::tiny_client(65_536, Some(1))]
+#[case::zero_server(0, Some(65_536))]
+#[case::zero_server_without_client_capability(0, None)]
+fn the_negotiated_size_does_not_go_below_one_fragment(#[case] server: u32, #[case] client: Option<u32>) {
+    let capabilities: Vec<_> = client.into_iter().map(multifragment_update).collect();
+    assert_eq!(client_max_request_size(server, &capabilities), one_fragment());
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,26 +107,61 @@ fn incompressible_frame(width: u16, height: u16) -> BitmapUpdate {
 
 // oracle: spec MS-RDPBCGR §2.2.7.2.6 (a fragmented update larger than MaxRequestSize overflows the client's reassembly buffer)
 #[rstest]
-#[case::raw_surface_rows_of_2048_pixels(Codec::Raw, 2048, 64, 65_536)]
-#[case::qoi_surface_rows_of_2048_pixels(Codec::Qoi, 2048, 64, 65_536)]
-#[case::qoiz_surface_rows_of_2048_pixels(Codec::Qoiz, 2048, 64, 65_536)]
-#[case::remotefx_surface_rows_of_2048_pixels(Codec::RemoteFx, 2048, 64, 65_536)]
-#[case::legacy_bitmap(Codec::Bitmap, 1440, 900, 65_536)]
-#[case::legacy_bitmap_at_one_fragment(Codec::Bitmap, 1440, 900, 16_374)]
+#[case::raw_surface_rows_of_2048_pixels(Codec::Raw, 2048, 64, Some(65_536))]
+#[case::qoi_surface_rows_of_2048_pixels(Codec::Qoi, 2048, 64, Some(65_536))]
+#[case::qoiz_surface_rows_of_2048_pixels(Codec::Qoiz, 2048, 64, Some(65_536))]
+#[case::remotefx_surface_rows_of_2048_pixels(Codec::RemoteFx, 2048, 64, Some(65_536))]
+#[case::legacy_bitmap(Codec::Bitmap, 1440, 900, Some(65_536))]
+#[case::legacy_bitmap_at_one_fragment(Codec::Bitmap, 1440, 900, None)]
 #[tokio::test]
 async fn every_encoded_update_fits_the_negotiated_request_size(
     #[case] codec: Codec,
     #[case] width: u16,
     #[case] height: u16,
-    #[case] max_request_size: u32,
+    #[case] max_request_size: Option<u32>,
 ) {
+    let max_request_size = max_request_size.unwrap_or_else(one_fragment);
+    let largest = largest_update(codec, width, height, max_request_size).await;
+    assert!(
+        largest <= usize::try_from(max_request_size).unwrap(),
+        "{largest}-byte update exceeds the {max_request_size}-byte request size"
+    );
+}
+
+/// The size of the largest update the encoder emits for one incompressible frame.
+async fn largest_update(codec: Codec, width: u16, height: u16, max_request_size: u32) -> usize {
     let mut encoder = encoder(codec, width, height, max_request_size);
     let mut updates = encoder.update(DisplayUpdate::Bitmap(incompressible_frame(width, height)));
+    let mut largest = 0;
     while let Some(update) = updates.next().await {
-        let len = update.unwrap().data.len();
-        assert!(
-            len <= usize::try_from(max_request_size).unwrap(),
-            "{len}-byte update exceeds the {max_request_size}-byte request size"
+        largest = largest.max(update.unwrap().data.len());
+    }
+    largest
+}
+
+// oracle: spec MS-RDPBCGR §2.2.7.2.6 (a fragmented update larger than MaxRequestSize overflows the client's reassembly buffer)
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn no_encoded_update_exceeds_the_negotiated_request_size(
+        codec in prop_oneof![
+            Just(Codec::Bitmap),
+            Just(Codec::Raw),
+            Just(Codec::Qoi),
+            Just(Codec::Qoiz),
+            Just(Codec::RemoteFx),
+        ],
+        // The legacy bitmap encoder takes widths in multiples of 4.
+        width in (1u16..=256).prop_map(|width| width * 4),
+        height in 1u16..=256,
+        max_request_size in 16_374u32..=262_144,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let largest = runtime.block_on(largest_update(codec, width, height, max_request_size));
+        prop_assert!(
+            largest <= usize::try_from(max_request_size).unwrap(),
+            "{largest}-byte update exceeds the {max_request_size}-byte request size"
         );
     }
 }
@@ -129,7 +173,7 @@ async fn a_color_pointer_larger_than_the_request_size_is_not_sent() {
         DesktopSize { width: 96, height: 96 },
         CmdFlags::empty(),
         UpdateEncoderCodecs::new(),
-        16_374,
+        one_fragment(),
         1,
         LargePointerSupportFlags::UP_TO_96X96_PIXELS,
     )
@@ -144,14 +188,15 @@ async fn a_color_pointer_larger_than_the_request_size_is_not_sent() {
         xor_mask: vec![0xAB; 96 * 96 * 4],
     };
 
-    let update = encoder
+    let error = encoder
         .update(DisplayUpdate::ColorPointer(pointer))
         .next()
         .await
-        .unwrap();
+        .unwrap()
+        .expect_err("a 36,864-byte pointer must not reach a one-fragment buffer");
 
     assert!(
-        update.is_err(),
-        "a 36,864-byte pointer must not reach a 16,374-byte buffer"
+        matches!(error.kind(), ServerErrorKind::Reason(reason) if reason.contains("exceeds negotiated maximum")),
+        "the pointer was refused for its size, not for another reason: {error}"
     );
 }

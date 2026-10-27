@@ -36,7 +36,7 @@ pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoSe
 #[cfg(all(feature = "__test", feature = "qoiz"))]
 pub use encoder::qoiz::Compressor as QoizCompressor;
 #[cfg(feature = "__test")]
-pub use encoder::{RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
+pub use encoder::{MAX_FASTPATH_UPDATE_SIZE, RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
 pub use error::{ServerError, ServerErrorExt, ServerErrorKind, ServerResult, ServerResultExt};
 #[cfg(feature = "egfx")]
 pub use gfx::{EgfxServerMessage, GfxContext, GfxDvcBridge, GfxServerFactory, GfxServerHandle};
