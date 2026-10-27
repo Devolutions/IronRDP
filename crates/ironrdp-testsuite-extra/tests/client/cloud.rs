@@ -802,7 +802,7 @@ proptest! {
         prop_assert_eq!(verified, baseline);
     }
 
-    // oracle: spec MS-TSWP §2.2.2
+    // oracle: property untrusted XML, .rdp, and CMS signedAttrs inputs never panic the parsers
     #[test]
     fn parsers_never_panic_on_arbitrary_malformed_inputs(
         raw in ".{0,512}",
