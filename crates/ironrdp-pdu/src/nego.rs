@@ -119,6 +119,8 @@ impl FailureCode {
     /// 5.4) with TLS 1.0, 1.1 or 1.2 (section 5.4.5.1) and certificate-based client
     /// authentication.
     pub const SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER: Self = Self(6);
+    /// The server requires RDS AAD Auth Security with Microsoft Entra ID.
+    pub const ENTRA_AUTH_REQUIRED_BY_SERVER: Self = Self(7);
 }
 
 impl From<u32> for FailureCode {
@@ -153,6 +155,9 @@ impl fmt::Display for FailureCode {
             }
             Self::SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER => {
                 write!(f, "TLS certificate-based client authentication required by server")
+            }
+            Self::ENTRA_AUTH_REQUIRED_BY_SERVER => {
+                write!(f, "Entra enhanced RDP security required by server")
             }
             _ => write!(f, "unknown failure code: {}", self.0),
         }

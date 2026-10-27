@@ -244,6 +244,14 @@ pub enum ClientConnectorState {
     Credssp {
         selected_protocol: nego::SecurityProtocol,
     },
+    /// Waiting for the server nonce over authenticated TLS.
+    EntraAuthWaitNonce,
+    /// Waiting for the caller to sign an RDP assertion bound to this nonce.
+    EntraAuthPending {
+        server_nonce: String,
+    },
+    /// Waiting for the server's authentication and authorization result.
+    EntraAuthWaitResult,
     BasicSettingsExchangeSendInitial {
         selected_protocol: nego::SecurityProtocol,
     },
@@ -361,6 +369,9 @@ impl State for ClientConnectorState {
             Self::ConnectionInitiationWaitConfirm { .. } => "ConnectionInitiationWaitResponse",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
             Self::Credssp { .. } => "Credssp",
+            Self::EntraAuthWaitNonce => "EntraAuthWaitNonce",
+            Self::EntraAuthPending { .. } => "EntraAuthPending",
+            Self::EntraAuthWaitResult => "EntraAuthWaitResult",
             Self::BasicSettingsExchangeSendInitial { .. } => "BasicSettingsExchangeSendInitial",
             Self::BasicSettingsExchangeWaitResponse { .. } => "BasicSettingsExchangeWaitResponse",
             Self::ChannelConnection { .. } => "ChannelConnection",
@@ -406,6 +417,7 @@ pub struct ClientConnector {
     load_balance_info: Option<String>,
     /// X.224 negotiation flags supplied by the server.
     response_flags: nego::ResponseFlags,
+    entra_auth: bool,
     /// Multitransport flags the server advertised in its GCC
     /// `MultiTransportChannelData` block, if it sent one. Retained because
     /// MS-RDPBCGR 2.2.15.2 permits an `S_OK` response only to a server that
@@ -443,12 +455,49 @@ impl ClientConnector {
             cluster_data: None,
             load_balance_info: None,
             response_flags: nego::ResponseFlags::empty(),
+            entra_auth: false,
             server_multitransport_flags: None,
             auto_reconnect_cookie: None,
             redirection_password_cookie: None,
             connect_time_bw_started_at: None,
             connect_time_bw_bytes: 0,
         }
+    }
+
+    /// Require RDS AAD Auth instead of TLS-only logon or CredSSP.
+    ///
+    /// The caller must validate the target's TLS certificate and sign a nonce-bound RDP assertion with a PoP-bound RDP access token.
+    /// See [MS-RDPBCGR] 5.4.5.4.1 for token and assertion requirements.
+    /// This does not acquire tokens, invoke WAM, or permit fallback to another authentication method.
+    /// Call this before starting negotiation.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    #[must_use]
+    pub fn with_entra_auth(mut self) -> Self {
+        self.entra_auth = true;
+        self
+    }
+
+    /// The server nonce to bind into the caller-signed RDP assertion.
+    pub fn entra_server_nonce(&self) -> Option<&str> {
+        match &self.state {
+            ClientConnectorState::EntraAuthPending { server_nonce } => Some(server_nonce),
+            _ => None,
+        }
+    }
+
+    /// Write a signed compact JWS RDP assertion to the authenticated TLS transport.
+    ///
+    /// Supply an RDP assertion, not a bearer access token.
+    /// The caller is responsible for its signature, claims, and binding to [`Self::entra_server_nonce`].
+    /// The assertion is not retained or logged by the connector; the caller must send and clear `output`.
+    pub fn submit_entra_assertion(&mut self, assertion: &str, output: &mut WriteBuf) -> ConnectorResult<Written> {
+        if !matches!(self.state, ClientConnectorState::EntraAuthPending { .. }) {
+            return Err(reason_err!("EntraAuth", "no server nonce is awaiting an assertion"));
+        }
+        let written = crate::entra::write_assertion(assertion, output)?;
+        self.state = ClientConnectorState::EntraAuthWaitResult;
+        Ok(written)
     }
 
     /// Attempt to resume a previous session using its auto-reconnect cookie.
@@ -509,7 +558,9 @@ impl ClientConnector {
         }
 
         let enabled_protocols = self.enabled_security_protocols()?;
-        if !enabled_protocols.contains(security_protocol) {
+        if !enabled_protocols.contains(security_protocol)
+            || (self.entra_auth && security_protocol != nego::SecurityProtocol::RDSAAD)
+        {
             return Err(reason_err!(
                 "Initiation",
                 "requested security protocols {security_protocol} are not enabled by connector configuration",
@@ -521,6 +572,9 @@ impl ClientConnector {
     }
 
     fn enabled_security_protocols(&self) -> ConnectorResult<nego::SecurityProtocol> {
+        if self.entra_auth {
+            return Ok(nego::SecurityProtocol::RDSAAD);
+        }
         let mut security_protocol = nego::SecurityProtocol::empty();
 
         if self.config.enable_tls {
@@ -699,6 +753,16 @@ impl ClientConnector {
 
     pub fn should_perform_credssp(&self) -> bool {
         matches!(self.state, ClientConnectorState::Credssp { .. })
+    }
+
+    /// Returns whether the connector is in the Entra RDS AAD authentication exchange.
+    pub fn should_perform_entra_auth(&self) -> bool {
+        matches!(
+            self.state,
+            ClientConnectorState::EntraAuthWaitNonce
+                | ClientConnectorState::EntraAuthPending { .. }
+                | ClientConnectorState::EntraAuthWaitResult
+        )
     }
 
     /// Advance past [`ClientConnectorState::Credssp`] after NLA is already done.
@@ -1114,7 +1178,14 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
             ClientConnectorState::Credssp { .. } => None,
+            ClientConnectorState::EntraAuthWaitNonce | ClientConnectorState::EntraAuthWaitResult => {
+                Some(&crate::entra::ENTRA_JSON_HINT)
+            }
+            ClientConnectorState::EntraAuthPending { .. } => None,
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
+            ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } if self.entra_auth => {
+                Some(&crate::entra::ENTRA_POST_AUTH_X224_HINT)
+            }
             ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::ChannelConnection { channel_connection, .. } => channel_connection.next_pdu_hint(),
             ClientConnectorState::SecureSettingsExchange { .. } => None,
@@ -1193,6 +1264,8 @@ impl Sequence for ClientConnector {
                 // sets, so treat standard RDP security as a special case.
                 let protocol_ok = if selected_protocol.is_standard_rdp_security() {
                     requested_protocol.is_standard_rdp_security()
+                } else if self.entra_auth {
+                    selected_protocol == nego::SecurityProtocol::RDSAAD
                 } else {
                     selected_protocol.intersects(requested_protocol)
                 };
@@ -1224,6 +1297,8 @@ impl Sequence for ClientConnector {
                 {
                     debug!("Begin NLA using CredSSP");
                     ClientConnectorState::Credssp { selected_protocol }
+                } else if selected_protocol == nego::SecurityProtocol::RDSAAD {
+                    ClientConnectorState::EntraAuthWaitNonce
                 } else {
                     debug!("CredSSP is disabled, skipping NLA");
                     ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
@@ -1237,6 +1312,29 @@ impl Sequence for ClientConnector {
                 Written::Nothing,
                 ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
             ),
+
+            ClientConnectorState::EntraAuthWaitNonce => (
+                Written::Nothing,
+                ClientConnectorState::EntraAuthPending {
+                    server_nonce: crate::entra::server_nonce(input)?,
+                },
+            ),
+            ClientConnectorState::EntraAuthPending { server_nonce } => {
+                self.state = ClientConnectorState::EntraAuthPending { server_nonce };
+                return Err(reason_err!("EntraAuth", "a caller-signed RDP assertion is required"));
+            }
+            ClientConnectorState::EntraAuthWaitResult => {
+                let code = crate::entra::authentication_result(input)?;
+                if code != 0 {
+                    return Err(ConnectorError::new("EntraAuth", ConnectorErrorKind::EntraAuth(code)));
+                }
+                (
+                    Written::Nothing,
+                    ClientConnectorState::BasicSettingsExchangeSendInitial {
+                        selected_protocol: nego::SecurityProtocol::RDSAAD,
+                    },
+                )
+            }
 
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.
@@ -1265,6 +1363,11 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
+                let input = if self.entra_auth {
+                    crate::entra::skip_json_whitespace(input)
+                } else {
+                    input
+                };
                 let x224_payload = decode::<X224<crate::x224::X224Data<'_>>>(input)
                     .map_err(ConnectorError::decode)
                     .map(|p| p.0)?;
@@ -1376,6 +1479,7 @@ impl Sequence for ClientConnector {
                     &self.client_addr,
                     self.auto_reconnect_cookie.as_ref(),
                     self.redirection_password_cookie.as_deref(),
+                    self.entra_auth,
                 );
 
                 debug!(message = ?client_info, "Send");
@@ -1896,6 +2000,7 @@ fn create_client_info_pdu(
     client_addr: &SocketAddr,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
     password_cookie: Option<&[u8]>,
+    entra_auth: bool,
 ) -> rdp::ClientInfoPdu {
     use ironrdp_pdu::rdp::ClientInfoPdu;
     use ironrdp_pdu::rdp::client_info::{
@@ -1919,11 +2024,11 @@ fn create_client_info_pdu(
         | ClientInfoFlags::ENABLE_WINDOWS_KEY
         | ClientInfoFlags::MAXIMIZE_SHELL;
 
-    if config.autologon {
+    if config.autologon && !entra_auth {
         flags |= ClientInfoFlags::AUTOLOGON;
     }
 
-    if let crate::Credentials::SmartCard { .. } = &config.credentials {
+    if !entra_auth && matches!(config.credentials, crate::Credentials::SmartCard { .. }) {
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
     }
 
@@ -1958,7 +2063,11 @@ fn create_client_info_pdu(
     let client_info = ClientInfo {
         credentials: Credentials {
             username: config.credentials.username().unwrap_or("").to_owned(),
-            password: config.credentials.secret().to_owned(),
+            password: if entra_auth {
+                String::new()
+            } else {
+                config.credentials.secret().to_owned()
+            },
             domain: config.domain.clone(),
         },
         // A smart card logon sends its PIN, never a redirection cookie.
@@ -2064,7 +2173,8 @@ mod tests {
             support_dyn_vc_gfx_protocol: false,
         };
 
-        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None).client_info;
+        let client_info =
+            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false).client_info;
 
         assert!(client_info.flags.contains(ClientInfoFlags::RAIL));
         assert!(client_info.alternate_shell.is_empty());
@@ -2125,12 +2235,14 @@ mod tests {
             support_dyn_vc_gfx_protocol: false,
         };
 
-        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None).client_info;
+        let client_info =
+            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false).client_info;
         assert!(client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
         assert!(!client_info.flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
 
         config.enable_audio_capture = false;
-        let client_info = create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None).client_info;
+        let client_info =
+            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false).client_info;
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
     }
 

@@ -2479,6 +2479,11 @@ fn build_connector(
     let mut connector =
         ironrdp_connector::ClientConnector::new(connector_config, client_addr).with_static_channel(drdynvc);
 
+    #[cfg(feature = "entra-auth")]
+    if config.entra_auth.is_some() {
+        connector = connector.with_entra_auth();
+    }
+
     if let Some(load_balance_info) = &config.load_balance_info {
         connector = connector.with_load_balance_info(load_balance_info.clone());
     }
@@ -3320,6 +3325,11 @@ where
     let erased_stream: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(tls_stream);
     let mut upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
 
+    #[cfg(feature = "entra-auth")]
+    if let Some(auth) = &config.entra_auth {
+        perform_entra_auth(&mut upgraded_framed, &mut connector, auth).await?;
+    }
+
     let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert)
         .ok_or_else(|| ironrdp_connector::general_err!("unable to extract tls server public key"))?
         .to_owned();
@@ -3408,6 +3418,10 @@ where
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 fn redirection_certificate_callback(config: &Config) -> Option<ironrdp_tls::CertificateValidationCallback> {
+    #[cfg(feature = "entra-auth")]
+    if config.entra_auth.is_some() {
+        return None;
+    }
     let target_certificate = config.redirection.as_ref()?.target_certificate.clone()?;
     // The native-tls backend rejects validation callbacks, so it keeps ordinary strict validation.
     if cfg!(feature = "native-tls") || config.certificate_validation() != ironrdp_tls::CertificateValidation::Strict {
@@ -3446,6 +3460,58 @@ fn warn_on_unexpected_target_certificate(config: &Config, tls_cert: &x509_cert::
             "The redirection target presented a certificate other than the one the redirecting server reported"
         );
     }
+}
+
+#[cfg(feature = "entra-auth")]
+async fn perform_entra_auth<S>(
+    framed: &mut ironrdp_tokio::TokioFramed<S>,
+    connector: &mut ironrdp_connector::ClientConnector,
+    auth: &crate::entra::EntraAuthSession,
+) -> ConnectorResult<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+{
+    use ironrdp_tokio::{FramedWrite as _, single_sequence_step};
+    use zeroize::Zeroize as _;
+
+    let aad_nonce = acquire_entra_aad_nonce(auth).await?;
+    let mut output = WriteBuf::new();
+    while connector.should_perform_entra_auth() {
+        if let Some(server_nonce) = connector.entra_server_nonce().map(str::to_owned) {
+            let assertion = auth.assertion(&server_nonce, &aad_nonce).await.map_err(|error| {
+                <ironrdp_connector::ConnectorError as ironrdp_connector::ConnectorErrorExt>::reason(
+                    "create Entra RDP assertion",
+                    error.to_string(),
+                )
+            })?;
+            let written = connector.submit_entra_assertion(assertion.as_str(), &mut output)?;
+            if let Some(size) = written.size() {
+                debug_assert_eq!(size, output.filled_len());
+                let write_result = framed.write_all(output.filled()).await;
+                output.filled_mut().zeroize();
+                output.clear();
+                write_result.map_err(|error| {
+                    ironrdp_connector::custom_err!("write Entra RDS AAD authentication request", error)
+                })?;
+            }
+        } else {
+            single_sequence_step(framed, connector, &mut output).await?;
+            output.filled_mut().zeroize();
+            output.clear();
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "entra-auth")]
+async fn acquire_entra_aad_nonce(auth: &crate::entra::EntraAuthSession) -> ConnectorResult<String> {
+    auth.acquire_aad_nonce().await.map_err(|error| {
+        <ironrdp_connector::ConnectorError as ironrdp_connector::ConnectorErrorExt>::reason(
+            "acquire Entra AAD nonce",
+            error.to_string(),
+        )
+    })
 }
 
 /// Hyper-V console connect via ironrdp-vmconnect, then shared RDP tail.
@@ -5808,12 +5874,12 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "clipboard")]
+    #[cfg(all(feature = "clipboard", feature = "rdpdr"))]
     fn no_cliprdr_factory() -> CliprdrFactoryRef<'static> {
         None
     }
 
-    #[cfg(not(feature = "clipboard"))]
+    #[cfg(all(not(feature = "clipboard"), feature = "rdpdr"))]
     fn no_cliprdr_factory() -> CliprdrFactoryRef<'static> {
         core::marker::PhantomData
     }
