@@ -173,12 +173,6 @@ impl ByteRangeLocks {
         responses
     }
 
-    /// Forgets every lock and waiting request, as the server does when the channel restarts.
-    pub(crate) fn clear(&mut self) {
-        self.locks.clear();
-        self.waiting.clear();
-    }
-
     fn try_lock(
         &mut self,
         owner: u32,
@@ -262,5 +256,106 @@ fn last_byte(offset: u64, length: u64) -> u64 {
     match length.checked_sub(1) {
         Some(extent) => offset.saturating_add(extent),
         None => offset.wrapping_sub(1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_rdpdr::pdu::efs::{MajorFunction, MinorFunction};
+
+    use super::*;
+
+    fn identity() -> FileIdentity {
+        FileIdentity::of(&nix::sys::stat::stat("/").expect("stat the root directory"))
+    }
+
+    fn request(file_id: u32) -> DeviceIoRequest {
+        DeviceIoRequest {
+            device_id: 1,
+            file_id,
+            completion_id: 0,
+            major_function: MajorFunction::LockControl,
+            minor_function: MinorFunction::from(0),
+        }
+    }
+
+    fn range(offset: u64, length: u64) -> RdpLockInfo {
+        RdpLockInfo { length, offset }
+    }
+
+    // oracle: mutant lock cap check removed
+    #[test]
+    fn a_full_table_refuses_another_lock() {
+        let mut table = ByteRangeLocks {
+            locks: (0..MAX_LOCKS)
+                .map(|index| ByteRangeLock {
+                    identity: identity(),
+                    owner: 1,
+                    offset: u64::try_from(index).expect("index fits u64"),
+                    length: 1,
+                    exclusive: false,
+                })
+                .collect(),
+            ..ByteRangeLocks::default()
+        };
+
+        let status = table.lock(&request(2), identity(), &[range(u64::MAX - 1, 1)], false, false);
+
+        assert_eq!(status, Some(NtStatus::INSUFFICIENT_RESOURCES));
+        assert_eq!(table.locks.len(), MAX_LOCKS);
+    }
+
+    // oracle: mutant waiting cap check removed
+    #[test]
+    fn a_full_queue_refuses_another_waiting_request() {
+        let mut table = ByteRangeLocks::default();
+        assert_eq!(
+            table.lock(&request(1), identity(), &[range(0, 10)], true, false),
+            Some(NtStatus::SUCCESS)
+        );
+        for _ in 0..MAX_WAITING {
+            assert_eq!(table.lock(&request(2), identity(), &[range(0, 10)], true, true), None);
+        }
+
+        let status = table.lock(&request(2), identity(), &[range(0, 10)], true, true);
+
+        assert_eq!(status, Some(NtStatus::INSUFFICIENT_RESOURCES));
+        assert_eq!(table.waiting.len(), MAX_WAITING);
+    }
+
+    // oracle: mutant rollback of the ranges taken before a conflict removed
+    #[test]
+    fn a_refused_request_takes_none_of_its_ranges() {
+        let mut table = ByteRangeLocks::default();
+        assert_eq!(
+            table.lock(&request(1), identity(), &[range(5, 1)], true, false),
+            Some(NtStatus::SUCCESS)
+        );
+
+        let status = table.lock(&request(2), identity(), &[range(0, 1), range(5, 1)], true, false);
+
+        assert_eq!(status, Some(NtStatus::LOCK_NOT_GRANTED));
+        assert!(!table.conflicts(identity(), 3, 0, 1, true, true));
+    }
+
+    // oracle: spec MS-FSA §2.1.5.8, §2.1.5.20
+    #[test]
+    fn closing_a_handle_cancels_its_waiting_requests_and_grants_others() {
+        let mut table = ByteRangeLocks::default();
+        assert_eq!(
+            table.lock(&request(1), identity(), &[range(0, 10)], true, false),
+            Some(NtStatus::SUCCESS)
+        );
+        assert_eq!(table.lock(&request(2), identity(), &[range(0, 10)], true, true), None);
+        assert_eq!(table.lock(&request(3), identity(), &[range(0, 10)], true, true), None);
+
+        let cancelled = table.close(2);
+        let granted = table.close(1);
+
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(granted.len(), 1);
+        assert!(table.waiting.is_empty());
+        assert_eq!(table.locks.len(), 1);
+        assert_eq!(table.locks[0].owner, 3);
     }
 }

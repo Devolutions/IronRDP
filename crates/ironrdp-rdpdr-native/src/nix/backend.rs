@@ -88,7 +88,7 @@ pub(crate) struct FileIdentity {
 }
 
 impl FileIdentity {
-    fn of(stat: &FileStat) -> Self {
+    pub(crate) fn of(stat: &FileStat) -> Self {
         Self {
             device: stat.st_dev,
             inode: stat.st_ino,
@@ -397,8 +397,7 @@ impl RdpdrBackend for NixRdpdrBackend {
         if let Some(printer) = self.printer.as_mut() {
             printer.spooler.reset();
         }
-        // The server forgets its handles and lock requests when the channel restarts, so they are closed as if it had closed them.
-        self.locks.clear();
+        // The server forgets its handles when the channel restarts, so they are closed as if it had closed them, which releases their locks and lock requests.
         self.close_all_files();
         Ok(())
     }
@@ -608,6 +607,9 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
     }
 }
 
+/// Takes or releases byte-range locks on the file `req_inner` names ([MS-FSA] 2.1.5.8 Server Requests a Byte-Range Lock and 2.1.5.9 Server Requests an Unlock of a Byte-Range).
+///
+/// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/369103ec-a8af-452b-8006-aff07b925b61
 pub(crate) fn lock_control(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveLockControlRequest,
