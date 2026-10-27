@@ -65,6 +65,14 @@ openh264 = ["ironrdp-egfx/openh264-bundled"]
 camera = ["dep:ironrdp-rdpecam", "dep:ironrdp-rdpecam-native"]
 # MS-RDPEUSB USB device redirection through nusb (WinUSB on Windows, usbfs on Linux, IOKit on macOS).
 usb = ["dep:ironrdp-rdpeusb", "dep:ironrdp-rdpeusb-native"]
+cloud = [
+    "dep:base64",
+    "dep:picky",
+    "dep:reqwest",
+    "dep:rustls-native-certs",
+    "dep:serde",
+    "dep:serde_json",
+]
 udp = [
     "dep:ironrdp-rdpeudp",
     "dep:ironrdp-rdpeudp-tokio",
@@ -95,6 +103,7 @@ all = [
     "video",
     "udp",
     "usb",
+    "cloud",
     "entra-auth",
 ]
 
@@ -151,12 +160,13 @@ anyhow = "1"
 smallvec = "1.15"
 url = "2" # public
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
-reqwest = { version = "0.12.28", default-features = false, features = ["system-proxy"], optional = true }
+reqwest = { version = "0.12.28", default-features = false, features = ["stream", "system-proxy"], optional = true } # public
+rustls-native-certs = { version = "0.8", optional = true }
 picky = { version = "=7.0.0-rc.27", optional = true }
 base64 = { version = "0.22", optional = true }
 rand = { version = "0.9", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true } # public
+serde_json = { version = "1", optional = true } # public
 zeroize = { version = "1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
