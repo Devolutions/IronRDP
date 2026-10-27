@@ -23,8 +23,17 @@ internal static class SmokeTests
             image.FillData(bytes);
             True(bytes[..^1].All(b => b == 0), "new image is zeroed");
             Equal((byte)0xff, bytes[^1], "bytes past the image are untouched");
-            Throws<IronRdpException>(() => image.FillData(new byte[4]));
+        });
 
+        yield return ("decoded image rejects a short output buffer", () =>
+        {
+            var image = DecodedImage.New(PixelFormat.BgrA32, 64, 32);
+            Throws<IronRdpException>(() => image.FillData(new byte[4]));
+        });
+
+        yield return ("disposed decoded image throws ObjectDisposedException", () =>
+        {
+            var image = DecodedImage.New(PixelFormat.BgrA32, 64, 32);
             image.Dispose();
             Throws<ObjectDisposedException>(() => _ = image.DataSize);
         });
