@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.8.0...ironrdp-input-v0.9.0)] - 2026-10-27
 
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
 
 
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-input-v0.7.0...ironrdp-input-v0.8.0)] - 2026-10-23
