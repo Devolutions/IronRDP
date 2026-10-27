@@ -24,6 +24,9 @@ internal static class SmokeTests
             True(bytes[..^1].All(b => b == 0), "new image is zeroed");
             Equal((byte)0xff, bytes[^1], "bytes past the image are untouched");
             Throws<IronRdpException>(() => image.FillData(new byte[4]));
+
+            image.Dispose();
+            Throws<ObjectDisposedException>(() => _ = image.DataSize);
         });
 
         yield return ("vec u8 round-trips bytes", () =>
