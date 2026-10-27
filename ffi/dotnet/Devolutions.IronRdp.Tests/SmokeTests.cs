@@ -11,6 +11,7 @@ internal static class SmokeTests
 
     internal static IEnumerable<(string Name, System.Action Run)> Cases()
     {
+        // oracle: ffi/INTENT.md "Copying into caller buffers" (bytes past the image)
         yield return ("decoded image exposes its size and zeroed data", () =>
         {
             var image = DecodedImage.New(PixelFormat.BgrA32, 64, 32);
@@ -25,7 +26,7 @@ internal static class SmokeTests
             Equal((byte)0xff, bytes[^1], "bytes past the image are untouched");
         });
 
-        // oracle: DecodedImage::fill_data doc contract (# Errors) and the shared fill_prefix error in ffi/src/utils/mod.rs
+        // oracle: ffi/INTENT.md "Copying into caller buffers"
         yield return ("decoded image rejects a short output buffer", () =>
         {
             var image = DecodedImage.New(PixelFormat.BgrA32, 64, 32);
@@ -51,6 +52,7 @@ internal static class SmokeTests
             True(bytes.SequenceEqual(new byte[] { 1, 2, 3 }), "filled bytes");
         });
 
+        // oracle: ffi/INTENT.md "Copying into caller buffers"
         yield return ("fill leaves the rest of a larger buffer alone", () =>
         {
             var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });
@@ -59,6 +61,7 @@ internal static class SmokeTests
             True(bytes.SequenceEqual(new byte[] { 1, 2, 3, 9, 9 }), "filled bytes");
         });
 
+        // oracle: ffi/INTENT.md "Copying into caller buffers"
         yield return ("short output buffer surfaces IronRdpException", () =>
         {
             var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });
@@ -67,6 +70,7 @@ internal static class SmokeTests
             True(error.Message.Contains("buffer is too small"), $"error message: {error.Message}");
         });
 
+        // oracle: ffi/INTENT.md "Copying into caller buffers"
         yield return ("write buf reads into a larger buffer and rejects a short one", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
