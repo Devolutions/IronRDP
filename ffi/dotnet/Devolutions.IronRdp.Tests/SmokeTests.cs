@@ -189,6 +189,7 @@ internal static class SmokeTests
             True(stream.ToArray().SequenceEqual(new byte[] { 1, 2, 3 }), "written bytes");
         });
 
+        // oracle: spec MS-RDPBCGR §2.2.1.2 (each X.224 Connection Confirm is one TPKT-framed PDU)
         yield return ("framed reads back-to-back PDUs", () =>
         {
             var bytes = TpktX224ConfirmSelectingTls.Concat(TpktX224ConfirmWithoutNegotiation).ToArray();

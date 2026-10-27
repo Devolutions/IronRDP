@@ -2,6 +2,9 @@ using System.Runtime.InteropServices;
 
 namespace Devolutions.IronRdp;
 
+/// <remarks>
+/// All reads share one buffer, so run one read at a time. Writes are locked and may overlap a read.
+/// </remarks>
 public class Framed<TS> where TS : Stream
 {
     private const int ReadChunkSize = 8192;
@@ -83,7 +86,7 @@ public class Framed<TS> where TS : Stream
 
     async Task<int> Read()
     {
-        var size = await this._stream.ReadAsync(_readBuffer.AsMemory());
+        var size = await this._stream.ReadAsync(_readBuffer);
         this._buffer.AddRange(_readBuffer.AsSpan(0, size));
         return size;
     }
