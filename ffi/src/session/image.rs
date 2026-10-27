@@ -35,7 +35,8 @@ pub mod ffi {
         ///
         /// Think of `buffer` as a picture laid out like this image: same pixel format, rows one after
         /// another from the top, and `buffer_stride` bytes from the start of one row to the start of
-        /// the next. Only the bytes under `rect` are written, and the rest of `buffer` stays as it was.
+        /// the next.
+        /// Only the bytes under `rect` are written, and the rest of `buffer` stays as it was.
         ///
         /// # Errors
         ///

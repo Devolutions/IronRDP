@@ -43,9 +43,10 @@ internal static class SmokeTests
             Throws<ObjectDisposedException>(() => _ = image.DataSize);
         });
 
+        // oracle: mutant source and destination row offsets, inclusive bounds, and vertical rectangle guards
         yield return ("decoded image copies only the requested rectangle", () =>
         {
-            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
+            var image = NonUniformImage();
             const int stride = 8 * 4 + 4;
             var buffer = new byte[stride * 4];
             Array.Fill(buffer, (byte)0xff);
@@ -57,17 +58,25 @@ internal static class SmokeTests
                 for (int x = 0; x < stride; x++)
                 {
                     bool inside = y is >= 1 and <= 2 && x >= 2 * 4 && x < 5 * 4;
-                    Equal(inside ? (byte)0 : (byte)0xff, buffer[y * stride + x], $"byte ({x}, {y})");
+                    byte expected = inside ? (byte)(y * 8 * 4 + x + 1) : (byte)0xff;
+                    Equal(expected, buffer[y * stride + x], $"byte ({x}, {y})");
                 }
             }
 
             var inverted = Throws<IronRdpException>(() => InclusiveRectangle.New(3, 0, 2, 0));
             True(inverted.Message.Contains("rectangle is inverted"), $"error message: {inverted.Message}");
+            var invertedVertical = Throws<IronRdpException>(() => InclusiveRectangle.New(0, 3, 0, 2));
+            True(invertedVertical.Message.Contains("rectangle is inverted"), $"error message: {invertedVertical.Message}");
             var tooLarge = Throws<IronRdpException>(() => InclusiveRectangle.New(0, 0, ushort.MaxValue, 0));
             True(tooLarge.Message.Contains("rectangle is too large"), $"error message: {tooLarge.Message}");
+            var tooTall = Throws<IronRdpException>(() => InclusiveRectangle.New(0, 0, 0, ushort.MaxValue));
+            True(tooTall.Message.Contains("rectangle is too large"), $"error message: {tooTall.Message}");
             Equal((int)ushort.MaxValue, (int)InclusiveRectangle.New(1, 0, ushort.MaxValue, 0).Width, "widest rectangle");
+            Equal((int)ushort.MaxValue, (int)InclusiveRectangle.New(0, 1, 0, ushort.MaxValue).Height, "tallest rectangle");
             var outside = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 8, 0), buffer, stride));
             True(outside.Message.Contains("rectangle is outside the image"), $"error message: {outside.Message}");
+            var outsideVertical = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 0, 4), buffer, stride));
+            True(outsideVertical.Message.Contains("rectangle is outside the image"), $"error message: {outsideVertical.Message}");
             Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 0), buffer, 8 * 4 - 1));
             Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 3), new byte[stride * 3], stride));
         });
@@ -185,6 +194,90 @@ internal static class SmokeTests
                 True(clipboard.NextClipboardMessageTimeout(10) == null, "no message before a session");
             });
         }
+    }
+
+    private static readonly byte[][] HandshakeServerPdus =
+    {
+        TpktX224ConfirmSelectingTls,
+        // MCS Connect Response with SKIP_CHANNELJOIN_SUPPORTED (MS-RDPBCGR §2.2.1.4).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x68, 0x02, 0xf0, 0x80, 0x7f, 0x66, 0x5e, 0x0a, 0x01, 0x00, 0x02, 0x01, 0x00,
+            0x30, 0x1a, 0x02, 0x01, 0x22, 0x02, 0x01, 0x03, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x01,
+            0x00, 0x02, 0x01, 0x01, 0x02, 0x03, 0x00, 0xff, 0xf8, 0x02, 0x01, 0x02, 0x04, 0x3a, 0x00, 0x05,
+            0x00, 0x14, 0x7c, 0x00, 0x01, 0x33, 0x14, 0x76, 0x0a, 0x01, 0x01, 0x00, 0x01, 0xc0, 0x00, 0x4d,
+            0x63, 0x44, 0x6e, 0x24, 0x01, 0x0c, 0x10, 0x00, 0x04, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x08, 0x00, 0x00, 0x00, 0x03, 0x0c, 0x08, 0x00, 0xeb, 0x03, 0x00, 0x00, 0x02, 0x0c, 0x0c, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        },
+        // MCS Attach User Confirm for channel 1007 (MS-RDPBCGR §2.2.1.6).
+        new byte[] { 0x03, 0x00, 0x00, 0x0b, 0x02, 0xf0, 0x80, 0x2e, 0x00, 0x00, 0x06 },
+        // Licensing Error Message STATUS_VALID_CLIENT (MS-RDPBCGR §2.2.1.12).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x22, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xeb, 0x70, 0x14, 0x80, 0x00,
+            0x00, 0x00, 0xff, 0x03, 0x14, 0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00,
+            0x00, 0x00,
+        },
+        // Server Demand Active with zero capability sets (MS-RDPBCGR §2.2.1.13.1).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x24, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xeb, 0x70, 0x16, 0x16, 0x00,
+            0x11, 0x00, 0xea, 0x03, 0xea, 0x03, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        },
+        // Server Font Map PDU (MS-RDPBCGR §2.2.1.22).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x28, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xeb, 0x70, 0x1a, 0x1a, 0x00,
+            0x17, 0x00, 0xea, 0x03, 0xea, 0x03, 0x01, 0x00, 0x00, 0x02, 0x08, 0x00, 0x28, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x04, 0x00,
+        },
+    };
+
+    private static DecodedImage NonUniformImage()
+    {
+        var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+        var buf = WriteBuf.New();
+        int i = 0;
+        while (!connector.DynState.IsTerminal())
+        {
+            buf.Clear();
+            if (connector.ShouldPerformSecurityUpgrade())
+            {
+                connector.MarkSecurityUpgradeAsDone();
+            }
+            else if (connector.NextPduHint() is null)
+            {
+                connector.StepNoInput(buf);
+            }
+            else
+            {
+                connector.Step(HandshakeServerPdus[i++], buf);
+            }
+        }
+
+        var stage = ActiveStage.New(connector.ConsumeAndCastToClientConnectorState().GetConnectedResult());
+        var image = DecodedImage.New(PixelFormat.BgrX32, 8, 4);
+        var frame = new byte[28 + 8 * 4 * 4];
+        // Fast-Path SetSurfaceBits (CODEC_ID_NONE, 32 bpp, 8x4, bottom-up rows, MS-RDPBCGR §2.2.9.2.1).
+        new byte[]
+        {
+            0x00, 0x80, 0x9c, 0x04, 0x96, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x04, 0x00,
+            0x20, 0x00, 0x00, 0x00, 0x08, 0x00, 0x04, 0x00, 0x80, 0x00, 0x00, 0x00,
+        }.CopyTo(frame, 0);
+        for (int y = 0; y < 4; y++)
+        {
+            for (int x = 0; x < 8 * 4; x++)
+            {
+                frame[28 + (3 - y) * 8 * 4 + x] = (byte)(y * 8 * 4 + x + 1);
+            }
+        }
+
+        var action = IronRdpPdu.New().FindSize(frame)!.Action;
+        stage.Process(image, action, frame);
+        return image;
     }
 
     private static Config TlsConfig()
