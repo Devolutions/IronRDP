@@ -1398,6 +1398,8 @@ fn a_read_only_file_cannot_be_marked_for_deletion() {
 #[case::dos_star_suffix(r"\dir\<.txt", &["B.TXT", "a.txt"])]
 #[case::question_mark(r"\dir\?.doc", &["c.doc"])]
 #[case::star_dot_star_includes_dot_entries(r"\dir\*.*", &[".", "..", "B.TXT", "a.txt", "c.doc"])]
+#[case::dot_entries_follow_dot_into_a_listing(r"\dir\?", &[".", ".."])]
+#[case::dot_entries_follow_dot_out_of_a_listing(r"\dir\*?.*", &["B.TXT", "a.txt", "c.doc"])]
 #[case::literal_name(r"\dir\c.doc", &["c.doc"])]
 fn query_directory_matches_wildcard_patterns(#[case] pattern: &str, #[case] expected: &[&str]) {
     let fixture = Fixture::new();

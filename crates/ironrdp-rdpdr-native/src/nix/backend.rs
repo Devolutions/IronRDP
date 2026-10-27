@@ -101,6 +101,7 @@ struct DirectoryListing {
     /// The enumerated directory, which entry names are resolved against.
     directory: OwnedFd,
     /// `.` and `..`, still to be returned first, which every directory but the root lists ([MS-FSA] 2.1.5.6.3 Directory Information Queries).
+    /// The pair is listed together, when `.` matches the pattern.
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/fa8194e0-53ec-413b-8315-e8fa85396fd8
     dot_entries: &'static [&'static str],
@@ -112,9 +113,13 @@ struct DirectoryListing {
 impl DirectoryListing {
     fn open(directory: OwnedFd, is_root: bool, pattern: Option<String>) -> nix::Result<Self> {
         let entries = Dir::from_fd(directory.try_clone().map_err(io_to_errno)?)?.into_iter();
+        let lists_dot_entries = !is_root
+            && pattern
+                .as_deref()
+                .is_none_or(|pattern| is_name_in_expression(".", pattern));
         Ok(Self {
             directory,
-            dot_entries: if is_root { &[] } else { &[".", ".."] },
+            dot_entries: if lists_dot_entries { &[".", ".."] } else { &[] },
             entries,
             pattern,
         })
@@ -124,15 +129,13 @@ impl DirectoryListing {
     fn next_entry(&mut self) -> nix::Result<Option<DirectoryEntry>> {
         let pattern = self.pattern.as_deref();
         let is_match = |name: &str| pattern.is_none_or(|pattern| is_name_in_expression(name, pattern));
-        while let Some((name, rest)) = self.dot_entries.split_first() {
+        if let Some((name, rest)) = self.dot_entries.split_first() {
             self.dot_entries = rest;
-            if is_match(name) {
-                let stat = fstatat(self.directory.as_fd(), *name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
-                return Ok(Some(DirectoryEntry {
-                    name: (*name).to_owned(),
-                    stat,
-                }));
-            }
+            let stat = fstatat(self.directory.as_fd(), *name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+            return Ok(Some(DirectoryEntry {
+                name: (*name).to_owned(),
+                stat,
+            }));
         }
         for entry in self.entries.by_ref() {
             let entry = entry?;
@@ -1375,6 +1378,7 @@ pub(crate) fn create_drive(
                     identity,
                     ancestors,
                     // GENERIC_ALL and MAXIMUM_ALLOWED include DELETE ([MS-SMB2] 2.2.13.1).
+                    // A MAXIMUM_ALLOWED open that fell back to read-only keeps it, as Windows lets a read-only file be renamed: the parent directory's permissions decide a rename, and the read-only check before a delete decides a delete.
                     may_delete: req_inner.desired_access.intersects(
                         DesiredAccess::DELETE | DesiredAccess::GENERIC_ALL | DesiredAccess::MAXIMUM_ALLOWED,
                     ),
