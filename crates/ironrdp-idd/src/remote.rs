@@ -1,7 +1,6 @@
 #[cfg(ironrdp_idd_link)]
 use core::mem::size_of;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::time::Duration;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -16,9 +15,9 @@ use windows::Win32::Devices::Display::{
 #[cfg(ironrdp_idd_link)]
 use windows::Win32::Foundation::POINT;
 
+use crate::{IDDCX_ADAPTER, NTSTATUS, STATUS_SUCCESS};
 #[cfg(ironrdp_idd_link)]
-use crate::ntstatus_to_u32;
-use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_SUCCESS};
+use crate::{IDDCX_MONITOR, ntstatus_to_u32};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RuntimeConfig {
@@ -32,6 +31,9 @@ pub(crate) struct RuntimeConfig {
 
 #[derive(Debug, Default)]
 struct AdapterRuntimeState {
+    adapter_raw: usize,
+    monitor_raw: usize,
+    timer_raw: usize,
     last_is_remote: bool,
     last_session_id: Option<u32>,
     adapter_initialized: bool,
@@ -50,8 +52,9 @@ struct AdapterRuntimeState {
 }
 
 static ADAPTER_RUNTIME_STATE: OnceLock<Mutex<AdapterRuntimeState>> = OnceLock::new();
-static ACTIVE_ADAPTER_RAW: AtomicUsize = AtomicUsize::new(0);
-static REMOTE_STATE_MONITOR_RUNNING: AtomicBool = AtomicBool::new(false);
+// The INF disables host sharing, so each process binds to one OS-owned device session.
+static DEVICE_SESSION_ID: AtomicU32 = AtomicU32::new(0);
+static DEVICE_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(ironrdp_idd_link)]
 static DISPLAY_CONFIG_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -133,9 +136,53 @@ fn reset_display_config_state(config: &RuntimeConfig, state: &mut AdapterRuntime
     }
 }
 
+pub(crate) fn bind_device_session(session_id: u32) -> bool {
+    match DEVICE_SESSION_ID.compare_exchange(0, session_id, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => true,
+        Err(bound_session_id) => bound_session_id == session_id,
+    }
+}
+
+#[cfg(ironrdp_idd_link)]
+pub(crate) fn set_device_active(active: bool) {
+    let mut state = adapter_runtime_state()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    DEVICE_ACTIVE.store(active, Ordering::Release);
+    if state.timer_raw != 0 {
+        // SAFETY: D0 exit precedes object cleanup, and the state lock excludes timer publication.
+        unsafe { crate::wdf::timer_stop(state.timer_raw as crate::wdf::WDFTIMER) };
+    }
+    *state = AdapterRuntimeState::default();
+}
+
+#[cfg(ironrdp_idd_link)]
+pub(crate) fn note_adapter_created(adapter: IDDCX_ADAPTER) {
+    let mut state = adapter_runtime_state()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    state.adapter_raw = adapter as usize;
+}
+
+#[cfg(ironrdp_idd_link)]
+pub(crate) fn adapter_is_active(adapter: IDDCX_ADAPTER) -> bool {
+    let state = adapter_runtime_state()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    DEVICE_ACTIVE.load(Ordering::Acquire) && state.adapter_raw == adapter as usize
+}
+
 pub(crate) fn load_runtime_config() -> RuntimeConfig {
+    let session_id = DEVICE_SESSION_ID.load(Ordering::Acquire);
+    let active = DEVICE_ACTIVE.load(Ordering::Acquire);
+    let mut config = RuntimeConfig {
+        session_id: (session_id != 0).then_some(session_id),
+        wddm_idd_enabled: active && session_id != 0,
+        driver_loaded: active && session_id != 0,
+        ..RuntimeConfig::default()
+    };
     let Ok(content) = std::fs::read_to_string(crate::IDD_RUNTIME_STATE_FILE) else {
-        return RuntimeConfig::default();
+        return config;
     };
 
     let mut values = HashMap::new();
@@ -152,24 +199,13 @@ pub(crate) fn load_runtime_config() -> RuntimeConfig {
         values.insert(key.trim().to_owned(), value.trim().to_owned());
     }
 
-    RuntimeConfig {
-        dump_dir: values
-            .get("dump_dir")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from),
-        session_id: values
-            .get("session_id")
-            .and_then(|value| value.parse::<u32>().ok())
-            .filter(|value| *value != 0),
-        wddm_idd_enabled: values
-            .get("wddm_idd_enabled")
-            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "True")),
-        driver_loaded: values
-            .get("driver_loaded")
-            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "True")),
-        hardware_id: values.get("hardware_id").cloned(),
-        active_video_source: values.get("active_video_source").cloned(),
-    }
+    config.dump_dir = values
+        .get("dump_dir")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    config.hardware_id = values.get("hardware_id").cloned();
+    config.active_video_source = values.get("active_video_source").cloned();
+    config
 }
 
 pub(crate) fn runtime_dump_dir() -> Option<PathBuf> {
@@ -195,48 +231,23 @@ pub(crate) fn swapchain_dump_runtime() -> Result<RuntimeConfig, String> {
     Ok(config)
 }
 
-#[expect(
-    clippy::infinite_loop,
-    reason = "the driver state monitor runs for the process lifetime"
-)]
-fn ensure_remote_state_monitor_thread() {
-    if REMOTE_STATE_MONITOR_RUNNING.swap(true, Ordering::AcqRel) {
-        return;
-    }
-
-    if let Err(error) = std::thread::Builder::new()
-        .name("irdp-idd-remote-state".to_owned())
-        .spawn(|| {
-            loop {
-                let adapter_raw = ACTIVE_ADAPTER_RAW.load(Ordering::Acquire);
-                if adapter_raw != 0 {
-                    let config = load_runtime_config();
-                    let is_remote = config.wddm_idd_enabled && config.session_id.is_some();
-                    handle_session_transition(adapter_raw as IDDCX_ADAPTER, is_remote);
-                }
-
-                std::thread::sleep(Duration::from_millis(250));
-            }
-        })
-    {
-        REMOTE_STATE_MONITOR_RUNNING.store(false, Ordering::Release);
-        crate::debug_trace(&format!(
-            "SESSION_PROOF_IDD_REMOTE_STATE_MONITOR_ERROR stage=spawn error={error}"
-        ));
-    }
+#[cfg(ironrdp_idd_link)]
+unsafe extern "system" fn display_timer_tick(timer: crate::wdf::WDFTIMER) {
+    // WDF drains this callback before cleaning up its monitor parent or adapter ancestor.
+    // Native display calls must stay here, never in a detached thread or a power callback.
+    // UNTESTED: A native update must finish or abort during stop without waiting for parent cleanup.
+    // Force that overlap when changing this callback; mocked rundown does not prove native progress.
+    maybe_request_display_config_update(timer);
 }
 
-#[cfg(not(ironrdp_idd_link))]
-fn maybe_request_display_config_update(_adapter: IDDCX_ADAPTER, _source: &str) {}
-
 #[cfg(ironrdp_idd_link)]
-fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
+fn maybe_request_display_config_update(timer: crate::wdf::WDFTIMER) {
+    let source = "display_timer";
     let _update_guard = match DISPLAY_CONFIG_UPDATE_LOCK.try_lock() {
         Ok(guard) => guard,
         Err(std::sync::TryLockError::WouldBlock) => return,
         Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
     };
-    ACTIVE_ADAPTER_RAW.store(adapter as usize, Ordering::Release);
 
     let config = load_runtime_config();
     let Some(session_id) = config.session_id else {
@@ -257,17 +268,17 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
         }
     };
 
-    let Some((monitor, connector_index, os_target_id)) = crate::monitor::current_monitor() else {
-        return;
-    };
-
-    let previous = {
+    let (adapter, monitor, connector_index, os_target_id, previous) = {
         let mut state = match adapter_runtime_state().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        if !state.adapter_initialized || !state.monitor_arrived {
+        if !DEVICE_ACTIVE.load(Ordering::Acquire)
+            || state.timer_raw != timer as usize
+            || !state.adapter_initialized
+            || !state.monitor_arrived
+        {
             return;
         }
 
@@ -285,7 +296,13 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
         state.display_config_requested = true;
         state.display_config_request_session_id = Some(session_id);
         state.display_config_request_size = Some(size);
-        previous
+        (
+            state.adapter_raw as IDDCX_ADAPTER,
+            state.monitor_raw as IDDCX_MONITOR,
+            state.last_monitor_connector_index,
+            state.last_monitor_os_target_id,
+            previous,
+        )
     };
 
     let mut path = crate::iddcx::IDDCX_DISPLAYCONFIGPATH {
@@ -312,7 +329,7 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
     };
 
     crate::debug_trace(&format!(
-        "SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_REQUEST source={source} session_id={session_id} connector_index={connector_index} os_target_id={os_target_id} resolution={}x{} refresh={}/{} monitor_scale={} v_sync_divider={}",
+        "SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_REQUEST source={source} session_id={session_id} connector_index={connector_index:?} os_target_id={os_target_id:?} resolution={}x{} refresh={}/{} monitor_scale={} v_sync_divider={}",
         path.Resolution.cx,
         path.Resolution.cy,
         path.RefreshRate.Numerator,
@@ -342,7 +359,7 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
     let status = if status < 0 {
         status
     } else {
-        // SAFETY: the adapter and monitor are initialized, and the path lives through this synchronous call.
+        // SAFETY: The monitor-parented timer keeps both objects ahead of cleanup until this callback returns.
         unsafe { crate::iddcx::adapter_display_config_update(adapter, &mut in_args) }
     };
 
@@ -352,7 +369,7 @@ fn maybe_request_display_config_update(adapter: IDDCX_ADAPTER, source: &str) {
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        if status < 0 && status != crate::ntstatus_from_u32(0xC000_000D) {
+        if state.timer_raw == timer as usize && status < 0 && status != crate::ntstatus_from_u32(0xC000_000D) {
             state.display_config_requested = false;
             state.display_config_request_session_id = None;
         }
@@ -388,16 +405,32 @@ pub(crate) fn requested_display_size() -> Option<DisplaySize> {
         .display_config_request_size
 }
 
-pub(crate) fn note_adapter_init_finished(adapter: IDDCX_ADAPTER) {
-    ACTIVE_ADAPTER_RAW.store(adapter as usize, Ordering::Release);
-    ensure_remote_state_monitor_thread();
-
+#[cfg(ironrdp_idd_link)]
+pub(crate) fn note_adapter_init_finished(adapter: IDDCX_ADAPTER) -> NTSTATUS {
     {
         let mut state = match adapter_runtime_state().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
+        if !DEVICE_ACTIVE.load(Ordering::Acquire) || state.adapter_raw != adapter as usize {
+            tracing::warn!("Discarded adapter completion after power exit");
+            return crate::ntstatus_from_u32(0xC000_02B6);
+        }
+        // SAFETY: The framework completion callback owns the adapter and its newly arrived monitor.
+        let (status, timer) =
+            unsafe { crate::wdf::timer_create(state.monitor_raw as IDDCX_MONITOR, display_timer_tick) };
+        crate::debug_trace(&format!(
+            "WdfTimerCreate: display update timer status=0x{:08X}",
+            ntstatus_to_u32(status),
+        ));
+        if status < 0 {
+            tracing::error!(status, "Failed to create display update timer");
+            return status;
+        }
         state.adapter_initialized = true;
+        state.timer_raw = timer as usize;
+        // SAFETY: The state lock prevents power exit from retiring this newly created timer.
+        unsafe { crate::wdf::timer_start(timer) };
     }
 
     let config = load_runtime_config();
@@ -414,24 +447,27 @@ pub(crate) fn note_adapter_init_finished(adapter: IDDCX_ADAPTER) {
         "SESSION_PROOF_IDD_ADAPTER_INIT_READY"
     );
 
-    maybe_request_display_config_update(adapter, "adapter_init_ready");
+    STATUS_SUCCESS
 }
 
+#[cfg(ironrdp_idd_link)]
 pub(crate) fn note_monitor_arrival(
     adapter: IDDCX_ADAPTER,
     monitor: IDDCX_MONITOR,
     connector_index: u32,
     os_target_id: u32,
-) {
-    let _ = monitor;
-    ensure_remote_state_monitor_thread();
-
+) -> NTSTATUS {
     let config = load_runtime_config();
     {
         let mut state = match adapter_runtime_state().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
+        if !DEVICE_ACTIVE.load(Ordering::Acquire) || state.adapter_raw != adapter as usize {
+            tracing::warn!("Discarded monitor arrival after power exit");
+            return crate::ntstatus_from_u32(0xC000_02B6);
+        }
+        state.monitor_raw = monitor as usize;
         state.monitor_arrived = true;
         state.last_monitor_connector_index = Some(connector_index);
         state.last_monitor_os_target_id = Some(os_target_id);
@@ -462,7 +498,24 @@ pub(crate) fn note_monitor_arrival(
         "SESSION_PROOF_IDD_MONITOR_ARRIVED"
     );
 
-    maybe_request_display_config_update(adapter, "monitor_arrival");
+    STATUS_SUCCESS
+}
+
+#[cfg(ironrdp_idd_link)]
+pub(crate) fn note_monitor_departure(monitor: IDDCX_MONITOR) {
+    let mut state = adapter_runtime_state()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if state.monitor_raw == monitor as usize {
+        if state.timer_raw != 0 {
+            // SAFETY: The caller has not yet reported monitor departure, so its timer is still live.
+            unsafe { crate::wdf::timer_stop(state.timer_raw as crate::wdf::WDFTIMER) };
+        }
+        state.timer_raw = 0;
+        state.monitor_raw = 0;
+        state.monitor_arrived = false;
+        state.adapter_initialized = false;
+    }
 }
 
 pub(crate) fn note_swapchain_assignment(session_id: Option<u32>) {
@@ -606,11 +659,8 @@ pub fn set_display_config(_adapter: IDDCX_ADAPTER, paths: &[crate::adapter::IDDC
     STATUS_SUCCESS
 }
 
-pub fn handle_session_transition(adapter: IDDCX_ADAPTER, is_remote: bool) {
-    ACTIVE_ADAPTER_RAW.store(adapter as usize, Ordering::Release);
-
+pub fn handle_session_transition(_adapter: IDDCX_ADAPTER, is_remote: bool) {
     let config = load_runtime_config();
-    let mut should_request_display_config = false;
 
     {
         let mut state = match adapter_runtime_state().lock() {
@@ -639,12 +689,6 @@ pub fn handle_session_transition(adapter: IDDCX_ADAPTER, is_remote: bool) {
 
         if !is_remote {
             reset_display_config_state(&config, &mut state, "session_inactive");
-        } else if state.adapter_initialized && state.monitor_arrived {
-            should_request_display_config = true;
         }
-    }
-
-    if should_request_display_config {
-        maybe_request_display_config_update(adapter, "remote_session_transition");
     }
 }

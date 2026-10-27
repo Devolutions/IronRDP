@@ -30,36 +30,9 @@ struct MonitorKey(IDDCX_MONITOR);
 unsafe impl Send for MonitorKey {}
 
 static ACTIVE_SWAPCHAINS: OnceLock<Mutex<HashMap<MonitorKey, SwapChainProcessor>>> = OnceLock::new();
-static ACTIVE_MONITOR: OnceLock<Mutex<Option<ActiveMonitor>>> = OnceLock::new();
 
 fn active_swapchains() -> &'static Mutex<HashMap<MonitorKey, SwapChainProcessor>> {
     ACTIVE_SWAPCHAINS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn active_monitor() -> &'static Mutex<Option<ActiveMonitor>> {
-    ACTIVE_MONITOR.get_or_init(|| Mutex::new(None))
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ActiveMonitor {
-    handle_raw: usize,
-    connector_index: u32,
-    os_target_id: u32,
-}
-
-pub(crate) fn current_monitor() -> Option<(IDDCX_MONITOR, u32, u32)> {
-    let state = match active_monitor().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-
-    state.as_ref().map(|value| {
-        (
-            value.handle_raw as IDDCX_MONITOR,
-            value.connector_index,
-            value.os_target_id,
-        )
-    })
 }
 
 const NO_PREFERRED_MODE: u32 = 0xFFFF_FFFF;
@@ -461,24 +434,12 @@ impl IronRdpIddMonitor {
                 os_target_id = out_arrival.OsTargetId,
                 "IddCxMonitorCreate/Arrival succeeded"
             );
-            {
-                let mut state = match active_monitor().lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                *state = Some(ActiveMonitor {
-                    handle_raw: out_create.MonitorObject as usize,
-                    connector_index: connector_idx,
-                    os_target_id: out_arrival.OsTargetId,
-                });
-            }
             crate::remote::note_monitor_arrival(
                 adapter,
                 out_create.MonitorObject,
                 connector_idx,
                 out_arrival.OsTargetId,
-            );
-            STATUS_SUCCESS
+            )
         }
     }
 
@@ -491,19 +452,7 @@ impl IronRdpIddMonitor {
 
         #[cfg(ironrdp_idd_link)]
         {
-            {
-                let mut state = match active_monitor().lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                if state
-                    .as_ref()
-                    .is_some_and(|value| value.handle_raw == self.monitor as usize)
-                {
-                    *state = None;
-                }
-            }
-
+            crate::remote::note_monitor_departure(self.monitor);
             // SAFETY: `self.monitor` is an IddCx monitor handle returned by `IddCxMonitorCreate`.
             let status = unsafe { iddcx::monitor_departure(self.monitor) };
             if status < 0 {

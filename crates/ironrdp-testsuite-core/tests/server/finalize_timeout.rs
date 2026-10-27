@@ -47,7 +47,7 @@ async fn client_that_stalls_during_finalize_is_dropped() {
             // `with_no_security` the negotiation resolves to plain RDP and goes
             // straight to the finalize handshake either way.
             let serving = tokio::task::spawn_local(async move {
-                server.run_connection_with(server_side, TransportTls::AlreadyDone).await
+                Box::pin(server.run_connection_with(server_side, TransportTls::AlreadyDone)).await
             });
 
             // X.224 negotiation, and nothing after it — no MCS Connect Initial,

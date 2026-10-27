@@ -8,6 +8,8 @@
 /// This module implements the same dispatch pattern as `iddcx.rs` does for IddCx.
 use crate::{DRIVER_OBJECT, NTSTATUS, UNICODE_STRING};
 use core::ffi::c_void;
+use windows::Win32::Devices::Properties::{DEVPKEY_Device_SessionId, DEVPROP_TYPE_UINT32, DEVPROPTYPE};
+use windows::Win32::Foundation::DEVPROPKEY;
 use windows_core::GUID;
 
 // ────────────────────────────── Opaque WDF handles ───────────────────────────────────────────
@@ -23,6 +25,21 @@ pub type WDFDEVICE_INIT = c_void;
 pub type WDFREQUEST = *mut c_void;
 
 pub type WDFFILEOBJECT = *mut c_void;
+pub(crate) type WDFTIMER = *mut c_void;
+pub(crate) type PFN_WDF_TIMER = unsafe extern "system" fn(WDFTIMER);
+const WDF_SYNCHRONIZATION_SCOPE_NONE: u32 = 4;
+
+#[repr(C)]
+pub(crate) struct WDF_TIMER_CONFIG {
+    pub(crate) Size: u32,
+    pub(crate) EvtTimerFunc: Option<PFN_WDF_TIMER>,
+    pub(crate) Period: u32,
+    pub(crate) AutomaticSerialization: u8,
+    pub(crate) TolerableDelay: u32,
+    pub(crate) UseHighResolutionTimer: u64,
+}
+
+const _: () = assert!(size_of::<WDF_TIMER_CONFIG>() == 40);
 
 // ─────────────────────────── Opaque WDF globals ──────────────────────────────────────────────
 
@@ -47,6 +64,8 @@ pub type WDF_POWER_DEVICE_STATE = u32;
 /// `EVT_WDF_DEVICE_D0_ENTRY` callback type.
 pub type PFN_WDF_DEVICE_D0_ENTRY =
     unsafe extern "system" fn(device: WDFDEVICE, previous_state: WDF_POWER_DEVICE_STATE) -> NTSTATUS;
+pub(crate) type PFN_WDF_DEVICE_D0_EXIT =
+    unsafe extern "system" fn(device: WDFDEVICE, target_state: WDF_POWER_DEVICE_STATE) -> NTSTATUS;
 pub type PFN_WDF_DEVICE_FILE_CREATE =
     unsafe extern "system" fn(device: WDFDEVICE, request: WDFREQUEST, file_object: WDFFILEOBJECT);
 
@@ -110,7 +129,7 @@ pub struct WDF_OBJECT_ATTRIBUTES {
     pub EvtDestroyCallback: Option<unsafe extern "system" fn(*mut c_void)>,
     /// `WdfExecutionLevelInheritFromParent` = 1.
     pub ExecutionLevel: u32,
-    /// `WdfSynchronizationScopeNone` = 3.
+    /// `WdfSynchronizationScopeNone` = 4.
     pub SynchronizationScope: u32,
     pub ParentObject: *mut c_void,
     pub ContextSizeOverride: usize,
@@ -125,8 +144,7 @@ const _: () = {
 };
 
 impl WDF_OBJECT_ATTRIBUTES {
-    /// Returns a zeroed `WDF_OBJECT_ATTRIBUTES` with `SynchronizationScope` set to
-    /// `WdfSynchronizationScopeNone` (3), which is appropriate for IDD devices.
+    /// Inherits execution and synchronization settings from the parent, without a context.
     pub const fn init_no_context() -> Self {
         WDF_OBJECT_ATTRIBUTES {
             Size: core::mem::size_of::<WDF_OBJECT_ATTRIBUTES>() as u32,
@@ -175,7 +193,7 @@ pub struct WDF_PNPPOWER_EVENT_CALLBACKS {
     pub Size: u32,
     pub EvtDeviceD0Entry: Option<PFN_WDF_DEVICE_D0_ENTRY>,
     pub EvtDeviceD0EntryPostInterruptsEnabled: Option<unsafe extern "system" fn()>,
-    pub EvtDeviceD0Exit: Option<unsafe extern "system" fn()>,
+    pub EvtDeviceD0Exit: Option<PFN_WDF_DEVICE_D0_EXIT>,
     pub EvtDeviceD0ExitPreInterruptsDisabled: Option<unsafe extern "system" fn()>,
     pub EvtDevicePrepareHardware: Option<unsafe extern "system" fn()>,
     pub EvtDeviceReleaseHardware: Option<unsafe extern "system" fn()>,
@@ -250,6 +268,26 @@ type PFN_WDF_DEVICE_CREATE_SYMBOLIC_LINK = unsafe extern "system" fn(
     symbolic_link_name: *const UNICODE_STRING,
 ) -> NTSTATUS;
 
+#[repr(C)]
+struct WDF_DEVICE_PROPERTY_DATA {
+    Size: u32,
+    PropertyKey: *const DEVPROPKEY,
+    Lcid: u32,
+    Flags: u32,
+}
+
+const _: () = assert!(size_of::<WDF_DEVICE_PROPERTY_DATA>() == 24);
+
+type PFN_WDF_DEVICE_QUERY_PROPERTY_EX = unsafe extern "system" fn(
+    globals: *mut WDF_DRIVER_GLOBALS,
+    device: WDFDEVICE,
+    property: *mut WDF_DEVICE_PROPERTY_DATA,
+    buffer_length: u32,
+    buffer: *mut c_void,
+    required_size: *mut u32,
+    property_type: *mut DEVPROPTYPE,
+) -> NTSTATUS;
+
 type PFN_WDF_DEVICE_CREATE_DEVICE_INTERFACE = unsafe extern "system" fn(
     globals: *mut WDF_DRIVER_GLOBALS,
     device: WDFDEVICE,
@@ -301,8 +339,15 @@ const WDF_DEVICE_SET_DEVICE_INTERFACE_STATE_TABLE_INDEX: usize = 28;
 /// `WdfDeviceCreateSymbolicLinkTableIndex` from `wdffuncenum.h` (UMDF 2.33).
 const WDF_DEVICE_CREATE_SYMBOLIC_LINK_TABLE_INDEX: usize = 30;
 
+/// `WdfDeviceQueryPropertyExTableIndex` from `wdffuncenum.h` (UMDF 2.33).
+const WDF_DEVICE_QUERY_PROPERTY_EX_TABLE_INDEX: usize = 54;
+
 /// `WdfDeviceInitSetPnpPowerEventCallbacksTableIndex` from `wdffuncenum.h` (UMDF 2.33).
 const WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS_TABLE_INDEX: usize = 19;
+
+const WDF_TIMER_CREATE_TABLE_INDEX: usize = 198;
+const WDF_TIMER_START_TABLE_INDEX: usize = 199;
+const WDF_TIMER_STOP_TABLE_INDEX: usize = 200;
 
 // External symbols exported from `WdfDriverStubUm.lib`.
 // The WDK header `wdf.h` defines `#define WdfFunctions WdfFunctions_02033`;
@@ -314,6 +359,99 @@ unsafe extern "C" {
 
     /// WDF driver globals pointer — set by the WDF framework on load.
     pub static mut WdfDriverGlobals: *mut WDF_DRIVER_GLOBALS;
+}
+
+pub(crate) unsafe fn timer_create(parent: *mut c_void, callback: PFN_WDF_TIMER) -> (NTSTATUS, WDFTIMER) {
+    let config = WDF_TIMER_CONFIG {
+        Size: size_of::<WDF_TIMER_CONFIG>() as u32,
+        EvtTimerFunc: Some(callback),
+        Period: 250,
+        AutomaticSerialization: 0,
+        TolerableDelay: 0,
+        UseHighResolutionTimer: 0,
+    };
+    let mut attributes = WDF_OBJECT_ATTRIBUTES::init_no_context();
+    attributes.ParentObject = parent;
+    attributes.SynchronizationScope = WDF_SYNCHRONIZATION_SCOPE_NONE;
+    let mut timer = core::ptr::null_mut();
+    type Create = unsafe extern "system" fn(
+        *mut WDF_DRIVER_GLOBALS,
+        *const WDF_TIMER_CONFIG,
+        *const WDF_OBJECT_ATTRIBUTES,
+        *mut WDFTIMER,
+    ) -> NTSTATUS;
+    // SAFETY: UMDF 2.33 binds slot 198 with this ABI before invoking driver callbacks.
+    let create = unsafe {
+        core::mem::transmute::<Option<PFN_WDF_FUNCTION>, Create>(*WDF_FUNCTION_TABLE.add(WDF_TIMER_CREATE_TABLE_INDEX))
+    };
+    // SAFETY: The caller supplies a live parent; configuration and output storage outlive the call.
+    let status = unsafe { create(WdfDriverGlobals, &config, &attributes, &mut timer) };
+    (status, timer)
+}
+
+pub(crate) unsafe fn timer_start(timer: WDFTIMER) {
+    type Start = unsafe extern "system" fn(*mut WDF_DRIVER_GLOBALS, WDFTIMER, i64) -> u8;
+    // SAFETY: UMDF 2.33 binds slot 199 with this ABI.
+    let start = unsafe {
+        core::mem::transmute::<Option<PFN_WDF_FUNCTION>, Start>(*WDF_FUNCTION_TABLE.add(WDF_TIMER_START_TABLE_INDEX))
+    };
+    // SAFETY: The caller supplies a live timer; negative due time is relative, in 100-ns units.
+    unsafe { start(WdfDriverGlobals, timer, -2_500_000) };
+}
+
+pub(crate) unsafe fn timer_stop(timer: WDFTIMER) {
+    type Stop = unsafe extern "system" fn(*mut WDF_DRIVER_GLOBALS, WDFTIMER, u8) -> u8;
+    // SAFETY: UMDF 2.33 binds slot 200 with this ABI.
+    let stop = unsafe {
+        core::mem::transmute::<Option<PFN_WDF_FUNCTION>, Stop>(*WDF_FUNCTION_TABLE.add(WDF_TIMER_STOP_TABLE_INDEX))
+    };
+    // SAFETY: The caller supplies a live timer; Wait=FALSE must not block a power transition.
+    unsafe { stop(WdfDriverGlobals, timer, 0) };
+}
+
+/// Reads the OS-owned remote session through the UMDF 2.33 device-property dispatch.
+///
+/// # Safety
+/// The device must be a live WDFDEVICE supplied by WDF.
+pub(crate) unsafe fn device_session_id(device: WDFDEVICE) -> (NTSTATUS, u32) {
+    let mut property = WDF_DEVICE_PROPERTY_DATA {
+        Size: size_of::<WDF_DEVICE_PROPERTY_DATA>() as u32,
+        PropertyKey: &DEVPKEY_Device_SessionId,
+        Lcid: 0,
+        Flags: 0,
+    };
+    let mut session_id = 0u32;
+    let mut required_size = 0u32;
+    let mut property_type = DEVPROPTYPE::default();
+    // SAFETY: WDF binds this table before invoking device callbacks; slot 54 has this ABI in UMDF 2.33.
+    let query = unsafe {
+        core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_QUERY_PROPERTY_EX>(
+            *WDF_FUNCTION_TABLE.add(WDF_DEVICE_QUERY_PROPERTY_EX_TABLE_INDEX),
+        )
+    };
+    // SAFETY: All input and output buffers remain valid for the synchronous query.
+    let status = unsafe {
+        query(
+            WdfDriverGlobals,
+            device,
+            &mut property,
+            size_of::<u32>() as u32,
+            core::ptr::addr_of_mut!(session_id).cast(),
+            &mut required_size,
+            &mut property_type,
+        )
+    };
+    if status < 0 {
+        return (status, 0);
+    }
+    if property_type != DEVPROP_TYPE_UINT32
+        || required_size != size_of::<u32>() as u32
+        || session_id == 0
+        || session_id == u32::MAX
+    {
+        return (crate::ntstatus_from_u32(0xC000_000D), 0);
+    }
+    (status, session_id)
 }
 
 /// Calls `WdfDriverCreate` through the WDF 2.33 dispatch table.

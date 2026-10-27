@@ -14,6 +14,7 @@ mod pointer_updates;
 mod rdpdr;
 mod rdpei;
 mod remote_app;
+mod reactivation;
 mod remotefx_codec_choice;
 mod remotefx_entropy_coder;
 mod remotefx_surface_command;

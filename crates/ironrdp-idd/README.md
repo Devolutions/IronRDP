@@ -38,21 +38,33 @@ This crate is intentionally *safe-by-default* for normal workspace builds:
   - Off by default because the public documentation does not guarantee these layouts.
 
 - Machine runtime state file: `C:\ProgramData\IronRDP\Idd\runtime-config.txt`
-  - The UMDF-hosted driver reads runtime configuration from this file instead of inheriting process environment variables.
-  - Expected keys include `dump_dir`, `session_id`, `wddm_idd_enabled`, `driver_loaded`, `hardware_id`, and `active_video_source`.
-  - The swapchain thread performs best-effort CPU readback only when the runtime state proves the remote session is bound and a dump directory is configured.
+  - The driver reads diagnostic settings such as `dump_dir`, `hardware_id`, and `active_video_source` from this file instead of inheriting process environment variables.
+  - Session ownership comes from the device's OS-owned `DEVPKEY_Device_SessionId`, never the shared file's `session_id` or readiness flags.
+  - The swapchain thread performs best-effort CPU readback only when the device is bound to a remote session and a dump directory is configured.
   - Dump files are written as `idd-swapchain-s####-f##########-######.bmp`, which lets the e2e harness correlate frame artifacts with the target session.
 - The INF declares `UmdfExtensions=IddCx0102`, the only service name IddCx registers, even though the driver binds IddCx 1.4.
   - Declaring `IddCx0104` makes IddCx's `WdfDriverCreate` fail with `STATUS_INVALID_PARAMETER` and the session drop with `ERRINFO_CLOSE_STACK_ON_DRIVER_FAILURE`.
   - Remote-session strict e2e assumes the package advertises the IddCx 1.4 remote-IDD contract and `UmdfHostProcessSharing=ProcessSharingDisabled`.
 
+The diagnostic DOS aliases are shared across device instances.
+An alias already owned by another instance must not abort device startup; UMDF can report this collision as `HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)` rather than `STATUS_OBJECT_NAME_COLLISION`.
+With `IRONRDP_IDD_LINK=1` and the WDK configured, run `cargo test --locked -p ironrdp-idd --lib` to exercise the device-add callback against simulated framework responses.
+
 The companion publishes session-specific display requests in `C:\ProgramData\IronRDPDisplay`, separately from the diagnostic runtime files.
+Each driver host reads only its device session's requests, so another user's resize or disconnect cannot redirect its display updates.
 `install-idd-remote.ps1` provisions this directory with write access restricted to SYSTEM and administrators and read access for LocalService and NetworkService.
 The driver updates target modes before applying a new display configuration and does not resubmit an unchanged request on every frame or inactive-path notification.
+Adapter initialization completes only in `EvtIddCxAdapterInitFinished`; power entry does not poll for it.
+Display updates run in a WDF timer parented to the monitor, so framework cleanup drains them before destroying the monitor and adapter.
+Power exit closes admission and stops the timer without waiting for a native display call.
 IddCx 1.10 or newer enables arbitrary monitor-compatible target modes; older runtimes retain the legacy adapter flags.
 See [desktop resizing][termsrv-resize] for supported dimensions and capture behavior.
 
 ## Scripts
+
+The UMDF binary [runs from the Driver Store][driver-store] using DIRID 13, so package updates do not overwrite a shared system DLL.
+Check the loaded `WUDFHost.exe` module path when verifying deployment; a legacy copy under `System32\drivers\UMDF` can remain after an upgrade.
+Driver Store packages cannot be force-deleted while installed on a device; the installer uses `pnputil /delete-driver /uninstall`.
 
 All scripts live in [crates/ironrdp-idd/scripts](scripts).
 
@@ -106,5 +118,6 @@ Use `ironrdp-agent`, not `mstsc` or MsRdpEx, for VM RDP connections; see the [Te
   - Use [find-wdk-tools.ps1](scripts/find-wdk-tools.ps1) to confirm `iddcx.h`, `iddcxstub.lib`, and `Inf2Cat.exe` are present.
 
 [psign-fixtures]: https://github.com/Devolutions/psign/tree/2a7a928a7db8479ca4c96273579aac8c85f60a09/tests/fixtures/devolutions-authenticode
+[driver-store]: https://learn.microsoft.com/en-us/windows-hardware/drivers/develop/run-from-driver-store
 [termsrv-rdp]: ../ironrdp-termsrv/README.md#connect-with-ironrdp-agent
 [termsrv-resize]: ../ironrdp-termsrv/README.md#desktop-resizing

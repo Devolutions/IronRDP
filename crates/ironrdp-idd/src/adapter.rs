@@ -1,7 +1,5 @@
 use crate::monitor::DISPLAYCONFIG_VIDEO_SIGNAL_INFO;
 use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS, ntstatus_to_u32};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::time::Duration;
 
 #[cfg(ironrdp_idd_link)]
 const IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE: u32 = 1;
@@ -12,29 +10,12 @@ const IDDCX_ADAPTER_FLAGS_REMOTE_ALL_TARGET_MODES_MONITOR_COMPATIBLE: u32 = 0x80
 const IDDCX_TRANSMISSION_TYPE_WIRED_OTHER: u32 = 0x0000_0003;
 const STATUS_INVALID_PARAMETER: NTSTATUS = crate::ntstatus_from_u32(0xC000_000D);
 const STATUS_OBJECT_NAME_COLLISION: NTSTATUS = crate::ntstatus_from_u32(0xC000_0035);
-const STATUS_OPERATION_IN_PROGRESS: NTSTATUS = crate::ntstatus_from_u32(0xC000_0476);
-const STATUS_DEVICE_REMOVED: NTSTATUS = crate::ntstatus_from_u32(0xC000_02B6);
 #[cfg(ironrdp_idd_link)]
 const GUID_DEVINTERFACE_IRONRDP_IDD_VIDEO: windows_core::GUID =
     windows_core::GUID::from_u128(0x1ea642e3_6a78_4f4b_9a19_2eb4f0f33b82);
 
 const IDDCX_PATH_FLAGS_CHANGED: u32 = 1;
 const IDDCX_PATH_FLAGS_ACTIVE: u32 = 2;
-
-static ADAPTER_INIT_COMPLETED: AtomicBool = AtomicBool::new(false);
-static ADAPTER_INIT_FINISHED_SIGNALED: AtomicBool = AtomicBool::new(false);
-static ADAPTER_INIT_PROBE_RUNNING: AtomicBool = AtomicBool::new(false);
-static ADAPTER_MONITOR_ARRIVAL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-static ADAPTER_OBJECT_RAW: AtomicUsize = AtomicUsize::new(0);
-
-const ADAPTER_INIT_POLL_ATTEMPTS: u32 = 60;
-const ADAPTER_INIT_POLL_INTERVAL_MS: u64 = 100;
-
-fn optional_u32_text(value: Option<u32>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_owned())
-}
 
 #[cfg(ironrdp_idd_link)]
 fn enable_video_device_interface(device: crate::wdf::WDFDEVICE, source: &str) {
@@ -55,73 +36,7 @@ fn enable_video_device_interface(device: crate::wdf::WDFDEVICE, source: &str) {
     ));
 }
 
-fn reset_adapter_initialization_state() {
-    ADAPTER_INIT_COMPLETED.store(false, Ordering::Release);
-    ADAPTER_INIT_FINISHED_SIGNALED.store(false, Ordering::Release);
-    ADAPTER_INIT_PROBE_RUNNING.store(false, Ordering::Release);
-    ADAPTER_MONITOR_ARRIVAL_IN_PROGRESS.store(false, Ordering::Release);
-    ADAPTER_OBJECT_RAW.store(0, Ordering::Release);
-}
-
-fn should_retry_monitor_arrival(status: NTSTATUS) -> bool {
-    status == STATUS_OPERATION_IN_PROGRESS || status == STATUS_DEVICE_REMOVED
-}
-
-fn complete_adapter_initialization_with_retry(
-    adapter: IDDCX_ADAPTER,
-    adapter_init_status: NTSTATUS,
-    source: &str,
-) -> NTSTATUS {
-    if ADAPTER_INIT_COMPLETED.load(Ordering::Acquire) {
-        crate::debug_trace(&format!(
-            "{source}: skipped retry because adapter initialization already completed"
-        ));
-        return STATUS_SUCCESS;
-    }
-
-    for attempt in 1..=ADAPTER_INIT_POLL_ATTEMPTS {
-        let config = crate::remote::load_runtime_config();
-        let adapter_init_finished = ADAPTER_INIT_FINISHED_SIGNALED.load(Ordering::Acquire);
-        let session_ready = config.wddm_idd_enabled && config.session_id.is_some();
-        crate::debug_trace(&format!(
-            "{source}: attempt={} session_id={} wddm_enabled={} driver_loaded={} session_ready={} adapter_init_finished={}",
-            attempt,
-            optional_u32_text(config.session_id),
-            config.wddm_idd_enabled,
-            config.driver_loaded,
-            session_ready,
-            adapter_init_finished,
-        ));
-
-        if !session_ready || !adapter_init_finished {
-            crate::debug_trace(&format!(
-                "{source}: deferring monitor arrival session_ready={} driver_loaded={} adapter_init_finished={}",
-                session_ready, config.driver_loaded, adapter_init_finished,
-            ));
-            std::thread::sleep(Duration::from_millis(ADAPTER_INIT_POLL_INTERVAL_MS));
-            continue;
-        }
-
-        let status = complete_adapter_initialization(adapter, adapter_init_status, source);
-        crate::debug_trace(&format!(
-            "{source}: attempt={} create status=0x{:08X}",
-            attempt,
-            ntstatus_to_u32(status)
-        ));
-        if status >= 0 || !should_retry_monitor_arrival(status) {
-            return status;
-        }
-
-        std::thread::sleep(Duration::from_millis(ADAPTER_INIT_POLL_INTERVAL_MS));
-    }
-
-    crate::debug_trace(&format!(
-        "{source}: deferred monitor arrival after {} attempts",
-        ADAPTER_INIT_POLL_ATTEMPTS
-    ));
-    STATUS_SUCCESS
-}
-
+#[cfg(ironrdp_idd_link)]
 fn complete_adapter_initialization(adapter: IDDCX_ADAPTER, adapter_init_status: NTSTATUS, source: &str) -> NTSTATUS {
     crate::debug_trace(&format!(
         "{source}: AdapterInitStatus=0x{:08X}",
@@ -132,28 +47,13 @@ fn complete_adapter_initialization(adapter: IDDCX_ADAPTER, adapter_init_status: 
             status = adapter_init_status,
             status_hex = format_args!("0x{:08X}", ntstatus_to_u32(adapter_init_status)),
             source,
-            "adapter initialization reported failure"
+            "Adapter initialization reported failure"
         );
         return adapter_init_status;
     }
-
-    if ADAPTER_INIT_COMPLETED.load(Ordering::Acquire) {
-        crate::debug_trace(&format!("{source}: adapter initialization already completed"));
-        return STATUS_SUCCESS;
-    }
-
-    if ADAPTER_MONITOR_ARRIVAL_IN_PROGRESS
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        crate::debug_trace(&format!(
-            "{source}: monitor arrival already in progress completed={}",
-            ADAPTER_INIT_COMPLETED.load(Ordering::Acquire)
-        ));
-        if ADAPTER_INIT_COMPLETED.load(Ordering::Acquire) {
-            return STATUS_SUCCESS;
-        }
-        return STATUS_OPERATION_IN_PROGRESS;
+    if !crate::remote::adapter_is_active(adapter) {
+        tracing::warn!("Discarded adapter completion for an inactive device");
+        return crate::ntstatus_from_u32(0xC000_02B6);
     }
 
     let status = crate::monitor::IronRdpIddMonitor::create_and_arrive(adapter, 0, None);
@@ -162,59 +62,19 @@ fn complete_adapter_initialization(adapter: IDDCX_ADAPTER, adapter_init_status: 
         ntstatus_to_u32(status)
     ));
     if status < 0 {
-        ADAPTER_MONITOR_ARRIVAL_IN_PROGRESS.store(false, Ordering::Release);
         return status;
     }
 
-    ADAPTER_INIT_COMPLETED.store(true, Ordering::Release);
-    ADAPTER_MONITOR_ARRIVAL_IN_PROGRESS.store(false, Ordering::Release);
-    crate::remote::note_adapter_init_finished(adapter);
+    let status = crate::remote::note_adapter_init_finished(adapter);
+    if status < 0 {
+        return status;
+    }
     let runtime_config = crate::remote::load_runtime_config();
     let is_remote = runtime_config.wddm_idd_enabled && runtime_config.session_id.is_some();
     crate::handle_session_transition(adapter, is_remote);
-    tracing::info!(source, "adapter initialization completed with monitor arrival");
+    tracing::info!(source, "Adapter initialization completed with monitor arrival");
     tracing::info!("SESSION_PROOF_IDD_ADAPTER_INIT_FINISHED");
     STATUS_SUCCESS
-}
-
-fn schedule_adapter_initialization_probe(source: &'static str) {
-    if ADAPTER_INIT_COMPLETED.load(Ordering::Acquire) {
-        return;
-    }
-
-    let adapter_raw = ADAPTER_OBJECT_RAW.load(Ordering::Acquire);
-    if adapter_raw == 0 {
-        crate::debug_trace(&format!(
-            "{source}: background adapter init probe skipped because adapter is not registered"
-        ));
-        return;
-    }
-
-    if ADAPTER_INIT_PROBE_RUNNING.swap(true, Ordering::AcqRel) {
-        crate::debug_trace(&format!("{source}: background adapter init probe already running"));
-        return;
-    }
-
-    let source_owned = source.to_owned();
-    if let Err(error) = std::thread::Builder::new()
-        .name("irdp-idd-adapter-probe".to_owned())
-        .spawn(move || {
-            let adapter = adapter_raw as IDDCX_ADAPTER;
-            crate::debug_trace(&format!("{source_owned}: background adapter init probe started"));
-            let status = complete_adapter_initialization_with_retry(adapter, STATUS_SUCCESS, source_owned.as_str());
-            crate::debug_trace(&format!(
-                "{source_owned}: background adapter init probe completed status=0x{:08X} completed={}",
-                ntstatus_to_u32(status),
-                ADAPTER_INIT_COMPLETED.load(Ordering::Acquire),
-            ));
-            ADAPTER_INIT_PROBE_RUNNING.store(false, Ordering::Release);
-        })
-    {
-        ADAPTER_INIT_PROBE_RUNNING.store(false, Ordering::Release);
-        crate::debug_trace(&format!(
-            "{source}: failed to spawn background adapter init probe: {error}"
-        ));
-    }
 }
 
 #[repr(C)]
@@ -279,15 +139,7 @@ pub(crate) extern "system" fn adapter_init_finished(
 
         // SAFETY: `args` is non-null and points to callback input provided by IddCx.
         let adapter_init_status = unsafe { (*args).AdapterInitStatus };
-        ADAPTER_INIT_FINISHED_SIGNALED.store(true, Ordering::Release);
-        ADAPTER_OBJECT_RAW.store(adapter as usize, Ordering::Release);
-        crate::debug_trace("EvtIddCxAdapterInitFinished: signaled adapter init completion");
-        let status =
-            complete_adapter_initialization_with_retry(adapter, adapter_init_status, "EvtIddCxAdapterInitFinished");
-        if !ADAPTER_INIT_COMPLETED.load(Ordering::Acquire) {
-            schedule_adapter_initialization_probe("EvtIddCxAdapterInitFinished");
-        }
-        status
+        complete_adapter_initialization(adapter, adapter_init_status, "EvtIddCxAdapterInitFinished")
     }
 }
 
@@ -476,6 +328,7 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
         return status;
     }
 
+    crate::remote::note_adapter_created(out_args.AdapterObject);
     tracing::info!(
         status,
         status_hex = format_args!("0x{:08X}", ntstatus_to_u32(status)),
@@ -483,25 +336,7 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
         adapter_flags = caps.Flags,
         "IddCxAdapterInitAsync succeeded"
     );
-    ADAPTER_OBJECT_RAW.store(out_args.AdapterObject as usize, Ordering::Release);
-
-    let config = crate::remote::load_runtime_config();
-    crate::debug_trace(&format!(
-        "IddCxAdapterInitAsync: runtime session_id={} wddm_enabled={} driver_loaded={} adapter_init_finished={}",
-        optional_u32_text(config.session_id),
-        config.wddm_idd_enabled,
-        config.driver_loaded,
-        ADAPTER_INIT_FINISHED_SIGNALED.load(Ordering::Acquire),
-    ));
-    let completion_status =
-        complete_adapter_initialization_with_retry(out_args.AdapterObject, STATUS_SUCCESS, "IddCxAdapterInitAsync");
-    crate::debug_trace(&format!(
-        "IddCxAdapterInitAsync: completion status=0x{:08X}",
-        ntstatus_to_u32(completion_status)
-    ));
-    if completion_status < 0 && completion_status != STATUS_OPERATION_IN_PROGRESS {
-        return completion_status;
-    }
+    // Waiting here can delay the EvtIddCxAdapterInitFinished callback needed to complete initialization.
     STATUS_SUCCESS
 }
 
@@ -511,7 +346,7 @@ pub(crate) unsafe extern "system" fn device_d0_entry(
     previous_state: crate::wdf::WDF_POWER_DEVICE_STATE,
 ) -> NTSTATUS {
     let _ = previous_state;
-    reset_adapter_initialization_state();
+    crate::remote::set_device_active(true);
 
     crate::debug_trace("EvtDeviceD0Entry: entered");
     crate::debug_trace("SESSION_PROOF_IDD_D0_ENTRY");
@@ -530,6 +365,17 @@ pub(crate) unsafe extern "system" fn device_d0_entry(
 }
 
 #[cfg(ironrdp_idd_link)]
+pub(crate) unsafe extern "system" fn device_d0_exit(
+    _device: crate::wdf::WDFDEVICE,
+    _target_state: crate::wdf::WDF_POWER_DEVICE_STATE,
+) -> NTSTATUS {
+    crate::debug_trace("SESSION_PROOF_IDD_D0_EXIT_ENTERED");
+    crate::remote::set_device_active(false);
+    crate::debug_trace("SESSION_PROOF_IDD_D0_EXIT_COMPLETED");
+    STATUS_SUCCESS
+}
+
+#[cfg(ironrdp_idd_link)]
 pub(crate) unsafe extern "system" fn device_file_create(
     device: crate::wdf::WDFDEVICE,
     request: crate::wdf::WDFREQUEST,
@@ -538,9 +384,6 @@ pub(crate) unsafe extern "system" fn device_file_create(
     let _ = (device, file_object);
     crate::debug_trace("EvtDeviceFileCreate: completing open request with STATUS_SUCCESS");
     unsafe { crate::wdf::request_complete(request, STATUS_SUCCESS) };
-    if !ADAPTER_INIT_COMPLETED.load(Ordering::Acquire) {
-        schedule_adapter_initialization_probe("EvtDeviceFileCreate");
-    }
 }
 
 #[cfg(ironrdp_idd_link)]
@@ -548,8 +391,11 @@ pub(crate) unsafe extern "system" fn device_add(
     _driver: crate::wdf::WDFDRIVER,
     device_init: *mut crate::wdf::WDFDEVICE_INIT,
 ) -> NTSTATUS {
-    use crate::iddcx::IDD_CX_CLIENT_CONFIG;
     use core::mem::{size_of, transmute};
+
+    use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
+
+    use crate::iddcx::IDD_CX_CLIENT_CONFIG;
 
     tracing::info!("EvtDriverDeviceAdd started");
     crate::debug_trace("EvtDriverDeviceAdd: entered");
@@ -557,6 +403,7 @@ pub(crate) unsafe extern "system" fn device_add(
     // ── 0. Register PnP/power callbacks ─────────────────────────────────────────────────────
     let mut pnp_power_callbacks = crate::wdf::WDF_PNPPOWER_EVENT_CALLBACKS::init();
     pnp_power_callbacks.EvtDeviceD0Entry = Some(device_d0_entry);
+    pnp_power_callbacks.EvtDeviceD0Exit = Some(device_d0_exit);
     // SAFETY: device_init is provided by WDF in EvtDriverDeviceAdd and callbacks point to valid functions.
     unsafe { crate::wdf::device_init_set_pnp_power_event_callbacks(device_init, &pnp_power_callbacks) };
     crate::debug_trace("EvtDriverDeviceAdd: WdfDeviceInitSetPnpPowerEventCallbacks configured");
@@ -642,6 +489,23 @@ pub(crate) unsafe extern "system" fn device_add(
         "WdfDeviceCreate succeeded"
     );
 
+    // SAFETY: WdfDeviceCreate returned this live device.
+    let (status, session_id) = unsafe { crate::wdf::device_session_id(device) };
+    if status < 0 {
+        crate::debug_trace(&format!(
+            "EvtDriverDeviceAdd: query device session failed status=0x{:08X}",
+            ntstatus_to_u32(status)
+        ));
+        tracing::error!(status, "Failed to query the device's remote session");
+        return status;
+    }
+    if !crate::remote::bind_device_session(session_id) {
+        crate::debug_trace("EvtDriverDeviceAdd: refusing a different session in the same driver host");
+        tracing::error!(session_id, "A different session already owns the driver host");
+        return STATUS_INVALID_PARAMETER;
+    }
+    crate::debug_trace(&format!("EvtDriverDeviceAdd: bound_session_id={session_id}"));
+
     let device_interface_status = unsafe {
         crate::wdf::device_create_device_interface(device, &GUID_DEVINTERFACE_IRONRDP_IDD_VIDEO, core::ptr::null())
     };
@@ -685,7 +549,11 @@ pub(crate) unsafe extern "system" fn device_add(
             ntstatus_to_u32(symbolic_link_status)
         ));
 
-        if symbolic_link_status >= 0 || symbolic_link_status == STATUS_OBJECT_NAME_COLLISION {
+        // UMDF can report a shared alias collision as an HRESULT rather than an NTSTATUS.
+        if 0 <= symbolic_link_status
+            || symbolic_link_status == STATUS_OBJECT_NAME_COLLISION
+            || symbolic_link_status == windows_core::HRESULT::from_win32(ERROR_ALREADY_EXISTS.0).0
+        {
             symbolic_link_created = true;
             tracing::info!(
                 status = symbolic_link_status,

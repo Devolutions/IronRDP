@@ -21,11 +21,14 @@ Read call arguments spilled to the stack with `target memory`, using a frame's `
 For a hang, dump all threads with `target thread --engine-thread-id <n>` and look for TermService RPC threads in `RtlAcquireResourceShared`; `dump triage` only shows the current thread.
 Run the analysis inside the VM over PSRemoting, or zip the dump and `Copy-Item -FromSession` it to the session artifacts directory and analyse it on the build host.
 Dumps contain CredSSP and logon passwords: never commit them, and delete them from the VM once analysed.
+Directory listings can report zero-length active logs; open the file with shared access and strip ANSI escapes before matching timestamps.
 
 ## Crashes and rejections
 
 WER LocalDumps on the VM write crashes of TermService's svchost, `winlogon.exe`, `LogonUI.exe`, `dwm.exe`, and `WUDFHost.exe` to `C:\IronRDPDeploy\dumps\wer`.
 Keep `dwm.exe` at `DumpType=1`: a full dump keeps the session's compositor frozen for about five minutes.
+For duplicate RAIL handshakes, check Application Error 1000 and WER 1001 for `rdpshell.exe`; a restarted native shell can reopen RAIL without an RDP reconnect.
+Set a temporary per-application `LocalDumps\rdpshell.exe` policy before reproducing; WER may delete the temporary dump while retaining only `Report.wer`.
 TermService runs with strict handle checking, so closing a handle termsrv owns kills the service and the client sees a TLS EOF; termsrv owns the handles from `GetInputHandles` and `CreateVirtualChannel`.
 When termsrv rejects or stalls a connection, trace its TraceLogging provider `{5283D5F6-65B5-425F-A30B-F16C057D6B57}` with `logman start <name> -ets -p '{5283D5F6-65B5-425F-A30B-F16C057D6B57}' 0xffffffffffffffff 0xff -o <etl>`; its events name the failing function and values.
 `tracerpt -of XML` output runs to hundreds of megabytes, so filter it on the VM with a `StreamReader` and delete it afterwards.

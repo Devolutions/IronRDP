@@ -671,7 +671,7 @@ mod windows_main {
         input_stream_slot: InputStreamSlot,
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
         credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
-        provider_mode: bool,
+        native_channels: Option<Arc<crate::native::NativeChannels>>,
     }
 
     impl GdiDisplay {
@@ -680,7 +680,7 @@ mod windows_main {
             input_stream_slot: InputStreamSlot,
             connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
             credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
-            provider_mode: bool,
+            native_channels: Option<Arc<crate::native::NativeChannels>>,
         ) -> anyhow::Result<Self> {
             let desktop_size = desktop_size_from_gdi().context("failed to query desktop size")?;
             let input_marker = {
@@ -708,7 +708,7 @@ mod windows_main {
                 input_stream_slot,
                 connection_session_ids,
                 credentials_slot,
-                provider_mode,
+                native_channels,
             })
         }
     }
@@ -721,7 +721,7 @@ mod windows_main {
 
         async fn request_initial_size(&mut self, client_size: DesktopSize) -> DesktopSize {
             let mut state = self.state.lock().expect("display state poisoned");
-            if self.provider_mode && state.requested.is_none() {
+            if self.native_channels.is_some() && state.requested.is_none() {
                 match DisplaySize::new(client_size.width & !1, client_size.height) {
                     Ok(size) => {
                         state.requested = Some(size);
@@ -750,7 +750,7 @@ mod windows_main {
         }
 
         async fn offers_display_control(&mut self) -> bool {
-            self.provider_mode
+            self.native_channels.is_some()
         }
 
         async fn updates(&mut self, _context: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
@@ -762,7 +762,7 @@ mod windows_main {
                     Arc::clone(&self.input_stream_slot),
                     Arc::clone(&self.connection_session_ids),
                     Arc::clone(&self.credentials_slot),
-                    self.provider_mode,
+                    self.native_channels.clone(),
                 )
                 .map_err(|error| ServerError::io("initialize GDI display updates", io::Error::other(error)))?,
             ))
@@ -810,6 +810,7 @@ mod windows_main {
         input_stream_slot: InputStreamSlot,
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
         credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
+        native_channels: Option<Arc<crate::native::NativeChannels>>,
         capture: Option<CaptureClient>,
         next_helper_attempt_at: Instant,
         sent_first_frame: bool,
@@ -877,9 +878,10 @@ mod windows_main {
             input_stream_slot: InputStreamSlot,
             connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
             credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
-            provider_mode: bool,
+            native_channels: Option<Arc<crate::native::NativeChannels>>,
         ) -> anyhow::Result<Self> {
             let _ = desktop_size_nonzero(size)?;
+            let provider_mode = native_channels.is_some();
 
             Ok(Self {
                 connection_id,
@@ -888,6 +890,7 @@ mod windows_main {
                 input_stream_slot,
                 connection_session_ids,
                 credentials_slot,
+                native_channels,
                 capture: None,
                 next_helper_attempt_at: Instant::now(),
                 sent_first_frame: false,
@@ -917,6 +920,16 @@ mod windows_main {
                 wait_for_session_id_until: None,
                 last_capture_output_source: None,
             })
+        }
+
+        fn desktop_shell_bootstrap_allowed(&self) -> ServerResult<bool> {
+            let Some(native) = &self.native_channels else {
+                return Ok(false);
+            };
+            let settings = native
+                .remote_app_settings()
+                .map_err(|error| ServerError::io("read native session mode", io::Error::other(error)))?;
+            Ok(settings.is_some_and(|settings| !settings.enabled))
         }
 
         fn log_capture_output_source_transition(&mut self, source: CaptureOutputSource) {
@@ -1107,7 +1120,7 @@ mod windows_main {
                     self.logon_readiness_session_id = session_id_override;
                     self.next_logon_readiness_probe_at = Instant::now() + LOGON_READINESS_PROBE_INTERVAL;
 
-                    if self.provider_mode {
+                    if self.desktop_shell_bootstrap_allowed()? {
                         match session_id_override {
                             Some(_session_id) if interactive_shell_ready => {
                                 self.waiting_for_shell_ready_since = None;
@@ -4254,6 +4267,26 @@ mod windows_main {
                 ProviderCommand::GetConnectionCredentials { connection_id } => {
                     self.get_connection_credentials(connection_id).await
                 }
+                ProviderCommand::GetRemoteAppSettings { connection_id } => {
+                    let state = self.state.lock().await;
+                    match state.connections.get(&connection_id) {
+                        Some(entry) => match entry.native_channels.remote_app_settings() {
+                            Ok(settings) => ServiceEvent::RemoteAppSettings {
+                                connection_id,
+                                settings,
+                            },
+                            Err(error) => {
+                                warn!(connection_id, %error, "Failed to query native RemoteApp settings");
+                                ServiceEvent::Error {
+                                    message: error.to_string(),
+                                }
+                            }
+                        },
+                        None => ServiceEvent::Error {
+                            message: "RemoteApp connection is unknown".to_owned(),
+                        },
+                    }
+                }
                 ProviderCommand::SetCaptureSessionId {
                     connection_id,
                     session_id,
@@ -4266,6 +4299,7 @@ mod windows_main {
                     connection_id,
                     session_id,
                     endpoint_name,
+                    static_channel,
                 } => {
                     let native = {
                         let state = self.state.lock().await;
@@ -4275,14 +4309,12 @@ mod windows_main {
                             .map(|entry| Arc::clone(&entry.native_channels))
                     };
                     let result = async {
-                        anyhow::ensure!(
-                            endpoint_name == crate::native::NOW_CHANNEL,
-                            "native channel endpoint is not enabled"
-                        );
-                        native
-                            .context("native channel connection is unknown")?
-                            .open(session_id)
-                            .await
+                        let native = native.context("native channel connection is unknown")?;
+                        if static_channel {
+                            native.open_static(session_id, &endpoint_name).await
+                        } else {
+                            native.open(session_id, &endpoint_name).await
+                        }
                     }
                     .await;
                     match result {
@@ -4814,6 +4846,11 @@ mod windows_main {
         native_channels: Option<Arc<crate::native::NativeChannels>>,
     ) -> anyhow::Result<()> {
         let provider_mode = native_channels.is_some();
+        let remote_app_enabled = crate::native::remote_app_enabled()?;
+        anyhow::ensure!(!remote_app_enabled || provider_mode, "RemoteApp requires provider mode");
+        if let Some(native) = &native_channels {
+            native.configure_remote_app(remote_app_enabled);
+        }
         info!(connection_id, peer_addr = ?peer_addr, "Starting IronRDP session task");
 
         let input_stream_slot: InputStreamSlot = Arc::default();
@@ -4829,7 +4866,7 @@ mod windows_main {
             Arc::clone(&input_stream_slot),
             Arc::clone(&connection_session_ids),
             Arc::clone(&credentials_slot),
-            provider_mode,
+            native_channels.clone(),
         )
         .context("failed to initialize GDI display handler")?;
         let (tls_acceptor, tls_pub_key) = make_tls_acceptor().context("failed to initialize TLS acceptor")?;
@@ -4851,7 +4888,7 @@ mod windows_main {
                 ironrdp_pdu::rdp::capability_sets::server_codecs_capabilities(&["remotefx:on", "qoi:off", "qoiz:off"])
                     .expect("valid codec config");
 
-            builder
+            let builder = builder
                 .with_input_handler(input_handler.clone())
                 .with_display_handler(display)
                 .with_honor_client_desktop_size(provider_mode.then_some(DesktopSize {
@@ -4860,8 +4897,16 @@ mod windows_main {
                 }))
                 .with_bitmap_codecs(rfx_only_codecs)
                 .with_cliprdr_factory(clipboard_factory)
-                .with_rdpei_factory(Some(Box::new(input_handler)))
-                .build()
+                .with_rdpei_factory(Some(Box::new(input_handler)));
+
+            match &native_channels {
+                Some(native) => builder
+                    .with_static_channel_factory(native.static_channels())
+                    .with_remote_app(native.remote_app_capabilities())
+                    .with_connection_handler(Some(native.connection_handler()))
+                    .build(),
+                None => builder.build(),
+            }
         };
 
         let _native_guard = native_channels
@@ -4870,25 +4915,7 @@ mod windows_main {
             .transpose()?;
 
         if provider_mode {
-            let expected_credentials = resolve_rdp_credentials_from_env()?;
-
-            if let Some(credentials) = expected_credentials {
-                info!(
-                    username = %credentials.username,
-                    domain = ?credentials.domain,
-                    "Configured expected RDP credentials for provider-mode CredSSP"
-                );
-                server.set_credentials(Some(credentials));
-            } else {
-                warn!(
-                    username_env = %RDP_USERNAME_ENV,
-                    password_env = %RDP_PASSWORD_ENV,
-                    domain_env = %RDP_DOMAIN_ENV,
-                    "RDP credentials are not configured; provider-mode CredSSP handshake may fail"
-                );
-            }
-
-            server.set_allow_unverified_credentials(true);
+            server.set_credssp_backend(ironrdp_server::ironrdp_acceptor::CredsspBackend::Windows);
         } else {
             let expected_credentials = resolve_rdp_credentials_from_env()?;
 
@@ -6635,6 +6662,7 @@ mod windows_main {
             ServiceEvent::IncomingConnection { .. } => "incoming_connection",
             ServiceEvent::NoIncoming => "no_incoming",
             ServiceEvent::ConnectionReady { .. } => "connection_ready",
+            ServiceEvent::RemoteAppSettings { .. } => "remote_app_settings",
             ServiceEvent::ConnectionBroken { .. } => "connection_broken",
             ServiceEvent::ConnectionCredentials { .. } => "connection_credentials",
             ServiceEvent::NoCredentials { .. } => "no_credentials",
@@ -6685,6 +6713,77 @@ mod windows_main {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        fn shell_bootstrap_fixture(native: Arc<crate::native::NativeChannels>) -> GdiDisplayUpdates {
+            let size = DesktopSize {
+                width: 800,
+                height: 600,
+            };
+            GdiDisplayUpdates::new(
+                1,
+                Arc::new(StdMutex::new(DisplayState {
+                    size,
+                    input_marker: 0,
+                    requested: None,
+                    submitted: None,
+                })),
+                size,
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+                Some(native),
+            )
+            .unwrap()
+        }
+
+        // oracle: mutant a missing RemoteApp user token must not permit the desktop Explorer launcher.
+        #[test]
+        fn remote_app_does_not_authorize_an_explorer_bootstrap() {
+            let native = Arc::new(crate::native::NativeChannels::default());
+            native.configure_remote_app(true);
+            native
+                .connection_handler()
+                .on_client_info(ironrdp_pdu::rdp::client_info::ClientInfoFlags::RAIL)
+                .unwrap();
+            let updates = shell_bootstrap_fixture(native);
+            assert!(!updates.logon_readiness_ready);
+            assert!(!updates.desktop_shell_bootstrap_allowed().unwrap());
+        }
+
+        // oracle: mutant treating unavailable Client Info as desktop mode launches Explorer before RemoteApp selection.
+        #[test]
+        fn pending_client_info_does_not_authorize_an_explorer_bootstrap() {
+            let native = Arc::new(crate::native::NativeChannels::default());
+            let updates = shell_bootstrap_fixture(native);
+            assert!(!updates.desktop_shell_bootstrap_allowed().unwrap());
+        }
+
+        // oracle: mutant an unsupported RemoteApp request must fail instead of selecting the desktop fallback.
+        #[test]
+        fn disabled_remote_app_rejects_the_request_without_authorizing_explorer() {
+            let native = Arc::new(crate::native::NativeChannels::default());
+            assert!(
+                native
+                    .connection_handler()
+                    .on_client_info(ironrdp_pdu::rdp::client_info::ClientInfoFlags::RAIL)
+                    .is_err()
+            );
+            let updates = shell_bootstrap_fixture(native);
+            assert!(!updates.desktop_shell_bootstrap_allowed().unwrap());
+        }
+
+        // oracle: mutant global RemoteApp enablement must not disable the existing desktop fallback.
+        #[test]
+        fn desktop_connections_still_authorize_an_explorer_bootstrap() {
+            let native = Arc::new(crate::native::NativeChannels::default());
+            native.configure_remote_app(true);
+            native
+                .connection_handler()
+                .on_client_info(ironrdp_pdu::rdp::client_info::ClientInfoFlags::empty())
+                .unwrap();
+            let updates = shell_bootstrap_fixture(native);
+            assert!(updates.desktop_shell_bootstrap_allowed().unwrap());
+        }
 
         // oracle: mutant input overload must close once, not create an unbounded queue of shutdown events.
         #[test]

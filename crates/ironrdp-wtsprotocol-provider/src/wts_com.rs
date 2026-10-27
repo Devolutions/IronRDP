@@ -19,8 +19,8 @@ use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 
 use ironrdp_wtsprotocol_ipc::{
-    DEFAULT_MAX_FRAME_SIZE, ProviderCommand, ServiceEvent, default_pipe_name, pipe_path, read_json_message,
-    resolve_pipe_name_from_env, write_json_message,
+    DEFAULT_MAX_FRAME_SIZE, ProviderCommand, RemoteAppSettings, ServiceEvent, default_pipe_name, pipe_path,
+    read_json_message, resolve_pipe_name_from_env, write_json_message,
 };
 use parking_lot::Mutex;
 use tracing::{debug, info, warn};
@@ -31,7 +31,7 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceInterfaceDetailW, SetupDiGetDeviceRegistryPropertyW,
 };
 use windows::Win32::Foundation::{
-    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, CloseHandle, E_NOINTERFACE, E_NOTIMPL,
+    CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, CloseHandle, E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL,
     E_OUTOFMEMORY as E_OUTOFMEMORY_WIN32, E_POINTER, E_UNEXPECTED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND,
     ERROR_INSUFFICIENT_BUFFER, ERROR_NO_DATA, ERROR_NO_MORE_ITEMS, ERROR_NO_TOKEN, ERROR_PATH_NOT_FOUND,
     ERROR_SEM_TIMEOUT, GetLastError, HANDLE, HANDLE_PTR, HLOCAL, LocalFree, WIN32_ERROR,
@@ -47,9 +47,10 @@ use windows::Win32::Storage::FileSystem::{
     QueryDosDeviceW, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
 };
 use windows::Win32::System::Com::{
-    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemAlloc, CoUninitialize, IAgileObject, IAgileObject_Impl,
-    IClassFactory, IClassFactory_Impl,
+    COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemAlloc, CoTaskMemFree, CoUninitialize, IAgileObject,
+    IAgileObject_Impl, IClassFactory, IClassFactory_Impl,
 };
+use windows::Win32::System::Memory::{LMEM_FIXED, LocalAlloc};
 use windows::Win32::System::Pipes::{PIPE_READMODE_MESSAGE, PeekNamedPipe, SetNamedPipeHandleState};
 use windows::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE, RegGetValueW,
@@ -71,6 +72,7 @@ use windows::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS,
     SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING, SERVICE_STATUS, StartServiceW,
 };
+use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::System::Threading::{
     CreateProcessAsUserW, GetCurrentThread, OpenThreadToken, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
     SetThreadToken,
@@ -78,9 +80,10 @@ use windows::Win32::System::Threading::{
 use windows::core::AgileReference;
 use windows_core::{BOOL, GUID, HRESULT, IUnknown, IUnknownImpl, Interface as _, PCSTR, PCWSTR, PWSTR, implement};
 
-use crate::connection::ProtocolConnection;
+use crate::connection::{ConnectionLifecycleState, ProtocolConnection};
 use crate::listener::ProtocolListener;
 use crate::manager::ProtocolManager;
+use crate::published_apps::PublishedApplications;
 
 const S_OK: HRESULT = HRESULT(0);
 const S_FALSE: HRESULT = HRESULT(1);
@@ -265,6 +268,7 @@ const WTS_PROTOCOL_TYPE_NON_RDP: u16 = 2;
 
 const WTS_VALUE_TYPE_ULONG: u16 = 1;
 const WTS_VALUE_TYPE_STRING: u16 = 2;
+const WTS_VALUE_TYPE_BINARY: u16 = 3;
 
 // From Windows SDK `wtsdefs.h`.
 const PROPERTY_TYPE_GET_FAST_RECONNECT: GUID = GUID::from_u128(0x6212_d757_0043_4862_99c3_9f30_59ac_2a3b);
@@ -278,10 +282,83 @@ const PROPERTY_TYPE_LICENSE_GUID: GUID = GUID::from_u128(0x4daa_5ab8_8b6a_49cf_9
 const WTS_QUERY_AUDIOENUM_DLL: GUID = GUID::from_u128(0x9bf4_fa97_c883_4c2a_80ab_5a39_c9af_00db);
 const PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL: GUID =
     GUID::from_u128(0xed2c_3fda_338d_4d3f_81a3_e767_310d_908e);
+const WTS_QUERY_ALLOWED_INITIAL_APP: GUID = GUID::from_u128(0xc77d1b30_5be1_4c6b_a0e1_bd6d2e5c9fcc);
+
+// Native RemoteApp shell properties use the WTS QueryProperty ABI.
+// UNTESTED: These private GUIDs must remain compatible across Windows builds; check native shell startup on upgrades.
+const PROPERTY_TYPE_RAIL_CLIENT_CAPABILITIES: GUID = GUID::from_u128(0xb8ce54c6_8a2d_4612_9c74_e715fc8bedea);
+const PROPERTY_TYPE_WINDOW_CAPABILITYSET: GUID = GUID::from_u128(0x4042c6ed_aad1_4eac_b3c1_87b726726cd8);
+const PROPERTY_TYPE_GET_REMOTEAPP_FEATURE_FLAGS: GUID = GUID::from_u128(0xe26e0aca_a72a_4b8e_ae5c_49bdfd467c4f);
+const PROPERTY_TYPE_GET_REMOTEAPP_HD_SUPPORT_LEVEL: GUID = GUID::from_u128(0xae3c6a8e_87b2_472d_d0be_915c27db937c);
+const TERMINAL_TYPE_RDP_REMOTEAPP: GUID = GUID::from_u128(0xeddcc3ce_6e7e_4f4b_8439_3d9ad4c9440f);
 
 const FAST_RECONNECT_DISABLED: u32 = 0;
 const FAST_RECONNECT_BASIC: u32 = 1;
 const FAST_RECONNECT_ENHANCED: u32 = 2;
+
+fn remote_app_initial_program() -> windows_core::Result<(String, String)> {
+    let mut buffer = vec![0; 32_768];
+    // SAFETY: The buffer is writable and its length is passed by the generated binding.
+    let length = unsafe { GetSystemDirectoryW(Some(&mut buffer)) };
+    if length == 0 {
+        return Err(windows_core::Error::from_thread());
+    }
+    let length = usize::try_from(length)
+        .map_err(|_| windows_core::Error::new(E_INVALIDARG, "system directory length overflow"))?;
+    if buffer.len() <= length {
+        return Err(windows_core::Error::new(E_INVALIDARG, "system directory is too long"));
+    }
+    let directory = String::from_utf16(&buffer[..length])
+        .map_err(|_| windows_core::Error::new(E_INVALIDARG, "system directory is not valid UTF-16"))?;
+    let program = format!(r"{directory}\rdpinit.exe");
+    Ok((directory, program))
+}
+
+fn property_string(value: &WTS_PROPERTY_VALUE) -> windows_core::Result<String> {
+    if value.Type != WTS_VALUE_TYPE_STRING {
+        return Err(windows_core::Error::new(E_INVALIDARG, "expected a string property"));
+    }
+    // SAFETY: Type identifies the active union member.
+    let value = unsafe { value.u.strVal };
+    let byte_length = usize::try_from(value.size)
+        .map_err(|_| windows_core::Error::new(E_INVALIDARG, "property string length overflow"))?;
+    if byte_length == 0 {
+        return Ok(String::new());
+    }
+    if 0x8000 < byte_length || byte_length % 2 != 0 || value.pstrVal.is_null() {
+        return Err(windows_core::Error::new(E_INVALIDARG, "invalid property string buffer"));
+    }
+    // SAFETY: Native initial-application properties describe their UTF-16 buffers in bytes.
+    let buffer = unsafe { core::slice::from_raw_parts(value.pstrVal.0, byte_length / 2) };
+    let length = buffer.iter().position(|v| *v == 0).unwrap_or(buffer.len());
+    String::from_utf16(&buffer[..length]).map_err(|_| windows_core::Error::new(E_INVALIDARG, "invalid property UTF-16"))
+}
+
+fn write_property_string(property: &mut WTS_PROPERTY_VALUE, value: &str) -> windows_core::Result<()> {
+    if property.Type != WTS_VALUE_TYPE_STRING {
+        return Err(windows_core::Error::new(
+            E_INVALIDARG,
+            "expected a string output property",
+        ));
+    }
+    // SAFETY: Type identifies the active union member.
+    let buffer = unsafe { property.u.strVal };
+    if 0x8000 < buffer.size || buffer.size % 2 != 0 || buffer.pstrVal.is_null() {
+        return Err(windows_core::Error::new(E_INVALIDARG, "invalid string output buffer"));
+    }
+    let wide: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
+    let capacity = usize::try_from(buffer.size)
+        .map_err(|_| windows_core::Error::new(E_INVALIDARG, "property string capacity overflow"))?;
+    if capacity < size_of_val(wide.as_slice()) {
+        return Err(windows_core::Error::new(
+            ERROR_INSUFFICIENT_BUFFER.to_hresult(),
+            "initial-application output buffer is too small",
+        ));
+    }
+    // SAFETY: The caller owns this writable buffer and its byte capacity includes the terminator.
+    unsafe { core::ptr::copy_nonoverlapping(wide.as_ptr(), buffer.pstrVal.0, wide.len()) };
+    Ok(())
+}
 
 fn session_has_user_token(session_id: u32) -> bool {
     let mut token = HANDLE::default();
@@ -572,6 +649,7 @@ fn command_kind(command: &ProviderCommand) -> &'static str {
         ProviderCommand::AcceptConnection { .. } => "accept_connection",
         ProviderCommand::CloseConnection { .. } => "close_connection",
         ProviderCommand::GetConnectionCredentials { .. } => "get_connection_credentials",
+        ProviderCommand::GetRemoteAppSettings { .. } => "get_remote_app_settings",
         ProviderCommand::SetCaptureSessionId { .. } => "set_capture_session_id",
         ProviderCommand::NotifyIddDriverLoaded { .. } => "notify_idd_driver_loaded",
         ProviderCommand::OpenVirtualChannel { .. } => "open_virtual_channel",
@@ -722,6 +800,7 @@ fn event_kind(event: &ServiceEvent) -> &'static str {
         ServiceEvent::IncomingConnection { .. } => "incoming_connection",
         ServiceEvent::NoIncoming => "no_incoming",
         ServiceEvent::ConnectionReady { .. } => "connection_ready",
+        ServiceEvent::RemoteAppSettings { .. } => "remote_app_settings",
         ServiceEvent::ConnectionBroken { .. } => "connection_broken",
         ServiceEvent::ConnectionCredentials { .. } => "connection_credentials",
         ServiceEvent::NoCredentials { .. } => "no_credentials",
@@ -1119,6 +1198,23 @@ impl ProviderControlBridge {
         Ok(None)
     }
 
+    fn remote_app_settings(&self, connection_id: u32) -> windows_core::Result<Option<RemoteAppSettings>> {
+        let event = with_provider_identity(|| {
+            self.send_command_retried(&ProviderCommand::GetRemoteAppSettings { connection_id })
+        })?;
+        match event {
+            Some(ServiceEvent::RemoteAppSettings {
+                connection_id: returned,
+                settings,
+            }) if returned == connection_id => Ok(settings),
+            Some(ServiceEvent::Error { message }) => Err(windows_core::Error::new(E_UNEXPECTED, message)),
+            _ => Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                "invalid RemoteApp settings response",
+            )),
+        }
+    }
+
     fn wait_for_incoming(
         &self,
         listener_name: &str,
@@ -1364,21 +1460,15 @@ fn default_connection_settings(listener_name: &str) -> WRDS_CONNECTION_SETTINGS 
     settings
 }
 
-fn apply_autologon_credentials_to_connection_settings(
-    settings: &mut WRDS_CONNECTION_SETTINGS,
-    username: &str,
-    domain: &str,
-    password: &str,
-) {
+fn enable_connection_autologon(settings: &mut WRDS_CONNECTION_SETTINGS) {
     // SAFETY: `settings` is initialized for the level-1 view by `default_connection_settings`.
     unsafe {
         let s1 = &mut settings.WRdsConnectionSetting.WRdsConnectionSettings1;
         s1.fInheritAutoLogon = true;
         s1.fUsingSavedCreds = true;
         s1.fPromptForPassword = false;
-        copy_wide(&mut s1.UserName, username);
-        copy_wide(&mut s1.Domain, domain);
-        copy_wide(&mut s1.Password, password);
+        // TermService limits these fields to 20/17/14 UTF-16 units through legacy USERCONFIGW buffers.
+        // Keep credentials in the full-width GetClientData and GetUserCredentials callbacks instead.
     }
 }
 
@@ -2028,6 +2118,29 @@ impl ComProtocolListener {
     }
 }
 
+fn retain_connection_callback(
+    connection: &ProtocolConnection,
+    callback_slot: &Mutex<Option<AgileReference<IWRdsProtocolConnectionCallback>>>,
+    callback: &IWRdsProtocolConnectionCallback,
+) -> windows_core::Result<bool> {
+    let callback = AgileReference::new(callback)?;
+    let previous = {
+        let mut slot = callback_slot.lock();
+        // UNTESTED: Close must mark the connection closed before clearing this slot to prevent concurrent registration
+        // from restoring its callback; check both lock orders when changing registration or Close.
+        if connection.state() == ConnectionLifecycleState::Closed {
+            debug!(
+                connection_id = connection.connection_id(),
+                "Discarding callback for a closed connection"
+            );
+            return Ok(false);
+        }
+        slot.replace(callback)
+    };
+    drop(previous);
+    Ok(true)
+}
+
 impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
     fn GetSettings(
         &self,
@@ -2136,13 +2249,18 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 unsafe { IWRdsProtocolListenerCallback::from_raw(callback_token as *mut c_void) }
             };
 
-            let mut connection_callbacks: HashMap<u32, IWRdsProtocolConnectionCallback> = HashMap::new();
+            let mut connection_callbacks: HashMap<u32, (Arc<ProtocolConnection>, IWRdsProtocolConnectionCallback)> =
+                HashMap::new();
 
             if control_bridge_enabled {
                 loop {
                     if stop_rx.try_recv().is_ok() {
                         break;
                     }
+
+                    // Server-initiated Close need not produce a companion ConnectionBroken event.
+                    connection_callbacks
+                        .retain(|_, (connection, _)| connection.state() != ConnectionLifecycleState::Closed);
 
                     let event = match control_bridge.wait_for_incoming(&listener_name, 250) {
                         Ok(event) => event,
@@ -2170,7 +2288,10 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                                 "Received connection_broken from companion connection_id={connection_id} reason={reason}",
                             ));
 
-                            if let Some(callback) = connection_callbacks.remove(&connection_id) {
+                            if let Some((_, callback)) = connection_callbacks
+                                .remove(&connection_id)
+                                .filter(|(connection, _)| connection.state() != ConnectionLifecycleState::Closed)
+                            {
                                 // SAFETY: callback is a valid COM interface returned by TermService.
                                 let broken_result = unsafe { callback.BrokenConnection(0, 0) };
                                 debug_log_line(&format!(
@@ -2193,7 +2314,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                     let connection_entry = listener.create_connection_with_id(incoming.connection_id);
                     let connection_callback_slot = Arc::new(Mutex::new(None));
                     let connection: IWRdsProtocolConnection = ComProtocolConnection::new(
-                        connection_entry,
+                        Arc::clone(&connection_entry),
                         Arc::clone(&connection_callback_slot),
                         control_bridge.clone(),
                     )
@@ -2214,14 +2335,12 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                         );
                     }
 
-                    let connection_credentials = match control_bridge.get_connection_credentials(incoming.connection_id)
-                    {
+                    match control_bridge.get_connection_credentials(incoming.connection_id) {
                         Ok(Some(credentials)) => {
                             debug_log_line(&format!(
                                 "OnConnected credential gate satisfied connection_id={} user={} domain={}",
                                 incoming.connection_id, credentials.0, credentials.1,
                             ));
-                            credentials
                         }
                         Ok(None) => {
                             debug_log_line(&format!(
@@ -2239,15 +2358,10 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                             let _ = control_bridge.close_connection(incoming.connection_id);
                             continue;
                         }
-                    };
+                    }
 
                     let mut settings = default_connection_settings(&listener_name);
-                    apply_autologon_credentials_to_connection_settings(
-                        &mut settings,
-                        &connection_credentials.0,
-                        &connection_credentials.1,
-                        &connection_credentials.2,
-                    );
+                    enable_connection_autologon(&mut settings);
 
                     let sd_probe: Option<&'static mut [u8]> =
                         if std::env::var("IRONRDP_WTS_SD_PROBE").as_deref() == Ok("1") {
@@ -2347,10 +2461,13 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                                 conn_id_result, incoming.connection_id
                             ));
 
-                            match AgileReference::new(&connection_callback) {
-                                Ok(callback_agile) => {
-                                    *connection_callback_slot.lock() = Some(callback_agile);
-                                }
+                            match retain_connection_callback(
+                                &connection_entry,
+                                &connection_callback_slot,
+                                &connection_callback,
+                            ) {
+                                Ok(true) => {}
+                                Ok(false) => continue,
                                 Err(error) => {
                                     debug_log_line(&format!(
                                         "Failed to create AgileReference for connection callback connection_id={} error={error}",
@@ -2364,11 +2481,12 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                                 }
                             }
 
-                            connection_callbacks.insert(incoming.connection_id, connection_callback.clone());
+                            connection_callbacks
+                                .insert(incoming.connection_id, (connection_entry, connection_callback.clone()));
 
                             debug_log_line(&format!(
-                                "OnReady credential gate already satisfied connection_id={} user={} domain={}",
-                                incoming.connection_id, connection_credentials.0, connection_credentials.1,
+                                "OnReady credential gate already satisfied connection_id={}",
+                                incoming.connection_id,
                             ));
 
                             // SAFETY: connection_callback is a valid COM interface returned by TermService.
@@ -2401,7 +2519,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 let bootstrap_connection = listener.create_connection();
                 let connection_callback_slot = Arc::new(Mutex::new(None));
                 let connection: IWRdsProtocolConnection = ComProtocolConnection::new(
-                    bootstrap_connection,
+                    Arc::clone(&bootstrap_connection),
                     Arc::clone(&connection_callback_slot),
                     control_bridge,
                 )
@@ -2456,10 +2574,12 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 }
 
                 match result {
-                    Ok(connection_callback) => match AgileReference::new(&connection_callback) {
-                        Ok(callback_agile) => {
-                            *connection_callback_slot.lock() = Some(callback_agile);
-                        }
+                    Ok(connection_callback) => match retain_connection_callback(
+                        &bootstrap_connection,
+                        &connection_callback_slot,
+                        &connection_callback,
+                    ) {
+                        Ok(_) => {}
                         Err(error) => {
                             debug_log_line(&format!(
                                 "Failed to create AgileReference for connection callback (standalone) error={error}",
@@ -2689,6 +2809,7 @@ struct ComProtocolConnection {
     inner: Arc<ProtocolConnection>,
     connection_callback: Arc<Mutex<Option<AgileReference<IWRdsProtocolConnectionCallback>>>>,
     control_bridge: ProviderControlBridge,
+    published_applications: PublishedApplications,
     wddm_idd_enabled: AtomicBool,
     idd_last_driver_load_session_id: AtomicU32,
     idd_driver_load_notified: AtomicBool,
@@ -2923,6 +3044,7 @@ impl ComProtocolConnection {
             inner,
             connection_callback,
             control_bridge,
+            published_applications: PublishedApplications::default(),
             wddm_idd_enabled: AtomicBool::new(false),
             idd_last_driver_load_session_id: AtomicU32::new(0),
             idd_driver_load_notified: AtomicBool::new(false),
@@ -2936,6 +3058,52 @@ impl ComProtocolConnection {
             video_handle_source: Mutex::new(VideoHandleSource::Unknown),
             driver_device_instance: Mutex::new(None),
         }
+    }
+
+    fn open_native_channel(&self, endpoint_name: &str, is_static: bool) -> windows_core::Result<usize> {
+        let session_id = self
+            .inner
+            .session_id()
+            .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "native channel session is not assigned"))?;
+        let connection_id = self.inner.connection_id();
+        let bridge = &self.control_bridge;
+        with_provider_identity(|| {
+            let event = bridge.send_command(&ProviderCommand::OpenVirtualChannel {
+                connection_id,
+                session_id,
+                endpoint_name: endpoint_name.to_owned(),
+                static_channel: is_static,
+            })?;
+            let pipe_name = match event {
+                Some(ServiceEvent::VirtualChannelReady { pipe_name }) => pipe_name,
+                Some(ServiceEvent::Error { message }) => return Err(windows_core::Error::new(E_UNEXPECTED, message)),
+                _ => {
+                    return Err(windows_core::Error::new(
+                        E_UNEXPECTED,
+                        "native channel transport did not become ready",
+                    ));
+                }
+            };
+            if !pipe_name.starts_with(r"\\.\pipe\IronRdpNativeDvc-") {
+                return Err(windows_core::Error::new(
+                    E_UNEXPECTED,
+                    "invalid native channel pipe name",
+                ));
+            }
+            let pipe = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(FILE_FLAG_OVERLAPPED.0 | SECURITY_SQOS_PRESENT.0 | SECURITY_IDENTIFICATION.0)
+                .open(&pipe_name)
+                .map_err(|error| io_error_to_windows_error(error, "open native channel pipe"))?;
+            // SAFETY: The file owns a connected message-pipe handle for the duration of this call.
+            unsafe { SetNamedPipeHandleState(HANDLE(pipe.as_raw_handle()), Some(&PIPE_READMODE_MESSAGE), None, None) }?;
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::CreateVirtualChannel ready connection_id={connection_id} session_id={session_id} endpoint={endpoint_name} static={is_static}",
+            ));
+            // TermService duplicates this handle into the authorized WTS caller and closes the original.
+            Ok(pipe.into_raw_handle() as usize)
+        })
     }
 
     fn close_device_handles(&self) {
@@ -3121,7 +3289,7 @@ impl ComProtocolConnection {
             ));
             // SAFETY: `packed_ptr` came from `CoTaskMemAlloc`.
             unsafe {
-                windows::Win32::System::Com::CoTaskMemFree(Some(packed_ptr.cast()));
+                CoTaskMemFree(Some(packed_ptr.cast()));
             }
             return Err(windows_core::Error::from_hresult(HRESULT::from_win32(error.0)));
         }
@@ -3131,7 +3299,7 @@ impl ComProtocolConnection {
             .cast::<WRDS_SERIALIZED_USER_CREDENTIAL>();
         if wrapper_ptr.is_null() {
             unsafe {
-                windows::Win32::System::Com::CoTaskMemFree(Some(packed_ptr.cast()));
+                CoTaskMemFree(Some(packed_ptr.cast()));
             }
             return Err(windows_core::Error::new(
                 E_OUTOFMEMORY_WIN32,
@@ -3383,6 +3551,13 @@ impl ComProtocolConnection {
         Ok(process_info.dwProcessId)
     }
 
+    fn desktop_shell_bootstrap_allowed(&self, connection_id: u32) -> windows_core::Result<bool> {
+        Ok(self
+            .control_bridge
+            .remote_app_settings(connection_id)?
+            .is_some_and(|settings| !settings.enabled))
+    }
+
     fn maybe_bootstrap_user_shell(
         &self,
         connection_id: u32,
@@ -3397,6 +3572,22 @@ impl ComProtocolConnection {
                 usertoken.0 != 0,
             ));
             return;
+        }
+
+        match self.desktop_shell_bootstrap_allowed(connection_id) {
+            Ok(true) => {}
+            Ok(false) => {
+                debug_log_line(&format!(
+                    "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_SKIPPED connection_id={connection_id} session_id={session_id} reason=not_confirmed_desktop",
+                ));
+                return;
+            }
+            Err(error) => {
+                debug_log_line(&format!(
+                    "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_ERROR connection_id={connection_id} session_id={session_id} stage=query_session_mode error={error}",
+                ));
+                return;
+            }
         }
 
         if self
@@ -4453,7 +4644,8 @@ impl ComProtocolConnection {
     }
 
     fn release_connection_callback(&self) {
-        *self.connection_callback.lock() = None;
+        let callback = self.connection_callback.lock().take();
+        drop(callback);
     }
 }
 
@@ -4821,6 +5013,38 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
                     "IWRdsProtocolConnection::GetClientData no_autologon_creds_yet connection_id={connection_id}"
                 ));
             }
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let settings = loop {
+            if let Some(settings) = self.control_bridge.remote_app_settings(connection_id)? {
+                break settings;
+            }
+            if deadline <= std::time::Instant::now() {
+                return Err(windows_core::Error::new(
+                    ERROR_SEM_TIMEOUT.to_hresult(),
+                    "Client Info is unavailable",
+                ));
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        if settings.enabled {
+            let (directory, program) = remote_app_initial_program()?;
+            if client_data.InitialProgram.len() <= program.encode_utf16().count()
+                || client_data.WorkDirectory.len() <= directory.encode_utf16().count()
+            {
+                return Err(windows_core::Error::new(
+                    E_INVALIDARG,
+                    "RemoteApp bootstrap path is too long",
+                ));
+            }
+            client_data.fInheritInitialProgram = BOOL(1);
+            client_data.fMaximizeShell = false;
+            copy_wide(&mut client_data.InitialProgram, &program);
+            copy_wide(&mut client_data.WorkDirectory, &directory);
+            debug_log_line(&format!(
+                "Native RemoteApp bootstrap configured connection_id={connection_id}"
+            ));
         }
 
         debug_log_line("IWRdsProtocolConnection::GetClientData ok");
@@ -5305,9 +5529,9 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         *self.ready_notified.lock() = false;
         self.close_device_handles();
+        let result = self.inner.close().map_err(transition_error);
         self.release_connection_callback();
-        self.inner.close().map_err(transition_error)?;
-        Ok(())
+        result
     }
 
     fn GetProtocolStatus(&self, pprotocolstatus: *mut WTS_PROTOCOL_STATUS) -> windows_core::Result<()> {
@@ -5372,52 +5596,30 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         // SAFETY: TermService supplies a valid NUL-terminated endpoint name.
         let endpoint_name = unsafe { szendpointname.to_string() }?;
-        if bstatic.as_bool() || endpoint_name != "Devolutions::Now::Agent" {
+        let is_static = bstatic.as_bool();
+        if !native_endpoint_enabled(&endpoint_name, is_static) {
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::CreateVirtualChannel denied connection_id={} endpoint={endpoint_name} static={is_static} priority={requestedpriority}",
+                self.inner.connection_id(),
+            ));
             debug!(%endpoint_name, requestedpriority, "Native virtual channel endpoint is not enabled");
             return Err(windows_core::Error::new(
                 E_NOTIMPL,
                 "native virtual channel endpoint is not enabled",
             ));
         }
-        let session_id = self
-            .inner
-            .session_id()
-            .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "native channel session is not assigned"))?;
-        let event = self.control_bridge.send_command(&ProviderCommand::OpenVirtualChannel {
-            connection_id: self.inner.connection_id(),
-            session_id,
-            endpoint_name,
-        })?;
-        let pipe_name = match event {
-            Some(ServiceEvent::VirtualChannelReady { pipe_name }) => pipe_name,
-            Some(ServiceEvent::Error { message }) => return Err(windows_core::Error::new(E_UNEXPECTED, message)),
-            _ => {
-                return Err(windows_core::Error::new(
-                    E_UNEXPECTED,
-                    "native channel transport did not become ready",
-                ));
-            }
-        };
-        if !pipe_name.starts_with(r"\\.\pipe\IronRdpNativeDvc-") {
-            return Err(windows_core::Error::new(
-                E_UNEXPECTED,
-                "invalid native channel pipe name",
+        self.open_native_channel(&endpoint_name, is_static).map_err(|error| {
+            debug_log_line(&format!(
+                "IWRdsProtocolConnection::CreateVirtualChannel failed connection_id={} endpoint={endpoint_name} static={is_static} error={error}",
+                self.inner.connection_id(),
             ));
-        }
-        let pipe = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(FILE_FLAG_OVERLAPPED.0 | SECURITY_SQOS_PRESENT.0 | SECURITY_IDENTIFICATION.0)
-            .open(&pipe_name)
-            .map_err(|error| io_error_to_windows_error(error, "open native channel pipe"))?;
-        // SAFETY: The file owns a connected message-pipe handle for the duration of this call.
-        unsafe { SetNamedPipeHandleState(HANDLE(pipe.as_raw_handle()), Some(&PIPE_READMODE_MESSAGE), None, None) }?;
-        debug_log_line(&format!(
-            "IWRdsProtocolConnection::CreateVirtualChannel ready connection_id={} session_id={session_id}",
-            self.inner.connection_id()
-        ));
-        // TermService duplicates this handle into the authorized WTS caller and closes the original.
-        Ok(pipe.into_raw_handle() as usize)
+            if is_static {
+                // TermService requests these while it sets up the session, and tolerates only this refusal.
+                windows_core::Error::new(E_NOTIMPL, error.message())
+            } else {
+                error
+            }
+        })
     }
 
     fn QueryProperty(
@@ -5428,6 +5630,14 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         _ppropertyentriesin: *const WTS_PROPERTY_VALUE,
         _ppropertyentriesout: *mut WTS_PROPERTY_VALUE,
     ) -> windows_core::Result<()> {
+        if *_querytype == WTS_QUERY_ALLOWED_INITIAL_APP
+            && (_ulnumentriesin != 3 || !matches!(_ulnumentriesout, 3 | 4) || _ppropertyentriesin.is_null())
+        {
+            return Err(windows_core::Error::new(
+                E_INVALIDARG,
+                "invalid initial-application query",
+            ));
+        }
         if _ulnumentriesout == 0 {
             debug_log_line(&format!(
                 "IWRdsProtocolConnection::QueryProperty called connection_id={} querytype={:?} in={} out=0",
@@ -5449,6 +5659,19 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         // SAFETY: pointer is non-null (checked above) and points to at least one output entry.
         let requested_type = unsafe { (*_ppropertyentriesout).Type };
+        let initial_application = if *_querytype == WTS_QUERY_ALLOWED_INITIAL_APP {
+            // SAFETY: The caller supplies three readable input entries.
+            let input = unsafe { core::slice::from_raw_parts(_ppropertyentriesin, 3) };
+            if input[2].Type != WTS_VALUE_TYPE_ULONG {
+                return Err(windows_core::Error::new(
+                    E_INVALIDARG,
+                    "invalid initial-application reserved property",
+                ));
+            }
+            Some((property_string(&input[0])?, property_string(&input[1])?))
+        } else {
+            None
+        };
 
         let is_known_querytype = *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT
             || *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT_USER_SID
@@ -5469,6 +5692,53 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         // SAFETY: TermService provides `_ulnumentriesout` writable entries.
         let out = unsafe { core::slice::from_raw_parts_mut(_ppropertyentriesout, out_len) };
+        if let Some((application, parameters)) = initial_application {
+            let (_, program) = remote_app_initial_program()?;
+            let enabled = self
+                .control_bridge
+                .remote_app_settings(self.inner.connection_id())?
+                .is_some_and(|settings| settings.enabled);
+            let authenticated = self.cached_credentials.lock().is_some();
+            let bootstrap = parameters.is_empty()
+                && (application.eq_ignore_ascii_case("rdpinit.exe") || application.eq_ignore_ascii_case(&program));
+            let published = if enabled && authenticated && !bootstrap {
+                self.published_applications
+                    .resolve(&application, &parameters)
+                    .map_err(|error| {
+                        debug_log_line(&format!(
+                            "Published application authorization failed connection_id={} error={error}",
+                            self.inner.connection_id()
+                        ));
+                        error
+                    })?
+            } else {
+                None
+            };
+            let allowed = enabled && authenticated && (bootstrap || published.is_some());
+            let (program, parameters) = match published.as_ref() {
+                Some(published) => (published.program.as_str(), published.parameters.as_str()),
+                None if allowed => (program.as_str(), ""),
+                None => ("", ""),
+            };
+            write_property_string(&mut out[0], program)?;
+            write_property_string(&mut out[1], parameters)?;
+            for entry in &mut out[2..] {
+                *entry = WTS_PROPERTY_VALUE {
+                    Type: WTS_VALUE_TYPE_ULONG,
+                    ..WTS_PROPERTY_VALUE::default()
+                };
+            }
+            out[2].u.ulVal = u32::from(allowed);
+            if let Some(alias) = out.get_mut(3) {
+                alias.u.ulVal = u32::from(published.is_some());
+            }
+            debug_log_line(&format!(
+                "Native initial-application decision connection_id={} allowed={allowed}",
+                self.inner.connection_id()
+            ));
+            return Ok(());
+        }
+
         for entry in out.iter_mut() {
             *entry = WTS_PROPERTY_VALUE::default();
         }
@@ -5476,6 +5746,44 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         // `wtsdefs.h` documents QueryProperty GUIDs and the expected output types.
         // TermService appears to treat invalid `Type` values as a hard failure.
         let first = &mut out[0];
+
+        if *_querytype == PROPERTY_TYPE_GET_REMOTEAPP_FEATURE_FLAGS
+            || *_querytype == PROPERTY_TYPE_GET_REMOTEAPP_HD_SUPPORT_LEVEL
+        {
+            first.Type = WTS_VALUE_TYPE_ULONG;
+            first.u.ulVal = 0;
+            return Ok(());
+        }
+
+        if *_querytype == PROPERTY_TYPE_RAIL_CLIENT_CAPABILITIES || *_querytype == PROPERTY_TYPE_WINDOW_CAPABILITYSET {
+            let settings = self
+                .control_bridge
+                .remote_app_settings(self.inner.connection_id())?
+                .filter(|settings| settings.enabled)
+                .ok_or_else(|| windows_core::Error::new(E_NOTIMPL, "RemoteApp is not enabled"))?;
+            if *_querytype == PROPERTY_TYPE_RAIL_CLIENT_CAPABILITIES {
+                let support = settings
+                    .client_rail_support_level
+                    .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "RemoteApp capabilities are unavailable"))?;
+                first.Type = WTS_VALUE_TYPE_ULONG;
+                first.u.ulVal = support;
+            } else {
+                let capability = settings
+                    .window_capability_set
+                    .filter(|bytes| bytes.len() == 11)
+                    .ok_or_else(|| {
+                        windows_core::Error::new(E_UNEXPECTED, "Window List capabilities are unavailable")
+                    })?;
+                // SAFETY: CConnectionEx::GetConnectionProperty frees this buffer with LocalFree.
+                let memory = unsafe { LocalAlloc(LMEM_FIXED, capability.len()) }?;
+                // SAFETY: The allocation has exactly the source length.
+                unsafe { core::ptr::copy_nonoverlapping(capability.as_ptr(), memory.0.cast(), capability.len()) };
+                first.Type = WTS_VALUE_TYPE_BINARY;
+                first.u.bVal.size = 11;
+                first.u.bVal.pbVal = windows_core::PSTR(memory.0.cast());
+            }
+            return Ok(());
+        }
 
         if *_querytype == PROPERTY_TYPE_GET_FAST_RECONNECT {
             let fast_reconnect_mode = provider_fast_reconnect_mode();
@@ -5493,8 +5801,25 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         }
 
         if *_querytype == PROPERTY_TYPE_CONNECTION_GUID {
-            debug_log_line("IWRdsProtocolConnection::QueryProperty PROPERTY_TYPE_CONNECTION_GUID -> E_NOTIMPL");
-            return Err(E_NOTIMPL.into());
+            let enabled = self
+                .control_bridge
+                .remote_app_settings(self.inner.connection_id())?
+                .ok_or_else(|| windows_core::Error::new(E_UNEXPECTED, "connection mode is unavailable"))?
+                .enabled;
+            if !enabled {
+                return Err(windows_core::Error::new(
+                    E_NOTIMPL,
+                    "use the default desktop terminal type",
+                ));
+            }
+            // SAFETY: CConnectionEx::GetConnectionGUIDFromProtocol frees this buffer with LocalFree, not CoTaskMemFree.
+            let memory = unsafe { LocalAlloc(LMEM_FIXED, size_of::<GUID>()) }?;
+            // SAFETY: The fixed allocation is aligned and large enough for one GUID.
+            unsafe { memory.0.cast::<GUID>().write(TERMINAL_TYPE_RDP_REMOTEAPP) };
+            first.Type = WTS_VALUE_TYPE_BINARY;
+            first.u.bVal.size = 16;
+            first.u.bVal.pbVal = windows_core::PSTR(memory.0.cast());
+            return Ok(());
         }
 
         if *_querytype == PROPERTY_TYPE_SUPPRESS_LOGON_UI {
@@ -5704,13 +6029,1487 @@ fn transition_error(message: &'static str) -> windows_core::Error {
     windows_core::Error::new(E_UNEXPECTED, message)
 }
 
+/// Whether an endpoint name can be submitted to the companion for authorization.
+///
+/// TermService attaches its RDPDR consumer only when RDPSND is served too.
+/// The companion restricts dynamic opens to fixed endpoints and cameras announced on the same connection.
+fn native_endpoint_enabled(endpoint_name: &str, is_static: bool) -> bool {
+    if is_static {
+        matches!(endpoint_name, "RDPDR" | "RDPSND" | "RAIL")
+    } else {
+        !endpoint_name.is_empty()
+            && endpoint_name.len() <= 256
+            && endpoint_name.is_ascii()
+            && !endpoint_name.as_bytes().contains(&0)
+            && !matches!(endpoint_name, "RDPDR" | "RDPSND" | "RAIL")
+    }
+}
+
 fn io_error_to_windows_error(error: std::io::Error, context: &'static str) -> windows_core::Error {
     windows_core::Error::new(E_UNEXPECTED, format!("{context}: {error}"))
+}
+
+fn with_provider_identity<T: Send>(
+    operation: impl FnOnce() -> windows_core::Result<T> + Send,
+) -> windows_core::Result<T> {
+    // Native RPC calls can impersonate the user; a fresh worker opens provider-only pipes without changing that token.
+    thread::scope(|scope| {
+        thread::Builder::new()
+            .name("ironrdp-provider-identity".to_owned())
+            .spawn_scoped(scope, operation)
+            .map_err(|error| io_error_to_windows_error(error, "spawn provider worker"))?
+            .join()
+            .map_err(|_| windows_core::Error::new(E_UNEXPECTED, "provider worker panicked"))?
+    })
 }
 
 #[expect(clippy::as_conversions)]
 fn handle_to_raw_usize(handle: HANDLE) -> usize {
     handle.0 as usize
+}
+
+/// Native virtual channel requests, as TermService issues them through `CreateVirtualChannel`.
+#[cfg(test)]
+mod native_channel_tests {
+    use core::ffi::c_void;
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use core::time::Duration;
+    use std::fs::File;
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+
+    use ironrdp_wtsprotocol_ipc::{
+        DEFAULT_MAX_FRAME_SIZE, ProviderCommand, ServiceEvent, read_json_message, write_json_message,
+    };
+    use parking_lot::Mutex;
+    use windows::Win32::Foundation::{E_NOTIMPL, E_UNEXPECTED, ERROR_PIPE_CONNECTED, HANDLE};
+    use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    use windows::Win32::System::Com::{IAgileObject, IAgileObject_Impl};
+    use windows::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeHandleStateW, NAMED_PIPE_MODE, PIPE_READMODE_MESSAGE,
+        PIPE_TYPE_BYTE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    };
+    use windows::Win32::System::RemoteDesktop::{
+        IWRdsProtocolConnection, IWRdsProtocolConnectionCallback, IWRdsProtocolConnectionCallback_Impl,
+        IWRdsProtocolListener, IWRdsProtocolListenerCallback, IWRdsProtocolListenerCallback_Impl,
+        WRDS_CONNECTION_SETTINGS, WTS_PROPERTY_VALUE, WTS_SMALL_RECT,
+    };
+    use windows_core::{AgileReference, HRESULT, HSTRING, implement, s};
+
+    use super::{
+        ComInitGuard, ComProtocolConnection, ComProtocolListener, ProviderControlBridge, native_endpoint_enabled,
+    };
+
+    const SESSION_ID: u32 = 5;
+    const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+    enum Reply {
+        Event(ServiceEvent),
+        HangUp,
+    }
+
+    /// A control pipe server that answers one provider command the way the companion service does.
+    struct FakeCompanion {
+        bridge: ProviderControlBridge,
+        commands: mpsc::Receiver<ProviderCommand>,
+    }
+
+    impl FakeCompanion {
+        fn replying(reply: Reply) -> Self {
+            let name = unique_name("IronRdpProviderTestControl");
+            let mut pipe = server_pipe(&name, false);
+            let (commands_tx, commands) = mpsc::channel();
+
+            thread::spawn(move || {
+                // SAFETY: The handle belongs to the live pipe server instance owned by `pipe`.
+                if let Err(error) = unsafe { ConnectNamedPipe(HANDLE(pipe.as_raw_handle()), None) } {
+                    assert_eq!(
+                        error.code(),
+                        HRESULT::from_win32(ERROR_PIPE_CONNECTED.0),
+                        "wait for the provider to connect"
+                    );
+                }
+                let command = read_json_message::<ProviderCommand>(&mut pipe, DEFAULT_MAX_FRAME_SIZE)
+                    .expect("read the provider command");
+                commands_tx.send(command).expect("report the provider command");
+                if let Reply::Event(event) = reply {
+                    write_json_message(&mut pipe, &event).expect("write the reply");
+                    // Returns once the provider has read the reply.
+                    pipe.sync_all().expect("flush the reply");
+                }
+            });
+
+            Self {
+                bridge: ProviderControlBridge {
+                    pipe_name: Some(name),
+                    optional_connection: false,
+                },
+                commands,
+            }
+        }
+
+        fn command(&self) -> ProviderCommand {
+            self.commands
+                .recv_timeout(COMMAND_TIMEOUT)
+                .expect("the provider sends a command")
+        }
+    }
+
+    fn unique_name(prefix: &str) -> String {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+
+        format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    fn server_pipe(name: &str, message_mode: bool) -> File {
+        let mode = if message_mode {
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE
+        } else {
+            PIPE_TYPE_BYTE
+        };
+
+        // SAFETY: The name is a valid NUL-terminated string for the duration of the call.
+        let handle = unsafe {
+            CreateNamedPipeW(
+                &HSTRING::from(format!(r"\\.\pipe\{name}")),
+                PIPE_ACCESS_DUPLEX,
+                mode | PIPE_WAIT,
+                1,
+                64 * 1024,
+                64 * 1024,
+                0,
+                None,
+            )
+        };
+        assert!(
+            !handle.is_invalid(),
+            "create the pipe: {}",
+            windows_core::Error::from_thread()
+        );
+
+        // SAFETY: The handle was just created and nothing else owns it.
+        unsafe { File::from_raw_handle(handle.0) }
+    }
+
+    fn connection(bridge: ProviderControlBridge, session_id: Option<u32>) -> IWRdsProtocolConnection {
+        let inner = Arc::new(crate::ProtocolConnection::new(
+            1,
+            Arc::new(crate::SessionRegistry::default()),
+        ));
+        if let Some(session_id) = session_id {
+            inner.accept_connection().expect("accept the connection");
+            inner.notify_session_id(session_id).expect("assign the session");
+        }
+
+        ComProtocolConnection::new(inner, Arc::new(Mutex::new(None)), bridge).into()
+    }
+
+    fn open_command(endpoint_name: &str, static_channel: bool) -> ProviderCommand {
+        ProviderCommand::OpenVirtualChannel {
+            connection_id: 1,
+            session_id: SESSION_ID,
+            endpoint_name: endpoint_name.to_owned(),
+            static_channel,
+        }
+    }
+
+    fn no_companion() -> ProviderControlBridge {
+        ProviderControlBridge {
+            pipe_name: None,
+            optional_connection: true,
+        }
+    }
+
+    #[implement(IWRdsProtocolListenerCallback, IAgileObject)]
+    struct NativeListenerCallback {
+        connected: mpsc::Sender<AgileReference<IWRdsProtocolConnection>>,
+        ready: mpsc::Sender<AgileReference<IWRdsProtocolConnection>>,
+        broken: mpsc::Sender<()>,
+        dropped: mpsc::Sender<()>,
+        close_on_connected: bool,
+    }
+
+    impl IAgileObject_Impl for NativeListenerCallback_Impl {}
+
+    impl IWRdsProtocolListenerCallback_Impl for NativeListenerCallback_Impl {
+        fn OnConnected(
+            &self,
+            pconnection: windows_core::Ref<'_, IWRdsProtocolConnection>,
+            _settings: *const WRDS_CONNECTION_SETTINGS,
+        ) -> windows_core::Result<IWRdsProtocolConnectionCallback> {
+            let connection = pconnection.ok()?;
+            if self.close_on_connected {
+                // SAFETY: The provider passed a live connection to the native listener callback.
+                unsafe { connection.Close()? };
+            }
+            let connection = AgileReference::new(connection)?;
+            self.connected
+                .send(connection.clone())
+                .map_err(|error| windows_core::Error::new(E_UNEXPECTED, error.to_string()))?;
+            Ok(NativeConnectionCallback {
+                connection,
+                ready: self.ready.clone(),
+                broken: self.broken.clone(),
+                dropped: self.dropped.clone(),
+                close_on_drop: None,
+            }
+            .into())
+        }
+    }
+
+    #[implement(IWRdsProtocolConnectionCallback, IAgileObject)]
+    struct NativeConnectionCallback {
+        connection: AgileReference<IWRdsProtocolConnection>,
+        ready: mpsc::Sender<AgileReference<IWRdsProtocolConnection>>,
+        broken: mpsc::Sender<()>,
+        dropped: mpsc::Sender<()>,
+        close_on_drop: Option<mpsc::Sender<Result<(), HRESULT>>>,
+    }
+
+    impl Drop for NativeConnectionCallback {
+        fn drop(&mut self) {
+            if let Some(closed) = &self.close_on_drop {
+                let result = self.connection.resolve().and_then(|connection| {
+                    // SAFETY: The callback owns the live connection returned by the provider.
+                    unsafe { connection.Close() }
+                });
+                let _ = closed.send(result.map_err(|error| error.code()));
+            }
+            let _ = self.dropped.send(());
+        }
+    }
+
+    impl IAgileObject_Impl for NativeConnectionCallback_Impl {}
+
+    impl IWRdsProtocolConnectionCallback_Impl for NativeConnectionCallback_Impl {
+        fn OnReady(&self) -> windows_core::Result<()> {
+            self.ready
+                .send(self.connection.clone())
+                .map_err(|error| windows_core::Error::new(E_UNEXPECTED, error.to_string()))
+        }
+
+        fn BrokenConnection(&self, _reason: u32, _source: u32) -> windows_core::Result<()> {
+            let connection = self.connection.resolve()?;
+            // SAFETY: The callback owns the live connection returned by the provider.
+            unsafe { connection.Close()? };
+            self.broken
+                .send(())
+                .map_err(|error| windows_core::Error::new(E_UNEXPECTED, error.to_string()))
+        }
+
+        fn StopScreenUpdates(&self) -> windows_core::Result<()> {
+            Err(windows_core::Error::new(E_NOTIMPL, "unexpected stop screen updates"))
+        }
+
+        fn RedrawWindow(&self, _rect: *const WTS_SMALL_RECT) -> windows_core::Result<()> {
+            Err(windows_core::Error::new(E_NOTIMPL, "unexpected redraw window"))
+        }
+
+        fn GetConnectionId(&self) -> windows_core::Result<u32> {
+            Ok(1)
+        }
+    }
+
+    struct NativeListenerProbe {
+        listener: IWRdsProtocolListener,
+        companion: thread::JoinHandle<()>,
+        connected: mpsc::Receiver<AgileReference<IWRdsProtocolConnection>>,
+        ready: mpsc::Receiver<AgileReference<IWRdsProtocolConnection>>,
+        broken: mpsc::Receiver<()>,
+        dropped: mpsc::Receiver<()>,
+        notifications: mpsc::Sender<ServiceEvent>,
+    }
+
+    impl NativeListenerProbe {
+        fn start(close_on_connected: bool) -> Self {
+            let pipe_name = unique_name("IronRdpListenerCloseTest");
+            let mut pipe = server_pipe(&pipe_name, false);
+            let mut listener = ComProtocolListener::new(
+                crate::ProtocolListener::new(Arc::new(crate::SessionRegistry::default())),
+                "IronRdpListenerCloseTest".to_owned(),
+            );
+            listener.control_bridge = ProviderControlBridge {
+                pipe_name: Some(pipe_name.clone()),
+                optional_connection: false,
+            };
+            let listener: IWRdsProtocolListener = listener.into();
+            let (notifications, incoming) = mpsc::channel();
+            let companion = thread::spawn(move || {
+                let mut offered = false;
+                loop {
+                    // SAFETY: `pipe` owns the live named pipe server handle.
+                    if let Err(error) = unsafe { ConnectNamedPipe(HANDLE(pipe.as_raw_handle()), None) } {
+                        assert_eq!(error.code(), HRESULT::from_win32(ERROR_PIPE_CONNECTED.0));
+                    }
+                    let command = read_json_message::<ProviderCommand>(&mut pipe, DEFAULT_MAX_FRAME_SIZE)
+                        .expect("read listener command");
+                    let stopping = matches!(command, ProviderCommand::StopListen { .. });
+                    let reply = match command {
+                        ProviderCommand::StartListen { .. }
+                        | ProviderCommand::StopListen { .. }
+                        | ProviderCommand::CloseConnection { .. } => ServiceEvent::Ack,
+                        ProviderCommand::WaitForIncoming { listener_name, .. } if !offered => {
+                            offered = true;
+                            ServiceEvent::IncomingConnection {
+                                listener_name,
+                                connection_id: 1,
+                                peer_addr: None,
+                            }
+                        }
+                        ProviderCommand::WaitForIncoming { .. } => match incoming.try_recv() {
+                            Ok(event) => event,
+                            Err(mpsc::TryRecvError::Empty) => ServiceEvent::NoIncoming,
+                            Err(mpsc::TryRecvError::Disconnected) => panic!("notification sender dropped before stop"),
+                        },
+                        ProviderCommand::AcceptConnection { connection_id } => {
+                            ServiceEvent::ConnectionReady { connection_id }
+                        }
+                        ProviderCommand::GetConnectionCredentials { connection_id } => {
+                            ServiceEvent::ConnectionCredentials {
+                                connection_id,
+                                username: "test-user".to_owned(),
+                                domain: String::new(),
+                                password: "test-password".to_owned(),
+                            }
+                        }
+                        other => panic!("unexpected listener command: {other:?}"),
+                    };
+                    write_json_message(&mut pipe, &reply).expect("reply to listener command");
+                    pipe.sync_all().expect("wait for the listener to read the reply");
+                    if stopping {
+                        break;
+                    }
+                    drop(pipe);
+                    pipe = server_pipe(&pipe_name, false);
+                }
+            });
+            let (connected_tx, connected) = mpsc::channel();
+            let (ready_tx, ready) = mpsc::channel();
+            let (broken_tx, broken) = mpsc::channel();
+            let (dropped_tx, dropped) = mpsc::channel();
+            let callback: IWRdsProtocolListenerCallback = NativeListenerCallback {
+                connected: connected_tx,
+                ready: ready_tx,
+                broken: broken_tx,
+                dropped: dropped_tx,
+                close_on_connected,
+            }
+            .into();
+
+            // SAFETY: The listener and callback are live COM interfaces in an initialized apartment.
+            unsafe { listener.StartListen(&callback) }.expect("start the listener");
+            Self {
+                listener,
+                companion,
+                connected,
+                ready,
+                broken,
+                dropped,
+                notifications,
+            }
+        }
+
+        fn stop(self) {
+            // SAFETY: The probe owns the live listener in an initialized apartment.
+            unsafe { self.listener.StopListen() }.expect("stop the listener");
+            self.companion.join().expect("companion completes");
+        }
+    }
+
+    // oracle: spec IWRdsProtocolListenerCallback::OnConnected, pCallback: the protocol must release it
+    // when the connection is closed, independently of a later transport failure notification.
+    #[test]
+    fn server_close_releases_callback_while_listener_keeps_running() {
+        let _com = ComInitGuard::new();
+        let probe = NativeListenerProbe::start(false);
+        let connection = probe
+            .ready
+            .recv_timeout(COMMAND_TIMEOUT)
+            .expect("the listener dispatches an incoming connection")
+            .resolve()
+            .expect("resolve the connection in this apartment");
+        // SAFETY: The connection was received from the listener and is still owned by this test.
+        unsafe { connection.Close() }.expect("close the connection without a broken notification");
+        let released = probe.dropped.recv_timeout(COMMAND_TIMEOUT);
+
+        probe.stop();
+        assert_eq!(released, Ok(()), "Close must release the callback before StopListen");
+    }
+
+    // oracle: spec IWRdsProtocolListenerCallback::OnConnected, pCallback: closing a connection releases
+    // its callback even when the native listener closes it before returning that callback.
+    #[test]
+    fn close_during_on_connected_does_not_retain_returned_callback() {
+        let _com = ComInitGuard::new();
+        let probe = NativeListenerProbe::start(true);
+        let _connection = probe
+            .connected
+            .recv_timeout(COMMAND_TIMEOUT)
+            .expect("the native listener closes the incoming connection");
+        let released = probe.dropped.recv_timeout(COMMAND_TIMEOUT);
+
+        probe.stop();
+        assert_eq!(
+            released,
+            Ok(()),
+            "registration must not retain an already closed callback"
+        );
+    }
+
+    // oracle: mutant releasing the last callback reference under its mutex deadlocks reentrant Close.
+    #[test]
+    fn callback_destruction_can_reenter_close() {
+        let _com = ComInitGuard::new();
+        let callback_slot = Arc::new(Mutex::new(None));
+        let inner = Arc::new(crate::ProtocolConnection::new(
+            1,
+            Arc::new(crate::SessionRegistry::default()),
+        ));
+        let connection: IWRdsProtocolConnection =
+            ComProtocolConnection::new(inner, Arc::clone(&callback_slot), no_companion()).into();
+        let connection = AgileReference::new(&connection).expect("share the connection across apartments");
+        let (ready, _ready) = mpsc::channel();
+        let (broken, _broken) = mpsc::channel();
+        let (dropped_tx, dropped) = mpsc::channel();
+        let (reentered_tx, reentered) = mpsc::channel();
+        let callback: IWRdsProtocolConnectionCallback = NativeConnectionCallback {
+            connection: connection.clone(),
+            ready,
+            broken,
+            dropped: dropped_tx,
+            close_on_drop: Some(reentered_tx),
+        }
+        .into();
+        *callback_slot.lock() = Some(AgileReference::new(&callback).expect("retain the native callback"));
+        drop(callback);
+        let (completed_tx, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let _com = ComInitGuard::new();
+            let connection = connection.resolve().expect("resolve the connection");
+            // SAFETY: The worker owns a live COM connection in an initialized apartment.
+            let result = unsafe { connection.Close() };
+            completed_tx
+                .send(result.map_err(|error| error.code()))
+                .expect("report Close completion");
+        });
+        let result = completed.recv_timeout(COMMAND_TIMEOUT);
+        if result.is_ok() {
+            worker.join().expect("Close worker completes");
+        }
+        assert_eq!(
+            result,
+            Ok(Ok(())),
+            "Close must not deadlock during callback destruction"
+        );
+        // A nested Close can reject an already closed connection, but it must return.
+        let _reentrant_result = reentered
+            .recv_timeout(COMMAND_TIMEOUT)
+            .expect("callback destruction returns from reentrant Close");
+        assert_eq!(dropped.recv_timeout(COMMAND_TIMEOUT), Ok(()));
+    }
+
+    // oracle: spec IWRdsProtocolConnectionCallback::BrokenConnection notifies RDS of transport loss;
+    // IWRdsProtocolListenerCallback::OnConnected requires releasing the callback after RDS closes the connection.
+    #[test]
+    fn transport_loss_notifies_native_callback_and_allows_reentrant_close() {
+        let _com = ComInitGuard::new();
+        let probe = NativeListenerProbe::start(false);
+        let _connection = probe.ready.recv_timeout(COMMAND_TIMEOUT).expect("connection is ready");
+        probe
+            .notifications
+            .send(ServiceEvent::ConnectionBroken {
+                connection_id: 1,
+                reason: "test transport closed".to_owned(),
+            })
+            .expect("report transport loss");
+        let notified = probe.broken.recv_timeout(COMMAND_TIMEOUT);
+        let released = probe.dropped.recv_timeout(COMMAND_TIMEOUT);
+
+        probe.stop();
+        assert_eq!(notified, Ok(()), "active connections must retain their native callback");
+        assert_eq!(
+            released,
+            Ok(()),
+            "native Close must release the callback without deadlocking"
+        );
+    }
+
+    fn remote_app_provider(enabled: bool, authenticated: bool) -> (ComProtocolConnection, FakeCompanion) {
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::RemoteAppSettings {
+            connection_id: 1,
+            settings: Some(super::RemoteAppSettings {
+                enabled,
+                client_rail_support_level: Some(1),
+                window_capability_set: Some(vec![24, 0, 11, 0, 2, 0, 0, 0, 3, 12, 0]),
+            }),
+        }));
+        let inner = Arc::new(crate::ProtocolConnection::new(
+            1,
+            Arc::new(crate::SessionRegistry::default()),
+        ));
+        let connection = ComProtocolConnection::new(inner, Arc::new(Mutex::new(None)), companion.bridge.clone());
+        if authenticated {
+            *connection.cached_credentials.lock() =
+                Some(("test-user".to_owned(), String::new(), "test-password".to_owned()));
+        }
+        (connection, companion)
+    }
+
+    fn remote_app_connection(enabled: bool, authenticated: bool) -> (IWRdsProtocolConnection, FakeCompanion) {
+        let (connection, companion) = remote_app_provider(enabled, authenticated);
+        (connection.into(), companion)
+    }
+
+    // oracle: reference termsrv.dll SHA256 16A660526148D0C26FB64D2EA0141AA7A3C6CB5E5CF5413CBE5822085755E560,
+    // CConnectionEx::GetConnectionGUIDFromProtocol reads TERMINAL_TYPE_RDP_REMOTEAPP and frees it with LocalFree.
+    #[test]
+    fn remote_app_connection_type_identifies_the_native_remote_app_terminal() {
+        let (connection, _companion) = remote_app_connection(true, false);
+        let mut output = WTS_PROPERTY_VALUE::default();
+        // SAFETY: The native query has no inputs and one writable output entry.
+        unsafe {
+            connection.QueryProperty(
+                super::PROPERTY_TYPE_CONNECTION_GUID,
+                &[],
+                core::slice::from_mut(&mut output),
+            )
+        }
+        .unwrap();
+        assert_eq!(output.Type, 3);
+        // SAFETY: Type 3 identifies the binary member, which the caller owns.
+        unsafe {
+            assert_eq!(output.u.bVal.size, 16);
+            assert!(!output.u.bVal.pbVal.is_null());
+            let actual = core::slice::from_raw_parts(output.u.bVal.pbVal.0, 16).to_vec();
+            let freed = super::LocalFree(Some(super::HLOCAL(output.u.bVal.pbVal.0.cast())));
+            assert!(freed.is_invalid());
+            assert_eq!(
+                actual,
+                [
+                    0xce, 0xc3, 0xdc, 0xed, 0x7e, 0x6e, 0x4b, 0x4f, 0x84, 0x39, 0x3d, 0x9a, 0xd4, 0xc9, 0x44, 0x0f
+                ]
+            );
+        }
+    }
+
+    // oracle: mutant classifying a desktop connection as RemoteApp replaces its native shell semantics.
+    #[test]
+    fn desktop_connection_type_keeps_the_native_default() {
+        let (connection, _companion) = remote_app_connection(false, true);
+        let mut output = WTS_PROPERTY_VALUE::default();
+        // SAFETY: The native query has no inputs and one writable output entry.
+        let error = unsafe {
+            connection.QueryProperty(
+                super::PROPERTY_TYPE_CONNECTION_GUID,
+                &[],
+                core::slice::from_mut(&mut output),
+            )
+        }
+        .unwrap_err();
+        assert_eq!(error.code(), E_NOTIMPL);
+    }
+
+    // oracle: mutant missing Client Info must not classify an unknown connection as RemoteApp.
+    #[test]
+    fn unknown_connection_type_is_not_reported_as_remote_app() {
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::RemoteAppSettings {
+            connection_id: 1,
+            settings: None,
+        }));
+        let connection = connection(companion.bridge, None);
+        let mut output = WTS_PROPERTY_VALUE::default();
+        // SAFETY: The native query has no inputs and one writable output entry.
+        let error = unsafe {
+            connection.QueryProperty(
+                super::PROPERTY_TYPE_CONNECTION_GUID,
+                &[],
+                core::slice::from_mut(&mut output),
+            )
+        }
+        .unwrap_err();
+        assert_eq!(error.code(), E_UNEXPECTED);
+    }
+
+    // oracle: mutant an authenticated RemoteApp connection must not activate the provider's Explorer fallback.
+    #[test]
+    fn remote_app_never_authorizes_provider_explorer_bootstrap() {
+        let (connection, _companion) = remote_app_provider(true, true);
+        assert!(!connection.desktop_shell_bootstrap_allowed(1).unwrap());
+    }
+
+    // oracle: mutant a confirmed desktop connection must retain its provider shell fallback.
+    #[test]
+    fn desktop_still_authorizes_provider_explorer_bootstrap() {
+        let (connection, _companion) = remote_app_provider(false, true);
+        assert!(connection.desktop_shell_bootstrap_allowed(1).unwrap());
+    }
+
+    // oracle: mutant missing Client Info must not authorize Explorer while native RemoteApp startup is pending.
+    #[test]
+    fn unknown_session_mode_denies_provider_explorer_bootstrap() {
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::RemoteAppSettings {
+            connection_id: 1,
+            settings: None,
+        }));
+        let connection = ComProtocolConnection::new(
+            Arc::new(crate::ProtocolConnection::new(1, Arc::default())),
+            Arc::new(Mutex::new(None)),
+            companion.bridge,
+        );
+        assert!(!connection.desktop_shell_bootstrap_allowed(1).unwrap());
+    }
+
+    fn string_buffer_property(buffer: &mut [u16]) -> WTS_PROPERTY_VALUE {
+        let mut property = WTS_PROPERTY_VALUE {
+            Type: super::WTS_VALUE_TYPE_STRING,
+            ..Default::default()
+        };
+        property.u.strVal.size = u32::try_from(size_of_val(buffer)).unwrap();
+        property.u.strVal.pstrVal = super::PWSTR(buffer.as_mut_ptr());
+        property
+    }
+
+    // oracle: reference termsrv.dll SHA256 16A660526148D0C26FB64D2EA0141AA7A3C6CB5E5CF5413CBE5822085755E560,
+    // ApplyTSAllowPolicyToInitialProgram supplies four outputs and byte-sized caller-owned string buffers.
+    #[test]
+    fn native_initial_application_query_uses_caller_owned_byte_buffers() {
+        let (connection, _companion) = remote_app_connection(true, true);
+        let mut application = [0xD800; 257];
+        let name: Vec<_> = "rdpinit.exe".encode_utf16().chain(Some(0)).collect();
+        application[..name.len()].copy_from_slice(&name);
+        let mut input = [
+            string_buffer_property(&mut application),
+            WTS_PROPERTY_VALUE {
+                Type: super::WTS_VALUE_TYPE_STRING,
+                ..Default::default()
+            },
+            WTS_PROPERTY_VALUE {
+                Type: super::WTS_VALUE_TYPE_ULONG,
+                ..Default::default()
+            },
+        ];
+        input[2].u.ulVal = 10;
+        let mut command_buffer = [0xA55A; 262];
+        let mut parameter_buffer = [0xA55A; 262];
+        let mut output = [
+            string_buffer_property(&mut command_buffer[..261]),
+            string_buffer_property(&mut parameter_buffer[..261]),
+            WTS_PROPERTY_VALUE {
+                Type: super::WTS_VALUE_TYPE_ULONG,
+                ..Default::default()
+            },
+            WTS_PROPERTY_VALUE {
+                Type: super::WTS_VALUE_TYPE_ULONG,
+                ..Default::default()
+            },
+        ];
+        // SAFETY: All entries and their advertised byte buffers remain valid throughout the call.
+        unsafe { connection.QueryProperty(super::WTS_QUERY_ALLOWED_INITIAL_APP, &input, &mut output) }.unwrap();
+        // SAFETY: Successful string and ULONG output entries retain their declared types.
+        unsafe {
+            assert_eq!(output[0].u.strVal.pstrVal.0, command_buffer.as_mut_ptr());
+            assert_eq!(output[1].u.strVal.pstrVal.0, parameter_buffer.as_mut_ptr());
+            assert_ne!(output[2].u.ulVal, 0);
+        }
+        let end = command_buffer.iter().position(|v| *v == 0).unwrap();
+        let program = String::from_utf16(&command_buffer[..end]).unwrap();
+        assert!(std::path::Path::new(&program).is_absolute());
+        assert!(program.to_ascii_lowercase().ends_with(r"\system32\rdpinit.exe"));
+        assert_eq!(parameter_buffer[0], 0);
+        assert_eq!(command_buffer[261], 0xA55A);
+        assert_eq!(parameter_buffer[261], 0xA55A);
+    }
+
+    fn allowed_initial_application(application: &str, parameters: &str, enabled: bool, authenticated: bool) -> bool {
+        let (connection, _companion) = remote_app_connection(enabled, authenticated);
+        let decision = application_decision(&connection, application, parameters).unwrap();
+        assert!(decision.parameters.is_empty());
+        if decision.allowed {
+            assert!(
+                decision
+                    .program
+                    .to_ascii_lowercase()
+                    .ends_with(r"\system32\rdpinit.exe"),
+                "{}",
+                decision.program
+            );
+        }
+        decision.allowed
+    }
+
+    struct ApplicationDecision {
+        allowed: bool,
+        expanded_alias: bool,
+        program: String,
+        parameters: String,
+    }
+
+    fn application_decision(
+        connection: &IWRdsProtocolConnection,
+        application: &str,
+        parameters: &str,
+    ) -> windows_core::Result<ApplicationDecision> {
+        let mut application: Vec<_> = application.encode_utf16().chain(Some(0)).collect();
+        let mut parameters: Vec<_> = parameters.encode_utf16().chain(Some(0)).collect();
+        let input = [
+            string_buffer_property(&mut application),
+            string_buffer_property(&mut parameters),
+            WTS_PROPERTY_VALUE {
+                Type: super::WTS_VALUE_TYPE_ULONG,
+                ..Default::default()
+            },
+        ];
+        let mut command_buffer = [0; 261];
+        let mut parameter_buffer = [0; 261];
+        let mut output = [
+            string_buffer_property(&mut command_buffer),
+            string_buffer_property(&mut parameter_buffer),
+            WTS_PROPERTY_VALUE::default(),
+            WTS_PROPERTY_VALUE::default(),
+        ];
+        // SAFETY: Three input entries and four output entries remain live for the native call.
+        unsafe { connection.QueryProperty(super::WTS_QUERY_ALLOWED_INITIAL_APP, &input, &mut output) }?;
+        assert_eq!(output[2].Type, super::WTS_VALUE_TYPE_ULONG);
+        assert_eq!(output[3].Type, super::WTS_VALUE_TYPE_ULONG);
+        let command_end = command_buffer.iter().position(|v| *v == 0).unwrap();
+        let parameter_end = parameter_buffer.iter().position(|v| *v == 0).unwrap();
+        // SAFETY: The ULONG tags identify the active union members.
+        unsafe {
+            Ok(ApplicationDecision {
+                allowed: output[2].u.ulVal != 0,
+                expanded_alias: output[3].u.ulVal != 0,
+                program: String::from_utf16(&command_buffer[..command_end]).unwrap(),
+                parameters: String::from_utf16(&parameter_buffer[..parameter_end]).unwrap(),
+            })
+        }
+    }
+
+    struct PublishedAppFixture {
+        path: String,
+    }
+
+    impl PublishedAppFixture {
+        fn new(setting: u32, required: &str, descriptor: Option<&str>) -> Self {
+            use windows::Win32::System::Registry::{
+                HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_CREATE_KEY_DISPOSITION, REG_CREATED_NEW_KEY, REG_DWORD,
+                REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegSetValueExW,
+            };
+            use windows_core::{PCWSTR, w};
+
+            let path = format!(r"Software\{}", unique_name("IronRdpPublishedApps"));
+            let mut root = HKEY::default();
+            let mut disposition = REG_CREATE_KEY_DISPOSITION::default();
+            // SAFETY: The temporary root is process-unique; all handle outputs are writable.
+            unsafe {
+                RegCreateKeyExW(
+                    HKEY_CURRENT_USER,
+                    &HSTRING::from(&path),
+                    None,
+                    PCWSTR::null(),
+                    REG_OPTION_NON_VOLATILE,
+                    KEY_WRITE,
+                    None,
+                    &mut root,
+                    Some(&mut disposition),
+                )
+            }
+            .ok()
+            .unwrap();
+            assert_eq!(
+                disposition, REG_CREATED_NEW_KEY,
+                "never overwrite an existing registry fixture"
+            );
+            let fixture = Self { path };
+            let mut app = HKEY::default();
+            // SAFETY: `root` is live, and `app` is a writable handle output.
+            let opened = unsafe {
+                RegCreateKeyExW(
+                    root,
+                    w!("App"),
+                    None,
+                    PCWSTR::null(),
+                    REG_OPTION_NON_VOLATILE,
+                    KEY_WRITE,
+                    None,
+                    &mut app,
+                    None,
+                )
+            };
+            // SAFETY: The child handle does not borrow the parent handle.
+            unsafe { RegCloseKey(root) }.ok().unwrap();
+            opened.ok().unwrap();
+            let configured = (|| {
+                for (name, value) in [
+                    ("Path", Some(r"C:\Program Files\IronRdp Fixture\app.exe")),
+                    ("RequiredCommandLine", Some(required)),
+                    ("SecurityDescriptor", descriptor),
+                ] {
+                    if let Some(value) = value {
+                        let bytes: Vec<_> = value.encode_utf16().chain(Some(0)).flat_map(u16::to_le_bytes).collect();
+                        // SAFETY: The value name and bytes remain live for the registry write.
+                        unsafe { RegSetValueExW(app, &HSTRING::from(name), None, REG_SZ, Some(&bytes)) }.ok()?;
+                    }
+                }
+                // SAFETY: The byte array represents one DWORD.
+                unsafe {
+                    RegSetValueExW(
+                        app,
+                        w!("CommandLineSetting"),
+                        None,
+                        REG_DWORD,
+                        Some(&setting.to_le_bytes()),
+                    )
+                }
+                .ok()
+            })();
+            // SAFETY: The fixture owns the child handle and no longer needs it.
+            unsafe { RegCloseKey(app) }.ok().unwrap();
+            configured.unwrap();
+            fixture
+        }
+
+        fn connection(&self, enabled: bool, authenticated: bool) -> (IWRdsProtocolConnection, FakeCompanion) {
+            let (mut connection, companion) = remote_app_provider(enabled, authenticated);
+            connection.published_applications = super::PublishedApplications::for_test(
+                windows::Win32::System::Registry::HKEY_CURRENT_USER,
+                self.path.clone(),
+            );
+            (connection.into(), companion)
+        }
+
+        fn set_value(&self, name: &str, value_type: windows::Win32::System::Registry::REG_VALUE_TYPE, bytes: &[u8]) {
+            use windows::Win32::System::Registry::{
+                HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, RegCloseKey, RegOpenKeyExW, RegSetValueExW,
+            };
+
+            let mut app = HKEY::default();
+            // SAFETY: The fixture owns this application key, and the handle output is writable.
+            unsafe {
+                RegOpenKeyExW(
+                    HKEY_CURRENT_USER,
+                    &HSTRING::from(format!(r"{}\App", self.path)),
+                    None,
+                    KEY_SET_VALUE,
+                    &mut app,
+                )
+            }
+            .ok()
+            .unwrap();
+            // SAFETY: The name and bytes remain live for the write.
+            let result = unsafe { RegSetValueExW(app, &HSTRING::from(name), None, value_type, Some(bytes)) };
+            // SAFETY: This helper owns the handle and no longer needs it.
+            unsafe { RegCloseKey(app) }.ok().unwrap();
+            result.ok().unwrap();
+        }
+    }
+
+    impl Drop for PublishedAppFixture {
+        fn drop(&mut self) {
+            use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RegDeleteTreeW};
+
+            // SAFETY: This exact subtree was newly created and is owned only by this fixture.
+            unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(&self.path)) }
+                .ok()
+                .expect("delete the owned published-app fixture");
+        }
+    }
+
+    // oracle: spec Win32_TSPublishedApplication Path and CommandLineSetting 0 identify the executable and forbid arguments.
+    // oracle: reference rdpcorets.dll VerifyAppAllowed returns the expanded alias and quotes paths containing spaces.
+    #[test]
+    fn published_app_alias_resolves_without_client_arguments() {
+        let fixture = PublishedAppFixture::new(0, "", None);
+        let (connection, _companion) = fixture.connection(true, true);
+        let decision = application_decision(&connection, "||App", "/untrusted").unwrap();
+        assert!(decision.allowed);
+        assert!(decision.expanded_alias);
+        assert_eq!(decision.program, r#""C:\Program Files\IronRdp Fixture\app.exe""#);
+        assert!(decision.parameters.is_empty());
+    }
+
+    // oracle: spec Win32_TSPublishedApplication CommandLineSetting 1 allows the client's command-line arguments.
+    #[test]
+    fn published_app_allows_configured_client_arguments() {
+        let fixture = PublishedAppFixture::new(1, "", None);
+        let (connection, _companion) = fixture.connection(true, true);
+        let decision = application_decision(&connection, "||App", r#"/open "a b.txt""#).unwrap();
+        assert!(decision.allowed);
+        assert_eq!(decision.parameters, r#"/open "a b.txt""#);
+    }
+
+    // oracle: spec Win32_TSPublishedApplication CommandLineSetting 2 always uses RequiredCommandLine.
+    #[test]
+    fn published_app_uses_required_arguments_instead_of_client_arguments() {
+        let fixture = PublishedAppFixture::new(2, "/configured", None);
+        let (connection, _companion) = fixture.connection(true, true);
+        let decision = application_decision(&connection, "||App", "/untrusted").unwrap();
+        assert!(decision.allowed);
+        assert_eq!(decision.parameters, "/configured");
+    }
+
+    // oracle: mutant publishing one alias must not authorize an absent alias.
+    #[test]
+    fn unpublished_app_alias_is_denied() {
+        let fixture = PublishedAppFixture::new(0, "", None);
+        let (connection, _companion) = fixture.connection(true, true);
+        let decision = application_decision(&connection, "||Absent", "").unwrap();
+        assert!(!decision.allowed);
+        assert!(!decision.expanded_alias);
+        assert!(decision.program.is_empty());
+    }
+
+    // oracle: mutant a registry separator must not let an alias escape the published-app registry root.
+    #[test]
+    fn published_app_alias_cannot_select_another_registry_path() {
+        let fixture = PublishedAppFixture::new(0, "", None);
+        let (connection, _companion) = fixture.connection(true, true);
+        assert!(!application_decision(&connection, r"||..\App", "").unwrap().allowed);
+    }
+
+    // oracle: mutant publishing an alias must not authorize launch before authenticated credentials exist.
+    #[test]
+    fn published_app_requires_authentication() {
+        let fixture = PublishedAppFixture::new(0, "", None);
+        let (connection, _companion) = fixture.connection(true, false);
+        assert!(!application_decision(&connection, "||App", "").unwrap().allowed);
+    }
+
+    // oracle: mutant publishing an alias must not change the shell of a desktop connection.
+    #[test]
+    fn published_app_requires_remote_app_mode() {
+        let fixture = PublishedAppFixture::new(0, "", None);
+        let (connection, _companion) = fixture.connection(false, true);
+        assert!(!application_decision(&connection, "||App", "").unwrap().allowed);
+    }
+
+    // oracle: spec Win32_TSPublishedApplication CommandLineSetting permits only 0, 1 or 2.
+    #[test]
+    fn published_app_rejects_an_unknown_argument_policy() {
+        let fixture = PublishedAppFixture::new(3, "", None);
+        let (connection, _companion) = fixture.connection(true, true);
+        assert_eq!(
+            application_decision(&connection, "||App", "").err().unwrap().code(),
+            super::E_INVALIDARG
+        );
+    }
+
+    // oracle: reference Windows Server 2025 RemoteDesktop Utility.psm1 Get-SecurityDescriptorFromUserGroup
+    // emits O:WDG:WDD:ARP(A;CIOI;CCLCSWLORCGR;;;SID) for each permitted group.
+    #[test]
+    fn published_app_user_group_is_checked_as_the_rpc_caller() {
+        thread::spawn(|| {
+            let fixture = PublishedAppFixture::new(0, "", Some("O:WDG:WDD:ARP(A;CIOI;CCLCSWLORCGR;;;WD)"));
+            let (connection, _companion) = fixture.connection(true, true);
+            // SAFETY: Impersonation is confined to this dedicated test thread.
+            unsafe { windows::Win32::Security::ImpersonateSelf(super::SecurityImpersonation) }.unwrap();
+            let result = application_decision(&connection, "||App", "");
+            // SAFETY: This test restores its thread before inspecting the result.
+            unsafe { super::RevertToSelf() }.unwrap();
+            assert!(result.unwrap().allowed);
+        })
+        .join()
+        .unwrap();
+    }
+
+    // oracle: spec Win32_TSPublishedApplication SecurityDescriptor controls access to the application.
+    // The null SID belongs to no caller, so this publication must not authorize the test user.
+    #[test]
+    fn published_app_denies_a_caller_outside_its_user_groups() {
+        thread::spawn(|| {
+            let fixture = PublishedAppFixture::new(0, "", Some("O:WDG:WDD:ARP(A;CIOI;CCLCSWLORCGR;;;S-1-0-0)"));
+            let (connection, _companion) = fixture.connection(true, true);
+            // SAFETY: Impersonation is confined to this dedicated test thread.
+            unsafe { windows::Win32::Security::ImpersonateSelf(super::SecurityImpersonation) }.unwrap();
+            let result = application_decision(&connection, "||App", "");
+            // SAFETY: This test restores its thread before inspecting the result.
+            unsafe { super::RevertToSelf() }.unwrap();
+            assert!(!result.unwrap().allowed);
+        })
+        .join()
+        .unwrap();
+    }
+
+    // oracle: mutant substituting the privileged process token bypasses published-app user restrictions.
+    #[test]
+    fn published_app_user_restrictions_require_an_rpc_caller_token() {
+        thread::spawn(|| {
+            let fixture = PublishedAppFixture::new(0, "", Some("O:WDG:WDD:ARP(A;CIOI;CCLCSWLORCGR;;;WD)"));
+            let (connection, _companion) = fixture.connection(true, true);
+            assert_eq!(
+                application_decision(&connection, "||App", "").err().unwrap().code(),
+                HRESULT::from_win32(super::ERROR_NO_TOKEN.0)
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    // oracle: mutant treating a mistyped SecurityDescriptor as absent silently removes user restrictions.
+    #[test]
+    fn published_app_rejects_a_mistyped_security_descriptor() {
+        let fixture = PublishedAppFixture::new(0, "", None);
+        fixture.set_value(
+            "SecurityDescriptor",
+            windows::Win32::System::Registry::REG_DWORD,
+            &0u32.to_le_bytes(),
+        );
+        let (connection, _companion) = fixture.connection(true, true);
+        assert!(application_decision(&connection, "||App", "").is_err());
+    }
+
+    // oracle: mutant accepting an empty REG_EXPAND_SZ descriptor silently removes user restrictions.
+    #[test]
+    fn published_app_rejects_an_expandable_empty_security_descriptor() {
+        let fixture = PublishedAppFixture::new(0, "", None);
+        fixture.set_value(
+            "SecurityDescriptor",
+            windows::Win32::System::Registry::REG_EXPAND_SZ,
+            &[0, 0],
+        );
+        let (connection, _companion) = fixture.connection(true, true);
+        assert_eq!(
+            application_decision(&connection, "||App", "").err().unwrap().code(),
+            HRESULT::from_win32(windows::Win32::Foundation::ERROR_UNSUPPORTED_TYPE.0)
+        );
+    }
+
+    // oracle: mutant expanding a REG_EXPAND_SZ policy accepts a different type from Windows publication REG_SZ.
+    #[test]
+    fn published_app_rejects_an_expandable_nonempty_security_descriptor() {
+        let fixture = PublishedAppFixture::new(0, "", None);
+        let bytes: Vec<_> = "O:WDG:WDD:ARP(A;CIOI;CCLCSWLORCGR;;;WD)"
+            .encode_utf16()
+            .chain(Some(0))
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        fixture.set_value(
+            "SecurityDescriptor",
+            windows::Win32::System::Registry::REG_EXPAND_SZ,
+            &bytes,
+        );
+        let (connection, _companion) = fixture.connection(true, true);
+        assert_eq!(
+            application_decision(&connection, "||App", "").err().unwrap().code(),
+            HRESULT::from_win32(windows::Win32::Foundation::ERROR_UNSUPPORTED_TYPE.0)
+        );
+    }
+
+    // oracle: mutant truncating a malformed descriptor at its first NUL treats it as an unrestricted publication.
+    #[test]
+    fn published_app_rejects_an_embedded_security_descriptor_terminator() {
+        let fixture = PublishedAppFixture::new(0, "", None);
+        fixture.set_value(
+            "SecurityDescriptor",
+            windows::Win32::System::Registry::REG_SZ,
+            &[0, 0, b'x', 0, 0, 0],
+        );
+        let (connection, _companion) = fixture.connection(true, true);
+        assert!(application_decision(&connection, "||App", "").is_err());
+    }
+
+    // oracle: mutant an invalid SDDL value must not be interpreted as an unrestricted publication.
+    #[test]
+    fn published_app_rejects_a_malformed_security_descriptor() {
+        thread::spawn(|| {
+            let fixture = PublishedAppFixture::new(0, "", Some("not an SDDL descriptor"));
+            let (connection, _companion) = fixture.connection(true, true);
+            // SAFETY: Impersonation is confined to this dedicated test thread.
+            unsafe { windows::Win32::Security::ImpersonateSelf(super::SecurityImpersonation) }.unwrap();
+            let result = application_decision(&connection, "||App", "");
+            // SAFETY: This test restores its thread before inspecting the result.
+            unsafe { super::RevertToSelf() }.unwrap();
+            assert!(result.is_err());
+        })
+        .join()
+        .unwrap();
+    }
+
+    // oracle: mutant mapping GENERIC_WRITE to the launch read permission grants access without a read ACE.
+    #[test]
+    fn published_app_write_access_does_not_grant_read_access() {
+        thread::spawn(|| {
+            let fixture = PublishedAppFixture::new(0, "", Some("O:WDG:WDD:ARP(A;CIOI;GW;;;WD)"));
+            let (connection, _companion) = fixture.connection(true, true);
+            // SAFETY: Impersonation is confined to this dedicated test thread.
+            unsafe { windows::Win32::Security::ImpersonateSelf(super::SecurityImpersonation) }.unwrap();
+            let result = application_decision(&connection, "||App", "");
+            // SAFETY: This test restores its thread before inspecting the result.
+            unsafe { super::RevertToSelf() }.unwrap();
+            assert!(!result.unwrap().allowed);
+        })
+        .join()
+        .unwrap();
+    }
+
+    // oracle: mutant authorizing an arbitrary initial executable bypasses the native RemoteApp shell.
+    #[test]
+    fn remote_app_bootstrap_rejects_other_executables() {
+        assert!(!allowed_initial_application("cmd.exe", "", true, true));
+    }
+
+    // oracle: mutant passing bootstrap parameters through permits an uncontrolled native launch.
+    #[test]
+    fn remote_app_bootstrap_rejects_parameters() {
+        assert!(!allowed_initial_application("rdpinit.exe", "/untrusted", true, true));
+    }
+
+    // oracle: mutant starting RemoteApp in a desktop connection changes the authenticated user's shell.
+    #[test]
+    fn remote_app_bootstrap_requires_a_remote_app_connection() {
+        assert!(!allowed_initial_application("rdpinit.exe", "", false, true));
+    }
+
+    // oracle: mutant authorizing a bootstrap before credentials exist bypasses authenticated session startup.
+    #[test]
+    fn remote_app_bootstrap_requires_authenticated_credentials() {
+        assert!(!allowed_initial_application("rdpinit.exe", "", true, false));
+    }
+
+    // oracle: spec WTS_QUERY_ALLOWED_INITIAL_APP: a nonzero third ULONG output authorizes the returned program.
+    #[test]
+    fn remote_app_bootstrap_allows_only_the_trusted_program_without_parameters() {
+        assert!(allowed_initial_application("rdpinit.exe", "", true, true));
+    }
+
+    // oracle: spec WTS_CLIENT_DATA InitialProgram: fInheritInitialProgram must be TRUE for this field to be used.
+    #[test]
+    fn remote_app_client_data_selects_the_native_bootstrap() {
+        let (connection, companion) = remote_app_connection(true, true);
+        let mut data = super::WTS_CLIENT_DATA::default();
+        // SAFETY: The structure is a valid writable output buffer.
+        unsafe { connection.GetClientData(&mut data) }.unwrap();
+        assert!(data.fInheritInitialProgram.as_bool());
+        let path =
+            String::from_utf16(&data.InitialProgram[..data.InitialProgram.iter().position(|v| *v == 0).unwrap()])
+                .unwrap();
+        assert!(std::path::Path::new(&path).is_absolute());
+        assert!(path.to_ascii_lowercase().ends_with(r"\system32\rdpinit.exe"), "{path}");
+        assert_eq!(
+            companion.command(),
+            ProviderCommand::GetRemoteAppSettings { connection_id: 1 }
+        );
+    }
+
+    // oracle: mutant setting InitialProgram for a desktop connection replaces Explorer.
+    #[test]
+    fn desktop_client_data_keeps_the_default_shell() {
+        let (connection, _companion) = remote_app_connection(false, true);
+        let mut data = super::WTS_CLIENT_DATA::default();
+        // SAFETY: The structure is a valid writable output buffer.
+        unsafe { connection.GetClientData(&mut data) }.unwrap();
+        assert!(!data.fInheritInitialProgram.as_bool());
+        assert_eq!(data.InitialProgram[0], 0);
+    }
+
+    // oracle: reference rdpshell.exe CRdpShell::GetIconCacheDimensions requires the complete 11-byte Window capability.
+    // TermService's CConnectionEx::GetConnectionProperty frees the returned binary property with LocalFree.
+    #[test]
+    fn remote_app_window_property_includes_the_capability_header() {
+        let (connection, _companion) = remote_app_connection(true, true);
+        let mut output = WTS_PROPERTY_VALUE::default();
+        // SAFETY: No inputs are required and output points to one writable entry.
+        unsafe {
+            connection.QueryProperty(
+                super::PROPERTY_TYPE_WINDOW_CAPABILITYSET,
+                &[],
+                core::slice::from_mut(&mut output),
+            )
+        }
+        .unwrap();
+        assert_eq!(output.Type, 3);
+        // SAFETY: Type 3 identifies the binary union member returned by QueryProperty.
+        unsafe {
+            assert_eq!(output.u.bVal.size, 11);
+            assert_eq!(
+                core::slice::from_raw_parts(output.u.bVal.pbVal.0, 11),
+                &[24, 0, 11, 0, 2, 0, 0, 0, 3, 12, 0]
+            );
+            assert!(super::LocalFree(Some(super::HLOCAL(output.u.bVal.pbVal.0.cast()))).is_invalid());
+        }
+    }
+
+    // oracle: reference native RAIL startup trace, 2026-10-27T02:35:58Z: QueryProperty runs impersonating the user.
+    #[test]
+    fn remote_app_property_reads_do_not_use_the_callers_impersonation_token() {
+        thread::spawn(|| {
+            let (connection, companion) = remote_app_connection(true, true);
+            let mut output = WTS_PROPERTY_VALUE::default();
+            let result = with_restricted_thread_token(|| {
+                // SAFETY: The native query has no inputs and one writable output entry.
+                unsafe {
+                    connection.QueryProperty(
+                        super::PROPERTY_TYPE_RAIL_CLIENT_CAPABILITIES,
+                        &[],
+                        core::slice::from_mut(&mut output),
+                    )
+                }
+            });
+            if result.is_err() {
+                companion.bridge.remote_app_settings(1).unwrap();
+            }
+            result.unwrap();
+            assert_eq!(output.Type, super::WTS_VALUE_TYPE_ULONG);
+            // SAFETY: The ULONG tag identifies the active union member.
+            assert_eq!(unsafe { output.u.ulVal }, 1);
+        })
+        .join()
+        .unwrap();
+    }
+
+    // oracle: reference native rdpshell startup trace, 2026-10-27T02:57:58Z:
+    // CreateVirtualChannel("RAIL") runs impersonating the user, but both pipes require the provider identity.
+    #[test]
+    fn native_channel_open_preserves_the_callers_impersonation_token() {
+        thread::spawn(|| {
+            let channel_name = unique_name("IronRdpNativeDvc");
+            let _channel = server_pipe(&channel_name, true);
+            let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::VirtualChannelReady {
+                pipe_name: format!(r"\\.\pipe\{channel_name}"),
+            }));
+            let connection = connection(companion.bridge.clone(), Some(SESSION_ID));
+            let handle = with_restricted_thread_token(|| {
+                // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+                unsafe { connection.CreateVirtualChannel(s!("RAIL"), true, 0) }
+            })
+            .expect("an authorized native channel opens while the caller impersonates");
+            // SAFETY: The call transfers a new pipe handle to its caller.
+            let _client = unsafe { File::from_raw_handle(core::ptr::with_exposed_provenance_mut::<c_void>(handle)) };
+            assert_eq!(companion.command(), open_command("RAIL", true));
+        })
+        .join()
+        .unwrap();
+    }
+
+    fn with_restricted_thread_token<T>(operation: impl FnOnce() -> T) -> T {
+        use std::os::windows::io::OwnedHandle;
+
+        use windows::Win32::Security::{
+            CreateRestrictedToken, CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, ImpersonateSelf, IsTokenRestricted, PSID,
+            SID_AND_ATTRIBUTES, WinRestrictedCodeSid,
+        };
+
+        let mut sid = [0u32; 17];
+        let mut sid_size = u32::try_from(size_of_val(&sid)).unwrap();
+        let sid_ptr = PSID(sid.as_mut_ptr().cast());
+        let mut token = HANDLE::default();
+        let mut restricted = HANDLE::default();
+        // SAFETY: The SID and handle outputs are writable, and impersonation affects only this dedicated thread.
+        unsafe {
+            CreateWellKnownSid(WinRestrictedCodeSid, None, Some(sid_ptr), &mut sid_size).unwrap();
+            ImpersonateSelf(super::SecurityImpersonation).unwrap();
+            super::OpenThreadToken(
+                super::GetCurrentThread(),
+                super::TOKEN_DUPLICATE | super::TOKEN_QUERY | super::TOKEN_IMPERSONATE,
+                true,
+                &mut token,
+            )
+            .unwrap();
+            let token = OwnedHandle::from_raw_handle(token.0);
+            CreateRestrictedToken(
+                HANDLE(token.as_raw_handle()),
+                DISABLE_MAX_PRIVILEGE,
+                None,
+                None,
+                Some(&[SID_AND_ATTRIBUTES {
+                    Sid: sid_ptr,
+                    Attributes: 0,
+                }]),
+                &mut restricted,
+            )
+            .unwrap();
+            let restricted = OwnedHandle::from_raw_handle(restricted.0);
+            super::SetThreadToken(None, Some(HANDLE(restricted.as_raw_handle()))).unwrap();
+            let result = operation();
+            let mut after = HANDLE::default();
+            let token_result = super::OpenThreadToken(super::GetCurrentThread(), super::TOKEN_QUERY, true, &mut after);
+            super::RevertToSelf().unwrap();
+            token_result.unwrap();
+            let after = OwnedHandle::from_raw_handle(after.0);
+            assert!(IsTokenRestricted(HANDLE(after.as_raw_handle())).is_ok());
+            result
+        }
+    }
+
+    // oracle: mutant accepting another connection's capabilities crosses the per-connection authorization boundary.
+    #[test]
+    fn remote_app_settings_reject_a_mismatched_connection_id() {
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::RemoteAppSettings {
+            connection_id: 2,
+            settings: None,
+        }));
+        assert!(companion.bridge.remote_app_settings(1).is_err());
+    }
+
+    #[test]
+    fn only_supported_endpoint_names_reach_companion_authorization() {
+        // oracle: spec MS-RDPEFS, MS-RDPEA and MS-RDPEWA section 2.1 name the fixed endpoints; MS-RDPECAM section 2.1 permits device channel names of up to 256 ANSI characters.
+        let served = [
+            ("Devolutions::Now::Agent", false),
+            ("WebAuthN_Channel", false),
+            ("RDCamera_Device_Enumerator", false),
+            ("Camera_Device_0", false),
+            ("RDPDR", true),
+            ("RDPSND", true),
+            ("RAIL", true),
+            ("railenc", false),
+        ];
+        // oracle: mutant forwarding malformed names or unsupported static channels bypasses the endpoint boundary.
+        let not_served = [
+            ("Devolutions::Now::Agent", true),
+            ("RDPDR", false),
+            ("RDPSND", false),
+            ("RAIL", false),
+            ("cliprdr", true),
+            ("Camera_Device_0", true),
+            ("", false),
+            ("Camera\0Device", false),
+            ("\u{e9}", false),
+        ];
+
+        for (endpoint_name, is_static) in served {
+            assert!(
+                native_endpoint_enabled(endpoint_name, is_static),
+                "{endpoint_name} static={is_static}"
+            );
+        }
+        for (endpoint_name, is_static) in not_served {
+            assert!(
+                !native_endpoint_enabled(endpoint_name, is_static),
+                "{endpoint_name} static={is_static}"
+            );
+        }
+        assert!(native_endpoint_enabled(&"c".repeat(256), false));
+        assert!(!native_endpoint_enabled(&"c".repeat(257), false));
+    }
+
+    #[test]
+    fn a_static_channel_the_companion_refuses_is_not_implemented() {
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::Error {
+            message: "native static channel was not offered by the client".to_owned(),
+        }));
+        let connection = connection(companion.bridge.clone(), Some(SESSION_ID));
+
+        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+        let error = unsafe { connection.CreateVirtualChannel(s!("RDPDR"), true, 0) }.unwrap_err();
+
+        // oracle: mutant forwarding a static request as a dynamic one makes the companion open the wrong kind of channel.
+        assert_eq!(companion.command(), open_command("RDPDR", true));
+        // oracle: regression TermService tolerates E_NOTIMPL for RDPDR and RDPSND at logon; no other code was tried there.
+        assert_eq!(error.code(), E_NOTIMPL);
+    }
+
+    #[test]
+    fn a_dynamic_channel_the_companion_refuses_is_unexpected() {
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::Error {
+            message: "no NOW channel was offered".to_owned(),
+        }));
+        let connection = connection(companion.bridge.clone(), Some(SESSION_ID));
+
+        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+        let error = unsafe { connection.CreateVirtualChannel(s!("Devolutions::Now::Agent"), false, 0) }.unwrap_err();
+
+        // oracle: mutant marking every request static makes the companion look for a static channel that a dynamic endpoint never has.
+        assert_eq!(companion.command(), open_command("Devolutions::Now::Agent", false));
+        // oracle: regression a refused NOW channel fails with E_UNEXPECTED, as it did before static endpoints were served.
+        assert_eq!(error.code(), E_UNEXPECTED);
+    }
+
+    #[test]
+    fn a_static_channel_without_a_companion_is_not_implemented() {
+        let connection = connection(no_companion(), Some(SESSION_ID));
+
+        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+        let error = unsafe { connection.CreateVirtualChannel(s!("RDPDR"), true, 0) }.unwrap_err();
+
+        // oracle: regression TermService tolerates E_NOTIMPL for RDPDR and RDPSND at logon; no other code was tried there.
+        assert_eq!(error.code(), E_NOTIMPL);
+    }
+
+    #[test]
+    fn a_static_channel_whose_companion_hangs_up_is_not_implemented() {
+        let companion = FakeCompanion::replying(Reply::HangUp);
+        let connection = connection(companion.bridge, Some(SESSION_ID));
+
+        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+        let error = unsafe { connection.CreateVirtualChannel(s!("RDPDR"), true, 0) }.unwrap_err();
+
+        // oracle: regression TermService tolerates E_NOTIMPL for RDPDR and RDPSND at logon; no other code was tried there.
+        assert_eq!(error.code(), E_NOTIMPL);
+    }
+
+    #[test]
+    fn a_static_channel_requested_before_the_session_is_assigned_is_not_implemented() {
+        let connection = connection(no_companion(), None);
+
+        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+        let error = unsafe { connection.CreateVirtualChannel(s!("RDPDR"), true, 0) }.unwrap_err();
+
+        // oracle: regression TermService tolerates E_NOTIMPL for RDPDR and RDPSND at logon; no other code was tried there.
+        assert_eq!(error.code(), E_NOTIMPL);
+    }
+
+    #[test]
+    fn an_offered_static_channel_is_returned_as_a_message_mode_pipe() {
+        let channel_name = unique_name("IronRdpNativeDvc");
+        let _channel = server_pipe(&channel_name, true);
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::VirtualChannelReady {
+            pipe_name: format!(r"\\.\pipe\{channel_name}"),
+        }));
+        let connection = connection(companion.bridge.clone(), Some(SESSION_ID));
+
+        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+        let handle =
+            unsafe { connection.CreateVirtualChannel(s!("RDPSND"), true, 0) }.expect("an offered channel opens");
+        // SAFETY: The call returned a new pipe handle that nothing else owns.
+        let client = unsafe { File::from_raw_handle(core::ptr::with_exposed_provenance_mut::<c_void>(handle)) };
+
+        let mut state = NAMED_PIPE_MODE(0);
+        // SAFETY: The handle is a live pipe client end and `state` is a valid output location.
+        unsafe { GetNamedPipeHandleStateW(HANDLE(client.as_raw_handle()), Some(&mut state), None, None, None, None) }
+            .ok()
+            .expect("query the pipe state");
+
+        // oracle: spec WTSVirtualChannelRead remarks; a message-mode read keeps each consumer message intact.
+        assert_eq!(state & PIPE_READMODE_MESSAGE, PIPE_READMODE_MESSAGE);
+        assert_eq!(companion.command(), open_command("RDPSND", true));
+    }
+
+    // oracle: spec MS-RDPECAM sections 2.1 and 3.3.5.3 use the device name announced by the client.
+    #[test]
+    fn a_camera_device_authorized_by_the_companion_opens_in_the_assigned_session() {
+        let channel_name = unique_name("IronRdpNativeDvc");
+        let _channel = server_pipe(&channel_name, true);
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::VirtualChannelReady {
+            pipe_name: format!(r"\\.\pipe\{channel_name}"),
+        }));
+        let connection = connection(companion.bridge.clone(), Some(SESSION_ID));
+
+        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+        let handle = unsafe { connection.CreateVirtualChannel(s!("Camera_Device_0"), false, 0) }
+            .expect("the authorized camera device opens");
+        // SAFETY: The call returned a new pipe handle that nothing else owns.
+        let _client = unsafe { File::from_raw_handle(core::ptr::with_exposed_provenance_mut::<c_void>(handle)) };
+        assert_eq!(companion.command(), open_command("Camera_Device_0", false));
+    }
+
+    // oracle: mutant treating a valid dynamic name as authorization opens a channel the companion refused.
+    #[test]
+    fn an_unannounced_dynamic_endpoint_is_not_opened() {
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::Error {
+            message: "native camera channel was not announced".to_owned(),
+        }));
+        let connection = connection(companion.bridge.clone(), Some(SESSION_ID));
+
+        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
+        let error = unsafe { connection.CreateVirtualChannel(s!("AUDIO_PLAYBACK_DVC"), false, 0) }.unwrap_err();
+        assert_eq!(error.code(), E_UNEXPECTED);
+        assert_eq!(companion.command(), open_command("AUDIO_PLAYBACK_DVC", false));
+    }
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use ironrdp_acceptor::{
     Acceptor, AcceptorResult, BeginResult, ConnectionSetupHandler, ConnectorError, ConnectorErrorExt as _,
-    CredentialOrigin, DesktopSize, ReceivedCredentials,
+    CredentialOrigin, CredsspBackend, DesktopSize, ReceivedCredentials,
 };
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
@@ -47,8 +47,12 @@ use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpdr as rdpdr;
 use ironrdp_rdpeai as rdpeai;
+#[cfg(feature = "usb")]
+use ironrdp_rdpeusb::{InterfaceAlloc, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
 use ironrdp_rdpsnd as rdpsnd;
-use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
+use ironrdp_svc::{
+    ChannelFlags, StaticChannelId, StaticChannelSet, SvcMessage, SvcProcessor, server_encode_svc_messages,
+};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rand::RngCore as _;
 use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
@@ -71,7 +75,6 @@ use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResu
 use crate::gfx::{EgfxServerMessage, GfxContext, GfxServerFactory, GfxServerHandle};
 use crate::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use crate::heartbeat::HeartbeatConfig;
-use crate::multitransport;
 use crate::rdpeai::RdpeaiServerFactory;
 use crate::rdpei::RdpeiServerFactory;
 #[cfg(feature = "usb")]
@@ -79,9 +82,7 @@ use crate::urbdrc::{
     DeviceFactory, ServerDeviceIoReq, ServerUsbDevice, UrbdrcDeviceServerMessage, UrbdrcServerMessage,
     UsbControlHandle, UsbDeviceHandle,
 };
-use crate::{RdpdrServerFactory, SoundServerFactory, builder, capabilities};
-#[cfg(feature = "usb")]
-use ironrdp_rdpeusb::{InterfaceAlloc, server::UrbdrcControlServer, server::UrbdrcDeviceServer};
+use crate::{RdpdrServerFactory, SoundServerFactory, builder, capabilities, multitransport};
 
 /// TCP listen backlog size for the RDP server socket.
 const LISTENER_BACKLOG: u32 = 1024;
@@ -288,6 +289,21 @@ impl ConnectionInfo {
 /// is the hook to use for embedders that accept connections and call those
 /// directly.
 pub trait ConnectionHandler: Send {
+    /// Observes Client Info before capability exchange; these flags do not authenticate the client.
+    fn on_client_info(&mut self, flags: rdp::client_info::ClientInfoFlags) -> ServerResult<()> {
+        let _ = flags;
+        Ok(())
+    }
+
+    /// Receives effective RemoteApp capabilities after each activation, including display resizing.
+    fn on_remote_app_capabilities(
+        &mut self,
+        capabilities: Option<&ironrdp_acceptor::RemoteAppCapabilities>,
+    ) -> ServerResult<()> {
+        let _ = capabilities;
+        Ok(())
+    }
+
     /// Called after `accept()` returns but before `run_connection()`.
     ///
     /// Return `false` to reject the connection (the TCP stream is dropped).
@@ -1332,6 +1348,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
     /// Advanced Input owns mouse delivery while its DVC is active. Core mouse
     /// events from the overlapping FastPath path are then suppressed.
     advanced_input_active: Arc<AtomicBool>,
@@ -1355,6 +1372,7 @@ pub struct RdpServer {
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
+    credssp_backend: CredsspBackend,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     allow_unverified_credentials: bool,
     client_info_credentials_sink: Option<Arc<dyn Fn(Credentials) + Send + Sync>>,
@@ -1587,6 +1605,19 @@ pub enum ServerEvent {
     /// See [`ServerRedirectionHandle::redirect`].
     Redirect(Box<ServerRedirectionPdu>),
     Clipboard(ClipboardMessage),
+    /// Signals completion after handling the event, including any transport write.
+    ///
+    /// Await the receiver before submitting another event to bound queued clipboard data.
+    /// The receiver returns an error if dispatch fails or the event is discarded.
+    /// Completion does not confirm that the peer accepted the clipboard data.
+    ClipboardWithCompletion(ClipboardMessage, oneshot::Sender<()>),
+    /// Writes data to an open dynamic channel over the main RDP transport.
+    ///
+    /// Await completion before submitting another batch to bound queued data.
+    /// A closed receiver means dispatch failed, the event was discarded, or the channel was unavailable.
+    /// Channels migrated to a sideband transport are rejected rather than sent over the wrong transport.
+    /// Completion confirms the transport write, not acceptance by the peer.
+    DynamicChannelWithCompletion(dvc::DvcMessageBatch, oneshot::Sender<()>),
     /// Writes one PDU to a joined static channel, splitting it into chunks as needed.
     ///
     /// Fragmented PDUs set `SHOW_PROTOCOL` on every chunk per [MS-RDPBCGR] section 3.1.5.2.1,
@@ -1630,6 +1661,15 @@ pub enum ServerEvent {
     /// Joins are final once the connection is active.
     /// A closed receiver means the event was discarded.
     StaticChannelJoined(ChannelName, oneshot::Sender<bool>),
+    /// Requests a dynamic channel after DRDYNVC negotiation.
+    ///
+    /// The factory receives the reserved ID so callers can cancel creation with `CloseDynamicChannel`.
+    /// Acceptance invokes the processor's `start` method.
+    /// A discarded request drops the factory without calling it.
+    CreateDynamicChannel(Box<dyn FnOnce(u32) -> Box<dyn dvc::DvcServerProcessor> + Send>),
+    /// Releases a dynamic channel and notifies the peer if creation was requested.
+    /// Also cancels pending creation; an unknown channel ID has no effect.
+    CloseDynamicChannel(u32),
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
     Rdpeai(RdpeaiServerMessage),
@@ -1639,6 +1679,7 @@ pub enum ServerEvent {
     SetAutoReconnectCookie(Option<rdp::session_info::ServerAutoReconnect>),
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
     /// Writes window orders only after RemoteApp negotiation.
+    /// Await completion before sending another batch; only `NotStarted` permits a safe retry.
     WindowingOrders(WindowingOrders),
     #[cfg(feature = "egfx")]
     Egfx(EgfxServerMessage),
@@ -1657,6 +1698,14 @@ pub trait StaticChannelFactory: Send {
     fn attach(&self, acceptor: &mut Acceptor);
 }
 
+/// Extends the built-in dynamic channels with fresh processors for each connection.
+///
+/// Factories run in registration order before DRDYNVC negotiation.
+pub trait DynamicChannelFactory: Send {
+    /// Adds processors to the supplied channel set, preserving its existing channels.
+    fn attach(&self, channels: dvc::DrdynvcServer) -> dvc::DrdynvcServer;
+}
+
 impl fmt::Debug for ServerEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1665,12 +1714,19 @@ impl fmt::Debug for ServerEvent {
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
+            Self::ClipboardWithCompletion(..) => f.write_str("ClipboardWithCompletion(..)"),
+            Self::DynamicChannelWithCompletion(batch, _) => f
+                .debug_tuple("DynamicChannelWithCompletion")
+                .field(&batch.channel_id())
+                .finish(),
             Self::StaticChannelWithCompletion { name, payload, .. } => f
                 .debug_tuple("StaticChannelWithCompletion")
                 .field(&name.as_str())
                 .field(&payload.len())
                 .finish(),
             Self::StaticChannelJoined(name, _) => f.debug_tuple("StaticChannelJoined").field(&name.as_str()).finish(),
+            Self::CreateDynamicChannel(_) => f.write_str("CreateDynamicChannel(..)"),
+            Self::CloseDynamicChannel(channel_id) => f.debug_tuple("CloseDynamicChannel").field(channel_id).finish(),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
@@ -1869,6 +1925,10 @@ impl Drop for BoundConnectionGuard {
 }
 
 impl PendingConnection {
+    fn acceptor_mut(&mut self) -> &mut Acceptor {
+        &mut self.acceptor
+    }
+
     fn new(
         security: RdpServerSecurity,
         desktop_size: DesktopSize,
@@ -2341,6 +2401,7 @@ fn refuse_reconnect_from_evicted(
 struct NegotiationContext {
     opts: RdpServerOptions,
     creds: Option<Credentials>,
+    credssp_backend: CredsspBackend,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     requires_authenticated_credentials: bool,
@@ -2391,6 +2452,7 @@ where
     pending
         .acceptor_mut()
         .set_allow_unverified_credentials(ctx.allow_unverified_credentials);
+    pending.acceptor_mut().set_credssp_backend(ctx.credssp_backend);
 
     // NOTE: deliberately NO channel attachment here. Building the cliprdr /
     // sound / gfx backends means running user-supplied factories for a peer
@@ -2474,6 +2536,7 @@ impl RdpServer {
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
         static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+        dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
@@ -2521,6 +2584,7 @@ impl RdpServer {
             bound_handler,
             bound_display,
             static_channel_factories,
+            dynamic_channel_factories,
             sound_factory,
             cliprdr_factory,
             rdpei_factory,
@@ -2535,6 +2599,7 @@ impl RdpServer {
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
+            credssp_backend: CredsspBackend::default(),
             credential_validator: None,
             allow_unverified_credentials: false,
             client_info_credentials_sink: None,
@@ -3095,6 +3160,10 @@ impl RdpServer {
             dvc
         };
 
+        let dvc = self
+            .dynamic_channel_factories
+            .iter()
+            .fold(dvc, |channels, factory| factory.attach(channels));
         acceptor.attach_static_channel(dvc);
 
         for factory in &self.static_channel_factories {
@@ -3203,6 +3272,7 @@ impl RdpServer {
         NegotiationContext {
             opts: self.opts.clone(),
             creds: self.creds.clone(),
+            credssp_backend: self.credssp_backend,
             display: Arc::clone(&self.display),
             credential_validator: self.credential_validator.clone(),
             requires_authenticated_credentials: self.connection_binder.is_some(),
@@ -3374,6 +3444,7 @@ impl RdpServer {
         pending
             .acceptor_mut()
             .set_allow_unverified_credentials(self.allow_unverified_credentials);
+        pending.acceptor_mut().set_credssp_backend(self.credssp_backend);
 
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());
@@ -3406,6 +3477,7 @@ impl RdpServer {
         pending
             .acceptor_mut()
             .set_allow_unverified_credentials(self.allow_unverified_credentials);
+        pending.acceptor_mut().set_credssp_backend(self.credssp_backend);
         let connection = pending
             .negotiate_and_authenticate(stream, TransportTls::Managed)
             .await?
@@ -4114,6 +4186,50 @@ impl RdpServer {
         Ok((RunState::Continue, encoder))
     }
 
+    async fn dispatch_clipboard_event(
+        conn: &mut ConnectionState,
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+        message: ClipboardMessage,
+    ) -> ServerResult<()> {
+        let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
+            warn!("No clipboard channel, dropping event");
+            return Ok(());
+        };
+        let messages = match message {
+            ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
+            ClipboardMessage::SendInitiateFileCopy(files) => cliprdr.initiate_file_copy(files),
+            ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
+            ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
+            ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
+            ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
+            ClipboardMessage::Error(error) => {
+                error!(?error, "Handling clipboard event");
+                return Ok(());
+            }
+        };
+        // A clipboard failure is a per-request problem at worst: a stale or
+        // malformed request, a capability that was never negotiated,
+        // backpressure on pending transfers. None of that is a reason to
+        // disconnect a session whose display, audio and input are healthy.
+        let messages = match messages {
+            Ok(messages) => messages,
+            Err(error) => {
+                error!(?error, "Failed to send clipboard event");
+                return Ok(());
+            }
+        };
+        let channel_id = conn
+            .get_channel_id_by_type::<CliprdrServer>()
+            .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+        let data =
+            server_encode_svc_messages(messages.into(), channel_id, user_channel_id).map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|error| ServerError::io("write_all", error))
+    }
+
     /// `conn.client_supports_errinfo` is the client's `RNS_UD_CS_SUPPORT_ERRINFO_PDU`
     /// early-capability opt-in: MS-RDPBCGR 3.3.5.7.1 forbids sending a Server
     /// Set Error Info PDU to a client that did not set it, so the two arms below
@@ -4565,47 +4681,178 @@ impl RdpServer {
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Clipboard(c) => {
-                    let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
-                        warn!("No clipboard channel, dropping event");
+                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, c).await?;
+                }
+                ServerEvent::ClipboardWithCompletion(message, completion) => {
+                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                    if completion.send(()).is_err() {
+                        trace!("Clipboard producer stopped waiting for dispatch");
+                    }
+                }
+                ServerEvent::DynamicChannelWithCompletion(batch, completion) => {
+                    let channel_id = batch.channel_id();
+                    if !conn.get_svc_processor::<dvc::DrdynvcServer>().is_some_and(|drdynvc| {
+                        drdynvc.is_channel_opened(channel_id)
+                            && drdynvc.tunnel_for_outgoing_channel(channel_id).is_none()
+                    }) {
+                        warn!(
+                            channel_id,
+                            "Dynamic channel is not open on the main transport, rejecting write"
+                        );
+                        continue;
+                    }
+                    let Some(drdynvc_channel_id) = conn.get_channel_id_by_type::<dvc::DrdynvcServer>() else {
+                        warn!(channel_id, "No DRDYNVC channel, rejecting dynamic channel write");
                         continue;
                     };
-                    let msgs = match c {
-                        ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
-                        ClipboardMessage::SendInitiateFileCopy(files) => cliprdr.initiate_file_copy(files),
-                        ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
-                        ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
-                        ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
-                        ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
-                        ClipboardMessage::Error(error) => {
-                            error!(?error, "Handling clipboard event");
-                            continue;
-                        }
-                    };
-
-                    // A clipboard failure is a per-request problem at worst: a
-                    // stale or malformed request, a capability that was never
-                    // negotiated, backpressure on pending transfers. None of
-                    // that is a reason to disconnect a session whose display,
-                    // audio and input are healthy. The `ClipboardMessage::Error`
-                    // arm above already takes this view; propagating here made
-                    // the two paths disagree.
-                    let msgs = match msgs {
-                        Ok(msgs) => msgs,
-                        Err(error) => {
-                            error!(?error, "Failed to send clipboard event");
-                            continue;
-                        }
-                    };
-
-                    let channel_id = conn
-                        .get_channel_id_by_type::<CliprdrServer>()
-                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
-                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
+                    let data = server_encode_svc_messages(batch.into_messages(), drdynvc_channel_id, user_channel_id)
                         .map_err(ServerError::encode)?;
                     writer
                         .write_all(&data)
                         .await
-                        .map_err(|e| ServerError::io("write_all", e))?;
+                        .map_err(|error| ServerError::io("write dynamic channel data", error))?;
+                    if completion.send(()).is_err() {
+                        trace!(channel_id, "Dynamic channel producer stopped waiting for dispatch");
+                    }
+                }
+                ServerEvent::StaticChannelWithCompletion {
+                    name,
+                    payload,
+                    completion,
+                    permit: _permit,
+                    is_current,
+                } => {
+                    if completion.is_closed() || !is_current() {
+                        trace!(channel = ?name.as_str(), "Discarding canceled static channel write");
+                        continue;
+                    }
+                    let Some(channel_id) = conn.static_channels.get_channel_id_by_channel_name(&name) else {
+                        warn!(channel = ?name.as_str(), "Static channel was not joined, rejecting write");
+                        continue;
+                    };
+                    let data = server_encode_svc_messages(vec![SvcMessage::from(payload)], channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    let sent = writer
+                        .write_all_if(&data, || !completion.is_closed() && is_current())
+                        .await
+                        .map_err(|error| ServerError::io("write static channel data", error))?;
+                    if !sent {
+                        trace!(
+                            channel_id,
+                            "Discarding canceled static channel write after waiting for the writer"
+                        );
+                        continue;
+                    }
+                    if completion.send(()).is_err() {
+                        trace!(channel_id, "Static channel producer stopped waiting for dispatch");
+                    }
+                }
+                ServerEvent::StaticChannelJoined(name, reply) => {
+                    let joined = conn.static_channels.get_channel_id_by_channel_name(&name).is_some();
+                    if reply.send(joined).is_err() {
+                        trace!(channel = ?name.as_str(), "Static channel query stopped waiting for its answer");
+                    }
+                }
+                ServerEvent::WindowingOrders(mut request) => {
+                    if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
+                        continue;
+                    }
+                    let encoded: ServerResult<Vec<u8>> = (|| {
+                        let remote_app = conn
+                            .remote_app
+                            .as_ref()
+                            .ok_or_else(|| ServerError::reason("window orders", "RemoteApp was not negotiated"))?;
+                        if remote_app.window_list.support_level != rdp::capability_sets::WindowSupportLevel::SupportedEx
+                            && request.orders.iter().any(WindowingOrder::requires_extended_support)
+                        {
+                            return Err(ServerError::reason(
+                                "window orders",
+                                "extended Window List support was not negotiated",
+                            ));
+                        }
+                        let count = u16::try_from(request.orders.len())
+                            .map_err(|error| ServerError::custom("window order count", error))?;
+                        let maximum = usize::try_from(self.opts.max_request_size)
+                            .map_err(|error| ServerError::custom("window update limit", error))?
+                            .min(
+                                conn.max_graphics_size
+                                    .unwrap_or(0)
+                                    .max(MAX_FASTPATH_UPDATE_SIZE),
+                            );
+                        let length = request
+                            .orders
+                            .iter()
+                            .try_fold(2 /* numberOrders */, |length: usize, order| {
+                                length.checked_add(order.size()).filter(|length| *length <= maximum)
+                            })
+                            .ok_or_else(|| ServerError::reason("window orders", "update exceeds the graphics limit"))?;
+                        let mut data = vec![0; length];
+                        let mut cursor = ironrdp_core::WriteCursor::new(&mut data);
+                        cursor.write_u16(count);
+                        for order in &request.orders {
+                            order.encode(&mut cursor).map_err(ServerError::encode)?;
+                        }
+                        Ok(data)
+                    })();
+                    let data = match encoded {
+                        Ok(data) => data,
+                        Err(error) => {
+                            request.complete(Err(error));
+                            continue;
+                        }
+                    };
+                    let _graphics = conn.graphics_write.lock().await;
+                    if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
+                        continue;
+                    }
+                    request.started = true;
+                    let mut fragments = UpdateFragmenter::new(UpdateCode::Orders, data);
+                    let mut buffer = vec![0; fragments.size_hint()];
+                    while let Some(written) = fragments.next(&mut buffer) {
+                        writer
+                            .write_all(&buffer[..written])
+                            .await
+                            .map_err(|error| ServerError::io("write window orders", error))?;
+                    }
+                    request.complete(Ok(WindowingOrdersStatus::Written));
+                }
+                ServerEvent::CreateDynamicChannel(build) => {
+                    let Some(drdynvc_channel_id) = conn.get_channel_id_by_type::<dvc::DrdynvcServer>() else {
+                        warn!("No DRDYNVC channel, rejecting dynamic channel creation");
+                        continue;
+                    };
+                    let Some(drdynvc) = conn
+                        .get_svc_processor::<dvc::DrdynvcServer>()
+                        .filter(|dvc| dvc.is_ready())
+                    else {
+                        warn!("DRDYNVC is not ready, rejecting dynamic channel creation");
+                        continue;
+                    };
+                    let message = drdynvc
+                        .create_channel_boxed_with(build)
+                        .map_err_kind("create dynamic channel", ServerErrorKind::Pdu)?;
+                    let data = server_encode_svc_messages(vec![message], drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|error| ServerError::io("create dynamic channel", error))?;
+                }
+                ServerEvent::CloseDynamicChannel(channel_id) => {
+                    let drdynvc_channel_id = conn.get_channel_id_by_type::<dvc::DrdynvcServer>();
+                    let message = conn
+                        .get_svc_processor::<dvc::DrdynvcServer>()
+                        .and_then(|drdynvc| drdynvc.close_channel(channel_id));
+                    let (Some(drdynvc_channel_id), Some(message)) = (drdynvc_channel_id, message) else {
+                        trace!(channel_id, "Dynamic channel is not open, ignoring close");
+                        continue;
+                    };
+                    let data = server_encode_svc_messages(vec![message], drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|error| ServerError::io("close dynamic channel", error))?;
                 }
                 ServerEvent::Echo(msg) => match msg {
                     EchoServerMessage::SendRequest { payload } => {
@@ -4895,7 +5142,7 @@ impl RdpServer {
     async fn dispatch_egfx_messages(
         &mut self,
         conn: &mut ConnectionState,
-        messages: Vec<ironrdp_svc::SvcMessage>,
+        messages: Vec<SvcMessage>,
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
@@ -4999,12 +5246,12 @@ impl RdpServer {
     async fn write_egfx_over_udp(
         &mut self,
         conn: &mut ConnectionState,
-        messages: Vec<ironrdp_svc::SvcMessage>,
+        messages: Vec<SvcMessage>,
         udp_transport: &multitransport::UdpTransportHandle,
     ) -> ServerResult<()> {
         let payloads = messages
             .iter()
-            .map(ironrdp_svc::SvcMessage::encode_unframed_pdu)
+            .map(SvcMessage::encode_unframed_pdu)
             .collect::<Result<Vec<_>, _>>()
             .map_err(ServerError::encode)?;
         let len = payloads.iter().map(Vec::len).sum();
@@ -5036,7 +5283,7 @@ impl RdpServer {
     async fn write_egfx_over_tcp(
         &mut self,
         conn: &mut ConnectionState,
-        messages: Vec<ironrdp_svc::SvcMessage>,
+        messages: Vec<SvcMessage>,
         writer: &mut impl FramedWrite,
         drdynvc_channel_id: u16,
         user_channel_id: u16,
@@ -5090,7 +5337,7 @@ impl RdpServer {
     async fn write_drdynvc_output(
         &mut self,
         conn: &mut ConnectionState,
-        messages: Vec<ironrdp_svc::SvcMessage>,
+        messages: Vec<SvcMessage>,
         writer: &mut impl FramedWrite,
         drdynvc_channel_id: u16,
         user_channel_id: u16,
@@ -5733,6 +5980,24 @@ impl RdpServer {
             });
         }
 
+        conn.remote_app = acceptor.remote_app_capabilities().cloned();
+        conn.max_graphics_size = result
+            .capabilities
+            .iter()
+            .find_map(|capability| {
+                if let CapabilitySet::MultiFragmentUpdate(capability) = capability {
+                    Some(usize::try_from(capability.max_request_size))
+                } else {
+                    None
+                }
+            })
+            .transpose()
+            .map_err(|error| ServerError::custom("client graphics limit", error))?;
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_remote_app_capabilities(acceptor.remote_app_capabilities())
+        }) {
+            result?;
+        }
         #[cfg(feature = "egfx")]
         if let Some(gfx_handle) = conn.gfx_handle.as_ref() {
             let mut server = gfx_handle
@@ -6492,6 +6757,13 @@ impl RdpServer {
         self.creds = creds
     }
 
+    /// Selects the CredSSP authentication provider for subsequent connections.
+    ///
+    /// This does not change transport security or replace the credential validator.
+    pub fn set_credssp_backend(&mut self, backend: CredsspBackend) {
+        self.credssp_backend = backend;
+    }
+
     /// Allows TLS-only credentials to be checked by an external logon provider.
     pub fn set_allow_unverified_credentials(&mut self, allow: bool) {
         self.allow_unverified_credentials = allow;
@@ -6912,6 +7184,15 @@ pub async fn dispatch_static_channel_events(
 
 #[async_trait::async_trait(?Send)]
 impl ConnectionSetupHandler for RdpServer {
+    async fn handle_client_info(&mut self, flags: rdp::client_info::ClientInfoFlags) -> Result<(), ConnectorError> {
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_client_info(flags)
+        }) {
+            result.map_err(|error| ConnectorError::custom("client info handler failed", error))?;
+        }
+        Ok(())
+    }
+
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> Result<(), ConnectorError> {
         let client_info_credentials = credentials
             .as_ref()
@@ -6997,6 +7278,7 @@ mod preempt_tests {
                 security: RdpServerSecurity::None,
                 codecs: BitmapCodecs(Vec::new()),
                 max_request_size: 8 * 1024 * 1024,
+                remote_app: None,
                 honor_client_desktop_size: None,
                 connection_policy: ConnectionPolicy::Preempt,
                 remotefx_quant: Quant::default(),
@@ -7004,6 +7286,7 @@ mod preempt_tests {
                 udp_bind_addr: None,
             },
             creds: None,
+            credssp_backend: CredsspBackend::default(),
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),
             credential_validator: None,
             requires_authenticated_credentials: false,
@@ -7729,6 +8012,54 @@ mod cliprdr_error_tests {
         }
     }
 
+    // oracle: mutant acknowledging clipboard dispatch before its transport write completes
+    #[tokio::test]
+    async fn clipboard_completion_waits_for_a_stalled_transport_write() {
+        use tokio::io::AsyncReadExt as _;
+
+        let mut server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let cliprdr: CliprdrServer = Cliprdr::new(Box::new(SilentBackend));
+        let mut conn = ConnectionState::default();
+        conn.static_channels.insert(cliprdr);
+        conn.static_channels
+            .attach_channel_id(TypeId::of::<CliprdrServer>(), 1004);
+        let (completion, mut processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::ClipboardWithCompletion(
+            ClipboardMessage::SendInitiateCopy(Vec::new()),
+            completion,
+        )];
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut writer = TokioFramed::new(stream);
+        let mut writer = SharedWriter::new(&mut writer);
+        let dispatch = server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None);
+        tokio::pin!(dispatch);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut dispatch)
+                .await
+                .is_err()
+        );
+        assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+
+        let state = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut bytes = [0; 128];
+            loop {
+                tokio::select! {
+                    result = &mut dispatch => break result.unwrap(),
+                    read = peer.read(&mut bytes) => assert_ne!(read.unwrap(), 0),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(state, RunState::Continue));
+        assert_eq!(processed.try_recv(), Ok(()));
+    }
+
     /// A clipboard message the channel refuses keeps the session alive.
     #[tokio::test]
     async fn a_refused_clipboard_message_does_not_end_the_client_loop() {
@@ -7785,8 +8116,9 @@ mod cliprdr_error_tests {
 
 #[cfg(all(test, feature = "egfx"))]
 mod frame_ack_limit_tests {
-    use super::*;
     use ironrdp_pdu::rdp::capability_sets::FrameAcknowledge;
+
+    use super::*;
     #[test]
     fn absent_and_zero_core_limit_are_unconstrained() {
         assert_eq!(client_core_frame_ack_limit(&[]), None);
@@ -8467,5 +8799,1278 @@ mod cliprdr_timeout_tests {
             .await
             .unwrap();
         assert!(writer.0.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod dynamic_channel_tests {
+    use core::any::TypeId;
+    use core::net::Ipv4Addr;
+
+    use dvc::pdu::{
+        CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DataPdu, DrdynvcClientPdu,
+        DrdynvcDataPdu,
+    };
+    use tokio::io::AsyncReadExt as _;
+
+    use super::cliprdr_error_tests::CapturingWriter;
+    use super::*;
+
+    // oracle: mutant acknowledging DVC dispatch before its transport write completes.
+    #[tokio::test]
+    async fn dynamic_channel_completion_waits_for_a_stalled_transport_write() {
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        let (completion, mut processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut writer = TokioFramed::new(stream);
+        let mut writer = SharedWriter::new(&mut writer);
+        let dispatch = server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None);
+        tokio::pin!(dispatch);
+        assert!(tokio::time::timeout(Duration::ZERO, &mut dispatch).await.is_err());
+        assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+
+        let state = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut bytes = [0; 128];
+            loop {
+                tokio::select! {
+                    result = &mut dispatch => break result.unwrap(),
+                    read = peer.read(&mut bytes) => assert_ne!(read.unwrap(), 0),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(state, RunState::Continue));
+        assert_eq!(processed.try_recv(), Ok(()));
+    }
+
+    // oracle: mutant transmitting queued data after the dynamic channel closes.
+    #[tokio::test]
+    async fn dynamic_channel_completion_rejects_a_closed_channel() {
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        conn.get_svc_processor::<dvc::DrdynvcServer>()
+            .unwrap()
+            .close_channel(channel_id)
+            .unwrap();
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let mut writer = CapturingWriter::default();
+
+        let state = server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                1002,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(writer.0.is_empty(), "data for a closed DVC reached the transport");
+        assert!(matches!(state, RunState::Continue));
+        assert!(processed.await.is_err(), "a rejected write was acknowledged");
+    }
+
+    // oracle: spec MS-RDPEDYC §3.3.5.3.1.
+    #[tokio::test]
+    async fn dynamic_channel_completion_does_not_fall_back_from_a_migrated_channel() {
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        conn.get_svc_processor::<dvc::DrdynvcServer>()
+            .unwrap()
+            .request_reliable_udp(vec![channel_id])
+            .unwrap();
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let mut writer = CapturingWriter::default();
+
+        let state = server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                1002,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(writer.0.is_empty(), "migrated DVC data fell back to the main transport");
+        assert!(matches!(state, RunState::Continue));
+        assert!(processed.await.is_err(), "an unsent write was acknowledged");
+    }
+
+    // oracle: spec MS-RDPEDYC §2.2.3.2.
+    #[tokio::test]
+    async fn dynamic_channel_completion_preserves_the_payload_and_destination() {
+        use ironrdp_core::{ReadCursor, decode_cursor};
+        use ironrdp_pdu::rdp::vc::ChannelPduHeader;
+
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let mut writer = CapturingWriter::default();
+        server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                1002,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let frame: X224<SendDataIndication<'_>> = decode(&writer.0).unwrap();
+        assert_eq!(frame.0.channel_id, 1004);
+        assert_eq!(frame.0.initiator_id, 1002);
+        let mut payload = ReadCursor::new(frame.0.user_data.as_ref());
+        let _: ChannelPduHeader = decode_cursor(&mut payload).unwrap();
+        let pdu: dvc::pdu::DrdynvcServerPdu = decode_cursor(&mut payload).unwrap();
+        let dvc::pdu::DrdynvcServerPdu::Data(data) = pdu else {
+            panic!("expected a DVC data PDU");
+        };
+        assert_eq!(data.channel_id(), channel_id);
+        let DrdynvcDataPdu::Data(data) = data else {
+            panic!("a short message must not be fragmented");
+        };
+        assert_eq!(data.data(), b"native channel data");
+        assert!(payload.is_empty());
+        processed.await.unwrap();
+    }
+
+    // oracle: mutant acknowledging data after a failed transport write.
+    #[tokio::test]
+    async fn dynamic_channel_completion_reports_transport_failure() {
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![ServerEvent::DynamicChannelWithCompletion(
+            data_batch(channel_id),
+            completion,
+        )];
+        let (stream, peer) = tokio::io::duplex(1);
+        drop(peer);
+        let mut writer = TokioFramed::new(stream);
+
+        assert!(
+            server
+                .dispatch_server_events(
+                    &mut conn,
+                    &mut events,
+                    &mut SharedWriter::new(&mut writer),
+                    1003,
+                    1002,
+                    None,
+                    None
+                )
+                .await
+                .is_err()
+        );
+        assert!(processed.await.is_err(), "a failed transport write was acknowledged");
+    }
+
+    // oracle: mutant carrying a previous connection's DVC data through session takeover.
+    #[tokio::test]
+    async fn dynamic_channel_completion_reports_discarded_session_data() {
+        let (mut server, _conn, channel_id) = server_with_open_dvc();
+        let (completion, processed) = oneshot::channel();
+        server
+            .event_sender()
+            .send(ServerEvent::DynamicChannelWithCompletion(
+                data_batch(channel_id),
+                completion,
+            ))
+            .unwrap();
+        server.discard_stale_session_events().await;
+        assert!(processed.await.is_err(), "discarded session data was acknowledged");
+    }
+
+    // oracle: mutant leaving the peer and server channel open after its native endpoint closes.
+    #[tokio::test]
+    async fn closing_a_dynamic_channel_releases_it_and_notifies_the_peer_once() {
+        use ironrdp_core::{ReadCursor, decode_cursor};
+        use ironrdp_pdu::rdp::vc::ChannelPduHeader;
+
+        let (mut server, mut conn, channel_id) = server_with_open_dvc();
+        let mut events = vec![
+            ServerEvent::CloseDynamicChannel(channel_id),
+            ServerEvent::CloseDynamicChannel(channel_id),
+        ];
+        let mut writer = CapturingWriter::default();
+        server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                1002,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !conn
+                .get_svc_processor::<dvc::DrdynvcServer>()
+                .unwrap()
+                .is_channel_opened(channel_id)
+        );
+        let mut frames = ReadCursor::new(&writer.0);
+        let frame: X224<SendDataIndication<'_>> = decode_cursor(&mut frames).unwrap();
+        let mut payload = ReadCursor::new(frame.0.user_data.as_ref());
+        let _: ChannelPduHeader = decode_cursor(&mut payload).unwrap();
+        let pdu: dvc::pdu::DrdynvcServerPdu = decode_cursor(&mut payload).unwrap();
+        assert_eq!(
+            pdu,
+            dvc::pdu::DrdynvcServerPdu::Close(dvc::pdu::ClosePdu::new(channel_id))
+        );
+        assert!(frames.is_empty(), "duplicate close notifications reached the peer");
+    }
+
+    // oracle: mutant discarding runtime creation or reporting allocation without sending the create request.
+    #[tokio::test]
+    async fn runtime_creation_sends_the_reserved_channel_to_the_peer() {
+        let (mut server, mut conn, _) = server_with_open_dvc();
+        let handle = server.echo_handle.clone();
+        let (allocated, channel_id) = oneshot::channel();
+        let mut events = vec![ServerEvent::CreateDynamicChannel(Box::new(move |id| {
+            allocated.send(id).unwrap();
+            Box::new(EchoDvcBridge::new(handle))
+        }))];
+        let mut writer = CapturingWriter::default();
+        server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                1002,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let id = channel_id.await.unwrap();
+        let frame: X224<SendDataIndication<'_>> = decode(&writer.0).unwrap();
+        let mut payload = ironrdp_core::ReadCursor::new(frame.0.user_data.as_ref());
+        let _: rdp::vc::ChannelPduHeader = ironrdp_core::decode_cursor(&mut payload).unwrap();
+        let pdu: dvc::pdu::DrdynvcServerPdu = ironrdp_core::decode_cursor(&mut payload).unwrap();
+        let dvc::pdu::DrdynvcServerPdu::Create(request) = pdu else {
+            panic!("expected create request");
+        };
+        assert_eq!(request.channel_id(), id);
+        assert!(
+            !conn
+                .get_svc_processor::<dvc::DrdynvcServer>()
+                .unwrap()
+                .is_channel_opened(id)
+        );
+        conn.get_svc_processor::<dvc::DrdynvcServer>()
+            .unwrap()
+            .process(
+                &encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(
+                    id,
+                    CreationStatus::OK,
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            conn.get_svc_processor::<dvc::DrdynvcServer>()
+                .unwrap()
+                .is_channel_opened(id)
+        );
+    }
+
+    // oracle: spec MS-RDPEDYC §3.3.5.1; capabilities precede runtime creation.
+    #[tokio::test]
+    async fn runtime_creation_before_capability_negotiation_drops_the_factory() {
+        let (mut server, mut conn, _) = server_with_open_dvc();
+        *conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap() = dvc::DrdynvcServer::new();
+        let handle = server.echo_handle.clone();
+        let (allocated, channel_id) = oneshot::channel();
+        let mut events = vec![ServerEvent::CreateDynamicChannel(Box::new(move |id| {
+            allocated.send(id).unwrap();
+            Box::new(EchoDvcBridge::new(handle))
+        }))];
+        let mut writer = CapturingWriter::default();
+        server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                1002,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(writer.0.is_empty());
+        assert!(channel_id.await.is_err());
+    }
+
+    fn server_with_open_dvc() -> (RdpServer, ConnectionState, u32) {
+        let server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let mut drdynvc =
+            dvc::DrdynvcServer::new().with_dynamic_channel(EchoDvcBridge::new(server.echo_handle.clone()));
+        drdynvc.start().unwrap();
+        drdynvc
+            .process(
+                &encode_vec(&DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(
+                    CapsVersion::V3,
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+        let channel_id = drdynvc.get_channel_id_by_type::<EchoDvcBridge>().unwrap();
+        drdynvc
+            .process(
+                &encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(
+                    channel_id,
+                    CreationStatus::OK,
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+        let mut conn = ConnectionState::default();
+        conn.static_channels.insert(drdynvc);
+        conn.static_channels
+            .attach_channel_id(TypeId::of::<dvc::DrdynvcServer>(), 1004);
+        (server, conn, channel_id)
+    }
+
+    fn data_batch(channel_id: u32) -> dvc::DvcMessageBatch {
+        dvc::DvcMessageBatch::try_new(
+            channel_id,
+            vec![SvcMessage::from(DrdynvcDataPdu::Data(DataPdu::new(
+                channel_id,
+                b"native channel data".to_vec(),
+            )))],
+        )
+        .unwrap()
+    }
+}
+
+#[cfg(test)]
+mod window_order_tests {
+    use core::future::Future as _;
+    use core::net::Ipv4Addr;
+    use core::task::{Context, Waker};
+
+    use ironrdp_core::{ReadCursor, decode_cursor};
+    use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdatePdu, Fragmentation};
+    use ironrdp_pdu::rdp::capability_sets::{Rail, RailSupportLevel, WindowList, WindowSupportLevel};
+    use ironrdp_pdu::window::{WindowOrder, WindowOrderBody};
+    use tokio::io::AsyncReadExt as _;
+
+    use super::cliprdr_error_tests::CapturingWriter;
+    use super::*;
+    use crate::BitmapUpdate;
+
+    struct QueuedDisplay {
+        updates: Option<mpsc::UnboundedReceiver<DisplayUpdate>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplay for QueuedDisplay {
+        async fn size(&mut self) -> DesktopSize {
+            DesktopSize { width: 128, height: 64 }
+        }
+
+        async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+            Ok(Box::new(QueuedUpdates(self.updates.take().unwrap())))
+        }
+    }
+
+    struct QueuedUpdates(mpsc::UnboundedReceiver<DisplayUpdate>);
+
+    #[async_trait::async_trait]
+    impl RdpServerDisplayUpdates for QueuedUpdates {
+        async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
+            Ok(self.0.recv().await)
+        }
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.9.1.2.1: fragmented graphics updates must not interleave.
+    #[tokio::test]
+    async fn client_loop_serializes_window_orders_after_all_bitmap_fragments() {
+        let (mut server, mut conn) = fixture();
+        let (updates, receiver) = mpsc::unbounded_channel();
+        server.display = Arc::new(Mutex::new(Box::new(QueuedDisplay {
+            updates: Some(receiver),
+        })));
+        updates
+            .send(DisplayUpdate::Bitmap(BitmapUpdate {
+                x: 0,
+                y: 0,
+                width: 128.try_into().unwrap(),
+                height: 64.try_into().unwrap(),
+                format: crate::PixelFormat::ARgb32,
+                data: vec![0x55; 128 * 64 * 4].into(),
+                stride: 512.try_into().unwrap(),
+            }))
+            .unwrap();
+        let events = server.ev_sender.clone();
+        let (wire, mut peer) = tokio::io::duplex(16);
+        let (mut reader, mut writer) = split_tokio_framed(TokioFramed::new(wire));
+        let running = server.client_loop(
+            &mut conn,
+            &mut reader,
+            &mut writer,
+            1003,
+            1002,
+            None,
+            loop_encoder(),
+            Rc::new(RefCell::new(None)),
+            None,
+        );
+        tokio::pin!(running);
+        let mut first = [0];
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut running => panic!("client loop ended before bitmap: {result:?}"),
+                result = peer.read_exact(&mut first) => result.unwrap(),
+            };
+        })
+        .await
+        .unwrap();
+        let (request, completion) = WindowingOrders::new(vec![deleted(); 4000]);
+        events.send(ServerEvent::WindowingOrders(request)).unwrap();
+        assert!(
+            running
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        let mut peer = TokioFramed::new_with_leftover(peer, bytes::BytesMut::from(first.as_slice()));
+        let (state, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(&mut running, async {
+                read_fragmented_update(&mut peer, UpdateCode::SurfaceCommands).await;
+                let orders = read_fragmented_update(&mut peer, UpdateCode::Orders).await;
+                assert_eq!(&orders[..2], &4000u16.to_le_bytes());
+                updates
+                    .send(DisplayUpdate::Resize(DesktopSize {
+                        width: 800,
+                        height: 600,
+                    }))
+                    .unwrap();
+                assert_eq!(peer.read_pdu().await.unwrap().0, Action::X224);
+            })
+        })
+        .await
+        .unwrap();
+        assert!(matches!(state.unwrap(), RunState::DeactivationReactivation { .. }));
+        assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
+    }
+
+    // oracle: mutant resize must not cancel an in-progress window update or insert Deactivate All between its fragments.
+    #[tokio::test]
+    async fn client_loop_resize_waits_for_the_complete_window_update() {
+        let (mut server, mut conn) = fixture();
+        let (updates, receiver) = mpsc::unbounded_channel();
+        server.display = Arc::new(Mutex::new(Box::new(QueuedDisplay {
+            updates: Some(receiver),
+        })));
+        let (request, completion) = WindowingOrders::new(vec![deleted(); 4000]);
+        server.ev_sender.send(ServerEvent::WindowingOrders(request)).unwrap();
+        let (wire, mut peer) = tokio::io::duplex(16);
+        let (mut reader, mut writer) = split_tokio_framed(TokioFramed::new(wire));
+        let running = server.client_loop(
+            &mut conn,
+            &mut reader,
+            &mut writer,
+            1003,
+            1002,
+            None,
+            loop_encoder(),
+            Rc::new(RefCell::new(None)),
+            None,
+        );
+        tokio::pin!(running);
+        let mut first = [0];
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut running => panic!("client loop ended before window update: {result:?}"),
+                result = peer.read_exact(&mut first) => result.unwrap(),
+            };
+        })
+        .await
+        .unwrap();
+        updates
+            .send(DisplayUpdate::Resize(DesktopSize {
+                width: 800,
+                height: 600,
+            }))
+            .unwrap();
+        assert!(
+            running
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        let mut peer = TokioFramed::new_with_leftover(peer, bytes::BytesMut::from(first.as_slice()));
+        let (state, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(&mut running, async {
+                let orders = read_fragmented_update(&mut peer, UpdateCode::Orders).await;
+                assert_eq!(&orders[..2], &4000u16.to_le_bytes());
+                assert_eq!(peer.read_pdu().await.unwrap().0, Action::X224);
+            })
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            state.unwrap(),
+            RunState::DeactivationReactivation {
+                desktop_size: DesktopSize {
+                    width: 800,
+                    height: 600
+                }
+            }
+        ));
+        assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
+    }
+
+    async fn read_fragmented_update(peer: &mut TokioFramed<tokio::io::DuplexStream>, code: UpdateCode) -> Vec<u8> {
+        let mut payload = Vec::new();
+        loop {
+            let (action, bytes) = peer.read_pdu().await.unwrap();
+            assert_eq!(action, Action::FastPath);
+            let mut cursor = ReadCursor::new(&bytes);
+            let _: FastPathHeader = decode_cursor(&mut cursor).unwrap();
+            let update: FastPathUpdatePdu<'_> = decode_cursor(&mut cursor).unwrap();
+            assert_eq!(update.update_code, code, "graphics fragments interleaved");
+            assert!(cursor.eof());
+            if payload.is_empty() {
+                assert_eq!(update.fragmentation, Fragmentation::First);
+            } else if update.fragmentation == Fragmentation::Last {
+                payload.extend_from_slice(update.data);
+                return payload;
+            } else {
+                assert_eq!(update.fragmentation, Fragmentation::Next);
+            }
+            payload.extend_from_slice(update.data);
+        }
+    }
+
+    fn loop_encoder() -> UpdateEncoder {
+        UpdateEncoder::new(
+            DesktopSize { width: 128, height: 64 },
+            CmdFlags::SET_SURFACE_BITS,
+            UpdateEncoderCodecs::new(),
+            65_536,
+            0,
+            0,
+            LargePointerSupportFlags::empty(),
+        )
+        .unwrap()
+    }
+
+    // oracle: spec MS-RDPERP §2.2.1.3.1.2.4 and MS-RDPBCGR §2.2.9.1.2.1.1: order count precedes window orders.
+    #[tokio::test]
+    async fn window_orders_reach_fastpath_with_the_order_count() {
+        let (mut server, mut conn) = fixture();
+        let (request, completion) = WindowingOrders::new(vec![deleted()]);
+        let mut events = vec![ServerEvent::WindowingOrders(request)];
+        let mut writer = CapturingWriter::default();
+        dispatch(&mut server, &mut conn, &mut events, &mut writer).await;
+        assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
+
+        let mut cursor = ReadCursor::new(&writer.0);
+        let _: FastPathHeader = decode_cursor(&mut cursor).unwrap();
+        let update: FastPathUpdatePdu<'_> = decode_cursor(&mut cursor).unwrap();
+        assert_eq!(update.update_code, UpdateCode::Orders);
+        assert_eq!(update.fragmentation, Fragmentation::Single);
+        assert_eq!(update.data, &[1, 0, 0x2e, 11, 0, 0, 0, 0, 0x21, 7, 0, 0, 0]);
+        assert!(cursor.eof());
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.9.1.2.1: fragments reassemble to one complete update.
+    #[tokio::test]
+    async fn window_orders_are_fragmented_without_losing_their_count_or_payload() {
+        let (mut server, mut conn) = fixture();
+        let (request, completion) = WindowingOrders::new(vec![deleted(); 4000]);
+        let mut events = vec![ServerEvent::WindowingOrders(request)];
+        let mut writer = CapturingWriter::default();
+        dispatch(&mut server, &mut conn, &mut events, &mut writer).await;
+        assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
+
+        let mut cursor = ReadCursor::new(&writer.0);
+        let mut data = Vec::new();
+        let mut sequence = Vec::new();
+        while !cursor.eof() {
+            let _: FastPathHeader = decode_cursor(&mut cursor).unwrap();
+            let update: FastPathUpdatePdu<'_> = decode_cursor(&mut cursor).unwrap();
+            assert_eq!(update.update_code, UpdateCode::Orders);
+            sequence.push(update.fragmentation);
+            data.extend_from_slice(update.data);
+        }
+        assert_eq!(sequence.first(), Some(&Fragmentation::First));
+        assert_eq!(sequence.last(), Some(&Fragmentation::Last));
+        assert!(
+            sequence[1..sequence.len() - 1]
+                .iter()
+                .all(|flag| *flag == Fragmentation::Next)
+        );
+        let mut data = ReadCursor::new(&data);
+        assert_eq!(data.read_u16(), 4000);
+        for _ in 0..4000 {
+            assert_eq!(decode_cursor::<WindowingOrder>(&mut data).unwrap(), deleted());
+        }
+        assert!(data.eof());
+    }
+
+    // oracle: spec MS-RDPERP §3.3.5.1.5: window orders require a negotiated RAIL connection.
+    #[tokio::test]
+    async fn unnegotiated_window_orders_are_rejected_without_retry() {
+        let (mut server, mut conn) = fixture();
+        conn.remote_app = None;
+        let (request, completion) = WindowingOrders::new(vec![deleted()]);
+        let mut events = vec![ServerEvent::WindowingOrders(request)];
+        let mut writer = CapturingWriter::default();
+        dispatch(&mut server, &mut conn, &mut events, &mut writer).await;
+        assert!(completion.await.unwrap().is_err());
+        assert!(writer.0.is_empty());
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.7.2.6: fragmented updates fit the client's reassembly buffer.
+    #[tokio::test]
+    async fn window_orders_obey_the_client_reassembly_limit() {
+        let (mut server, mut conn) = fixture();
+        conn.max_graphics_size = Some(20_000);
+        let (request, completion) = WindowingOrders::new(vec![deleted(); 2000]);
+        let mut events = vec![ServerEvent::WindowingOrders(request)];
+        let mut writer = CapturingWriter::default();
+        dispatch(&mut server, &mut conn, &mut events, &mut writer).await;
+        assert!(completion.await.unwrap().is_err());
+        assert!(writer.0.is_empty());
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.9.1.2.1: fragmentation requires the Multifragment Update capability.
+    #[tokio::test]
+    async fn window_orders_do_not_fragment_without_client_support() {
+        let (mut server, mut conn) = fixture();
+        conn.max_graphics_size = None;
+        let (request, completion) = WindowingOrders::new(vec![deleted(); 2000]);
+        let mut events = vec![ServerEvent::WindowingOrders(request)];
+        let mut writer = CapturingWriter::default();
+        dispatch(&mut server, &mut conn, &mut events, &mut writer).await;
+        assert!(completion.await.unwrap().is_err());
+        assert!(writer.0.is_empty());
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.7.2.6: MaxRequestSize limits fragmented updates, not single-fragment updates.
+    #[tokio::test]
+    async fn single_window_orders_do_not_require_a_reassembly_buffer() {
+        let (mut server, mut conn) = fixture();
+        conn.max_graphics_size = Some(0);
+        let (request, completion) = WindowingOrders::new(vec![deleted()]);
+        let mut events = vec![ServerEvent::WindowingOrders(request)];
+        let mut writer = CapturingWriter::default();
+        dispatch(&mut server, &mut conn, &mut events, &mut writer).await;
+        assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
+    }
+
+    // oracle: mutant retrying a partially transmitted update duplicates window orders on the graphics stream.
+    #[tokio::test]
+    async fn failed_window_order_writes_cannot_be_retried() {
+        let (mut server, mut conn) = fixture();
+        let (request, completion) = WindowingOrders::new(vec![deleted()]);
+        let mut events = vec![ServerEvent::WindowingOrders(request)];
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut writer = TokioFramed::new(stream);
+        let mut writer = SharedWriter::new(&mut writer);
+        let mut write =
+            Box::pin(server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None));
+        assert!(
+            write
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        peer.read_exact(&mut [0]).await.unwrap();
+        drop(peer);
+        assert!(write.await.is_err());
+        assert!(completion.await.unwrap().is_err());
+    }
+
+    // oracle: mutant acknowledging a discarded event loses the native window order during resize.
+    #[tokio::test]
+    async fn canceling_before_the_graphics_lock_allows_a_safe_retry() {
+        let (mut server, mut conn) = fixture();
+        let graphics = Arc::clone(&conn.graphics_write);
+        let _held = graphics.lock().await;
+        let (request, completion) = WindowingOrders::new(vec![deleted()]);
+        let mut events = vec![ServerEvent::WindowingOrders(request)];
+        let mut writer = CapturingWriter::default();
+        {
+            let mut writer = SharedWriter::new(&mut writer);
+            let mut write =
+                Box::pin(server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None));
+            assert!(
+                write
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+        }
+        assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::NotStarted);
+        assert!(writer.0.is_empty());
+    }
+
+    // oracle: mutant retrying a canceled in-progress update can resend its first fragment.
+    #[tokio::test]
+    async fn canceling_after_the_first_transport_byte_forbids_retry() {
+        let (mut server, mut conn) = fixture();
+        let (request, completion) = WindowingOrders::new(vec![deleted()]);
+        let mut events = vec![ServerEvent::WindowingOrders(request)];
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut writer = TokioFramed::new(stream);
+        {
+            let mut writer = SharedWriter::new(&mut writer);
+            let mut write =
+                Box::pin(server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None));
+            assert!(
+                write
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            peer.read_exact(&mut [0]).await.unwrap();
+        }
+        assert!(completion.await.unwrap().is_err());
+    }
+
+    fn deleted() -> WindowingOrder {
+        WindowingOrder::Window(WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: WindowOrderBody::Deleted,
+        })
+    }
+
+    fn fixture() -> (RdpServer, ConnectionState) {
+        let server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let conn = ConnectionState {
+            remote_app: Some(ironrdp_acceptor::RemoteAppCapabilities {
+                rail: Rail {
+                    support_level: RailSupportLevel::SUPPORTED,
+                },
+                window_list: WindowList {
+                    support_level: WindowSupportLevel::SupportedEx,
+                    num_icon_caches: 3,
+                    num_icon_cache_entries: 12,
+                },
+            }),
+            max_graphics_size: Some(65_536),
+            ..ConnectionState::default()
+        };
+        (server, conn)
+    }
+
+    async fn dispatch(
+        server: &mut RdpServer,
+        conn: &mut ConnectionState,
+        events: &mut Vec<ServerEvent>,
+        writer: &mut CapturingWriter,
+    ) {
+        server
+            .dispatch_server_events(conn, events, &mut SharedWriter::new(writer), 1003, 1002, None, None)
+            .await
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod static_channel_tests {
+    use core::net::Ipv4Addr;
+
+    use ironrdp_core::{ReadCursor, decode_cursor};
+    use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
+    use ironrdp_svc::SvcServerProcessor;
+    use tokio::io::AsyncReadExt as _;
+
+    use super::cliprdr_error_tests::CapturingWriter;
+    use super::*;
+
+    const JOINED_CHANNEL_ID: u16 = 1005;
+    const USER_CHANNEL_ID: u16 = 1002;
+
+    #[derive(Debug)]
+    struct NamedChannel;
+
+    impl_as_any!(NamedChannel);
+
+    impl SvcProcessor for NamedChannel {
+        fn channel_name(&self) -> ChannelName {
+            name()
+        }
+
+        fn process(&mut self, _payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl SvcServerProcessor for NamedChannel {}
+
+    // oracle: regression a static write whose completion receiver was canceled must not reach the client.
+    #[tokio::test]
+    async fn canceled_static_channel_write_never_reaches_the_transport() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![static_write(name(), b"canceled".to_vec(), completion)];
+        drop(processed);
+        let mut writer = CapturingWriter::default();
+        server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                USER_CHANNEL_ID,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(writer.0.is_empty(), "canceled static data reached the client");
+    }
+
+    // oracle: regression canceling a static write while it waits for the shared writer must prevent transmission.
+    #[tokio::test]
+    async fn static_channel_cancellation_is_checked_after_the_writer_lock() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![static_write(
+            name(),
+            b"canceled behind another writer".to_vec(),
+            completion,
+        )];
+        let mut transport = CapturingWriter::default();
+        {
+            let mut writer = SharedWriter::new(&mut transport);
+            let lock = Rc::clone(&writer.writer);
+            let held = lock.lock().await;
+            let dispatch =
+                server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, USER_CHANNEL_ID, None, None);
+            tokio::pin!(dispatch);
+            assert!(tokio::time::timeout(Duration::ZERO, &mut dispatch).await.is_err());
+            drop(processed);
+            drop(held);
+            dispatch.await.unwrap();
+        }
+        assert!(transport.0.is_empty(), "canceled data escaped after the writer lock");
+    }
+
+    // oracle: regression replacement invalidates queued data even before its old producer observes cancellation.
+    #[tokio::test]
+    async fn static_channel_invalidation_is_checked_after_the_writer_lock() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let (completion, processed) = oneshot::channel();
+        let current = Arc::new(AtomicBool::new(true));
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut events = vec![ServerEvent::StaticChannelWithCompletion {
+            name: name(),
+            payload: b"previous consumer".to_vec(),
+            completion,
+            permit: Arc::clone(&permits).try_acquire_owned().unwrap(),
+            is_current: Box::new({
+                let current = Arc::clone(&current);
+                move || current.load(Ordering::SeqCst)
+            }),
+        }];
+        let mut transport = CapturingWriter::default();
+        {
+            let mut writer = SharedWriter::new(&mut transport);
+            let lock = Rc::clone(&writer.writer);
+            let held = lock.lock().await;
+            let dispatch =
+                server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, USER_CHANNEL_ID, None, None);
+            tokio::pin!(dispatch);
+            assert!(tokio::time::timeout(Duration::ZERO, &mut dispatch).await.is_err());
+            assert_eq!(permits.available_permits(), 0);
+            current.store(false, Ordering::SeqCst);
+            drop(held);
+            dispatch.await.unwrap();
+        }
+        assert!(
+            transport.0.is_empty(),
+            "a replaced consumer's data escaped after the writer lock"
+        );
+        assert!(processed.await.is_err());
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    // oracle: regression cancellation after transmission begins must finish the RDP frame and retain its write permit.
+    #[tokio::test]
+    async fn canceling_an_in_flight_static_write_finishes_the_frame_before_releasing_its_permit() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let (completion, processed) = oneshot::channel();
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut events = vec![ServerEvent::StaticChannelWithCompletion {
+            name: name(),
+            payload: b"finish this frame".to_vec(),
+            completion,
+            permit: Arc::clone(&permits).try_acquire_owned().unwrap(),
+            is_current: Box::new(|| true),
+        }];
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut transport = TokioFramed::new(stream);
+        let mut writer = SharedWriter::new(&mut transport);
+        let dispatch =
+            server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, USER_CHANNEL_ID, None, None);
+        tokio::pin!(dispatch);
+        assert!(tokio::time::timeout(Duration::ZERO, &mut dispatch).await.is_err());
+        drop(processed);
+        assert!(tokio::time::timeout(Duration::ZERO, &mut dispatch).await.is_err());
+        assert_eq!(permits.available_permits(), 0);
+
+        let (state, bytes) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(&mut dispatch, async {
+                let mut header = [0; 4];
+                peer.read_exact(&mut header).await.unwrap();
+                let length = usize::from(u16::from_be_bytes([header[2], header[3]]));
+                assert!((4..=512).contains(&length), "invalid TPKT length");
+                let mut bytes = vec![0; length];
+                bytes[..4].copy_from_slice(&header);
+                peer.read_exact(&mut bytes[4..]).await.unwrap();
+                bytes
+            })
+        })
+        .await
+        .unwrap();
+        assert!(matches!(state.unwrap(), RunState::Continue));
+        let received = chunks(&bytes);
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].1, b"finish this frame");
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1 and §3.1.5.2.1; a PDU that fits one chunk carries its length with FIRST and LAST.
+    #[tokio::test]
+    async fn static_channel_write_reaches_the_named_channel() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![static_write(name(), b"static channel data".to_vec(), completion)];
+        let mut writer = CapturingWriter::default();
+
+        server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                USER_CHANNEL_ID,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            chunks(&writer.0),
+            [(
+                ChannelPduHeader {
+                    length: 19,
+                    flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+                },
+                b"static channel data".to_vec(),
+            )]
+        );
+        processed.await.unwrap();
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1 and §3.1.5.2.1; at most 1600 bytes per chunk, FIRST and LAST on the ends.
+    #[tokio::test]
+    async fn static_channel_write_is_split_into_ordered_chunks() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let payload: Vec<u8> = (0..3201u32).map(|i| u8::try_from(i % 251).unwrap()).collect();
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![static_write(name(), payload.clone(), completion)];
+        let mut writer = CapturingWriter::default();
+
+        server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                USER_CHANNEL_ID,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let chunks = chunks(&writer.0);
+        // SHOW_PROTOCOL follows the channel options, so only the chunk boundary flags are compared.
+        let boundary = ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST;
+        let shape: Vec<_> = chunks
+            .iter()
+            .map(|(header, data)| (header.length, header.flags & boundary, data.len()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (3201, ChannelControlFlags::FLAG_FIRST, 1600),
+                (3201, ChannelControlFlags::empty(), 1600),
+                (3201, ChannelControlFlags::FLAG_LAST, 1),
+            ]
+        );
+        let reassembled: Vec<u8> = chunks.into_iter().flat_map(|(_, data)| data).collect();
+        assert_eq!(reassembled, payload);
+        processed.await.unwrap();
+    }
+
+    // oracle: mutant writing to a channel the client did not join.
+    #[tokio::test]
+    async fn static_channel_write_to_an_unjoined_channel_is_rejected() {
+        let (mut server, mut conn) = server_with_static_channel(false);
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![static_write(name(), b"static channel data".to_vec(), completion)];
+        let mut writer = CapturingWriter::default();
+
+        let state = server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                USER_CHANNEL_ID,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            writer.0.is_empty(),
+            "data for an unjoined channel reached the transport"
+        );
+        assert!(matches!(state, RunState::Continue));
+        assert!(processed.await.is_err(), "a rejected write was acknowledged");
+    }
+
+    // oracle: mutant routing a named write to whichever channel is joined.
+    #[tokio::test]
+    async fn static_channel_write_is_not_routed_to_another_channel() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let (completion, processed) = oneshot::channel();
+        let other = ChannelName::from_static(b"otherch\0");
+        let mut events = vec![static_write(other, b"static channel data".to_vec(), completion)];
+        let mut writer = CapturingWriter::default();
+
+        server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                USER_CHANNEL_ID,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(writer.0.is_empty(), "data reached a channel with a different name");
+        assert!(processed.await.is_err(), "a rejected write was acknowledged");
+    }
+
+    // oracle: mutant acknowledging static channel dispatch before its transport write completes.
+    #[tokio::test]
+    async fn static_channel_completion_waits_for_a_stalled_transport_write() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let (completion, mut processed) = oneshot::channel();
+        let mut events = vec![static_write(name(), b"static channel data".to_vec(), completion)];
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut writer = TokioFramed::new(stream);
+        let mut writer = SharedWriter::new(&mut writer);
+        let dispatch =
+            server.dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, USER_CHANNEL_ID, None, None);
+        tokio::pin!(dispatch);
+        assert!(tokio::time::timeout(Duration::ZERO, &mut dispatch).await.is_err());
+        assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+
+        let state = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut bytes = [0; 128];
+            loop {
+                tokio::select! {
+                    result = &mut dispatch => break result.unwrap(),
+                    read = peer.read(&mut bytes) => assert_ne!(read.unwrap(), 0),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(state, RunState::Continue));
+        assert_eq!(processed.try_recv(), Ok(()));
+    }
+
+    // oracle: mutant acknowledging data after a failed transport write.
+    #[tokio::test]
+    async fn static_channel_completion_reports_transport_failure() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let (completion, processed) = oneshot::channel();
+        let mut events = vec![static_write(name(), b"static channel data".to_vec(), completion)];
+        let (stream, peer) = tokio::io::duplex(1);
+        drop(peer);
+        let mut writer = TokioFramed::new(stream);
+
+        assert!(
+            server
+                .dispatch_server_events(
+                    &mut conn,
+                    &mut events,
+                    &mut SharedWriter::new(&mut writer),
+                    1003,
+                    USER_CHANNEL_ID,
+                    None,
+                    None
+                )
+                .await
+                .is_err()
+        );
+        assert!(processed.await.is_err(), "a failed transport write was acknowledged");
+    }
+
+    // oracle: mutant carrying a previous connection's static channel data through session takeover.
+    #[tokio::test]
+    async fn static_channel_completion_reports_discarded_session_data() {
+        let (mut server, _conn) = server_with_static_channel(true);
+        let (completion, mut processed) = oneshot::channel();
+        server
+            .event_sender()
+            .send(static_write(name(), b"static channel data".to_vec(), completion))
+            .unwrap();
+
+        server.discard_stale_session_events().await;
+
+        assert_eq!(
+            processed.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed),
+            "discarded session data was kept"
+        );
+    }
+
+    // oracle: mutant answering a joined channel as absent, which would starve a consumer of its channel.
+    #[tokio::test]
+    async fn joined_query_reports_a_joined_channel() {
+        let (mut server, mut conn) = server_with_static_channel(true);
+        let (reply, joined) = oneshot::channel();
+        let mut events = vec![ServerEvent::StaticChannelJoined(name(), reply)];
+        let mut writer = CapturingWriter::default();
+
+        server
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                USER_CHANNEL_ID,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(joined.await.unwrap());
+        assert!(writer.0.is_empty(), "a join query wrote to the transport");
+    }
+
+    // oracle: mutant answering a registered channel as joined before the client joined it.
+    #[tokio::test]
+    async fn joined_query_reports_false_for_a_channel_the_client_did_not_join() {
+        for (joined, queried) in [(false, name()), (true, ChannelName::from_static(b"otherch\0"))] {
+            let (mut server, mut conn) = server_with_static_channel(joined);
+            let (reply, answer) = oneshot::channel();
+            let mut events = vec![ServerEvent::StaticChannelJoined(queried, reply)];
+            let mut writer = CapturingWriter::default();
+
+            server
+                .dispatch_server_events(
+                    &mut conn,
+                    &mut events,
+                    &mut SharedWriter::new(&mut writer),
+                    1003,
+                    USER_CHANNEL_ID,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+
+            assert!(!answer.await.unwrap(), "registered channel joined: {joined}");
+        }
+    }
+
+    fn name() -> ChannelName {
+        ChannelName::from_static(b"testchn\0")
+    }
+
+    fn static_write(name: ChannelName, payload: Vec<u8>, completion: oneshot::Sender<()>) -> ServerEvent {
+        ServerEvent::StaticChannelWithCompletion {
+            name,
+            payload,
+            completion,
+            permit: Arc::new(tokio::sync::Semaphore::new(1)).try_acquire_owned().unwrap(),
+            is_current: Box::new(|| true),
+        }
+    }
+
+    fn server_with_static_channel(joined: bool) -> (RdpServer, ConnectionState) {
+        let server = RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build();
+        let mut conn = ConnectionState::default();
+        let key = conn.static_channels.insert_dynamic(NamedChannel).unwrap();
+        if joined {
+            conn.static_channels.attach_channel_id_by_key(key, JOINED_CHANNEL_ID);
+        }
+        (server, conn)
+    }
+
+    fn chunks(bytes: &[u8]) -> Vec<(ChannelPduHeader, Vec<u8>)> {
+        let mut frames = ReadCursor::new(bytes);
+        let mut chunks = Vec::new();
+        while !frames.is_empty() {
+            let frame: X224<SendDataIndication<'_>> = decode_cursor(&mut frames).unwrap();
+            assert_eq!(frame.0.channel_id, JOINED_CHANNEL_ID);
+            assert_eq!(frame.0.initiator_id, USER_CHANNEL_ID);
+            let mut chunk = ReadCursor::new(frame.0.user_data.as_ref());
+            let header: ChannelPduHeader = decode_cursor(&mut chunk).unwrap();
+            chunks.push((header, chunk.remaining().to_vec()));
+        }
+        chunks
     }
 }

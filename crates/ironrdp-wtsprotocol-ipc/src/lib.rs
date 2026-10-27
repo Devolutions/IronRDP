@@ -36,6 +36,9 @@ pub enum ProviderCommand {
     GetConnectionCredentials {
         connection_id: u32,
     },
+    GetRemoteAppSettings {
+        connection_id: u32,
+    },
     /// Notify the companion service of the session ID for a connection.
     ///
     /// The provider DLL calls this when WTS invokes `NotifySessionId`, so the companion can
@@ -56,6 +59,11 @@ pub enum ProviderCommand {
         connection_id: u32,
         session_id: u32,
         endpoint_name: String,
+        /// Whether the endpoint is a static virtual channel.
+        ///
+        /// A frame from a provider that predates the field opens a dynamic channel.
+        #[serde(default)]
+        static_channel: bool,
     },
 }
 
@@ -77,6 +85,10 @@ pub enum ServiceEvent {
     NoIncoming,
     ConnectionReady {
         connection_id: u32,
+    },
+    RemoteAppSettings {
+        connection_id: u32,
+        settings: Option<RemoteAppSettings>,
     },
     ConnectionBroken {
         connection_id: u32,
@@ -106,6 +118,13 @@ pub enum ServiceEvent {
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteAppSettings {
+    pub enabled: bool,
+    pub client_rail_support_level: Option<u32>,
+    pub window_capability_set: Option<Vec<u8>>,
 }
 
 pub fn resolve_pipe_name_from_env() -> Option<String> {

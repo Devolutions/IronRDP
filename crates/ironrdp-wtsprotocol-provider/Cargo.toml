@@ -39,8 +39,13 @@ windows = { version = "0.62", features = [
     "Win32_System_Services",
     "Win32_System_Threading",
     "Win32_Storage_FileSystem",
+    "Win32_System_SystemInformation",
+    "Win32_System_Memory",
 ] }
 windows-core = "0.62"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62", features = ["Win32_System_IO"] }
 
 [lints]
 workspace = true

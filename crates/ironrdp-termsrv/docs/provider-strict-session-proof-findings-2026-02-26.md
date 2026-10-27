@@ -41,7 +41,7 @@ The following provider-side behavior was tested/reset during investigation:
 - `WrdsLogonErrorRedirector::RedirectStatus`: keep `NOT_HANDLED`
 - `GetProtocolStatus`: keep `Specific=0` (baseline)
 
-Related strict harness and companion updates were also validated (SAS auto-send path, screenshot timeout controls, stricter proof gateing).
+Related strict harness and companion updates were also validated (SAS auto-send path, screenshot timeout controls, stricter proof gating).
 
 ## Environment finding (probable blocker)
 

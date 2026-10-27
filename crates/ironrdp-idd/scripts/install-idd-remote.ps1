@@ -171,7 +171,7 @@ try {
         $toDelete = @($entries | Where-Object { $_.ProviderName -eq 'IronRDP Project' })
         foreach ($drv in $toDelete) {
             Write-Host "Removing existing IronRDP driver package: $($drv.PublishedName) (Original=$($drv.OriginalName))"
-            pnputil /delete-driver $drv.PublishedName /uninstall /force
+            pnputil /delete-driver $drv.PublishedName /uninstall
             if ($LASTEXITCODE -ne 0) {
                 throw "pnputil /delete-driver $($drv.PublishedName) failed with exit code $LASTEXITCODE"
             }

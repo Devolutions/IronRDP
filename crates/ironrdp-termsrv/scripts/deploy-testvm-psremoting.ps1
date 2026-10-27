@@ -50,6 +50,12 @@ param(
     [switch]$WtsProvider,
 
     [Parameter()]
+    [switch]$Clipboard,
+
+    [Parameter()]
+    [switch]$RemoteApp,
+
+    [Parameter()]
     [switch]$AutoSendSas,
 
     [Parameter()]
@@ -81,6 +87,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ($RemoteApp.IsPresent -and -not $WtsProvider.IsPresent) {
+    throw '-RemoteApp requires -WtsProvider'
+}
 
 function Convert-SecureStringToPlainText {
     param(
@@ -206,31 +216,10 @@ $resolvedRdpIdentity = Resolve-RdpIdentityParts -Username $RdpUsername -Domain $
 $RdpUsername = [string]$resolvedRdpIdentity.Username
 $RdpDomain = [string]$resolvedRdpIdentity.Domain
 
-$wtsLogonUsername = ''
-$wtsLogonDomain = ''
-if ($WtsProvider.IsPresent) {
-    # In provider mode, TermService may request credentials before ClientInfo is
-    # available from the companion. Seed fallback logon credentials from the RDP
-    # identity first (user/domain passed to screenshot client), then fall back to
-    # the admin remoting identity if not provided.
-    if (-not [string]::IsNullOrWhiteSpace($RdpUsername)) {
-        $wtsLogonUsername = $RdpUsername
-        $wtsLogonDomain = $RdpDomain
-    }
-    else {
-        $m = [regex]::Match($Username, '^(?<domain>[^\\]+)\\(?<user>.+)$')
-        if ($m.Success) {
-            $wtsLogonDomain = $m.Groups['domain'].Value
-            $wtsLogonUsername = $m.Groups['user'].Value
-        }
-        else {
-            $wtsLogonUsername = $Username
-            $wtsLogonDomain = ''
-        }
-    }
+$resolvedRdpPassword = if ($WtsProvider.IsPresent) {
+    ''
 }
-
-$resolvedRdpPassword = if ($PSBoundParameters.ContainsKey('RdpPassword') -and -not [string]::IsNullOrWhiteSpace($RdpPassword)) {
+elseif ($PSBoundParameters.ContainsKey('RdpPassword') -and -not [string]::IsNullOrWhiteSpace($RdpPassword)) {
     Write-Warning "-RdpPassword is passed as plaintext; prefer env:$RdpPasswordEnvVar to avoid leaking credentials via shell history."
     $RdpPassword
 }
@@ -244,13 +233,13 @@ else {
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
+if (-not $WtsProvider.IsPresent -and [string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
     # Convenience: if the user provided/prompted an admin password (SecureString), reuse it for RDP
     # so Hybrid/CredSSP can be enabled without passing any plaintext password on the command line.
     $resolvedRdpPassword = Convert-SecureStringToPlainText -Value $resolvedPassword
 }
 
-if ([string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
+if (-not $WtsProvider.IsPresent -and [string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
     Write-Warning "RDP password is not configured (pass -RdpPassword or set env:$RdpPasswordEnvVar). Standard security connections will be rejected."
 }
 
@@ -339,7 +328,9 @@ try {
 
         # Stop ceviche-service if present - it uses the same named pipe and causes accept_connection to fail
         Write-Host "Stopping ceviche-service (if running)..."
-        Get-Process -Name 'ceviche-service' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Get-Process -Name 'ceviche-service' -ErrorAction SilentlyContinue | ForEach-Object {
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
 
         try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
         try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
@@ -434,6 +425,12 @@ param(
     [switch]$WtsProvider,
 
     [Parameter()]
+    [switch]$Clipboard,
+
+    [Parameter()]
+    [switch]$RemoteApp,
+
+    [Parameter()]
     [switch]$AutoSendSas,
 
     [Parameter()]
@@ -449,16 +446,7 @@ param(
     [string]$RdpDomain = '',
 
     [Parameter()]
-    [string]$RdpPasswordFile = '',
-
-    [Parameter()]
-    [string]$WtsLogonUsername = '',
-
-    [Parameter()]
-    [string]$WtsLogonDomain = '',
-
-    [Parameter()]
-    [string]$WtsLogonPasswordFile = ''
+    [string]$RdpPasswordFile = ''
 )
 
 Set-StrictMode -Version Latest
@@ -468,6 +456,10 @@ $env:IRONRDP_WTS_LISTEN_ADDR = $ListenerAddr
 $env:IRONRDP_WTS_CAPTURE_IPC = $CaptureIpc
 $env:IRONRDP_WTS_AUTO_LISTEN = if ($AutoListen.IsPresent) { '1' } else { '0' }
 $env:IRONRDP_WTS_PROVIDER = if ($WtsProvider.IsPresent) { '1' } else { '0' }
+$env:IRONRDP_WTS_REMOTEAPP = if ($RemoteApp.IsPresent) { '1' } else { '0' }
+if ($Clipboard.IsPresent) {
+    $env:IRONRDP_WTS_CLIPBOARD = '1'
+}
 $env:IRONRDP_WTS_AUTO_SEND_SAS = if ($AutoSendSas.IsPresent) { '1' } else { '0' }
 $env:IRONRDP_LOG = 'info'
 $env:RUST_BACKTRACE = '1'
@@ -484,20 +476,20 @@ if (-not [string]::IsNullOrWhiteSpace($DumpBitmapUpdatesDir)) {
     Remove-Item Env:IRONRDP_WTS_DUMP_BITMAP_UPDATES_DIR -ErrorAction SilentlyContinue
 }
 
-if (-not [string]::IsNullOrWhiteSpace($RdpUsername)) {
+if (-not $WtsProvider.IsPresent -and -not [string]::IsNullOrWhiteSpace($RdpUsername)) {
     $env:IRONRDP_RDP_USERNAME = $RdpUsername
 } else {
     Remove-Item Env:IRONRDP_RDP_USERNAME -ErrorAction SilentlyContinue
 }
 
-if (-not [string]::IsNullOrWhiteSpace($RdpDomain)) {
+if (-not $WtsProvider.IsPresent -and -not [string]::IsNullOrWhiteSpace($RdpDomain)) {
     $env:IRONRDP_RDP_DOMAIN = $RdpDomain
 } else {
     Remove-Item Env:IRONRDP_RDP_DOMAIN -ErrorAction SilentlyContinue
 }
 
 $rdpPassword = ''
-if (-not [string]::IsNullOrWhiteSpace($RdpPasswordFile) -and (Test-Path -LiteralPath $RdpPasswordFile -PathType Leaf)) {
+if (-not $WtsProvider.IsPresent -and -not [string]::IsNullOrWhiteSpace($RdpPasswordFile) -and (Test-Path -LiteralPath $RdpPasswordFile -PathType Leaf)) {
     $rdpPassword = [System.IO.File]::ReadAllText($RdpPasswordFile, [System.Text.Encoding]::UTF8).TrimEnd("`r", "`n")
 }
 
@@ -507,24 +499,9 @@ if (-not [string]::IsNullOrWhiteSpace($rdpPassword)) {
     Remove-Item Env:IRONRDP_RDP_PASSWORD -ErrorAction SilentlyContinue
 }
 
-$wtsPassword = ''
-if (-not [string]::IsNullOrWhiteSpace($WtsLogonPasswordFile) -and (Test-Path -LiteralPath $WtsLogonPasswordFile -PathType Leaf)) {
-    $wtsPassword = [System.IO.File]::ReadAllText($WtsLogonPasswordFile, [System.Text.Encoding]::UTF8).TrimEnd("`r", "`n")
-}
-
-if (-not [string]::IsNullOrWhiteSpace($WtsLogonUsername) -and -not [string]::IsNullOrWhiteSpace($wtsPassword)) {
-    $env:IRONRDP_WTS_LOGON_USERNAME = $WtsLogonUsername
-    if (-not [string]::IsNullOrWhiteSpace($WtsLogonDomain)) {
-        $env:IRONRDP_WTS_LOGON_DOMAIN = $WtsLogonDomain
-    } else {
-        Remove-Item Env:IRONRDP_WTS_LOGON_DOMAIN -ErrorAction SilentlyContinue
-    }
-    $env:IRONRDP_WTS_LOGON_PASSWORD = $wtsPassword
-} else {
-    Remove-Item Env:IRONRDP_WTS_LOGON_USERNAME -ErrorAction SilentlyContinue
-    Remove-Item Env:IRONRDP_WTS_LOGON_DOMAIN -ErrorAction SilentlyContinue
-    Remove-Item Env:IRONRDP_WTS_LOGON_PASSWORD -ErrorAction SilentlyContinue
-}
+Remove-Item Env:IRONRDP_WTS_LOGON_USERNAME -ErrorAction SilentlyContinue
+Remove-Item Env:IRONRDP_WTS_LOGON_DOMAIN -ErrorAction SilentlyContinue
+Remove-Item Env:IRONRDP_WTS_LOGON_PASSWORD -ErrorAction SilentlyContinue
 
 $logDir = Split-Path -Parent $LogOut
 if (-not [string]::IsNullOrWhiteSpace($logDir)) {
@@ -552,9 +529,6 @@ finally {
     # Best-effort cleanup: remove the password file after startup.
     if (-not [string]::IsNullOrWhiteSpace($RdpPasswordFile)) {
         Remove-Item -LiteralPath $RdpPasswordFile -Force -ErrorAction SilentlyContinue
-    }
-    if (-not [string]::IsNullOrWhiteSpace($WtsLogonPasswordFile) -and ($WtsLogonPasswordFile -ne $RdpPasswordFile)) {
-        Remove-Item -LiteralPath $WtsLogonPasswordFile -Force -ErrorAction SilentlyContinue
     }
 }
 '@
@@ -592,7 +566,7 @@ finally {
     } -ArgumentList ([int]($ListenerAddr.Split(':')[-1]))
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $AutoSendSas, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain, $WtsLogonUsername, $WtsLogonDomain)
+        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $Clipboard, $RemoteApp, $AutoSendSas, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain)
 
         $arguments = @(
             '-NoProfile',
@@ -611,17 +585,18 @@ finally {
 
         if ($WtsProvider) {
             $arguments += @('-WtsProvider')
-            if (-not [string]::IsNullOrWhiteSpace($WtsLogonUsername)) {
-                $arguments += @('-WtsLogonUsername', $WtsLogonUsername)
-            }
-            if (-not [string]::IsNullOrWhiteSpace($WtsLogonDomain)) {
-                $arguments += @('-WtsLogonDomain', $WtsLogonDomain)
-            }
-            $arguments += @('-WtsLogonPasswordFile', $SecretPath)
         }
 
         if ($AutoSendSas) {
             $arguments += @('-AutoSendSas')
+        }
+
+        if ($Clipboard) {
+            $arguments += @('-Clipboard')
+        }
+
+        if ($RemoteApp) {
+            $arguments += @('-RemoteApp')
         }
 
         if (-not [string]::IsNullOrWhiteSpace($CaptureSessionId)) {
@@ -632,15 +607,17 @@ finally {
             $arguments += @('-DumpBitmapUpdatesDir', $DumpBitmapUpdatesDir)
         }
 
-        if (-not [string]::IsNullOrWhiteSpace($RdpUsername)) {
+        if (-not $WtsProvider -and -not [string]::IsNullOrWhiteSpace($RdpUsername)) {
             $arguments += @('-RdpUsername', $RdpUsername)
         }
 
-        if (-not [string]::IsNullOrWhiteSpace($RdpDomain)) {
+        if (-not $WtsProvider -and -not [string]::IsNullOrWhiteSpace($RdpDomain)) {
             $arguments += @('-RdpDomain', $RdpDomain)
         }
 
-        $arguments += @('-RdpPasswordFile', $SecretPath)
+        if (-not $WtsProvider) {
+            $arguments += @('-RdpPasswordFile', $SecretPath)
+        }
 
         $argumentString = ($arguments | ForEach-Object {
             if ($_ -match '[\s"'']') { '"' + ($_ -replace '"', '\\"') + '"' } else { $_ }
@@ -704,7 +681,7 @@ finally {
             LogErr = $LogErr
             Pid = $proc.ProcessId
         }
-    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $AutoSendSas.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain, $wtsLogonUsername, $wtsLogonDomain | Format-List
+    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $Clipboard.IsPresent, $RemoteApp.IsPresent, $AutoSendSas.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain | Format-List
 
     Invoke-Command -Session $session -ScriptBlock {
         param($ListenerAddr, $LogOut, $LogErr, $TailLines, $NoTermServiceStart)
@@ -746,7 +723,7 @@ finally {
 
     Write-Host "Ready: $Hostname ($ListenerAddr)" -ForegroundColor Green
     $port = $ListenerAddr.Split(':')[-1]
-    if ([string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
+    if (-not $WtsProvider.IsPresent -and [string]::IsNullOrWhiteSpace($resolvedRdpPassword)) {
         Write-Warning 'RDP password is not configured'
     } else {
         Write-Host "Connect with: ironrdp-agent connect --server ${Hostname}:$port --no-prompt (credentials from environment)" -ForegroundColor Green

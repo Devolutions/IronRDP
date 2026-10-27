@@ -25,6 +25,7 @@ ironrdp-wtsprotocol-ipc = { version = "0.1.0", path = "../ironrdp-wtsprotocol-ip
 tracing = { version = "0.1", features = ["log"] }
 windows = { version = "0.62", features = [
     "Win32_Devices_Display",
+    "Win32_Devices_Properties",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",

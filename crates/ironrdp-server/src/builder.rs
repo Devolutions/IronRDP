@@ -306,6 +306,13 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Offers RemoteApp to requesting clients.
+    /// The embedder must provide a `rail` static channel and window-order updates.
+    pub fn with_remote_app(mut self, capabilities: Option<ironrdp_acceptor::RemoteAppCapabilities>) -> Self {
+        self.state.remote_app = capabilities;
+        self
+    }
+
     /// Set a handler for connection lifecycle events (accept filtering,
     /// post-disconnect cleanup).
     pub fn with_connection_handler(mut self, handler: Option<Box<dyn ConnectionHandler>>) -> Self {

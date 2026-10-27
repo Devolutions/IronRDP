@@ -3,6 +3,7 @@
 mod connection;
 mod listener;
 mod manager;
+mod published_apps;
 mod session_registry;
 mod wts_com;
 

@@ -288,19 +288,7 @@ impl CredsspSequence {
                     client_computer_name: server_name,
                 })
             }
-            None => {
-                // Use the Negotiate token format (SPNEGO/GSS) even when we only have NTLM.
-                // This keeps the handshake compatible with servers/clients that expect Negotiate.
-                let credssp_config = Box::new(sspi::ntlm::NtlmConfig::default());
-                credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
-                    protocol_config: credssp_config,
-                    // Avoid opportunistic Kerberos when we don't have an explicit Kerberos config.
-                    // Our pure-Rust SSPI path is primarily validated for NTLM, and attempting
-                    // Kerberos here can make handshakes environment-dependent.
-                    package_list: Some("!kerberos,!pku2u".to_owned()),
-                    client_computer_name: server_name,
-                })
-            }
+            None => credssp::ClientMode::Ntlm(sspi::ntlm::NtlmConfig::default()),
         };
 
         let mode = credssp::CredSspMode::WithCredentials;

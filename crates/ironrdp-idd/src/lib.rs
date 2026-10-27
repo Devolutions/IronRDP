@@ -57,6 +57,9 @@ pub(crate) fn debug_trace(message: &str) {
     use std::io::Write as _;
     use std::path::PathBuf;
 
+    // SAFETY: Reading the calling thread ID has no preconditions.
+    let thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+    let line = format!("pid={} tid={thread_id} {message}\n", std::process::id());
     let mut candidates = Vec::with_capacity(4);
 
     if let Ok(path) = std::env::var("IRONRDP_IDD_DEBUG_TRACE_FILE") {
@@ -76,7 +79,7 @@ pub(crate) fn debug_trace(message: &str) {
         }
 
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(file, "{message}");
+            let _ = file.write_all(line.as_bytes());
             return;
         }
     }
@@ -197,3 +200,6 @@ fn iddcx_callback_table() -> IddCxCallbackTable {
         monitor_get_physical_size: monitor::monitor_get_physical_size,
     }
 }
+
+#[cfg(all(test, ironrdp_idd_link))]
+mod adapter_tests;
