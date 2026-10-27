@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
+use ironrdp_connector::credssp::KdcResolution;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rail::pdu::ExecutePdu;
 use url::Url;
@@ -1589,10 +1590,13 @@ impl ConfigBuilder {
     }
 
     /// Set the kerberos config. Upserts the `kdcproxyurl` property (or clears it when the config
-    /// has no KDC proxy URL); `hostname` is derived from the client name and not stored separately.
+    /// has no KDC proxy URL) and always clears `kdcproxyname`, so the properties cannot select a
+    /// different KDC than the explicit config; `hostname` is derived from the client name and not
+    /// stored separately.
     #[must_use]
     pub fn with_kerberos_config(mut self, cfg: ironrdp_connector::credssp::KerberosConfig) -> Self {
-        if let Some(url) = &cfg.kdc_proxy_url {
+        self.properties.clear_kdc_proxy_name();
+        if let KdcResolution::KdcUrl(Some(url)) = &cfg.kdc_resolution {
             self.properties.set_kdc_proxy_url(url.to_string());
         } else {
             self.properties.clear_kdc_proxy_url();
@@ -2982,7 +2986,7 @@ fn kerberos_config_from_properties(
     Url::parse(&kdc_proxy_url)
         .ok()
         .map(|url| ironrdp_connector::credssp::KerberosConfig {
-            kdc_proxy_url: Some(url),
+            kdc_resolution: KdcResolution::KdcUrl(Some(url)),
             hostname: client_name.to_owned(),
         })
 }

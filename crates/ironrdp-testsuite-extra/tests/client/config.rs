@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use std::sync::Arc;
 
+use ironrdp::connector::credssp::{KdcResolution, KerberosConfig};
 #[cfg(windows)]
 use ironrdp_cfg::GatewayCredentialsSource;
 use ironrdp_cfg::PropertySetExt as _;
@@ -445,10 +446,10 @@ fn kdc_proxy_name_is_normalized_to_https_url() {
     );
 
     let kerberos = config.kerberos_config().expect("kerberos config should be present");
-    let kdc_proxy_url = kerberos
-        .kdc_proxy_url
-        .as_ref()
-        .expect("kdc proxy url should be present");
+    let kdc_proxy_url = match &kerberos.kdc_resolution {
+        KdcResolution::KdcUrl(Some(url)) => url,
+        _ => panic!("kdc proxy url should be present"),
+    };
     assert_eq!(kdc_proxy_url.as_str(), "https://kdc.example.com/KdcProxy");
 }
 
@@ -1700,4 +1701,24 @@ fn property_set_rejects_invalid_usb_devices() {
     properties.set_usb_devices_to_redirect(r"USB\VID_XYZ&PID_0001");
 
     assert!(ConfigBuilder::from_property_set(&properties).is_err());
+}
+
+#[test]
+fn explicit_kerberos_config_clears_kdc_proxy_properties() {
+    let mut properties = ironrdp_propertyset::PropertySet::new();
+    properties.set_kdc_proxy_name("kdc.example.com");
+    properties.set_kdc_proxy_url("https://kdc.example.com/KdcProxy");
+
+    let config = complete_builder()
+        .with_property_set(&properties)
+        .expect("valid KDC proxy properties")
+        .with_kerberos_config(KerberosConfig {
+            kdc_resolution: KdcResolution::IAKerb,
+            hostname: "client".to_owned(),
+        })
+        .build()
+        .expect("valid configuration");
+
+    assert!(config.properties().kdc_proxy_name().is_none());
+    assert!(config.properties().kdc_proxy_url().is_none());
 }
