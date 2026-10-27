@@ -1,8 +1,10 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
 use core::net::SocketAddr;
-use core::num::NonZeroU32;
+use core::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
+use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::task::{Context, Poll};
 use core::time::Duration;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -14,7 +16,7 @@ use ironrdp::dvc::DrdynvcClient;
 use ironrdp::echo::client::EchoClient;
 use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
 use ironrdp::pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
-use ironrdp::pdu::geometry::InclusiveRectangle;
+use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::pdu::rdp::capability_sets::{InputFlags, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp::pdu::rdp::headers::CompressionFlags;
@@ -31,6 +33,7 @@ use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput}
 use ironrdp::svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcServerProcessor};
 use ironrdp_async::{Framed, FramedWrite as _};
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags as bulk_flags};
+use ironrdp_core::{ReadCursor, decode_cursor};
 use ironrdp_dvc::{DvcClientProcessor, DvcEncode, DvcMessage, DvcProcessor};
 use ironrdp_egfx::pdu::{CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitySet, GfxPdu};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
@@ -45,6 +48,7 @@ use ironrdp_server::{GfxContext, GfxServerFactory, ServerEventSender};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::{Mutex, oneshot};
@@ -100,6 +104,244 @@ async fn test_client_server_advertising_dyn_vc_gfx_protocol() {
         |stage, _activation_factory, framed, _display_tx| async { (stage, framed) },
     )
     .await
+}
+
+/// The server sizes fast-path updates by the client's Multifragment Update Capability Set.
+///
+/// [MS-RDPBCGR] 2.2.7.2.6: MaxRequestSize is the size of the client's reassembly buffer, so no
+/// fragmented update may be larger. The IronRDP client echoes the size the server advertises,
+/// so the test lowers it in the client's Confirm Active PDU on its way to the server, which
+/// keeps advertising its default of 8 MB.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
+#[tokio::test]
+async fn fast_path_updates_fit_the_client_max_request_size() {
+    let largest = largest_fast_path_update(65_536).await;
+    assert!(
+        largest <= 65_536,
+        "a {largest}-byte update exceeds the client's 65,536-byte MaxRequestSize"
+    );
+}
+
+/// A client buffer smaller than one fast-path fragment gets updates of one fragment each.
+///
+/// [MS-RDPBCGR] 2.2.9.1.2.1: an update sent as a single fragment is never reassembled, so the
+/// client's buffer does not bound it.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a1c4caa8-00ed-45bb-a06e-5177473766d3
+#[tokio::test]
+async fn a_client_max_request_size_below_one_fragment_gets_single_fragments() {
+    let largest = largest_fast_path_update(4_096).await;
+    // The server's fragment size, `MAX_FASTPATH_UPDATE_SIZE`.
+    assert!(
+        4_096 < largest && largest <= 16_374,
+        "the largest update has {largest} bytes, not up to one 16,374-byte fragment"
+    );
+}
+
+/// Connects a client that advertises `client_max_request_size`, sends it one full frame, and
+/// returns the size of the largest fast-path update the client reassembles.
+async fn largest_fast_path_update(client_max_request_size: u32) -> usize {
+    // The server's default, which it advertises in its Demand Active PDU.
+    const SERVER_MAX_REQUEST_SIZE: u32 = 8 * 1024 * 1024;
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+    let rewritten = Arc::new(AtomicBool::new(false));
+    let client_rewritten = Arc::clone(&rewritten);
+
+    let local = tokio::task::LocalSet::new();
+    let largest = local
+        .run_until(async move {
+            let server = tokio::task::spawn_local(async move { server.run().await.unwrap() });
+
+            let client = tokio::task::spawn_local({
+                let rewritten = client_rewritten;
+                async move {
+                    let server_addr = local_addr_of(&ev).await;
+                    let (mut framed, connection_result) = connect_client_with(
+                        server_addr,
+                        |client_addr| connector::ClientConnector::new(default_client_config(), client_addr),
+                        |stream| MaxRequestSizeRewrite {
+                            inner: stream,
+                            from: multifragment_update_capability(SERVER_MAX_REQUEST_SIZE),
+                            to: multifragment_update_capability(client_max_request_size),
+                            rewritten,
+                        },
+                    )
+                    .await;
+                    let mut stage = ActiveStageBuilder {
+                        static_channels: connection_result.static_channels,
+                        user_channel_id: connection_result.user_channel_id,
+                        io_channel_id: connection_result.io_channel_id,
+                        message_channel_id: connection_result.message_channel_id,
+                        share_id: connection_result.share_id,
+                        compression_type: connection_result.compression_type,
+                        enable_server_pointer: connection_result.enable_server_pointer,
+                        pointer_software_rendering: connection_result.pointer_software_rendering,
+                    }
+                    .build();
+
+                    display_tx
+                        .send(DisplayUpdate::Bitmap(incompressible_frame(
+                            DESKTOP_WIDTH,
+                            DESKTOP_HEIGHT,
+                        )))
+                        .unwrap();
+
+                    let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+                    let mut painted = 0;
+                    let mut reassembled = 0;
+                    let mut largest = 0;
+                    while painted < usize::from(DESKTOP_WIDTH) * usize::from(DESKTOP_HEIGHT) {
+                        let (action, payload) = tokio::time::timeout(Duration::from_secs(10), framed.read_pdu())
+                            .await
+                            .expect("the whole frame arrives")
+                            .expect("valid PDU");
+                        if action == pdu::Action::FastPath {
+                            let mut cursor = ReadCursor::new(&payload);
+                            let _: FastPathHeader = decode_cursor(&mut cursor).expect("fast-path header");
+                            let update: FastPathUpdatePdu<'_> = decode_cursor(&mut cursor).expect("fast-path update");
+                            reassembled = match update.fragmentation {
+                                Fragmentation::Single | Fragmentation::First => update.data.len(),
+                                Fragmentation::Next | Fragmentation::Last => reassembled + update.data.len(),
+                            };
+                            largest = largest.max(reassembled);
+                        }
+                        for output in stage
+                            .process(&mut image, action, &payload, None)
+                            .expect("stage process")
+                        {
+                            match output {
+                                ActiveStageOutput::GraphicsUpdate(rect) => {
+                                    painted += usize::from(rect.width()) * usize::from(rect.height())
+                                }
+                                ActiveStageOutput::ResponseFrame(frame) => {
+                                    framed.write_all(&frame).await.expect("write frame")
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    for output in stage.graceful_shutdown().expect("shutdown") {
+                        if let ActiveStageOutput::ResponseFrame(frame) = output {
+                            framed.write_all(&frame).await.expect("write frame");
+                        }
+                    }
+                    while framed.read_pdu().await.is_ok() {}
+                    let _ = ev.send(ServerEvent::Quit("bye".into()));
+                    largest
+                }
+            });
+
+            let ((), largest) = tokio::try_join!(server, client).expect("join");
+            largest
+        })
+        .await;
+
+    assert!(
+        rewritten.load(Ordering::Relaxed),
+        "the client's Multifragment Update Capability Set was not rewritten"
+    );
+    largest
+}
+
+/// A Multifragment Update Capability Set ([MS-RDPBCGR] 2.2.7.2.6) as it is encoded.
+fn multifragment_update_capability(max_request_size: u32) -> [u8; 8] {
+    let mut capability = [0x1a, 0x00, 0x08, 0x00, 0, 0, 0, 0];
+    capability[4..].copy_from_slice(&max_request_size.to_le_bytes());
+    capability
+}
+
+/// Replaces the client's first Multifragment Update Capability Set before TLS encrypts it.
+struct MaxRequestSizeRewrite<S> {
+    inner: S,
+    from: [u8; 8],
+    to: [u8; 8],
+    rewritten: Arc<AtomicBool>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for MaxRequestSizeRewrite<S> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for MaxRequestSizeRewrite<S> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let at = (!this.rewritten.load(Ordering::Relaxed))
+            .then(|| buf.windows(this.from.len()).position(|window| window == this.from))
+            .flatten();
+        let Some(at) = at else {
+            return Pin::new(&mut this.inner).poll_write(cx, buf);
+        };
+        let mut patched = buf.to_vec();
+        patched[at..at + this.to.len()].copy_from_slice(&this.to);
+        let written = Pin::new(&mut this.inner).poll_write(cx, &patched);
+        if let Poll::Ready(Ok(written)) = written
+            && at + this.to.len() <= written
+        {
+            this.rewritten.store(true, Ordering::Relaxed);
+        }
+        written
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+/// A frame of pixels with no runs or repeats for an encoder to exploit.
+fn incompressible_frame(width: u16, height: u16) -> server::BitmapUpdate {
+    let len = usize::from(width) * usize::from(height) * 4;
+    // xorshift64
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let data: Vec<u8> = core::iter::repeat_with(|| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state.to_le_bytes()[0]
+    })
+    .take(len)
+    .collect();
+    server::BitmapUpdate {
+        x: 0,
+        y: 0,
+        width: NonZeroU16::new(width).unwrap(),
+        height: NonZeroU16::new(height).unwrap(),
+        format: PixelFormat::BgrA32,
+        data: data.into(),
+        stride: NonZeroUsize::new(usize::from(width) * 4).unwrap(),
+    }
 }
 
 #[tokio::test]
@@ -2533,6 +2775,18 @@ async fn connect_client(
     server_addr: SocketAddr,
     make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
 ) -> (Framed<TokioStream<TlsStream<TcpStream>>>, connector::ConnectionResult) {
+    connect_client_with(server_addr, make_connector, |stream| stream).await
+}
+
+/// Connects like [`connect_client`], with the TLS stream wrapped by `wrap`.
+async fn connect_client_with<S>(
+    server_addr: SocketAddr,
+    make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
+    wrap: impl FnOnce(TlsStream<TcpStream>) -> S,
+) -> (Framed<TokioStream<S>>, connector::ConnectionResult)
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
     let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
     let client_addr = tcp_stream.local_addr().expect("local_addr");
     let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
@@ -2549,8 +2803,8 @@ async fn connect_client(
     .await
     .expect("TLS upgrade");
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
-    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
     let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert).expect("extract server public key");
+    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(wrap(upgraded_stream));
     let connection_result = ironrdp_async::connect_finalize(
         upgraded,
         connector,
