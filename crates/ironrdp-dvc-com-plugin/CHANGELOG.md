@@ -10,21 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 7 -->Build
 
-- Mark exposed dependencies as public ([#2213](https://github.com/Devolutions/IronRDP/issues/2213)) ([405e6576ba](https://github.com/Devolutions/IronRDP/commit/405e6576bac7c64b04efc8a0d00beeecdc648356)) 
+- Declare `ironrdp-dvc`, `ironrdp-pdu` and `ironrdp-svc` as public dependencies, since `load_dvc_plugin` exposes their types ([#2213](https://github.com/Devolutions/IronRDP/issues/2213)) ([405e6576ba](https://github.com/Devolutions/IronRDP/commit/405e6576bac7c64b04efc8a0d00beeecdc648356))
 
-  These crates expose types or traits from these dependencies in their
-  public API, so a breaking release of the dependency requires a breaking
-  release of the crate:
-  
-  - `ironrdp-str`: `ironrdp-core`, whose `Encode` and `DecodeOwned` traits
-  the string types implement.
-  - `ironrdp-dvc-pipe-proxy`: `ironrdp-dvc`, through `DvcNamedPipeProxy`'s
-  `DvcProcessor` implementation.
-  - `ironrdp-dvc-com-plugin`: `ironrdp-dvc`, plus `ironrdp-pdu` and
-  `ironrdp-svc` through the `PduResult` return type and the `SvcMessage`
-  callback bound of `load_dvc_plugin`.
-  - `ironrdp-mstsgu`: `ironrdp-error`, whose `Error<GwErrorKind>` the
-  `GwClient` methods return.
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
 
 
 

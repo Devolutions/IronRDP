@@ -8,4 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-egfx-native-v0.1.0...ironrdp-egfx-native-v0.2.0)] - 2026-10-27
 
+### <!-- 7 -->Build
 
+- [**breaking**] Update `ironrdp-egfx` public dependency to 0.5

@@ -12,16 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 1 -->Features
 
-- Support STUN and ICE candidate gathering ([#2245](https://github.com/Devolutions/IronRDP/issues/2245)) ([79343b26cb](https://github.com/Devolutions/IronRDP/commit/79343b26cb7e57984d9ddfd33f6888adb72345c2)) 
+- Add a STUN Binding probe in the `stun` module ([#2245](https://github.com/Devolutions/IronRDP/issues/2245)) ([79343b26cb](https://github.com/Devolutions/IronRDP/commit/79343b26cb7e57984d9ddfd33f6888adb72345c2))
 
-  Add a standalone RFC 8489 STUN Binding probe and an optional `ice`
-  feature to `ironrdp-rdpeudp-tokio` for UDP ICE candidate gathering,
-  connectivity checks, nominated-pair selection, and UDP TURN relay
-  transport beneath the existing RDPEUDP2, TLS, and RDPEMT stack.
-  
-  Expose `connect_udp_with_socket`, `gather_ice_candidates`,
-  `connect_udp_with_ice`, `accept_udp_with_ice`, and
-  `MultitransportBootstrap::connect_with_ice` while keeping the default
-  direct `connect_udp` path unchanged.
+- Add the optional `ice` feature, with `gather_ice_candidates`, `connect_udp_with_ice`, `accept_udp_with_ice` and `MultitransportBootstrap::connect_with_ice`, including TURN relays ([#2245](https://github.com/Devolutions/IronRDP/issues/2245)) ([79343b26cb](https://github.com/Devolutions/IronRDP/commit/79343b26cb7e57984d9ddfd33f6888adb72345c2))
 
+- Add `connect_udp_with_socket` ([#2245](https://github.com/Devolutions/IronRDP/issues/2245)) ([79343b26cb](https://github.com/Devolutions/IronRDP/commit/79343b26cb7e57984d9ddfd33f6888adb72345c2))
 
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-async` public dependency to 0.12
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
