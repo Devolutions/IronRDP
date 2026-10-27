@@ -74,7 +74,7 @@ fn digicert_root_g2_der() -> Vec<u8> {
     DIGICERT_ROOT_G2_DER.to_vec()
 }
 
-// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
+// oracle: spec https://learn.microsoft.com/windows-app/direct-launch-urls
 #[test]
 fn documented_launch_urls() {
     assert_eq!(
@@ -156,7 +156,7 @@ fn decode_discovery_and_continuation() {
     assert!(nullable.cloud_pcs[0].service_plan_type.is_none());
 }
 
-// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
+// oracle: spec https://learn.microsoft.com/graph/api/cloudpc-retrievecloudpclaunchdetail?view=graph-rest-1.0
 #[test]
 fn launch_detail_uses_documented_graph_resource_route() {
     assert_eq!(
@@ -230,12 +230,14 @@ fn page_size_limit_exact_boundary() {
 #[tokio::test]
 async fn invalid_tokens_and_continuations_fail_before_network() {
     let client = CloudPcClient::new().unwrap();
+    // oracle: spec RFC 6750 §2.1
     for token in ["", "not a token", "secret\r\nInjected: header"] {
         assert!(matches!(
             client.list_page(token, None).await,
             Err(Error::InvalidInput("Graph bearer token"))
         ));
     }
+    // oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
     for next in [
         "http://127.0.0.1/v1.0/me/cloudPCs",
         "https://attacker.invalid/v1.0/me/cloudPCs",
@@ -246,10 +248,12 @@ async fn invalid_tokens_and_continuations_fail_before_network() {
             Err(Error::InvalidContinuation)
         ));
     }
+    // oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
     assert!(matches!(
         client.retrieve_launch_detail("token", "id/path").await,
         Err(Error::InvalidInput("Cloud PC ID"))
     ));
+    // oracle: spec RFC 6750 §2.1
     assert!(matches!(
         client.retrieve_launch_detail("not a token", PC_ID).await,
         Err(Error::InvalidInput("Graph bearer token"))
@@ -506,6 +510,16 @@ fn avd_feed_discovery_and_workspace_xml_parsing() {
         parse_avd_workspace_feed_xml(&untrusted_res_xml),
         Err(Error::InvalidXml("untrusted ResourceFile URL"))
     ));
+
+    // Relative ResourceFile URL (as in MS-TSWP examples) resolves against the AVD origin.
+    let relative_res_xml = format!(
+        r#"<ResourceCollection><Publisher ID="{WORKSPACE_ID}"><Resources><Resource ID="{PC_ID}" Title="D" Type="Desktop"><HostingTerminalServers><HostingTerminalServer><ResourceFile FileExtension=".rdp" URL="/RDWeb/Pages/rdp/{PC_ID}.rdp" /></HostingTerminalServer></HostingTerminalServers></Resource></Resources></Publisher></ResourceCollection>"#
+    );
+    let relative_ws = parse_avd_workspace_feed_xml(&relative_res_xml).unwrap();
+    assert_eq!(
+        relative_ws.resources[0].rdp_file_url.as_ref().unwrap().as_str(),
+        format!("https://www.wvd.microsoft.com/RDWeb/Pages/rdp/{PC_ID}.rdp")
+    );
 }
 
 // oracle: spec MS-TSWP §2.2.2
@@ -579,31 +593,6 @@ fn verify_microsoft_signed_avd_rdp_file_and_detect_tampering() {
         Err(Error::InvalidRdpSignature("signature verification failed"))
     ));
 
-    // Adding an unsigned sensitive setting (alternate shell, server port, kdcproxyname, use redirection server name, or IronRDP transport/TLS overrides) must fail.
-    for unsigned_sensitive in [
-        "alternate shell:s:cmd.exe",
-        "server port:i:3390",
-        "kdcproxyname:s:attacker.invalid",
-        "kdcproxyurl:s:https://attacker.invalid/KdcProxy",
-        "use redirection server name:i:1",
-        "negotiate security layer:i:0",
-        "remoteapplicationcmdline:s:--evil",
-        "administrative session:i:1",
-        "ironrdp_tls:i:0",
-        "ironrdp_named_pipe:s:\\\\.\\pipe\\evil",
-        "ironrdp_rdcleanpathurl:s:https://attacker.invalid/rdcleanpath",
-        "ironrdp_rdcleanpathtoken:s:secret",
-        "ironrdp_dvcplugin:s:evil.dll",
-    ] {
-        let with_unsigned = format!("{signed_rdp}{unsigned_sensitive}\r\n");
-        assert!(matches!(
-            verify_rdp_signature_at(valid_time, &with_unsigned, &anchors),
-            Err(Error::InvalidRdpSignature(
-                "sensitive .rdp setting is not covered by signscope"
-            ))
-        ));
-    }
-
     // Unsigned enablecredsspsupport downgrade (present in file but omitted from signscope) must fail.
     let without_credssp_in_scope = signed_rdp.replace(
         "Full Address,Alternate Full Address,EnableCredSspSupport,",
@@ -626,6 +615,35 @@ fn verify_microsoft_signed_avd_rdp_file_and_detect_tampering() {
     assert!(matches!(
         verify_rdp_signature_at(valid_time, &duplicate_credssp, &anchors),
         Err(Error::InvalidRdpSignature("duplicate .rdp property"))
+    ));
+}
+
+// oracle: reference mstscax.dll 10.0.26100.9711 VerifySensitiveSettings
+#[rstest]
+#[case::alternate_shell("alternate shell:s:cmd.exe")]
+#[case::server_port("server port:i:3390")]
+#[case::kdc_proxy_name("kdcproxyname:s:attacker.invalid")]
+#[case::kdc_proxy_url("kdcproxyurl:s:https://attacker.invalid/KdcProxy")]
+#[case::use_redirection_server_name("use redirection server name:i:1")]
+#[case::negotiate_security_layer("negotiate security layer:i:0")]
+#[case::remote_app_cmdline("remoteapplicationcmdline:s:--evil")]
+#[case::admin_session("administrative session:i:1")]
+#[case::ironrdp_tls("ironrdp_tls:i:0")]
+#[case::ironrdp_named_pipe("ironrdp_named_pipe:s:\\\\.\\pipe\\evil")]
+#[case::ironrdp_rdcleanpath_url("ironrdp_rdcleanpathurl:s:https://attacker.invalid/rdcleanpath")]
+#[case::ironrdp_rdcleanpath_token("ironrdp_rdcleanpathtoken:s:secret")]
+#[case::ironrdp_dvc_plugin("ironrdp_dvcplugin:s:evil.dll")]
+fn unsigned_sensitive_setting_is_rejected(#[case] unsigned_sensitive: &str) {
+    let signed_rdp = microsoft_signed_avd_rdp();
+    let root_der = digicert_root_g2_der();
+    let anchors = [root_der.as_slice()];
+    let valid_time = Duration::from_secs(1_793_047_200);
+    let with_unsigned = format!("{signed_rdp}{unsigned_sensitive}\r\n");
+    assert!(matches!(
+        verify_rdp_signature_at(valid_time, &with_unsigned, &anchors),
+        Err(Error::InvalidRdpSignature(
+            "sensitive .rdp setting is not covered by signscope"
+        ))
     ));
 }
 
@@ -699,7 +717,9 @@ fn certificate_chain_validation_rejects_untrusted_incomplete_or_expired_paths() 
     let orig_sig_b64 = STANDARD.encode(raw_sig);
     let patched_sig_b64 = STANDARD.encode(&patched_sig);
     let cross_signed_rdp = signed_rdp.replace(&orig_sig_b64, &patched_sig_b64);
-    assert!(verify_rdp_signature_at(valid_time, &cross_signed_rdp, &anchors).is_ok());
+    // oracle: spec RFC 5280 §6.1
+    let cross_verified = verify_rdp_signature_at(valid_time, &cross_signed_rdp, &anchors).unwrap();
+    assert!(cross_verified.signer_subject.contains("rdp.wvd.microsoft.com"));
 }
 
 // oracle: spec RFC 5652 §5.3
@@ -722,6 +742,14 @@ fn cms_signed_attrs_requires_exact_message_digest_attribute() {
     valid_attrs.extend_from_slice(&md_attr);
     assert!(verify_signed_attrs_for_test(&valid_attrs, &digest).is_ok());
 
+    // Missing contentType attribute (RFC 5652 §11.1 requires both contentType and messageDigest) must fail.
+    assert!(matches!(
+        verify_signed_attrs_for_test(&md_attr, &digest),
+        Err(Error::InvalidRdpSignature(
+            "PKCS#7 signedAttrs must contain exactly one contentType and one messageDigest"
+        ))
+    ));
+
     // Embedding the expected digest inside an unrelated attribute OID (e.g. 1.2.840.113549.1.9.99) without messageDigest must fail.
     let mut unrelated_attr = vec![
         0x30, 0x2f, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x63, 0x31, 0x22, 0x04, 0x20,
@@ -730,7 +758,7 @@ fn cms_signed_attrs_requires_exact_message_digest_attribute() {
     assert!(matches!(
         verify_signed_attrs_for_test(&unrelated_attr, &digest),
         Err(Error::InvalidRdpSignature(
-            "PKCS#7 signedAttrs must contain exactly one messageDigest"
+            "PKCS#7 signedAttrs must contain exactly one contentType and one messageDigest"
         ))
     ));
 
@@ -740,7 +768,7 @@ fn cms_signed_attrs_requires_exact_message_digest_attribute() {
     assert!(matches!(
         verify_signed_attrs_for_test(&duplicate_md, &digest),
         Err(Error::InvalidRdpSignature(
-            "PKCS#7 signedAttrs must contain exactly one messageDigest"
+            "PKCS#7 signedAttrs must contain exactly one contentType and one messageDigest"
         ))
     ));
 
@@ -787,7 +815,7 @@ async fn download_avd_rdp_file_decodes_utf16le_with_bom_and_verifies() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
-    // oracle: property idempotent
+    // oracle: reference mstscax.dll 10.0.26100.9711 CRdpSettingsStore case-insensitive key lookup and line-order-independent signscope canonicalization
     #[test]
     fn canonicalization_is_invariant_under_line_order_case_and_line_endings(
         reverse_order in any::<bool>(),
@@ -825,10 +853,10 @@ proptest! {
         prop_assert_eq!(verified, baseline);
     }
 
-    // oracle: property untrusted XML, .rdp, and CMS signedAttrs inputs never panic the parsers
+    // oracle: scaffold (untrusted multi-line XML, .rdp, and CMS signedAttrs inputs return structured errors without panicking; these parsers are not wired into cargo-fuzz)
     #[test]
     fn parsers_never_panic_on_arbitrary_malformed_inputs(
-        raw in ".{0,512}",
+        raw in "[\\s\\S]{0,512}",
         raw_bytes in prop::collection::vec(any::<u8>(), 0..256),
     ) {
         let root_der = digicert_root_g2_der();

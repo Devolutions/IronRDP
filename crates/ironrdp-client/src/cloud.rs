@@ -23,6 +23,7 @@ const CLOUD_PCS_URL: &str = "https://graph.microsoft.com/v1.0/me/cloudPCs";
 const MAX_PAGE_BYTES: usize = 1024 * 1024;
 const AVD_FEED_USER_AGENT: &str = "TSWorkspace/2.0";
 
+/// Errors returned by Cloud PC discovery, AVD feed discovery, launch URL construction, and `.rdp` signature verification.
 #[derive(Debug)]
 pub enum Error {
     InvalidInput(&'static str),
@@ -122,7 +123,7 @@ struct RawCloudPcPage {
 #[derive(Clone)]
 pub struct CloudPcLaunchDetail {
     cloud_pc_id: String,
-    // INVARIANT: Validated on construction to use `https` with a non-empty host, no userinfo, and port 443.
+    /// INVARIANT: Validated on construction to use `https` with a non-empty host, no userinfo, and port 443.
     launch_url: Url,
     windows365_switch_compatible: bool,
     windows365_switch_compatibility_failure_reason_type: Option<String>,
@@ -214,6 +215,7 @@ pub struct CloudPcClient {
 }
 
 impl CloudPcClient {
+    /// Create a [`CloudPcClient`] configured with platform TLS roots, a 30-second timeout, and redirects disabled.
     pub fn new() -> Result<Self, Error> {
         let http = Self::client_builder()?
             .build()
@@ -262,14 +264,14 @@ impl CloudPcClient {
         CloudPcPage::decode_page(&body)
     }
 
-    /// Retrieve the Graph-provided browser launch URL for a Cloud PC owned by the signed-in user.
+    /// Retrieve the [Graph launch details] browser URL for a Cloud PC owned by the signed-in user.
     ///
     /// Requires delegated `CloudPC.Read.All` permission.
     /// Graph returns a `cloudPcLaunchUrl`; it does not return an RDP host endpoint, broker
     /// allocation result, feed connection file, or reverse-connect transport parameters.
     /// Open the returned URL in a supported Windows App browser.
     ///
-    /// [Graph operation]: https://learn.microsoft.com/graph/api/cloudpc-retrievecloudpclaunchdetail?view=graph-rest-1.0
+    /// [Graph launch details]: https://learn.microsoft.com/graph/api/cloudpc-retrievecloudpclaunchdetail?view=graph-rest-1.0
     pub async fn retrieve_launch_detail(
         &self,
         access_token: &str,
@@ -303,7 +305,7 @@ impl CloudPcClient {
             return Err(Error::LaunchDetailMismatch);
         }
         let launch_url = Url::parse(&detail.cloud_pc_launch_url).map_err(|_| Error::InvalidLaunchUrl)?;
-        if !is_canonical_https(&launch_url) || launch_url.host_str().is_none() {
+        if !is_canonical_https(&launch_url) {
             return Err(Error::InvalidLaunchUrl);
         }
         Ok(CloudPcLaunchDetail {
@@ -351,14 +353,14 @@ impl CloudPcClient {
         let expected_env = validate_avd_service_url(&feed_url)?;
         let body = self
             .get_with_accept(
-                feed_url,
+                feed_url.clone(),
                 access_token,
                 "application/x-msts-radc+xml, application/xml, text/xml",
                 Some(AVD_FEED_USER_AGENT),
             )
             .await?;
         let xml = core::str::from_utf8(&body).map_err(|_| Error::InvalidXml("response is not valid UTF-8"))?;
-        let feed = parse_avd_workspace_feed_xml(xml)?;
+        let feed = parse_avd_workspace_feed_xml_inner(xml, Some(&feed_url))?;
         for resource in &feed.resources {
             if let Some(rdp_url) = &resource.rdp_file_url
                 && validate_avd_service_url(rdp_url)? != expected_env
@@ -629,11 +631,11 @@ fn host_matches_domain(host: &str, domain: &str) -> bool {
 pub struct AvdFeedSubscription {
     pub tenant_id: String,
     pub tenant_display_name: Option<String>,
-    // INVARIANT: Validated by `validate_avd_service_url` during feed discovery XML parsing.
+    /// Workspace webfeed URL validated against [`AvdCloudEnvironment`] by [`parse_avd_feed_discovery_xml`].
     pub feed_url: Url,
-    // INVARIANT: Validated by `validate_avd_service_url` to match `feed_url`'s sovereign cloud environment.
+    /// Optional geo-discovery URL in the same [`AvdCloudEnvironment`] as `feed_url`.
     pub hub_discovery_geo_url: Option<Url>,
-    // INVARIANT: Validated by `validate_avd_service_url` to match `feed_url`'s sovereign cloud environment.
+    /// Optional diagnostic service URL in the same [`AvdCloudEnvironment`] as `feed_url`.
     pub diagnostic_service_url: Option<Url>,
     pub activity_hint: Option<String>,
     pub conditional_access_claims: Option<String>,
@@ -661,11 +663,11 @@ pub struct AvdResource {
     pub kind: AvdResourceKind,
     pub arm_path: Option<String>,
     pub device_state: Option<String>,
-    // INVARIANT: Validated by `validate_avd_service_url` during workspace feed XML parsing.
+    /// Optional `.rdp` download URL validated against [`AvdCloudEnvironment`] by [`parse_avd_workspace_feed_xml`].
     pub rdp_file_url: Option<Url>,
     pub rdp_etag: Option<String>,
-    // INVARIANT: When `Some`, contains canonical `.rdp` text whose detached PKCS#7 signature
-    // and `signscope` sensitive-setting coverage were verified by `verify_and_canonicalize_rdp`.
+    /// Canonical `.rdp` text extracted from an inline `<RDPFile>` element after signature and
+    /// `signscope` verification by [`parse_avd_workspace_feed_xml`].
     pub embedded_rdp: Option<String>,
 }
 
@@ -766,8 +768,15 @@ pub fn parse_avd_feed_discovery_xml(xml: &str) -> Result<Vec<AvdFeedSubscription
 
 /// Parse an RDWeb `application/x-msts-radc+xml` workspace webfeed XML document ([MS-TSWP] §2.2.2 "`ResourceCollection` Schema").
 ///
+/// Any inline `<RDPFile>` payload is verified with [`verify_rdp_signature`] so that an unsigned or
+/// tampered embedded `.rdp` payload fails parsing rather than exposing unverified connection settings.
+///
 /// [MS-TSWP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tswp/
 pub fn parse_avd_workspace_feed_xml(xml: &str) -> Result<AvdWorkspaceFeed, Error> {
+    parse_avd_workspace_feed_xml_inner(xml, None)
+}
+
+fn parse_avd_workspace_feed_xml_inner(xml: &str, base_url: Option<&Url>) -> Result<AvdWorkspaceFeed, Error> {
     if MAX_PAGE_BYTES < xml.len() {
         return Err(Error::ResponseTooLarge);
     }
@@ -836,7 +845,23 @@ pub fn parse_avd_workspace_feed_xml(xml: &str) -> Result<AvdWorkspaceFeed, Error
                 let ext = xml_attr(child_tag, "FileExtension")?.unwrap_or_default();
                 if ext.is_empty() || ext.eq_ignore_ascii_case(".rdp") || ext.eq_ignore_ascii_case("rdp") {
                     if let Some(url_str) = xml_attr(child_tag, "URL")? {
-                        let parsed = Url::parse(&url_str).map_err(|_| Error::InvalidXml("invalid ResourceFile URL"))?;
+                        let parsed = match Url::parse(&url_str) {
+                            Ok(u) => u,
+                            Err(url::ParseError::RelativeUrlWithoutBase) if !url_str.starts_with("//") => {
+                                let default_base;
+                                let base = match base_url {
+                                    Some(b) => b,
+                                    None => {
+                                        default_base = Url::parse(AvdCloudEnvironment::Public.base_url())
+                                            .map_err(|_| Error::InvalidXml("invalid ResourceFile URL"))?;
+                                        &default_base
+                                    }
+                                };
+                                base.join(&url_str)
+                                    .map_err(|_| Error::InvalidXml("invalid ResourceFile URL"))?
+                            }
+                            Err(_) => return Err(Error::InvalidXml("invalid ResourceFile URL")),
+                        };
                         validate_avd_service_url(&parsed)
                             .map_err(|_| Error::InvalidXml("untrusted ResourceFile URL"))?;
                         rdp_file_url = Some(parsed);
@@ -1217,8 +1242,9 @@ pub struct VerifiedRdpSignature {
 /// against the platform trust store.
 ///
 /// `picky` does not provide a CMS `SignedData` parser or detached `.rdp` `CTsRdpCertSignature`
-/// policy validator, so CMS `SignedData` structure is read directly while `x509-cert` decodes
-/// certificates and extensions and `picky` verifies RSA, ECDSA, and Ed25519 signatures.
+/// policy validator, and the RustCrypto `cms` crate is not in the workspace dependency tree,
+/// so the fixed CMS `SignedData` / `SignerInfo` envelope is read directly while `x509-cert`
+/// decodes certificates and extensions and `picky` verifies RSA, ECDSA, and Ed25519 signatures.
 /// Unrecognized critical X.509 extensions (including critical `NameConstraints`) are rejected;
 /// non-critical `NameConstraints`, `CertificatePolicies`, and network CRL/OCSP revocation checks
 /// are not evaluated. Platform trust anchors are loaded via `rustls-native-certs` independently
@@ -1249,23 +1275,13 @@ pub fn verify_rdp_signature_at(
 }
 
 fn decode_rdp_bytes(body: &[u8]) -> Result<String, Error> {
-    if let Some((payload, is_le)) = body
-        .strip_prefix(&[0xFF, 0xFE])
-        .map(|b| (b, true))
-        .or_else(|| body.strip_prefix(&[0xFE, 0xFF]).map(|b| (b, false)))
-    {
+    if let Some(payload) = body.strip_prefix(&[0xFF, 0xFE]) {
         if !payload.len().is_multiple_of(2) {
             return Err(Error::InvalidRdpSignature("RDP file has odd UTF-16 byte length"));
         }
         let units: Vec<u16> = payload
             .chunks_exact(2)
-            .map(|chunk| {
-                if is_le {
-                    u16::from_le_bytes([chunk[0], chunk[1]])
-                } else {
-                    u16::from_be_bytes([chunk[0], chunk[1]])
-                }
-            })
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
         String::from_utf16(&units).map_err(|_| Error::InvalidRdpSignature("RDP file is not valid UTF-16"))
     } else {
@@ -1621,9 +1637,9 @@ fn verify_signed_attrs(raw_attributes: &[u8], expected_digest: &[u8]) -> Result<
         rest = next_rest;
     }
 
-    if message_digest_count != 1 || 1 < content_type_count {
+    if message_digest_count != 1 || content_type_count != 1 {
         return Err(Error::InvalidRdpSignature(
-            "PKCS#7 signedAttrs must contain exactly one messageDigest",
+            "PKCS#7 signedAttrs must contain exactly one contentType and one messageDigest",
         ));
     }
     Ok(())
