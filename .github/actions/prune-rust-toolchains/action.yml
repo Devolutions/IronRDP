@@ -11,7 +11,7 @@ runs:
       shell: bash
       run: |
         rustup toolchain install
-        pinned="$(rustup show active-toolchain | cut -d' ' -f1)"
+        pinned="$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)"
         rustup default "$pinned"
         rustup toolchain list --quiet | tr -d '\r' | while read -r toolchain; do
           if [ "$toolchain" != "$pinned" ]; then

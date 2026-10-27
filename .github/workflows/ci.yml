@@ -12,7 +12,7 @@ concurrency:
   # Stacked PRs get two `synchronize` events per push (base and head branch), and a new push makes
   # the previous run obsolete: keep only the latest run per PR. Other events never share a group.
   group: ci-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 env:
   # Disable incremental compilation. CI builds are often closer to from-scratch builds, as changes
