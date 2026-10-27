@@ -6,8 +6,8 @@ description: Judge whether a test's expected value is justified independently of
 A test whose expected value came from the code under test detects change, not bugs.
 For each test, ask whether the expected value can be justified without running the code.
 
-Independent sources: a spec example, an external capture, a hand-derived value, an input the test chose itself and asserts was honored, a named law such as round-trip, a property a document states, such as `encode` writing exactly `size()` bytes, or a reference model.
-Self-derived sources: a snapshot of current output, a value computed through the code or a shared helper, a production constant or message copied into the test, a mock that returns what is then asserted, `is_ok()` or `!is_empty()` on an input that no requirement says must succeed, or a restatement of what a derive or the type system guarantees.
+Independent sources: a spec example, an external capture, a hand-derived value, an input the test chose itself and asserts was honored, a named law such as round-trip, a property an intent, contract, or spec states, such as `encode` writing exactly `size()` bytes, or a reference model.
+Self-derived sources: a snapshot of current output, a value computed through the code or a shared helper, a production constant or message copied into the test, documentation in or generated from the code under test, such as its rustdoc, a trait's included, or an OpenAPI file generated from its annotations, a mock that returns what is then asserted, `is_ok()` or `!is_empty()` on an input that no requirement says must succeed, or a restatement of what a derive or the type system guarantees.
 
 Verify instead of guessing.
 Check comments and `git log -p` for the origin, then check the value against the governing spec section: decode a byte vector field by field and show the breakdown, or cite the specification section that defines the behavior.
@@ -28,7 +28,7 @@ Strong kinds name an independent source, and a test, case, or assertion marked w
 - `contract <path> §<section>`: a `CONTRACT*.md`.
 - `intent <path> §<section>`: a statement in an intent file.
 - `regression <issue or crash file>`: a bug report, as a Jira key such as `DGW-123` or a GitHub issue such as `#123` or `owner/repo#123`, or a fuzz crash file under `fuzz/`.
-- `reference <implementation, capture, or model>`: what another implementation or a reference model does, recorded or compared live.
+- `reference <implementation, capture, or model>`: what another implementation, a capture, or a reference model does, recorded or compared live; never the code under test or its own documentation, because documentation written with the code describes what it does rather than deciding what it must do.
 - `property <law>`: a law of the code under test named by one of `round-trip`, `idempotent`, `involution`, `commutative`, `associative`, or `monotonic`.
 
 Write every path from the repository root, with forward slashes and exact case, such as `crates/gateway-db/INTENT.md`, because markers sit at every depth and a root-relative path reads and resolves the same from each.
@@ -54,6 +54,7 @@ When it checks a property or intention no document states, ask whether and where
 Mark a strong source whenever one decides the value, so a test found through a mutant but decided by a spec is `spec`, because whether a test may go depends on whether a source still requires it, not on how it was found.
 An unmarked test starts as unknown: verify it as above, and turn a citation in another form into the marker it supports.
 A marker is a claim: verify it like any other origin.
+A marker citing the code under test's own documentation is self-derived whatever its kind: re-cite the test to the intent, contract, or spec sentence that decides its value, keep it as `mutant` when `test-pruner` finds it alone catches a fault, or delete it.
 
 ## Review
 

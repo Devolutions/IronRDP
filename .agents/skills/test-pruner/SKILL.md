@@ -21,6 +21,7 @@ A reviewer's request for more mutation evidence falls under the same budget.
 ## Measure
 
 Invoke `test-oracle-reviewer` on every test in scope and record independent, self-derived, or unknown with evidence.
+Record a test whose marker cites the code under test's own documentation, such as its rustdoc, as self-derived, so Decide flags it for removal unless an independent source decides its value or it alone catches a fault.
 The default mutant source is domain mutants written by a fresh-context sub-agent, because a few calibrated domain faults cost minutes where a generic run over the same code costs hours.
 Give it the applicable intent and contract files, the code under test, and `references/domain-mutants.md`, but not the tests, so the faults come from what the code must do rather than from what the tests already check.
 Ask for one patch per fault, each a single plausible mistake, weighted toward critical paths such as validation, cryptography, parsing, and authorization decisions, and as many as the estimate fits in the remaining budget.
