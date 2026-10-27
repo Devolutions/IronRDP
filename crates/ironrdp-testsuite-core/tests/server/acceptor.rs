@@ -14,7 +14,7 @@ use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrappe
 use ironrdp_connector::credssp::CredsspSequence;
 use ironrdp_connector::sspi::credssp::{NStatusCode, TsRequest};
 use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
-use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
+use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult};
 use ironrdp_connector::{DesktopSize, Sequence, Written, encode_x224_packet};
 use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc::{
@@ -853,6 +853,7 @@ struct HandshakeStream {
     incoming: VecDeque<Vec<u8>>,
     outgoing: Rc<RefCell<Vec<Vec<u8>>>>,
     credssp_client: Option<CredsspSequence>,
+    fail_writes: bool,
 }
 
 impl StreamWrapper for HandshakeStream {
@@ -889,6 +890,9 @@ impl FramedWrite for HandshakeStream {
     type WriteAllFut<'write> = Ready<io::Result<()>>;
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+        if self.fail_writes {
+            return ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)));
+        }
         self.outgoing.borrow_mut().push(buf.to_vec());
         if let Some(client) = self.credssp_client.as_mut()
             && buf.len() != 4
@@ -1174,12 +1178,80 @@ async fn accept_finalize_sends_the_error_info_for_other_credentials() {
         .await
         .err()
         .expect("other credentials should fail the handshake");
-    assert!(error.to_string().contains("invalid credentials"));
+    assert!(
+        matches!(error.kind(), ConnectorErrorKind::General),
+        "expected the credentials rejection, got {error}"
+    );
 
     // The Connect Response, the Attach User Confirm and two Channel Join Confirms come first.
     let outgoing = outgoing.borrow();
     assert_eq!(outgoing.len(), 5);
     assert_access_denied(&outgoing[4]);
+}
+
+// oracle: spec MS-RDPBCGR §2.2.5.1 (the Set Error Info PDU is only sent to clients that set
+// RNS_UD_CS_SUPPORT_ERRINFO_PDU)
+// oracle: mutant Client Info step writing the Set Error Info PDU without checking the client supports it
+#[rstest::rstest]
+#[case::no_early_capability_flags(None)]
+#[case::no_error_info_flag(Some(ClientEarlyCapabilityFlags::empty()))]
+#[tokio::test]
+async fn accept_finalize_sends_no_error_info_to_a_client_without_support(
+    #[case] error_info: Option<ClientEarlyCapabilityFlags>,
+) {
+    let mut acceptor = negotiated_acceptor_expecting(
+        SecurityProtocol::SSL,
+        Some(Credentials {
+            username: "mallory".to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        }),
+    );
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: post_credssp_messages(error_info),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+
+    let error = accept_finalize(framed, &mut acceptor)
+        .await
+        .err()
+        .expect("other credentials should fail the handshake");
+    assert!(
+        matches!(error.kind(), ConnectorErrorKind::General),
+        "expected the credentials rejection, got {error}"
+    );
+
+    // Only the Connect Response, the Attach User Confirm and two Channel Join Confirms.
+    assert_eq!(outgoing.borrow().len(), 4);
+}
+
+// oracle: mutant driver returning the error of sending the failing step's PDU instead of the step error
+#[tokio::test]
+async fn accept_begin_reports_the_step_error_when_sending_its_pdu_fails() {
+    let mut acceptor = Acceptor::new(
+        SecurityProtocol::SSL,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        Vec::new(),
+        None,
+    );
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [encode_connection_request(SecurityProtocol::HYBRID)].into(),
+        fail_writes: true,
+        ..HandshakeStream::default()
+    });
+
+    let error = accept_begin(framed, &mut acceptor)
+        .await
+        .err()
+        .expect("a security protocol mismatch should fail the handshake");
+    assert!(
+        matches!(error.kind(), ConnectorErrorKind::Reason(_)),
+        "expected the security protocol mismatch, got {error}"
+    );
 }
 
 #[rstest::rstest]

@@ -243,10 +243,7 @@ where
                 buf.clear();
                 let written = acceptor.encode_access_denied(&mut buf)?;
                 if written != 0 {
-                    framed
-                        .write_all(&buf[..written])
-                        .await
-                        .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+                    send_rejection(&mut framed, &buf[..written]).await;
                 }
                 return Err(error);
             }
@@ -262,10 +259,7 @@ where
             buf.clear();
             let written = acceptor.encode_access_denied(&mut buf)?;
             if written != 0 {
-                framed
-                    .write_all(&buf[..written])
-                    .await
-                    .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+                send_rejection(&mut framed, &buf[..written]).await;
             }
             return Err(error);
         }
@@ -295,6 +289,7 @@ where
     match single_sequence_step_read(framed, acceptor, buf).await {
         Ok(written) => {
             if let Some(response_len) = written.size() {
+                debug_assert_eq!(buf.filled_len(), response_len);
                 trace!(response_len, "Send response");
                 framed
                     .write_all(&buf[..response_len])
@@ -305,15 +300,33 @@ where
         }
         Err(error) => {
             if 0 < buf.filled_len() {
-                trace!(response_len = buf.filled_len(), "Send response of the failed step");
-                // UNTESTED: the step error is returned even when sending the PDU that reports it fails, because it says
-                // why the connection ends and the write error would hide that.
-                if let Err(write_error) = framed.write_all(buf.filled()).await {
-                    debug!(%write_error, "Failed to send the response of the failed step");
-                }
+                // A failing step writes one whole PDU or nothing, so the client never receives a truncated frame.
+                // Only debug builds check this, so a new error path that writes output needs a test driving it here.
+                debug_assert!(
+                    ironrdp_pdu::find_size(buf.filled())
+                        .ok()
+                        .flatten()
+                        .is_some_and(|pdu| pdu.length == buf.filled_len()),
+                    "a failing step wrote something other than one whole PDU"
+                );
+                send_rejection(framed, buf.filled()).await;
             }
             Err(error)
         }
+    }
+}
+
+/// Sends a PDU that tells the client why the server ends the connection.
+///
+/// A failed send is only logged, because the caller's error says why the connection ends and the write error would
+/// hide it.
+async fn send_rejection<S>(framed: &mut Framed<S>, pdu: &[u8])
+where
+    S: FramedWrite,
+{
+    trace!(pdu_len = pdu.len(), "Send rejection");
+    if let Err(error) = framed.write_all(pdu).await {
+        debug!(%error, "Failed to send the rejection");
     }
 }
 
