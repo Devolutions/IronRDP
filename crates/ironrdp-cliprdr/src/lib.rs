@@ -515,6 +515,9 @@ pub struct Cliprdr<R: Role> {
 
     /// FIFO insertion order for [`Self::locked_file_lists`] so that exceeding
     /// [`MAX_LOCKED_FILE_LISTS`] evicts the oldest lock and notifies the backend.
+    ///
+    /// INVARIANT: Contains the exact keys of [`Self::locked_file_lists`] without
+    /// duplicates, ordered from oldest to newest lock.
     locked_file_list_order: VecDeque<u32>,
 
     /// Timeout for individual file contents requests.
@@ -1180,7 +1183,9 @@ impl<R: Role> Cliprdr<R> {
     ///    sends synthetic error responses to the backend
     ///
     /// Incoming snapshots remain locked until the peer sends an Unlock Clipboard Data PDU,
-    /// per [MS-RDPECLIP 3.1.5.3.2, "Processing a Lock Clipboard Data PDU"][locking].
+    /// per [MS-RDPECLIP 3.1.5.3.2, "Processing a Lock Clipboard Data PDU"][locking]
+    /// (bounded by [`MAX_LOCKED_FILE_LISTS`], which evicts the oldest lock as a
+    /// defense-in-depth cap against peers that never unlock).
     ///
     /// [locking]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/597dee8c-ea46-474c-b2de-2a843932b10c
     ///
@@ -1684,13 +1689,13 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                     if self.locked_file_lists.contains_key(&id.0) {
                         self.locked_file_list_order.retain(|&locked_id| locked_id != id.0);
                     } else if MAX_LOCKED_FILE_LISTS <= self.locked_file_lists.len()
-                        && let Some(evicted_id) = self
-                            .locked_file_list_order
-                            .pop_front()
-                            .or_else(|| self.locked_file_lists.keys().next().copied())
+                        // locked_file_list_order holds the exact keys of locked_file_lists.
+                        && let Some(evicted_id) = self.locked_file_list_order.pop_front()
                     {
-                        // Defense-in-depth: bound retained snapshots against peers that never
-                        // unlock by evicting the oldest lock and notifying the backend first.
+                        // Intentional bounded-memory deviation from [MS-RDPECLIP] 3.1.5.3.2:
+                        // when a peer exceeds MAX_LOCKED_FILE_LISTS without unlocking, evict
+                        // the oldest snapshot and notify the backend so later requests for
+                        // the evicted lock fail with CB_RESPONSE_FAIL per 3.1.5.4.6.
                         self.locked_file_lists.remove(&evicted_id);
                         warn!(
                             evicted_clip_data_id = evicted_id,

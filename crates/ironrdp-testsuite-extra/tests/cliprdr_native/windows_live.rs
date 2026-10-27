@@ -973,6 +973,43 @@ fn replacing_a_native_retry_fails_the_displaced_format_request() {
     harness.assert_no_errors();
 }
 
+// oracle: spec MS-RDPECLIP §3.1.5.4.2, §3.1.5.4.3
+#[test]
+#[ignore = "replaces the Windows clipboard contents, set IRONRDP_WIN_CLIPBOARD_LIVE=1 to run"]
+fn subsequent_format_request_fails_an_earlier_deferred_request() {
+    if !enabled() {
+        return;
+    }
+
+    powershell("Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::SetText('retry source')");
+    let harness = Harness::start();
+    harness.synchronize();
+    {
+        wait_until("clipboard can be held by the test thread", || {
+            // SAFETY: Balanced by the guard below on this thread.
+            unsafe { OpenClipboard(None) }.is_ok()
+        });
+        struct ClipboardLock;
+        impl Drop for ClipboardLock {
+            fn drop(&mut self) {
+                // SAFETY: This test thread successfully opened the clipboard.
+                unsafe { CloseClipboard() }.unwrap();
+            }
+        }
+        let _lock = ClipboardLock;
+        harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
+        harness.synchronize();
+        harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
+        harness.synchronize();
+    }
+
+    let first = harness.expect_format_data_response();
+    assert!(first.is_error());
+    let second = harness.expect_format_data_response();
+    assert_eq!(second.to_unicode_string().unwrap(), "retry source");
+    harness.assert_no_errors();
+}
+
 /// Fetches the file list the client advertised, then every file through SIZE and RANGE requests.
 fn fetch_local_files(harness: &Harness) -> Vec<(FileDescriptor, Vec<u8>)> {
     let file_list_format = harness.expect_event(|event| match event {
@@ -1160,6 +1197,8 @@ fn local_bitmap_keeps_pixels_without_synthesized_dibv5() {
     harness.command(LoopbackCommand::Paste(format));
     let response = harness.expect_format_data_response();
     let dib = response.data();
+    assert_eq!(i32::from_le_bytes(dib[4..8].try_into().unwrap()), 2);
+    assert_eq!(i32::from_le_bytes(dib[8..12].try_into().unwrap()), 2);
     assert_eq!(u16::from_le_bytes(dib[14..16].try_into().unwrap()), 32);
     let compression = u32::from_le_bytes(dib[16..20].try_into().unwrap());
     let pixel_offset = match compression {

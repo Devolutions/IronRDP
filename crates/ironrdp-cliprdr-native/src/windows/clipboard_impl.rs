@@ -29,7 +29,7 @@ use crate::windows::clipboard_data_ref::ClipboardDataRef;
 use crate::windows::data_object::{FileFormatIds, RemoteDataObject};
 use crate::windows::file_list::{
     build_local_file_list, decode_file_group_descriptor, fits_without_huge_file_support, is_file_list_format,
-    is_portable_format, is_sendable_descriptor,
+    is_portable_format, is_sendable_descriptor, omit_synthesized_dibv5,
 };
 use crate::windows::local_files::{LocalFileSource, LocalFiles, VirtualFiles, hglobal_data};
 use crate::windows::os_clipboard::OwnedOsClipboard;
@@ -208,16 +208,7 @@ impl WinClipboardImpl {
 
         let mut formats = formats;
         formats.retain(is_portable_format);
-
-        // EnumClipboardFormats lists the source bitmap before its synthesized formats.
-        // Windows can corrupt BI_BITFIELDS pixels when synthesizing CF_DIBV5 from CF_DIB.
-        if formats
-            .iter()
-            .find(|format| matches!(format.id(), ClipboardFormatId::CF_DIB | ClipboardFormatId::CF_DIBV5))
-            .is_some_and(|format| format.id() == ClipboardFormatId::CF_DIB)
-        {
-            formats.retain(|format| format.id() != ClipboardFormatId::CF_DIBV5);
-        }
+        omit_synthesized_dibv5(&mut formats);
 
         let mut filtered_format_ids = formats.iter().map(|f| f.id()).collect::<HashSet<_, _>>();
         filter_format_ids(&mut filtered_format_ids);
@@ -528,15 +519,19 @@ impl WinClipboardImpl {
         self.remote_data_object = None;
     }
 
+    fn fail_deferred_format_request(&mut self) {
+        if matches!(self.retry_message, Some(BackendEvent::FormatDataRequest(_))) {
+            self.retry_message = None;
+            // Displacing a deferred format request must not leave the remote request unanswered.
+            self.transport
+                .send(ClipboardMessage::SendFormatData(FormatDataResponse::new_error()));
+        }
+    }
+
     fn handle_event(&mut self, event: BackendEvent) {
         let result = match &event {
             BackendEvent::FormatDataRequest(request) => {
-                if matches!(self.retry_message, Some(BackendEvent::FormatDataRequest(_))) {
-                    self.retry_message = None;
-                    // Fail an earlier deferred request before handling a newer one so responses stay in order.
-                    self.transport
-                        .send(ClipboardMessage::SendFormatData(FormatDataResponse::new_error()));
-                }
+                self.fail_deferred_format_request();
                 self.on_format_data_request(request)
             }
             BackendEvent::FormatDataResponse(_) | BackendEvent::RemoteFileList { .. } => {
@@ -612,14 +607,8 @@ impl WinClipboardImpl {
                 if self.attempt < MAX_PROCESSING_ATTEMPTS {
                     self.attempt += 1;
 
-                    if matches!(
-                        self.retry_message.replace(event),
-                        Some(BackendEvent::FormatDataRequest(_))
-                    ) {
-                        // Retry coalescing must not leave a remote format request unanswered.
-                        self.transport
-                            .send(ClipboardMessage::SendFormatData(FormatDataResponse::new_error()));
-                    }
+                    self.fail_deferred_format_request();
+                    self.retry_message = Some(event);
 
                     // SAFETY: `SetTimer` is always safe to call when `hwnd` is a valid window handle
                     unsafe {

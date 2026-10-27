@@ -609,3 +609,47 @@ fn request_naming_a_released_lock_fails() {
     ));
     assert!(timed_backend(&cliprdr).file_requests.is_empty());
 }
+
+// oracle: spec MS-RDPECLIP §3.1.5.3.2, §3.1.5.3.4, §3.1.5.4.6
+#[test]
+fn locked_file_list_survives_arbitrary_idle_intervals_and_clipboard_replacements() {
+    use proptest::prelude::*;
+
+    proptest!(ProptestConfig::with_cases(32), |(
+        steps in proptest::collection::vec((0u64..300_000, any::<bool>()), 1..12),
+    )| {
+        let mut cliprdr = locked_file_copy_client();
+        for (idx, (advance_ms, replace_clipboard)) in steps.into_iter().enumerate() {
+            if replace_clipboard {
+                cliprdr
+                    .initiate_file_copy(vec![FileDescriptor::new("next.txt").with_file_size(40)])
+                    .unwrap();
+            } else {
+                cliprdr.initiate_copy(&[]).unwrap();
+            }
+            timed_backend(&cliprdr).advance_ms(advance_ms);
+            cliprdr.drive_timeouts().unwrap();
+            prop_assert!(timed_backend(&cliprdr).unlocks.lock().unwrap().is_empty());
+
+            let stream_id = u32::try_from(idx + 1).unwrap();
+            let request = FileContentsRequest {
+                stream_id,
+                index: 1,
+                flags: FileContentsFlags::RANGE,
+                position: 0,
+                requested_size: 20,
+                data_id: Some(42),
+            };
+            let messages = cliprdr
+                .process(&encode_vec(&ClipboardPdu::FileContentsRequest(request.clone())).unwrap())
+                .unwrap();
+            prop_assert!(messages.is_empty());
+            prop_assert_eq!(timed_backend(&cliprdr).file_requests.last(), Some(&request));
+        }
+
+        cliprdr
+            .process(&encode_vec(&ClipboardPdu::UnlockData(LockDataId(42))).unwrap())
+            .unwrap();
+        prop_assert_eq!(&*timed_backend(&cliprdr).unlocks.lock().unwrap(), &[42]);
+    });
+}
