@@ -415,10 +415,57 @@ fn a_message_without_a_frame_begin_is_rejected() {
 }
 
 #[test]
+fn quantization_rounds_at_half_step_boundaries_for_both_signs() {
+    // oracle: spec MS-RDPRFX §3.1.8.1.5 (quantization divides coefficients by the sub-band scale
+    // value and rounds; for quant=6 the 11.5 fixed-point shift is 5, so scale=32 and half=16)
+    let quant = Quant {
+        ll3: 6,
+        lh3: 6,
+        hl3: 6,
+        hh3: 6,
+        lh2: 6,
+        hl2: 6,
+        hh2: 6,
+        lh1: 6,
+        hl1: 6,
+        hh1: 6,
+    };
+    let samples = [
+        (i16::MIN, -1024),
+        (-49, -2),
+        (-48, -1),
+        (-32, -1),
+        (-31, -1),
+        (-17, -1),
+        (-16, 0),
+        (-1, 0),
+        (0, 0),
+        (15, 0),
+        (16, 1),
+        (31, 1),
+        (32, 1),
+        (47, 1),
+        (48, 2),
+        (i16::MAX, 1024),
+    ];
+
+    let mut buffer = [0i16; 4096];
+    for (idx, (input, _)) in samples.iter().copied().enumerate() {
+        buffer[idx] = input;
+    }
+
+    ironrdp_graphics::quantization::encode(&mut buffer, &quant);
+
+    for (idx, (input, expected)) in samples.iter().copied().enumerate() {
+        assert_eq!(buffer[idx], expected, "input={input}");
+    }
+}
+
+#[test]
 fn a_smooth_gradient_tile_round_trips_without_negative_quantization_spikes() {
     // oracle: spec MS-RDPRFX §3.1.8.1.5 (quantization divides coefficients by the sub-band scale
-    // value; small negative detail coefficients on a decreasing gradient must quantize to zero
-    // instead of floor-shifting to -1)
+    // value and rounds; small negative detail coefficients on a decreasing gradient must round to
+    // zero instead of floor-shifting to -1)
     let mut input = [0u8; TILE_RGBA_LEN];
     for y in 0..64usize {
         for x in 0..64usize {
