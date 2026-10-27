@@ -1,6 +1,6 @@
 //! STUN Binding probes for opt-in UDP server-reflexive address discovery.
 //!
-//! This implements the unauthenticated Binding method from [RFC 8489].
+//! This implements the unauthenticated Binding method from [RFC 8489] without external STUN crate dependencies so default builds remain lightweight.
 //! It does not implement ICE connectivity checks, TURN, or candidate signaling.
 //!
 //! [RFC 8489]: https://www.rfc-editor.org/rfc/rfc8489
@@ -56,7 +56,8 @@ impl core::error::Error for StunError {
 
 /// Sends one STUN Binding request and returns its server-reflexive address.
 ///
-/// The caller resolves and selects the STUN server, binds `socket`, and supplies a fresh 96-bit transaction ID.
+/// The caller resolves and selects the STUN server, binds `socket`, and supplies a fresh CSPRNG-generated 96-bit transaction ID.
+/// Accepting `transaction_id` from the caller keeps the default feature set free of a mandatory RNG dependency and lets callers correlate or retry probes.
 /// The socket remains available for [`crate::connect_udp_with_socket`], allowing an embedder to attempt RDPEUDP2 on the same local socket after candidate gathering.
 ///
 /// The call waits only for a response from `stun_server` with the matching transaction ID.
@@ -269,18 +270,19 @@ mod tests {
         value
     }
 
-    // oracle: spec RFC 8489 §14.2
+    // RFC 5769 Section 2.2 IPv4 Binding response test vector:
+    // transaction ID b7 e7 a7 01 bc 34 d6 86 fa 87 df ae and
+    // XOR-MAPPED-ADDRESS value 00 01 a1 47 e1 12 a6 43 decode to 192.0.2.1:32853.
+    // oracle: spec RFC 5769 §2.2
     #[test]
     fn decodes_xor_mapped_ipv4_address() {
-        let response = binding_response(
-            XOR_MAPPED_ADDRESS,
-            &xor_mapped_v4(Ipv4Addr::new(203, 0, 113, 10), 49_152),
-            TRANSACTION_ID,
-        );
+        const RFC5769_TX_ID: [u8; 12] = [0xb7, 0xe7, 0xa7, 0x01, 0xbc, 0x34, 0xd6, 0x86, 0xfa, 0x87, 0xdf, 0xae];
+        const RFC5769_XOR_MAPPED_V4: [u8; 8] = [0x00, 0x01, 0xa1, 0x47, 0xe1, 0x12, 0xa6, 0x43];
+        let response = binding_response(XOR_MAPPED_ADDRESS, &RFC5769_XOR_MAPPED_V4, RFC5769_TX_ID);
 
         assert_eq!(
-            parse_binding_success_response(&response, TRANSACTION_ID).expect("valid STUN response"),
-            "203.0.113.10:49152".parse().expect("valid socket address")
+            parse_binding_success_response(&response, RFC5769_TX_ID).expect("valid STUN response"),
+            "192.0.2.1:32853".parse().expect("valid socket address")
         );
     }
 
@@ -295,20 +297,29 @@ mod tests {
         );
     }
 
-    // oracle: spec RFC 8489 §14.2
+    // RFC 5769 Section 2.2 IPv6 Binding response test vector:
+    // transaction ID b7 e7 a7 01 bc 34 d6 86 fa 87 df ae and
+    // XOR-MAPPED-ADDRESS value 00 02 a1 47 01 13 a9 fa a5 d3 f1 79 bc 25 f4 b5 be d2 b9 d9
+    // decode to [2001:db8:1234:5678:11:2233:4455:6677]:32853.
+    // oracle: spec RFC 5769 §2.2
     #[test]
     fn decodes_xor_mapped_ipv6_address() {
-        let address = Ipv6Addr::new(0x2001, 0xdb8, 0x1234, 0x5678, 0x9abc, 0xdef0, 0x1122, 0x3344);
-        let value = xor_mapped_v6(address, 49_152, TRANSACTION_ID);
-        let response = binding_response(XOR_MAPPED_ADDRESS, &value, TRANSACTION_ID);
+        const RFC5769_TX_ID: [u8; 12] = [0xb7, 0xe7, 0xa7, 0x01, 0xbc, 0x34, 0xd6, 0x86, 0xfa, 0x87, 0xdf, 0xae];
+        const RFC5769_XOR_MAPPED_V6: [u8; 20] = [
+            0x00, 0x02, 0xa1, 0x47, 0x01, 0x13, 0xa9, 0xfa, 0xa5, 0xd3, 0xf1, 0x79, 0xbc, 0x25, 0xf4, 0xb5, 0xbe, 0xd2,
+            0xb9, 0xd9,
+        ];
+        let response = binding_response(XOR_MAPPED_ADDRESS, &RFC5769_XOR_MAPPED_V6, RFC5769_TX_ID);
 
         assert_eq!(
-            parse_binding_success_response(&response, TRANSACTION_ID).expect("valid STUN response"),
-            SocketAddr::new(address.into(), 49_152)
+            parse_binding_success_response(&response, RFC5769_TX_ID).expect("valid STUN response"),
+            "[2001:db8:1234:5678:11:2233:4455:6677]:32853"
+                .parse()
+                .expect("valid socket address")
         );
     }
 
-    // oracle: mutant fallback MAPPED-ADDRESS overrides XOR-MAPPED-ADDRESS
+    // oracle: spec RFC 8489 §14.2
     #[test]
     fn prefers_xor_mapped_address_over_mapped_address() {
         let fallback = [0, 1, 0x13, 0x88, 192, 0, 2, 1];
@@ -331,14 +342,30 @@ mod tests {
 
     // oracle: spec RFC 8489 §5
     #[test]
-    fn rejects_truncated_attributes_and_mismatched_transaction_ids() {
+    fn rejects_truncated_attribute_value() {
         let valid = binding_response(
             XOR_MAPPED_ADDRESS,
             &xor_mapped_v4(Ipv4Addr::new(203, 0, 113, 10), 49_152),
             TRANSACTION_ID,
         );
-        assert!(parse_binding_success_response(&valid[..valid.len() - 1], TRANSACTION_ID).is_err());
-        assert!(parse_binding_success_response(&valid, [0; 12]).is_err());
+        assert!(
+            parse_binding_success_response(&valid[..valid.len() - 1], TRANSACTION_ID).is_err(),
+            "truncated STUN attribute value must be rejected"
+        );
+    }
+
+    // oracle: spec RFC 8489 §5
+    #[test]
+    fn rejects_mismatched_transaction_id() {
+        let valid = binding_response(
+            XOR_MAPPED_ADDRESS,
+            &xor_mapped_v4(Ipv4Addr::new(203, 0, 113, 10), 49_152),
+            TRANSACTION_ID,
+        );
+        assert!(
+            parse_binding_success_response(&valid, [0; 12]).is_err(),
+            "mismatched STUN transaction ID must be rejected"
+        );
     }
 
     // RFC 8489 Section 14: "only the first occurrence needs to be processed by a receiver, and any duplicates MAY be ignored by a receiver."
@@ -362,10 +389,9 @@ mod tests {
         );
     }
 
-    // RFC 8489 Section 6.3.3: "If the success response contains unknown comprehension-required attributes, the response is discarded and the transaction is considered to have failed."
-    // oracle: spec RFC 8489 §6.3.3
+    // oracle: spec RFC 8489 §14
     #[test]
-    fn rejects_unknown_comprehension_required_attributes_and_ignores_optional_ones() {
+    fn ignores_unknown_comprehension_optional_attributes() {
         let mapped = xor_mapped_v4(Ipv4Addr::new(203, 0, 113, 10), 49_152);
         let mut with_optional = binding_response(0x8022, b"test", TRANSACTION_ID);
         with_optional.extend_from_slice(&XOR_MAPPED_ADDRESS.to_be_bytes());
@@ -380,7 +406,14 @@ mod tests {
             parse_binding_success_response(&with_optional, TRANSACTION_ID).expect("valid STUN response"),
             "203.0.113.10:49152".parse().expect("valid socket address")
         );
+    }
 
+    // RFC 8489 Section 6.3.3: "If the success response contains unknown comprehension-required attributes, the response is discarded and the transaction is considered to have failed."
+    // oracle: spec RFC 8489 §6.3.3
+    #[test]
+    fn rejects_unknown_comprehension_required_attributes() {
+        let mapped = xor_mapped_v4(Ipv4Addr::new(203, 0, 113, 10), 49_152);
+        let mapped_length = u16::try_from(mapped.len()).expect("test attribute length fits in the STUN field");
         let mut with_required = binding_response(0x7FFF, b"test", TRANSACTION_ID);
         with_required.extend_from_slice(&XOR_MAPPED_ADDRESS.to_be_bytes());
         with_required.extend_from_slice(&mapped_length.to_be_bytes());
@@ -389,7 +422,10 @@ mod tests {
             .expect("test message length fits in the STUN field");
         with_required[2..4].copy_from_slice(&required_body_length.to_be_bytes());
 
-        assert!(parse_binding_success_response(&with_required, TRANSACTION_ID).is_err());
+        assert!(
+            parse_binding_success_response(&with_required, TRANSACTION_ID).is_err(),
+            "unknown comprehension-required STUN attribute must be rejected"
+        );
     }
 
     // oracle: spec RFC 8489 §14.1
@@ -405,33 +441,37 @@ mod tests {
         );
     }
 
-    // oracle: reference RFC 8489 §14.2 XOR-MAPPED-ADDRESS encoder
+    // oracle: reference RFC 8489 §14.2 XOR-MAPPED-ADDRESS IPv4 encoder
     proptest! {
         #[test]
-        fn roundtrips_xor_mapped_socket_addresses(
-            is_v6 in any::<bool>(),
+        fn roundtrips_xor_mapped_ipv4_socket_addresses(
+            octets in any::<[u8; 4]>(),
+            port in any::<u16>(),
+            transaction_id in any::<[u8; 12]>(),
+        ) {
+            let address = Ipv4Addr::from(octets);
+            let value = xor_mapped_v4(address, port);
+            let response = binding_response(XOR_MAPPED_ADDRESS, &value, transaction_id);
+            let decoded = parse_binding_success_response(&response, transaction_id)
+                .expect("valid IPv4 XOR-MAPPED-ADDRESS response");
+            prop_assert_eq!(decoded, SocketAddr::new(address.into(), port));
+        }
+    }
+
+    // oracle: reference RFC 8489 §14.2 XOR-MAPPED-ADDRESS IPv6 encoder
+    proptest! {
+        #[test]
+        fn roundtrips_xor_mapped_ipv6_socket_addresses(
             octets in any::<[u8; 16]>(),
             port in any::<u16>(),
             transaction_id in any::<[u8; 12]>(),
         ) {
-            let expected = if is_v6 {
-                let address = Ipv6Addr::from(octets);
-                let value = xor_mapped_v6(address, port, transaction_id);
-                let response = binding_response(XOR_MAPPED_ADDRESS, &value, transaction_id);
-                let decoded = parse_binding_success_response(&response, transaction_id)
-                    .expect("valid IPv6 XOR-MAPPED-ADDRESS response");
-                prop_assert_eq!(decoded, SocketAddr::new(address.into(), port));
-                decoded
-            } else {
-                let address = Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
-                let value = xor_mapped_v4(address, port);
-                let response = binding_response(XOR_MAPPED_ADDRESS, &value, transaction_id);
-                let decoded = parse_binding_success_response(&response, transaction_id)
-                    .expect("valid IPv4 XOR-MAPPED-ADDRESS response");
-                prop_assert_eq!(decoded, SocketAddr::new(address.into(), port));
-                decoded
-            };
-            prop_assert_eq!(expected.port(), port);
+            let address = Ipv6Addr::from(octets);
+            let value = xor_mapped_v6(address, port, transaction_id);
+            let response = binding_response(XOR_MAPPED_ADDRESS, &value, transaction_id);
+            let decoded = parse_binding_success_response(&response, transaction_id)
+                .expect("valid IPv6 XOR-MAPPED-ADDRESS response");
+            prop_assert_eq!(decoded, SocketAddr::new(address.into(), port));
         }
     }
 

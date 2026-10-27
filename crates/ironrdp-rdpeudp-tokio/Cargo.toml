@@ -21,9 +21,11 @@ doctest = false
 # `ClientConfig::builder()` is called.
 rustls-aws-lc-rs = ["tokio-rustls/aws_lc_rs"]
 rustls-ring = ["tokio-rustls/ring"]
-# `webrtc-ice` 0.17 pulls `webrtc-util` 0.17 and `webrtc-mdns` 0.17, which
-# transitively depend on `nix` 0.26 and `socket2` 0.5 alongside the workspace's
-# newer major versions until upstream `webrtc-rs` updates its dependencies.
+# `src/stun.rs` remains un-gated and dependency-free so default builds do not
+# pull in `webrtc-ice`/`stun`. Enabling `ice` pulls `webrtc-util` 0.17 and
+# `webrtc-mdns` 0.17, which transitively depend on `nix` 0.26 and `socket2` 0.5
+# alongside the workspace's newer major versions until upstream `webrtc-rs`
+# updates its dependencies.
 ice = ["dep:webrtc-ice", "dep:webrtc-util"]
 
 [dependencies]

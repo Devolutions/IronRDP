@@ -214,7 +214,7 @@ impl Error for IceTransportError {
     }
 }
 
-/// Gather host candidates and, when configured, STUN server-reflexive and TURN relay candidates.
+/// Gather host candidates and, when configured, STUN server-reflexive and TURN relay candidates ([RFC 8445] §5.1.1 "Gathering Candidates").
 ///
 /// The caller must signal the returned credentials and candidates to a remote ICE agent using its own established signaling contract.
 /// This function gathers UDP candidates only; it does not implement application signaling.
@@ -222,6 +222,8 @@ impl Error for IceTransportError {
 /// # Errors
 ///
 /// Returns [`IceTransportError::InvalidConfiguration`] for unsupported server URLs or input limits, [`IceTransportError::GatheringTimeout`] if gathering exceeds `config.timeout`, and [`IceTransportError::Agent`] if the ICE agent rejects its configuration or encounters a network error.
+///
+/// [RFC 8445]: https://www.rfc-editor.org/rfc/rfc8445#section-5.1.1
 pub async fn gather_ice_candidates(config: IceGatherConfig) -> Result<IceGatheredCandidates, IceTransportError> {
     gather_ice_candidates_with_types(
         config,
@@ -253,6 +255,7 @@ async fn gather_ice_candidates_with_types(
         candidate_types,
         network_types: vec![NetworkType::Udp4, NetworkType::Udp6],
         multicast_dns_mode: MulticastDnsMode::Disabled,
+        include_loopback: cfg!(test),
         ..AgentConfig::default()
     };
 
@@ -309,10 +312,13 @@ async fn gather_ice_candidates_with_types(
     })
 }
 
-/// Establish an RDPEUDP2 transport over the nominated ICE candidate pair.
+/// Establish an RDPEUDP2 transport over the nominated ICE candidate pair ([RFC 8445] §6 "Performing Connectivity Checks").
 ///
 /// ICE uses the caller-supplied remote credentials and candidate attribute values.
+/// `config.server_addr` is replaced with the nominated ICE peer address while `config.tls.certificate_validation_endpoint` is preserved as configured.
 /// The returned transport keeps the ICE agent alive for consent freshness, TURN allocation maintenance, and ongoing data transfer.
+///
+/// [RFC 8445]: https://www.rfc-editor.org/rfc/rfc8445#section-6
 pub async fn connect_udp_with_ice(
     config: UdpTransportConfig,
     local: IceGatheredCandidates,
@@ -323,9 +329,6 @@ pub async fn connect_udp_with_ice(
     let (io, agent) = connect_ice_candidates(local, remote, role, timeout).await?;
     let peer = io.peer_addr().ok_or(IceTransportError::NoSelectedCandidatePair)?;
     let mut config = config;
-    if config.tls.certificate_validation_endpoint == config.server_addr.to_string() {
-        config.tls.certificate_validation_endpoint = peer.to_string();
-    }
     config.server_addr = peer;
     let mut transport = connect_udp_with_datagram_io(config, io)
         .await
@@ -334,19 +337,20 @@ pub async fn connect_udp_with_ice(
     Ok(transport)
 }
 
-/// Accept an RDPEUDP2 transport over the nominated ICE candidate pair.
+/// Accept an RDPEUDP2 transport over the nominated ICE candidate pair ([RFC 8445] §6 "Performing Connectivity Checks").
 ///
 /// This variant is useful to ICE-capable RDP servers and local test peers.
 /// Existing [`crate::accept_udp`] remains the direct, non-ICE path.
+///
+/// [RFC 8445]: https://www.rfc-editor.org/rfc/rfc8445#section-6
 pub async fn accept_udp_with_ice(
+    config: UdpAcceptConfig,
     local: IceGatheredCandidates,
     remote: RemoteIceDescription,
     role: IceRole,
     timeout: Duration,
-    config: UdpAcceptConfig,
 ) -> Result<UdpTransport, IceTransportError> {
-    validate_timeout(config.accept_timeout)
-        .map_err(|_| IceTransportError::InvalidConfiguration("accept timeout must be between 1 ms and 120 s"))?;
+    validate_timeout(config.accept_timeout)?;
     let accept_timeout = config.accept_timeout;
     let (io, agent) = connect_ice_candidates(local, remote, role, timeout).await?;
     let mut transport = tokio::time::timeout(accept_timeout, accept_udp_with_datagram_io(io, config))
@@ -783,11 +787,11 @@ mod tests {
                     Duration::from_secs(10),
                 ),
                 accept_udp_with_ice(
+                    server_config,
                     server_local,
                     server_remote,
                     IceRole::Controlled,
                     Duration::from_secs(10),
-                    server_config,
                 )
             )
         })
@@ -946,11 +950,11 @@ mod tests {
                     Duration::from_secs(20),
                 ),
                 accept_udp_with_ice(
+                    server_config,
                     server_local,
                     server_remote,
                     IceRole::Controlled,
                     Duration::from_secs(20),
-                    server_config,
                 )
             );
             client_result?;
