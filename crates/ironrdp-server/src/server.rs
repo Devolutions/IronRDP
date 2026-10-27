@@ -5239,7 +5239,6 @@ impl RdpServer {
                 CapabilitySet::Bitmap(b) => {
                     if !b.desktop_resize_flag {
                         debug!("Desktop resize is not supported by the client");
-                        continue;
                     }
 
                     let client_size = DesktopSize {
@@ -5250,12 +5249,12 @@ impl RdpServer {
 
                     // It's problematic when the client didn't resize, as we send bitmap updates that don't fit.
                     // The client will likely drop the connection.
-                    if client_size.width < display_size.width || client_size.height < display_size.height {
+                    if (!b.desktop_resize_flag && client_size != display_size)
+                        || client_size.width < display_size.width
+                        || client_size.height < display_size.height
+                    {
                         // TODO: we may have different behaviour instead, such as clipping or scaling?
-                        warn!(
-                            "Client size doesn't fit the server size: {:?} < {:?}",
-                            client_size, display_size
-                        );
+                        warn!(?client_size, ?display_size, "Client size differs from the server size");
                     }
                 }
                 CapabilitySet::SurfaceCommands(c) => {
