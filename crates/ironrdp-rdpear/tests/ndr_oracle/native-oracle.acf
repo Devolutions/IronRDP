@@ -1,0 +1,7 @@
+interface NativeRdpearOracle
+{
+    typedef [encode, decode] PREQUEST;
+    typedef [encode, decode] POUTPUT;
+    typedef [encode, decode] PNREQUEST;
+    typedef [encode, decode] PNOUTPUT;
+}

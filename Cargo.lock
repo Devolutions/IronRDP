@@ -2928,8 +2928,10 @@ name = "ironrdp-connector"
 version = "0.12.0"
 dependencies = [
  "ironrdp-core 0.3.1",
+ "ironrdp-dvc",
  "ironrdp-error 0.2.1",
  "ironrdp-pdu",
+ "ironrdp-rdpear",
  "ironrdp-svc",
  "picky",
  "picky-asn1-der",
@@ -3103,6 +3105,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
+ "ironrdp-rdpear",
  "ironrdp-rdpel",
  "ironrdp-rdpemt",
  "ironrdp-rdpeudp",
@@ -3257,6 +3260,16 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-svc",
  "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpear"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.3.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
 ]
 
 [[package]]
@@ -3588,6 +3601,7 @@ dependencies = [
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr",
  "ironrdp-rdpeai",
+ "ironrdp-rdpear",
  "ironrdp-rdpecam",
  "ironrdp-rdpegt",
  "ironrdp-rdpei",
@@ -3631,6 +3645,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
  "ironrdp-cliprdr-native",
+ "ironrdp-connector",
  "ironrdp-core 0.3.1",
  "ironrdp-daemon",
  "ironrdp-dvc",

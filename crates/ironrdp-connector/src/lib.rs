@@ -10,6 +10,15 @@ mod connection_finalization;
 pub mod credssp;
 mod entra;
 mod license_exchange;
+#[cfg(all(feature = "remote-guard", not(feature = "__test")))]
+#[expect(
+    unreachable_pub,
+    reason = "items are pub for the integration test suite under the __test feature"
+)]
+mod remote_guard;
+#[cfg(all(feature = "remote-guard", feature = "__test"))]
+#[doc(hidden)]
+pub mod remote_guard;
 mod server_name;
 
 use core::any::Any;

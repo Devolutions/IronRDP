@@ -144,9 +144,16 @@ The crate forwards only location data supplied by its caller and performs no loc
 RDPEWA dynamic virtual channel for WebAuthn redirection as described in MS-RDPEWA.
 The Windows backend lives in [`crates/ironrdp-rdpewa-native`](./crates/ironrdp-rdpewa-native).
 
+#### [`crates/ironrdp-rdpear`](./crates/ironrdp-rdpear)
+
+Authentication-redirection dynamic channel framing, borrowed DER inner-packet codecs, portable NDR wire profiles, and an encrypted-payload backend boundary as described in MS-RDPEAR.
+The crate performs no authentication or I/O and does not enable Remote Credential Guard by itself.
+
 #### [`crates/ironrdp-connector`](./crates/ironrdp-connector)
 
 State machines to drive an RDP connection sequence.
+The experimental `remote-guard` feature owns the SSPI-to-RDPEAR backend and moves a completed CredSSP context into the authentication DVC without adding authentication dependencies to `ironrdp-rdpear`.
+See the connector README for supported operations and interoperability limits.
 
 #### [`crates/ironrdp-session`](./crates/ironrdp-session)
 

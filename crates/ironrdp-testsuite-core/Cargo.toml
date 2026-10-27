@@ -17,6 +17,7 @@ test = false
 __bench = ["dep:visibility"]
 __test = ["dep:visibility"]
 openh264-bundled = ["ironrdp-egfx/openh264-bundled", "dep:openh264"]
+remote-guard = ["ironrdp-connector/remote-guard"]
 
 [[test]]
 name = "integration_tests_core"
@@ -46,7 +47,7 @@ ironrdp-acceptor.path = "../ironrdp-acceptor"
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-bulk.path = "../ironrdp-bulk"
-ironrdp-connector.path = "../ironrdp-connector"
+ironrdp-connector = { path = "../ironrdp-connector", features = ["__test"] }
 ironrdp-displaycontrol.path = "../ironrdp-displaycontrol"
 ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-echo.path = "../ironrdp-echo"
@@ -64,6 +65,7 @@ ironrdp-rdpecam = { path = "../ironrdp-rdpecam" }
 ironrdp-rdpegt.path = "../ironrdp-rdpegt"
 ironrdp-rdpevor.path = "../ironrdp-rdpevor"
 ironrdp-rdpel.path = "../ironrdp-rdpel"
+ironrdp-rdpear.path = "../ironrdp-rdpear"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
 ironrdp-rdpeusb.path = "../ironrdp-rdpeusb"

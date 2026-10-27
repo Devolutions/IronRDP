@@ -99,6 +99,14 @@ pub trait DvcProcessor: AsAny + Send {
     /// The name of the channel, e.g. "Microsoft::Windows::RDS::DisplayControl"
     fn channel_name(&self) -> &str;
 
+    /// Returns the maximum complete, reassembled message size accepted by this channel.
+    ///
+    /// This limit is checked before DVC fragments are retained for reassembly.
+    /// `None` preserves the historical behavior without a message-size limit.
+    fn max_message_size(&self) -> Option<usize> {
+        None
+    }
+
     /// Returns any messages that should be sent immediately
     /// upon the channel being created.
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>>;

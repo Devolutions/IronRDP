@@ -442,6 +442,14 @@ pub struct ClientConnector {
     /// Only accumulated while a window is open, since a total with no interval to
     /// divide it by is not a measurement of anything.
     connect_time_bw_bytes: u32,
+    remote_guard: bool,
+    remote_guard_ready: bool,
+    // None disables NTLM; Some(None) binds it to the configured identity.
+    #[cfg(feature = "remote-guard")]
+    remote_guard_ntlm: Option<Option<sspi::rcg::NtlmRedirectionNames>>,
+    // False rejects Kerberos operations on the redirection channel, restricting the session to NTLM.
+    #[cfg(feature = "remote-guard")]
+    remote_guard_kerberos: bool,
 }
 
 impl ClientConnector {
@@ -461,6 +469,12 @@ impl ClientConnector {
             redirection_password_cookie: None,
             connect_time_bw_started_at: None,
             connect_time_bw_bytes: 0,
+            remote_guard: false,
+            remote_guard_ready: false,
+            #[cfg(feature = "remote-guard")]
+            remote_guard_ntlm: None,
+            #[cfg(feature = "remote-guard")]
+            remote_guard_kerberos: false,
         }
     }
 
@@ -498,6 +512,146 @@ impl ClientConnector {
         let written = crate::entra::write_assertion(assertion, output)?;
         self.state = ClientConnectorState::EntraAuthWaitResult;
         Ok(written)
+    }
+
+    /// Enables experimental, Kerberos-only Remote Credential Guard.
+    ///
+    /// Supply all other dynamic channels in `drdynvc`; do not attach a second DRDYNVC carrier.
+    /// Both carrier and authentication-message reassembly are capped at 1 MiB.
+    #[cfg(feature = "remote-guard")]
+    pub fn with_remote_guard(mut self, drdynvc: ironrdp_dvc::DrdynvcClient) -> ConnectorResult<Self> {
+        if !matches!(self.state, ClientConnectorState::ConnectionInitiationSendRequest)
+            || self.remote_guard
+            || self.entra_auth
+            || !self.config.enable_credssp
+            || self.auto_reconnect_cookie.is_some()
+        {
+            return Err(general_err!("RCG requires a fresh CredSSP connection"));
+        }
+        if self.static_channels.len() >= MAX_STATIC_CHANNELS
+            || self
+                .static_channels
+                .get_by_channel_name_key(&ironrdp_dvc::DrdynvcClient::NAME)
+                .is_some()
+            || drdynvc.has_channel_name(ironrdp_rdpear::CHANNEL_NAME)
+        {
+            return Err(general_err!(
+                "RCG channel registration conflicts with existing channels"
+            ));
+        }
+        self.attach_static_channel(drdynvc.with_max_transport_message_size(crate::remote_guard::MAX_MESSAGE_SIZE));
+        self.remote_guard = true;
+        self.remote_guard_kerberos = true;
+        Ok(self)
+    }
+
+    /// Enables experimental RCG with NTLMv2 redirection in addition to Kerberos.
+    ///
+    /// Initial authentication still requires Kerberos.
+    /// `names` optionally binds redirected NTLM requests to an explicit SAM user and domain.
+    /// `None` uses the configured authentication identity without guessing aliases.
+    /// Identities without an NT password hash omit the NTLM supplemental credential.
+    #[cfg(feature = "remote-guard")]
+    pub fn with_remote_guard_ntlm(
+        self,
+        drdynvc: ironrdp_dvc::DrdynvcClient,
+        names: Option<sspi::rcg::NtlmRedirectionNames>,
+    ) -> ConnectorResult<Self> {
+        let mut connector = self.with_remote_guard(drdynvc)?;
+        connector.remote_guard_ntlm = Some(names);
+        Ok(connector)
+    }
+
+    /// Enables experimental RCG restricted to NTLMv2 redirection (CredSSP `NTLM` equivalent).
+    ///
+    /// Kerberos still performs the mandatory initial logon, but Kerberos operations on the
+    /// redirection channel are rejected so remote Kerberos attempts fall back to NTLMv2.
+    /// `names` binds redirected NTLM requests exactly as [`Self::with_remote_guard_ntlm`].
+    #[cfg(feature = "remote-guard")]
+    pub fn with_remote_guard_ntlm_only(
+        self,
+        drdynvc: ironrdp_dvc::DrdynvcClient,
+        names: Option<sspi::rcg::NtlmRedirectionNames>,
+    ) -> ConnectorResult<Self> {
+        let mut connector = self.with_remote_guard_ntlm(drdynvc, names)?;
+        connector.remote_guard_kerberos = false;
+        Ok(connector)
+    }
+
+    #[cfg(feature = "remote-guard")]
+    pub(crate) fn remote_guard_ntlm(&self) -> Option<Option<sspi::rcg::NtlmRedirectionNames>> {
+        self.remote_guard_ntlm.clone()
+    }
+
+    #[cfg(all(feature = "__test", feature = "remote-guard"))]
+    #[doc(hidden)]
+    pub fn __test_remote_guard_ntlm(&self) -> Option<Option<sspi::rcg::NtlmRedirectionNames>> {
+        self.remote_guard_ntlm()
+    }
+
+    #[cfg(all(feature = "__test", feature = "remote-guard"))]
+    #[doc(hidden)]
+    pub fn __test_remote_guard_kerberos(&self) -> bool {
+        self.remote_guard_kerberos
+    }
+
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn __test_auto_reconnect_cookie(&self) -> Option<&ServerAutoReconnect> {
+        self.auto_reconnect_cookie.as_ref()
+    }
+
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn __test_static_channel_count(&self, name: gcc::ChannelName) -> usize {
+        self.static_channels
+            .values()
+            .filter(|channel| channel.channel_name() == name)
+            .count()
+    }
+
+    pub fn remote_guard_enabled(&self) -> bool {
+        self.remote_guard
+    }
+
+    /// Finishes NLA and moves its live RCG context into the registered authentication channel.
+    ///
+    /// Call only after sending the final CredSSP message and accepting any early-auth result.
+    pub fn complete_credssp(&mut self, mut sequence: crate::credssp::CredsspSequence) -> ConnectorResult<()> {
+        if !self.should_perform_credssp() || !sequence.is_finished() {
+            return Err(general_err!("CredSSP exchange is not complete"));
+        }
+        if self.remote_guard != sequence.remote_guard_enabled() {
+            return Err(general_err!("CredSSP security mode does not match the connector"));
+        }
+        #[cfg(feature = "remote-guard")]
+        if self.remote_guard_ntlm.is_some() != sequence.remote_guard_ntlm_enabled() {
+            return Err(general_err!(
+                "CredSSP NTLM redirection policy does not match the connector"
+            ));
+        }
+        #[cfg(feature = "remote-guard")]
+        if self.remote_guard {
+            let session = sequence.take_remote_guard_session()?;
+            let remote_guard_kerberos = self.remote_guard_kerberos;
+            let drdynvc = self
+                .get_static_channel_processor_mut::<ironrdp_dvc::DrdynvcClient>()
+                .ok_or_else(|| general_err!("RCG requires the registered DRDYNVC carrier"))?;
+            if ironrdp_svc::SvcProcessor::max_message_size(drdynvc)
+                .is_none_or(|limit| limit > crate::remote_guard::MAX_MESSAGE_SIZE)
+            {
+                return Err(general_err!("RCG requires a bounded DRDYNVC carrier"));
+            }
+            if drdynvc.has_channel_name(ironrdp_rdpear::CHANNEL_NAME) {
+                return Err(general_err!("authentication redirection channel is already registered"));
+            }
+            drdynvc.attach_dynamic_channel(crate::remote_guard::channel(session, remote_guard_kerberos)?);
+            self.remote_guard_ready = true;
+        }
+        #[cfg(not(feature = "remote-guard"))]
+        let _ = &mut sequence;
+        self.step(&[], None, &mut WriteBuf::new())?;
+        Ok(())
     }
 
     /// Attempt to resume a previous session using its auto-reconnect cookie.
@@ -572,6 +726,12 @@ impl ClientConnector {
     }
 
     fn enabled_security_protocols(&self) -> ConnectorResult<nego::SecurityProtocol> {
+        if self.remote_guard {
+            if !self.config.enable_credssp || self.entra_auth || self.auto_reconnect_cookie.is_some() {
+                return Err(general_err!("RCG requires CredSSP and does not support auto-reconnect"));
+            }
+            return Ok(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
+        }
         if self.entra_auth {
             return Ok(nego::SecurityProtocol::RDSAAD);
         }
@@ -607,6 +767,12 @@ impl ClientConnector {
         security_protocol: nego::SecurityProtocol,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
+        if self.remote_guard
+            && (security_protocol.is_empty()
+                || !(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX).contains(security_protocol))
+        {
+            return Err(general_err!("RCG cannot negotiate without CredSSP"));
+        }
         let connection_request = nego::ConnectionRequest {
             nego_data: if self.load_balance_info.is_none() {
                 self.config.request_data.clone().or_else(|| {
@@ -618,7 +784,11 @@ impl ClientConnector {
             } else {
                 None
             },
-            flags: nego::RequestFlags::empty(),
+            flags: if self.remote_guard {
+                nego::RequestFlags::REDIRECTED_AUTHENTICATION_MODE_REQUIRED
+            } else {
+                nego::RequestFlags::empty()
+            },
             protocol: security_protocol,
             correlation_info: None,
         };
@@ -1278,6 +1448,16 @@ impl Sequence for ClientConnector {
 
                 self.response_flags = flags;
 
+                if self.remote_guard
+                    && (!flags.contains(nego::ResponseFlags::REDIRECTED_AUTHENTICATION_MODE_SUPPORTED)
+                        || !matches!(
+                            selected_protocol,
+                            nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX
+                        ))
+                {
+                    return Err(general_err!("server did not confirm Kerberos RCG with CredSSP"));
+                }
+
                 (
                     Written::Nothing,
                     ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol },
@@ -1308,10 +1488,15 @@ impl Sequence for ClientConnector {
             }
 
             //== CredSSP ==//
-            ClientConnectorState::Credssp { selected_protocol } => (
-                Written::Nothing,
-                ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
-            ),
+            ClientConnectorState::Credssp { selected_protocol } => {
+                if self.remote_guard && !self.remote_guard_ready {
+                    return Err(general_err!("RCG cannot continue without the live CredSSP context"));
+                }
+                (
+                    Written::Nothing,
+                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
+                )
+            }
 
             ClientConnectorState::EntraAuthWaitNonce => (
                 Written::Nothing,
@@ -1480,6 +1665,7 @@ impl Sequence for ClientConnector {
                     self.auto_reconnect_cookie.as_ref(),
                     self.redirection_password_cookie.as_deref(),
                     self.entra_auth,
+                    self.remote_guard,
                 );
 
                 debug!(message = ?client_info, "Send");
@@ -2001,6 +2187,7 @@ fn create_client_info_pdu(
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
     password_cookie: Option<&[u8]>,
     entra_auth: bool,
+    remote_guard: bool,
 ) -> rdp::ClientInfoPdu {
     use ironrdp_pdu::rdp::ClientInfoPdu;
     use ironrdp_pdu::rdp::client_info::{
@@ -2028,7 +2215,7 @@ fn create_client_info_pdu(
         flags |= ClientInfoFlags::AUTOLOGON;
     }
 
-    if !entra_auth && matches!(config.credentials, crate::Credentials::SmartCard { .. }) {
+    if !entra_auth && !remote_guard && matches!(&config.credentials, crate::Credentials::SmartCard { .. }) {
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
     }
 
@@ -2063,16 +2250,16 @@ fn create_client_info_pdu(
     let client_info = ClientInfo {
         credentials: Credentials {
             username: config.credentials.username().unwrap_or("").to_owned(),
-            password: if entra_auth {
+            password: if entra_auth || remote_guard {
                 String::new()
             } else {
                 config.credentials.secret().to_owned()
             },
             domain: config.domain.clone(),
         },
-        // A smart card logon sends its PIN, never a redirection cookie.
+        // A smart card, Entra, or Remote Credential Guard logon never sends a redirection password cookie.
         password_cookie: password_cookie
-            .filter(|_| !flags.contains(ClientInfoFlags::PASSWORD_IS_SC_PIN))
+            .filter(|_| !entra_auth && !remote_guard && !flags.contains(ClientInfoFlags::PASSWORD_IS_SC_PIN))
             .map(|cookie| PasswordCookie(cookie.to_vec())),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags,
@@ -2174,7 +2361,7 @@ mod tests {
         };
 
         let client_info =
-            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false).client_info;
+            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
 
         assert!(client_info.flags.contains(ClientInfoFlags::RAIL));
         assert!(client_info.alternate_shell.is_empty());
@@ -2236,13 +2423,13 @@ mod tests {
         };
 
         let client_info =
-            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false).client_info;
+            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
         assert!(client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
         assert!(!client_info.flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
 
         config.enable_audio_capture = false;
         let client_info =
-            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false).client_info;
+            create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
     }
 

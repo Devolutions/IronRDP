@@ -282,6 +282,16 @@ pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
         "{CARGO} test -p ironrdp-rdpeudp-tokio --features ice,rustls-ring --locked --no-run"
     )
     .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-core --features remote-guard --locked --no-run"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-extra --features remote-guard --locked --no-run"
+    )
+    .run()?;
     println!("All good!");
     Ok(())
 }
@@ -308,6 +318,16 @@ pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
     cmd!(
         sh,
         "{CARGO} test -p ironrdp-rdpeudp-tokio --features ice,rustls-ring --locked"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-core --features remote-guard --locked -- connector::remote_guard"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-extra --features remote-guard --locked -- client::remote_guard"
     )
     .run()?;
     println!("All good!");

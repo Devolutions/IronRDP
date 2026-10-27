@@ -5,8 +5,6 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
 
-use crate::alloc::borrow::ToOwned as _;
-use crate::complete_data::CompleteData;
 use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
@@ -14,6 +12,8 @@ use pdu::PduResult;
 use pdu::gcc::ChannelName;
 use tracing::{debug, trace};
 
+use crate::alloc::borrow::ToOwned as _;
+use crate::complete_data::CompleteData;
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
     DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncResponsePdu, SoftSyncTunnelType,
@@ -109,9 +109,10 @@ impl Drop for DynamicVirtualChannel {
 
 impl DynamicVirtualChannel {
     fn from_boxed(processor: Box<dyn DvcClientProcessor + Send>) -> Self {
+        let max_message_size = processor.max_message_size();
         Self {
             channel_processor: processor,
-            complete_data: CompleteData::new(),
+            complete_data: CompleteData::new(max_message_size),
             channel_id: None,
         }
     }
@@ -149,6 +150,7 @@ const MAX_CLIENT_CLOSED_CHANNELS: usize = 64;
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcClient {
     dynamic_channels: DynamicChannelSet,
+    max_transport_message_size: Option<usize>,
     /// Indicates whether the capability request/response handshake has been completed.
     cap_handshake_done: bool,
     available_tunnels: BTreeSet<SoftSyncTunnelType>,
@@ -180,6 +182,7 @@ impl DrdynvcClient {
     pub fn new() -> Self {
         Self {
             dynamic_channels: DynamicChannelSet::new(),
+            max_transport_message_size: None,
             cap_handshake_done: false,
             available_tunnels: BTreeSet::new(),
             tunnel_channels: BTreeMap::new(),
@@ -187,6 +190,27 @@ impl DrdynvcClient {
             soft_sync_complete: false,
             client_closed: VecDeque::new(),
         }
+    }
+
+    /// Bounds inbound static-channel reassembly before any dynamic-channel dispatch.
+    ///
+    /// This limit covers each DRDYNVC carrier message, excluding its SVC header.
+    /// Configure it before constructing the static channel.
+    /// Per-DVC message limits remain independent because a dynamic message can span carriers.
+    #[must_use]
+    pub fn with_max_transport_message_size(mut self, max_message_size: usize) -> Self {
+        self.max_transport_message_size = Some(max_message_size);
+        self
+    }
+
+    /// Checks for a registered listener or active channel, including untyped listeners.
+    pub fn has_channel_name(&self, name: &str) -> bool {
+        self.dynamic_channels.listeners.contains_key(name)
+            || self
+                .dynamic_channels
+                .active_channels
+                .values()
+                .any(|channel| channel.channel_name() == name)
     }
 
     /// Registers a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
@@ -642,7 +666,19 @@ impl SvcProcessor for DrdynvcClient {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        self.max_transport_message_size
+    }
+
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        if self
+            .max_transport_message_size
+            .is_some_and(|limit| limit < payload.len())
+        {
+            return Err(pdu_other_err!(
+                "DRDYNVC carrier message exceeds configured maximum size"
+            ));
+        }
         let pdu = decode_dvc_message(payload).map_err(|e| decode_err!(e))?;
         let mut responses = Vec::new();
 

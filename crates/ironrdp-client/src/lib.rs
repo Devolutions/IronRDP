@@ -35,6 +35,15 @@ pub fn __test_apply_server_redirection(
     redirection::apply_server_redirection(config, redirection)
 }
 
+#[cfg(feature = "__test")]
+#[doc(hidden)]
+pub fn __test_build_connector(
+    config: &config::Config,
+    auto_reconnect_cookie: Option<&ironrdp_pdu::rdp::session_info::ServerAutoReconnect>,
+) -> ironrdp_connector::ConnectorResult<ironrdp_connector::ClientConnector> {
+    rdp::__test_build_connector(config, auto_reconnect_cookie)
+}
+
 #[cfg(any(feature = "cloud", feature = "entra-auth"))]
 fn http_client_builder() -> std::io::Result<reqwest::ClientBuilder> {
     let builder = reqwest::Client::builder();

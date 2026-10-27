@@ -1,0 +1,66 @@
+import "wtypes.idl";
+[
+    uuid(7ae7b3af-03aa-4b62-b077-f6e674cbca15),
+    version(1.0)
+]
+interface NativeRdpearOracle
+{
+    typedef struct _KEY {
+        [ignore] void* reserved1;
+        long reserved2;
+        unsigned long length;
+        [size_is(length)] byte* data;
+    } KEY;
+    typedef enum _CALL {
+        Negotiate = 0x100,
+        Authenticator = 0x101,
+        ApAuthenticator = 0x103,
+        Hash = 0x109,
+        Destroy = 0x116,
+        NtlmNegotiate = 0x200,
+        NtlmCompare = 0x205
+    } CALL;
+    typedef struct _REQUEST {
+        CALL CallId;
+        [switch_type(CALL), switch_is(CallId)] union {
+            [case(Negotiate)] struct { unsigned long version; } Version;
+            [case(Authenticator)] struct { KEY* key; KEY* armor; hyper* skew; } Auth;
+            [case(Destroy)] struct { hyper handle; } DestroyKey;
+        };
+    } REQUEST;
+    typedef [unique] REQUEST* PREQUEST;
+    typedef struct _ASN1 {
+        unsigned long pdu;
+        unsigned long length;
+        [size_is(length)] byte* data;
+    } ASN1;
+    typedef struct _OUTPUT {
+        CALL CallId;
+        long Status;
+        [switch_type(CALL), switch_is(CallId)] union {
+            [case(Negotiate)] struct { unsigned long version; } Version;
+            [case(Hash)] struct {
+                unsigned long* ChecksumSize;
+                [size_is(, *ChecksumSize)] byte** ChecksumValue;
+            } Checksum;
+            [case(ApAuthenticator)] struct { hyper time; ASN1 authenticator; long error; } ApAuth;
+        };
+    } OUTPUT;
+    typedef [unique] OUTPUT* POUTPUT;
+    typedef struct _NREQUEST {
+        CALL CallId;
+        [switch_type(CALL), switch_is(CallId)] union {
+            [case(NtlmNegotiate)] struct { unsigned long version; } Version;
+        };
+    } NREQUEST;
+    typedef [unique] NREQUEST* PNREQUEST;
+    typedef struct _NOUTPUT {
+        CALL CallId;
+        long Status;
+        [switch_type(CALL), switch_is(CallId)] union {
+            [case(NtlmNegotiate)] struct { unsigned long version; } Version;
+            [case(NtlmCompare)] struct { long nt; long lm; long sha; } Compare;
+        };
+    } NOUTPUT;
+    typedef [unique] NOUTPUT* PNOUTPUT;
+}

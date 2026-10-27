@@ -39,6 +39,15 @@ server-name validation.
 
 Cloud PC, AVD feed, and Entra HTTP requests use platform-root validation and the client's selected TLS backend.
 
+The experimental `remote-guard` feature forwards [Remote Credential Guard][rcg-build] through the Tokio and async drivers.
+Select `ConfigBuilder::with_remote_guard_mode` with `RemoteGuardMode::Negotiate`, `Ntlm`, or `Kerberos` from `ironrdp_client::config`, and explicitly select strict TLS validation.
+All modes require Kerberos for initial authentication; the mode mirrors CredSSP package selection, with `Negotiate` permitting both Kerberos and outbound NTLMv2 redirection and the other two restricting redirection to one package.
+The client retains the CredSSP context and registers MS-RDPEAR on its existing DRDYNVC carrier.
+Without an explicit Kerberos configuration, RCG enables DNS KDC discovery using the configured client computer name.
+The account realm must be DNS-resolvable; SAM/NetBIOS identities require an explicit KDC URL.
+Unsupported builds, invalid policies, insecure transports, RDCleanPath, VMConnect, and automatic reconnect fail rather than downgrading authentication.
+The feature is off by default and is not included in `all`.
+
 The optional `camera` feature enables MS-RDPECAM camera redirection, selected with `ConfigBuilder::with_cameras` or the `camerastoredirect` `.rdp` property.
 Capture uses Media Foundation and is only available on Windows; cameras attached or removed during the session are advertised or withdrawn as they come and go.
 Raw camera frames are encoded to H.264 unless the camera produces H.264 or MJPEG itself or `CameraConfig::encode_video` is off.
@@ -99,3 +108,4 @@ This crate is part of the [IronRDP] project.
 
 [IronRDP]: https://github.com/Devolutions/IronRDP
 [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+[rcg-build]: https://docs.rs/ironrdp-connector#experimental-remote-credential-guard

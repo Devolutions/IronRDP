@@ -126,10 +126,11 @@ impl DynamicChannel {
     where
         T: DvcServerProcessor + 'static,
     {
+        let max_message_size = processor.max_message_size();
         Self {
             state,
             processor: Box::new(processor),
-            complete_data: CompleteData::new(),
+            complete_data: CompleteData::new(max_message_size),
             channel_id,
         }
     }
