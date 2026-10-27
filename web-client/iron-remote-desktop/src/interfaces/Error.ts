@@ -12,6 +12,8 @@ export interface RDCleanPathDetails {
     readonly httpStatusCode?: number;
     readonly wsaErrorCode?: number;
     readonly tlsAlertCode?: number;
+    /** RDCleanPath error code; codes 16384 to 32767 are specific to the proxy implementation. */
+    readonly errorCode?: number;
 }
 
 export interface IronError {

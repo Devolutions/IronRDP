@@ -35,6 +35,9 @@ TASKS:
   clean                   Clean workspace
   pr check-message [--event-file <PATH>]
                           Validate a pull request title and body from a GitHub event
+  release check-public-deps [--fix]
+                          Require a breaking release for released crates whose public
+                          dependencies take one, applying the bumps with --fix
   fuzz corpus-fetch       Fetch fuzzing corpus from Azure storage
   fuzz corpus-min [--target <NAME>]
                           Minify fuzzing corpus for a specific target (or all if unspecified)
@@ -117,6 +120,9 @@ pub enum Action {
     Clean,
     PrCheckMessage {
         event_file: Option<std::path::PathBuf>,
+    },
+    ReleaseCheckPublicDeps {
+        fix: bool,
     },
     FuzzCorpusFetch,
     FuzzCorpusMin {
@@ -209,6 +215,13 @@ pub fn parse_args() -> anyhow::Result<Args> {
                     event_file: args.opt_value_from_str("--event-file")?,
                 },
                 Some(unknown) => anyhow::bail!("unknown pr action: {unknown}"),
+                None => Action::ShowHelp,
+            },
+            Some("release") => match args.subcommand()?.as_deref() {
+                Some("check-public-deps") => Action::ReleaseCheckPublicDeps {
+                    fix: args.contains("--fix"),
+                },
+                Some(unknown) => anyhow::bail!("unknown release action: {unknown}"),
                 None => Action::ShowHelp,
             },
             Some("fuzz") => match args.subcommand()?.as_deref() {

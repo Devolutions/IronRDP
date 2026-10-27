@@ -1428,7 +1428,8 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?monitor_layout, "Send");
 
-                let share_data = wrap_share_data(monitor_layout, self.io_channel_id);
+                // MS-RDPBCGR 2.2.12.1: the pduSource field of the Monitor Layout PDU MUST be zero.
+                let share_data = wrap_share_data(monitor_layout, 0);
 
                 let written =
                     util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;

@@ -15,6 +15,7 @@ mod ffi;
 mod fuzz;
 mod pr;
 mod prelude;
+mod release;
 mod section;
 mod wasm;
 mod web;
@@ -116,6 +117,7 @@ fn main() -> anyhow::Result<()> {
         }
         Action::Clean => clean::workspace(&sh)?,
         Action::PrCheckMessage { event_file } => pr::check_message(event_file.as_deref())?,
+        Action::ReleaseCheckPublicDeps { fix } => release::check_public_deps(&sh, fix)?,
         Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
         Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
@@ -225,9 +227,13 @@ pub fn local_bin() -> PathBuf {
     path
 }
 
-fn target_directory(sh: &Shell) -> anyhow::Result<PathBuf> {
+fn cargo_metadata(sh: &Shell) -> anyhow::Result<JsonValue> {
     let metadata = cmd!(sh, "{CARGO} metadata --format-version 1 --no-deps").read()?;
-    let metadata: JsonValue = metadata.parse().context("parse cargo metadata")?;
+    metadata.parse().context("parse cargo metadata")
+}
+
+fn target_directory(sh: &Shell) -> anyhow::Result<PathBuf> {
+    let metadata = cargo_metadata(sh)?;
 
     let directory: &String = metadata["target_directory"]
         .get()
