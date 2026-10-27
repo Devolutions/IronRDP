@@ -3,8 +3,6 @@ name: rust-style
 description: Apply the Devolutions Rust style conventions while writing or editing Rust. Use whenever adding or changing Rust code in this repository, including error messages, log statements, comments, invariants, size computations, and function signatures, even when the user does not mention style.
 ---
 
-# Rust style
-
 Error messages are one short sentence with no trailing punctuation and no capital added just for sentence position, while keeping proper casing for acronyms (`"invalid X.509 certificate"`), because reporters compose them into chains.
 Return a crate-qualified result such as `io::Result`, not a bare `Result`, unless the alias is already clear (`ConnectionResult`).
 

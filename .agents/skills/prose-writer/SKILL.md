@@ -3,8 +3,6 @@ name: prose-writer
 description: Write concise, human-first prose with one sentence per source line. Use whenever generating or substantially rewriting Markdown, AsciiDoc, plain-text documentation, code comments, doc comments such as rustdoc, release notes, user-facing explanations, or other hand-maintained prose.
 ---
 
-# Prose writer
-
 Lead with what the reader needs to know or do.
 Use direct sentences, concrete verbs, familiar words, and the shortest phrasing that preserves meaning.
 This is plain language at the sentence level: a reader understands on first reading.

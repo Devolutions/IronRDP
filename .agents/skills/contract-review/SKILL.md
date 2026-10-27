@@ -3,8 +3,6 @@ name: contract-review
 description: Review a normative CONTRACT*.md for overreach, unspecified failure paths, duplicated lists, examples standing in for rules, one-implementation bias, and untestable wording; returns findings with proposed rewordings, never edits. Use when asked to review, critique, tighten, or prepare a rewrite of a contract or protocol specification.
 ---
 
-# Contract review
-
 A contract is implemented and tested by parties who read only it, so every ambiguity becomes a divergence between implementations.
 
 ## Gather
@@ -26,7 +24,7 @@ Apply each to every normative sentence and quote it, so the author finds it afte
 - **Order for precedence**: an evaluation order where only which-outcome-wins matters, or two outcomes equally valid for one input.
 - **Unowned field**: a stored field with no statement of who initialises it and which operations update it or must not.
 - **Second copy**: a list, mapping, or encoding defined twice; keep one and point.
-- **Anchor**: an operation or normative section without an anchor, a published anchor renamed, or an anchor removed while citations still name it, since the suite, the code, and the intent cite sections by anchor (`intent-files` Anchors).
+- **Anchor**: an operation or normative section without an anchor, an id repeated within the file, a published anchor renamed, or an anchor removed while citations still name it, since the suite, the code, and the intent cite sections by anchor (`intent-files` Anchors).
   Propose the id or restore the old one; for a removal, list the citers a search for the id finds.
 - **Example as rule**: a transcript or template whose free aspects (order, case, whitespace) are not stated; propose the statement and vectors that vary them.
 - **One-implementation bias**: a library's behaviour, a number, or a rationale true for one backend; ask whether it was written to fit one implementation.
