@@ -24,7 +24,7 @@ base64 = "0.22"
 ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["camera", "clipboard", "dvc-com-plugin", "gateway", "location", "rdpdr", "rustls", "smartcard", "sound", "webauthn"] }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.9" }
 ironrdp-cliprdr-format = { path = "../ironrdp-cliprdr-format", version = "0.3.0" }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.8" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9" }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.3" }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.12" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.3" }
@@ -36,7 +36,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11" }
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.3" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1.1" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
-ironrdp-rail = { path = "../ironrdp-rail", version = "0.2" }
+ironrdp-rail = { path = "../ironrdp-rail", version = "0.3" }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.9" }
 ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.2" }
 ironrdp-session = { path = "../ironrdp-session", version = "0.13" }

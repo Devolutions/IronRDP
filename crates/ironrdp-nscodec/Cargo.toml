@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-nscodec"
-version = "0.3.0"
+version = "0.4.0"
 readme = "README.md"
 description = "NSCodec ([MS-RDPNSC]) implementation for IronRDP"
 edition.workspace = true
