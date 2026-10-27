@@ -124,6 +124,8 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -173,6 +175,7 @@ jobs:
         uses: Swatinem/rust-cache@v2.9.1
         with:
           workspaces: fuzz -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -200,6 +203,8 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -290,6 +295,8 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Setup matrix
         id: setup-matrix
@@ -314,6 +321,8 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
