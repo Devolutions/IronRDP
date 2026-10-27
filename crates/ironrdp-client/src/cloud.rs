@@ -1222,20 +1222,23 @@ pub fn verify_rdp_signature_at(
 }
 
 fn decode_rdp_bytes(body: &[u8]) -> Result<String, Error> {
-    if let Some((payload, from_bytes)) = body
+    if let Some((payload, is_le)) = body
         .strip_prefix(&[0xFF, 0xFE])
-        .map(|b| (b, u16::from_le_bytes as fn([u8; 2]) -> u16))
-        .or_else(|| {
-            body.strip_prefix(&[0xFE, 0xFF])
-                .map(|b| (b, u16::from_be_bytes as fn([u8; 2]) -> u16))
-        })
+        .map(|b| (b, true))
+        .or_else(|| body.strip_prefix(&[0xFE, 0xFF]).map(|b| (b, false)))
     {
         if !payload.len().is_multiple_of(2) {
             return Err(Error::InvalidRdpSignature("RDP file has odd UTF-16 byte length"));
         }
         let units: Vec<u16> = payload
             .chunks_exact(2)
-            .map(|chunk| from_bytes([chunk[0], chunk[1]]))
+            .map(|chunk| {
+                if is_le {
+                    u16::from_le_bytes([chunk[0], chunk[1]])
+                } else {
+                    u16::from_be_bytes([chunk[0], chunk[1]])
+                }
+            })
             .collect();
         let text =
             String::from_utf16(&units).map_err(|_| Error::InvalidRdpSignature("RDP file is not valid UTF-16"))?;
