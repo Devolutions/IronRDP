@@ -3207,6 +3207,7 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-svc",
  "nix",
+ "rstest",
  "tracing",
  "windows",
 ]
