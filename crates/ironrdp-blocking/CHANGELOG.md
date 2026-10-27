@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.12.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.11.0...ironrdp-blocking-v0.12.0)] - 2026-10-27
 
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-connector` public dependency to 0.12
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
 
 
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.10.0...ironrdp-blocking-v0.11.0)] - 2026-10-23

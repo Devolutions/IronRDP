@@ -10,39 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- Send RDP as the Demand Active source descriptor ([#2119](https://github.com/Devolutions/IronRDP/issues/2119)) ([d921607fc8](https://github.com/Devolutions/IronRDP/commit/d921607fc817b72298cf7434e2bba887ebaf5674)) 
+- Send `RDP` as the Demand Active source descriptor instead of an empty one, which Jump Desktop rejects ([#2119](https://github.com/Devolutions/IronRDP/issues/2119)) ([d921607fc8](https://github.com/Devolutions/IronRDP/commit/d921607fc817b72298cf7434e2bba887ebaf5674))
 
-  The server Demand Active PDU used an empty source descriptor, which
-  `DemandActive` encodes as a single NUL byte. Jump Desktop rejects it
-  (`bad packet - source Descriptor not set to RDP`) and drops the
-  connection right after the TLS upgrade.
-  
-  Send `RDP` instead. It encodes as `RDP\0`, the same four bytes the
-  FreeRDP server writes, and the value already used by the server Demand
-  Active fixture in `ironrdp-testsuite-core`.
+- Stepping an `Acceptor`, `ChannelConnectionSequence` or `FinalizationSequence` after a failed step or after it finished returns an error instead of panicking ([#2231](https://github.com/Devolutions/IronRDP/issues/2231)) ([e51dcfee4a](https://github.com/Devolutions/IronRDP/commit/e51dcfee4a1edf7e92917c0eb5e8df6cc7a8ad64))
 
-- Error on steps after the acceptor ends ([#2231](https://github.com/Devolutions/IronRDP/issues/2231)) ([e51dcfee4a](https://github.com/Devolutions/IronRDP/commit/e51dcfee4a1edf7e92917c0eb5e8df6cc7a8ad64)) 
+- Send a zero `pduSource` in the Monitor Layout PDU, as MS-RDPBCGR 2.2.12.1 requires ([#2230](https://github.com/Devolutions/IronRDP/issues/2230)) ([3ca12ee636](https://github.com/Devolutions/IronRDP/commit/3ca12ee63687980ace30cd6ed59c2ab4f57cf157))
 
-  Stepping an `Acceptor`, a `ChannelConnectionSequence` or a
-  `FinalizationSequence` after a failed step, or after it finished,
-  reached `unreachable!()` and panicked. Both states are reachable through
-  the public API: a failed step leaves the sequence consumed, and the
-  accepted or finished state stays until the caller moves on.
-  
-  Each sequence now returns an error in those states, and a finished one
-  stays finished, so an accepted acceptor still yields its result. The
-  type docs state this. The client connector already answers the same
-  misuse with an error.
+### <!-- 7 -->Build
 
-- Send a zero pduSource in Monitor Layout ([#2230](https://github.com/Devolutions/IronRDP/issues/2230)) ([3ca12ee636](https://github.com/Devolutions/IronRDP/commit/3ca12ee63687980ace30cd6ed59c2ab4f57cf157)) 
+- [**breaking**] Update `ironrdp-async` public dependency to 0.12
 
-  MS-RDPBCGR 2.2.12.1 requires the pduSource field of the Monitor Layout
-  PDU to be zero, but the acceptor wrapped it with the I/O channel ID like
-  the finalization PDUs. The acceptor now passes zero for this PDU only;
-  the share data helper takes the pduSource it writes instead of naming it
-  after the I/O channel.
-  
-  ---------
+- [**breaking**] Update `ironrdp-connector` public dependency to 0.12
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
 
 
 
