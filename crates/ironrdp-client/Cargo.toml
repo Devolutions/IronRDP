@@ -165,7 +165,7 @@ rustls-native-certs = { version = "0.8", optional = true }
 picky = { version = "=7.0.0-rc.27", optional = true }
 base64 = { version = "0.22", optional = true }
 rand = { version = "0.9", optional = true }
-serde = { version = "1", features = ["derive"], optional = true } # public
+serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true } # public
 zeroize = { version = "1", optional = true }
 

@@ -3,10 +3,13 @@ use core::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use ironrdp_client::cloud::{
-    AvdCloudEnvironment, AvdResourceKind, CloudPcClient, CloudPcPage, Error, avd_launch_url, continuation_url,
-    launch_detail_request_url, parse_avd_feed_discovery_xml, parse_avd_workspace_feed_xml, verify_rdp_signature_at,
-    verify_signed_attrs_for_test, windows365_launch_url,
+    AvdCloudEnvironment, AvdResourceKind, CloudPcClient, CloudPcPage, Error, MAX_SIGN_SCOPE_CHARS,
+    MSTSC_SENSITIVE_SETTINGS, avd_launch_url, continuation_url, launch_detail_request_url,
+    parse_avd_feed_discovery_xml, parse_avd_workspace_feed_xml, verify_rdp_signature_at, verify_signed_attrs_for_test,
+    windows365_launch_url,
 };
+use proptest::prelude::*;
+use rstest::rstest;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -71,6 +74,7 @@ fn digicert_root_g2_der() -> Vec<u8> {
     DIGICERT_ROOT_G2_DER.to_vec()
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[test]
 fn documented_launch_urls() {
     assert_eq!(
@@ -91,38 +95,37 @@ fn documented_launch_urls() {
     );
 }
 
-#[test]
-fn launch_urls_reject_missing_or_injected_ids() {
-    for invalid in [
-        "",
-        ".",
-        "..",
-        "/path",
-        "id?token=secret",
-        "id#fragment",
-        "a b",
-        "a\\b",
-        "\r\n",
-    ] {
-        assert!(matches!(
-            windows365_launch_url(invalid, None),
-            Err(Error::InvalidInput(_))
-        ));
-        assert!(matches!(
-            avd_launch_url(invalid, PC_ID, None),
-            Err(Error::InvalidInput(_))
-        ));
-        assert!(matches!(
-            avd_launch_url(WORKSPACE_ID, invalid, None),
-            Err(Error::InvalidInput(_))
-        ));
-        assert!(matches!(
-            windows365_launch_url(PC_ID, Some(invalid)),
-            Err(Error::InvalidInput(_))
-        ));
-    }
+// oracle: spec RFC 3986 §3.3
+#[rstest]
+#[case::empty("")]
+#[case::dot(".")]
+#[case::dot_dot("..")]
+#[case::slash_path("/path")]
+#[case::query_injection("id?token=secret")]
+#[case::fragment_injection("id#fragment")]
+#[case::whitespace("a b")]
+#[case::backslash("a\\b")]
+#[case::crlf("\r\n")]
+fn launch_urls_reject_missing_or_injected_ids(#[case] invalid: &str) {
+    assert!(matches!(
+        windows365_launch_url(invalid, None),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        avd_launch_url(invalid, PC_ID, None),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        avd_launch_url(WORKSPACE_ID, invalid, None),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        windows365_launch_url(PC_ID, Some(invalid)),
+        Err(Error::InvalidInput(_))
+    ));
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[test]
 fn decode_discovery_and_continuation() {
     let body = format!(
@@ -139,7 +142,7 @@ fn decode_discovery_and_continuation() {
     assert_eq!(pc.provisioning_type.as_deref(), Some("dedicated"));
     assert_eq!(
         pc.launch_url(None).unwrap(),
-        windows365_launch_url(PC_ID, None).unwrap()
+        format!("https://windows.cloud.microsoft/webclient/ent/{PC_ID}")
     );
     assert_eq!(
         page.next_link.as_deref(),
@@ -153,65 +156,65 @@ fn decode_discovery_and_continuation() {
     assert!(nullable.cloud_pcs[0].service_plan_type.is_none());
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[test]
 fn launch_detail_uses_documented_graph_resource_route() {
     assert_eq!(
         launch_detail_request_url(PC_ID).unwrap().as_str(),
         format!("{CLOUD_PCS_URL}/{PC_ID}/retrieveCloudPcLaunchDetail")
     );
-    for invalid in [
-        "",
-        "../other",
-        "id/path",
-        "id?access_token=secret",
-        "id#fragment",
-        "a b",
-    ] {
-        assert!(matches!(
-            launch_detail_request_url(invalid),
-            Err(Error::InvalidInput("Cloud PC ID"))
-        ));
-    }
 }
 
-#[test]
-fn continuations_cannot_change_bearer_destination() {
-    for invalid in [
-        "http://graph.microsoft.com/v1.0/me/cloudPCs",
-        "https://attacker.invalid/v1.0/me/cloudPCs",
-        "https://graph.microsoft.com.attacker.invalid/v1.0/me/cloudPCs",
-        "https://graph.microsoft.com:444/v1.0/me/cloudPCs",
-        "https://user@graph.microsoft.com/v1.0/me/cloudPCs",
-        "https://graph.microsoft.com/v1.0/users",
-        "https://graph.microsoft.com/v1.0/me/cloudPCs#fragment",
-        "https://graph.microsoft.com/beta/me/cloudPCs",
-        "/v1.0/me/cloudPCs?$skiptoken=x",
-    ] {
-        assert!(matches!(continuation_url(invalid), Err(Error::InvalidContinuation)));
-        let body = format!(r#"{{"value":[],"@odata.nextLink":"{invalid}"}}"#);
-        assert!(matches!(
-            CloudPcPage::decode(body.as_bytes()),
-            Err(Error::InvalidContinuation)
-        ));
-    }
+// oracle: spec RFC 3986 §3.3
+#[rstest]
+#[case::empty("")]
+#[case::parent_dir("../other")]
+#[case::subpath("id/path")]
+#[case::query("id?access_token=secret")]
+#[case::fragment("id#fragment")]
+#[case::space("a b")]
+fn launch_detail_rejects_invalid_cloud_pc_id(#[case] invalid: &str) {
+    assert!(matches!(
+        launch_detail_request_url(invalid),
+        Err(Error::InvalidInput("Cloud PC ID"))
+    ));
+}
+
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
+#[rstest]
+#[case::insecure_http("http://graph.microsoft.com/v1.0/me/cloudPCs")]
+#[case::foreign_host("https://attacker.invalid/v1.0/me/cloudPCs")]
+#[case::subdomain_spoof("https://graph.microsoft.com.attacker.invalid/v1.0/me/cloudPCs")]
+#[case::non_default_port("https://graph.microsoft.com:444/v1.0/me/cloudPCs")]
+#[case::userinfo("https://user@graph.microsoft.com/v1.0/me/cloudPCs")]
+#[case::wrong_collection_path("https://graph.microsoft.com/v1.0/users")]
+#[case::url_fragment("https://graph.microsoft.com/v1.0/me/cloudPCs#fragment")]
+#[case::beta_endpoint("https://graph.microsoft.com/beta/me/cloudPCs")]
+#[case::relative_url("/v1.0/me/cloudPCs?$skiptoken=x")]
+fn continuations_cannot_change_bearer_destination(#[case] invalid: &str) {
+    assert!(matches!(continuation_url(invalid), Err(Error::InvalidContinuation)));
+    let body = format!(r#"{{"value":[],"@odata.nextLink":"{invalid}"}}"#);
+    assert!(matches!(
+        CloudPcPage::decode(body.as_bytes()),
+        Err(Error::InvalidContinuation)
+    ));
     let next = format!("{CLOUD_PCS_URL}?$skiptoken=opaque%2Bvalue");
     assert_eq!(continuation_url(&next).unwrap().as_str(), next);
 }
 
-#[test]
-fn invalid_discovery_is_not_an_empty_success() {
-    for invalid in [
-        &b""[..],
-        &b"not JSON"[..],
-        &b"{}"[..],
-        &br#"{"value":null}"#[..],
-        &br#"{"value":[{"displayName":"missing ID"}]}"#[..],
-        &br#"{"value":[{"id":42}]}"#[..],
-    ] {
-        assert!(matches!(CloudPcPage::decode(invalid), Err(Error::InvalidResponse(_))));
-    }
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
+#[rstest]
+#[case::empty_body(&b""[..])]
+#[case::non_json(&b"not JSON"[..])]
+#[case::missing_value_array(&b"{}"[..])]
+#[case::null_value_array(&br#"{"value":null}"#[..])]
+#[case::missing_pc_id(&br#"{"value":[{"displayName":"missing ID"}]}"#[..])]
+#[case::integer_pc_id(&br#"{"value":[{"id":42}]}"#[..])]
+fn invalid_discovery_is_not_an_empty_success(#[case] invalid: &[u8]) {
+    assert!(matches!(CloudPcPage::decode(invalid), Err(Error::InvalidResponse(_))));
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[test]
 fn page_size_limit_exact_boundary() {
     let mut body = br#"{"value":[]}"#.to_vec();
@@ -223,6 +226,7 @@ fn page_size_limit_exact_boundary() {
     assert!(matches!(CloudPcPage::decode(&body), Err(Error::ResponseTooLarge)));
 }
 
+// oracle: spec RFC 6750 §2.1
 #[tokio::test]
 async fn invalid_tokens_and_continuations_fail_before_network() {
     let client = CloudPcClient::new().unwrap();
@@ -252,34 +256,34 @@ async fn invalid_tokens_and_continuations_fail_before_network() {
     ));
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
+#[rstest]
+#[case::attacker_domain("https://attacker.invalid/api/arm/feeddiscovery")]
+#[case::subdomain_spoof("https://wvd.microsoft.com.attacker.invalid/api/arm/feeddiscovery")]
+#[case::loopback_ip("https://127.0.0.1/api/arm/feeddiscovery")]
+#[case::plaintext_http("http://www.wvd.microsoft.com/api/arm/feeddiscovery")]
+#[case::non_default_port("https://www.wvd.microsoft.com:444/api/arm/feeddiscovery")]
+#[case::userinfo("https://user@www.wvd.microsoft.com/api/arm/feeddiscovery")]
+#[case::fragment("https://www.wvd.microsoft.com/api/arm/feeddiscovery#frag")]
 #[tokio::test]
-async fn avd_authenticated_requests_reject_attacker_controlled_https_origins() {
+async fn avd_authenticated_requests_reject_attacker_controlled_https_origins(#[case] untrusted: &str) {
     let client = CloudPcClient::new().unwrap();
-    for untrusted in [
-        "https://attacker.invalid/api/arm/feeddiscovery",
-        "https://wvd.microsoft.com.attacker.invalid/api/arm/feeddiscovery",
-        "https://127.0.0.1/api/arm/feeddiscovery",
-        "http://www.wvd.microsoft.com/api/arm/feeddiscovery",
-        "https://www.wvd.microsoft.com:444/api/arm/feeddiscovery",
-        "https://user@www.wvd.microsoft.com/api/arm/feeddiscovery",
-        "https://www.wvd.microsoft.com/api/arm/feeddiscovery#frag",
-    ] {
-        let url = Url::parse(untrusted).unwrap();
-        assert!(matches!(
-            client.discover_avd_feeds(url.clone(), "token").await,
-            Err(Error::InvalidLaunchUrl)
-        ));
-        assert!(matches!(
-            client.fetch_avd_workspace_feed(url.clone(), "token").await,
-            Err(Error::InvalidLaunchUrl)
-        ));
-        assert!(matches!(
-            client.download_avd_rdp_file(url, "token").await,
-            Err(Error::InvalidLaunchUrl)
-        ));
-    }
+    let url = Url::parse(untrusted).unwrap();
+    assert!(matches!(
+        client.discover_avd_feeds(url.clone(), "token").await,
+        Err(Error::InvalidAvdUrl)
+    ));
+    assert!(matches!(
+        client.fetch_avd_workspace_feed(url.clone(), "token").await,
+        Err(Error::InvalidAvdUrl)
+    ));
+    assert!(matches!(
+        client.download_avd_rdp_file(url, "token").await,
+        Err(Error::InvalidAvdUrl)
+    ));
 }
 
+// oracle: spec RFC 6750 §2.1
 #[tokio::test]
 async fn http_discovery_sends_bearer_and_decodes_page() {
     let (url, request) = serve(http_response("200 OK", r#"{"value":[{"id":"demo"}]}"#)).await;
@@ -292,6 +296,7 @@ async fn http_discovery_sends_bearer_and_decodes_page() {
     assert!(!request.contains("?"));
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[tokio::test]
 async fn http_launch_detail_returns_redacted_service_browser_url() {
     let response = format!(
@@ -320,6 +325,7 @@ async fn http_launch_detail_returns_redacted_service_browser_url() {
     assert!(!request.contains("opaque-secret"));
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[tokio::test]
 async fn launch_detail_rejects_mismatched_or_untrusted_service_urls() {
     let wrong_id = r#"{"cloudPcId":"another-id","cloudPcLaunchUrl":"https://windows.cloud.microsoft/","windows365SwitchCompatible":true}"#;
@@ -347,6 +353,7 @@ async fn launch_detail_rejects_mismatched_or_untrusted_service_urls() {
     }
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[tokio::test]
 async fn launch_detail_rejects_missing_contract_fields_and_service_errors() {
     for body in ["{}", r#"{"cloudPcId":"demo","cloudPcLaunchUrl":"https://example.com"}"#] {
@@ -367,6 +374,7 @@ async fn launch_detail_rejects_missing_contract_fields_and_service_errors() {
     request.await.unwrap();
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[tokio::test]
 async fn http_status_and_redirects_are_not_success() {
     for (expected_code, status) in [
@@ -391,6 +399,7 @@ async fn http_status_and_redirects_are_not_success() {
     request.await.unwrap();
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[tokio::test]
 async fn oversized_streams_and_invalid_http_bodies_fail() {
     let (url, request) =
@@ -416,6 +425,7 @@ async fn oversized_streams_and_invalid_http_bodies_fail() {
     request.await.unwrap();
 }
 
+// oracle: spec crates/ironrdp-client/README.md §Cloud discovery and browser handoff
 #[tokio::test]
 async fn transport_errors_do_not_expose_continuation_urls() {
     let (url, request) = serve(b"not an HTTP response".to_vec()).await;
@@ -425,6 +435,7 @@ async fn transport_errors_do_not_expose_continuation_urls() {
     request.await.unwrap();
 }
 
+// oracle: spec MS-TSWP §2.2.2
 #[test]
 fn avd_feed_discovery_and_workspace_xml_parsing() {
     let url = AvdCloudEnvironment::Public.feed_discovery_url(Some(TENANT_ID)).unwrap();
@@ -497,6 +508,7 @@ fn avd_feed_discovery_and_workspace_xml_parsing() {
     ));
 }
 
+// oracle: spec MS-TSWP §2.2.2
 #[test]
 fn xml_parser_handles_quoted_gt_comments_and_utf8_element_names() {
     let utf8_tag = "Resourc\u{e9}";
@@ -531,6 +543,19 @@ fn xml_parser_handles_quoted_gt_comments_and_utf8_element_names() {
     ));
 }
 
+// oracle: reference mstscax.dll 10.0.26100.9711 VerifySensitiveSettings
+#[test]
+fn mstsc_sensitive_settings_matches_activex_oracle() {
+    assert_eq!(MAX_SIGN_SCOPE_CHARS, 0x800);
+    assert_eq!(MSTSC_SENSITIVE_SETTINGS.len(), 48);
+    assert_eq!(MSTSC_SENSITIVE_SETTINGS[0], "Full Address");
+    assert_eq!(MSTSC_SENSITIVE_SETTINGS[6], "EnableCredSspSupport");
+    assert_eq!(MSTSC_SENSITIVE_SETTINGS[43], "KDCProxyName");
+    assert_eq!(MSTSC_SENSITIVE_SETTINGS[44], "EnableRdsAadAuth");
+    assert_eq!(MSTSC_SENSITIVE_SETTINGS[47], "allowed security protocols");
+}
+
+// oracle: reference crates/ironrdp-testsuite-extra/tests/client/avd_rdp_signature.bin
 #[test]
 fn verify_microsoft_signed_avd_rdp_file_and_detect_tampering() {
     let signed_rdp = microsoft_signed_avd_rdp();
@@ -604,6 +629,7 @@ fn verify_microsoft_signed_avd_rdp_file_and_detect_tampering() {
     ));
 }
 
+// oracle: reference crates/ironrdp-testsuite-extra/tests/client/digicert_global_root_g2.bin
 #[test]
 fn certificate_chain_validation_rejects_untrusted_incomplete_or_expired_paths() {
     let signed_rdp = microsoft_signed_avd_rdp();
@@ -653,6 +679,7 @@ fn certificate_chain_validation_rejects_untrusted_incomplete_or_expired_paths() 
     ));
 }
 
+// oracle: spec RFC 5652 §5.3
 #[test]
 fn cms_signed_attrs_requires_exact_message_digest_attribute() {
     let digest = [0x42u8; 32];
@@ -702,6 +729,7 @@ fn cms_signed_attrs_requires_exact_message_digest_attribute() {
     ));
 }
 
+// oracle: reference crates/ironrdp-testsuite-extra/tests/client/avd_rdp_signature.bin
 #[tokio::test]
 async fn download_avd_rdp_file_decodes_utf16le_with_bom_and_verifies() {
     let signed_rdp = microsoft_signed_avd_rdp();
@@ -726,11 +754,69 @@ async fn download_avd_rdp_file_decodes_utf16le_with_bom_and_verifies() {
         .await
         .unwrap();
     assert!(rdp_text.contains("full address:s:rdgateway-r1.wvd.microsoft.com\r\n"));
-    // Unsigned non-sensitive lines (such as `use multimon:i:1`) are stripped from the returned canonical document.
-    assert!(!rdp_text.contains("use multimon"));
+    // Non-sensitive properties (such as `use multimon:i:1`) are preserved in the returned canonical document.
+    assert!(rdp_text.contains("use multimon:i:1\r\n"));
     assert_eq!(verified.signed_scope.len(), 30);
     let req_str = request.await.unwrap().to_ascii_lowercase();
     assert!(req_str.contains("\r\nauthorization: bearer test-token\r\n"));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    // oracle: property idempotent
+    #[test]
+    fn canonicalization_is_invariant_under_line_order_case_and_line_endings(
+        reverse_order in any::<bool>(),
+        uppercase_keys in any::<bool>(),
+        use_lf_only in any::<bool>(),
+        leading_spaces in 0usize..3,
+    ) {
+        let signed_rdp = microsoft_signed_avd_rdp();
+        let root_der = digicert_root_g2_der();
+        let anchors = [root_der.as_slice()];
+        let valid_time = Duration::from_secs(1_793_047_200);
+        let baseline = verify_rdp_signature_at(&signed_rdp, &anchors, valid_time).unwrap();
+
+        let prefix = " ".repeat(leading_spaces);
+        let mut lines: Vec<String> = signed_rdp
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|line| {
+                let (key, rest) = line.split_once(':').unwrap();
+                let transformed_key = if uppercase_keys && !key.eq_ignore_ascii_case("signscope") {
+                    key.to_ascii_uppercase()
+                } else {
+                    key.to_owned()
+                };
+                format!("{prefix}{transformed_key}:{rest}")
+            })
+            .collect();
+        if reverse_order {
+            lines.reverse();
+        }
+        let sep = if use_lf_only { "\n" } else { "\r\n" };
+        let mutated = format!("{}{sep}", lines.join(sep));
+
+        let verified = verify_rdp_signature_at(&mutated, &anchors, valid_time).unwrap();
+        prop_assert_eq!(verified, baseline);
+    }
+
+    // oracle: spec MS-TSWP §2.2.2
+    #[test]
+    fn parsers_never_panic_on_arbitrary_malformed_inputs(
+        raw in ".{0,512}",
+        raw_bytes in prop::collection::vec(any::<u8>(), 0..256),
+    ) {
+        let root_der = digicert_root_g2_der();
+        let anchors = [root_der.as_slice()];
+        let valid_time = Duration::from_secs(1_793_047_200);
+
+        let _ = parse_avd_feed_discovery_xml(&raw);
+        let _ = parse_avd_workspace_feed_xml(&raw);
+        let _ = verify_rdp_signature_at(&raw, &anchors, valid_time);
+        let _ = verify_signed_attrs_for_test(&raw_bytes, &[0u8; 32]);
+    }
 }
 
 fn test_client() -> CloudPcClient {

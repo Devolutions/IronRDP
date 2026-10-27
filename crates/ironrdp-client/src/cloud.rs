@@ -15,7 +15,9 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderValue, USER_AGENT};
 use serde::Deserialize;
 use url::Url;
 use x509_cert::Certificate;
-use x509_cert::der::{Decode as _, Encode as _};
+use x509_cert::der::{Decode as _, Encode as _, Header, Length, Tag};
+use x509_cert::ext::pkix::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectKeyIdentifier};
+use x509_cert::name::Name;
 
 const CLOUD_PCS_URL: &str = "https://graph.microsoft.com/v1.0/me/cloudPCs";
 const MAX_PAGE_BYTES: usize = 1024 * 1024;
@@ -32,6 +34,7 @@ pub enum Error {
     InvalidResponse(serde_json::Error),
     InvalidXml(&'static str),
     InvalidLaunchUrl,
+    InvalidAvdUrl,
     LaunchDetailMismatch,
     InvalidRdpSignature(&'static str),
 }
@@ -48,6 +51,7 @@ impl fmt::Display for Error {
             Self::InvalidResponse(_) => f.write_str("invalid Cloud PC response"),
             Self::InvalidXml(reason) => write!(f, "invalid AVD feed XML: {reason}"),
             Self::InvalidLaunchUrl => f.write_str("invalid Cloud PC launch URL"),
+            Self::InvalidAvdUrl => f.write_str("invalid AVD service URL"),
             Self::LaunchDetailMismatch => f.write_str("Cloud PC launch detail does not match the requested device"),
             Self::InvalidRdpSignature(reason) => write!(f, "invalid .rdp file signature: {reason}"),
         }
@@ -70,8 +74,7 @@ impl core::error::Error for Error {
 /// Unknown properties are ignored; service-plan values are preserved as strings.
 ///
 /// [Cloud PC properties]: https://learn.microsoft.com/graph/api/resources/cloudpc?view=graph-rest-1.0
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct CloudPc {
     pub id: String,
     pub display_name: Option<String>,
@@ -89,12 +92,27 @@ impl CloudPc {
 }
 
 /// One Graph response page; callers decide whether and when to request another page.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CloudPcPage {
-    #[serde(rename = "value")]
     pub cloud_pcs: Vec<CloudPc>,
-    #[serde(rename = "@odata.nextLink")]
     pub next_link: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCloudPc {
+    id: String,
+    display_name: Option<String>,
+    service_plan_type: Option<String>,
+    provisioning_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawCloudPcPage {
+    #[serde(rename = "value")]
+    cloud_pcs: Vec<RawCloudPc>,
+    #[serde(rename = "@odata.nextLink")]
+    next_link: Option<String>,
 }
 
 /// Service-provided browser connection details for a signed-in user's Cloud PC.
@@ -166,11 +184,23 @@ impl CloudPcPage {
         if MAX_PAGE_BYTES < body.len() {
             return Err(Error::ResponseTooLarge);
         }
-        let page: Self = serde_json::from_slice(body).map_err(Error::InvalidResponse)?;
-        if let Some(next_link) = &page.next_link {
+        let raw: RawCloudPcPage = serde_json::from_slice(body).map_err(Error::InvalidResponse)?;
+        if let Some(next_link) = &raw.next_link {
             continuation_url_inner(next_link)?;
         }
-        Ok(page)
+        Ok(Self {
+            cloud_pcs: raw
+                .cloud_pcs
+                .into_iter()
+                .map(|pc| CloudPc {
+                    id: pc.id,
+                    display_name: pc.display_name,
+                    service_plan_type: pc.service_plan_type,
+                    provisioning_type: pc.provisioning_type,
+                })
+                .collect(),
+            next_link: raw.next_link,
+        })
     }
 }
 
@@ -424,12 +454,14 @@ impl CloudPcClient {
         {
             return Err(Error::ResponseTooLarge);
         }
+        // INVARIANT: body.len() <= MAX_PAGE_BYTES is maintained by the capacity check before each extend.
         let mut body = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
             .map_err(|error| Error::Transport(error.without_url()))?
         {
+            // body.len() <= MAX_PAGE_BYTES prevents underflow here.
             if MAX_PAGE_BYTES - body.len() < chunk.len() {
                 return Err(Error::ResponseTooLarge);
             }
@@ -587,7 +619,9 @@ fn host_matches_domain(host: &str, domain: &str) -> bool {
     host.as_bytes()[split - 1] == b'.' && host.as_bytes()[split..].eq_ignore_ascii_case(domain.as_bytes())
 }
 
-/// One tenant/workspace feed entry returned by RDWeb `/api/arm/feeddiscovery`.
+/// One tenant/workspace feed entry returned by [AVD feed discovery] (`/api/arm/feeddiscovery`).
+///
+/// [AVD feed discovery]: https://learn.microsoft.com/azure/virtual-desktop/users/connect-microsoft-store-source
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvdFeedSubscription {
     pub tenant_id: String,
@@ -599,7 +633,9 @@ pub struct AvdFeedSubscription {
     pub conditional_access_claims: Option<String>,
 }
 
-/// Kind of published AVD resource in a workspace feed.
+/// Kind of published AVD resource in a workspace webfeed (`Type` attribute in [MS-TSWP] §2.2.2.1.4 "`Resource`").
+///
+/// [MS-TSWP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tswp/
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AvdResourceKind {
     /// Full session desktop (`Desktop`).
@@ -608,7 +644,9 @@ pub enum AvdResourceKind {
     RemoteApp,
 }
 
-/// One published desktop or RemoteApp resource from an AVD workspace webfeed.
+/// One published desktop or RemoteApp resource from an AVD workspace webfeed ([MS-TSWP] §2.2.2.1.4 "`Resource`").
+///
+/// [MS-TSWP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tswp/
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvdResource {
     pub id: String,
@@ -622,7 +660,9 @@ pub struct AvdResource {
     pub embedded_rdp: Option<String>,
 }
 
-/// Parsed AVD workspace webfeed (`ResourceCollection`).
+/// Parsed AVD workspace webfeed ([MS-TSWP] §2.2.2 "`ResourceCollection` Schema").
+///
+/// [MS-TSWP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tswp/
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvdWorkspaceFeed {
     pub workspace_id: Option<String>,
@@ -637,17 +677,22 @@ fn validate_avd_service_url(url: &Url) -> Result<AvdCloudEnvironment, Error> {
         || url.port_or_known_default() != Some(443)
         || url.fragment().is_some()
     {
-        return Err(Error::InvalidLaunchUrl);
+        return Err(Error::InvalidAvdUrl);
     }
     let Some(url::Host::Domain(domain)) = url.host() else {
-        return Err(Error::InvalidLaunchUrl);
+        return Err(Error::InvalidAvdUrl);
     };
-    AvdCloudEnvironment::from_host(domain).ok_or(Error::InvalidLaunchUrl)
+    AvdCloudEnvironment::from_host(domain).ok_or(Error::InvalidAvdUrl)
 }
 
-/// Parse an RDWeb `/api/arm/feeddiscovery` XML document into workspace feed subscriptions.
+/// Parse an [AVD feed discovery] (`/api/arm/feeddiscovery`) XML document into workspace feed subscriptions.
+///
+/// A small local XML scanner is used rather than an external XML crate because RDWeb discovery and
+/// workspace feeds use two fixed element schemas without namespaces or DTDs.
+///
+/// [AVD feed discovery]: https://learn.microsoft.com/azure/virtual-desktop/users/connect-microsoft-store-source
 pub fn parse_avd_feed_discovery_xml(xml: &str) -> Result<Vec<AvdFeedSubscription>, Error> {
-    if xml.len() > MAX_PAGE_BYTES {
+    if MAX_PAGE_BYTES < xml.len() {
         return Err(Error::ResponseTooLarge);
     }
     let mut subscriptions = Vec::new();
@@ -701,9 +746,11 @@ pub fn parse_avd_feed_discovery_xml(xml: &str) -> Result<Vec<AvdFeedSubscription
     Ok(subscriptions)
 }
 
-/// Parse an RDWeb `application/x-msts-radc+xml` workspace webfeed XML document.
+/// Parse an RDWeb `application/x-msts-radc+xml` workspace webfeed XML document ([MS-TSWP] §2.2.2 "`ResourceCollection` Schema").
+///
+/// [MS-TSWP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tswp/
 pub fn parse_avd_workspace_feed_xml(xml: &str) -> Result<AvdWorkspaceFeed, Error> {
-    if xml.len() > MAX_PAGE_BYTES {
+    if MAX_PAGE_BYTES < xml.len() {
         return Err(Error::ResponseTooLarge);
     }
     let top_tags = find_xml_open_tags(xml)?;
@@ -726,26 +773,22 @@ pub fn parse_avd_workspace_feed_xml(xml: &str) -> Result<AvdWorkspaceFeed, Error
 
     let mut resources = Vec::new();
     let mut search_rest = xml;
-    while let Some((res_start, open_end)) = find_open_tag_span(search_rest, "Resource")? {
-        let after_start = search_rest
-            .get(res_start..)
-            .ok_or(Error::InvalidXml("invalid Resource span"))?;
-        let open_tag = after_start
-            .get(..=open_end)
+    while let Some((open_start, open_end)) = find_tag_span(search_rest, "Resource", false)? {
+        let open_tag = search_rest
+            .get(open_start..open_end)
             .ok_or(Error::InvalidXml("invalid Resource tag"))?;
         let (inner, next_offset) = if open_tag.ends_with("/>") {
-            ("", res_start + open_end + 1)
+            ("", open_end)
         } else {
-            let body_start = open_end + 1;
-            let body_slice = after_start
-                .get(body_start..)
+            let body_slice = search_rest
+                .get(open_end..)
                 .ok_or(Error::InvalidXml("invalid Resource body"))?;
-            let (close_rel_start, close_rel_end) = find_close_tag_span(body_slice, "Resource")?
+            let (close_rel_start, close_rel_end) = find_tag_span(body_slice, "Resource", true)?
                 .ok_or(Error::InvalidXml("missing closing </Resource> tag"))?;
             let inner_slice = body_slice
                 .get(..close_rel_start)
                 .ok_or(Error::InvalidXml("invalid Resource inner span"))?;
-            (inner_slice, res_start + body_start + close_rel_end)
+            (inner_slice, open_end + close_rel_end)
         };
         search_rest = search_rest
             .get(next_offset..)
@@ -856,7 +899,7 @@ fn skip_xml_special(after_lt: &str) -> Result<Option<usize>, Error> {
 
 fn matches_tag_name_at(after_name_start: &[u8], name: &str) -> bool {
     let name_bytes = name.as_bytes();
-    after_name_start.len() > name_bytes.len()
+    name_bytes.len() < after_name_start.len()
         && after_name_start[..name_bytes.len()].eq_ignore_ascii_case(name_bytes)
         && matches!(
             after_name_start[name_bytes.len()],
@@ -864,67 +907,47 @@ fn matches_tag_name_at(after_name_start: &[u8], name: &str) -> bool {
         )
 }
 
-fn find_open_tag_span(haystack: &str, name: &str) -> Result<Option<(usize, usize)>, Error> {
-    let mut offset = 0;
-    while let Some(tail) = haystack.get(offset..) {
+fn next_xml_tag(xml: &str, mut offset: usize) -> Result<Option<(bool, usize, usize)>, Error> {
+    while let Some(tail) = xml.get(offset..) {
         let Some(pos) = tail.find('<') else {
-            break;
+            return Ok(None);
         };
-        let idx = offset + pos;
-        let after = haystack.get(idx..).ok_or(Error::InvalidXml("invalid XML offset"))?;
+        let start = offset + pos;
+        let after = xml.get(start..).ok_or(Error::InvalidXml("invalid XML offset"))?;
         if let Some(skip_len) = skip_xml_special(after)? {
-            offset = idx + skip_len;
+            offset = start + skip_len;
             continue;
         }
-        let end = find_tag_end(after)?;
-        if !after.starts_with("</") && matches_tag_name_at(&after.as_bytes()[1..], name) {
-            return Ok(Some((idx, end)));
-        }
-        offset = idx + end + 1;
+        let end = start + find_tag_end(after)? + 1;
+        return Ok(Some((after.starts_with("</"), start, end)));
     }
     Ok(None)
 }
 
-fn find_close_tag_span(haystack: &str, name: &str) -> Result<Option<(usize, usize)>, Error> {
+fn find_tag_span(haystack: &str, name: &str, want_closing: bool) -> Result<Option<(usize, usize)>, Error> {
     let mut offset = 0;
-    while let Some(tail) = haystack.get(offset..) {
-        let Some(pos) = tail.find('<') else {
-            break;
-        };
-        let idx = offset + pos;
-        let after = haystack.get(idx..).ok_or(Error::InvalidXml("invalid XML offset"))?;
-        if let Some(skip_len) = skip_xml_special(after)? {
-            offset = idx + skip_len;
-            continue;
+    let prefix_len = if want_closing { 2 } else { 1 };
+    while let Some((is_closing, start, end)) = next_xml_tag(haystack, offset)? {
+        let tag_bytes = haystack
+            .as_bytes()
+            .get(start + prefix_len..end)
+            .ok_or(Error::InvalidXml("invalid XML tag span"))?;
+        if is_closing == want_closing && matches_tag_name_at(tag_bytes, name) {
+            return Ok(Some((start, end)));
         }
-        let end = find_tag_end(after)?;
-        if after.starts_with("</") && matches_tag_name_at(&after.as_bytes()[2..], name) {
-            return Ok(Some((idx, idx + end + 1)));
-        }
-        offset = idx + end + 1;
+        offset = end;
     }
     Ok(None)
 }
 
 fn find_xml_open_tags(xml: &str) -> Result<Vec<&str>, Error> {
     let mut tags = Vec::new();
-    let mut rest = xml;
-    while let Some(start) = rest.find('<') {
-        let after = rest.get(start..).ok_or(Error::InvalidXml("invalid XML offset"))?;
-        if let Some(skip_len) = skip_xml_special(after)? {
-            rest = after
-                .get(skip_len..)
-                .ok_or(Error::InvalidXml("invalid XML comment or CDATA span"))?;
-            continue;
+    let mut offset = 0;
+    while let Some((is_closing, start, end)) = next_xml_tag(xml, offset)? {
+        if !is_closing {
+            tags.push(xml.get(start..end).ok_or(Error::InvalidXml("invalid XML tag span"))?);
         }
-        let end = find_tag_end(after)?;
-        let tag = after.get(..=end).ok_or(Error::InvalidXml("invalid XML tag span"))?;
-        if !tag.starts_with("</") {
-            tags.push(tag);
-        }
-        rest = after
-            .get(end + 1..)
-            .ok_or(Error::InvalidXml("invalid XML continuation"))?;
+        offset = end;
     }
     Ok(tags)
 }
@@ -967,21 +990,18 @@ fn xml_attr(tag: &str, attr_name: &str) -> Result<Option<String>, Error> {
 }
 
 fn extract_xml_element_text<'a>(xml: &'a str, element_name: &str) -> Result<Option<&'a str>, Error> {
-    let Some((start_idx, open_end)) = find_open_tag_span(xml, element_name)? else {
+    let Some((open_start, open_end)) = find_tag_span(xml, element_name, false)? else {
         return Ok(None);
     };
-    let after = xml.get(start_idx..).ok_or(Error::InvalidXml("invalid element start"))?;
-    let open_tag = after
-        .get(..=open_end)
+    let open_tag = xml
+        .get(open_start..open_end)
         .ok_or(Error::InvalidXml("invalid element open tag"))?;
     if open_tag.ends_with("/>") {
         return Ok(None);
     }
-    let body = after
-        .get(open_end + 1..)
-        .ok_or(Error::InvalidXml("invalid element body"))?;
+    let body = xml.get(open_end..).ok_or(Error::InvalidXml("invalid element body"))?;
     let (close_pos, _) =
-        find_close_tag_span(body, element_name)?.ok_or(Error::InvalidXml("missing closing element tag"))?;
+        find_tag_span(body, element_name, true)?.ok_or(Error::InvalidXml("missing closing element tag"))?;
     body.get(..close_pos)
         .map(Some)
         .ok_or(Error::InvalidXml("invalid element body span"))
@@ -1020,57 +1040,64 @@ fn unescape_xml(input: &str) -> Result<String, Error> {
     Ok(out)
 }
 
-/// Sensitive `.rdp` settings that must be covered by `signscope` whenever present in a signed `.rdp` file,
-/// matching the 48 `SENSITIVE_SETTINGS` in `mstscax.dll` (`ironrdp-activex`) plus AVD and IronRDP client properties.
-const SENSITIVE_RDP_SETTINGS: &[&str] = &[
-    "full address",
-    "alternate full address",
-    "pcb",
-    "use redirection server name",
-    "server port",
-    "negotiate security layer",
-    "enablecredsspsupport",
-    "disableconnectionsharing",
-    "autoreconnection enabled",
-    "gatewayhostname",
-    "gatewayusagemethod",
-    "gatewayprofileusagemethod",
-    "gatewaycredentialssource",
-    "support url",
-    "promptcredentialonce",
-    "require pre-authentication",
-    "pre-authentication server address",
-    "alternate shell",
-    "shell working directory",
-    "remoteapplicationprogram",
-    "remoteapplicationexpandworkingdir",
-    "remoteapplicationmode",
-    "remoteapplicationguid",
-    "remoteapplicationname",
-    "remoteapplicationicon",
-    "remoteapplicationfile",
-    "remoteapplicationfileextensions",
-    "remoteapplicationcmdline",
-    "remoteapplicationexpandcmdline",
-    "prompt for credentials",
-    "authentication level",
-    "audiomode",
-    "redirectdrives",
-    "redirectprinters",
-    "redirectcomports",
-    "redirectsmartcards",
-    "redirectposdevices",
-    "redirectclipboard",
-    "devicestoredirect",
-    "drivestoredirect",
-    "loadbalanceinfo",
-    "redirectdirectx",
-    "rdgiskdcproxy",
-    "kdcproxyname",
-    "enablerdsaadauth",
-    "redirectwebauthn",
-    "redirecttextprocessing",
+/// Settings that a signature must cover whenever they are present, in the order `mstscax.dll`
+/// writes them to `signscope`. `Full Address` is mandatory.
+pub const MSTSC_SENSITIVE_SETTINGS: [&str; 48] = [
+    "Full Address",
+    "Alternate Full Address",
+    "PCB",
+    "Use Redirection Server Name",
+    "Server Port",
+    "Negotiate Security Layer",
+    "EnableCredSspSupport",
+    "DisableConnectionSharing",
+    "AutoReconnection Enabled",
+    "GatewayHostname",
+    "GatewayUsageMethod",
+    "GatewayProfileUsageMethod",
+    "GatewayCredentialsSource",
+    "Support URL",
+    "PromptCredentialOnce",
+    "Require pre-authentication",
+    "Pre-authentication server address",
+    "Alternate Shell",
+    "Shell Working Directory",
+    "RemoteApplicationProgram",
+    "RemoteApplicationExpandWorkingdir",
+    "RemoteApplicationMode",
+    "RemoteApplicationGuid",
+    "RemoteApplicationName",
+    "RemoteApplicationIcon",
+    "RemoteApplicationFile",
+    "RemoteApplicationFileExtensions",
+    "RemoteApplicationCmdLine",
+    "RemoteApplicationExpandCmdLine",
+    "Prompt For Credentials",
+    "Authentication Level",
+    "AudioMode",
+    "RedirectDrives",
+    "RedirectPrinters",
+    "RedirectCOMPorts",
+    "RedirectSmartCards",
+    "RedirectPOSDevices",
+    "RedirectClipboard",
+    "DevicesToRedirect",
+    "DrivesToRedirect",
+    "LoadBalanceInfo",
+    "RedirectDirectX",
+    "RDGIsKDCProxy",
+    "KDCProxyName",
+    "EnableRdsAadAuth",
+    "RedirectWebAuthn",
+    "RedirectTextProcessing",
     "allowed security protocols",
+];
+
+/// Maximum UTF-16 code units allowed in `signscope`, matching `mstscax.dll`.
+pub const MAX_SIGN_SCOPE_CHARS: usize = 0x800;
+
+/// Additional AVD and IronRDP client settings that must be covered by `signscope` whenever present.
+const EXTRA_SENSITIVE_RDP_SETTINGS: &[&str] = &[
     "armpath",
     "aadtenantid",
     "gatewaybrokeringtype",
@@ -1099,8 +1126,7 @@ const SENSITIVE_RDP_SETTINGS: &[&str] = &[
     "redirectlocation",
 ];
 
-const MAX_SIGN_SCOPE_CHARS: usize = 0x800;
-const SIGNATURE_HEADER_LEN: usize = 12;
+const SIGNATURE_HEADER_LEN: usize = 2 /* Version */ + 2 /* SignatureType */ + 4 /* Flags */ + 4 /* Length */;
 const SIGNATURE_VERSION_1: u16 = 1;
 const SIGNATURE_TYPE_CERTIFICATE: u16 = 1;
 
@@ -1120,6 +1146,14 @@ const OID_SHA256_WITH_RSA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0
 const OID_SHA384_WITH_RSA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0c];
 // OID 1.2.840.113549.1.1.13 (sha512WithRSAEncryption)
 const OID_SHA512_WITH_RSA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0d];
+// OID 1.2.840.10045.2.1 (id-ecPublicKey)
+const OID_EC_PUBLIC_KEY: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+// OID 1.2.840.10045.4.3.2 (ecdsa-with-SHA256)
+const OID_ECDSA_WITH_SHA256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
+// OID 1.2.840.10045.4.3.3 (ecdsa-with-SHA384)
+const OID_ECDSA_WITH_SHA384: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03];
+// OID 1.3.101.112 (id-Ed25519)
+const OID_ED25519: &[u8] = &[0x2b, 0x65, 0x70];
 
 // X.509 extension OIDs
 // 2.5.29.14 (id-ce-subjectKeyIdentifier)
@@ -1159,9 +1193,9 @@ pub struct VerifiedRdpSignature {
 /// Verify the `signscope` and detached PKCS#7 `signature` of an `.rdp` file against platform root certificates.
 ///
 /// Enforces sensitive-setting coverage (`VerifySensitiveSettings` in `RDCoreSdk.dll`), verifies
-/// the detached PKCS#7 RSA signature over the canonical UTF-16LE `signscope` lines, and validates
+/// the detached PKCS#7 signature over the canonical UTF-16LE `signscope` lines, and validates
 /// the X.509 certificate chain, validity window, CA constraints, and RDP signing EKU against the
-/// platform trust store.
+/// platform trust store without network CRL/OCSP revocation lookups.
 pub fn verify_rdp_signature(rdp_content: &str) -> Result<VerifiedRdpSignature, Error> {
     let (_, verified) = verify_and_canonicalize_rdp(rdp_content, None, None)?;
     Ok(verified)
@@ -1188,27 +1222,23 @@ pub fn verify_rdp_signature_at(
 }
 
 fn decode_rdp_bytes(body: &[u8]) -> Result<String, Error> {
-    if let Some(payload) = body.strip_prefix(&[0xFF, 0xFE]) {
+    if let Some((payload, from_bytes)) = body
+        .strip_prefix(&[0xFF, 0xFE])
+        .map(|b| (b, u16::from_le_bytes as fn([u8; 2]) -> u16))
+        .or_else(|| {
+            body.strip_prefix(&[0xFE, 0xFF])
+                .map(|b| (b, u16::from_be_bytes as fn([u8; 2]) -> u16))
+        })
+    {
         if !payload.len().is_multiple_of(2) {
-            return Err(Error::InvalidRdpSignature("RDP file has odd UTF-16LE byte length"));
+            return Err(Error::InvalidRdpSignature("RDP file has odd UTF-16 byte length"));
         }
         let units: Vec<u16> = payload
             .chunks_exact(2)
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .map(|chunk| from_bytes([chunk[0], chunk[1]]))
             .collect();
         let text =
-            String::from_utf16(&units).map_err(|_| Error::InvalidRdpSignature("RDP file is not valid UTF-16LE"))?;
-        Ok(text.trim_end_matches('\0').to_owned())
-    } else if let Some(payload) = body.strip_prefix(&[0xFE, 0xFF]) {
-        if !payload.len().is_multiple_of(2) {
-            return Err(Error::InvalidRdpSignature("RDP file has odd UTF-16BE byte length"));
-        }
-        let units: Vec<u16> = payload
-            .chunks_exact(2)
-            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
-            .collect();
-        let text =
-            String::from_utf16(&units).map_err(|_| Error::InvalidRdpSignature("RDP file is not valid UTF-16BE"))?;
+            String::from_utf16(&units).map_err(|_| Error::InvalidRdpSignature("RDP file is not valid UTF-16"))?;
         Ok(text.trim_end_matches('\0').to_owned())
     } else {
         let text =
@@ -1234,8 +1264,8 @@ fn verify_and_canonicalize_rdp(
         .strip_prefix('\u{feff}')
         .unwrap_or(rdp_content)
         .trim_end_matches('\0');
-    let mut records_by_key: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut values_by_key: std::collections::HashMap<String, (&str, String)> = std::collections::HashMap::new();
+    let mut normalized_doc = String::new();
 
     for raw_line in content.split('\n') {
         let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
@@ -1263,11 +1293,15 @@ fn verify_and_canonicalize_rdp(
             }
             _ => return Err(Error::InvalidRdpSignature("unsupported .rdp property type")),
         };
-        let canonical_line = format!("{key_lower}:{ty}:{canonical_val}");
-        if records_by_key.insert(key_lower.clone(), canonical_line).is_some() {
+        normalized_doc.push_str(&key_lower);
+        normalized_doc.push(':');
+        normalized_doc.push_str(ty);
+        normalized_doc.push(':');
+        normalized_doc.push_str(&canonical_val);
+        normalized_doc.push_str("\r\n");
+        if values_by_key.insert(key_lower, (ty, canonical_val)).is_some() {
             return Err(Error::InvalidRdpSignature("duplicate .rdp property"));
         }
-        values_by_key.insert(key_lower, (ty, canonical_val));
     }
 
     let (signscope_ty, signscope_value) = values_by_key
@@ -1300,12 +1334,18 @@ fn verify_and_canonicalize_rdp(
         return Err(Error::InvalidRdpSignature("signscope is empty"));
     }
 
-    if !records_by_key.contains_key("full address") {
+    if !values_by_key.contains_key("full address") {
         return Err(Error::InvalidRdpSignature("missing full address property"));
     }
 
-    for sensitive in SENSITIVE_RDP_SETTINGS {
-        if records_by_key.contains_key(*sensitive) && !signed_scope.iter().any(|s| s.eq_ignore_ascii_case(sensitive)) {
+    for sensitive in MSTSC_SENSITIVE_SETTINGS
+        .iter()
+        .chain(EXTRA_SENSITIVE_RDP_SETTINGS.iter())
+    {
+        let sensitive_lower = sensitive.to_ascii_lowercase();
+        if values_by_key.contains_key(&sensitive_lower)
+            && !signed_scope.iter().any(|s| s.eq_ignore_ascii_case(sensitive))
+        {
             return Err(Error::InvalidRdpSignature(
                 "sensitive .rdp setting is not covered by signscope",
             ));
@@ -1314,16 +1354,19 @@ fn verify_and_canonicalize_rdp(
 
     let mut canonical = String::new();
     for scope_key in &signed_scope {
-        let line = records_by_key
-            .get(&scope_key.to_ascii_lowercase())
+        let key_lower = scope_key.to_ascii_lowercase();
+        let (ty, val) = values_by_key
+            .get(&key_lower)
             .ok_or(Error::InvalidRdpSignature("property listed in signscope is missing"))?;
-        canonical.push_str(line);
+        canonical.push_str(&key_lower);
+        canonical.push(':');
+        canonical.push_str(ty);
+        canonical.push(':');
+        canonical.push_str(val);
         canonical.push_str("\r\n");
     }
-    let signscope_line = records_by_key
-        .get("signscope")
-        .ok_or(Error::InvalidRdpSignature("missing signscope property"))?;
-    canonical.push_str(signscope_line);
+    canonical.push_str("signscope:s:");
+    canonical.push_str(signscope_value);
     canonical.push_str("\r\n");
 
     let mut canonical_utf16le: Vec<u8> = Vec::with_capacity((canonical.len() + 1) * 2);
@@ -1373,18 +1416,23 @@ fn verify_and_canonicalize_rdp(
         _ => return Err(Error::InvalidRdpSignature("unsupported PKCS#7 digest algorithm")),
     };
 
-    match parsed_pkcs7.sig_alg_oid {
-        OID_RSA_ENCRYPTION => {}
-        OID_SHA256_WITH_RSA if hash_alg == HashAlgorithm::SHA2_256 => {}
-        OID_SHA384_WITH_RSA if hash_alg == HashAlgorithm::SHA2_384 => {}
-        OID_SHA512_WITH_RSA if hash_alg == HashAlgorithm::SHA2_512 => {}
+    let sig_algo = match parsed_pkcs7.sig_alg_oid {
+        OID_RSA_ENCRYPTION => SignatureAlgorithm::RsaPkcs1v15(hash_alg),
+        OID_SHA256_WITH_RSA if hash_alg == HashAlgorithm::SHA2_256 => SignatureAlgorithm::RsaPkcs1v15(hash_alg),
+        OID_SHA384_WITH_RSA if hash_alg == HashAlgorithm::SHA2_384 => SignatureAlgorithm::RsaPkcs1v15(hash_alg),
+        OID_SHA512_WITH_RSA if hash_alg == HashAlgorithm::SHA2_512 => SignatureAlgorithm::RsaPkcs1v15(hash_alg),
+        OID_EC_PUBLIC_KEY if matches!(hash_alg, HashAlgorithm::SHA2_256 | HashAlgorithm::SHA2_384) => {
+            SignatureAlgorithm::Ecdsa(hash_alg)
+        }
+        OID_ECDSA_WITH_SHA256 if hash_alg == HashAlgorithm::SHA2_256 => SignatureAlgorithm::Ecdsa(hash_alg),
+        OID_ECDSA_WITH_SHA384 if hash_alg == HashAlgorithm::SHA2_384 => SignatureAlgorithm::Ecdsa(hash_alg),
         _ => return Err(Error::InvalidRdpSignature("unsupported PKCS#7 signature algorithm")),
-    }
+    };
 
     let signed_payload = if let Some(attrs_body) = parsed_pkcs7.signed_attrs_raw {
         let expected_digest = hash_alg.digest(&canonical_utf16le);
         verify_signed_attrs(attrs_body, &expected_digest)?;
-        encode_der_set(attrs_body)
+        encode_der_set(attrs_body)?
     } else {
         canonical_utf16le
     };
@@ -1413,7 +1461,6 @@ fn verify_and_canonicalize_rdp(
         .map_err(|_| Error::InvalidRdpSignature("failed to encode signer SPKI"))?;
     let public_key =
         PublicKey::from_der(&spki_der).map_err(|_| Error::InvalidRdpSignature("unsupported signer public key"))?;
-    let sig_algo = SignatureAlgorithm::RsaPkcs1v15(hash_alg);
     if sig_algo
         .verify(&public_key, &signed_payload, parsed_pkcs7.signature_bytes)
         .is_err()
@@ -1443,12 +1490,6 @@ fn verify_and_canonicalize_rdp(
 
     verify_certificate_chain(leaf_der, leaf_cert, &parsed_certs, &parsed_anchors, validation_time)?;
 
-    let mut normalized_doc = canonical;
-    if let Some(sig_line) = records_by_key.get("signature") {
-        normalized_doc.push_str(sig_line);
-        normalized_doc.push_str("\r\n");
-    }
-
     let signer_subject = leaf_cert.tbs_certificate().subject().to_string();
     Ok((
         normalized_doc,
@@ -1461,10 +1502,7 @@ fn verify_and_canonicalize_rdp(
 }
 
 enum SignerId<'a> {
-    IssuerAndSerialNumber {
-        issuer_der: &'a [u8],
-        serial_bytes: &'a [u8],
-    },
+    IssuerAndSerialNumber { issuer: Name, serial_bytes: &'a [u8] },
     SubjectKeyIdentifier(&'a [u8]),
 }
 
@@ -1479,16 +1517,10 @@ struct ParsedPkcs7<'a> {
 
 fn matches_signer_id(cert: &Certificate, signer_id: &SignerId<'_>) -> bool {
     match signer_id {
-        SignerId::IssuerAndSerialNumber {
-            issuer_der,
-            serial_bytes,
-        } => {
-            let Ok(cert_issuer_der) = cert.tbs_certificate().issuer().to_der() else {
-                return false;
-            };
+        SignerId::IssuerAndSerialNumber { issuer, serial_bytes } => {
             let cert_serial = trim_leading_zero_byte(cert.tbs_certificate().serial_number().as_bytes());
             let expected_serial = trim_leading_zero_byte(serial_bytes);
-            cert_issuer_der.as_slice() == *issuer_der && cert_serial == expected_serial
+            cert.tbs_certificate().issuer() == issuer && cert_serial == expected_serial
         }
         SignerId::SubjectKeyIdentifier(expected_ski) => {
             let Some(exts) = cert.tbs_certificate().extensions() else {
@@ -1496,15 +1528,15 @@ fn matches_signer_id(cert: &Certificate, signer_id: &SignerId<'_>) -> bool {
             };
             exts.iter().any(|ext| {
                 ext.extn_id.as_bytes() == OID_EXT_SKI
-                    && read_der_tlv(ext.extn_value.as_bytes())
-                        .is_some_and(|(tag, val, rest)| tag == 0x04 && rest.is_empty() && val == *expected_ski)
+                    && SubjectKeyIdentifier::from_der(ext.extn_value.as_bytes())
+                        .is_ok_and(|ski| ski.0.as_bytes() == *expected_ski)
             })
         }
     }
 }
 
 fn trim_leading_zero_byte(bytes: &[u8]) -> &[u8] {
-    if bytes.len() > 1 && bytes[0] == 0 {
+    if 1 < bytes.len() && bytes[0] == 0 {
         &bytes[1..]
     } else {
         bytes
@@ -1561,7 +1593,7 @@ fn verify_signed_attrs(raw_attributes: &[u8], expected_digest: &[u8]) -> Result<
         rest = next_rest;
     }
 
-    if message_digest_count != 1 || content_type_count > 1 {
+    if message_digest_count != 1 || 1 < content_type_count {
         return Err(Error::InvalidRdpSignature(
             "PKCS#7 signedAttrs must contain exactly one messageDigest",
         ));
@@ -1660,22 +1692,25 @@ fn check_leaf_extensions(leaf: &Certificate) -> Result<(), Error> {
         let oid = ext.extn_id.as_bytes();
         let val = ext.extn_value.as_bytes();
         if oid == OID_EXT_BASIC_CONSTRAINTS {
-            let (is_ca, _) = parse_basic_constraints(val)?;
-            if is_ca {
+            let bc = BasicConstraints::from_der(val)
+                .map_err(|_| Error::InvalidRdpSignature("malformed BasicConstraints"))?;
+            if bc.ca {
                 return Err(Error::InvalidRdpSignature("signer certificate cannot be a CA"));
             }
         } else if oid == OID_EXT_KEY_USAGE {
-            let ku = parse_key_usage(val)?;
-            if (ku & 0x8000) == 0 {
+            let ku = KeyUsage::from_der(val).map_err(|_| Error::InvalidRdpSignature("malformed KeyUsage"))?;
+            if !ku.digital_signature() {
                 return Err(Error::InvalidRdpSignature(
                     "signer certificate KeyUsage lacks digitalSignature",
                 ));
             }
         } else if oid == OID_EXT_EKU {
-            let eku_oids = parse_extended_key_usage(val)?;
-            has_rdp_eku = eku_oids
-                .iter()
-                .any(|&u| u == OID_EKU_SERVER_AUTH || u == OID_EKU_CODE_SIGNING || u == OID_EKU_MS_RDP_SIGNING);
+            let eku = ExtendedKeyUsage::from_der(val)
+                .map_err(|_| Error::InvalidRdpSignature("malformed ExtendedKeyUsage"))?;
+            has_rdp_eku = eku.0.iter().any(|u| {
+                let bytes = u.as_bytes();
+                bytes == OID_EKU_SERVER_AUTH || bytes == OID_EKU_CODE_SIGNING || bytes == OID_EKU_MS_RDP_SIGNING
+            });
         } else if ext.critical && oid != OID_EXT_SAN && oid != OID_EXT_CERT_POLICIES {
             return Err(Error::InvalidRdpSignature(
                 "unrecognized critical extension in signer certificate",
@@ -1699,12 +1734,13 @@ fn check_ca_extensions(ca: &Certificate, intermediate_count: usize, is_trust_anc
         let oid = ext.extn_id.as_bytes();
         let val = ext.extn_value.as_bytes();
         if oid == OID_EXT_BASIC_CONSTRAINTS {
-            let (is_ca, path_len) = parse_basic_constraints(val)?;
-            if !is_ca {
+            let bc = BasicConstraints::from_der(val)
+                .map_err(|_| Error::InvalidRdpSignature("malformed BasicConstraints"))?;
+            if !bc.ca {
                 return Err(Error::InvalidRdpSignature("issuer certificate is not a CA"));
             }
-            if let Some(max_len) = path_len
-                && max_len < intermediate_count
+            if let Some(max_len) = bc.path_len_constraint
+                && usize::from(max_len) < intermediate_count
             {
                 return Err(Error::InvalidRdpSignature(
                     "CA pathLenConstraint exceeded in PKCS#7 chain",
@@ -1712,14 +1748,19 @@ fn check_ca_extensions(ca: &Certificate, intermediate_count: usize, is_trust_anc
             }
             has_ca_basic_constraints = true;
         } else if oid == OID_EXT_KEY_USAGE {
-            let ku = parse_key_usage(val)?;
-            if (ku & 0x0400) == 0 {
+            let ku = KeyUsage::from_der(val).map_err(|_| Error::InvalidRdpSignature("malformed KeyUsage"))?;
+            if !ku.key_cert_sign() {
                 return Err(Error::InvalidRdpSignature("CA certificate KeyUsage lacks keyCertSign"));
             }
         } else if oid == OID_EXT_EKU && !is_trust_anchor {
-            let eku_oids = parse_extended_key_usage(val)?;
-            let allowed = eku_oids.iter().any(|&u| {
-                u == OID_EKU_SERVER_AUTH || u == OID_EKU_CODE_SIGNING || u == OID_EKU_MS_RDP_SIGNING || u == OID_EKU_ANY
+            let eku = ExtendedKeyUsage::from_der(val)
+                .map_err(|_| Error::InvalidRdpSignature("malformed ExtendedKeyUsage"))?;
+            let allowed = eku.0.iter().any(|u| {
+                let bytes = u.as_bytes();
+                bytes == OID_EKU_SERVER_AUTH
+                    || bytes == OID_EKU_CODE_SIGNING
+                    || bytes == OID_EKU_MS_RDP_SIGNING
+                    || bytes == OID_EKU_ANY
             });
             if !allowed {
                 return Err(Error::InvalidRdpSignature(
@@ -1740,89 +1781,18 @@ fn check_ca_extensions(ca: &Certificate, intermediate_count: usize, is_trust_anc
     Ok(())
 }
 
-fn parse_basic_constraints(extn_value: &[u8]) -> Result<(bool, Option<usize>), Error> {
-    let (tag, mut rest, trailing) =
-        read_der_tlv(extn_value).ok_or(Error::InvalidRdpSignature("malformed BasicConstraints"))?;
-    if tag != 0x30 || !trailing.is_empty() {
-        return Err(Error::InvalidRdpSignature("malformed BasicConstraints"));
-    }
-    let mut is_ca = false;
-    let mut path_len = None;
-    if !rest.is_empty() {
-        let (first_tag, first_val, next_rest) =
-            read_der_tlv(rest).ok_or(Error::InvalidRdpSignature("malformed BasicConstraints"))?;
-        if first_tag == 0x01 {
-            if first_val.len() != 1 {
-                return Err(Error::InvalidRdpSignature("malformed BasicConstraints cA boolean"));
-            }
-            is_ca = first_val[0] != 0;
-            rest = next_rest;
-        }
-    }
-    if !rest.is_empty() {
-        let (len_tag, len_val, next_rest) =
-            read_der_tlv(rest).ok_or(Error::InvalidRdpSignature("malformed BasicConstraints pathLen"))?;
-        if len_tag != 0x02
-            || !next_rest.is_empty()
-            || len_val.is_empty()
-            || len_val.len() > 4
-            || (len_val[0] & 0x80) != 0
-            || !is_ca
-        {
-            return Err(Error::InvalidRdpSignature("malformed BasicConstraints pathLen"));
-        }
-        let mut n = 0usize;
-        for &b in len_val {
-            n = (n << 8) | usize::from(b);
-        }
-        path_len = Some(n);
-    }
-    Ok((is_ca, path_len))
-}
-
-fn parse_key_usage(extn_value: &[u8]) -> Result<u16, Error> {
-    let (tag, bit_string, trailing) =
-        read_der_tlv(extn_value).ok_or(Error::InvalidRdpSignature("malformed KeyUsage"))?;
-    if tag != 0x03 || !trailing.is_empty() || bit_string.is_empty() || bit_string[0] > 7 {
-        return Err(Error::InvalidRdpSignature("malformed KeyUsage"));
-    }
-    let bytes = &bit_string[1..];
-    if bytes.is_empty() {
-        return Ok(0);
-    }
-    let b0 = u16::from(bytes[0]);
-    let b1 = bytes.get(1).copied().map_or(0, u16::from);
-    Ok((b0 << 8) | b1)
-}
-
-fn parse_extended_key_usage(extn_value: &[u8]) -> Result<Vec<&[u8]>, Error> {
-    let (tag, mut rest, trailing) =
-        read_der_tlv(extn_value).ok_or(Error::InvalidRdpSignature("malformed ExtendedKeyUsage"))?;
-    if tag != 0x30 || !trailing.is_empty() || rest.is_empty() {
-        return Err(Error::InvalidRdpSignature("malformed ExtendedKeyUsage"));
-    }
-    let mut oids = Vec::new();
-    while !rest.is_empty() {
-        let (oid_tag, oid_bytes, next_rest) =
-            read_der_tlv(rest).ok_or(Error::InvalidRdpSignature("malformed ExtendedKeyUsage OID"))?;
-        if oid_tag != 0x06 || oid_bytes.is_empty() {
-            return Err(Error::InvalidRdpSignature("malformed ExtendedKeyUsage OID"));
-        }
-        oids.push(oid_bytes);
-        rest = next_rest;
-    }
-    Ok(oids)
-}
-
 fn verify_x509_signature(child: &Certificate, issuer: &Certificate) -> Result<(), Error> {
     let sig_oid = child.signature_algorithm().oid.as_bytes();
     if child.tbs_certificate().signature().oid.as_bytes() != sig_oid || child.signature().unused_bits() != 0 {
         return Err(Error::InvalidRdpSignature("certificate signature algorithm mismatch"));
     }
-    let hash_alg = match sig_oid {
-        OID_SHA256_WITH_RSA => HashAlgorithm::SHA2_256,
-        OID_SHA384_WITH_RSA => HashAlgorithm::SHA2_384,
-        OID_SHA512_WITH_RSA => HashAlgorithm::SHA2_512,
+    let sig_alg = match sig_oid {
+        OID_SHA256_WITH_RSA => SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_256),
+        OID_SHA384_WITH_RSA => SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_384),
+        OID_SHA512_WITH_RSA => SignatureAlgorithm::RsaPkcs1v15(HashAlgorithm::SHA2_512),
+        OID_ECDSA_WITH_SHA256 => SignatureAlgorithm::Ecdsa(HashAlgorithm::SHA2_256),
+        OID_ECDSA_WITH_SHA384 => SignatureAlgorithm::Ecdsa(HashAlgorithm::SHA2_384),
+        OID_ED25519 => SignatureAlgorithm::Ed25519,
         _ => {
             return Err(Error::InvalidRdpSignature(
                 "unsupported certificate signature algorithm",
@@ -1841,27 +1811,20 @@ fn verify_x509_signature(child: &Certificate, issuer: &Certificate) -> Result<()
         .to_der()
         .map_err(|_| Error::InvalidRdpSignature("failed to encode TBS certificate"))?;
     let sig_bytes = child.signature().raw_bytes();
-    SignatureAlgorithm::RsaPkcs1v15(hash_alg)
+    sig_alg
         .verify(&issuer_pk, &tbs_der, sig_bytes)
         .map_err(|_| Error::InvalidRdpSignature("certificate chain signature verification failed"))
 }
 
-fn encode_der_set(content: &[u8]) -> Vec<u8> {
+fn encode_der_set(content: &[u8]) -> Result<Vec<u8>, Error> {
+    let len = Length::try_from(content.len()).map_err(|_| Error::InvalidRdpSignature("signedAttrs length overflow"))?;
+    let header = Header::new(Tag::Set, len);
     let mut out = Vec::with_capacity(content.len() + 5);
-    out.push(0x31);
-    let len = u32::try_from(content.len()).unwrap_or(u32::MAX);
-    let [_, b2, b1, b0] = len.to_be_bytes();
-    if len < 0x80 {
-        out.push(b0);
-    } else if len <= 0xff {
-        out.extend_from_slice(&[0x81, b0]);
-    } else if len <= 0xffff {
-        out.extend_from_slice(&[0x82, b1, b0]);
-    } else {
-        out.extend_from_slice(&[0x83, b2, b1, b0]);
-    }
+    header
+        .encode_to_vec(&mut out)
+        .map_err(|_| Error::InvalidRdpSignature("failed to encode signedAttrs SET header"))?;
     out.extend_from_slice(content);
-    out
+    Ok(out)
 }
 
 fn parse_pkcs7_signed_data(der: &[u8]) -> Result<ParsedPkcs7<'_>, Error> {
@@ -1959,16 +1922,14 @@ fn parse_pkcs7_signed_data(der: &[u8]) -> Result<ParsedPkcs7<'_>, Error> {
             return Err(Error::InvalidRdpSignature("invalid SignerInfo issuer"));
         }
         let issuer_len = identifier_body.len() - after_issuer.len();
-        let issuer_der = &identifier_body[..issuer_len];
+        let issuer = Name::from_der(&identifier_body[..issuer_len])
+            .map_err(|_| Error::InvalidRdpSignature("invalid SignerInfo issuer"))?;
         let (serial_tag, serial_bytes, after_serial) =
             read_der_tlv(after_issuer).ok_or(Error::InvalidRdpSignature("missing SignerInfo serialNumber"))?;
         if serial_tag != 0x02 || !after_serial.is_empty() || serial_bytes.is_empty() {
             return Err(Error::InvalidRdpSignature("invalid SignerInfo serialNumber"));
         }
-        SignerId::IssuerAndSerialNumber {
-            issuer_der,
-            serial_bytes,
-        }
+        SignerId::IssuerAndSerialNumber { issuer, serial_bytes }
     } else if identifier_tag == 0x80 {
         if identifier_body.is_empty() {
             return Err(Error::InvalidRdpSignature("empty SignerInfo subjectKeyIdentifier"));
@@ -2040,14 +2001,14 @@ fn read_der_tlv(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
         (usize::from(len_byte), 2)
     } else {
         let num_octets = usize::from(len_byte & 0x7f);
-        if num_octets == 0 || num_octets > 4 || input.len() < 2 + num_octets {
+        if num_octets == 0 || 4 < num_octets || input.len() < 2 + num_octets {
             return None;
         }
         let mut len = 0usize;
         for &b in &input[2..2 + num_octets] {
             len = (len << 8) | usize::from(b);
         }
-        if len < 0x80 || (num_octets > 1 && input[2] == 0) {
+        if len < 0x80 || (1 < num_octets && input[2] == 0) {
             return None;
         }
         (len, 2 + num_octets)
