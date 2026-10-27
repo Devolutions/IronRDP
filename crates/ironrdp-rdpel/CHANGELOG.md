@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [[0.0.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpel-v0.0.1...ironrdp-rdpel-v0.0.2)] - 2026-10-27
+
+
+
 ## [[0.0.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpel-v0.0.0...ironrdp-rdpel-v0.0.1)] - 2026-10-23
 
 ### <!-- 7 -->Build
