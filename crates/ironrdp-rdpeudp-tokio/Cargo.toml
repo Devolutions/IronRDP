@@ -21,6 +21,12 @@ doctest = false
 # `ClientConfig::builder()` is called.
 rustls-aws-lc-rs = ["tokio-rustls/aws_lc_rs"]
 rustls-ring = ["tokio-rustls/ring"]
+# `src/stun.rs` remains un-gated and dependency-free so default builds do not
+# pull in `webrtc-ice`/`stun`. Enabling `ice` pulls `webrtc-util` 0.17 and
+# `webrtc-mdns` 0.17, which transitively depend on `nix` 0.26 and `socket2` 0.5
+# alongside the workspace's newer major versions until upstream `webrtc-rs`
+# updates its dependencies.
+ice = ["dep:webrtc-ice", "dep:webrtc-util"]
 
 [dependencies]
 ironrdp-async = { path = "../ironrdp-async", version = "0.11" } # public
@@ -38,8 +44,14 @@ sha2 = "0.10"
 # default must be installed before connecting.
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] } # public
 tracing = { version = "0.1", features = ["log"] }
+webrtc-ice = { version = "0.17.2", optional = true }
+webrtc-util = { version = "0.17.1", default-features = false, features = ["conn"], optional = true }
 
 [dev-dependencies]
+proptest.workspace = true
+rcgen = "0.14"
+rstest.workspace = true
+turn = "0.17.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 
 [lints]
