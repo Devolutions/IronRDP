@@ -57,6 +57,13 @@ struct MotionTracker {
 
 impl MotionTracker {
     fn observe(&mut self, position: (u16, u16), history: Vec<NativePoint>) -> Movement {
+        if self.position.is_some() && history.is_empty() {
+            self.position = Some(position);
+            return Movement {
+                serial: self.serial,
+                from_client: true,
+            };
+        }
         if self.position != Some(position) || self.history != history {
             self.serial = self.serial.wrapping_add(1);
             self.position = Some(position);
@@ -704,6 +711,28 @@ mod tests {
                 y: 338
             }))
         ));
+    }
+
+    // oracle: mutant treating ERROR_POINT_NOT_FOUND (empty history) after a client move as a server warp rewinds the client cursor.
+    #[test]
+    fn missing_mouse_history_after_client_movement_does_not_warp_pointer() {
+        let mut motion = MotionTracker {
+            input_marker: INPUT_MARKER,
+            ..Default::default()
+        };
+        let first = Snapshot::HiddenAt {
+            x: 400,
+            y: 300,
+            movement: motion.observe((400, 300), vec![(400, 300, 100, INPUT_MARKER)]),
+        };
+        let second = Snapshot::HiddenAt {
+            x: 450,
+            y: 320,
+            movement: motion.observe((450, 320), Vec::new()),
+        };
+        let mut updates = VecDeque::new();
+        second.updates(Some(&first), &mut updates);
+        assert!(updates.is_empty());
     }
 
     // oracle: mutant duplicate cursor states resend shapes, or a hidden cursor cannot become visible again.

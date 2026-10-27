@@ -130,7 +130,41 @@ impl ConnectionHandler for RemoteAppObserver {
                 enabled,
                 client_rail_support_level: None,
                 window_capability_set: None,
+                client_info_flags: flags.bits(),
+                ..RemoteAppSettings::default()
             });
+        Ok(())
+    }
+
+    fn on_client_session_config(
+        &mut self,
+        flags: ClientInfoFlags,
+        performance_flags: ironrdp_pdu::rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: ironrdp_server::DesktopSize,
+    ) -> ServerResult<()> {
+        let mut settings = self
+            .0
+            .remote_app
+            .settings
+            .lock()
+            .map_err(|_| ServerError::reason("native RemoteApp settings", "lock poisoned"))?;
+        let settings = settings
+            .as_mut()
+            .ok_or_else(|| ServerError::reason("native RemoteApp settings", "Client Info is unavailable"))?;
+        settings.client_info_flags = flags.bits();
+        settings.performance_flags = performance_flags.bits();
+        settings.keyboard_layout = keyboard_layout;
+        settings.keyboard_type = u32::from(keyboard_type);
+        settings.keyboard_subtype = keyboard_subtype;
+        settings.keyboard_function_key = keyboard_functional_keys_count;
+        settings.ime_file_name = ime_file_name.to_owned();
+        settings.desktop_width = desktop_size.width;
+        settings.desktop_height = desktop_size.height;
         Ok(())
     }
 

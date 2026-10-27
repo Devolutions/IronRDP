@@ -39,8 +39,7 @@ use windows::Win32::Foundation::{
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{
     DuplicateTokenEx, IsValidSecurityDescriptor, LookupAccountNameW, PSECURITY_DESCRIPTOR, PSID, RevertToSelf,
-    SID_NAME_USE, SecurityImpersonation, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
-    TokenImpersonation, TokenPrimary,
+    SID_NAME_USE, SecurityImpersonation, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY, TokenImpersonation,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_OVERLAPPED, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -73,10 +72,7 @@ use windows::Win32::System::Services::{
     SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING, SERVICE_STATUS, StartServiceW,
 };
 use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
-use windows::Win32::System::Threading::{
-    CreateProcessAsUserW, GetCurrentThread, OpenThreadToken, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
-    SetThreadToken,
-};
+use windows::Win32::System::Threading::{GetCurrentThread, OpenThreadToken, SetThreadToken};
 use windows::core::AgileReference;
 use windows_core::{BOOL, GUID, HRESULT, IUnknown, IUnknownImpl, Interface as _, PCSTR, PCWSTR, PWSTR, implement};
 
@@ -2814,7 +2810,6 @@ struct ComProtocolConnection {
     idd_last_driver_load_session_id: AtomicU32,
     idd_driver_load_notified: AtomicBool,
     driver_handle_raw: AtomicUsize,
-    user_shell_bootstrap_attempted: AtomicBool,
     ready_notified: Mutex<bool>,
     cached_credentials: Mutex<Option<(String, String, String)>>,
     last_input_time: Mutex<u64>,
@@ -3049,7 +3044,6 @@ impl ComProtocolConnection {
             idd_last_driver_load_session_id: AtomicU32::new(0),
             idd_driver_load_notified: AtomicBool::new(false),
             driver_handle_raw: AtomicUsize::new(0),
-            user_shell_bootstrap_attempted: AtomicBool::new(false),
             ready_notified: Mutex::new(false),
             cached_credentials: Mutex::new(None),
             last_input_time: Mutex::new(0),
@@ -3413,23 +3407,6 @@ impl ComProtocolConnection {
         );
     }
 
-    fn duplicate_primary_token(user_token: HANDLE) -> windows_core::Result<HANDLE> {
-        let mut primary_token = HANDLE::default();
-
-        unsafe {
-            DuplicateTokenEx(
-                user_token,
-                TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY,
-                None,
-                SecurityImpersonation,
-                TokenPrimary,
-                &mut primary_token,
-            )?;
-        }
-
-        Ok(primary_token)
-    }
-
     fn duplicate_impersonation_token(
         token: HANDLE,
         desired_access: windows::Win32::Security::TOKEN_ACCESS_MASK,
@@ -3506,246 +3483,6 @@ impl ComProtocolConnection {
         };
 
         Self::duplicate_impersonation_token(token, TOKEN_IMPERSONATE | TOKEN_QUERY)
-    }
-
-    fn launch_explorer_with_token(session_id: u32, user_token: HANDLE) -> windows_core::Result<u32> {
-        let exe_path = r"C:\Windows\explorer.exe";
-        let app_name: Vec<u16> = exe_path.encode_utf16().chain(Some(0)).collect();
-        let mut cmd_line: Vec<u16> = format!("\"{exe_path}\"").encode_utf16().chain(Some(0)).collect();
-        let mut desktop_w: Vec<u16> = "winsta0\\default".encode_utf16().chain(Some(0)).collect();
-
-        let startup_info = STARTUPINFOW {
-            cb: u32::try_from(size_of::<STARTUPINFOW>()).unwrap_or(0),
-            lpDesktop: PWSTR(desktop_w.as_mut_ptr()),
-            ..Default::default()
-        };
-        let mut process_info = PROCESS_INFORMATION::default();
-
-        unsafe {
-            CreateProcessAsUserW(
-                Some(user_token),
-                PCWSTR(app_name.as_ptr()),
-                Some(PWSTR(cmd_line.as_mut_ptr())),
-                None,
-                None,
-                false,
-                PROCESS_CREATION_FLAGS(0),
-                None,
-                None,
-                &startup_info,
-                &mut process_info,
-            )?;
-        }
-
-        unsafe {
-            let _ = CloseHandle(process_info.hThread);
-            let _ = CloseHandle(process_info.hProcess);
-            let _ = CloseHandle(user_token);
-        }
-
-        debug_log_line(&format!(
-            "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_SUCCESS session_id={session_id} explorer_pid={}",
-            process_info.dwProcessId,
-        ));
-
-        Ok(process_info.dwProcessId)
-    }
-
-    fn desktop_shell_bootstrap_allowed(&self, connection_id: u32) -> windows_core::Result<bool> {
-        Ok(self
-            .control_bridge
-            .remote_app_settings(connection_id)?
-            .is_some_and(|settings| !settings.enabled))
-    }
-
-    fn maybe_bootstrap_user_shell(
-        &self,
-        connection_id: u32,
-        session_id: u32,
-        usertoken: HANDLE_PTR,
-        has_userinit: bool,
-        has_explorer: bool,
-    ) {
-        if usertoken.0 == 0 || has_userinit || has_explorer {
-            debug_log_line(&format!(
-                "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_SKIPPED connection_id={connection_id} session_id={session_id} usertoken_nonzero={} userinit={has_userinit} explorer={has_explorer}",
-                usertoken.0 != 0,
-            ));
-            return;
-        }
-
-        match self.desktop_shell_bootstrap_allowed(connection_id) {
-            Ok(true) => {}
-            Ok(false) => {
-                debug_log_line(&format!(
-                    "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_SKIPPED connection_id={connection_id} session_id={session_id} reason=not_confirmed_desktop",
-                ));
-                return;
-            }
-            Err(error) => {
-                debug_log_line(&format!(
-                    "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_ERROR connection_id={connection_id} session_id={session_id} stage=query_session_mode error={error}",
-                ));
-                return;
-            }
-        }
-
-        if self
-            .user_shell_bootstrap_attempted
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            debug_log_line(&format!(
-                "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_SKIPPED connection_id={connection_id} session_id={session_id} reason=already_attempted",
-            ));
-            return;
-        }
-
-        let duplicated_token = match Self::duplicate_primary_token(HANDLE(usertoken.0 as *mut c_void)) {
-            Ok(token) => token,
-            Err(error) => {
-                self.user_shell_bootstrap_attempted.store(false, Ordering::SeqCst);
-                debug_log_line(&format!(
-                    "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_ERROR connection_id={connection_id} session_id={session_id} stage=duplicate_primary_token error={error}",
-                ));
-                return;
-            }
-        };
-
-        debug_log_line(&format!(
-            "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_ATTEMPT connection_id={connection_id} session_id={session_id}",
-        ));
-
-        let duplicated_token_raw = duplicated_token.0 as usize;
-        let control_bridge = self.control_bridge.clone();
-
-        if let Err(error) = thread::Builder::new()
-            .name(format!("irdp-shell-bootstrap-{connection_id}"))
-            .spawn(move || {
-                let duplicated_token = HANDLE(duplicated_token_raw as *mut c_void);
-                thread::sleep(Duration::from_secs(2));
-
-                if session_has_process(session_id, "userinit.exe") || session_has_process(session_id, "explorer.exe") {
-                    debug_log_line(&format!(
-                        "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_SKIPPED connection_id={connection_id} session_id={session_id} reason=shell_already_present",
-                    ));
-                    unsafe {
-                        let _ = CloseHandle(duplicated_token);
-                    }
-                    return;
-                }
-
-                match Self::launch_explorer_with_token(session_id, duplicated_token) {
-                    Ok(_) => {
-                        if provider_video_handle_probe_enabled() {
-                            let _ = Self::probe_idd_driver_load_without_callback(
-                                &control_bridge,
-                                connection_id,
-                                session_id,
-                                "user_shell_bootstrap",
-                                20,
-                                Duration::from_millis(200),
-                            );
-                        } else {
-                            debug_log_line(&format!(
-                                "SESSION_PROOF_PROVIDER_IDD_NOTIFY_DRIVER_LOAD_DEFERRED source=user_shell_bootstrap connection_id={connection_id} session_id={session_id} reason=awaiting_on_driver_load",
-                            ));
-                        }
-                    }
-                    Err(error) => {
-                        debug_log_line(&format!(
-                            "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_ERROR connection_id={connection_id} session_id={session_id} stage=create_process error={error}",
-                        ));
-                    }
-                }
-            })
-        {
-            self.user_shell_bootstrap_attempted.store(false, Ordering::SeqCst);
-            unsafe {
-                let _ = CloseHandle(duplicated_token);
-            }
-            debug_log_line(&format!(
-                "SESSION_PROOF_PROVIDER_USER_SHELL_BOOTSTRAP_ERROR connection_id={connection_id} session_id={session_id} stage=spawn_thread error={error}",
-            ));
-        }
-    }
-
-    fn probe_idd_driver_load_without_callback(
-        control_bridge: &ProviderControlBridge,
-        connection_id: u32,
-        session_id: u32,
-        source: &'static str,
-        attempts: u32,
-        retry_delay: Duration,
-    ) -> bool {
-        let _ = control_bridge;
-        if !provider_video_handle_probe_enabled() {
-            debug_log_line(&format!(
-                "SESSION_PROOF_PROVIDER_IDD_DIAGNOSTIC_PROBE_SKIPPED source={source} connection_id={connection_id} session_id={session_id} reason=disabled mode=bootstrap",
-            ));
-            return false;
-        }
-
-        let probe_attempts = attempts.max(1);
-        let rw = (windows::Win32::Storage::FileSystem::FILE_GENERIC_READ
-            | windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE)
-            .0;
-        let direct_candidates = [
-            (r"\\.\IronRdpIddVideo", rw),
-            (r"\\.\Global\IronRdpIddVideo", rw),
-            (r"\\?\GLOBALROOT\Device\IronRdpIddVideo", 0),
-            (r"\\?\GLOBALROOT\??\IronRdpIddVideo", 0),
-            (r"\\?\GLOBALROOT\GLOBAL??\IronRdpIddVideo", 0),
-            (r"\\?\GLOBALROOT\DosDevices\IronRdpIddVideo", 0),
-            (r"\\?\GLOBALROOT\DosDevices\Global\IronRdpIddVideo", 0),
-        ];
-        let mut last_error: Option<windows_core::Error> = None;
-
-        for attempt in 1..=probe_attempts {
-            let open_result = ComProtocolConnection::open_first_device_handle_with_path(&direct_candidates)
-                .map(|(handle, path)| (handle, path.to_owned()));
-
-            match open_result {
-                Ok((handle, path)) => {
-                    // SAFETY: `handle` came from CreateFileW in this helper and must be closed here.
-                    unsafe {
-                        let _ = CloseHandle(handle);
-                    }
-
-                    debug_log_line(&format!(
-                        "SESSION_PROOF_PROVIDER_IDD_DIAGNOSTIC_PROBE source={source} connection_id={connection_id} session_id={session_id} attempt={attempt} result=open_ok handle_nonzero=true path={path} mode=bootstrap",
-                    ));
-                    return true;
-                }
-                Err(error) => {
-                    last_error = Some(error.clone());
-                    debug_log_line(&format!(
-                        "SESSION_PROOF_PROVIDER_IDD_DIAGNOSTIC_PROBE_RETRY source={source} connection_id={connection_id} session_id={session_id} attempt={attempt} mode=bootstrap error={error}",
-                    ));
-
-                    if attempt == probe_attempts || !ComProtocolConnection::is_transient_idd_open_error(&error) {
-                        break;
-                    }
-
-                    thread::sleep(retry_delay);
-                }
-            }
-        }
-
-        debug_log_line(&format!(
-            "SESSION_PROOF_PROVIDER_IDD_DIAGNOSTIC_PROBE_SKIPPED source={source} connection_id={connection_id} session_id={session_id} reason={} mode=bootstrap",
-            last_error
-                .as_ref()
-                .map(|error| {
-                    format!(
-                        "probe_exhausted code=0x{:08X}",
-                        u32::from_ne_bytes(error.code().0.to_ne_bytes())
-                    )
-                })
-                .unwrap_or_else(|| "no_driver_handle_yet_after_probe".to_owned())
-        ));
-
-        false
     }
 
     fn idd_readiness_snapshot(&self) -> (bool, bool, bool, Option<u32>) {
@@ -5028,6 +4765,35 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
             }
             thread::sleep(Duration::from_millis(50));
         };
+        if settings.client_info_flags != 0 {
+            const INFO_MOUSE: u32 = 0x0000_0001;
+            const INFO_DISABLECTRLALTDEL: u32 = 0x0000_0002;
+            const INFO_MAXIMIZESHELL: u32 = 0x0000_0020;
+            const INFO_ENABLEWINDOWSKEY: u32 = 0x0000_0100;
+            const INFO_REMOTECONSOLEAUDIO: u32 = 0x0000_2000;
+            const INFO_NOAUDIOPLAYBACK: u32 = 0x0008_0000;
+
+            client_data.fMouse = (settings.client_info_flags & INFO_MOUSE) != 0;
+            client_data.fDisableCtrlAltDel = (settings.client_info_flags & INFO_DISABLECTRLALTDEL) != 0;
+            client_data.fMaximizeShell = (settings.client_info_flags & INFO_MAXIMIZESHELL) != 0;
+            client_data.fEnableWindowsKey = (settings.client_info_flags & INFO_ENABLEWINDOWSKEY) != 0;
+            client_data.fRemoteConsoleAudio = (settings.client_info_flags & INFO_REMOTECONSOLEAUDIO) != 0;
+            client_data.fNoAudioPlayback = (settings.client_info_flags & INFO_NOAUDIOPLAYBACK) != 0;
+        }
+        client_data.PerformanceFlags = settings.performance_flags;
+        client_data.KeyboardLayout = settings.keyboard_layout;
+        client_data.ActiveInputLocale = settings.keyboard_layout;
+        client_data.KeyboardType = settings.keyboard_type;
+        client_data.KeyboardSubType = settings.keyboard_subtype;
+        client_data.KeyboardFunctionKey = settings.keyboard_function_key;
+        if !settings.ime_file_name.is_empty() {
+            copy_wide(&mut client_data.imeFileName, &settings.ime_file_name);
+        }
+        if settings.desktop_width != 0 && settings.desktop_height != 0 {
+            client_data.HRes = settings.desktop_width;
+            client_data.VRes = settings.desktop_height;
+            client_data.ColorDepth = 5;
+        }
         if settings.enabled {
             let (directory, program) = remote_app_initial_program()?;
             if client_data.InitialProgram.len() <= program.encode_utf16().count()
@@ -5403,7 +5169,6 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
         ));
 
         self.cache_session_impersonation_token(sessionid, usertoken);
-        self.maybe_bootstrap_user_shell(connection_id, sessionid, usertoken, has_userinit, has_explorer);
 
         // Backup path: some hosts delay or skip NotifySessionId.  IsUserAllowedToLogon already
         // carries the target session ID, so forward it to the companion now to minimize time spent
@@ -5900,9 +5665,11 @@ impl IWRdsProtocolConnection_Impl for ComProtocolConnection_Impl {
 
         if *_querytype == PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL {
             // `wtsdefs.h`: 0 = don't enable, 1 = enable.
+            // `userinitext.dll!ShouldLaunchShellAppRuntime` starts `ShellAppRuntime.exe` when this is
+            // nonzero, which claims `Progman` before `userinit.exe` starts `Explorer.EXE`.
             let connection_id = self.inner.connection_id();
             let has_credentials = self.cached_connection_credentials().is_some();
-            let enable_universal_apps = u32::from(has_credentials);
+            let enable_universal_apps = 0;
 
             first.Type = WTS_VALUE_TYPE_ULONG;
             first.u.ulVal = enable_universal_apps;
@@ -6546,6 +6313,7 @@ mod native_channel_tests {
                 enabled,
                 client_rail_support_level: Some(1),
                 window_capability_set: Some(vec![24, 0, 11, 0, 2, 0, 0, 0, 3, 12, 0]),
+                ..super::RemoteAppSettings::default()
             }),
         }));
         let inner = Arc::new(crate::ProtocolConnection::new(
@@ -6635,33 +6403,25 @@ mod native_channel_tests {
         assert_eq!(error.code(), E_UNEXPECTED);
     }
 
-    // oracle: mutant an authenticated RemoteApp connection must not activate the provider's Explorer fallback.
+    // oracle: reference userinitext.dll ShouldLaunchShellAppRuntime and rdpserverbase.dll
+    // CRDPWDUMXStack::GetConnectionProperty: enabling PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL
+    // launches ShellAppRuntime.exe, which cloaks Progman and prevents Explorer.EXE from starting the desktop shell.
     #[test]
-    fn remote_app_never_authorizes_provider_explorer_bootstrap() {
-        let (connection, _companion) = remote_app_provider(true, true);
-        assert!(!connection.desktop_shell_bootstrap_allowed(1).unwrap());
-    }
-
-    // oracle: mutant a confirmed desktop connection must retain its provider shell fallback.
-    #[test]
-    fn desktop_still_authorizes_provider_explorer_bootstrap() {
-        let (connection, _companion) = remote_app_provider(false, true);
-        assert!(connection.desktop_shell_bootstrap_allowed(1).unwrap());
-    }
-
-    // oracle: mutant missing Client Info must not authorize Explorer while native RemoteApp startup is pending.
-    #[test]
-    fn unknown_session_mode_denies_provider_explorer_bootstrap() {
-        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::RemoteAppSettings {
-            connection_id: 1,
-            settings: None,
-        }));
-        let connection = ComProtocolConnection::new(
-            Arc::new(crate::ProtocolConnection::new(1, Arc::default())),
-            Arc::new(Mutex::new(None)),
-            companion.bridge,
-        );
-        assert!(!connection.desktop_shell_bootstrap_allowed(1).unwrap());
+    fn custom_shell_universal_apps_property_remains_disabled_after_authentication() {
+        let (connection, _companion) = remote_app_connection(false, true);
+        let mut output = WTS_PROPERTY_VALUE::default();
+        // SAFETY: The native query has no inputs and one writable output entry.
+        unsafe {
+            connection.QueryProperty(
+                super::PROPERTY_TYPE_ENABLE_UNIVERSAL_APPS_FOR_CUSTOM_SHELL,
+                &[],
+                core::slice::from_mut(&mut output),
+            )
+        }
+        .unwrap();
+        assert_eq!(output.Type, super::WTS_VALUE_TYPE_ULONG);
+        // SAFETY: The ULONG tag identifies the active union member.
+        assert_eq!(unsafe { output.u.ulVal }, 0);
     }
 
     fn string_buffer_property(buffer: &mut [u16]) -> WTS_PROPERTY_VALUE {
@@ -7204,6 +6964,48 @@ mod native_channel_tests {
         unsafe { connection.GetClientData(&mut data) }.unwrap();
         assert!(!data.fInheritInitialProgram.as_bool());
         assert_eq!(data.InitialProgram[0], 0);
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.1.3.2 and §2.2.1.11.1.1.1: WTS_CLIENT_DATA carries client performance flags and keyboard layout.
+    #[test]
+    fn client_data_forwards_performance_flags_and_keyboard_layout() {
+        let companion = FakeCompanion::replying(Reply::Event(ServiceEvent::RemoteAppSettings {
+            connection_id: 1,
+            settings: Some(super::RemoteAppSettings {
+                enabled: false,
+                client_rail_support_level: None,
+                window_capability_set: None,
+                client_info_flags: 0x0008_0123,
+                performance_flags: 0x0000_0086,
+                keyboard_layout: 0x0001_1009,
+                keyboard_type: 4,
+                keyboard_subtype: 2,
+                keyboard_function_key: 12,
+                ime_file_name: "ime.dll".to_owned(),
+                desktop_width: 1920,
+                desktop_height: 1080,
+            }),
+        }));
+        let inner = Arc::new(crate::ProtocolConnection::new(
+            1,
+            Arc::new(crate::SessionRegistry::default()),
+        ));
+        let connection = ComProtocolConnection::new(inner, Arc::new(Mutex::new(None)), companion.bridge);
+        *connection.cached_credentials.lock() =
+            Some(("test-user".to_owned(), String::new(), "test-password".to_owned()));
+        let connection: IWRdsProtocolConnection = connection.into();
+        let mut data = super::WTS_CLIENT_DATA::default();
+        // SAFETY: The structure is a valid writable output buffer.
+        unsafe { connection.GetClientData(&mut data) }.unwrap();
+        assert_eq!(data.PerformanceFlags, 0x0000_0086);
+        assert_eq!(data.KeyboardLayout, 0x0001_1009);
+        assert_eq!(data.ActiveInputLocale, 0x0001_1009);
+        assert_eq!(data.KeyboardType, 4);
+        assert_eq!(data.KeyboardSubType, 2);
+        assert_eq!(data.KeyboardFunctionKey, 12);
+        assert_eq!(data.HRes, 1920);
+        assert_eq!(data.VRes, 1080);
+        assert_eq!(data.ColorDepth, 5);
     }
 
     // oracle: reference rdpshell.exe CRdpShell::GetIconCacheDimensions requires the complete 11-byte Window capability.

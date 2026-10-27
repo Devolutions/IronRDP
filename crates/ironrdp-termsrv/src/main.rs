@@ -70,8 +70,8 @@ mod windows_main {
         LocalFree, SetLastError, WAIT_OBJECT_0, WAIT_TIMEOUT, WIN32_ERROR,
     };
     use windows::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
-        DeleteDC, DeleteObject, GetDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC,
+        DeleteObject, GetDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
     };
     use windows::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -89,10 +89,11 @@ mod windows_main {
         PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
     };
     use windows::Win32::Security::{
-        AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW,
-        PSECURITY_DESCRIPTOR, RevertToSelf, SE_PRIVILEGE_ENABLED, SECURITY_ATTRIBUTES, SecurityImpersonation,
-        SetTokenInformation, TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
-        TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenPrimary, TokenSessionId, TokenUser,
+        AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, ImpersonateLoggedOnUser, LUID_AND_ATTRIBUTES,
+        LookupPrivilegeValueW, PSECURITY_DESCRIPTOR, RevertToSelf, SE_PRIVILEGE_ENABLED, SECURITY_ATTRIBUTES,
+        SecurityImpersonation, SetTokenInformation, TOKEN_ADJUST_PRIVILEGES, TOKEN_ADJUST_SESSIONID,
+        TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenPrimary, TokenSessionId,
+        TokenUser,
     };
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -121,10 +122,32 @@ mod windows_main {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
     use windows::core::{BOOL, PCWSTR, PWSTR, w};
 
-    #[link(name = "sas")]
+    #[link(name = "kernel32")]
     unsafe extern "system" {
-        // Win32 BOOL is a 32-bit signed integer.
-        fn SendSAS(as_user: i32) -> i32;
+        fn LoadLibraryA(lp_lib_file_name: *const u8) -> *mut c_void;
+        fn GetProcAddress(h_module: *mut c_void, lp_proc_name: *const u8) -> *mut c_void;
+        fn FreeLibrary(h_lib_module: *mut c_void) -> i32;
+        fn GetCurrentThreadId() -> u32;
+    }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn OpenInputDesktop(dw_flags: u32, f_inherit: i32, dw_desired_access: u32) -> *mut c_void;
+        fn GetThreadDesktop(dw_thread_id: u32) -> *mut c_void;
+        fn SetThreadDesktop(h_desktop: *mut c_void) -> i32;
+        fn CloseDesktop(h_desktop: *mut c_void) -> i32;
+        fn GetUserObjectInformationW(
+            h_obj: *mut c_void,
+            n_index: i32,
+            pv_info: *mut c_void,
+            n_length: u32,
+            lpn_length_needed: *mut u32,
+        ) -> i32;
+        fn SystemParametersInfoW(ui_action: u32, ui_param: u32, pv_param: *mut c_void, f_win_ini: u32) -> i32;
+        fn SetCaretBlinkTime(u_mseconds: u32) -> i32;
+        fn LoadKeyboardLayoutW(pwsz_klid: *const u16, flags: u32) -> *mut c_void;
+        fn ActivateKeyboardLayout(hkl: *mut c_void, flags: u32) -> *mut c_void;
+        fn SendNotifyMessageW(hwnd: usize, msg: u32, wparam: usize, lparam: *mut c_void) -> i32;
     }
 
     const PIPE_BUFFER_SIZE: u32 = 64 * 1024;
@@ -135,11 +158,9 @@ mod windows_main {
     const CONNECTION_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
     const LISTEN_ADDR_ENV: &str = "IRONRDP_WTS_LISTEN_ADDR";
     const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:4489";
-    const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
+    const CAPTURE_INTERVAL: Duration = Duration::from_millis(16);
     const LOGON_READINESS_PROBE_INTERVAL: Duration = Duration::from_secs(2);
     const WAITING_FOR_USER_LOGON_DIAGNOSTIC_INTERVAL: Duration = Duration::from_secs(5);
-    const SHELL_BOOTSTRAP_GRACE: Duration = Duration::from_secs(0);
-    const SHELL_BOOTSTRAP_RETRY_INTERVAL: Duration = Duration::from_secs(1);
     const AUTO_SEND_SAS_RETRY_INTERVAL: Duration = Duration::from_secs(3);
     const FIRST_FRAME_BLANK_GRACE: Duration = Duration::from_secs(1);
     const FIRST_FRAME_BLANK_MAX_FRAMES: u32 = 8;
@@ -662,7 +683,30 @@ mod windows_main {
         size: DesktopSize,
         input_marker: usize,
         requested: Option<DisplaySize>,
+        requested_at: Option<Instant>,
         submitted: Option<(u32, DisplaySize)>,
+        client_preferences: Option<(u32, u32)>,
+    }
+
+    struct StandaloneConnectionObserver(Arc<StdMutex<DisplayState>>);
+
+    impl ironrdp_server::ConnectionHandler for StandaloneConnectionObserver {
+        fn on_client_session_config(
+            &mut self,
+            _flags: ironrdp_pdu::rdp::client_info::ClientInfoFlags,
+            performance_flags: ironrdp_pdu::rdp::client_info::PerformanceFlags,
+            keyboard_layout: u32,
+            _keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+            _keyboard_subtype: u32,
+            _keyboard_functional_keys_count: u32,
+            _ime_file_name: &str,
+            _desktop_size: DesktopSize,
+        ) -> ServerResult<()> {
+            if let Ok(mut state) = self.0.lock() {
+                state.client_preferences = Some((performance_flags.bits(), keyboard_layout));
+            }
+            Ok(())
+        }
     }
 
     struct GdiDisplay {
@@ -703,7 +747,9 @@ mod windows_main {
                     size: desktop_size,
                     input_marker,
                     requested: None,
+                    requested_at: None,
                     submitted: None,
+                    client_preferences: None,
                 })),
                 input_stream_slot,
                 connection_session_ids,
@@ -724,8 +770,13 @@ mod windows_main {
             if self.native_channels.is_some() && state.requested.is_none() {
                 match DisplaySize::new(client_size.width & !1, client_size.height) {
                     Ok(size) => {
+                        let applied = DesktopSize {
+                            width: size.width(),
+                            height: size.height(),
+                        };
                         state.requested = Some(size);
-                        state.size = client_size;
+                        state.requested_at = Some(Instant::now());
+                        state.size = applied;
                     }
                     Err(error) => warn!(%error, "Rejected initial desktop size"),
                 }
@@ -743,8 +794,12 @@ mod windows_main {
                 warn!("Desktop size exceeds the supported range");
                 return;
             };
-            match DisplaySize::new(width, height) {
-                Ok(size) => self.state.lock().expect("display state poisoned").requested = Some(size),
+            match DisplaySize::new(width & !1, height) {
+                Ok(size) => {
+                    let mut state = self.state.lock().expect("display state poisoned");
+                    state.requested = Some(size);
+                    state.requested_at = Some(Instant::now());
+                }
                 Err(error) => warn!(%error, "Rejected desktop size"),
             }
         }
@@ -754,6 +809,14 @@ mod windows_main {
         }
 
         async fn updates(&mut self, _context: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+            if let Some(prefs) = self
+                .native_channels
+                .as_ref()
+                .and_then(|native| native.remote_app_settings().ok().flatten())
+                .map(|settings| (settings.performance_flags, settings.keyboard_layout))
+            {
+                self.state.lock().expect("display state poisoned").client_preferences = Some(prefs);
+            }
             Ok(Box::new(
                 GdiDisplayUpdates::new(
                     self.connection_id,
@@ -762,7 +825,7 @@ mod windows_main {
                     Arc::clone(&self.input_stream_slot),
                     Arc::clone(&self.connection_session_ids),
                     Arc::clone(&self.credentials_slot),
-                    self.native_channels.clone(),
+                    self.native_channels.is_some(),
                 )
                 .map_err(|error| ServerError::io("initialize GDI display updates", io::Error::other(error)))?,
             ))
@@ -810,7 +873,6 @@ mod windows_main {
         input_stream_slot: InputStreamSlot,
         connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
         credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
-        native_channels: Option<Arc<crate::native::NativeChannels>>,
         capture: Option<CaptureClient>,
         next_helper_attempt_at: Instant,
         sent_first_frame: bool,
@@ -845,11 +907,6 @@ mod windows_main {
         /// Set to `true` after we have restarted the capture helper once the user has logged in.
         /// Prevents repeated restarts if `WTSQueryUserToken` briefly flaps.
         capture_restarted_for_logon: bool,
-        /// First time we observed a valid user token for the provider-selected session while
-        /// explorer was still missing.
-        waiting_for_shell_ready_since: Option<Instant>,
-        /// Next time we may attempt a best-effort shell bootstrap in provider mode.
-        next_shell_bootstrap_attempt_at: Instant,
         /// The `session_id_override` value that was in effect when the capture helper was last
         /// started.
         ///
@@ -878,10 +935,9 @@ mod windows_main {
             input_stream_slot: InputStreamSlot,
             connection_session_ids: Arc<StdMutex<HashMap<u32, u32>>>,
             credentials_slot: Arc<Mutex<Option<StoredCredentials>>>,
-            native_channels: Option<Arc<crate::native::NativeChannels>>,
+            provider_mode: bool,
         ) -> anyhow::Result<Self> {
             let _ = desktop_size_nonzero(size)?;
-            let provider_mode = native_channels.is_some();
 
             Ok(Self {
                 connection_id,
@@ -890,7 +946,6 @@ mod windows_main {
                 input_stream_slot,
                 connection_session_ids,
                 credentials_slot,
-                native_channels,
                 capture: None,
                 next_helper_attempt_at: Instant::now(),
                 sent_first_frame: false,
@@ -913,8 +968,6 @@ mod windows_main {
                 next_auto_send_sas_at: Instant::now(),
                 next_waiting_for_user_login_diagnostic_at: Instant::now(),
                 capture_restarted_for_logon: false,
-                waiting_for_shell_ready_since: None,
-                next_shell_bootstrap_attempt_at: Instant::now(),
                 capture_started_with_session_override: None,
                 provider_mode,
                 wait_for_session_id_until: None,
@@ -922,14 +975,23 @@ mod windows_main {
             })
         }
 
-        fn desktop_shell_bootstrap_allowed(&self) -> ServerResult<bool> {
-            let Some(native) = &self.native_channels else {
-                return Ok(false);
-            };
-            let settings = native
-                .remote_app_settings()
-                .map_err(|error| ServerError::io("read native session mode", io::Error::other(error)))?;
-            Ok(settings.is_some_and(|settings| !settings.enabled))
+        fn accept_resized_frame(&self, actual: DesktopSize) -> bool {
+            let mut state = self.display_state.lock().expect("display state poisoned");
+            if let Some(requested) = state.requested {
+                let target = DesktopSize {
+                    width: requested.width(),
+                    height: requested.height(),
+                };
+                if actual != target
+                    && state
+                        .requested_at
+                        .is_some_and(|at| at.elapsed() < Duration::from_secs(3))
+                {
+                    return false;
+                }
+            }
+            state.size = actual;
+            true
         }
 
         fn log_capture_output_source_transition(&mut self, source: CaptureOutputSource) {
@@ -1042,6 +1104,7 @@ mod windows_main {
                                 )
                                 .map_err(|error| ServerError::io("publish session display size", error))?;
                                 state.submitted = Some((session_id, size));
+                                state.requested_at = Some(Instant::now());
                                 info!(
                                     session_id,
                                     width = size.width(),
@@ -1119,97 +1182,6 @@ mod windows_main {
                     self.logon_readiness_ready = interactive_shell_ready;
                     self.logon_readiness_session_id = session_id_override;
                     self.next_logon_readiness_probe_at = Instant::now() + LOGON_READINESS_PROBE_INTERVAL;
-
-                    if self.desktop_shell_bootstrap_allowed()? {
-                        match session_id_override {
-                            Some(_session_id) if interactive_shell_ready => {
-                                self.waiting_for_shell_ready_since = None;
-                            }
-                            Some(session_id) => {
-                                let captured_credentials = { self.credentials_slot.lock().await.clone() };
-                                let now = Instant::now();
-                                let waiting_since = self.waiting_for_shell_ready_since.get_or_insert(now);
-
-                                if now.saturating_duration_since(*waiting_since) >= SHELL_BOOTSTRAP_GRACE
-                                    && now >= self.next_shell_bootstrap_attempt_at
-                                {
-                                    self.next_shell_bootstrap_attempt_at = now + SHELL_BOOTSTRAP_RETRY_INTERVAL;
-
-                                    info!(
-                                        connection_id = self.connection_id,
-                                        session_id,
-                                        user_token_available,
-                                        "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ATTEMPT"
-                                    );
-
-                                    let bootstrap_task = tokio::task::spawn_blocking(move || {
-                                        try_start_explorer_process(session_id, captured_credentials, false)
-                                    });
-
-                                    match timeout(Duration::from_secs(3), bootstrap_task).await {
-                                        Ok(Ok(Ok(pid))) => {
-                                            info!(
-                                                connection_id = self.connection_id,
-                                                session_id,
-                                                explorer_pid = pid,
-                                                "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_SUCCESS"
-                                            );
-
-                                            if let Some(capture) = self.capture.take() {
-                                                capture.terminate();
-
-                                                info!(
-                                                    connection_id = self.connection_id,
-                                                    session_id,
-                                                    explorer_pid = pid,
-                                                    "Restarting capture helper after shell bootstrap success"
-                                                );
-
-                                                self.next_helper_attempt_at = Instant::now();
-                                                self.warned_blank_capture = false;
-                                                self.initial_blank_since = None;
-                                                self.initial_blank_frames = 0;
-                                                self.persistent_blank_since = None;
-                                                self.persistent_blank_frames = 0;
-                                                self.capture_restarted_for_blank = false;
-                                                self.sent_first_frame = false;
-                                                self.last_bitmap = None;
-                                                self.helper_frames_received = 0;
-                                                self.helper_timeouts = 0;
-                                            }
-                                        }
-                                        Ok(Ok(Err(error))) => {
-                                            warn!(
-                                                connection_id = self.connection_id,
-                                                session_id,
-                                                error = %format!("{error:#}"),
-                                                "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ERROR"
-                                            );
-                                        }
-                                        Ok(Err(join_error)) => {
-                                            warn!(
-                                                connection_id = self.connection_id,
-                                                session_id,
-                                                error = %join_error,
-                                                "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ERROR"
-                                            );
-                                        }
-                                        Err(_) => {
-                                            warn!(
-                                                connection_id = self.connection_id,
-                                                session_id,
-                                                error = "bootstrap attempt timed out",
-                                                "SESSION_PROOF_TERMSRV_SHELL_BOOTSTRAP_ERROR"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                self.waiting_for_shell_ready_since = None;
-                            }
-                        }
-                    }
                 }
 
                 let should_restart_for_logon = self.logon_readiness_ready && !self.capture_restarted_for_logon;
@@ -1249,8 +1221,6 @@ mod windows_main {
                     self.logon_readiness_ready = false;
                     self.logon_readiness_session_id = None;
                     self.next_logon_readiness_probe_at = Instant::now();
-                    self.waiting_for_shell_ready_since = None;
-                    self.next_shell_bootstrap_attempt_at = Instant::now();
                     self.next_auto_send_sas_at = Instant::now();
                     self.capture_started_with_session_override = None;
                     self.waiting_for_user_login_since = None;
@@ -1310,9 +1280,11 @@ mod windows_main {
                             if auto_send_sas_enabled() && now >= self.next_auto_send_sas_at {
                                 self.next_auto_send_sas_at = now + AUTO_SEND_SAS_RETRY_INTERVAL;
 
-                                if tokio::task::spawn_blocking(|| try_send_sas("provider_wait_for_user_logon"))
-                                    .await
-                                    .unwrap_or(false)
+                                if tokio::task::spawn_blocking(move || {
+                                    try_send_sas(Some(session_id), "provider_wait_for_user_logon")
+                                })
+                                .await
+                                .unwrap_or(false)
                                 {
                                     info!(
                                         connection_id = self.connection_id,
@@ -1347,7 +1319,10 @@ mod windows_main {
                         "Capture helper launch attempt"
                     );
 
-                    let input_marker = self.display_state.lock().expect("display state poisoned").input_marker;
+                    let (input_marker, client_preferences) = {
+                        let state = self.display_state.lock().expect("display state poisoned");
+                        (state.input_marker, state.client_preferences)
+                    };
                     match CaptureClient::start(
                         self.connection_id,
                         input_marker,
@@ -1356,6 +1331,7 @@ mod windows_main {
                         session_id_override,
                         captured_credentials,
                         allow_prelogon_fallback,
+                        client_preferences,
                     )
                     .await
                     {
@@ -1445,6 +1421,10 @@ mod windows_main {
                             }
                         }
                         Err(_) => {
+                            if self.sent_first_frame {
+                                continue;
+                            }
+
                             self.helper_timeouts = self.helper_timeouts.saturating_add(1);
 
                             if self.helper_frames_received == 0 && self.helper_timeouts >= 3 {
@@ -1527,7 +1507,10 @@ mod windows_main {
 
                 match captured {
                     CapturedFrame::Size(actual) => {
-                        self.display_state.lock().expect("display state poisoned").size = actual;
+                        if !self.accept_resized_frame(actual) {
+                            sleep(CAPTURE_INTERVAL).await;
+                            continue;
+                        }
                         return Ok(Some(DisplayUpdate::Resize(actual)));
                     }
                     CapturedFrame::PreEncoded(surface) => {
@@ -1544,7 +1527,10 @@ mod windows_main {
                                 height: bitmap.height.get(),
                             };
                             if actual != self.desktop_size {
-                                self.display_state.lock().expect("display state poisoned").size = actual;
+                                if !self.accept_resized_frame(actual) {
+                                    sleep(CAPTURE_INTERVAL).await;
+                                    continue;
+                                }
                                 return Ok(Some(DisplayUpdate::Resize(actual)));
                             }
                         }
@@ -1600,6 +1586,10 @@ mod windows_main {
                             self.persistent_blank_frames = self.persistent_blank_frames.saturating_add(1);
 
                             let blank_elapsed = now.saturating_duration_since(*blank_since);
+                            if blank_elapsed < PERSISTENT_BLANK_RESTART_GRACE {
+                                sleep(CAPTURE_INTERVAL).await;
+                                continue;
+                            }
                             let should_restart_for_blank = !self.capture_restarted_for_blank
                                 && self.logon_readiness_ready
                                 && blank_elapsed >= PERSISTENT_BLANK_RESTART_GRACE
@@ -1690,12 +1680,12 @@ mod windows_main {
             .ok()
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "tcp".to_owned());
+            .unwrap_or_else(|| "shm".to_owned());
 
         match configured.to_ascii_lowercase().as_str() {
             "tcp" => CaptureIpc::Tcp,
             "shm" | "sharedmem" | "shared-memory" => CaptureIpc::SharedMem,
-            _ => CaptureIpc::Tcp,
+            _ => CaptureIpc::SharedMem,
         }
     }
 
@@ -1817,6 +1807,7 @@ mod windows_main {
     }
 
     impl CaptureClient {
+        #[expect(clippy::too_many_arguments, reason = "internal helper startup parameters")]
         async fn start(
             connection_id: u32,
             input_marker: usize,
@@ -1825,6 +1816,7 @@ mod windows_main {
             session_id_override: Option<u32>,
             credentials: Option<StoredCredentials>,
             allow_prelogon_fallback: bool,
+            client_preferences: Option<(u32, u32)>,
         ) -> anyhow::Result<Self> {
             match capture_ipc_from_env() {
                 CaptureIpc::Tcp => Ok(Self::Tcp(
@@ -1835,6 +1827,7 @@ mod windows_main {
                         session_id_override,
                         credentials,
                         allow_prelogon_fallback,
+                        client_preferences,
                     )
                     .await?,
                 )),
@@ -1847,6 +1840,7 @@ mod windows_main {
                         session_id_override,
                         credentials.clone(),
                         allow_prelogon_fallback,
+                        client_preferences,
                     )
                     .await
                     {
@@ -1865,6 +1859,7 @@ mod windows_main {
                                     session_id_override,
                                     credentials,
                                     allow_prelogon_fallback,
+                                    client_preferences,
                                 )
                                 .await?,
                             ))
@@ -1928,6 +1923,7 @@ mod windows_main {
             session_id_override: Option<u32>,
             credentials: Option<StoredCredentials>,
             allow_prelogon_fallback: bool,
+            client_preferences: Option<(u32, u32)>,
         ) -> anyhow::Result<Self> {
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
                 .await
@@ -1960,6 +1956,7 @@ mod windows_main {
                         session_id_override,
                         credentials,
                         allow_prelogon_fallback,
+                        client_preferences,
                     )
                 })
                 .await
@@ -2309,6 +2306,7 @@ mod windows_main {
     unsafe impl Sync for SharedMemCaptureClient {}
 
     impl SharedMemCaptureClient {
+        #[expect(clippy::too_many_arguments, reason = "internal helper startup parameters")]
         async fn start(
             connection_id: u32,
             input_marker: usize,
@@ -2317,6 +2315,7 @@ mod windows_main {
             session_id_override: Option<u32>,
             credentials: Option<StoredCredentials>,
             allow_prelogon_fallback: bool,
+            client_preferences: Option<(u32, u32)>,
         ) -> anyhow::Result<Self> {
             let (width, height) = desktop_size_nonzero(desktop_size)?;
             let width_usize = NonZeroUsize::from(width).get();
@@ -2404,9 +2403,10 @@ mod windows_main {
                             unsafe { CreateEventW(Some(&attrs), false, false, PCWSTR(event_name_w.as_ptr())) }
                                 .context("create framebuffer notification event")?,
                         );
+                        let pref_args = format_client_preference_args(client_preferences);
                         let helper = spawn_session_helper_process(
                             &format!(
-                                "--shm-map \"{map_name}\" --shm-event \"{event_name}\" --input-connect {input_addr}"
+                                "--shm-map \"{map_name}\" --shm-event \"{event_name}\" --input-connect {input_addr}{pref_args}"
                             ),
                             &helper_token,
                             session_id,
@@ -2712,6 +2712,15 @@ mod windows_main {
         }
     }
 
+    fn format_client_preference_args(client_preferences: Option<(u32, u32)>) -> String {
+        match client_preferences {
+            Some((performance_flags, keyboard_layout)) => {
+                format!(" --performance-flags {performance_flags} --keyboard-layout {keyboard_layout}")
+            }
+            None => String::new(),
+        }
+    }
+
     fn spawn_capture_helper_process_tcp(
         connect_addr: SocketAddr,
         input_connect_addr: SocketAddr,
@@ -2719,9 +2728,11 @@ mod windows_main {
         session_id_override: Option<u32>,
         credentials: Option<StoredCredentials>,
         allow_prelogon_fallback: bool,
+        client_preferences: Option<(u32, u32)>,
     ) -> anyhow::Result<SpawnedProcess> {
+        let pref_args = format_client_preference_args(client_preferences);
         spawn_capture_helper_process_with_args(
-            &format!("--connect {connect_addr} --input-connect {input_connect_addr}"),
+            &format!("--connect {connect_addr} --input-connect {input_connect_addr}{pref_args}"),
             helper_token,
             session_id_override,
             credentials,
@@ -2829,60 +2840,6 @@ mod windows_main {
         }
 
         Ok(helper)
-    }
-
-    fn try_start_explorer_process(
-        session_id: u32,
-        credentials: Option<StoredCredentials>,
-        allow_prelogon_fallback: bool,
-    ) -> anyhow::Result<u32> {
-        let acquired = acquire_session_token(session_id, credentials.as_ref(), allow_prelogon_fallback, true)
-            .context("failed to acquire a user token for explorer bootstrap")?;
-        let user_token = acquired.token;
-
-        let exe_path = r"C:\Windows\explorer.exe";
-        let args = format!("\"{exe_path}\"");
-
-        let app_name: Vec<u16> = exe_path.encode_utf16().chain(Some(0)).collect();
-        let mut cmd_line: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
-        let mut desktop_w: Vec<u16> = acquired.desktop.as_lpdesktop().encode_utf16().chain(Some(0)).collect();
-
-        let startup_info = STARTUPINFOW {
-            cb: u32::try_from(size_of::<STARTUPINFOW>()).map_err(|_| anyhow!("STARTUPINFOW size overflow"))?,
-            lpDesktop: PWSTR(desktop_w.as_mut_ptr()),
-            ..Default::default()
-        };
-
-        let mut process_info = PROCESS_INFORMATION::default();
-
-        // SAFETY:
-        // - user token handle is valid on successful acquisition
-        // - app/cmd/desktop buffers are NUL-terminated and live for the call
-        // - startup/process structures are valid out-parameters
-        let create_ok = unsafe {
-            CreateProcessAsUserW(
-                Some(user_token),
-                PCWSTR(app_name.as_ptr()),
-                Some(PWSTR(cmd_line.as_mut_ptr())),
-                None,
-                None,
-                false,
-                windows::Win32::System::Threading::PROCESS_CREATION_FLAGS(0),
-                None,
-                None,
-                &startup_info,
-                &mut process_info,
-            )
-        };
-
-        create_ok.ok().context("CreateProcessAsUserW(explorer) failed")?;
-
-        // SAFETY: `hThread` is owned by this successful process-creation result.
-        let _ = unsafe { CloseHandle(process_info.hThread) };
-        // SAFETY: `hProcess` is owned by this successful process-creation result.
-        let _ = unsafe { CloseHandle(process_info.hProcess) };
-
-        Ok(process_info.dwProcessId)
     }
 
     fn session_has_user_token(session_id: u32) -> bool {
@@ -3107,25 +3064,6 @@ mod windows_main {
             1
         };
 
-        if allow_service_token_fallback {
-            // Prefer a token from explorer first when present (interactive desktop), even when
-            // prelogon fallback is disabled. This is the strongest signal that the remote user
-            // shell exists, and it remains usable on hosts where WTSQueryUserToken keeps failing.
-            match token_from_session_process_with_retries(session_id, "explorer.exe", process_lookup_retries) {
-                Ok(token) => {
-                    debug!(session_id, "Using explorer.exe token (default desktop)");
-                    return finalize_acquired_session_token(session_id, token, HelperDesktop::Default, "explorer.exe");
-                }
-                Err(error) => {
-                    info!(
-                        session_id,
-                        error = %format!("{error:#}"),
-                        "explorer.exe token unavailable for capture session"
-                    );
-                }
-            }
-        }
-
         let mut token = HANDLE::default();
         let mut wts_result = Err(windows::core::Error::empty());
 
@@ -3153,14 +3091,70 @@ mod windows_main {
                         );
                     }
                 }
+            }
+        }
+        let user_token_available = wts_result.is_ok();
+        let interactive_user_ready = user_token_available || session_has_explorer_token(session_id);
+        let target_desktop = if interactive_user_ready || !allow_prelogon_fallback {
+            HelperDesktop::Default
+        } else {
+            HelperDesktop::Winlogon
+        };
 
+        if allow_service_token_fallback && (interactive_user_ready || allow_prelogon_fallback) {
+            // Prefer a session-bound LocalSystem token (winlogon.exe / csrss.exe / service token)
+            // for the display and input helper so WmsgSendMessage(SAS) passes Winlogon's
+            // LocalSystem check and OpenInputDesktop/SetThreadDesktop can follow transitions
+            // between WinSta0\Default and WinSta0\Winlogon (Ctrl+Alt+Del and UAC secure desktop).
+            for source_process in ["winlogon.exe", "csrss.exe"] {
+                if let Ok(sys_token) =
+                    token_from_session_process_with_retries(session_id, source_process, process_lookup_retries)
+                {
+                    if user_token_available {
+                        close_handle_best_effort(token);
+                    }
+                    return finalize_acquired_session_token(session_id, sys_token, target_desktop, source_process);
+                }
+            }
+            if let Ok(sys_token) = duplicate_self_token_for_session(session_id) {
+                if user_token_available {
+                    close_handle_best_effort(token);
+                }
                 return finalize_acquired_session_token(
                     session_id,
-                    token,
-                    HelperDesktop::Default,
-                    "wts_query_user_token",
+                    sys_token,
+                    target_desktop,
+                    "service_token_fallback",
                 );
             }
+        }
+
+        if allow_service_token_fallback {
+            match token_from_session_process_with_retries(session_id, "explorer.exe", process_lookup_retries) {
+                Ok(explorer_token) => {
+                    if user_token_available {
+                        close_handle_best_effort(token);
+                    }
+                    debug!(session_id, "Using explorer.exe token (default desktop)");
+                    return finalize_acquired_session_token(
+                        session_id,
+                        explorer_token,
+                        HelperDesktop::Default,
+                        "explorer.exe",
+                    );
+                }
+                Err(error) => {
+                    info!(
+                        session_id,
+                        error = %format!("{error:#}"),
+                        "explorer.exe token unavailable for capture session"
+                    );
+                }
+            }
+        }
+
+        if user_token_available {
+            return finalize_acquired_session_token(session_id, token, HelperDesktop::Default, "wts_query_user_token");
         }
 
         if !allow_prelogon_fallback && !allow_service_token_fallback {
@@ -3954,7 +3948,32 @@ mod windows_main {
         Ok(())
     }
 
+    struct CachedCaptureSurface {
+        width: i32,
+        height: i32,
+        memory_dc: windows::Win32::Graphics::Gdi::HDC,
+        bitmap: windows::Win32::Graphics::Gdi::HBITMAP,
+        previous_bitmap: HGDIOBJ,
+        bits_ptr: *mut u8,
+        frame_len: usize,
+    }
+
+    impl Drop for CachedCaptureSurface {
+        fn drop(&mut self) {
+            // SAFETY: restore previous bitmap before deleting the DIB section and memory DC.
+            let _ = unsafe { SelectObject(self.memory_dc, self.previous_bitmap) };
+            // SAFETY: `bitmap` was created by CreateDIBSection.
+            let _ = unsafe { DeleteObject(HGDIOBJ(self.bitmap.0)) };
+            // SAFETY: `memory_dc` was created by CreateCompatibleDC.
+            let _ = unsafe { DeleteDC(self.memory_dc) };
+        }
+    }
+
     fn capture_bitmap_update(size: DesktopSize) -> anyhow::Result<BitmapUpdate> {
+        thread_local! {
+            static SURFACE: core::cell::RefCell<Option<CachedCaptureSurface>> = const { core::cell::RefCell::new(None) };
+        }
+
         let (width, height) = desktop_size_nonzero(size)?;
         let width_i32 = i32::from(NonZeroI32::from(width));
         let height_i32 = i32::from(NonZeroI32::from(height));
@@ -3976,109 +3995,100 @@ mod windows_main {
             return Err(anyhow!("GetDC returned a null screen device context"));
         }
 
-        // SAFETY: `screen_dc` is a valid display DC obtained above.
-        let memory_dc = unsafe { CreateCompatibleDC(Some(screen_dc)) };
-        if memory_dc.0.is_null() {
-            // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
-            let _ = unsafe { ReleaseDC(None, screen_dc) };
-            return Err(anyhow!("CreateCompatibleDC returned a null memory device context"));
-        }
+        let result = SURFACE.with(|slot| -> anyhow::Result<Vec<u8>> {
+            let mut slot = slot.borrow_mut();
+            let needs_recreate = slot
+                .as_ref()
+                .is_none_or(|s| s.width != width_i32 || s.height != height_i32 || s.frame_len != frame_len);
+            if needs_recreate {
+                *slot = None;
+                // SAFETY: `screen_dc` is a valid display DC obtained above.
+                let memory_dc = unsafe { CreateCompatibleDC(Some(screen_dc)) };
+                if memory_dc.0.is_null() {
+                    return Err(anyhow!("CreateCompatibleDC returned a null memory device context"));
+                }
 
-        let mut bitmap_info = BITMAPINFO::default();
-        bitmap_info.bmiHeader.biSize =
-            u32::try_from(size_of::<BITMAPINFOHEADER>()).map_err(|_| anyhow!("BITMAPINFOHEADER size overflow"))?;
-        bitmap_info.bmiHeader.biWidth = width_i32;
-        bitmap_info.bmiHeader.biHeight = top_down_height;
-        bitmap_info.bmiHeader.biPlanes = 1;
-        bitmap_info.bmiHeader.biBitCount = 32;
-        bitmap_info.bmiHeader.biCompression = BI_RGB.0;
+                let mut bitmap_info = BITMAPINFO::default();
+                bitmap_info.bmiHeader.biSize = u32::try_from(size_of::<BITMAPINFOHEADER>())
+                    .map_err(|_| anyhow!("BITMAPINFOHEADER size overflow"))?;
+                bitmap_info.bmiHeader.biWidth = width_i32;
+                bitmap_info.bmiHeader.biHeight = top_down_height;
+                bitmap_info.bmiHeader.biPlanes = 1;
+                bitmap_info.bmiHeader.biBitCount = 32;
+                bitmap_info.bmiHeader.biCompression = BI_RGB.0;
 
-        let mut bits_ptr: *mut c_void = null_mut();
+                let mut bits_ptr: *mut c_void = null_mut();
+                // SAFETY: `screen_dc` and `bitmap_info` are valid, and we pass a valid out-pointer for bits.
+                let bitmap =
+                    unsafe { CreateDIBSection(Some(screen_dc), &bitmap_info, DIB_RGB_COLORS, &mut bits_ptr, None, 0) }
+                        .map_err(|error| {
+                            // SAFETY: `memory_dc` was created above and must be deleted on error.
+                            let _ = unsafe { DeleteDC(memory_dc) };
+                            anyhow!("CreateDIBSection failed: {error}")
+                        })?;
 
-        // SAFETY: `screen_dc` and `bitmap_info` are valid, and we pass a valid out-pointer for bits.
-        let bitmap = unsafe { CreateDIBSection(Some(screen_dc), &bitmap_info, DIB_RGB_COLORS, &mut bits_ptr, None, 0) }
-            .map_err(|error| anyhow!("CreateDIBSection failed: {error}"))?;
+                if bitmap.0.is_null() || bits_ptr.is_null() {
+                    if !bitmap.0.is_null() {
+                        // SAFETY: `bitmap` was created by CreateDIBSection above.
+                        let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+                    }
+                    // SAFETY: `memory_dc` was created above.
+                    let _ = unsafe { DeleteDC(memory_dc) };
+                    return Err(anyhow!(
+                        "CreateDIBSection returned a null bitmap handle or data pointer"
+                    ));
+                }
 
-        if bitmap.0.is_null() {
-            // SAFETY: `memory_dc` and `screen_dc` are valid handles created above.
-            let _ = unsafe { DeleteDC(memory_dc) };
-            // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
-            let _ = unsafe { ReleaseDC(None, screen_dc) };
-            return Err(anyhow!("CreateDIBSection returned a null bitmap handle"));
-        }
+                // SAFETY: `memory_dc` is valid and `bitmap` is a valid bitmap handle.
+                let previous_bitmap = unsafe { SelectObject(memory_dc, HGDIOBJ(bitmap.0)) };
+                if previous_bitmap.0.is_null() {
+                    // SAFETY: `bitmap` was created by CreateDIBSection above.
+                    let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
+                    // SAFETY: `memory_dc` was created above.
+                    let _ = unsafe { DeleteDC(memory_dc) };
+                    return Err(anyhow!("SelectObject failed for capture bitmap"));
+                }
 
-        // SAFETY: `memory_dc` is valid and `bitmap` is a valid bitmap handle.
-        let previous_bitmap = unsafe { SelectObject(memory_dc, HGDIOBJ(bitmap.0)) };
-        if previous_bitmap.0.is_null() {
-            // SAFETY: `bitmap`, `memory_dc`, and `screen_dc` were created above and must be released.
-            let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
-            // SAFETY: `memory_dc` is a valid memory DC created above.
-            let _ = unsafe { DeleteDC(memory_dc) };
-            // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
-            let _ = unsafe { ReleaseDC(None, screen_dc) };
-            return Err(anyhow!("SelectObject failed for capture bitmap"));
-        }
-
-        // SAFETY: all DC handles are valid and dimensions are taken from initialized state.
-        // CAPTUREBLT requests that layered windows and DWM-composited surfaces be included.
-        let bitblt_result = unsafe {
-            BitBlt(
-                memory_dc,
-                0,
-                0,
-                width_i32,
-                height_i32,
-                Some(screen_dc),
-                0,
-                0,
-                SRCCOPY | CAPTUREBLT,
-            )
-        };
-
-        let mut data = Vec::new();
-        if bitblt_result.is_ok() {
-            if bits_ptr.is_null() {
-                // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { SelectObject(memory_dc, previous_bitmap) };
-                // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
-                // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { DeleteDC(memory_dc) };
-                // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { ReleaseDC(None, screen_dc) };
-                return Err(anyhow!("CreateDIBSection returned a null bitmap data pointer"));
+                *slot = Some(CachedCaptureSurface {
+                    width: width_i32,
+                    height: height_i32,
+                    memory_dc,
+                    bitmap,
+                    previous_bitmap,
+                    bits_ptr: bits_ptr.cast::<u8>(),
+                    frame_len,
+                });
             }
 
-            if let Err(error) = data.try_reserve(frame_len) {
-                // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { SelectObject(memory_dc, previous_bitmap) };
-                // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
-                // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { DeleteDC(memory_dc) };
-                // SAFETY: clean up GDI objects created above.
-                let _ = unsafe { ReleaseDC(None, screen_dc) };
-                return Err(anyhow!("failed to allocate frame buffer ({frame_len} bytes): {error}"));
+            let surface = slot.as_ref().expect("surface initialized above");
+            // SAFETY: all DC handles are valid and dimensions match the selected DIB section.
+            let bitblt_result = unsafe {
+                BitBlt(
+                    surface.memory_dc,
+                    0,
+                    0,
+                    width_i32,
+                    height_i32,
+                    Some(screen_dc),
+                    0,
+                    0,
+                    SRCCOPY,
+                )
+            };
+            if let Err(error) = bitblt_result {
+                *slot = None;
+                return Err(anyhow!("BitBlt failed while capturing desktop frame: {error}"));
             }
 
-            data.resize(frame_len, 0);
+            // SAFETY: `bits_ptr` points to the mapped DIB section of `frame_len` bytes populated by BitBlt.
+            let slice = unsafe { core::slice::from_raw_parts(surface.bits_ptr, frame_len) };
+            Ok(slice.to_vec())
+        });
 
-            // SAFETY: source and destination buffers are valid for `frame_len` bytes and do not overlap.
-            unsafe {
-                core::ptr::copy_nonoverlapping(bits_ptr.cast::<u8>(), data.as_mut_ptr(), frame_len);
-            }
-        }
-
-        // SAFETY: restore previous bitmap before releasing the DC and objects.
-        let _ = unsafe { SelectObject(memory_dc, previous_bitmap) };
-        // SAFETY: `bitmap` was created with `CreateDIBSection`.
-        let _ = unsafe { DeleteObject(HGDIOBJ(bitmap.0)) };
-        // SAFETY: `memory_dc` was created with `CreateCompatibleDC`.
-        let _ = unsafe { DeleteDC(memory_dc) };
-        // SAFETY: `screen_dc` was acquired with `GetDC`.
+        // SAFETY: `screen_dc` was acquired with `GetDC` and must be released.
         let _ = unsafe { ReleaseDC(None, screen_dc) };
 
-        bitblt_result.map_err(|error| anyhow!("BitBlt failed while capturing desktop frame: {error}"))?;
+        let data = result?;
 
         // Optional diagnostics: dump the raw (pre-RemoteFX encode) BGRA32 frame to disk.
         maybe_dump_bitmap_update_bgra32(width, height, stride, &data);
@@ -4869,6 +4879,7 @@ mod windows_main {
             native_channels.clone(),
         )
         .context("failed to initialize GDI display handler")?;
+        let display_state = Arc::clone(&display.state);
         let (tls_acceptor, tls_pub_key) = make_tls_acceptor().context("failed to initialize TLS acceptor")?;
 
         let input_handler = TermSrvInputHandler::new(connection_id, input_tx);
@@ -4896,6 +4907,18 @@ mod windows_main {
                     height: 2400,
                 }))
                 .with_bitmap_codecs(rfx_only_codecs)
+                .with_remotefx_quant(ironrdp_pdu::codecs::rfx::Quant {
+                    ll3: 6,
+                    lh3: 6,
+                    hl3: 6,
+                    hh3: 6,
+                    lh2: 6,
+                    hl2: 6,
+                    hh2: 6,
+                    lh1: 6,
+                    hl1: 6,
+                    hh1: 6,
+                })
                 .with_cliprdr_factory(clipboard_factory)
                 .with_rdpei_factory(Some(Box::new(input_handler)));
 
@@ -4905,7 +4928,9 @@ mod windows_main {
                     .with_remote_app(native.remote_app_capabilities())
                     .with_connection_handler(Some(native.connection_handler()))
                     .build(),
-                None => builder.build(),
+                None => builder
+                    .with_connection_handler(Some(Box::new(StandaloneConnectionObserver(Arc::clone(&display_state)))))
+                    .build(),
             }
         };
 
@@ -4975,6 +5000,7 @@ mod windows_main {
         }
 
         let clipboard_sender = server.event_sender().clone();
+        let clipboard_native_channels = native_channels.clone();
         let clipboard_task = clipboard_bridge.map(|clipboard_bridge| {
             ConnectionTask(tokio::task::spawn_local(async move {
                 let result = async {
@@ -5006,6 +5032,12 @@ mod windows_main {
                         }
                         sleep(LOGON_READINESS_PROBE_INTERVAL).await;
                     };
+                    let client_preferences = clipboard_native_channels
+                        .as_ref()
+                        .and_then(|native| native.remote_app_settings().ok().flatten())
+                        .map(|settings| (settings.performance_flags, settings.keyboard_layout))
+                        .or_else(|| display_state.lock().ok().and_then(|state| state.client_preferences));
+                    let pref_args = format_client_preference_args(client_preferences);
                     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
                     let addr = listener.local_addr()?;
                     let token = generate_capture_helper_token()?;
@@ -5023,7 +5055,7 @@ mod windows_main {
                             "clipboard_user",
                         )?;
                         spawn_session_helper_process(
-                            &format!("--clipboard-connect {addr}"),
+                            &format!("--clipboard-connect {addr}{pref_args}"),
                             &helper_token,
                             session_id,
                             acquired,
@@ -5484,9 +5516,10 @@ mod windows_main {
             init_tracing()?;
         }
 
-        if let Some(mode) = capture_helper_mode {
+        if let Some(config) = capture_helper_mode {
             let helper_token = capture_helper_token_from_env()?;
-            match mode {
+            apply_client_session_preferences(config.performance_flags, config.keyboard_layout);
+            match config.mode {
                 CaptureHelperMode::Tcp {
                     connect_addr,
                     input_connect_addr,
@@ -5711,6 +5744,12 @@ mod windows_main {
             .map_err(|error| anyhow::anyhow!("failed to initialize tracing subscriber: {error}"))
     }
 
+    struct CaptureHelperConfig {
+        mode: CaptureHelperMode,
+        performance_flags: Option<u32>,
+        keyboard_layout: Option<u32>,
+    }
+
     enum CaptureHelperMode {
         Clipboard {
             connect_addr: SocketAddr,
@@ -5726,7 +5765,7 @@ mod windows_main {
         },
     }
 
-    fn parse_capture_helper_mode() -> anyhow::Result<Option<CaptureHelperMode>> {
+    fn parse_capture_helper_mode() -> anyhow::Result<Option<CaptureHelperConfig>> {
         let mut args = std::env::args().skip(1);
 
         let mut capture_helper = false;
@@ -5735,6 +5774,8 @@ mod windows_main {
         let mut map_name: Option<String> = None;
         let mut event_name: Option<String> = None;
         let mut clipboard_connect: Option<SocketAddr> = None;
+        let mut performance_flags: Option<u32> = None;
+        let mut keyboard_layout: Option<u32> = None;
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -5779,6 +5820,18 @@ mod windows_main {
                     };
                     event_name = Some(value);
                 }
+                "--performance-flags" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| anyhow!("--performance-flags requires a value"))?;
+                    performance_flags = Some(value.parse().context("invalid --performance-flags value")?);
+                }
+                "--keyboard-layout" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| anyhow!("--keyboard-layout requires a value"))?;
+                    keyboard_layout = Some(value.parse().context("invalid --keyboard-layout value")?);
+                }
                 _ => {}
             }
         }
@@ -5796,7 +5849,11 @@ mod windows_main {
                 connect_addr.ip().is_loopback(),
                 "clipboard helper requires a loopback address"
             );
-            return Ok(Some(CaptureHelperMode::Clipboard { connect_addr }));
+            return Ok(Some(CaptureHelperConfig {
+                mode: CaptureHelperMode::Clipboard { connect_addr },
+                performance_flags,
+                keyboard_layout,
+            }));
         }
 
         let input_connect_addr = input_connect.ok_or_else(|| anyhow!("--capture-helper requires --input-connect"))?;
@@ -5805,19 +5862,27 @@ mod windows_main {
             if map_name.is_some() || event_name.is_some() {
                 return Err(anyhow!("--connect cannot be combined with --shm-map/--shm-event"));
             }
-            return Ok(Some(CaptureHelperMode::Tcp {
-                connect_addr: connect,
-                input_connect_addr,
+            return Ok(Some(CaptureHelperConfig {
+                mode: CaptureHelperMode::Tcp {
+                    connect_addr: connect,
+                    input_connect_addr,
+                },
+                performance_flags,
+                keyboard_layout,
             }));
         }
 
         let map_name =
             map_name.ok_or_else(|| anyhow!("--capture-helper requires --connect or --shm-map/--shm-event"))?;
         let event_name = event_name.ok_or_else(|| anyhow!("--capture-helper requires --shm-event"))?;
-        Ok(Some(CaptureHelperMode::SharedMem {
-            map_name,
-            event_name,
-            input_connect_addr,
+        Ok(Some(CaptureHelperConfig {
+            mode: CaptureHelperMode::SharedMem {
+                map_name,
+                event_name,
+                input_connect_addr,
+            },
+            performance_flags,
+            keyboard_layout,
         }))
     }
 
@@ -6016,7 +6081,7 @@ mod windows_main {
                             mouseData: mouse_data,
                             dwFlags: flags,
                             time: 0,
-                            dwExtraInfo: 0,
+                            dwExtraInfo: input_marker,
                         },
                     },
                 };
@@ -6038,7 +6103,7 @@ mod windows_main {
                             mouseData: u32::from_le_bytes(delta.to_le_bytes()),
                             dwFlags: MOUSEEVENTF_WHEEL,
                             time: 0,
-                            dwExtraInfo: 0,
+                            dwExtraInfo: input_marker,
                         },
                     },
                 };
@@ -6060,7 +6125,7 @@ mod windows_main {
                             mouseData: u32::from_le_bytes(delta.to_le_bytes()),
                             dwFlags: MOUSEEVENTF_HWHEEL,
                             time: 0,
-                            dwExtraInfo: 0,
+                            dwExtraInfo: input_marker,
                         },
                     },
                 };
@@ -6155,7 +6220,28 @@ mod windows_main {
                     SCANCODE_CTRL => ctrl_down = !released,
                     SCANCODE_ALT => alt_down = !released,
                     SCANCODE_END | SCANCODE_DEL if !released && ctrl_down && alt_down => {
-                        if try_send_sas("input_ctrl_alt_end") {
+                        let _ = inject_helper_input_event(
+                            input_marker,
+                            HelperInputEvent::ScancodeKey {
+                                code: SCANCODE_ALT,
+                                extended: false,
+                                released: true,
+                            },
+                        );
+                        let _ = inject_helper_input_event(
+                            input_marker,
+                            HelperInputEvent::ScancodeKey {
+                                code: SCANCODE_CTRL,
+                                extended: false,
+                                released: true,
+                            },
+                        );
+                        ctrl_down = false;
+                        alt_down = false;
+                        if tokio::task::spawn_blocking(|| try_send_sas(None, "input_ctrl_alt_end"))
+                            .await
+                            .unwrap_or(false)
+                        {
                             continue;
                         }
                     }
@@ -6172,11 +6258,200 @@ mod windows_main {
                     pointer = crate::pointer::Input::default();
                     Ok(())
                 }
-                event => inject_helper_input_event(input_marker, event),
+                event => {
+                    let first = inject_helper_input_event(input_marker, event.clone());
+                    if first.is_err() {
+                        if !sync_thread_to_input_desktop() {
+                            pointer = crate::pointer::Input::default();
+                            let _ = sync_thread_to_input_desktop();
+                        }
+                        inject_helper_input_event(input_marker, event)
+                    } else {
+                        first
+                    }
+                }
             };
             if let Err(error) = result {
                 warn!(error = %format!("{error:#}"), "Failed to inject input event");
                 pointer.reset();
+            }
+        }
+    }
+
+    fn spi_set_bool_pv(action: u32, enabled: bool) {
+        const SPIF_SENDCHANGE: u32 = 0x0002;
+        let mut value = i32::from(enabled);
+        // SAFETY: `value` is a live `BOOL` out/in buffer for the BOOL-pointer SPI action.
+        let _ = unsafe {
+            SystemParametersInfoW(
+                action,
+                0,
+                core::ptr::from_mut(&mut value).cast::<c_void>(),
+                SPIF_SENDCHANGE,
+            )
+        };
+    }
+
+    fn spi_set_bool_ui(action: u32, enabled: bool) {
+        const SPIF_SENDCHANGE: u32 = 0x0002;
+        // SAFETY: This SPI action reads `ui_param` as a BOOL and ignores `pv_param`.
+        let _ = unsafe { SystemParametersInfoW(action, u32::from(enabled), null_mut(), SPIF_SENDCHANGE) };
+    }
+
+    fn impersonate_current_session_user() -> Option<(PipeClientImpersonation, OwnedHandle)> {
+        let session_id = current_process_session_id().filter(|&id| id != 0)?;
+        let _ = enable_privilege(w!("SeTcbPrivilege"));
+        let mut user_token = HANDLE::default();
+        // SAFETY: `user_token` is a writable output handle for the current session's user token.
+        unsafe { WTSQueryUserToken(session_id, &mut user_token) }.ok()?;
+        let token_guard = OwnedHandle(user_token);
+        // SAFETY: `user_token` is a valid primary token returned by `WTSQueryUserToken`.
+        unsafe { ImpersonateLoggedOnUser(token_guard.0) }.ok()?;
+        Some((PipeClientImpersonation, token_guard))
+    }
+
+    fn apply_client_session_preferences(performance_flags: Option<u32>, keyboard_layout: Option<u32>) {
+        use ironrdp_pdu::rdp::client_info::PerformanceFlags;
+
+        const SPI_SETDESKWALLPAPER: u32 = 0x0014;
+        const SPI_SETDRAGFULLWINDOWS: u32 = 0x0025;
+        const SPI_SETANIMATION: u32 = 0x0049;
+        const SPI_SETFONTSMOOTHING: u32 = 0x004B;
+        const SPI_SETDEFAULTINPUTLANG: u32 = 0x005A;
+        const SPI_GETDESKWALLPAPER: u32 = 0x0073;
+        const SPI_SETMENUANIMATION: u32 = 0x1003;
+        const SPI_SETCOMBOBOXANIMATION: u32 = 0x1005;
+        const SPI_SETLISTBOXSMOOTHSCROLLING: u32 = 0x1007;
+        const SPI_SETSELECTIONFADE: u32 = 0x1015;
+        const SPI_SETTOOLTIPANIMATION: u32 = 0x1017;
+        const SPI_SETCURSORSHADOW: u32 = 0x101B;
+        const SPI_SETDROPSHADOW: u32 = 0x1025;
+        const SPI_SETUIEFFECTS: u32 = 0x103F;
+        const SPI_SETCLIENTAREAANIMATION: u32 = 0x1043;
+        const SPIF_SENDCHANGE: u32 = 0x0002;
+
+        #[repr(C)]
+        struct AnimationInfo {
+            cb_size: u32,
+            i_min_animate: i32,
+        }
+
+        let _user_impersonation = impersonate_current_session_user();
+
+        if let Some(bits) = performance_flags {
+            let flags = PerformanceFlags::from_bits_retain(bits);
+            spi_set_bool_ui(
+                SPI_SETDRAGFULLWINDOWS,
+                !flags.contains(PerformanceFlags::DISABLE_FULLWINDOWDRAG),
+            );
+
+            let menu_animations = !flags.contains(PerformanceFlags::DISABLE_MENUANIMATIONS);
+            for action in [
+                SPI_SETMENUANIMATION,
+                SPI_SETCOMBOBOXANIMATION,
+                SPI_SETLISTBOXSMOOTHSCROLLING,
+                SPI_SETSELECTIONFADE,
+                SPI_SETTOOLTIPANIMATION,
+                SPI_SETCLIENTAREAANIMATION,
+            ] {
+                spi_set_bool_pv(action, menu_animations);
+            }
+
+            let mut anim = AnimationInfo {
+                cb_size: u32::try_from(size_of::<AnimationInfo>()).unwrap_or(8),
+                i_min_animate: i32::from(menu_animations),
+            };
+            // SAFETY: `anim` is a properly sized `ANIMATIONINFO` struct for `SPI_SETANIMATION`.
+            let _ = unsafe {
+                SystemParametersInfoW(
+                    SPI_SETANIMATION,
+                    anim.cb_size,
+                    core::ptr::from_mut(&mut anim).cast::<c_void>(),
+                    SPIF_SENDCHANGE,
+                )
+            };
+
+            spi_set_bool_pv(SPI_SETUIEFFECTS, !flags.contains(PerformanceFlags::DISABLE_THEMING));
+
+            let cursor_shadow = !flags.contains(PerformanceFlags::DISABLE_CURSOR_SHADOW);
+            spi_set_bool_pv(SPI_SETCURSORSHADOW, cursor_shadow);
+            spi_set_bool_pv(SPI_SETDROPSHADOW, cursor_shadow);
+
+            let blink_ms = if flags.contains(PerformanceFlags::DISABLE_CURSORSETTINGS) {
+                u32::MAX
+            } else {
+                530
+            };
+            // SAFETY: `SetCaretBlinkTime` takes a plain millisecond count with no pointers.
+            let _ = unsafe { SetCaretBlinkTime(blink_ms) };
+
+            spi_set_bool_ui(
+                SPI_SETFONTSMOOTHING,
+                flags.contains(PerformanceFlags::ENABLE_FONT_SMOOTHING),
+            );
+
+            if flags.contains(PerformanceFlags::DISABLE_WALLPAPER) {
+                let mut empty = [0u16; 1];
+                // SAFETY: `empty` is a NUL-terminated UTF-16 string clearing the in-memory wallpaper.
+                let _ = unsafe {
+                    SystemParametersInfoW(
+                        SPI_SETDESKWALLPAPER,
+                        0,
+                        empty.as_mut_ptr().cast::<c_void>(),
+                        SPIF_SENDCHANGE,
+                    )
+                };
+            } else {
+                let mut current_wallpaper = [0u16; 260];
+                // SAFETY: `current_wallpaper` is a writable UTF-16 buffer of `260` `WCHAR`s.
+                let queried = unsafe {
+                    SystemParametersInfoW(
+                        SPI_GETDESKWALLPAPER,
+                        u32::try_from(current_wallpaper.len()).unwrap_or(260),
+                        current_wallpaper.as_mut_ptr().cast::<c_void>(),
+                        0,
+                    )
+                };
+                if queried != 0 && current_wallpaper[0] == 0 {
+                    // SAFETY: A null `pv_param` reloads the impersonated user's configured wallpaper from HKCU.
+                    let _ = unsafe { SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, null_mut(), SPIF_SENDCHANGE) };
+                }
+            }
+
+            info!(
+                performance_flags = format_args!("0x{bits:08x}"),
+                "Applied client RDP performance flags"
+            );
+        }
+
+        if let Some(klid) = keyboard_layout.filter(|&id| id != 0) {
+            const KLF_ACTIVATE: u32 = 0x0000_0001;
+            const KLF_SUBSTITUTE_OK: u32 = 0x0000_0002;
+            const KLF_SETFORPROCESS: u32 = 0x0000_0100;
+            const WM_INPUTLANGCHANGEREQUEST: u32 = 0x0050;
+
+            let klid_w: Vec<u16> = format!("{klid:08x}").encode_utf16().chain(Some(0)).collect();
+            // SAFETY: `klid_w` is a NUL-terminated 8-digit hex keyboard layout ID.
+            let mut hkl =
+                unsafe { LoadKeyboardLayoutW(klid_w.as_ptr(), KLF_ACTIVATE | KLF_SUBSTITUTE_OK | KLF_SETFORPROCESS) };
+            if !hkl.is_null() {
+                // SAFETY: `hkl` is a valid keyboard layout handle returned by `LoadKeyboardLayoutW`.
+                let _ = unsafe { ActivateKeyboardLayout(hkl, KLF_SETFORPROCESS) };
+                // SAFETY: `hkl` is passed by pointer as required by `SPI_SETDEFAULTINPUTLANG`.
+                let _ = unsafe {
+                    SystemParametersInfoW(
+                        SPI_SETDEFAULTINPUTLANG,
+                        0,
+                        core::ptr::addr_of_mut!(hkl).cast::<c_void>(),
+                        SPIF_SENDCHANGE,
+                    )
+                };
+                // SAFETY: `HWND_BROADCAST` (0xFFFF) broadcasts the non-blocking input-language change request.
+                let _ = unsafe { SendNotifyMessageW(0xFFFF, WM_INPUTLANGCHANGEREQUEST, 0, hkl) };
+                info!(
+                    keyboard_layout = format_args!("0x{klid:08x}"),
+                    "Activated client keyboard layout"
+                );
             }
         }
     }
@@ -6190,16 +6465,146 @@ mod windows_main {
         matches!(configured.as_str(), "1" | "true" | "yes" | "on")
     }
 
-    fn try_send_sas(source: &'static str) -> bool {
-        // SAFETY: SendSAS takes a plain BOOL-compatible flag and has no pointer preconditions.
-        let ok = unsafe { SendSAS(0) };
-        if ok != 0 {
-            info!(source = %source, "Generated Secure Attention Sequence (SAS)");
+    fn desktop_object_name(desktop: *mut c_void) -> Option<String> {
+        const UOI_NAME: i32 = 2;
+        if desktop.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 128];
+        let mut needed = 0u32;
+        // SAFETY: `desktop` is a desktop handle and `buf` is writable for `size_of_val(&buf)` bytes.
+        let ok = unsafe {
+            GetUserObjectInformationW(
+                desktop,
+                UOI_NAME,
+                buf.as_mut_ptr().cast::<c_void>(),
+                u32::try_from(size_of_val(&buf)).unwrap_or(0),
+                &mut needed,
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+        let end = buf.iter().position(|&ch| ch == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..end]))
+    }
+
+    fn sync_thread_to_input_desktop() -> bool {
+        const DESKTOP_ACCESS: u32 = 0x01FF;
+        thread_local! {
+            static BOUND_DESKTOP: core::cell::Cell<*mut c_void> = const { core::cell::Cell::new(null_mut()) };
+        }
+
+        // SAFETY: OpenInputDesktop has no pointer preconditions.
+        let input_desktop = unsafe { OpenInputDesktop(0, 0, DESKTOP_ACCESS) };
+        if input_desktop.is_null() {
+            return false;
+        }
+
+        // SAFETY: GetCurrentThreadId has no preconditions.
+        let thread_id = unsafe { GetCurrentThreadId() };
+        // SAFETY: GetThreadDesktop has no pointer preconditions; the returned handle is owned by
+        // the system and must not be closed.
+        let current_desktop = unsafe { GetThreadDesktop(thread_id) };
+        let current_name = desktop_object_name(current_desktop);
+        let input_name = desktop_object_name(input_desktop);
+
+        if current_name
+            .as_deref()
+            .zip(input_name.as_deref())
+            .is_some_and(|(cur, inp)| cur.eq_ignore_ascii_case(inp))
+        {
+            // SAFETY: `input_desktop` was not assigned to any thread and must be closed.
+            let _ = unsafe { CloseDesktop(input_desktop) };
+            return true;
+        }
+
+        // SAFETY: `input_desktop` is a valid desktop handle returned by OpenInputDesktop.
+        let switched = unsafe { SetThreadDesktop(input_desktop) } != 0;
+        if switched {
+            let prev = BOUND_DESKTOP.with(|slot| slot.replace(input_desktop));
+            if !prev.is_null() {
+                // SAFETY: `prev` was previously opened by OpenInputDesktop and is no longer the thread desktop.
+                let _ = unsafe { CloseDesktop(prev) };
+            }
+            info!(
+                from = ?current_name,
+                to = ?input_name,
+                "Switched capture helper thread to active input desktop"
+            );
             true
         } else {
+            // SAFETY: SetThreadDesktop failed, so `input_desktop` is not bound to this thread and must be closed.
+            let _ = unsafe { CloseDesktop(input_desktop) };
+            false
+        }
+    }
+
+    fn try_send_sas(session_id: Option<u32>, source: &'static str) -> bool {
+        const WMSG_SAS: u32 = 0x208;
+        type WmsgSendMessageFn =
+            unsafe extern "system" fn(session_id: u32, msg: u32, wparam: u32, response: *mut u32) -> u32;
+
+        let target_session_id = session_id
+            .or_else(|| current_process_session_id().filter(|&id| id != 0))
+            // SAFETY: WTSGetActiveConsoleSessionId has no preconditions.
+            .unwrap_or_else(|| unsafe { WTSGetActiveConsoleSessionId() });
+
+        // SAFETY: The literal is a NUL-terminated DLL name.
+        let module = unsafe { LoadLibraryA(c"wmsgapi.dll".as_ptr().cast::<u8>()) };
+        if module.is_null() {
             // SAFETY: GetLastError reads the calling thread's last-error value.
             let err = unsafe { GetLastError() };
-            warn!(error = ?err, source = %source, "SendSAS failed");
+            warn!(
+                error = ?err,
+                session_id = target_session_id,
+                source = %source,
+                "Failed to load wmsgapi.dll for SAS"
+            );
+            return false;
+        }
+
+        // SAFETY: `module` is a loaded module handle and the symbol name is NUL-terminated.
+        let proc = unsafe { GetProcAddress(module, c"WmsgSendMessage".as_ptr().cast::<u8>()) };
+        let result = if proc.is_null() {
+            // SAFETY: GetLastError reads the calling thread's last-error value.
+            let err = unsafe { GetLastError() };
+            warn!(
+                error = ?err,
+                session_id = target_session_id,
+                source = %source,
+                "WmsgSendMessage not found in wmsgapi.dll"
+            );
+            None
+        } else {
+            // SAFETY: `WmsgSendMessage` in `wmsgapi.dll` has the 4-argument x64 stdcall/system ABI.
+            let send_msg: WmsgSendMessageFn = unsafe { core::mem::transmute(proc) };
+            let mut response = 0u32;
+            // SAFETY: `response` is a writable `u32` out-parameter for the synchronous LRPC call.
+            let status = unsafe { send_msg(target_session_id, WMSG_SAS, 0, &mut response) };
+            Some((status, response))
+        };
+        // SAFETY: `module` was returned by a successful `LoadLibraryA` above.
+        let _ = unsafe { FreeLibrary(module) };
+        let Some((status, response)) = result else {
+            return false;
+        };
+
+        if status == 0 && response == 0 {
+            info!(
+                session_id = target_session_id,
+                source = %source,
+                "Generated Secure Attention Sequence (SAS)"
+            );
+            true
+        } else {
+            warn!(
+                session_id = target_session_id,
+                status,
+                response,
+                source = %source,
+                "WmsgSendMessage(SAS) failed"
+            );
             false
         }
     }
@@ -6261,11 +6666,13 @@ mod windows_main {
         let mut input_stream = Some(input_stream);
         let mut cursor_stream = None;
         let mut last_cursor = None;
+        let mut last_frame: Option<BitmapUpdate> = None;
+        let mut blank_since: Option<Instant> = None;
         let mut cursor_capture = crate::cursor::Capture::new(input_marker);
 
         if auto_send_sas_enabled() {
             for attempt in 1..=5 {
-                if try_send_sas("capture_helper_startup") {
+                if try_send_sas(None, "capture_helper_startup") {
                     break;
                 }
 
@@ -6275,6 +6682,7 @@ mod windows_main {
             }
         }
 
+        let _ = sync_thread_to_input_desktop();
         let desktop_size = desktop_size_from_gdi().context("failed to query desktop size")?;
         info!(
             width = desktop_size.width,
@@ -6283,15 +6691,40 @@ mod windows_main {
         );
 
         loop {
+            let _ = sync_thread_to_input_desktop();
             let desktop_size = desktop_size_from_gdi().context("failed to query current desktop size")?;
-            match capture_bitmap_update(desktop_size) {
+            let captured = match capture_bitmap_update(desktop_size) {
+                Ok(bitmap) => Ok(bitmap),
+                Err(_) if sync_thread_to_input_desktop() => capture_bitmap_update(desktop_size),
+                Err(error) => Err(error),
+            };
+            match captured {
                 Ok(bitmap) => {
                     if let Some(input_stream) = input_stream.take() {
                         cursor_stream = Some(enable_helper_input(input_marker, input_stream).await?);
                     }
-                    // RemoteFX encoding stays in the server process, where the
-                    // client-selected codec ID and entropy coder are available.
-                    write_capture_frame(&mut stream, &bitmap).await?;
+                    let is_blank = is_probably_blank_bgra32(bitmap.data.as_ref());
+                    let suppress_transient_blank = if is_blank && last_frame.is_some() {
+                        let start = blank_since.get_or_insert_with(Instant::now);
+                        start.elapsed() < FIRST_FRAME_BLANK_GRACE
+                    } else {
+                        blank_since = None;
+                        false
+                    };
+                    let unchanged = !is_blank
+                        && last_frame.as_ref().is_some_and(|prev| {
+                            prev.width == bitmap.width
+                                && prev.height == bitmap.height
+                                && prev.data.as_ref() == bitmap.data.as_ref()
+                        });
+                    if !unchanged && !suppress_transient_blank {
+                        // RemoteFX encoding stays in the server process, where the
+                        // client-selected codec ID and entropy coder are available.
+                        write_capture_frame(&mut stream, &bitmap).await?;
+                        if !is_blank {
+                            last_frame = Some(bitmap);
+                        }
+                    }
                     let cursor = cursor_capture.capture(desktop_size);
                     if last_cursor.as_ref() != Some(&cursor) {
                         cursor
@@ -6306,10 +6739,17 @@ mod windows_main {
                         error = %format!("{error:#}"),
                         "Capture helper failed to capture frame"
                     );
-                    let bitmap = fallback_bitmap_update(desktop_size)
-                        .context("failed to generate fallback bitmap in capture helper")?;
-                    maybe_dump_bitmap_update_bgra32(bitmap.width, bitmap.height, bitmap.stride, bitmap.data.as_ref());
-                    write_capture_frame(&mut stream, &bitmap).await?;
+                    if last_frame.is_none() {
+                        let bitmap = fallback_bitmap_update(desktop_size)
+                            .context("failed to generate fallback bitmap in capture helper")?;
+                        maybe_dump_bitmap_update_bgra32(
+                            bitmap.width,
+                            bitmap.height,
+                            bitmap.stride,
+                            bitmap.data.as_ref(),
+                        );
+                        write_capture_frame(&mut stream, &bitmap).await?;
+                    }
                     sleep(CAPTURE_INTERVAL).await;
                 }
             }
@@ -6372,11 +6812,13 @@ mod windows_main {
         let mut input_stream = Some(input_stream);
         let mut cursor_stream = None;
         let mut last_cursor = None;
+        let mut last_frame: Option<BitmapUpdate> = None;
+        let mut blank_since: Option<Instant> = None;
         let mut cursor_capture = crate::cursor::Capture::new(input_marker);
 
         if auto_send_sas_enabled() {
             for attempt in 1..=5 {
-                if try_send_sas("capture_helper_startup") {
+                if try_send_sas(None, "capture_helper_startup") {
                     break;
                 }
 
@@ -6409,6 +6851,7 @@ mod windows_main {
         let mut slot_idx: usize = 0;
 
         loop {
+            let _ = sync_thread_to_input_desktop();
             let actual = desktop_size_from_gdi().context("failed to query current desktop size")?;
             let size = u32::from(actual.width) | (u32::from(actual.height) << 16);
             // SAFETY: the aligned size record is inside the mapped header.
@@ -6419,23 +6862,47 @@ mod windows_main {
                 sleep(CAPTURE_INTERVAL).await;
                 continue;
             }
-            match capture_bitmap_update(desktop_size) {
+            let captured = match capture_bitmap_update(desktop_size) {
+                Ok(bitmap) => Ok(bitmap),
+                Err(_) if sync_thread_to_input_desktop() => capture_bitmap_update(desktop_size),
+                Err(error) => Err(error),
+            };
+            match captured {
                 Ok(bitmap) => {
                     if let Some(input_stream) = input_stream.take() {
                         cursor_stream = Some(enable_helper_input(input_marker, input_stream).await?);
                     }
-                    seq = seq.wrapping_add(1);
-                    slot_idx = (slot_idx + 1) % SHM_FB_SLOTS;
+                    let is_blank = is_probably_blank_bgra32(bitmap.data.as_ref());
+                    let suppress_transient_blank = if is_blank && last_frame.is_some() {
+                        let start = blank_since.get_or_insert_with(Instant::now);
+                        start.elapsed() < FIRST_FRAME_BLANK_GRACE
+                    } else {
+                        blank_since = None;
+                        false
+                    };
+                    let unchanged = !is_blank
+                        && last_frame.as_ref().is_some_and(|prev| {
+                            prev.width == bitmap.width
+                                && prev.height == bitmap.height
+                                && prev.data.as_ref() == bitmap.data.as_ref()
+                        });
+                    if !unchanged && !suppress_transient_blank {
+                        seq = seq.wrapping_add(1);
+                        slot_idx = (slot_idx + 1) % SHM_FB_SLOTS;
 
-                    // SAFETY: view pointer is valid; slot_len and slot_idx are checked by shm_publish_frame.
-                    unsafe {
-                        shm_publish_frame(view, view_len, slot_idx, slot_len, seq, bitmap.data.as_ref())?;
+                        // SAFETY: view pointer is valid; slot_len and slot_idx are checked by shm_publish_frame.
+                        unsafe {
+                            shm_publish_frame(view, view_len, slot_idx, slot_len, seq, bitmap.data.as_ref())?;
+                        }
+
+                        // SAFETY: event handle is valid.
+                        unsafe { SetEvent(frame_ready_event) }
+                            .map_err(|error| anyhow!("SetEvent failed: {error}"))
+                            .context("SetEvent failed")?;
+                        if !is_blank {
+                            last_frame = Some(bitmap);
+                        }
                     }
-
-                    // SAFETY: event handle is valid.
-                    unsafe { SetEvent(frame_ready_event) }
-                        .map_err(|error| anyhow!("SetEvent failed: {error}"))
-                        .context("SetEvent failed")?;
                     let cursor = cursor_capture.capture(desktop_size);
                     if last_cursor.as_ref() != Some(&cursor) {
                         cursor
@@ -6452,20 +6919,27 @@ mod windows_main {
                         error = %format!("{error:#}"),
                         "Capture helper failed to capture frame"
                     );
-                    let bitmap = fallback_bitmap_update(desktop_size)
-                        .context("failed to generate fallback bitmap in shared-memory capture helper")?;
-                    maybe_dump_bitmap_update_bgra32(bitmap.width, bitmap.height, bitmap.stride, bitmap.data.as_ref());
+                    if last_frame.is_none() {
+                        let bitmap = fallback_bitmap_update(desktop_size)
+                            .context("failed to generate fallback bitmap in shared-memory capture helper")?;
+                        maybe_dump_bitmap_update_bgra32(
+                            bitmap.width,
+                            bitmap.height,
+                            bitmap.stride,
+                            bitmap.data.as_ref(),
+                        );
 
-                    seq = seq.wrapping_add(1);
-                    slot_idx = (slot_idx + 1) % SHM_FB_SLOTS;
+                        seq = seq.wrapping_add(1);
+                        slot_idx = (slot_idx + 1) % SHM_FB_SLOTS;
 
-                    // SAFETY: `view` is the live mapped framebuffer and all lengths come from its validated header.
-                    unsafe { shm_publish_frame(view, view_len, slot_idx, slot_len, seq, bitmap.data.as_ref())? };
+                        // SAFETY: `view` is the live mapped framebuffer and all lengths come from its validated header.
+                        unsafe { shm_publish_frame(view, view_len, slot_idx, slot_len, seq, bitmap.data.as_ref())? };
 
-                    // SAFETY: `frame_ready_event` is a live event handle opened above.
-                    unsafe { SetEvent(frame_ready_event) }
-                        .map_err(|set_event_error| anyhow!("SetEvent failed: {set_event_error}"))
-                        .context("SetEvent failed")?;
+                        // SAFETY: `frame_ready_event` is a live event handle opened above.
+                        unsafe { SetEvent(frame_ready_event) }
+                            .map_err(|set_event_error| anyhow!("SetEvent failed: {set_event_error}"))
+                            .context("SetEvent failed")?;
+                    }
                     sleep(CAPTURE_INTERVAL).await;
                 }
             }
@@ -6713,77 +7187,6 @@ mod windows_main {
     #[cfg(test)]
     mod tests {
         use super::*;
-
-        fn shell_bootstrap_fixture(native: Arc<crate::native::NativeChannels>) -> GdiDisplayUpdates {
-            let size = DesktopSize {
-                width: 800,
-                height: 600,
-            };
-            GdiDisplayUpdates::new(
-                1,
-                Arc::new(StdMutex::new(DisplayState {
-                    size,
-                    input_marker: 0,
-                    requested: None,
-                    submitted: None,
-                })),
-                size,
-                Arc::default(),
-                Arc::default(),
-                Arc::default(),
-                Some(native),
-            )
-            .unwrap()
-        }
-
-        // oracle: mutant a missing RemoteApp user token must not permit the desktop Explorer launcher.
-        #[test]
-        fn remote_app_does_not_authorize_an_explorer_bootstrap() {
-            let native = Arc::new(crate::native::NativeChannels::default());
-            native.configure_remote_app(true);
-            native
-                .connection_handler()
-                .on_client_info(ironrdp_pdu::rdp::client_info::ClientInfoFlags::RAIL)
-                .unwrap();
-            let updates = shell_bootstrap_fixture(native);
-            assert!(!updates.logon_readiness_ready);
-            assert!(!updates.desktop_shell_bootstrap_allowed().unwrap());
-        }
-
-        // oracle: mutant treating unavailable Client Info as desktop mode launches Explorer before RemoteApp selection.
-        #[test]
-        fn pending_client_info_does_not_authorize_an_explorer_bootstrap() {
-            let native = Arc::new(crate::native::NativeChannels::default());
-            let updates = shell_bootstrap_fixture(native);
-            assert!(!updates.desktop_shell_bootstrap_allowed().unwrap());
-        }
-
-        // oracle: mutant an unsupported RemoteApp request must fail instead of selecting the desktop fallback.
-        #[test]
-        fn disabled_remote_app_rejects_the_request_without_authorizing_explorer() {
-            let native = Arc::new(crate::native::NativeChannels::default());
-            assert!(
-                native
-                    .connection_handler()
-                    .on_client_info(ironrdp_pdu::rdp::client_info::ClientInfoFlags::RAIL)
-                    .is_err()
-            );
-            let updates = shell_bootstrap_fixture(native);
-            assert!(!updates.desktop_shell_bootstrap_allowed().unwrap());
-        }
-
-        // oracle: mutant global RemoteApp enablement must not disable the existing desktop fallback.
-        #[test]
-        fn desktop_connections_still_authorize_an_explorer_bootstrap() {
-            let native = Arc::new(crate::native::NativeChannels::default());
-            native.configure_remote_app(true);
-            native
-                .connection_handler()
-                .on_client_info(ironrdp_pdu::rdp::client_info::ClientInfoFlags::empty())
-                .unwrap();
-            let updates = shell_bootstrap_fixture(native);
-            assert!(updates.desktop_shell_bootstrap_allowed().unwrap());
-        }
 
         // oracle: mutant input overload must close once, not create an unbounded queue of shutdown events.
         #[test]

@@ -120,11 +120,29 @@ pub enum ServiceEvent {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteAppSettings {
     pub enabled: bool,
     pub client_rail_support_level: Option<u32>,
     pub window_capability_set: Option<Vec<u8>>,
+    #[serde(default)]
+    pub client_info_flags: u32,
+    #[serde(default)]
+    pub performance_flags: u32,
+    #[serde(default)]
+    pub keyboard_layout: u32,
+    #[serde(default)]
+    pub keyboard_type: u32,
+    #[serde(default)]
+    pub keyboard_subtype: u32,
+    #[serde(default)]
+    pub keyboard_function_key: u32,
+    #[serde(default)]
+    pub ime_file_name: String,
+    #[serde(default)]
+    pub desktop_width: u16,
+    #[serde(default)]
+    pub desktop_height: u16,
 }
 
 pub fn resolve_pipe_name_from_env() -> Option<String> {

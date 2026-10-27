@@ -112,7 +112,7 @@ It authorizes this bootstrap with no parameters and published aliases through th
 Windows' native RemoteApp shell executes the authorized application in the user's session.
 Publish permitted applications through Windows RDS policy rather than disabling its allowlist.
 The companion does not launch client-selected programs as SYSTEM or change the Windows application policy.
-Neither the companion nor the provider starts Explorer for RemoteApp or before Client Info identifies a desktop connection.
+Windows starts Explorer for desktop sessions and the RemoteApp shell for RemoteApp sessions; neither the companion nor the provider launches Explorer directly.
 
 The static `rail` channel carries native shell messages.
 Native RAIL reads include reconstructed channel headers with `SHOW_PROTOCOL`; RDPDR and RDPSND reads remain unframed.

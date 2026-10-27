@@ -215,12 +215,18 @@ pub struct ConnectionInfo {
     pub keyboard_layout: u32,
     /// See [`ironrdp_acceptor::AcceptorResult::keyboard_type`].
     pub keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_subtype`].
+    pub keyboard_subtype: u32,
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_functional_keys_count`].
+    pub keyboard_functional_keys_count: u32,
     /// See [`ironrdp_acceptor::AcceptorResult::ime_file_name`].
     pub ime_file_name: String,
     /// See [`ironrdp_acceptor::AcceptorResult::desktop_scale_factor`].
     pub desktop_scale_factor: Option<u32>,
     /// See [`ironrdp_acceptor::AcceptorResult::device_scale_factor`].
     pub device_scale_factor: Option<u32>,
+    /// See [`ironrdp_acceptor::AcceptorResult::performance_flags`].
+    pub performance_flags: rdp::client_info::PerformanceFlags,
     /// The client came back with an auto-reconnect cookie the server
     /// verified, in place of its credentials.
     pub auto_reconnect: bool,
@@ -254,9 +260,12 @@ impl ConnectionInfo {
         Self {
             keyboard_layout,
             keyboard_type,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 0,
             ime_file_name,
             desktop_scale_factor: None,
             device_scale_factor: None,
+            performance_flags: rdp::client_info::PerformanceFlags::empty(),
             auto_reconnect: false,
             client_monitors: Vec::new(),
             routing_token: None,
@@ -295,12 +304,32 @@ pub trait ConnectionHandler: Send {
         Ok(())
     }
 
-    /// Receives effective RemoteApp capabilities after each activation, including display resizing.
-    fn on_remote_app_capabilities(
+    /// Observes Client Info and Client Core Data session settings before capability exchange.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards Client Info and GCC Client Core Data fields together"
+    )]
+    fn on_client_session_config(
         &mut self,
-        capabilities: Option<&ironrdp_acceptor::RemoteAppCapabilities>,
+        flags: rdp::client_info::ClientInfoFlags,
+        performance_flags: rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
     ) -> ServerResult<()> {
-        let _ = capabilities;
+        let _ = (
+            flags,
+            performance_flags,
+            keyboard_layout,
+            keyboard_type,
+            keyboard_subtype,
+            keyboard_functional_keys_count,
+            ime_file_name,
+            desktop_size,
+        );
         Ok(())
     }
 
@@ -3171,12 +3200,12 @@ impl RdpServer {
         }
 
         ConnectionState {
-            remote_app: None,
-            max_graphics_size: None,
-            graphics_write: Arc::new(Mutex::new(())),
             static_channels: StaticChannelSet::new(),
             client_supports_heartbeat: false,
             client_supports_errinfo: false,
+            remote_app: None,
+            max_graphics_size: None,
+            graphics_write: Arc::new(Mutex::new(())),
             autodetect: self.autodetect_enabled.then(AutoDetectManager::new),
             autodetect_handles,
             display_suppressed: Arc::new(AtomicBool::new(false)),
@@ -4290,7 +4319,7 @@ impl RdpServer {
                         continue;
                     };
                     let fragmented = ironrdp_svc::CHANNEL_CHUNK_LENGTH < payload.len();
-                    let mut message = ironrdp_svc::SvcMessage::from(payload);
+                    let mut message = SvcMessage::from(payload);
                     if fragmented {
                         message = message.with_flags(ChannelFlags::SHOW_PROTOCOL);
                     }
@@ -4714,107 +4743,6 @@ impl RdpServer {
                     if completion.send(()).is_err() {
                         trace!(channel_id, "Dynamic channel producer stopped waiting for dispatch");
                     }
-                }
-                ServerEvent::StaticChannelWithCompletion {
-                    name,
-                    payload,
-                    completion,
-                    permit: _permit,
-                    is_current,
-                } => {
-                    if completion.is_closed() || !is_current() {
-                        trace!(channel = ?name.as_str(), "Discarding canceled static channel write");
-                        continue;
-                    }
-                    let Some(channel_id) = conn.static_channels.get_channel_id_by_channel_name(&name) else {
-                        warn!(channel = ?name.as_str(), "Static channel was not joined, rejecting write");
-                        continue;
-                    };
-                    let data = server_encode_svc_messages(vec![SvcMessage::from(payload)], channel_id, user_channel_id)
-                        .map_err(ServerError::encode)?;
-                    let sent = writer
-                        .write_all_if(&data, || !completion.is_closed() && is_current())
-                        .await
-                        .map_err(|error| ServerError::io("write static channel data", error))?;
-                    if !sent {
-                        trace!(
-                            channel_id,
-                            "Discarding canceled static channel write after waiting for the writer"
-                        );
-                        continue;
-                    }
-                    if completion.send(()).is_err() {
-                        trace!(channel_id, "Static channel producer stopped waiting for dispatch");
-                    }
-                }
-                ServerEvent::StaticChannelJoined(name, reply) => {
-                    let joined = conn.static_channels.get_channel_id_by_channel_name(&name).is_some();
-                    if reply.send(joined).is_err() {
-                        trace!(channel = ?name.as_str(), "Static channel query stopped waiting for its answer");
-                    }
-                }
-                ServerEvent::WindowingOrders(mut request) => {
-                    if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
-                        continue;
-                    }
-                    let encoded: ServerResult<Vec<u8>> = (|| {
-                        let remote_app = conn
-                            .remote_app
-                            .as_ref()
-                            .ok_or_else(|| ServerError::reason("window orders", "RemoteApp was not negotiated"))?;
-                        if remote_app.window_list.support_level != rdp::capability_sets::WindowSupportLevel::SupportedEx
-                            && request.orders.iter().any(WindowingOrder::requires_extended_support)
-                        {
-                            return Err(ServerError::reason(
-                                "window orders",
-                                "extended Window List support was not negotiated",
-                            ));
-                        }
-                        let count = u16::try_from(request.orders.len())
-                            .map_err(|error| ServerError::custom("window order count", error))?;
-                        let maximum = usize::try_from(self.opts.max_request_size)
-                            .map_err(|error| ServerError::custom("window update limit", error))?
-                            .min(
-                                conn.max_graphics_size
-                                    .unwrap_or(0)
-                                    .max(MAX_FASTPATH_UPDATE_SIZE),
-                            );
-                        let length = request
-                            .orders
-                            .iter()
-                            .try_fold(2 /* numberOrders */, |length: usize, order| {
-                                length.checked_add(order.size()).filter(|length| *length <= maximum)
-                            })
-                            .ok_or_else(|| ServerError::reason("window orders", "update exceeds the graphics limit"))?;
-                        let mut data = vec![0; length];
-                        let mut cursor = ironrdp_core::WriteCursor::new(&mut data);
-                        cursor.write_u16(count);
-                        for order in &request.orders {
-                            order.encode(&mut cursor).map_err(ServerError::encode)?;
-                        }
-                        Ok(data)
-                    })();
-                    let data = match encoded {
-                        Ok(data) => data,
-                        Err(error) => {
-                            request.complete(Err(error));
-                            continue;
-                        }
-                    };
-                    let _graphics = conn.graphics_write.lock().await;
-                    if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
-                        continue;
-                    }
-                    request.started = true;
-                    let mut fragments = UpdateFragmenter::new(UpdateCode::Orders, data);
-                    let mut buffer = vec![0; fragments.size_hint()];
-                    while let Some(written) = fragments.next(&mut buffer) {
-                        writer
-                            .write_all(&buffer[..written])
-                            .await
-                            .map_err(|error| ServerError::io("write window orders", error))?;
-                    }
-                    request.complete(Ok(WindowingOrdersStatus::Written));
                 }
                 ServerEvent::CreateDynamicChannel(build) => {
                     let Some(drdynvc_channel_id) = conn.get_channel_id_by_type::<dvc::DrdynvcServer>() else {
@@ -5959,9 +5887,12 @@ impl RdpServer {
                 h.on_connection_info(&ConnectionInfo {
                     keyboard_layout: result.keyboard_layout,
                     keyboard_type: result.keyboard_type,
+                    keyboard_subtype: result.keyboard_subtype,
+                    keyboard_functional_keys_count: result.keyboard_functional_keys_count,
                     ime_file_name: result.ime_file_name.clone(),
                     desktop_scale_factor: result.desktop_scale_factor,
                     device_scale_factor: result.device_scale_factor,
+                    performance_flags: result.performance_flags,
                     auto_reconnect: is_auto_reconnect,
                     client_monitors: result.client_monitors,
                     routing_token: result.routing_token.clone(),
@@ -5980,24 +5911,6 @@ impl RdpServer {
             });
         }
 
-        conn.remote_app = acceptor.remote_app_capabilities().cloned();
-        conn.max_graphics_size = result
-            .capabilities
-            .iter()
-            .find_map(|capability| {
-                if let CapabilitySet::MultiFragmentUpdate(capability) = capability {
-                    Some(usize::try_from(capability.max_request_size))
-                } else {
-                    None
-                }
-            })
-            .transpose()
-            .map_err(|error| ServerError::custom("client graphics limit", error))?;
-        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
-            handler.on_remote_app_capabilities(acceptor.remote_app_capabilities())
-        }) {
-            result?;
-        }
         #[cfg(feature = "egfx")]
         if let Some(gfx_handle) = conn.gfx_handle.as_ref() {
             let mut server = gfx_handle
@@ -7193,6 +7106,34 @@ impl ConnectionSetupHandler for RdpServer {
         Ok(())
     }
 
+    async fn handle_client_session_config(
+        &mut self,
+        flags: rdp::client_info::ClientInfoFlags,
+        performance_flags: rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> Result<(), ConnectorError> {
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_client_session_config(
+                flags,
+                performance_flags,
+                keyboard_layout,
+                keyboard_type,
+                keyboard_subtype,
+                keyboard_functional_keys_count,
+                ime_file_name,
+                desktop_size,
+            )
+        }) {
+            result.map_err(|error| ConnectorError::custom("client session config handler failed", error))?;
+        }
+        Ok(())
+    }
+
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> Result<(), ConnectorError> {
         let client_info_credentials = credentials
             .as_ref()
@@ -7278,7 +7219,6 @@ mod preempt_tests {
                 security: RdpServerSecurity::None,
                 codecs: BitmapCodecs(Vec::new()),
                 max_request_size: 8 * 1024 * 1024,
-                remote_app: None,
                 honor_client_desktop_size: None,
                 connection_policy: ConnectionPolicy::Preempt,
                 remotefx_quant: Quant::default(),
@@ -8250,7 +8190,7 @@ mod tests {
 
     use ironrdp_core::{Encode as _, WriteCursor, impl_as_any};
     use ironrdp_dvc::DvcProcessor as _;
-    use ironrdp_svc::{SvcMessage, SvcServerProcessor};
+    use ironrdp_svc::SvcServerProcessor;
 
     use super::*;
 
@@ -8569,6 +8509,87 @@ mod tests {
             released.load(Ordering::Relaxed),
             "the channel backends of a finished connection must be released, not held until the next client"
         );
+    }
+
+    #[tokio::test]
+    async fn dynamic_channel_factory_creates_and_releases_each_connections_backend() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        struct ResourceDvc(Arc<AtomicBool>);
+        ironrdp_core::impl_as_any!(ResourceDvc);
+
+        impl dvc::DvcProcessor for ResourceDvc {
+            fn channel_name(&self) -> &str {
+                "test::resource"
+            }
+
+            fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
+                Ok(Vec::new())
+            }
+
+            fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<dvc::DvcMessage>> {
+                Ok(Vec::new())
+            }
+        }
+
+        impl dvc::DvcServerProcessor for ResourceDvc {}
+
+        impl Drop for ResourceDvc {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        struct ResourceFactory(Arc<AtomicBool>);
+        impl DynamicChannelFactory for ResourceFactory {
+            fn attach(&self, channels: dvc::DrdynvcServer) -> dvc::DrdynvcServer {
+                assert!(channels.get_channel_id_by_type::<AInputHandler>().is_some());
+                assert!(channels.get_channel_id_by_type::<EchoDvcBridge>().is_some());
+                channels.with_dynamic_channel(ResourceDvc(Arc::clone(&self.0)))
+            }
+        }
+
+        let released = Arc::new(AtomicBool::new(false));
+        let mut server = RdpServer::builder()
+            .with_addr(([127, 0, 0, 1], 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .with_dynamic_channel_factory(Box::new(ResourceFactory(Arc::clone(&released))))
+            .build();
+
+        // oracle: mutant a configured factory is ignored or retains a previous connection's backend.
+        for _ in 0..2 {
+            released.store(false, Ordering::Relaxed);
+            let (mut client, server_side) = tokio::io::duplex(4096);
+            let mut connection = Box::pin(server.run_connection(server_side));
+            let request = nego::ConnectionRequest {
+                nego_data: None,
+                flags: nego::RequestFlags::empty(),
+                protocol: nego::SecurityProtocol::empty(),
+                correlation_info: None,
+            };
+            let request = encode_vec(&X224(request)).expect("encode connection request");
+            client.write_all(&request).await.expect("send connection request");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), connection.as_mut())
+                    .await
+                    .is_err()
+            );
+            let mut confirm = [0u8; 128];
+            let read = client.read(&mut confirm).await.expect("read connection confirm");
+            let _ = decode::<X224<nego::ConnectionConfirm>>(&confirm[..read]).expect("server answered the negotiation");
+            assert!(
+                !released.load(Ordering::Relaxed),
+                "DVC backend was released during negotiation"
+            );
+            drop(client);
+            let _ = connection.await;
+            assert!(
+                released.load(Ordering::Relaxed),
+                "connection-local DVC backend was not released"
+            );
+        }
     }
 
     #[test]
@@ -9183,7 +9204,7 @@ mod window_order_tests {
     use ironrdp_core::{ReadCursor, decode_cursor};
     use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdatePdu, Fragmentation};
     use ironrdp_pdu::rdp::capability_sets::{Rail, RailSupportLevel, WindowList, WindowSupportLevel};
-    use ironrdp_pdu::window::{WindowOrder, WindowOrderBody};
+    use ironrdp_pdu::window::WindowOrder;
     use tokio::io::AsyncReadExt as _;
 
     use super::cliprdr_error_tests::CapturingWriter;
