@@ -179,7 +179,7 @@ impl ByteRangeLocks {
     ///
     /// Returns the responses to the cancelled requests and to other waiting requests that can now proceed.
     pub(crate) fn close(&mut self, owner: u32) -> Vec<SvcMessage> {
-        // A handle holds locks on one file only.
+        // INVARIANT: a handle holds locks on one file only, so the last released identity is the only one.
         let mut released = None;
         self.locks.retain(|lock| {
             let is_owned = lock.owner == owner;

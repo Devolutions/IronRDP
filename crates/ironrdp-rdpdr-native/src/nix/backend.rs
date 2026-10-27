@@ -617,9 +617,10 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
     }
 }
 
-/// Takes or releases byte-range locks on the file `req_inner` names ([MS-FSA] 2.1.5.8 Server Requests a Byte-Range Lock and 2.1.5.9 Server Requests an Unlock of a Byte-Range).
+/// Takes or releases byte-range locks on the file `req_inner` names, as MS-FSA [2.1.5.8] Server Requests a Byte-Range Lock and [2.1.5.9] Server Requests an Unlock of a Byte-Range describe.
 ///
-/// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/369103ec-a8af-452b-8006-aff07b925b61
+/// [2.1.5.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/369103ec-a8af-452b-8006-aff07b925b61
+/// [2.1.5.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/84e68de6-31a6-4cba-afd4-00b1bac6d1a2
 pub(crate) fn lock_control(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveLockControlRequest,
@@ -1539,8 +1540,6 @@ fn open_file(
     let mode = Mode::from_bits_truncate(0o666);
     let opened = match root.open_at(parent.as_fd(), name, flags, mode) {
         // MAXIMUM_ALLOWED asks for whatever access the file allows, so a refused write still leaves read access.
-        // UNTESTED: a MAXIMUM_ALLOWED open of a file the client user cannot write still succeeds, read-only.
-        // The tests run as root, which writes any file, so after changing this check by hand as an unprivileged user.
         Err(Errno::EACCES | Errno::EROFS)
             if req.desired_access.contains(DesiredAccess::MAXIMUM_ALLOWED)
                 && flags.contains(OFlag::O_RDWR)

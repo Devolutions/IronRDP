@@ -1338,6 +1338,33 @@ fn a_handle_without_delete_access_can_neither_rename_nor_delete(#[case] set_buff
     assert!(!fixture.share.join("renamed.txt").exists());
 }
 
+/// Root writes any file, so only an unprivileged run, as on CI, reaches the read-only fallback.
+// oracle: spec MS-DTYP §2.4.3
+#[test]
+fn maximum_allowed_opens_a_file_the_user_cannot_write_for_reading() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new();
+    let path = fixture.share.join("locked.txt");
+    std::fs::write(&path, b"locked").expect("write file");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).expect("make file read-only");
+    let mut backend = fixture.backend();
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            desired_access: DesiredAccess::MAXIMUM_ALLOWED,
+            ..create_request(r"\locked.txt", CreateDisposition::FILE_OPEN)
+        },
+    );
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let file_id = response_file_id(&response);
+
+    let response = read(&mut backend, file_id, 0, 6);
+    close(&mut backend, file_id);
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+}
+
 // oracle: spec MS-FSA §2.1.5.15.3
 #[test]
 fn a_read_only_file_cannot_be_marked_for_deletion() {
