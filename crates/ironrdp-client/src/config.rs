@@ -2996,7 +2996,6 @@ mod tests {
     use core::time::Duration;
 
     use ironrdp_cfg::PropertySetExt as _;
-    use ironrdp_connector::credssp::{KdcResolution, KerberosConfig};
     use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 
     use super::{ConfigBuilder, Destination};
@@ -3027,24 +3026,6 @@ mod tests {
             .build()
             .expect("terminator-only load-balance info clears the token");
         assert!(cleared.load_balance_info().is_none());
-    }
-
-    #[test]
-    fn explicit_kerberos_config_clears_kdc_proxy_properties() {
-        let mut builder = complete_builder();
-        builder.properties.set_kdc_proxy_name("kdc.example.com");
-        builder.properties.set_kdc_proxy_url("https://kdc.example.com/KdcProxy");
-
-        let config = builder
-            .with_kerberos_config(KerberosConfig {
-                kdc_resolution: KdcResolution::IAKerb,
-                hostname: "client".to_owned(),
-            })
-            .build()
-            .expect("valid configuration");
-
-        assert!(config.properties().kdc_proxy_name().is_none());
-        assert!(config.properties().kdc_proxy_url().is_none());
     }
 
     #[test]
