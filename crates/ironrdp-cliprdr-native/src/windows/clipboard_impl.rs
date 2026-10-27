@@ -20,8 +20,8 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Ole::{OleGetClipboard, OleSetClipboard, OleUninitialize};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    KillTimer, SetTimer, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_CLIPBOARDUPDATE, WM_NCDESTROY,
-    WM_RENDERALLFORMATS, WM_RENDERFORMAT, WM_TIMER,
+    GetForegroundWindow, GetWindowThreadProcessId, KillTimer, SetTimer, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP,
+    WM_CLIPBOARDUPDATE, WM_NCDESTROY, WM_RENDERALLFORMATS, WM_RENDERFORMAT, WM_TIMER,
 };
 use windows::core::{HRESULT, Interface as _};
 
@@ -208,6 +208,16 @@ impl WinClipboardImpl {
 
         let mut formats = formats;
         formats.retain(is_portable_format);
+
+        // EnumClipboardFormats lists the source bitmap before its synthesized formats.
+        // Windows can corrupt BI_BITFIELDS pixels when synthesizing CF_DIBV5 from CF_DIB.
+        if formats
+            .iter()
+            .find(|format| matches!(format.id(), ClipboardFormatId::CF_DIB | ClipboardFormatId::CF_DIBV5))
+            .is_some_and(|format| format.id() == ClipboardFormatId::CF_DIB)
+        {
+            formats.retain(|format| format.id() != ClipboardFormatId::CF_DIBV5);
+        }
 
         let mut filtered_format_ids = formats.iter().map(|f| f.id()).collect::<HashSet<_, _>>();
         filter_format_ids(&mut filtered_format_ids);
@@ -592,7 +602,14 @@ impl WinClipboardImpl {
                 if self.attempt < MAX_PROCESSING_ATTEMPTS {
                     self.attempt += 1;
 
-                    self.retry_message = Some(event);
+                    if matches!(
+                        self.retry_message.replace(event),
+                        Some(BackendEvent::FormatDataRequest(_))
+                    ) {
+                        // Retry coalescing must not leave a remote format request unanswered.
+                        self.transport
+                            .send(ClipboardMessage::SendFormatData(FormatDataResponse::new_error()));
+                    }
 
                     // SAFETY: `SetTimer` is always safe to call when `hwnd` is a valid window handle
                     unsafe {
@@ -692,10 +709,18 @@ pub(crate) struct ClipboardWindowState {
 
 impl ClipboardWindowState {
     pub(crate) fn new(inner: WinClipboardImpl) -> Self {
+        // A background clipboard host may never receive an activation message.
+        let mut foreground_process = 0;
+        // SAFETY: GetForegroundWindow has no preconditions.
+        let foreground_window = unsafe { GetForegroundWindow() };
+        // SAFETY: The output is writable; a missing foreground window leaves the process ID at zero.
+        unsafe { GetWindowThreadProcessId(foreground_window, Some(&mut foreground_process)) };
+        let window_is_active = foreground_process == std::process::id();
+
         Self {
             inner: UnsafeCell::new(inner),
             busy: Cell::new(false),
-            window_is_active: Cell::new(true), // We assume that we start with current window active,
+            window_is_active: Cell::new(window_is_active),
             missed_backend_events: Cell::new(0),
             missed_clipboard_update: Cell::new(false),
             missed_retry_timer: Cell::new(false),

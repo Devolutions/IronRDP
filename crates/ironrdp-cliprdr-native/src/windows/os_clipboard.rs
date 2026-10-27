@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId, ClipboardFormatName};
 use tracing::error;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, SetLastError};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardFormatNameW, OpenClipboard,
     SetClipboardData,
@@ -117,17 +117,17 @@ impl OwnedOsClipboard {
 
     #[expect(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
     pub(crate) fn delay_render(&mut self, format: ClipboardFormatId) -> Result<(), WinCliprdrError> {
+        // Successful delayed registration returns a null handle without clearing a previous error.
+        // SAFETY: Only changes this thread's last-error value.
+        unsafe { SetLastError(ERROR_SUCCESS) };
+
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `SetClipboardData`.
-        let result = unsafe { SetClipboardData(format.value(), None) };
-
-        if let Err(err) = result {
-            // `windows` crate will return `Err(..)` on err zero handle, but for `SetClipboardData`
-            // is is considered as error only if `GetLastError` returns non-zero value
-            if err.code().is_err() {
-                error!("Failed to delayed clipboard rendering for format {}", format.value());
-                return Err(WinCliprdrError::SetClipboardData);
-            }
+        if let Err(error) = unsafe { SetClipboardData(format.value(), None) }
+            && error.code().is_err()
+        {
+            error!(%error, format = format.value(), "Failed to register delayed clipboard rendering");
+            return Err(WinCliprdrError::SetClipboardData);
         }
 
         Ok(())
