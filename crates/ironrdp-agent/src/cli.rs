@@ -1494,6 +1494,7 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
                 eprintln!("warning: skipped entry in {}: {error}", path.display());
             }
         }
+        ironrdp_daemon::apply_rdp_launch_companion(path, &mut properties);
     }
 
     // `--prop` overrides win over the .rdp file but lose to the named flags below.

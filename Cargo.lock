@@ -2880,6 +2880,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
+ "windows",
  "x509-cert",
  "zeroize",
 ]

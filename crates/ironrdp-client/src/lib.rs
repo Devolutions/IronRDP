@@ -9,6 +9,8 @@
 
 #[cfg(feature = "sound")]
 pub mod audio;
+#[cfg(all(feature = "gateway", feature = "entra-auth"))]
+pub mod avd;
 #[cfg(feature = "camera")]
 pub mod camera;
 #[cfg(feature = "cloud")]

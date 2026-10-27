@@ -10,9 +10,11 @@ use ironrdp_propertyset::PropertySet;
 /// Matching is case-insensitive, so a single lowercase entry covers casing variants such as
 /// `GatewayPassword`/`gatewaypassword` and `ClearTextPassword`/`cleartextpassword`.
 const SECRET_KEYS: &[&str] = &[
-    "cleartextpassword",        // plaintext RDP account password
-    "gatewaypassword",          // RD gateway password (both casings)
-    "ironrdp_rdcleanpathtoken", // RDCleanPath authentication token
+    "cleartextpassword",           // plaintext RDP account password
+    "gatewaypassword",             // RD gateway password (both casings)
+    "ironrdp_rdcleanpathtoken",    // RDCleanPath authentication token
+    "ironrdp_avd_gateway_token",   // AVD orchestration gateway bearer token
+    "ironrdp_avd_sso_logon_token", // AVD orchestration SSO logon token
 ];
 
 /// Returns `true` when `key` names a property whose value is a secret (password or token).

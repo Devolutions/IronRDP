@@ -106,6 +106,12 @@ pub struct Config {
     pub(crate) certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
     #[cfg(feature = "entra-auth")]
     pub(crate) entra_auth: Option<Arc<crate::entra::EntraAuthSession>>,
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    pub(crate) avd_token_provider: Option<Arc<dyn crate::avd::AvdTokenProvider>>,
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    pub(crate) avd_gateway_token: Option<zeroize::Zeroizing<String>>,
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    pub(crate) avd_sso_logon_token: Option<zeroize::Zeroizing<String>>,
 
     #[cfg(feature = "vmconnect")]
     /// Hyper-V VM ID when connecting to a VM console (port [`ironrdp_vmconnect::PORT`]).
@@ -920,6 +926,12 @@ pub struct ConfigBuilder {
     rdcleanpath_token: Option<String>,
     #[cfg(feature = "entra-auth")]
     entra_auth: Option<Arc<crate::entra::EntraAuthSession>>,
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    avd_token_provider: Option<Arc<dyn crate::avd::AvdTokenProvider>>,
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    avd_gateway_token: Option<zeroize::Zeroizing<String>>,
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    avd_sso_logon_token: Option<zeroize::Zeroizing<String>>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
     input_send_interval: Option<Duration>,
     input_keepalive_interval: Option<Duration>,
@@ -1330,6 +1342,17 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_entra_auth(mut self, auth: Arc<crate::entra::EntraAuthSession>) -> Self {
         self.entra_auth = Some(auth);
+        self
+    }
+
+    /// Supply a custom cross-platform token provider for Azure Virtual Desktop (`gatewaybrokeringtype:i:1`)
+    /// orchestration and session-host PoP authentication.
+    ///
+    /// On Windows, when omitted, IronRDP defaults to Windows Web Account Manager (`WebAuthenticationCoreManager`).
+    #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+    #[must_use]
+    pub fn with_avd_token_provider(mut self, provider: Arc<dyn crate::avd::AvdTokenProvider>) -> Self {
+        self.avd_token_provider = Some(provider);
         self
     }
 
@@ -1987,6 +2010,18 @@ impl ConfigBuilder {
         self
     }
 
+    fn is_avd_gateway(&self) -> bool {
+        #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+        {
+            matches!(self.transport, TransportKind::Gateway { .. })
+                && self.properties.get::<i64>("gatewaybrokeringtype") == Some(1)
+        }
+        #[cfg(not(all(feature = "gateway", feature = "entra-auth")))]
+        {
+            false
+        }
+    }
+
     /// List the required fields that still need a value before [`build`](Self::build) can succeed.
     ///
     /// Gateway credentials are only required when a gateway transport is selected.
@@ -1994,10 +2029,14 @@ impl ConfigBuilder {
     /// because [`build`](Self::build) resolves them from the RDP server account.
     pub fn missing(&self) -> Vec<MissingField> {
         let mut missing = Vec::new();
+        let is_avd_gateway = self.is_avd_gateway();
         #[cfg(feature = "entra-auth")]
-        let uses_entra_auth = self.entra_auth.is_some();
+        let uses_entra_auth = self.entra_auth.is_some()
+            || (is_avd_gateway && self.properties.get::<bool>("enablerdsaadauth").unwrap_or(false));
         #[cfg(not(feature = "entra-auth"))]
         let uses_entra_auth = false;
+        #[cfg(not(feature = "gateway"))]
+        let _ = is_avd_gateway;
         #[cfg(all(windows, feature = "vmconnect"))]
         let uses_current_vmconnect_credentials = self.vm_id.is_some() && self.vmconnect_current_user;
         #[cfg(not(all(windows, feature = "vmconnect")))]
@@ -2034,6 +2073,7 @@ impl ConfigBuilder {
             self.transport,
             TransportKind::Gateway { .. } | TransportKind::GatewayRpch { .. }
         ) && !gateway_uses_server_credentials
+            && !is_avd_gateway
         {
             if self.gateway_username.is_none() {
                 missing.push(MissingField::GatewayUsername);
@@ -2099,11 +2139,19 @@ impl ConfigBuilder {
             );
         }
 
+        let is_avd_gateway = self.is_avd_gateway();
+        if self.properties.get::<i64>("gatewaybrokeringtype") == Some(1) && !is_avd_gateway {
+            anyhow::bail!(
+                "AVD gateway orchestration (gatewaybrokeringtype:i:1) requires the HTTP/WebSocket gateway transport and the entra-auth feature"
+            );
+        }
+
         #[cfg(feature = "gateway")]
         if matches!(
             self.transport,
             TransportKind::Gateway { .. } | TransportKind::GatewayRpch { .. }
-        ) {
+        ) && !is_avd_gateway
+        {
             use ironrdp_cfg::GatewayCredentialsSource;
 
             match self
@@ -2113,7 +2161,7 @@ impl ConfigBuilder {
             {
                 Some(GatewayCredentialsSource::UseServerCredentials) => {
                     #[cfg(feature = "entra-auth")]
-                    if self.entra_auth.is_some() {
+                    if self.entra_auth.is_some() || self.properties.get::<bool>("enablerdsaadauth").unwrap_or(false) {
                         anyhow::bail!("gateway UseServerCredentials requires RDP username and password credentials");
                     }
                     if self.gateway_username.is_none() {
@@ -2218,7 +2266,15 @@ impl ConfigBuilder {
         }
 
         #[cfg(feature = "entra-auth")]
-        let entra_auth_enabled = self.entra_auth.is_some();
+        let property_entra_auth = self.properties.get::<bool>("enablerdsaadauth").unwrap_or(false);
+        #[cfg(feature = "entra-auth")]
+        if property_entra_auth && self.entra_auth.is_none() && !is_avd_gateway {
+            anyhow::bail!(
+                "enablerdsaadauth requires an EntraAuthSession (ConfigBuilder::with_entra_auth) or an AVD gateway (gatewaybrokeringtype:i:1)"
+            );
+        }
+        #[cfg(feature = "entra-auth")]
+        let entra_auth_enabled = self.entra_auth.is_some() || property_entra_auth;
         #[cfg(not(feature = "entra-auth"))]
         let entra_auth_enabled = false;
 
@@ -2249,7 +2305,7 @@ impl ConfigBuilder {
         let enable_standard_rdp_security = false;
 
         #[cfg(feature = "entra-auth")]
-        if self.entra_auth.is_some() {
+        if entra_auth_enabled {
             anyhow::ensure!(
                 self.enable_tls.unwrap_or(true),
                 "Entra RDS AAD authentication requires TLS"
@@ -2287,8 +2343,8 @@ impl ConfigBuilder {
                 prefer_direct,
             } => Transport::Gateway(GatewayConfig {
                 endpoint,
-                username: self.gateway_username.unwrap(),
-                password: self.gateway_password.unwrap(),
+                username: self.gateway_username.unwrap_or_default(),
+                password: self.gateway_password.unwrap_or_default(),
                 prefer_direct,
             }),
             #[cfg(feature = "gateway")]
@@ -2323,11 +2379,11 @@ impl ConfigBuilder {
         let kerberos_config = self
             .kerberos_config
             .or_else(|| kerberos_config_from_properties(&self.properties, &client_name));
-        let certificate_validation = if entra_auth_enabled {
+        let certificate_validation = if entra_auth_enabled || is_avd_gateway {
             anyhow::ensure!(
                 self.certificate_validation
                     != Some(ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate),
-                "Entra RDS AAD authentication requires TLS certificate validation"
+                "Entra RDS AAD and AVD gateway authentication require TLS certificate validation"
             );
             ironrdp_tls::CertificateValidation::Strict
         } else {
@@ -2477,6 +2533,12 @@ impl ConfigBuilder {
             certificate_validation_callback: self.certificate_validation_callback,
             #[cfg(feature = "entra-auth")]
             entra_auth: self.entra_auth,
+            #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+            avd_token_provider: self.avd_token_provider,
+            #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+            avd_gateway_token: self.avd_gateway_token,
+            #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+            avd_sso_logon_token: self.avd_sso_logon_token,
             #[cfg(feature = "vmconnect")]
             vm_id: self.vm_id,
             #[cfg(feature = "vmconnect")]
@@ -2515,6 +2577,27 @@ impl ConfigBuilder {
         ConfigBuilder::new().with_property_set(ps)
     }
 
+    /// Applies companion metadata from a sibling `<rdp_file>.json` file (such as Windows App / AVD
+    /// launch files) onto `properties` when not already set in the `.rdp` file.
+    pub fn apply_rdp_launch_companion(rdp_file: &std::path::Path, properties: &mut PropertySet) {
+        #[cfg(any(feature = "cloud", feature = "entra-auth"))]
+        if properties.username().is_none() {
+            let mut added_os = rdp_file.as_os_str().to_os_string();
+            added_os.push(".json");
+            let added_json = PathBuf::from(added_os);
+            if let Ok(json_text) = std::fs::read_to_string(&added_json)
+                .or_else(|_| std::fs::read_to_string(rdp_file.with_extension("json")))
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_text)
+                && let Some(user) = val.get("UserName").and_then(serde_json::Value::as_str)
+                && !user.is_empty()
+            {
+                properties.set_username(user.to_owned());
+            }
+        }
+        #[cfg(not(any(feature = "cloud", feature = "entra-auth")))]
+        let _ = (rdp_file, properties);
+    }
+
     /// Overlay a `.rdp` [`PropertySet`] on top of the current builder.
     ///
     /// Only properties present in `ps` set values, so this can be layered:
@@ -2527,6 +2610,16 @@ impl ConfigBuilder {
         use ironrdp_cfg::{AudioCaptureMode, AudioMode, TargetHost};
 
         self.properties.merge(ps);
+
+        #[cfg(all(feature = "gateway", feature = "entra-auth"))]
+        {
+            if let Some(token) = ps.get::<&str>("ironrdp_avd_gateway_token") {
+                self.avd_gateway_token = (!token.is_empty()).then(|| zeroize::Zeroizing::new(token.to_owned()));
+            }
+            if let Some(token) = ps.get::<&str>("ironrdp_avd_sso_logon_token") {
+                self.avd_sso_logon_token = (!token.is_empty()).then(|| zeroize::Zeroizing::new(token.to_owned()));
+            }
+        }
 
         let target = ps.full_address().context("invalid 'full address'")?.or(ps
             .alternate_full_address()

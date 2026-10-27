@@ -85,6 +85,7 @@ entra-auth = [
     "dep:reqwest",
     "dep:serde",
     "dep:serde_json",
+    "dep:windows",
     "dep:zeroize",
 ]
 
@@ -176,6 +177,15 @@ ironrdp-rdpewa-native = { path = "../ironrdp-rdpewa-native", version = "0.2", op
 ironrdp-rdpecam = { path = "../ironrdp-rdpecam", version = "0.2", optional = true }
 ironrdp-rdpecam-native = { path = "../ironrdp-rdpecam-native", version = "0.2", optional = true }
 ironrdp-egfx-native = { path = "../ironrdp-egfx-native", version = "0.2" }
+windows = { version = "0.62", features = [
+    "Foundation_Collections",
+    "Security_Authentication_Web_Core",
+    "Security_Credentials",
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_WinRT",
+    "Win32_UI_WindowsAndMessaging",
+], optional = true }
 
 [lints]
 workspace = true

@@ -159,11 +159,22 @@ pub(crate) fn apply_server_redirection(
         debug!("The redirecting server allows a smart card logon on the target");
     }
 
+    let is_avd_gateway = config.properties.get::<i64>("gatewaybrokeringtype") == Some(1);
     let target_certificate = redirection
         .target_certificate
         .as_ref()
         .and_then(|container| container.certificate_der())
-        .map(<[u8]>::to_vec);
+        .map(<[u8]>::to_vec)
+        .or_else(|| {
+            is_avd_gateway
+                .then(|| {
+                    config
+                        .redirection
+                        .as_ref()
+                        .and_then(|hop| hop.target_certificate.clone())
+                })
+                .flatten()
+        });
     if redirection.target_certificate.is_some() && target_certificate.is_none() {
         warn!("The redirection target certificate container has no DER certificate");
     }
@@ -176,7 +187,9 @@ pub(crate) fn apply_server_redirection(
     );
 
     config.destination = target;
-    config.load_balance_info = load_balance_info;
+    if load_balance_info.is_some() || !is_avd_gateway {
+        config.load_balance_info = load_balance_info;
+    }
     config.redirection = Some(RedirectionHop {
         connect_hosts,
         session_id: redirection.session_id,

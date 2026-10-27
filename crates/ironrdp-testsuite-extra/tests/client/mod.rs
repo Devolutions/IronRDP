@@ -1,3 +1,4 @@
+mod avd;
 mod cloud;
 mod config;
 mod egfx_cache;

@@ -22,7 +22,6 @@ for consuming them and dispatching them to whatever event loop or runtime it wis
 The optional `entra-auth` feature provides an experimental implementation of the [MS-RDPBCGR] RDS AAD authorization-code and proof-of-possession flow.
 Call `EntraAuthorization::begin(client_id, redirect_uri, resource)` with an application client ID you are authorized to use and its registered redirect URI; there are no first-party registration defaults.
 The method returns a browser URL; the embedder must capture the `form_post` response at its redirect URI and pass the authorization code and state to `complete`.
-This module does not implement browser callback capture or Windows Web Account Manager (WAM).
 An app registration and redirect URI alone do not establish permission to obtain RDP resource tokens; third-party registration acceptance has not been verified.
 Attach the resulting `EntraAuthSession` with `ConfigBuilder::with_entra_auth` to authenticate the RDP session using RDS AAD over strictly validated TLS, without a CredSSP or password fallback.
 The high-level client supports direct and RDS Gateway transports for Entra authentication; it rejects RDCleanPath because that path does not validate the RDP server's TLS certificate.
@@ -30,6 +29,7 @@ Entra authentication also rejects certificate-validation override callbacks.
 Certificate validation uses platform trust and the server's DNS name; Entra P2P certificate validation using tenant roots and a device ID is not implemented.
 The embedder owns browser UI and must choose the target host name or device ID that matches the RDP server.
 This flow uses Microsoft's documented public-cloud authority and requires a new authorization flow after the access token expires.
+When combined with `gateway`, `gatewaybrokeringtype:i:1` enables Azure Virtual Desktop orchestration over WebSocket, acquiring gateway and session-host PoP tokens through Windows Web Account Manager on Windows, `OAuthAvdTokenProvider` (loopback PKCE, device code, and refresh-token cache) across platforms, or a custom `AvdTokenProvider` set with `ConfigBuilder::with_avd_token_provider`.
 Live Entra host interoperability has not been verified.
 
 TLS peer-certificate validation remains disabled by default for compatibility with
