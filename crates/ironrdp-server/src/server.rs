@@ -33,7 +33,8 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{
-    BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, EntropyBits, GeneralExtraFlags, LargePointerSupportFlags,
+    BitmapCodecs, CapabilitySet, CmdFlags, Codec, CodecProperty, EntropyBits, GeneralExtraFlags,
+    LargePointerSupportFlags, RemoteFxContainer,
 };
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
@@ -61,7 +62,7 @@ use crate::autodetect::{AutoDetectHandles, AutoDetectManager, AutoDetectOutcome}
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayContext, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
-use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
+use crate::encoder::{RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxContext, GfxServerFactory, GfxServerHandle};
@@ -807,6 +808,44 @@ pub fn pick_remotefx_entropy_coder(
     }
 
     first
+}
+
+/// Picks the RemoteFX codec, its codec id and entropy coder out of the client's
+/// [2.2.7.2.10.1.1] Bitmap Codec (TS_BITMAPCODEC) list.
+///
+/// `CODEC_GUID_REMOTEFX` wins over `CODEC_GUID_IMAGE_REMOTEFX` whatever the order of the
+/// client's list, so that the choice, and with it the surface command that carries the data,
+/// does not depend on that order. Each codec is a candidate only when the server enables it.
+///
+/// [2.2.7.2.10.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/86507fed-a0ee-4242-b802-237534a8f65e
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+fn pick_remotefx_codec(
+    preferred: Option<EntropyBits>,
+    codecs: &[Codec],
+    remote_fx: bool,
+    image_remote_fx: bool,
+) -> Option<(EntropyBits, u8, RemoteFxCodec)> {
+    let pick = |wanted: RemoteFxCodec| {
+        codecs.iter().find_map(|codec| {
+            let caps = match (&codec.property, wanted) {
+                (CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(c)), RemoteFxCodec::RemoteFx)
+                | (CodecProperty::ImageRemoteFx(RemoteFxContainer::ClientContainer(c)), RemoteFxCodec::ImageRemoteFx) => {
+                    c
+                }
+                _ => return None,
+            };
+            let offered = caps.caps_data.0.0.iter().map(|icap| icap.entropy_bits);
+            pick_remotefx_entropy_coder(preferred, offered).map(|entropy_bits| (entropy_bits, codec.id, wanted))
+        })
+    };
+
+    [
+        (RemoteFxCodec::RemoteFx, remote_fx),
+        (RemoteFxCodec::ImageRemoteFx, image_remote_fx),
+    ]
+    .into_iter()
+    .filter(|&(_, enabled)| enabled)
+    .find_map(|(codec, _)| pick(codec))
 }
 
 #[derive(Clone)]
@@ -5223,35 +5262,25 @@ impl RdpServer {
                     surface_flags = c.flags;
                 }
                 CapabilitySet::BitmapCodecs(BitmapCodecs(codecs)) => {
+                    // FIXME: The encoder operates in image mode only.
+                    //
+                    // See [MS-RDPRFX] 3.1.1.1 "State Machine" for the
+                    // implementation of the video mode, which allows
+                    // skipping the header for each image.
+                    //
+                    // We should distinguish parameters for both modes.
+                    if let Some(remotefx) = pick_remotefx_codec(
+                        self.opts.remotefx_entropy_coder,
+                        &codecs,
+                        self.opts.has_remote_fx(),
+                        self.opts.has_image_remote_fx(),
+                    ) {
+                        update_codecs.set_remotefx_codec(Some(remotefx));
+                        update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
+                    }
+
                     for codec in codecs {
                         match codec.property {
-                            // FIXME: The encoder operates in image mode only.
-                            //
-                            // See [MS-RDPRFX] 3.1.1.1 "State Machine" for
-                            // implementation of the video mode. which allows to
-                            // skip sending Header for each image.
-                            //
-                            // We should distinguish parameters for both modes.
-                            CodecProperty::RemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(c))
-                                if self.opts.has_remote_fx() =>
-                            {
-                                let offered = c.caps_data.0.0.iter().map(|caps| caps.entropy_bits);
-                                let preferred = self.opts.remotefx_entropy_coder;
-                                if let Some(entropy_bits) = pick_remotefx_entropy_coder(preferred, offered) {
-                                    update_codecs.set_remotefx(Some((entropy_bits, codec.id)));
-                                    update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
-                                }
-                            }
-                            CodecProperty::ImageRemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(
-                                c,
-                            )) if self.opts.has_image_remote_fx() => {
-                                let offered = c.caps_data.0.0.iter().map(|caps| caps.entropy_bits);
-                                let preferred = self.opts.remotefx_entropy_coder;
-                                if let Some(entropy_bits) = pick_remotefx_entropy_coder(preferred, offered) {
-                                    update_codecs.set_remotefx(Some((entropy_bits, codec.id)));
-                                    update_codecs.set_remotefx_quant(self.opts.remotefx_quant.clone());
-                                }
-                            }
                             #[cfg(feature = "nscodec")]
                             CodecProperty::NsCodec(client_ns) if self.opts.has_nscodec() => {
                                 // Re-use the client's confirmed color-loss
