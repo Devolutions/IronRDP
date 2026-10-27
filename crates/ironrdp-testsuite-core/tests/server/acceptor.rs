@@ -1385,3 +1385,34 @@ fn stepping_a_failed_finalization_returns_an_error() {
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
 }
+
+// oracle: spec MS-RDPBCGR §2.2.12.1 (the pduSource field of the Monitor Layout PDU MUST be set to zero)
+#[test]
+fn monitor_layout_pdu_source_is_zero() {
+    let mut acceptor = multitransport_acceptor(None);
+    let mut client_blocks = client_gcc_with_message_channel_and_multitransport(None);
+    client_blocks
+        .core
+        .optional_data
+        .early_capability_flags
+        .get_or_insert_with(ClientEarlyCapabilityFlags::empty)
+        .insert(ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU);
+    drive_to_secure_settings_exchange(&mut acceptor, client_blocks);
+
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // LicensingExchange
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // MultitransportBootstrapping
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap(); // CapabilitiesSendServer: sends Demand Active
+    let mut output = WriteBuf::new();
+    acceptor.step(&[], None, &mut output).unwrap(); // MonitorLayoutSend
+
+    let indication = mcs::decode_send_data_indication(output.filled()).unwrap();
+    let share_control = decode_share_control(indication).unwrap();
+    let ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::MonitorLayout(_),
+        ..
+    }) = share_control.pdu
+    else {
+        panic!("expected a Monitor Layout PDU");
+    };
+    assert_eq!(share_control.pdu_source, 0);
+}
