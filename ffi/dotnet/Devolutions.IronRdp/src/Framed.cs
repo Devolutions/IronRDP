@@ -20,6 +20,13 @@ public class Framed<TS> where TS : Stream
         _buffer = new List<byte>();
     }
 
+    /// <summary>
+    /// Returns the underlying stream and the bytes read from it but not consumed yet.
+    /// </summary>
+    /// <remarks>
+    /// The list is the live buffer, not a copy: later reads append to it and drop the bytes they consume.
+    /// Copy it if you need a snapshot.
+    /// </remarks>
     public (TS, List<byte>) GetInner()
     {
         return (_stream, _buffer);
