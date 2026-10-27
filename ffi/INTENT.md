@@ -29,3 +29,8 @@ When a consumer disposes `WinCliprdr`, it does so on the thread that created it.
 
 A method that copies native bytes into a caller's buffer (`Fill`, `FillData`, `ReadIntoBuf`) writes them at the start of the buffer.
 It throws `IronRdpException` when the buffer is shorter than the data, and leaves every byte past the data untouched.
+
+## Copying a rectangle into a caller buffer
+
+`CopyRectInto` rejects the rectangles the Rust client rejects (`pack_desktop_update` in `crates/ironrdp-client/src/rdp.rs`): an inverted one, and one that reaches past the image.
+Where Rust code would panic on an out-of-range slice, such as a stride or buffer too short for the rectangle, it throws `IronRdpException` instead, before it writes anything.

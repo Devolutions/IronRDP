@@ -66,7 +66,7 @@ internal static class SmokeTests
             }
         });
 
-        // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
+        // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
         yield return ("decoded image copy rejects a rectangle outside the image", () =>
         {
             var (stage, image) = ConnectedStage(8, 4);
@@ -79,7 +79,7 @@ internal static class SmokeTests
             True(outsideVertical.Message.Contains("rectangle is outside the image"), $"error message: {outsideVertical.Message}");
         });
 
-        // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
+        // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
         yield return ("decoded image copy rejects a short stride", () =>
         {
             var (stage, image) = ConnectedStage(8, 4);
@@ -87,7 +87,7 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => image.CopyRectInto(full, new byte[8 * 4 * 4], 8 * 4 - 1));
         });
 
-        // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
+        // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
         yield return ("decoded image copy rejects a short buffer", () =>
         {
             var (stage, image) = ConnectedStage(8, 4);
@@ -96,7 +96,7 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => image.CopyRectInto(full, new byte[stride * 3], stride));
         });
 
-        // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
+        // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
         yield return ("decoded image copy rejects a stride whose last row overflows", () =>
         {
             var (stage, image) = ConnectedStage(8, 4);

@@ -126,6 +126,7 @@ mod tests {
     use crate::error::ffi::IronRdpErrorKind;
     use crate::pdu::ffi::InclusiveRectangle;
 
+    // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
     #[test]
     fn copy_rect_into_rejects_an_inverted_rectangle() {
         let image = DecodedImage::new(PixelFormat::BgrA32, 8, 4);
