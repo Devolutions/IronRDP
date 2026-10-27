@@ -1127,11 +1127,10 @@ impl GraphicsPipelineClient {
             .get(&pdu.surface_id)
             .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface2"))?;
         let (surface_width, surface_height) = (surface.width, surface.height);
-        // A surface the compositor refused paints nothing, so it keeps no
-        // Progressive tile state either, only the CONTEXT flag a re-created
-        // surface of the same id falls back on.
+        // A surface the compositor refused paints nothing, so it keeps no Progressive tile state either, only the
+        // CONTEXT flag a re-created surface of the same id falls back on.
         if !self.compositor.has_surface(pdu.surface_id) {
-            debug!(
+            trace!(
                 surface_id = pdu.surface_id,
                 "WireToSurface2 for a surface without pixels -- not decoded"
             );
@@ -3478,7 +3477,7 @@ mod tests {
         });
     }
 
-    /// A client with surface 1 created at a size the compositor refuses:
+    /// A client with surface 1 created at a size the compositor refuses.
     /// 16384 x 16384 is 1 GiB of pixels, past its budget.
     fn progressive_client_with_refused_surface() -> GraphicsPipelineClient {
         let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
@@ -3500,18 +3499,24 @@ mod tests {
         client
     }
 
-    /// A surface the compositor refused paints nothing, so its Progressive
-    /// updates aren't decoded: one without a CONTEXT to decode with is
-    /// accepted rather than failing.
+    /// A surface the compositor refused paints nothing, so its Progressive updates aren't decoded into bitmap updates.
+    // oracle: mutant decoding Progressive for a surface the compositor refused
     #[test]
     fn refused_surface_does_not_decode_progressive() {
+        let updates = Arc::new(Mutex::new(Vec::new()));
         let mut client = progressive_client_with_refused_surface();
-        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
+        client.handler = Box::new(CapturingHandler {
+            updates: Arc::clone(&updates),
+            unhandled: Arc::new(Mutex::new(0)),
+        });
+        assert!(wire_progressive(&mut client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64))).is_ok());
         assert_eq!(client.dropped_updates(), 0);
+        assert!(updates.lock().unwrap().is_empty());
     }
 
-    /// An unreadable stream for a refused surface is dropped like any other
-    /// undecodable update, not fatal to the session.
+    /// An unreadable stream for a refused surface is dropped like any other undecodable update.
+    /// It isn't fatal to the session.
+    // oracle: mutant skip_bitmap's parse error ending the session
     #[test]
     fn refused_surface_drops_an_unreadable_progressive_stream() {
         let mut client = progressive_client_with_refused_surface();
@@ -3519,8 +3524,9 @@ mod tests {
         assert_eq!(client.dropped_updates(), 1);
     }
 
-    /// A refused surface still records the CONTEXT flag, so a surface re-created
-    /// with its id after a reset decodes the CONTEXT-less updates Windows sends.
+    /// A refused surface still records the CONTEXT flag.
+    /// A surface re-created with its id after a reset then decodes the CONTEXT-less updates Windows sends.
+    // oracle: mutant skip_bitmap not recording the CONTEXT flag
     #[test]
     fn refused_surface_keeps_its_progressive_context_flag() {
         let mut client = progressive_client_with_refused_surface();

@@ -1520,19 +1520,15 @@ impl ProgressiveDecoder {
         Ok(decoded_tiles)
     }
 
-    /// Take in a progressive bitmap stream for a surface whose tiles aren't
-    /// kept, such as one the caller has no pixels for. Tile state and sub-band
-    /// references the surface had are discarded, since the stream changes
-    /// tiles no longer tracked. Only the stream's CONTEXT band-layout flag is
-    /// recorded, for later streams on the surface that omit the block, as
-    /// [`Self::decode_bitmap`] records it.
+    /// Take in a progressive bitmap stream for a surface whose tiles aren't kept, such as one without pixels.
+    /// The surface's tile state and sub-band references are discarded, since the stream changes tiles.
+    /// Only its CONTEXT band-layout flag is kept, for later streams on the surface that omit the block, as
+    /// [`Self::decode_bitmap`] keeps it.
     pub fn skip_bitmap(&mut self, surface_id: u16, bitmap_data: &[u8]) -> Result<(), ProgressiveDecodeError> {
         let blocks = ironrdp_pdu::codecs::rfx::progressive::decode_progressive_stream(bitmap_data)?;
-        self.surfaces.remove(&surface_id);
-        self.references
-            .retain(|(reference_surface_id, _, _), _| *reference_surface_id != surface_id);
-        self.frame_tiles.remove(&surface_id);
-        if let Some(flag) = signalled_context_flag(&blocks) {
+        let flag = signalled_context_flag(&blocks).or_else(|| self.surface_context_flags.get(&surface_id).copied());
+        self.delete_surface(surface_id);
+        if let Some(flag) = flag {
             self.surface_context_flags.insert(surface_id, flag);
         }
         Ok(())
@@ -2268,19 +2264,36 @@ mod tests {
         assert!(decoder.surfaces.contains_key(&2));
     }
 
+    // oracle: mutant skip_bitmap not recording the stream's CONTEXT flag, or recording a wrong value
     #[test]
     fn skipped_stream_keeps_only_the_context_flag() {
-        let mut decoder = ProgressiveDecoder::new();
+        use ironrdp_pdu::codecs::rfx::progressive::{
+            FLAG_DWT_REDUCE_EXTRAPOLATE, ProgressiveBlock, ProgressiveContextPdu, ProgressiveSyncPdu,
+            encode_progressive_stream,
+        };
 
-        decoder.skip_bitmap(1, &minimal_progressive_stream(true)).unwrap();
-        assert!(decoder.surfaces.is_empty());
-        assert!(decoder.references.is_empty());
+        for flags in [0, FLAG_DWT_REDUCE_EXTRAPOLATE] {
+            let mut decoder = ProgressiveDecoder::new();
+            let context_stream = encode_progressive_stream(&[
+                ProgressiveBlock::Sync(ProgressiveSyncPdu),
+                ProgressiveBlock::Context(ProgressiveContextPdu {
+                    context_id: 0,
+                    tile_size: 0x0040,
+                    flags,
+                }),
+            ])
+            .unwrap();
+            decoder.skip_bitmap(1, &context_stream).unwrap();
+            assert!(decoder.surfaces.is_empty());
 
-        // A later stream for the surface that omits CONTEXT still decodes.
-        let stream_without_context = minimal_progressive_stream(false);
-        assert!(decoder.decode_bitmap(1, 0, 640, 480, &stream_without_context).is_ok());
+            // A later stream for the surface that omits CONTEXT decodes with the band layout the skipped one set.
+            let stream_without_context = minimal_progressive_stream(false);
+            assert!(decoder.decode_bitmap(1, 0, 640, 480, &stream_without_context).is_ok());
+            assert_eq!(decoder.surfaces[&1].use_reduce_extrapolate, flags != 0);
+        }
     }
 
+    // oracle: mutant skip_bitmap keeping the surface's earlier sub-band references, or dropping its CONTEXT flag
     #[test]
     fn skipped_stream_discards_earlier_tile_state() {
         let mut decoder = ProgressiveDecoder::new();
