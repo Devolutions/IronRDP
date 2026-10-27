@@ -61,7 +61,9 @@ pub mod ffi {
                 bottom,
             } = rect.0;
 
-            crate::pdu::ensure_not_inverted(&rect.0)?;
+            if !(left <= right && top <= bottom) {
+                return Err("rectangle is inverted".into());
+            }
 
             if !(right < image.width() && bottom < image.height()) {
                 return Err("rectangle is outside the image".into());
@@ -115,5 +117,30 @@ pub mod ffi {
         BgrX32,
         RgbA32,
         RgbX32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ffi::{DecodedImage, PixelFormat};
+    use crate::error::ffi::IronRdpErrorKind;
+    use crate::pdu::ffi::InclusiveRectangle;
+
+    #[test]
+    fn copy_rect_into_rejects_an_inverted_rectangle() {
+        let image = DecodedImage::new(PixelFormat::BgrA32, 8, 4);
+        let rect = InclusiveRectangle(ironrdp::pdu::geometry::InclusiveRectangle {
+            left: 3,
+            top: 0,
+            right: 2,
+            bottom: 0,
+        });
+
+        let mut buffer = [0xff; 8 * 4 * 4];
+
+        let error = image.copy_rect_into(&rect, &mut buffer, 8 * 4).unwrap_err();
+
+        assert!(matches!(error.get_kind(), IronRdpErrorKind::Generic));
+        assert!(buffer.iter().all(|&b| b == 0xff));
     }
 }

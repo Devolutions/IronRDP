@@ -43,84 +43,65 @@ internal static class SmokeTests
             Throws<ObjectDisposedException>(() => _ = image.DataSize);
         });
 
-        // oracle: mutant source and destination row offsets, inclusive bounds, and vertical rectangle guards
-        yield return ("decoded image copies only the requested rectangle", () =>
+        // oracle: mutant source and destination row offsets and inclusive bounds; the rectangle is the GraphicsUpdate IronRDP reports
+        yield return ("decoded image copies only the damaged rectangle", () =>
         {
-            var image = NonUniformImage();
+            var (stage, image) = ConnectedStage(8, 4);
+            var damage = PaintSurface(stage, image, 2, 1, 3, 2);
+            Equal((2, 1, 4, 2), ((int)damage.Left, (int)damage.Top, (int)damage.Right, (int)damage.Bottom), "damage");
             const int stride = 8 * 4 + 4;
             var buffer = new byte[stride * 4];
             Array.Fill(buffer, (byte)0xff);
 
-            image.CopyRectInto(InclusiveRectangle.New(2, 1, 4, 2), buffer, stride);
+            image.CopyRectInto(damage, buffer, stride);
 
             for (int y = 0; y < 4; y++)
             {
                 for (int x = 0; x < stride; x++)
                 {
                     bool inside = y is >= 1 and <= 2 && x >= 2 * 4 && x < 5 * 4;
-                    byte expected = inside ? (byte)(y * 8 * 4 + x + 1) : (byte)0xff;
+                    byte expected = inside ? SurfaceByte(3, x - 2 * 4, y - 1) : (byte)0xff;
                     Equal(expected, buffer[y * stride + x], $"byte ({x}, {y})");
                 }
             }
         });
 
-        // oracle: InclusiveRectangle::new doc contract; every error kind is Generic, so only the message tells the rejections apart
-        yield return ("inclusive rectangle rejects inverted edges", () =>
-        {
-            var inverted = Throws<IronRdpException>(() => InclusiveRectangle.New(3, 0, 2, 0));
-            True(inverted.Message.Contains("rectangle is inverted"), $"error message: {inverted.Message}");
-            var invertedVertical = Throws<IronRdpException>(() => InclusiveRectangle.New(0, 3, 0, 2));
-            True(invertedVertical.Message.Contains("rectangle is inverted"), $"error message: {invertedVertical.Message}");
-        });
-
-        // oracle: InclusiveRectangle::new doc contract; every error kind is Generic, so only the message tells the rejections apart
-        yield return ("inclusive rectangle rejects a full 65536-pixel span", () =>
-        {
-            var tooLarge = Throws<IronRdpException>(() => InclusiveRectangle.New(0, 0, ushort.MaxValue, 0));
-            True(tooLarge.Message.Contains("rectangle is too large"), $"error message: {tooLarge.Message}");
-            var tooTall = Throws<IronRdpException>(() => InclusiveRectangle.New(0, 0, 0, ushort.MaxValue));
-            True(tooTall.Message.Contains("rectangle is too large"), $"error message: {tooTall.Message}");
-        });
-
-        // oracle: InclusiveRectangle::new doc contract (only the full 65536-pixel span is rejected)
-        yield return ("inclusive rectangle reports the widest and tallest sizes", () =>
-        {
-            Equal((int)ushort.MaxValue, (int)InclusiveRectangle.New(1, 0, ushort.MaxValue, 0).Width, "widest rectangle");
-            Equal((int)ushort.MaxValue, (int)InclusiveRectangle.New(0, 1, 0, ushort.MaxValue).Height, "tallest rectangle");
-        });
-
         // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
         yield return ("decoded image copy rejects a rectangle outside the image", () =>
         {
-            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
-            const int stride = 8 * 4;
-            var buffer = new byte[stride * 4];
-            var outside = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 8, 0), buffer, stride));
+            var (stage, image) = ConnectedStage(8, 4);
+            var full = PaintSurface(stage, image, 0, 0, 8, 4);
+            var narrow = DecodedImage.New(PixelFormat.BgrX32, 7, 4);
+            var outside = Throws<IronRdpException>(() => narrow.CopyRectInto(full, new byte[8 * 4 * 4], 8 * 4));
             True(outside.Message.Contains("rectangle is outside the image"), $"error message: {outside.Message}");
-            var outsideVertical = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 0, 4), buffer, stride));
+            var shallow = DecodedImage.New(PixelFormat.BgrX32, 8, 3);
+            var outsideVertical = Throws<IronRdpException>(() => shallow.CopyRectInto(full, new byte[8 * 4 * 4], 8 * 4));
             True(outsideVertical.Message.Contains("rectangle is outside the image"), $"error message: {outsideVertical.Message}");
         });
 
         // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
         yield return ("decoded image copy rejects a short stride", () =>
         {
-            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
-            Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 0), new byte[8 * 4 * 4], 8 * 4 - 1));
+            var (stage, image) = ConnectedStage(8, 4);
+            var full = PaintSurface(stage, image, 0, 0, 8, 4);
+            Throws<IronRdpException>(() => image.CopyRectInto(full, new byte[8 * 4 * 4], 8 * 4 - 1));
         });
 
         // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
         yield return ("decoded image copy rejects a short buffer", () =>
         {
-            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
+            var (stage, image) = ConnectedStage(8, 4);
+            var full = PaintSurface(stage, image, 0, 0, 8, 4);
             const int stride = 8 * 4;
-            Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 3), new byte[stride * 3], stride));
+            Throws<IronRdpException>(() => image.CopyRectInto(full, new byte[stride * 3], stride));
         });
 
         // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
         yield return ("decoded image copy rejects a stride whose last row overflows", () =>
         {
-            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
-            var error = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 3), new byte[8 * 4 * 4], nuint.MaxValue));
+            var (stage, image) = ConnectedStage(8, 4);
+            var full = PaintSurface(stage, image, 0, 0, 8, 4);
+            var error = Throws<IronRdpException>(() => image.CopyRectInto(full, new byte[8 * 4 * 4], nuint.MaxValue));
             True(error.Message.Contains("buffer stride is too large"), $"error message: {error.Message}");
         });
 
@@ -278,7 +259,7 @@ internal static class SmokeTests
         },
     };
 
-    private static DecodedImage NonUniformImage()
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height)
     {
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
         var buf = WriteBuf.New();
@@ -310,28 +291,46 @@ internal static class SmokeTests
         }
 
         Equal(HandshakeServerPdus.Length, i, "server PDUs consumed by the handshake");
-
         var stage = ActiveStage.New(connector.ConsumeAndCastToClientConnectorState().GetConnectedResult());
-        var image = DecodedImage.New(PixelFormat.BgrX32, 8, 4);
-        var frame = new byte[28 + 8 * 4 * 4];
-        // Fast-Path SetSurfaceBits (CODEC_ID_NONE, 32 bpp, 8x4, bottom-up rows, MS-RDPBCGR §2.2.9.2.1).
+        return (stage, DecodedImage.New(PixelFormat.BgrX32, width, height));
+    }
+
+    private static byte SurfaceByte(int width, int x, int y) => (byte)(y * width * 4 + x + 1);
+
+    // Sends one Fast-Path SetSurfaceBits (CODEC_ID_NONE, 32 bpp, bottom-up rows, MS-RDPBCGR §2.2.9.2.1)
+    // and returns the GraphicsUpdate rectangle IronRDP reports for it.
+    private static InclusiveRectangle PaintSurface(ActiveStage stage, DecodedImage image, ushort left, ushort top, ushort width, ushort height)
+    {
+        int dataLength = width * height * 4;
+        var frame = new byte[28 + dataLength];
+        int right = left + width;
+        int bottom = top + height;
         new byte[]
         {
-            0x00, 0x80, 0x9c, 0x04, 0x96, 0x00,
-            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x04, 0x00,
-            0x20, 0x00, 0x00, 0x00, 0x08, 0x00, 0x04, 0x00, 0x80, 0x00, 0x00, 0x00,
+            0x00, (byte)(0x80 | frame.Length >> 8), (byte)frame.Length, 0x04, (byte)(22 + dataLength), (byte)(22 + dataLength >> 8),
+            0x01, 0x00, (byte)left, (byte)(left >> 8), (byte)top, (byte)(top >> 8), (byte)right, (byte)(right >> 8), (byte)bottom, (byte)(bottom >> 8),
+            0x20, 0x00, 0x00, 0x00, (byte)width, (byte)(width >> 8), (byte)height, (byte)(height >> 8),
+            (byte)dataLength, (byte)(dataLength >> 8), (byte)(dataLength >> 16), (byte)(dataLength >> 24),
         }.CopyTo(frame, 0);
-        for (int y = 0; y < 4; y++)
+        for (int y = 0; y < height; y++)
         {
-            for (int x = 0; x < 8 * 4; x++)
+            for (int x = 0; x < width * 4; x++)
             {
-                frame[28 + (3 - y) * 8 * 4 + x] = (byte)(y * 8 * 4 + x + 1);
+                frame[28 + (height - 1 - y) * width * 4 + x] = SurfaceByte(width, x, y);
             }
         }
 
         var action = IronRdpPdu.New().FindSize(frame)!.Action;
-        stage.Process(image, action, frame);
-        return image;
+        var outputs = stage.Process(image, action, frame);
+        while (outputs.Next() is { } output)
+        {
+            if (output.EnumType == ActiveStageOutputType.GraphicsUpdate)
+            {
+                return output.GraphicsUpdate;
+            }
+        }
+
+        throw new InvalidOperationException("SetSurfaceBits produced no GraphicsUpdate");
     }
 
     private static Config TlsConfig()

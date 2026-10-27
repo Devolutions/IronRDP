@@ -39,29 +39,6 @@ pub mod ffi {
     pub struct InclusiveRectangle(pub ironrdp::pdu::geometry::InclusiveRectangle);
 
     impl InclusiveRectangle {
-        /// Makes a rectangle from its edges, which are all part of the rectangle.
-        ///
-        /// # Errors
-        ///
-        /// Fails when `right` is left of `left` or `bottom` is above `top`, or when the rectangle
-        /// spans all 65536 columns or rows, because [`Self::get_width`] and [`Self::get_height`]
-        /// could not report that size.
-        pub fn new(left: u16, top: u16, right: u16, bottom: u16) -> Result<Box<InclusiveRectangle>, Box<IronRdpError>> {
-            let rect = ironrdp::pdu::geometry::InclusiveRectangle {
-                left,
-                top,
-                right,
-                bottom,
-            };
-            super::ensure_not_inverted(&rect)?;
-
-            if !(right - left < u16::MAX && bottom - top < u16::MAX) {
-                return Err("rectangle is too large".into());
-            }
-
-            Ok(Box::new(InclusiveRectangle(rect)))
-        }
-
         #[diplomat::attr(auto, getter = "left")]
         pub fn get_left(&self) -> u16 {
             self.0.left
@@ -135,14 +112,4 @@ impl From<Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>> for ffi::Fast
     fn from(value: Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>) -> Self {
         ffi::FastPathInputEventIterator(value)
     }
-}
-
-pub(crate) fn ensure_not_inverted(
-    rect: &ironrdp::pdu::geometry::InclusiveRectangle,
-) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
-    if !(rect.left <= rect.right && rect.top <= rect.bottom) {
-        return Err("rectangle is inverted".into());
-    }
-
-    Ok(())
 }
