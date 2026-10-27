@@ -261,7 +261,7 @@ public partial class MainWindow : Window
                     var image = _decodedImage!;
                     size = new PixelSize(image.Width, image.Height);
                     stride = size.Width * BytesPerPixel;
-                    resized = writableBitmap.PixelSize != size || _frameBuffer?.Length != stride * size.Height;
+                    resized = writableBitmap.PixelSize != size || _frameBuffer is null;
                     if (resized)
                     {
                         _frameBuffer = new byte[stride * size.Height];
