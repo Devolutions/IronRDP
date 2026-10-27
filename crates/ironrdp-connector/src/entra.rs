@@ -2,6 +2,9 @@
 //!
 //! Token acquisition and proof-of-possession signing belong to the caller.
 //! See [MS-RDPBCGR] sections 2.2.18 and 5.4.5.4.1.
+//! Windows `termsrv` frames these JSON messages as NUL-terminated strings on the wire.
+//! Framing and message parsing are property-tested in `ironrdp-testsuite-core` rather than fuzzed in
+//! `ironrdp-fuzzing`, which does not depend on `ironrdp-connector`.
 //!
 //! [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 
@@ -34,7 +37,7 @@ impl PduHint for EntraJsonHint {
             }
             Some(Ok(_)) => Err(other_err!("EntraAuth", "expected a JSON object")),
             Some(Err(e)) if !e.is_eof() => Err(other_err!("EntraAuth", "invalid JSON message")),
-            _ if bytes.len() >= MAX_MESSAGE_SIZE => Err(other_err!("EntraAuth", "JSON message exceeds size limit")),
+            _ if MAX_MESSAGE_SIZE <= bytes.len() => Err(other_err!("EntraAuth", "JSON message exceeds size limit")),
             _ => Ok(None),
         }
     }
@@ -98,7 +101,7 @@ pub(crate) fn authentication_result(input: &[u8]) -> ConnectorResult<u32> {
 }
 
 fn message(input: &[u8]) -> ConnectorResult<Value> {
-    if input.len() > MAX_MESSAGE_SIZE {
+    if MAX_MESSAGE_SIZE < input.len() {
         return Err(reason_err!("EntraAuth", "JSON message exceeds size limit"));
     }
     let start = json_whitespace_len(input);
@@ -112,7 +115,7 @@ fn message(input: &[u8]) -> ConnectorResult<Value> {
 }
 
 pub(crate) fn write_assertion(assertion: &str, output: &mut WriteBuf) -> ConnectorResult<Written> {
-    if assertion.len() > MAX_MESSAGE_SIZE {
+    if MAX_MESSAGE_SIZE < assertion.len() {
         return Err(reason_err!("EntraAuth", "RDP assertion exceeds size limit"));
     }
     let mut parts = assertion.split('.');
@@ -135,8 +138,9 @@ pub(crate) fn write_assertion(assertion: &str, output: &mut WriteBuf) -> Connect
     }
     let mut message = serde_json::to_vec(&serde_json::json!({ "rdp_assertion": assertion }))
         .map_err(|e| custom_err!("encoding RDP assertion", e))?;
+    // Windows `termsrv` requires the RDS AAD JSON message to be NUL-terminated on the wire.
     message.push(0);
-    if message.len() > MAX_MESSAGE_SIZE {
+    if MAX_MESSAGE_SIZE < message.len() {
         return Err(reason_err!("EntraAuth", "JSON message exceeds size limit"));
     }
     let written = Written::from_size(message.len())?;

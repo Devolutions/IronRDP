@@ -45,6 +45,7 @@ fn awaiting_result() -> ClientConnector {
     connector
 }
 
+// oracle: spec MS-RDPBCGR §2.2.1.1.1; spec MS-RDPBCGR §5.4.5.4.1
 #[test]
 fn entra_negotiation_requires_rds_aad_without_fallback() {
     let mut config = super::test_config();
@@ -69,6 +70,7 @@ fn entra_negotiation_requires_rds_aad_without_fallback() {
     assert_eq!(request.protocol, SecurityProtocol::RDSAAD);
 }
 
+// oracle: spec MS-RDPBCGR §2.2.1.2.1; spec MS-RDPBCGR §5.4.5.4.1
 #[test]
 fn entra_rejects_server_downgrade_and_mixed_protocol_selection() {
     for protocol in [
@@ -88,6 +90,7 @@ fn entra_rejects_server_downgrade_and_mixed_protocol_selection() {
     }
 }
 
+// oracle: spec MS-RDPBCGR §2.2.18.1; spec MS-RDPBCGR §2.2.18.2; spec MS-RDPBCGR §2.2.18.3; spec MS-RDPBCGR §5.4.5.4.1; reference FreeRDP libfreerdp/core/aad.c
 #[test]
 fn entra_nonce_assertion_and_success_gate_basic_settings() {
     let mut connector = after_tls();
@@ -131,6 +134,7 @@ fn entra_nonce_assertion_and_success_gate_basic_settings() {
     assert!(!output.filled().is_empty());
 }
 
+// oracle: spec MS-RDPBCGR §2.2.18.1; spec MS-RDPBCGR §2.2.18.3; spec RFC 8259 §2
 #[test]
 fn entra_json_hint_handles_all_fragments_and_coalesced_messages() {
     let connector = after_tls();
@@ -158,7 +162,7 @@ fn entra_json_hint_handles_all_fragments_and_coalesced_messages() {
     assert_eq!(hint.find_size(&combined).unwrap(), Some((true, result.len())));
 }
 
-// oracle: spec MS-RDPBCGR §2.2.18.3; RFC 8259 §2
+// oracle: spec MS-RDPBCGR §2.2.18.3; spec RFC 8259 §2
 #[test]
 fn entra_auth_result_trailing_json_whitespace_does_not_corrupt_x224_framing() {
     let mut connector = awaiting_result();
@@ -169,8 +173,17 @@ fn entra_auth_result_trailing_json_whitespace_does_not_corrupt_x224_framing() {
     let mut output = WriteBuf::new();
     connector.step_no_input(&mut output).unwrap();
     let hint = connector.next_pdu_hint().expect("X.224 response hint");
+    let mut gcc_blocks = ironrdp_testsuite_core::conference_create::CONFERENCE_CREATE_RESPONSE
+        .clone()
+        .into_gcc_blocks();
+    gcc_blocks.security = ironrdp_pdu::gcc::ServerSecurityData::no_security();
+    let connect_response = ironrdp_pdu::mcs::ConnectResponse {
+        conference_create_response: ironrdp_pdu::gcc::ConferenceCreateResponse::new(1007, gcc_blocks).unwrap(),
+        ..ironrdp_testsuite_core::mcs::CONNECT_RESPONSE.clone()
+    };
+    let mcs_bytes = encode_vec(&connect_response).unwrap();
     let x224 = encode_vec(&X224(X224Data {
-        data: std::borrow::Cow::Borrowed(&ironrdp_testsuite_core::mcs::CONNECT_RESPONSE_BUFFER),
+        data: std::borrow::Cow::Borrowed(&mcs_bytes),
     }))
     .unwrap();
     let mut input = b"\r\n \t".to_vec();
@@ -180,10 +193,15 @@ fn entra_auth_result_trailing_json_whitespace_does_not_corrupt_x224_framing() {
         assert_eq!(hint.find_size(&input[..end]).unwrap(), None);
     }
     assert_eq!(hint.find_size(&input).unwrap(), Some((true, input.len())));
-    let error = connector.step(&input, None, &mut output).unwrap_err();
-    assert!(matches!(error.kind(), ConnectorErrorKind::General));
+    output.clear();
+    connector.step(&input, None, &mut output).unwrap();
+    assert!(matches!(
+        connector.state,
+        ClientConnectorState::ChannelConnection { .. }
+    ));
 }
 
+// oracle: spec MS-RDPBCGR §2.2.18.1; mutant overflow boundary off-by-one in 64 KiB Entra JSON size guard
 #[test]
 fn entra_json_size_limit_accepts_complete_boundary_and_rejects_overflow() {
     let prefix = "{\"ts_nonce\":\"";
@@ -218,6 +236,7 @@ fn entra_json_size_limit_accepts_complete_boundary_and_rejects_overflow() {
     assert!(matches!(connector.state, ClientConnectorState::Consumed));
 }
 
+// oracle: spec MS-RDPBCGR §2.2.18.1; spec RFC 8259 §2
 #[test]
 fn entra_rejects_malformed_nonce_messages() {
     for input in [
@@ -237,6 +256,7 @@ fn entra_rejects_malformed_nonce_messages() {
     }
 }
 
+// oracle: spec MS-RDPBCGR §2.2.18.2; spec RFC 7515 §3.1; spec RFC 4648 §5
 #[test]
 fn entra_rejects_invalid_assertions_without_advancing_or_writing() {
     let mut connector = after_tls();
@@ -253,6 +273,7 @@ fn entra_rejects_invalid_assertions_without_advancing_or_writing() {
     assert_eq!(output.filled_len(), 0);
 }
 
+// oracle: spec MS-RDPBCGR §2.2.18.2; mutant overflow boundary off-by-one in 64 KiB Entra assertion envelope guard
 #[test]
 fn entra_assertion_message_size_limit_includes_json_envelope() {
     let envelope_len = b"{\"rdp_assertion\":\"\"}\0".len();
@@ -271,6 +292,7 @@ fn entra_assertion_message_size_limit_includes_json_envelope() {
     assert!(matches!(connector.state, ClientConnectorState::EntraAuthWaitResult));
 }
 
+// oracle: spec MS-RDPBCGR §2.2.18.3; spec MS-ERREF §2.1
 #[test]
 fn entra_authentication_failure_preserves_hresult_and_aborts() {
     for input in [
@@ -296,6 +318,7 @@ fn entra_authentication_failure_preserves_hresult_and_aborts() {
     ));
 }
 
+// oracle: spec MS-RDPBCGR §2.2.18.3
 #[test]
 fn entra_rejects_invalid_authentication_results() {
     for input in [
@@ -318,47 +341,96 @@ fn entra_rejects_invalid_authentication_results() {
     assert!(matches!(error.kind(), ConnectorErrorKind::EntraAuth(1)));
 }
 
+fn step_client_info(credentials: Credentials, entra: bool) -> ironrdp_pdu::rdp::client_info::ClientInfo {
+    let mut config = super::test_config();
+    config.autologon = true;
+    config.credentials = credentials;
+    let mut connector = ClientConnector::new(config, "127.0.0.1:3389".parse().unwrap());
+    if entra {
+        connector = connector.with_entra_auth();
+    }
+    connector.state = ClientConnectorState::SecureSettingsExchange {
+        io_channel_id: 1003,
+        user_channel_id: 1002,
+    };
+    let mut output = WriteBuf::new();
+    connector.step_no_input(&mut output).unwrap();
+    let data = decode::<X224<SendDataRequest<'_>>>(output.filled()).unwrap().0;
+    decode::<ClientInfoPdu>(data.user_data.as_ref()).unwrap().client_info
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1; spec MS-RDPBCGR §5.4.5.4.1
 #[test]
-fn entra_client_info_never_sends_password_or_pin() {
-    for smart_card in [false, true] {
-        for entra in [false, true] {
-            let mut config = super::test_config();
-            config.autologon = true;
-            if smart_card {
-                config.credentials = Credentials::SmartCard {
-                    pin: "test".into(),
-                    config: None,
-                };
-            }
-            let mut connector = ClientConnector::new(config, "127.0.0.1:3389".parse().unwrap());
-            if entra {
-                connector = connector.with_entra_auth();
-            }
-            connector.state = ClientConnectorState::SecureSettingsExchange {
-                io_channel_id: 1003,
-                user_channel_id: 1002,
-            };
-            let mut output = WriteBuf::new();
-            connector.step_no_input(&mut output).unwrap();
-            let data = decode::<X224<SendDataRequest<'_>>>(output.filled()).unwrap().0;
-            let info = decode::<ClientInfoPdu>(data.user_data.as_ref()).unwrap().client_info;
-            assert_eq!(info.credentials.password, if entra { "" } else { "test" });
-            assert_eq!(info.flags.contains(ClientInfoFlags::AUTOLOGON), !entra);
-            assert_eq!(
-                info.flags.contains(ClientInfoFlags::PASSWORD_IS_SC_PIN),
-                smart_card && !entra
-            );
-        }
+fn entra_client_info_omits_password_and_smart_card_pin() {
+    for credentials in [
+        Credentials::UsernamePassword {
+            username: "user".into(),
+            password: "test".into(),
+        },
+        Credentials::SmartCard {
+            pin: "test".into(),
+            config: None,
+        },
+    ] {
+        let info = step_client_info(credentials, true);
+        assert_eq!(info.credentials.password, "");
+        assert!(!info.flags.contains(ClientInfoFlags::AUTOLOGON));
+        assert!(!info.flags.contains(ClientInfoFlags::PASSWORD_IS_SC_PIN));
     }
 }
 
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1
 #[test]
-fn credssp_and_tls_negotiation_are_unchanged_without_entra_opt_in() {
-    for protocol in [
-        SecurityProtocol::SSL,
-        SecurityProtocol::HYBRID,
-        SecurityProtocol::HYBRID_EX,
-    ] {
+fn non_entra_client_info_preserves_password_and_smart_card_pin() {
+    let password_info = step_client_info(
+        Credentials::UsernamePassword {
+            username: "user".into(),
+            password: "test".into(),
+        },
+        false,
+    );
+    assert_eq!(password_info.credentials.password, "test");
+    assert!(password_info.flags.contains(ClientInfoFlags::AUTOLOGON));
+    assert!(!password_info.flags.contains(ClientInfoFlags::PASSWORD_IS_SC_PIN));
+
+    let smart_card_info = step_client_info(
+        Credentials::SmartCard {
+            pin: "test".into(),
+            config: None,
+        },
+        false,
+    );
+    assert_eq!(smart_card_info.credentials.password, "test");
+    assert!(smart_card_info.flags.contains(ClientInfoFlags::AUTOLOGON));
+    assert!(smart_card_info.flags.contains(ClientInfoFlags::PASSWORD_IS_SC_PIN));
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.1.1; spec MS-RDPBCGR §2.2.1.2.1
+#[test]
+fn tls_negotiation_skips_credssp_and_entra_without_entra_opt_in() {
+    let mut config = super::test_config();
+    config.enable_credssp = true;
+    let mut connector = ClientConnector::new(config, "127.0.0.1:3389".parse().unwrap());
+    let mut output = WriteBuf::new();
+    connector.step_no_input(&mut output).unwrap();
+    let request = decode::<X224<ConnectionRequest>>(output.filled()).unwrap().0;
+    assert_eq!(
+        request.protocol,
+        SecurityProtocol::SSL | SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX
+    );
+    connector
+        .step(&confirmation(SecurityProtocol::SSL), None, &mut output)
+        .unwrap();
+    connector.mark_security_upgrade_as_done();
+    assert!(!connector.should_perform_credssp());
+    assert!(!connector.should_perform_entra_auth());
+    assert!(connector.entra_server_nonce().is_none());
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.1.1; spec MS-RDPBCGR §2.2.1.2.1
+#[test]
+fn credssp_negotiation_enables_credssp_without_entra_opt_in() {
+    for protocol in [SecurityProtocol::HYBRID, SecurityProtocol::HYBRID_EX] {
         let mut config = super::test_config();
         config.enable_credssp = true;
         let mut connector = ClientConnector::new(config, "127.0.0.1:3389".parse().unwrap());
@@ -371,11 +443,13 @@ fn credssp_and_tls_negotiation_are_unchanged_without_entra_opt_in() {
         );
         connector.step(&confirmation(protocol), None, &mut output).unwrap();
         connector.mark_security_upgrade_as_done();
-        assert_eq!(connector.should_perform_credssp(), protocol != SecurityProtocol::SSL);
+        assert!(connector.should_perform_credssp());
+        assert!(!connector.should_perform_entra_auth());
         assert!(connector.entra_server_nonce().is_none());
     }
 }
 
+// oracle: spec MS-RDPBCGR §2.2.1.2.2
 #[test]
 fn entra_required_negotiation_failure_has_specific_diagnostic() {
     let mut connector = connector();
@@ -389,6 +463,53 @@ fn entra_required_negotiation_failure_has_specific_diagnostic() {
     let ConnectorErrorKind::Negotiation(failure) = error.kind() else {
         panic!("expected a negotiation failure");
     };
-    assert_eq!(u32::from(failure.code()), 7);
+    assert_eq!(failure.code(), FailureCode::ENTRA_AUTH_REQUIRED_BY_SERVER);
+    assert_eq!(u32::from(failure.code()), 0x0000_0007);
     assert!(failure.to_string().contains("Microsoft Entra"));
+}
+
+// oracle: spec MS-RDPBCGR §2.2.18.1; spec MS-RDPBCGR §2.2.18.2; spec MS-RDPBCGR §2.2.18.3
+proptest::proptest! {
+    #[test]
+    fn entra_json_framing_and_parsers_maintain_bounds_and_invariants(
+        raw_bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512),
+        assertion_candidate in ".{0,256}",
+    ) {
+        let mut nonce_connector = after_tls();
+        let hint = nonce_connector.next_pdu_hint().unwrap();
+        if let Ok(Some((is_complete, len))) = hint.find_size(&raw_bytes) {
+            proptest::prop_assert!(is_complete);
+            proptest::prop_assert!(len <= raw_bytes.len());
+            let mut output = WriteBuf::new();
+            let _ = nonce_connector.step(&raw_bytes[..len], None, &mut output);
+            proptest::prop_assert_eq!(output.filled_len(), 0);
+        } else {
+            let mut output = WriteBuf::new();
+            let _ = nonce_connector.step(&raw_bytes, None, &mut output);
+            proptest::prop_assert_eq!(output.filled_len(), 0);
+        }
+
+        let mut assertion_connector = after_tls();
+        let mut output = WriteBuf::new();
+        assertion_connector.step(br#"{"ts_nonce":"nonce"}"#, None, &mut output).unwrap();
+        match assertion_connector.submit_entra_assertion(&assertion_candidate, &mut output) {
+            Ok(written) => {
+                proptest::prop_assert_eq!(written.size(), Some(output.filled_len()));
+                proptest::prop_assert_eq!(output.filled().last(), Some(&0));
+                proptest::prop_assert!(matches!(
+                    assertion_connector.state,
+                    ClientConnectorState::EntraAuthWaitResult
+                ));
+            }
+            Err(_) => {
+                proptest::prop_assert_eq!(output.filled_len(), 0);
+                proptest::prop_assert_eq!(assertion_connector.entra_server_nonce(), Some("nonce"));
+            }
+        }
+
+        let mut result_connector = awaiting_result();
+        let mut result_output = WriteBuf::new();
+        let _ = result_connector.step(&raw_bytes, None, &mut result_output);
+        proptest::prop_assert_eq!(result_output.filled_len(), 0);
+    }
 }

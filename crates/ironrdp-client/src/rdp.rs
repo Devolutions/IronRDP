@@ -3212,12 +3212,6 @@ async fn connect_rdcleanpath_transport(
     let destination = config.destination.to_string();
     let mut network_client = ReqwestNetworkClient::new();
     let server_name = ironrdp_connector::ServerName::from(&config.destination);
-    #[cfg(feature = "entra-auth")]
-    let entra_aad_nonce = if let Some(auth) = &config.entra_auth {
-        Some(acquire_entra_aad_nonce(auth).await?)
-    } else {
-        None
-    };
     let (upgraded, server_public_key) = rdcleanpath_handshake(
         &mut framed,
         &mut connector,
@@ -3235,14 +3229,6 @@ async fn connect_rdcleanpath_transport(
         },
     )
     .await?;
-
-    #[cfg(feature = "entra-auth")]
-    if let Some(auth) = &config.entra_auth {
-        let aad_nonce = entra_aad_nonce
-            .as_deref()
-            .ok_or_else(|| ironrdp_connector::general_err!("Entra AAD nonce missing"))?;
-        perform_entra_auth(&mut framed, &mut connector, auth, aad_nonce).await?;
-    }
 
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
@@ -3312,13 +3298,6 @@ where
 
     let (initial_stream, leftover_bytes) = framed.into_inner();
 
-    #[cfg(feature = "entra-auth")]
-    let entra_aad_nonce = if let Some(auth) = &config.entra_auth {
-        Some(acquire_entra_aad_nonce(auth).await?)
-    } else {
-        None
-    };
-
     // The UDP transport presents the same server certificate, so it is validated the same way.
     let callback =
         redirection_certificate_callback(config).or_else(|| config.certificate_validation_callback().cloned());
@@ -3348,10 +3327,7 @@ where
 
     #[cfg(feature = "entra-auth")]
     if let Some(auth) = &config.entra_auth {
-        let aad_nonce = entra_aad_nonce
-            .as_deref()
-            .ok_or_else(|| ironrdp_connector::general_err!("Entra AAD nonce missing"))?;
-        perform_entra_auth(&mut upgraded_framed, &mut connector, auth, aad_nonce).await?;
+        perform_entra_auth(&mut upgraded_framed, &mut connector, auth).await?;
     }
 
     let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert)
@@ -3442,6 +3418,10 @@ where
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 fn redirection_certificate_callback(config: &Config) -> Option<ironrdp_tls::CertificateValidationCallback> {
+    #[cfg(feature = "entra-auth")]
+    if config.entra_auth.is_some() {
+        return None;
+    }
     let target_certificate = config.redirection.as_ref()?.target_certificate.clone()?;
     // The native-tls backend rejects validation callbacks, so it keeps ordinary strict validation.
     if cfg!(feature = "native-tls") || config.certificate_validation() != ironrdp_tls::CertificateValidation::Strict {
@@ -3487,7 +3467,6 @@ async fn perform_entra_auth<S>(
     framed: &mut ironrdp_tokio::TokioFramed<S>,
     connector: &mut ironrdp_connector::ClientConnector,
     auth: &crate::entra::EntraAuthSession,
-    aad_nonce: &str,
 ) -> ConnectorResult<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
@@ -3495,10 +3474,11 @@ where
     use ironrdp_tokio::{FramedWrite as _, single_sequence_step};
     use zeroize::Zeroize as _;
 
+    let aad_nonce = acquire_entra_aad_nonce(auth).await?;
     let mut output = WriteBuf::new();
     while connector.should_perform_entra_auth() {
         if let Some(server_nonce) = connector.entra_server_nonce().map(str::to_owned) {
-            let assertion = auth.assertion(&server_nonce, aad_nonce).await.map_err(|error| {
+            let assertion = auth.assertion(&server_nonce, &aad_nonce).await.map_err(|error| {
                 <ironrdp_connector::ConnectorError as ironrdp_connector::ConnectorErrorExt>::reason(
                     "create Entra RDP assertion",
                     error.to_string(),

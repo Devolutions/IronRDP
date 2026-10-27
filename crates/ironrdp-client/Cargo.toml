@@ -18,10 +18,15 @@ test = false
 [features]
 default = []
 
+# Internal (PRIVATE!) feature used to expose helpers to the shared integration tests.
+# Don't rely on this whatsoever. It may disappear at any time.
+__test = []
+
 rustls = [
     "ironrdp-tls/rustls",
     "tokio-tungstenite/rustls-tls-native-roots",
     "ironrdp-mstsgu?/rustls",
+    "reqwest?/rustls-tls-native-roots-no-provider",
 ]
 
 native-tls = [
@@ -146,7 +151,7 @@ anyhow = "1"
 smallvec = "1.15"
 url = "2" # public
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots-no-provider", "system-proxy"], optional = true }
+reqwest = { version = "0.12.28", default-features = false, features = ["system-proxy"], optional = true }
 picky = { version = "=7.0.0-rc.26", optional = true }
 base64 = { version = "0.22", optional = true }
 rand = { version = "0.9", optional = true }

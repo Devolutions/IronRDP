@@ -22,6 +22,15 @@ pub mod rdp;
 #[cfg(feature = "video")]
 pub mod video;
 
+#[cfg(feature = "__test")]
+#[doc(hidden)]
+pub fn __test_apply_server_redirection(
+    config: &mut config::Config,
+    redirection: &ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu,
+) -> ironrdp_connector::ConnectorResult<String> {
+    redirection::apply_server_redirection(config, redirection)
+}
+
 #[cfg(feature = "entra-auth")]
 fn http_client_builder() -> std::io::Result<reqwest::ClientBuilder> {
     let builder = reqwest::Client::builder();

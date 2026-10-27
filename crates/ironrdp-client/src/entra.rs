@@ -26,7 +26,6 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 const AUTHORITY: &str = "https://login.microsoftonline.com/common";
 const MAX_AUTHORITY_RESPONSE_SIZE: usize = 64 * 1024;
-const MAX_AUTHORITY_RESPONSE_SIZE_U64: u64 = 64 * 1024;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Identifies the RDP host for which the RDP access token is requested.
@@ -39,7 +38,8 @@ pub enum RdpResource {
 }
 
 impl RdpResource {
-    fn uri(&self) -> anyhow::Result<String> {
+    /// Format the `ms-device-service://` resource URI for this RDP target.
+    pub fn uri(&self) -> anyhow::Result<String> {
         let (kind, value) = match self {
             Self::DeviceId(value) => ("id", value),
             Self::HostName(value) => ("name", value),
@@ -119,13 +119,7 @@ impl EntraAuthorization {
             .append_pair("code_challenge", &code_challenge)
             .append_pair("code_challenge_method", "S256");
 
-        let http = crate::http_client_builder()
-            .context("configure Entra HTTPS client")?
-            .https_only(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .context("create Entra HTTPS client")?;
+        let http = entra_http_client()?;
 
         Ok(Self {
             authorization_url,
@@ -178,20 +172,9 @@ impl EntraAuthorization {
             .context("send Entra authorization-code token request")?;
         let body = authority_response_body(response).await?;
         let token: TokenResponse = serde_json::from_slice(&body).context("decode Entra token response")?;
-        ensure!(
-            token.token_type.eq_ignore_ascii_case("pop"),
-            "Entra returned a non-PoP RDP access token"
-        );
-        ensure!(!token.access_token.is_empty(), "Entra returned an empty access token");
-        ensure!(token.expires_in > 0, "Entra returned an expired access token");
-        if let Some(scope) = &token.scope {
-            ensure!(
-                scope.eq_ignore_ascii_case(&self.resource_uri),
-                "Entra token response scope did not match the requested RDP resource"
-            );
-        }
+        let expires_in = validate_token_response(&token, &self.resource_uri)?;
         let expires_at = tokio::time::Instant::now()
-            .checked_add(Duration::from_secs(token.expires_in))
+            .checked_add(expires_in)
             .context("Entra token lifetime is out of range")?;
 
         Ok(EntraAuthSession {
@@ -231,21 +214,17 @@ impl fmt::Debug for EntraAuthSession {
 }
 
 impl EntraAuthSession {
-    /// Construct an Entra RDS AAD session from a pre-acquired PoP access token and its signing key.
+    /// Construct an Entra RDS AAD session from a pre-acquired PoP access token, its remaining lifetime, and its signing key.
     pub fn from_pop_token(
         access_token: String,
+        expires_in: Duration,
         key: EntraPopKey,
         resource_uri: String,
         tenant_id: Option<&str>,
     ) -> anyhow::Result<Self> {
         ensure!(!access_token.is_empty(), "Entra returned an empty access token");
-        let http = crate::http_client_builder()
-            .context("configure Entra HTTPS client")?
-            .https_only(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(HTTP_TIMEOUT)
-            .build()
-            .context("create Entra HTTPS client")?;
+        ensure!(Duration::ZERO < expires_in, "Entra returned an expired access token");
+        let http = entra_http_client()?;
         let authority = match tenant_id.filter(|id| !id.is_empty()) {
             Some(tenant_id) => {
                 ensure!(
@@ -263,9 +242,12 @@ impl EntraAuthSession {
             }
             None => AUTHORITY.to_owned(),
         };
+        let expires_at = tokio::time::Instant::now()
+            .checked_add(expires_in)
+            .context("Entra token lifetime is out of range")?;
         Ok(Self {
             access_token: Zeroizing::new(access_token),
-            expires_at: tokio::time::Instant::now() + Duration::from_secs(3600),
+            expires_at,
             http,
             key,
             resource_uri,
@@ -275,26 +257,28 @@ impl EntraAuthSession {
 
     /// Whether the PoP access token has reached its expiration timestamp.
     pub fn is_expired(&self) -> bool {
-        tokio::time::Instant::now() >= self.expires_at
+        self.expires_at <= tokio::time::Instant::now()
+    }
+
+    fn ensure_not_expired(&self) -> anyhow::Result<()> {
+        ensure!(
+            !self.is_expired(),
+            "Entra RDP access token has expired; start a new authorization flow"
+        );
+        Ok(())
     }
 
     /// Acquire the fresh AAD nonce required for an RDS AAD authentication handshake.
     ///
-    /// Call this before the TLS handshake, as required by the RDS AAD connection sequence.
+    /// Call this once per RDS AAD connection handshake before signing the RDP assertion.
     pub async fn acquire_aad_nonce(&self) -> anyhow::Result<String> {
-        ensure!(
-            tokio::time::Instant::now() < self.expires_at,
-            "Entra RDP access token has expired; start a new authorization flow"
-        );
+        self.ensure_not_expired()?;
         self.request_aad_nonce().await
     }
 
     /// Sign an RDP assertion for the server's TLS-protected nonce and a fresh AAD nonce.
     pub async fn assertion(&self, server_nonce: &str, aad_nonce: &str) -> anyhow::Result<EntraAssertion> {
-        ensure!(
-            tokio::time::Instant::now() < self.expires_at,
-            "Entra RDP access token has expired; start a new authorization flow"
-        );
+        self.ensure_not_expired()?;
         ensure!(!server_nonce.is_empty(), "RDP server nonce is empty");
         ensure!(!aad_nonce.is_empty(), "AAD nonce is empty");
         self.key
@@ -355,16 +339,7 @@ impl EntraPopKey {
         let public_key = private_key.to_public_key().context("derive Entra PoP public key")?;
         let public_jwk = Jwk::from_public_key(&public_key).context("encode Entra PoP public JWK")?;
         let public_jwk_json = serde_json::to_value(&public_jwk)?;
-        let exponent = public_jwk_json
-            .get("e")
-            .and_then(serde_json::Value::as_str)
-            .context("generated Entra JWK has no RSA public exponent")?;
-        let modulus = public_jwk_json
-            .get("n")
-            .and_then(serde_json::Value::as_str)
-            .context("generated Entra JWK has no RSA modulus")?;
-        let thumbprint_input = format!(r#"{{"e":"{exponent}","kty":"RSA","n":"{modulus}"}}"#);
-        let key_id = URL_SAFE_NO_PAD.encode(HashAlgorithm::SHA2_256.digest(thumbprint_input.as_bytes()));
+        let key_id = rsa_jwk_thumbprint(&public_jwk_json)?;
 
         Ok(Self {
             private_key,
@@ -410,6 +385,65 @@ impl EntraPopKey {
         jws.payload.zeroize();
         Ok(EntraAssertion(Zeroizing::new(encoded?)))
     }
+}
+
+fn entra_http_client() -> anyhow::Result<reqwest::Client> {
+    crate::http_client_builder()
+        .context("configure Entra HTTPS client")?
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .context("create Entra HTTPS client")
+}
+
+fn rsa_jwk_thumbprint(public_jwk_json: &serde_json::Value) -> anyhow::Result<String> {
+    ensure!(
+        public_jwk_json.get("kty").and_then(serde_json::Value::as_str) == Some("RSA"),
+        "Entra JWK key type must be RSA"
+    );
+    let exponent = public_jwk_json
+        .get("e")
+        .and_then(serde_json::Value::as_str)
+        .context("generated Entra JWK has no RSA public exponent")?;
+    let modulus = public_jwk_json
+        .get("n")
+        .and_then(serde_json::Value::as_str)
+        .context("generated Entra JWK has no RSA modulus")?;
+    let thumbprint_input = format!(r#"{{"e":"{exponent}","kty":"RSA","n":"{modulus}"}}"#);
+    Ok(URL_SAFE_NO_PAD.encode(HashAlgorithm::SHA2_256.digest(thumbprint_input.as_bytes())))
+}
+
+fn validate_token_response(token: &TokenResponse, expected_resource_uri: &str) -> anyhow::Result<Duration> {
+    ensure!(
+        token.token_type.eq_ignore_ascii_case("pop"),
+        "Entra returned a non-PoP RDP access token"
+    );
+    ensure!(!token.access_token.is_empty(), "Entra returned an empty access token");
+    ensure!(0 < token.expires_in, "Entra returned an expired access token");
+    if let Some(scope) = &token.scope {
+        ensure!(
+            scope
+                .split_ascii_whitespace()
+                .any(|granted| granted.eq_ignore_ascii_case(expected_resource_uri)),
+            "Entra token response scope did not include the requested RDP resource"
+        );
+    }
+    Ok(Duration::from_secs(token.expires_in))
+}
+
+#[cfg(feature = "__test")]
+#[doc(hidden)]
+pub fn __test_rsa_jwk_thumbprint(jwk_json: &str) -> anyhow::Result<String> {
+    let value: serde_json::Value = serde_json::from_str(jwk_json)?;
+    rsa_jwk_thumbprint(&value)
+}
+
+#[cfg(feature = "__test")]
+#[doc(hidden)]
+pub fn __test_validate_token_response(response_json: &str, expected_resource_uri: &str) -> anyhow::Result<Duration> {
+    let token: TokenResponse = serde_json::from_str(response_json)?;
+    validate_token_response(&token, expected_resource_uri)
 }
 
 #[derive(Serialize)]
@@ -460,7 +494,7 @@ async fn authority_response_body(response: reqwest::Response) -> anyhow::Result<
     );
     if let Some(length) = response.content_length() {
         ensure!(
-            length <= MAX_AUTHORITY_RESPONSE_SIZE_U64,
+            usize::try_from(length).is_ok_and(|length| length <= MAX_AUTHORITY_RESPONSE_SIZE),
             "Entra authority response exceeds the size limit"
         );
     }
@@ -475,217 +509,4 @@ async fn authority_response_body(response: reqwest::Response) -> anyhow::Result<
         body.extend_from_slice(&chunk);
     }
     Ok(body)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-
-    #[test]
-    fn builds_host_and_device_resource_uris_as_single_path_segments() {
-        assert_eq!(
-            RdpResource::HostName("desktop.example.com".to_owned())
-                .uri()
-                .expect("valid host resource"),
-            "ms-device-service://termsrv.wvd.microsoft.com/name/desktop.example.com/user_impersonation"
-        );
-        assert_eq!(
-            RdpResource::DeviceId("device/id".to_owned())
-                .uri()
-                .expect("device ID is escaped as a path segment"),
-            "ms-device-service://termsrv.wvd.microsoft.com/id/device%2Fid/user_impersonation"
-        );
-        assert!(RdpResource::HostName(String::new()).uri().is_err());
-    }
-
-    // oracle: spec MS-RDPBCGR section 2.2.18.2.1.
-    #[tokio::test]
-    async fn signs_rdp_assertion_with_required_claims_and_rsa_key_id() {
-        let key = EntraPopKey::generate().expect("generate PoP key");
-        let expected_req_cnf = key.req_cnf().expect("encode req_cnf");
-        let public_key = key.private_key.to_public_key().expect("derive verification key");
-        let auth = EntraAuthSession::from_pop_token(
-            "pop-access-token".to_owned(),
-            key,
-            "ms-device-service://termsrv.wvd.microsoft.com/name/desktop.example.com/user_impersonation".to_owned(),
-            Some("00000000-0000-0000-0000-000000000000"),
-        )
-        .expect("construct session from PoP token");
-        assert!(!auth.is_expired());
-        let before = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("current time")
-            .as_secs();
-        let assertion = auth
-            .assertion("server-nonce", "aad-nonce")
-            .await
-            .expect("sign assertion");
-        let after = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("current time")
-            .as_secs();
-        let verified = Jws::decode(assertion.as_str(), &public_key).expect("verify assertion signature");
-        assert_eq!(verified.header.alg, JwsAlg::RS256);
-        assert_eq!(verified.header.kid.as_deref(), Some(expected_req_cnf.as_str()));
-
-        let claims: serde_json::Value = serde_json::from_slice(&verified.payload).expect("decode assertion claims");
-        let timestamp = claims["ts"].as_str().expect("timestamp is a JSON string");
-        assert!(timestamp.bytes().all(|byte| byte.is_ascii_digit()));
-        let timestamp: u64 = timestamp.parse().expect("timestamp contains whole Unix seconds");
-        assert!(before <= timestamp && timestamp <= after);
-        let client_claims: serde_json::Value = serde_json::from_str(
-            claims["client_claims"]
-                .as_str()
-                .expect("client_claims is a JSON string"),
-        )
-        .expect("decode client claims");
-        assert_eq!(claims["at"], "pop-access-token");
-        assert_eq!(claims["nonce"], "server-nonce");
-        assert_eq!(client_claims["aad_nonce"], "aad-nonce");
-        assert_eq!(claims["cnf"]["jwk"]["kty"], "RSA");
-        assert_eq!(claims["cnf"]["jwk"]["alg"], "RS256");
-        assert_eq!(
-            claims["u"],
-            "ms-device-service://termsrv.wvd.microsoft.com/name/desktop.example.com/user_impersonation"
-        );
-        // oracle: spec RFC 7638 section 3 and MS-RDPBCGR section 4.11.4.
-        let jwk = serde_json::to_value(&auth.key.public_jwk).expect("serialize public JWK");
-        let thumbprint_input = format!(
-            r#"{{"e":"{}","kty":"RSA","n":"{}"}}"#,
-            jwk["e"].as_str().expect("JWK exponent"),
-            jwk["n"].as_str().expect("JWK modulus")
-        );
-        assert_eq!(
-            auth.key.key_id,
-            URL_SAFE_NO_PAD.encode(HashAlgorithm::SHA2_256.digest(thumbprint_input.as_bytes()))
-        );
-        assert!(
-            EntraAuthSession::from_pop_token(
-                "pop-access-token".to_owned(),
-                EntraPopKey::generate().expect("generate PoP key"),
-                "ms-device-service://termsrv.wvd.microsoft.com/name/desktop.example.com/user_impersonation".to_owned(),
-                Some("tenant/../../other"),
-            )
-            .is_err()
-        );
-    }
-
-    // oracle: spec RFC 6749 section 4.1.1, RFC 7636 section 4.3, and MS-RDPBCGR section 4.11.4.
-    #[tokio::test]
-    async fn authorization_request_uses_scope_state_and_pkce() {
-        let request = EntraAuthorization::begin(
-            "8aa28d12-42ad-4ae8-8ed5-f8a593d77f63",
-            Url::parse("https://client.example.com/signin-callback").expect("valid application redirect"),
-            RdpResource::HostName("desktop.example.com".to_owned()),
-        )
-        .await
-        .expect("create authorization request");
-        let query = request
-            .authorization_url()
-            .query_pairs()
-            .into_owned()
-            .collect::<std::collections::HashMap<_, _>>();
-        assert_eq!(
-            query.get("client_id").map(String::as_str),
-            Some("8aa28d12-42ad-4ae8-8ed5-f8a593d77f63")
-        );
-        assert_eq!(
-            query.get("redirect_uri").map(String::as_str),
-            Some("https://client.example.com/signin-callback")
-        );
-        assert_eq!(query.get("response_type").map(String::as_str), Some("code"));
-        assert_eq!(query.get("response_mode").map(String::as_str), Some("form_post"));
-        assert_eq!(query.get("code_challenge_method").map(String::as_str), Some("S256"));
-        assert_eq!(
-            query.get("scope").map(String::as_str),
-            Some("ms-device-service://termsrv.wvd.microsoft.com/name/desktop.example.com/user_impersonation")
-        );
-        assert_eq!(query.get("state").map(String::as_str), Some(request.state()));
-        assert!(query.get("code_challenge").is_some_and(|value| !value.is_empty()));
-    }
-
-    // oracle: spec RFC 6749 section 4.1.1 requires the client identifier.
-    #[tokio::test]
-    async fn authorization_requires_explicit_client_id() {
-        let result = EntraAuthorization::begin(
-            "",
-            Url::parse("https://client.example.com/signin-callback").expect("valid application redirect"),
-            RdpResource::HostName("desktop.example.com".to_owned()),
-        )
-        .await;
-        assert!(result.is_err(), "missing client ID must not use a first-party default");
-    }
-
-    // oracle: spec RFC 6749 section 3.1.2 forbids fragments in the redirection endpoint URI.
-    #[tokio::test]
-    async fn authorization_rejects_redirect_fragment() {
-        let result = EntraAuthorization::begin(
-            "8aa28d12-42ad-4ae8-8ed5-f8a593d77f63",
-            Url::parse("https://client.example.com/signin-callback#fragment").expect("valid URL"),
-            RdpResource::HostName("desktop.example.com".to_owned()),
-        )
-        .await;
-        assert!(result.is_err(), "OAuth redirect URIs must not contain a fragment");
-    }
-
-    #[test]
-    fn entra_config_requires_no_password_and_disables_credssp() {
-        let key = EntraPopKey::generate().expect("generate PoP key");
-        let auth = Arc::new(EntraAuthSession {
-            access_token: Zeroizing::new("test-pop-token".to_owned()),
-            expires_at: tokio::time::Instant::now() + Duration::from_secs(60),
-            http: crate::http_client_builder().unwrap().build().unwrap(),
-            key,
-            resource_uri: RdpResource::HostName("desktop.example.com".to_owned())
-                .uri()
-                .expect("valid target resource"),
-            authority: AUTHORITY.to_owned(),
-        });
-
-        let builder = || {
-            crate::config::ConfigBuilder::new()
-                .with_destination(crate::config::Destination::new("desktop.example.com").expect("valid destination"))
-                .with_entra_auth(Arc::clone(&auth))
-                .with_client_build(1)
-                .with_client_dir("C:\\")
-                .with_client_name("client")
-                .with_platform(ironrdp_pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
-        };
-        let config = builder()
-            .build()
-            .expect("Entra does not require a reusable username or password");
-
-        assert!(config.connector().enable_tls);
-        assert!(!config.connector().enable_credssp);
-        assert_eq!(
-            config.certificate_validation(),
-            ironrdp_tls::CertificateValidation::Strict
-        );
-
-        let config = builder()
-            .with_certificate_validation(ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate)
-            .build();
-        assert!(config.is_err(), "Entra must not accept invalid TLS certificates");
-
-        let config = builder().with_tls(false).build();
-        assert!(config.is_err(), "Entra must not permit TLS to be disabled");
-
-        let config = builder()
-            .with_certificate_validation_callback(Arc::new(|_, _, _| true))
-            .build();
-        assert!(
-            config.is_err(),
-            "Entra must not permit certificate-validation overrides"
-        );
-
-        let config = builder()
-            .with_transport(crate::config::TransportKind::RDCleanPath {
-                url: Url::parse("wss://proxy.example.com/").expect("valid proxy URL"),
-            })
-            .with_rdcleanpath_token("proxy-token")
-            .build();
-        assert!(config.is_err(), "Entra requires validated TLS to the RDP server");
-    }
 }
