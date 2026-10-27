@@ -461,6 +461,130 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
     )
 }
 
+/// The server starts audio redirection only for a client that wants the audio played on its side
+/// (MS-RDPBCGR 2.2.1.11.1.1): with `INFO_NOAUDIOPLAYBACK` set, the client gets no Server Audio
+/// Formats PDU.
+#[tokio::test]
+async fn rdpsnd_starts_only_when_the_client_wants_audio_playback() {
+    assert!(
+        run_rdpsnd_probe(true).await,
+        "the client got no Server Audio Formats PDU"
+    );
+    assert!(
+        !run_rdpsnd_probe(false).await,
+        "the client got a Server Audio Formats PDU although it asked for no audio playback"
+    );
+}
+
+/// Connects with `enable_audio_playback` and returns whether the client got a Server Audio Formats
+/// PDU. The server starts its static channels before the session loop, so their PDUs come before
+/// the reply to the echo request.
+async fn run_rdpsnd_probe(enable_audio_playback: bool) -> bool {
+    let got_server_formats = Arc::new(AtomicBool::new(false));
+    let client_got_server_formats = Arc::clone(&got_server_formats);
+    let config = connector::Config {
+        enable_audio_playback,
+        ..default_client_config()
+    };
+
+    client_server_with_connector(
+        config,
+        vec![Box::new(RdpsndFixtureFactory)],
+        None,
+        move |connector| {
+            connector
+                .with_static_channel(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(RdpsndFixtureClient {
+                    got_server_formats: client_got_server_formats,
+                })))
+                .with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new()))
+        },
+        move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
+            let _display_tx = display_tx;
+
+            drive_echo_round_trip(&mut stage, &mut framed, &echo_handle, b"rdpsnd probe")
+                .await
+                .expect("echo RTT measurement was not produced");
+
+            (stage, framed)
+        },
+    )
+    .await;
+
+    got_server_formats.load(Ordering::Relaxed)
+}
+
+const RDPSND_FIXTURE_FORMATS: &[ironrdp_rdpsnd::pdu::AudioFormat] = &[ironrdp_rdpsnd::pdu::AudioFormat {
+    format: ironrdp_rdpsnd::pdu::WaveFormat::PCM,
+    n_channels: 2,
+    n_samples_per_sec: 44100,
+    n_avg_bytes_per_sec: 176400,
+    n_block_align: 4,
+    bits_per_sample: 16,
+    data: None,
+}];
+
+/// Attaches the server's rdpsnd channel, as `RdpServerBuilder::with_sound_factory` does.
+struct RdpsndFixtureFactory;
+
+impl StaticChannelFactory for RdpsndFixtureFactory {
+    fn attach(&self, acceptor: &mut Acceptor) {
+        acceptor.attach_static_channel(ironrdp_rdpsnd::server::RdpsndServer::new(Box::new(RdpsndFixtureServer)));
+    }
+}
+
+#[derive(Debug)]
+struct RdpsndFixtureServer;
+
+impl ironrdp_rdpsnd::server::RdpsndServerHandler for RdpsndFixtureServer {
+    fn get_formats(&self) -> &[ironrdp_rdpsnd::pdu::AudioFormat] {
+        RDPSND_FIXTURE_FORMATS
+    }
+
+    fn choose_format<'a>(
+        &mut self,
+        common: &'a [ironrdp_rdpsnd::server::NegotiatedFormat],
+    ) -> Option<&'a ironrdp_rdpsnd::server::NegotiatedFormat> {
+        common.first()
+    }
+
+    fn start(
+        &mut self,
+        _format: &ironrdp_rdpsnd::server::NegotiatedFormat,
+    ) -> Result<(), Box<dyn ironrdp_rdpsnd::server::RdpsndError>> {
+        Ok(())
+    }
+
+    fn stop(&mut self) {}
+}
+
+#[derive(Debug)]
+struct RdpsndFixtureClient {
+    got_server_formats: Arc<AtomicBool>,
+}
+
+impl ironrdp_rdpsnd::client::RdpsndClientHandler for RdpsndFixtureClient {
+    fn get_formats(&self) -> &[ironrdp_rdpsnd::pdu::AudioFormat] {
+        RDPSND_FIXTURE_FORMATS
+    }
+
+    fn choose_formats(
+        &self,
+        server_formats: &[ironrdp_rdpsnd::pdu::AudioFormat],
+    ) -> Vec<ironrdp_rdpsnd::pdu::AudioFormat> {
+        let _ = server_formats;
+        self.got_server_formats.store(true, Ordering::Relaxed);
+        self.get_formats().to_vec()
+    }
+
+    fn wave(&mut self, _format: &ironrdp_rdpsnd::pdu::AudioFormat, _ts: u32, _data: std::borrow::Cow<'_, [u8]>) {}
+
+    fn set_volume(&mut self, _volume: ironrdp_rdpsnd::pdu::VolumePdu) {}
+
+    fn set_pitch(&mut self, _pitch: ironrdp_rdpsnd::pdu::PitchPdu) {}
+
+    fn close(&mut self) {}
+}
+
 #[tokio::test]
 async fn rdpdr_static_channel_announces_a_drive_and_completes_an_unsupported_create() {
     let fixture = RdpdrFixtureFactory::new(RdpdrFixtureOperation::UnsupportedCreate);

@@ -13,7 +13,7 @@ use ironrdp_pdu::rdp::client_info::PasswordCookie;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
-use pdu::rdp::client_info::{ClientAutoReconnect, Credentials};
+use pdu::rdp::client_info::{ClientAutoReconnect, ClientInfoFlags, Credentials};
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
@@ -66,6 +66,7 @@ pub struct Acceptor {
     received_credentials: Option<ReceivedCredentials>,
     credentials_handled: bool,
     received_auto_reconnect: Option<ClientAutoReconnect>,
+    client_info_flags: ClientInfoFlags,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
     /// UDP multitransport flags to advertise to the client and, if it
@@ -282,6 +283,9 @@ pub struct AcceptorResult {
     ///
     /// A client redirected by a Server Redirection PDU passes the cookie of that PDU to the target server.
     pub password_cookie: Option<PasswordCookie>,
+    /// Flags the client sent in its Client Info PDU (MS-RDPBCGR 2.2.1.11.1.1), such as
+    /// `INFO_NOAUDIOPLAYBACK` and `INFO_REMOTECONSOLEAUDIO` for where it wants the session audio played.
+    pub client_info_flags: ClientInfoFlags,
 }
 
 impl Acceptor {
@@ -314,6 +318,7 @@ impl Acceptor {
             received_credentials: None,
             credentials_handled: false,
             received_auto_reconnect: None,
+            client_info_flags: ClientInfoFlags::empty(),
             reactivation: false,
             honor_client_desktop_size: None,
             offer_multitransport: None,
@@ -554,6 +559,7 @@ impl Acceptor {
             received_credentials: consumed.received_credentials,
             credentials_handled: consumed.credentials_handled,
             received_auto_reconnect: consumed.received_auto_reconnect,
+            client_info_flags: consumed.client_info_flags,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
             offer_multitransport: consumed.offer_multitransport,
@@ -751,6 +757,7 @@ impl Acceptor {
                 routing_token: self.routing_token.clone(),
                 client_cluster_data: self.client_cluster_data.clone(),
                 password_cookie: self.password_cookie.clone(),
+                client_info_flags: self.client_info_flags,
             }),
             previous_state => {
                 self.state = previous_state;
@@ -1262,6 +1269,7 @@ impl Sequence for Acceptor {
                     "Received Client Info PDU"
                 );
                 self.received_auto_reconnect = auto_reconnect;
+                self.client_info_flags = client_info.client_info.flags;
                 self.password_cookie
                     .clone_from(&client_info.client_info.password_cookie);
 

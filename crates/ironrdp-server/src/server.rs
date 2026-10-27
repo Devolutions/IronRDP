@@ -45,7 +45,9 @@ use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpdr as rdpdr;
 use ironrdp_rdpeai as rdpeai;
 use ironrdp_rdpsnd as rdpsnd;
-use ironrdp_svc::{ChannelFlags, StaticChannelId, StaticChannelSet, SvcProcessor, server_encode_svc_messages};
+use ironrdp_svc::{
+    ChannelFlags, StaticChannelId, StaticChannelKey, StaticChannelSet, SvcProcessor, server_encode_svc_messages,
+};
 use ironrdp_tokio::{FramedRead, FramedWrite, TokioFramed, split_tokio_framed, unsplit_tokio_framed};
 use rand::RngCore as _;
 use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
@@ -87,6 +89,15 @@ const LISTENER_BACKLOG: u32 = 1024;
 /// it reports the failure, so a persistent one (no file descriptors left) is not
 /// retried in a tight loop.
 const TCP_ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+
+/// Whether the client wants the session audio played on its side: it set neither "do not play"
+/// nor "play on the remote computer" (MS-RDPBCGR 2.2.1.11.1.1, `INFO_NOAUDIOPLAYBACK` and
+/// `INFO_REMOTECONSOLEAUDIO`).
+fn client_wants_audio_playback(flags: rdp::client_info::ClientInfoFlags) -> bool {
+    use rdp::client_info::ClientInfoFlags;
+
+    !flags.intersects(ClientInfoFlags::NO_AUDIO_PLAYBACK | ClientInfoFlags::REMOTE_CONSOLE_AUDIO)
+}
 
 #[cfg(feature = "egfx")]
 fn client_core_frame_ack_limit(capabilities: &[CapabilitySet]) -> Option<NonZeroU32> {
@@ -5190,11 +5201,24 @@ impl RdpServer {
             .client_early_capability_flags
             .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
         if !result.reactivation {
-            for (_channel_key, channel, channel_id) in conn.static_channels.iter_by_key_mut() {
+            // Audio redirection MUST NOT take place with INFO_NOAUDIOPLAYBACK, and SHOULD take place only
+            // without INFO_REMOTECONSOLEAUDIO too (MS-RDPBCGR 2.2.1.11.1.1). Without the Server Audio
+            // Formats PDU that starts it, the client sends no formats, so the channel never gets ready
+            // and no wave is sent.
+            let audio_playback = client_wants_audio_playback(result.client_info_flags);
+            let rdpsnd_key = StaticChannelKey::Typed(core::any::TypeId::of::<RdpsndServer>());
+            for (channel_key, channel, channel_id) in conn.static_channels.iter_by_key_mut() {
                 debug!(?channel, ?channel_id, "Start");
                 let Some(channel_id) = channel_id else {
                     continue;
                 };
+                if !audio_playback && channel_key == rdpsnd_key {
+                    info!(
+                        flags = ?result.client_info_flags,
+                        "Client does not want audio played on its side, rdpsnd not started"
+                    );
+                    continue;
+                }
                 let svc_responses = channel.start().map_err_kind("svc start", ServerErrorKind::Pdu)?;
                 let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)
                     .map_err(ServerError::encode)?;
