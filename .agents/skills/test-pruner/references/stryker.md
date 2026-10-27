@@ -31,7 +31,9 @@ A test-only diff still yields mutants under `--since`: every mutant covered by a
 Pass `--project <Name>.csproj` only when the test project references more than one project, and `--solution <path>.sln` when it targets .NET Framework, where Stryker requires it.
 Coverage analysis, `perTest` by default, runs only the tests covering each mutant, so the matrix spans the whole test project without scoping tests and a unique kill is unique across the project; restricting to a test class needs `test-case-filter` in `stryker-config.json`, since the 5.0.0 command line rejects it as a flag.
 Stryker builds the test project itself and writes a `.gitignore` of `*` into `--output`, so the output stays untracked wherever it is.
-Build and the initial run take a few minutes before the first mutant, and a whole library of a few thousand lines can run for most of an hour, so scope first; timeouts are computed per mutant from the initial run, and `additional-timeout` and `timeout-ratio` are config-file options.
+Build and the initial run take a few minutes before the first mutant, and a whole library of a few thousand lines can run for most of an hour, so `--mutate` a module, a file, or a span.
+Stryker logs how many mutants it will test before the first one runs; estimate the run from that count, the clean TRX run's duration, and `--concurrency`, and stop it if the estimate exceeds the budget.
+Timeouts are computed per mutant from the initial run, and `additional-timeout` and `timeout-ratio` are config-file options.
 
 ## Kill matrix
 
@@ -60,7 +62,8 @@ Mutant ids are assigned in order over the whole project, so an edit anywhere can
 ## Rerun
 
 Refresh the clean run and its TRX before each rerun.
-For a change's diff, measure and rerun with `--mutate` over the files a `--since` run mutated, never comparing `--since` runs: a test edit changes which mutants `--since` selects, so a lost kill drops out instead of surviving.
+Rerun only the mutants the removed or changed tests caught: apply one or two by hand as above, or narrow `--mutate` to the spans that hold them.
+For a change's diff, measure and rerun with `--mutate` over the files or spans a `--since` run mutated, never comparing `--since` runs: a test edit changes which mutants `--since` selects, so a lost kill drops out instead of surviving.
 Do not use `--with-baseline`; it reuses results for mutants it considers unchanged, the opposite of a rerun.
 Identical settings include `mutation-level` and any `test-case-filter`, since either changes the mutant population or the tests that can kill it.
 

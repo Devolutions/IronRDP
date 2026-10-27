@@ -7,6 +7,7 @@ description: Review IronRDP pull requests and diffs using focused protocol, inte
 
 Inspect the diff, its stated goal, and repository guidance before selecting reviewers:
 
+- Read the root and ancestor `AGENTS.md` and applicable intent files for every changed path before selecting passes.
 - Run `protocol-reviewer` only when the change may affect protocol behavior, wire data, negotiation, state transitions, security, codecs, virtual channels, or protocol-visible errors.
 - Run `intent-drift-audit` when the diff touches a path governed by an `INTENT*.md` in its directory or an ancestor, or by a `*.intent*.md` beside the changed module, or changes a surface a `CONTRACT*.md` specifies.
 - Run `intent-review` when the diff adds or changes an intent file.

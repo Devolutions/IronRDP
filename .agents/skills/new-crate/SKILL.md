@@ -5,8 +5,7 @@ description: Create and integrate a new Rust crate in the IronRDP workspace. Use
 
 # New crate
 
-Run `cargo new --lib --vcs none crates/<crate-name>` from the repository root.
-Do not hand-create the directory or initial `Cargo.toml`.
+Run `cargo new --lib --vcs none crates/<crate-name>` from the repository root so Cargo generates the workspace inheritance entries.
 
 In the generated manifest:
 

@@ -1,6 +1,6 @@
 ---
 name: test-oracle-reviewer
-description: Judge whether a test's expected value is justified independently of the code under test, and define the `// oracle:` marker that records its source. Use when reviewing tests added or changed in a pull request, auditing a module's tests, marking a test's source, or whenever expected bytes, snapshots, or mock values may have been copied from the implementation's own output.
+description: Judge whether a test's expected value is justified independently of the code under test, and define the `oracle:` marker that records its source. Use when reviewing tests added or changed in a pull request, auditing a module's tests, marking a test's source, or whenever expected bytes, snapshots, or mock values may have been copied from the implementation's own output.
 ---
 
 # Test oracle reviewer
@@ -23,7 +23,7 @@ Unknown is an outcome, not a guess in either direction.
 
 ## Markers
 
-Mark where an expected value comes from with `// oracle: <kind> <reference>` on the test, on a case row, or on one assertion when a test mixes sources, so one search finds every test that rests on a source.
+Mark where an expected value comes from with an `oracle: <kind> <reference>` line comment of the test's language, such as `// oracle: …`, on the test, on a case row, or on one assertion when a test mixes sources, so one search finds every test that rests on a source.
 Strong kinds name an independent source, and a test, case, or assertion marked with one is deleted only when its source changes or is shown not to decide what it asserts:
 
 - `spec <document> §<section>`: normative text other than a contract or intent file, such as an RFC, a Microsoft open specification, or `docs/JMUX-spec.md`.

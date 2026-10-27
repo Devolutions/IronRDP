@@ -38,7 +38,7 @@ A file per source file is the exception, never the default, and never mechanical
 ## Anchors
 
 A section that tests, code comments, or other documents cite or will cite carries an anchor on its own line just before its heading, and citations name the anchor rather than the heading text or number, because rewording a heading or inserting a section changes those and breaks every citation.
-The anchor is `<a id="<scope>-<topic>"></a>`, where `<scope>` names the file's component, feature, or contract (`<a id="agent-identity-channel"></a>`) and no other section in the repository uses the id, copies of a part file aside, so a search for it finds only the section and its citers.
+The anchor is `<a id="<section>"></a>`, a short kebab-case name of the section (`<a id="channel"></a>`) that no other section of the same file uses; the file is its namespace, because a citation names the file with the anchor, so only a repeat within the file makes it ambiguous.
 An anchor keeps its id once published, even when its heading is reworded or its section renumbered; removing one breaks every citation of it, so the change that removes it updates them.
 A file whose rules a test may cite has at least one heading, with an anchor on each cited section, rather than one flat list, because a flat list leaves a citation nothing narrower than the whole file.
 
