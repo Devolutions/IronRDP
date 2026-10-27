@@ -10,40 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 0 -->Security
 
-- Support Entra RDS AAD session authentication ([#2248](https://github.com/Devolutions/IronRDP/issues/2248)) ([c790e6d4f2](https://github.com/Devolutions/IronRDP/commit/c790e6d4f2f8bf15ae66b2c29bffeca14ec19ff1)) 
-
-  Add MS-RDPBCGR RDS AAD (`SecurityProtocol::RDSAAD`) negotiation and
-  NUL-terminated JSON nonce, assertion, and authentication-result framing
-  to `ironrdp-connector`, along with
-  `FailureCode::ENTRA_AUTH_REQUIRED_BY_SERVER` in `ironrdp-pdu`.
-  
-  Expose the optional `entra-auth` feature in `ironrdp-client`
-  (`client-entra-auth` in `ironrdp`) to acquire or accept
-  proof-of-possession RDP access tokens, fetch fresh AAD challenge nonces,
-  sign compact JWS assertions with RSA-256 and `req_cnf` key binding, and
-  enforce strict TLS validation without CredSSP or password fallback.
-  
-  ---------
+- Negotiate Entra ID authentication (`SecurityProtocol::RDSAAD`) with `Config::with_entra_auth`, exposing the server nonce through `entra_server_nonce` and sending the signed assertion with `submit_entra_assertion` ([#2248](https://github.com/Devolutions/IronRDP/issues/2248)) ([c790e6d4f2](https://github.com/Devolutions/IronRDP/commit/c790e6d4f2f8bf15ae66b2c29bffeca14ec19ff1))
 
 ### <!-- 1 -->Features
 
-- [**breaking**] Broaden mstscax compatibility ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615)) 
+- [**breaking**] Add `Config::desktop_physical_size`, `desktop_orientation` and `device_scale_factor`, sent in the Client Core Data ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
 
-  Hosts written against Microsoft's mstscax control (RDM, MsRdpEx,
-  scripting hosts, mstsc-style shells) still hit members that IronRDP's
-  ActiveX control left unimplemented. A comparison against mstscax.dll
-  10.0.26100 (its embedded MSTSCLib type library, AdvancedSettings vtable
-  and property handlers) identified the most-used gaps; this change closes
-  six of them.
-  
-  Late-bound Automation: every published MSTSCLib member of the control
-  and of the Advanced, Secured, Transport and RemoteProgram settings
-  objects is reachable through `IDispatch` by name and DISPID, with
-  arguments coerced to the published Automation types and calls routed to
-  the existing vtable slots through `DispCallFunc`. The control also
-  implements `IProvideClassInfo2`, `IQuickActivate` and
-  `IPersistPropertyBag`/`IPersistPropertyBag2`. No type library is created
-  or registered, so `GetTypeInfo` still returns `E_NOTIMPL`.
+- [**breaking**] Add `Config::monitor_extended_layout`, sent as Client Monitor Extended Data when it describes every monitor of `monitor_layout` ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
+
+- [**breaking**] Add `Config::relative_mouse_input`, which announces relative mouse input and RDP 10.12 ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
 
 
 

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-echo-v0.5.0...ironrdp-echo-v0.6.0)] - 2026-10-27
 
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
 
 
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-echo-v0.4.0...ironrdp-echo-v0.5.0)] - 2026-10-23

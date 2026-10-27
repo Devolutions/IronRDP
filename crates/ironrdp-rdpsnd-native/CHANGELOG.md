@@ -8,135 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.7.0...ironrdp-rdpsnd-native-v0.8.0)] - 2026-10-27
 
-### <!-- 0 -->Security
-
-- Bump clap from 4.6.4 to 4.6.5 in the patch group across 1 directory ([#1537](https://github.com/Devolutions/IronRDP/issues/1537)) ([5f779f5caf](https://github.com/Devolutions/IronRDP/commit/5f779f5caf937183bcef49359475eb91591ca5a2)) 
-
-  Bumps the patch group with 1 update in the / directory:
-  [clap](https://github.com/clap-rs/clap).
-  
-  Updates `clap` from 4.6.4 to 4.6.5
-  <details>
-  <summary>Release notes</summary>
-  <p><em>Sourced from <a
-  href="https://github.com/clap-rs/clap/releases">clap's
-  releases</a>.</em></p>
-  <blockquote>
-  <h2>v4.6.5</h2>
-  <h2>[4.6.5] - 2026-07-31</h2>
-  <h3>Fixes</h3>
-  <ul>
-  <li><em>(help)</em> Correctly mark which <code>value_names</code> are
-  optional with <code>num_args</code></li>
-  </ul>
-  </blockquote>
-  </details>
-  <details>
-  <summary>Changelog</summary>
-  <p><em>Sourced from <a
-  href="https://github.com/clap-rs/clap/blob/master/CHANGELOG.md">clap's
-  changelog</a>.</em></p>
-  <blockquote>
-  <h2>[4.6.5] - 2026-07-31</h2>
-  <h3>Fixes</h3>
-  <ul>
-  <li><em>(help)</em> Correctly mark which <code>value_names</code> are
-  optional with <code>num_args</code></li>
-  </ul>
-  </blockquote>
-  </details>
-  <details>
-  <summary>Commits</summary>
-  <ul>
-  <li><a
-  href="https://github.com/clap-rs/clap/commit/[[c8c935504a3f1a015470199ae82c3cb124b5b1d5](https://github.com/Devolutions/IronRDP/commit/c8c935504a3f1a015470199ae82c3cb124b5b1d5)](https://github.com/Devolutions/IronRDP/commit/[c8c935504a3f1a015470199ae82c3cb124b5b1d5](https://github.com/Devolutions/IronRDP/commit/c8c935504a3f1a015470199ae82c3cb124b5b1d5))"><code>c8c9355</code></a>
-  chore: Release</li>
-  <li><a
-  href="https://github.com/clap-rs/clap/commit/[[af74def7141738c51ace956f58eb32dd94e998ab](https://github.com/Devolutions/IronRDP/commit/af74def7141738c51ace956f58eb32dd94e998ab)](https://github.com/Devolutions/IronRDP/commit/[af74def7141738c51ace956f58eb32dd94e998ab](https://github.com/Devolutions/IronRDP/commit/af74def7141738c51ace956f58eb32dd94e998ab))"><code>af74def</code></a>
-  docs: Update changelog</li>
-  <li><a
-  href="https://github.com/clap-rs/clap/commit/[[c96f222c35c4ef4bd3ab9927809b2724532a8f6e](https://github.com/Devolutions/IronRDP/commit/c96f222c35c4ef4bd3ab9927809b2724532a8f6e)](https://github.com/Devolutions/IronRDP/commit/[c96f222c35c4ef4bd3ab9927809b2724532a8f6e](https://github.com/Devolutions/IronRDP/commit/c96f222c35c4ef4bd3ab9927809b2724532a8f6e))"><code>c96f222</code></a>
-  Merge pull request <a
-  href="https://redirect.github.com/clap-rs/clap/issues/6368">#6368</a>
-  from truffle-dev/fix/fish-env-escaping</li>
-  <li><a
-  href="https://github.com/clap-rs/clap/commit/[[49a05cdc99c2151cdd48d5ec4c974151d21c026e](https://github.com/Devolutions/IronRDP/commit/49a05cdc99c2151cdd48d5ec4c974151d21c026e)](https://github.com/Devolutions/IronRDP/commit/[49a05cdc99c2151cdd48d5ec4c974151d21c026e](https://github.com/Devolutions/IronRDP/commit/49a05cdc99c2151cdd48d5ec4c974151d21c026e))"><code>49a05cd</code></a>
-  fix(complete): Two-pass quote fish env-completer</li>
-  <li><a
-  href="https://github.com/clap-rs/clap/commit/[[e791004a5bbbfe5418fe573a4db777df24d72490](https://github.com/Devolutions/IronRDP/commit/e791004a5bbbfe5418fe573a4db777df24d72490)](https://github.com/Devolutions/IronRDP/commit/[e791004a5bbbfe5418fe573a4db777df24d72490](https://github.com/Devolutions/IronRDP/commit/e791004a5bbbfe5418fe573a4db777df24d72490))"><code>e791004</code></a>
-  test(complete): Snapshot fish env quoting cases</li>
-  <li>See full diff in <a
-  href="https://github.com/clap-rs/clap/compare/clap_complete-v4.6.4...clap_complete-v4.6.5">compare
-  view</a></li>
-  </ul>
-  </details>
-  <br />
-  
-  
-  [![Dependabot compatibility
-  score](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=clap&package-manager=cargo&previous-version=4.6.4&new-version=4.6.5)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)
-  
-  Dependabot will resolve any conflicts with this PR as long as you don't
-  alter it yourself. You can also trigger a rebase manually by commenting
-  `@dependabot rebase`.
-
 ### <!-- 1 -->Features
 
-- Harden Windows client playback path ([#1648](https://github.com/Devolutions/IronRDP/issues/1648)) ([2d9a9bf114](https://github.com/Devolutions/IronRDP/commit/2d9a9bf114dcf41a1ddc7343f564bc2e8d1d06db)) 
+- [**breaking**] Decode every server format the backend supports, including AAC through Media Foundation on Windows behind the default `aac` feature, and remove `DecodeStream` ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
 
-  Keep client format order for wFormatNo, play pre-v8 Wave PDUs, and apply
-  volume on a broader CPAL PCM offer so ActiveX mode 0 can redirect remote
-  audio reliably.
-  
-  Also fix clippy noise in the RDPSND client suite and keep interleaved
-  volume L/R phase stable across wave blocks. Volume scaling is a simple
-  amplitude map, not a logarithmic MS-RDPEA model.
+- Play through a jitter buffer with a configurable latency target (`PlaybackConfig`, `DEFAULT_PLAYBACK_LATENCY`) and report buffered plus device latency ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
 
-- Wire MS-RDPEAI capture into Windows client and ActiveX ([#1642](https://github.com/Devolutions/IronRDP/issues/1642)) ([205fe038cc](https://github.com/Devolutions/IronRDP/commit/205fe038cc693598adf803fe181526b789b2ec3d)) 
+- Select playback and capture devices with `DeviceSelector`, and list them with `list_devices` ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
 
-  Add the client MS-RDPEAI capture path on top of hardened RDPSND
-  playback: connector CFG + static channel wiring, CPAL PCM capture
-  backend, ironrdp-client --audio-capture, and ActiveX
-  AudioCaptureRedirectionMode.
-  
-  PCM capture only accepts encode formats that match the Open capture
-  stream, rejects non-16-bit capture (Data PDU size contract), and gates
-  the capture backend behind ironrdp-rdpsnd-native/capture.
-  
-  Depends on #1648 (playback).
+- Map the server volume to the Windows audio session ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
 
-- [**breaking**] Compressed audio over AUDIO_PLAYBACK_DVC ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483)) 
+- Add MS-RDPEAI microphone capture behind the `capture` feature: `RdpeaiCaptureBackend` captures 16-bit PCM ([#1642](https://github.com/Devolutions/IronRDP/issues/1642)) ([205fe038cc](https://github.com/Devolutions/IronRDP/commit/205fe038cc693598adf803fe181526b789b2ec3d))
 
-  Windows 8 and later servers stream audio over the AUDIO_PLAYBACK_DVC and
-  AUDIO_PLAYBACK_LOSSY_DVC dynamic channels, preferring AAC or ADPCM on
-  constrained links, but IronRDP declined those channels and could only
-  play PCM and Opus. Wave Confirm PDUs echoed the server timestamp,
-  playback dropped audio when its fixed 500 ms ring filled, and devices
-  could not be chosen.
-  
-  - `ironrdp-rdpsnd` gains a pure `codec` module (PCM, G.711 A-law and
-  µ-law, IMA and Microsoft ADPCM decoders and encoders, bit-exact with the
-  Windows ACM codecs), an `RdpsndDvc` processor whose `RdpsndDvcState`
-  lets both dynamic channels share one negotiation (Windows negotiates on
-  the reliable channel and sends AAC on the lossy one), the UDP Wave
-  datagrams, and a `playout` jitter-buffer policy. Wave Confirm PDUs
-  report the hold time plus the handler's playback latency, and handlers
-  pick the formats to advertise from the server's list.
-  - The CPAL backend decodes every offered format it can, including AAC
-  through Media Foundation on Windows, plays through the jitter buffer
-  with a configurable latency target, reports buffered plus device
-  latency, follows the default device or a selected one, and maps the
-  server volume to the Windows audio session. Microphone capture encodes
-  to PCM, G.711 or ADPCM and selects its device.
-  - `ironrdp-client` registers the dynamic channels next to the static one
-  on a shared backend and adds `AudioConfig` (`ironrdp_audiooutputdevice`,
-  `ironrdp_audioinputdevice`, `ironrdp_audiolatency`); the viewer adds
-  `--audio-output-device`, `--audio-input-device`, `--audio-latency` and
-  `--list-audio-devices`.
+- Capture encodes to PCM, G.711 or ADPCM ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Keep the client's format order, play Wave PDUs from servers older than RDPSND version 8, and apply the server volume to more PCM formats ([#1648](https://github.com/Devolutions/IronRDP/issues/1648)) ([2d9a9bf114](https://github.com/Devolutions/IronRDP/commit/2d9a9bf114dcf41a1ddc7343f564bc2e8d1d06db))
 
 ### <!-- 4 -->Bug Fixes
 
-- Stop blocking the real-time playback callback ([#1803](https://github.com/Devolutions/IronRDP/issues/1803)) ([850f654673](https://github.com/Devolutions/IronRDP/commit/850f6546730cff1a6b858864f6fbf9cb7d6264fd)) 
+- Stop blocking the real-time playback callback ([#1803](https://github.com/Devolutions/IronRDP/issues/1803)) ([850f654673](https://github.com/Devolutions/IronRDP/commit/850f6546730cff1a6b858864f6fbf9cb7d6264fd))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- Add the optional `ironrdp-rdpeai` 0.2 public dependency, enabled by `capture`
+
+- [**breaking**] Update `ironrdp-rdpsnd` public dependency to 0.11
 
 
 
