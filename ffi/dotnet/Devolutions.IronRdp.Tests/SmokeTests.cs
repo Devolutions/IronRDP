@@ -62,22 +62,57 @@ internal static class SmokeTests
                     Equal(expected, buffer[y * stride + x], $"byte ({x}, {y})");
                 }
             }
+        });
 
+        // oracle: InclusiveRectangle::new doc contract; every error kind is Generic, so only the message tells the rejections apart
+        yield return ("inclusive rectangle rejects inverted edges", () =>
+        {
             var inverted = Throws<IronRdpException>(() => InclusiveRectangle.New(3, 0, 2, 0));
             True(inverted.Message.Contains("rectangle is inverted"), $"error message: {inverted.Message}");
             var invertedVertical = Throws<IronRdpException>(() => InclusiveRectangle.New(0, 3, 0, 2));
             True(invertedVertical.Message.Contains("rectangle is inverted"), $"error message: {invertedVertical.Message}");
+        });
+
+        // oracle: InclusiveRectangle::new doc contract; every error kind is Generic, so only the message tells the rejections apart
+        yield return ("inclusive rectangle rejects a full 65536-pixel span", () =>
+        {
             var tooLarge = Throws<IronRdpException>(() => InclusiveRectangle.New(0, 0, ushort.MaxValue, 0));
             True(tooLarge.Message.Contains("rectangle is too large"), $"error message: {tooLarge.Message}");
             var tooTall = Throws<IronRdpException>(() => InclusiveRectangle.New(0, 0, 0, ushort.MaxValue));
             True(tooTall.Message.Contains("rectangle is too large"), $"error message: {tooTall.Message}");
+        });
+
+        // oracle: InclusiveRectangle::new doc contract (only the full 65536-pixel span is rejected)
+        yield return ("inclusive rectangle reports the widest and tallest sizes", () =>
+        {
             Equal((int)ushort.MaxValue, (int)InclusiveRectangle.New(1, 0, ushort.MaxValue, 0).Width, "widest rectangle");
             Equal((int)ushort.MaxValue, (int)InclusiveRectangle.New(0, 1, 0, ushort.MaxValue).Height, "tallest rectangle");
+        });
+
+        // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
+        yield return ("decoded image copy rejects a rectangle outside the image", () =>
+        {
+            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
+            const int stride = 8 * 4;
+            var buffer = new byte[stride * 4];
             var outside = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 8, 0), buffer, stride));
             True(outside.Message.Contains("rectangle is outside the image"), $"error message: {outside.Message}");
             var outsideVertical = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 0, 4), buffer, stride));
             True(outsideVertical.Message.Contains("rectangle is outside the image"), $"error message: {outsideVertical.Message}");
-            Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 0), buffer, 8 * 4 - 1));
+        });
+
+        // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
+        yield return ("decoded image copy rejects a short stride", () =>
+        {
+            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
+            Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 0), new byte[8 * 4 * 4], 8 * 4 - 1));
+        });
+
+        // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
+        yield return ("decoded image copy rejects a short buffer", () =>
+        {
+            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
+            const int stride = 8 * 4;
             Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 3), new byte[stride * 3], stride));
         });
 

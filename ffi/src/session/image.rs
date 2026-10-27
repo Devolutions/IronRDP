@@ -57,9 +57,7 @@ pub mod ffi {
                 bottom,
             } = rect.0;
 
-            if !(left <= right && top <= bottom) {
-                return Err("rectangle is inverted".into());
-            }
+            crate::pdu::ensure_not_inverted(&rect.0)?;
 
             if !(right < image.width() && bottom < image.height()) {
                 return Err("rectangle is outside the image".into());
@@ -82,6 +80,7 @@ pub mod ffi {
 
             let image_stride = image.stride();
             let data = image.data();
+            // INVARIANT: for y in top..=bottom: dst + row_end <= buffer.len() and src + row_end <= data.len()
             for y in usize::from(top)..=usize::from(bottom) {
                 let src = y * image_stride;
                 let dst = y * buffer_stride;

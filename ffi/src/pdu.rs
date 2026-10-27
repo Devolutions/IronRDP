@@ -47,22 +47,19 @@ pub mod ffi {
         /// spans all 65536 columns or rows, because [`Self::get_width`] and [`Self::get_height`]
         /// could not report that size.
         pub fn new(left: u16, top: u16, right: u16, bottom: u16) -> Result<Box<InclusiveRectangle>, Box<IronRdpError>> {
-            if !(left <= right && top <= bottom) {
-                return Err("rectangle is inverted".into());
-            }
+            let rect = ironrdp::pdu::geometry::InclusiveRectangle {
+                left,
+                top,
+                right,
+                bottom,
+            };
+            super::ensure_not_inverted(&rect)?;
 
             if !(right - left < u16::MAX && bottom - top < u16::MAX) {
                 return Err("rectangle is too large".into());
             }
 
-            Ok(Box::new(InclusiveRectangle(
-                ironrdp::pdu::geometry::InclusiveRectangle {
-                    left,
-                    top,
-                    right,
-                    bottom,
-                },
-            )))
+            Ok(Box::new(InclusiveRectangle(rect)))
         }
 
         #[diplomat::attr(auto, getter = "left")]
@@ -138,4 +135,14 @@ impl From<Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>> for ffi::Fast
     fn from(value: Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>) -> Self {
         ffi::FastPathInputEventIterator(value)
     }
+}
+
+pub(crate) fn ensure_not_inverted(
+    rect: &ironrdp::pdu::geometry::InclusiveRectangle,
+) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
+    if !(rect.left <= rect.right && rect.top <= rect.bottom) {
+        return Err("rectangle is inverted".into());
+    }
+
+    Ok(())
 }
