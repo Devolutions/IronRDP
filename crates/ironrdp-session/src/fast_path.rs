@@ -573,12 +573,13 @@ impl Processor {
                 }
             }
             PointerUpdateData::SetPosition(position) => {
-                if self.use_system_pointer || !self.pointer_software_rendering {
-                    processor_updates.push(UpdateKind::PointerPosition {
-                        x: position.x,
-                        y: position.y,
-                    });
-                } else if let Some(rect) = image.move_pointer(position.x, position.y)? {
+                processor_updates.push(UpdateKind::PointerPosition {
+                    x: position.x,
+                    y: position.y,
+                });
+                if self.pointer_software_rendering
+                    && let Some(rect) = image.move_pointer(position.x, position.y)?
+                {
                     processor_updates.push(UpdateKind::Region(rect));
                 }
             }
@@ -676,6 +677,16 @@ impl Processor {
                 }
             }
         };
+
+        if self.pointer_software_rendering
+            && matches!(
+                update,
+                PointerUpdateData::Color(_) | PointerUpdateData::New(_) | PointerUpdateData::Large(_)
+            )
+        {
+            self.use_system_pointer = false;
+            processor_updates.insert(0, UpdateKind::PointerHidden);
+        }
 
         Ok(processor_updates)
     }
