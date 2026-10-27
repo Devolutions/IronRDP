@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-ainput"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bitflags 2.13.2",
  "ironrdp-core 0.3.1",
@@ -2905,7 +2905,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-cliprdr-native"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
@@ -3080,7 +3080,7 @@ version = "0.2.1"
 
 [[package]]
 name = "ironrdp-futures"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "futures-util",
  "ironrdp-async",
@@ -3166,7 +3166,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-nscodec"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ironrdp-graphics",
 ]
@@ -3205,7 +3205,7 @@ version = "0.1.1"
 
 [[package]]
 name = "ironrdp-rail"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-svc",
@@ -3271,7 +3271,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpecam-native"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ironrdp-rdpecam",
  "tracing",
@@ -3409,7 +3409,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpewa-native"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ironrdp-rdpewa",
  "tracing",

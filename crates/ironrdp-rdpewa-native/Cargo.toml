@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpewa-native"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 description = "Windows WebAuthn backend for IronRDP MS-RDPEWA client"
 edition.workspace = true

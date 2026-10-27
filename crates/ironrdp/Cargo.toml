@@ -86,7 +86,7 @@ ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.2", optional =
 
 [dev-dependencies]
 ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.12" }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.8" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9" }
 anyhow = "1"
 async-trait = "0.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
