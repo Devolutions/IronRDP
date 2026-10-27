@@ -268,11 +268,16 @@ public partial class MainWindow : Window
                     }
 
                     frameBuffer = _frameBuffer!;
-                    var rect = resized
-                        ? InclusiveRectangle.New(0, 0, (ushort)(size.Width - 1), (ushort)(size.Height - 1))
-                        : damage;
-                    image.CopyRectInto(rect, frameBuffer, (nuint)stride);
-                    (left, top, right, bottom) = (rect.Left, rect.Top, rect.Right, rect.Bottom);
+                    if (resized)
+                    {
+                        image.FillData(frameBuffer);
+                        (left, top, right, bottom) = (0, 0, size.Width - 1, size.Height - 1);
+                    }
+                    else
+                    {
+                        image.CopyRectInto(damage, frameBuffer, (nuint)stride);
+                        (left, top, right, bottom) = (damage.Left, damage.Top, damage.Right, damage.Bottom);
+                    }
                 }
 
                 if (resized)
