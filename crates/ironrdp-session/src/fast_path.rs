@@ -685,6 +685,7 @@ impl Processor {
             )
         {
             self.use_system_pointer = false;
+            // Emit the hide first so consumers switch off the system pointer before applying the shape region.
             processor_updates.insert(0, UpdateKind::PointerHidden);
         }
 

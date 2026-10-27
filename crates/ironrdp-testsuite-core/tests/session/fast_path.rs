@@ -35,6 +35,28 @@ fn processor() -> Processor {
     .build()
 }
 
+fn software_pointer_fixture() -> (Processor, DecodedImage) {
+    let processor = ProcessorBuilder {
+        io_channel_id: 0,
+        user_channel_id: 0,
+        share_id: 0,
+        enable_server_pointer: true,
+        pointer_software_rendering: true,
+    }
+    .build();
+    let image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    (processor, image)
+}
+
+fn assert_visible_pixels(image: &DecodedImage, expected: &[u8]) {
+    let visible: Vec<_> = image
+        .data()
+        .chunks_exact(4)
+        .flat_map(|pixel| pixel[..3].iter().copied())
+        .collect();
+    assert_eq!(visible, expected);
+}
+
 const CURSOR_IMAGE: ColorPointerAttribute<'static> = ColorPointerAttribute {
     cache_index: 0,
     hot_spot: Point16 { x: 0, y: 0 },
@@ -44,7 +66,7 @@ const CURSOR_IMAGE: ColorPointerAttribute<'static> = ColorPointerAttribute {
     and_mask: &[0x80, 0],
 };
 
-// oracle: spec MS-RDPBCGR §3.2.5.9.2 and §3.2.5.9.3; shapes activate without a Cached Pointer Update.
+// oracle: mutant (software pointer shape updates leaving use_system_pointer set, omitting UpdateKind::PointerHidden, or SetPosition omitting UpdateKind::PointerPosition)
 #[rstest::rstest]
 #[case::color(PointerUpdateData::Color(CURSOR_IMAGE))]
 #[case::new(PointerUpdateData::New(PointerAttribute { xor_bpp: 24, color_pointer: CURSOR_IMAGE }))]
@@ -58,15 +80,7 @@ const CURSOR_IMAGE: ColorPointerAttribute<'static> = ColorPointerAttribute {
     and_mask: &[0x80, 0],
 }))]
 fn pointer_shape_reactivates_software_movement_and_hiding(#[case] shape: PointerUpdateData<'_>) {
-    let mut processor = ProcessorBuilder {
-        io_channel_id: 0,
-        user_channel_id: 0,
-        share_id: 0,
-        enable_server_pointer: true,
-        pointer_software_rendering: true,
-    }
-    .build();
-    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    let (mut processor, mut image) = software_pointer_fixture();
     processor
         .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
         .unwrap();
@@ -88,65 +102,45 @@ fn pointer_shape_reactivates_software_movement_and_hiding(#[case] shape: Pointer
     );
     let mut expected = [0; 48];
     expected[18..21].copy_from_slice(&[255, 255, 255]);
-    let visible: Vec<_> = image
-        .data()
-        .chunks_exact(4)
-        .flat_map(|pixel| pixel[..3].iter().copied())
-        .collect();
-    assert_eq!(visible, expected);
+    assert_visible_pixels(&image, &expected);
     processor
         .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
         .unwrap();
-    assert!(image.data().chunks_exact(4).all(|pixel| pixel[..3] == [0; 3]));
+    assert_visible_pixels(&image, &[0; 48]);
 }
 
-// oracle: spec MS-RDPBCGR §2.2.9.1.1.4.2 and §3.2.5.9.2; a position update moves the pointer even while hidden.
+// oracle: mutant (SetPosition while the pointer is hidden omitting UpdateKind::PointerPosition or failing to retain coordinates for the next shape update)
 #[test]
 fn hidden_pointer_position_is_retained_when_shape_returns() {
-    let mut processor = ProcessorBuilder {
-        io_channel_id: 0,
-        user_channel_id: 0,
-        share_id: 0,
-        enable_server_pointer: true,
-        pointer_software_rendering: true,
-    }
-    .build();
-    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    let (mut processor, mut image) = software_pointer_fixture();
     processor
         .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
         .unwrap();
     processor
         .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
         .unwrap();
-    processor
+    let updates = processor
         .process_pointer_update(&mut image, PointerUpdateData::SetPosition(Point16 { x: 2, y: 1 }))
         .unwrap();
-    assert!(image.data().chunks_exact(4).all(|pixel| pixel[..3] == [0; 3]));
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, UpdateKind::PointerPosition { x: 2, y: 1 })),
+        "hidden pointer movement must still report the server's position to input consumers"
+    );
+    assert_visible_pixels(&image, &[0; 48]);
     processor
         .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
         .unwrap();
     let mut expected = [0; 48];
     expected[18..21].copy_from_slice(&[255, 255, 255]);
-    let visible: Vec<_> = image
-        .data()
-        .chunks_exact(4)
-        .flat_map(|pixel| pixel[..3].iter().copied())
-        .collect();
-    assert_eq!(visible, expected);
+    assert_visible_pixels(&image, &expected);
 }
 
-// oracle: spec MS-RDPBCGR §3.2.5.9.2; restoring a pointer must preserve desktop updates received while hidden.
+// oracle: mutant (update_pointer restoring stale PointerLayer::Background pixels over desktop updates received while the pointer was hidden)
 #[test]
 fn restored_pointer_preserves_background_changes_while_hidden() {
-    let mut processor = ProcessorBuilder {
-        io_channel_id: 0,
-        user_channel_id: 0,
-        share_id: 0,
-        enable_server_pointer: true,
-        pointer_software_rendering: true,
-    }
-    .build();
-    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    let (mut processor, mut image) = software_pointer_fixture();
     processor
         .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
         .unwrap();
@@ -191,12 +185,7 @@ fn restored_pointer_preserves_background_changes_while_hidden() {
         .unwrap();
     let mut expected = [30, 80, 100].repeat(16);
     expected[18..21].copy_from_slice(&[225, 175, 155]);
-    let visible: Vec<_> = image
-        .data()
-        .chunks_exact(4)
-        .flat_map(|pixel| pixel[..3].iter().copied())
-        .collect();
-    assert_eq!(visible, expected);
+    assert_visible_pixels(&image, &expected);
 }
 
 /// Encodes the inner FastPath Bitmap update: a single uncompressed 8x8 32bpp
