@@ -40,13 +40,15 @@ fn decode_block(buffer: &mut [i16], factor: i16) {
 #[expect(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
-    reason = "rounded shift of i16 by factor in 1..15 fits in i16"
+    reason = "rounded shift of i16 by shift in 1..=16 fits in i16"
 )]
 fn encode_block(buffer: &mut [i16], factor: i16) {
-    if (1..15).contains(&factor) {
-        let half = 1i32 << (factor - 1);
+    if factor > 0 {
+        // For factor >= 16, scale >= 65536 and half >= 32768, so every i16 rounds to 0, matching shift = 16.
+        let shift = factor.min(16);
+        let half = 1i32 << (shift - 1);
         for value in buffer {
-            *value = ((i32::from(*value) + half) >> factor) as i16;
+            *value = ((i32::from(*value) + half) >> shift) as i16;
         }
     }
 }

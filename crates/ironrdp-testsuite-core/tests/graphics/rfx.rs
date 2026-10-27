@@ -6,13 +6,17 @@ use ironrdp_pdu::codecs::rfx::{
     RegionPdu, RfxChannel, RfxRectangle, Tile, TileSetPdu,
 };
 
+fn encode_plane(plane: &mut [i16; 4096], quant: &Quant, entropy: EntropyAlgorithm) -> Vec<u8> {
+    let mut out = vec![0; 4096];
+    let len = rfx_encode_component(plane, &mut out, quant, entropy).unwrap();
+    out.truncate(len);
+    out
+}
+
 /// Encode a constant component: every coefficient set to `value` before the forward transform.
 fn flat_component(value: i16, quant: &Quant, entropy: EntropyAlgorithm) -> Vec<u8> {
     let mut input = [value; 4096];
-    let mut out = vec![0; 4096];
-    let len = rfx_encode_component(&mut input, &mut out, quant, entropy).unwrap();
-    out.truncate(len);
-    out
+    encode_plane(&mut input, quant, entropy)
 }
 
 fn tile(x: u16, y: u16, data: &[u8]) -> Tile<'_> {
@@ -417,7 +421,8 @@ fn a_message_without_a_frame_begin_is_rejected() {
 #[test]
 fn quantization_rounds_at_half_step_boundaries_for_both_signs() {
     // oracle: spec MS-RDPRFX §3.1.8.1.5 (quantization divides coefficients by the sub-band scale
-    // value and rounds; for quant=6 the 11.5 fixed-point shift is 5, so scale=32 and half=16)
+    // value and rounds via (value + half) >> factor; for quant=6 the 11.5 fixed-point shift is 5,
+    // so scale=32, half=16, and half-way ties -48, -16, 16, 48 round toward +infinity to -1, 0, 1, 2)
     let quant = Quant {
         ll3: 6,
         lh3: 6,
@@ -433,19 +438,19 @@ fn quantization_rounds_at_half_step_boundaries_for_both_signs() {
     let samples = [
         (i16::MIN, -1024),
         (-49, -2),
-        (-48, -1),
+        (-48, -1), // -1.5 * 32 tie rounds toward +infinity: (-48 + 16) >> 5 == -1
         (-32, -1),
         (-31, -1),
         (-17, -1),
-        (-16, 0),
+        (-16, 0), // -0.5 * 32 tie rounds toward +infinity: (-16 + 16) >> 5 == 0
         (-1, 0),
         (0, 0),
         (15, 0),
-        (16, 1),
+        (16, 1), // +0.5 * 32 tie: (16 + 16) >> 5 == 1
         (31, 1),
         (32, 1),
         (47, 1),
-        (48, 2),
+        (48, 2), // +1.5 * 32 tie: (48 + 16) >> 5 == 2
         (i16::MAX, 1024),
     ];
 
@@ -492,15 +497,9 @@ fn a_smooth_gradient_tile_round_trips_without_negative_quantization_spikes() {
     .unwrap();
 
     let quant = Quant::default();
-    let encode_plane = |plane: &mut [i16; 4096]| {
-        let mut out = vec![0u8; 4096];
-        let len = rfx_encode_component(plane, &mut out, &quant, EntropyAlgorithm::Rlgr3).unwrap();
-        out.truncate(len);
-        out
-    };
-    let y_data = encode_plane(&mut luma);
-    let blue_chroma = encode_plane(&mut cb);
-    let red_chroma = encode_plane(&mut cr);
+    let y_data = encode_plane(&mut luma, &quant, EntropyAlgorithm::Rlgr3);
+    let blue_chroma = encode_plane(&mut cb, &quant, EntropyAlgorithm::Rlgr3);
+    let red_chroma = encode_plane(&mut cr, &quant, EntropyAlgorithm::Rlgr3);
 
     let encoded = Tile {
         y_quant_index: 0,
