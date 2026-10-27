@@ -1768,7 +1768,7 @@ impl Default for ProgressiveDecoder {
     }
 }
 
-/// The band-layout flag a stream's CONTEXT block sets, if it has one.
+/// Returns the band-layout flag a stream's CONTEXT block sets, if it has one.
 fn signalled_context_flag(blocks: &[ironrdp_pdu::codecs::rfx::progressive::ProgressiveBlock<'_>]) -> Option<bool> {
     blocks.iter().find_map(|block| match block {
         ironrdp_pdu::codecs::rfx::progressive::ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
@@ -2289,7 +2289,11 @@ mod tests {
             // A later stream for the surface that omits CONTEXT decodes with the band layout the skipped one set.
             let stream_without_context = minimal_progressive_stream(false);
             assert!(decoder.decode_bitmap(1, 0, 640, 480, &stream_without_context).is_ok());
-            assert_eq!(decoder.surfaces[&1].use_reduce_extrapolate, flags != 0);
+            assert_eq!(
+                decoder.surfaces[&1].use_reduce_extrapolate,
+                flags != 0,
+                "CONTEXT flags {flags:#04x}"
+            );
         }
     }
 
