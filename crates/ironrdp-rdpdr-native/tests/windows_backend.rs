@@ -420,7 +420,11 @@ fn directory_notifications_are_cancelled_by_close() {
             },
         ))
         .expect("schedule directory notification");
-    assert!(scheduled.is_empty());
+    assert!(
+        scheduled.is_empty(),
+        "directory notification was completed immediately with {:?}",
+        response_status(&scheduled),
+    );
 
     let close_response = backend
         .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
