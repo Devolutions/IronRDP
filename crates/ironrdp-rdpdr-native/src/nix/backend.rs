@@ -489,12 +489,14 @@ impl RdpdrBackend for NixRdpdrBackend {
 pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWriteRequest) -> PduResult<Vec<SvcMessage>> {
     let file_id = req_inner.device_io_request.file_id;
     let length = u64::try_from(req_inner.write_data.len()).unwrap_or(u64::MAX);
-    // [MS-FSA] 2.1.5.4 refuses a write into a range another handle locked, or that any shared lock covers.
-    if backend.open_files.get(&file_id).is_some_and(|open_file| {
-        backend
-            .locks
-            .conflicts(open_file.identity, file_id, req_inner.offset, length, true, false)
-    }) {
+    // [MS-FSA] 2.1.5.4 refuses a write into a range another handle locked, or that any shared lock covers, after a write of no bytes has already succeeded.
+    if length != 0
+        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+            backend
+                .locks
+                .conflicts(open_file.identity, file_id, req_inner.offset, length, true, false)
+        })
+    {
         let res = RdpdrPdu::DeviceWriteResponse(DeviceWriteResponse {
             device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, file_lock_conflict()),
             length: 0u32,
@@ -554,17 +556,19 @@ pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWrite
 
 pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRequest) -> PduResult<Vec<SvcMessage>> {
     let file_id = req_inner.device_io_request.file_id;
-    // [MS-FSA] 2.1.5.3 refuses a read from a range another handle locked exclusively.
-    if backend.open_files.get(&file_id).is_some_and(|open_file| {
-        backend.locks.conflicts(
-            open_file.identity,
-            file_id,
-            req_inner.offset,
-            u64::from(req_inner.length),
-            false,
-            false,
-        )
-    }) {
+    // [MS-FSA] 2.1.5.3 refuses a read from a range another handle locked exclusively, after a read of no bytes has already succeeded.
+    if req_inner.length != 0
+        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+            backend.locks.conflicts(
+                open_file.identity,
+                file_id,
+                req_inner.offset,
+                u64::from(req_inner.length),
+                false,
+                false,
+            )
+        })
+    {
         let res = RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
             device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, file_lock_conflict()),
             read_data: Vec::new(),

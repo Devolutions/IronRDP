@@ -1415,6 +1415,20 @@ fn an_exclusive_lock_refuses_reads_through_another_handle() {
     assert_eq!(response_status(&other_read), NtStatus::from(0xC000_0054));
 }
 
+/// Offset 5 lies inside the lock, where a zero-length range at any offset but 0 still overlaps it ([MS-FSA] 2.1.4.10).
+// oracle: spec MS-FSA §2.1.5.3, §2.1.5.4
+#[test]
+fn zero_length_reads_and_writes_succeed_inside_another_handles_lock() {
+    let (_fixture, mut backend, first_id, second_id) = two_handles();
+    let _ = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 10);
+
+    let read_response = read(&mut backend, second_id, 5, 0);
+    let write_response = write(&mut backend, second_id, 5, b"");
+
+    assert_eq!(response_status(&read_response), NtStatus::SUCCESS);
+    assert_eq!(response_status(&write_response), NtStatus::SUCCESS);
+}
+
 // oracle: spec MS-FSA §2.1.4.10
 #[test]
 fn a_shared_lock_refuses_writes_even_through_its_owner() {
