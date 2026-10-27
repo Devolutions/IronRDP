@@ -122,6 +122,7 @@ struct RawCloudPcPage {
 #[derive(Clone)]
 pub struct CloudPcLaunchDetail {
     cloud_pc_id: String,
+    // INVARIANT: Validated on construction to use `https` with a non-empty host, no userinfo, and port 443.
     launch_url: Url,
     windows365_switch_compatible: bool,
     windows365_switch_compatibility_failure_reason_type: Option<String>,
@@ -302,12 +303,7 @@ impl CloudPcClient {
             return Err(Error::LaunchDetailMismatch);
         }
         let launch_url = Url::parse(&detail.cloud_pc_launch_url).map_err(|_| Error::InvalidLaunchUrl)?;
-        if launch_url.scheme() != "https"
-            || launch_url.host_str().is_none()
-            || !launch_url.username().is_empty()
-            || launch_url.password().is_some()
-            || launch_url.port_or_known_default() != Some(443)
-        {
+        if !is_canonical_https(&launch_url) || launch_url.host_str().is_none() {
             return Err(Error::InvalidLaunchUrl);
         }
         Ok(CloudPcLaunchDetail {
@@ -319,9 +315,11 @@ impl CloudPcClient {
         })
     }
 
-    /// Discover AVD workspace feed URLs from an RDWeb `api/arm/feeddiscovery` endpoint.
+    /// Discover [AVD feed discovery] workspace feed URLs from an RDWeb `api/arm/feeddiscovery` endpoint.
     ///
     /// Supply an Entra bearer token for the AVD RDWeb resource (e.g. `https://www.wvd.microsoft.com`).
+    ///
+    /// [AVD feed discovery]: https://learn.microsoft.com/azure/virtual-desktop/users/connect-microsoft-store-source
     pub async fn discover_avd_feeds(
         &self,
         discovery_url: Url,
@@ -346,7 +344,9 @@ impl CloudPcClient {
         Ok(subscriptions)
     }
 
-    /// Fetch and parse an AVD workspace webfeed (`application/x-msts-radc+xml`).
+    /// Fetch and parse an AVD workspace webfeed (`application/x-msts-radc+xml`, [MS-TSWP] §2.2.2).
+    ///
+    /// [MS-TSWP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-tswp/
     pub async fn fetch_avd_workspace_feed(&self, feed_url: Url, access_token: &str) -> Result<AvdWorkspaceFeed, Error> {
         let expected_env = validate_avd_service_url(&feed_url)?;
         let body = self
@@ -376,7 +376,7 @@ impl CloudPcClient {
         access_token: &str,
     ) -> Result<(String, VerifiedRdpSignature), Error> {
         validate_avd_service_url(&rdp_url)?;
-        self.download_avd_rdp_file_unchecked_url(rdp_url, access_token, None, None)
+        self.download_avd_rdp_file_unchecked_url(None, rdp_url, access_token, None)
             .await
     }
 
@@ -384,21 +384,21 @@ impl CloudPcClient {
     #[doc(hidden)]
     pub async fn download_avd_rdp_file_at(
         &self,
+        validation_time: Option<Duration>,
         rdp_url: Url,
         access_token: &str,
         trust_anchors_der: Option<&[&[u8]]>,
-        validation_time: Option<Duration>,
     ) -> Result<(String, VerifiedRdpSignature), Error> {
-        self.download_avd_rdp_file_unchecked_url(rdp_url, access_token, trust_anchors_der, validation_time)
+        self.download_avd_rdp_file_unchecked_url(validation_time, rdp_url, access_token, trust_anchors_der)
             .await
     }
 
     async fn download_avd_rdp_file_unchecked_url(
         &self,
+        validation_time: Option<Duration>,
         rdp_url: Url,
         access_token: &str,
         trust_anchors_der: Option<&[&[u8]]>,
-        validation_time: Option<Duration>,
     ) -> Result<(String, VerifiedRdpSignature), Error> {
         let body = self
             .get_with_accept(
@@ -409,7 +409,7 @@ impl CloudPcClient {
             )
             .await?;
         let rdp_text = decode_rdp_bytes(&body)?;
-        verify_and_canonicalize_rdp(&rdp_text, trust_anchors_der, validation_time)
+        verify_and_canonicalize_rdp(validation_time, &rdp_text, trust_anchors_der)
     }
 
     async fn get(&self, url: Url, access_token: &str) -> Result<Vec<u8>, Error> {
@@ -423,11 +423,7 @@ impl CloudPcClient {
         accept: &'static str,
         user_agent: Option<&'static str>,
     ) -> Result<Vec<u8>, Error> {
-        if access_token.is_empty()
-            || !access_token
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-._~+/=".contains(&b))
-        {
+        if !is_valid_id_charset(access_token, b"-._~+/=") {
             return Err(Error::InvalidInput("Graph bearer token"));
         }
         let mut authorization = HeaderValue::from_str(&format!("Bearer {access_token}"))
@@ -471,6 +467,20 @@ impl CloudPcClient {
     }
 }
 
+fn is_canonical_https(url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port_or_known_default() == Some(443)
+}
+
+fn is_valid_id_charset(value: &str, allowed_extra: &[u8]) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || allowed_extra.contains(&b))
+}
+
 #[cfg(feature = "__test")]
 #[doc(hidden)]
 pub fn launch_detail_request_url(cloud_pc_id: &str) -> Result<Url, Error> {
@@ -478,11 +488,7 @@ pub fn launch_detail_request_url(cloud_pc_id: &str) -> Result<Url, Error> {
 }
 
 fn launch_detail_request_url_inner(cloud_pc_id: &str) -> Result<Url, Error> {
-    if cloud_pc_id.is_empty()
-        || !cloud_pc_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
-    {
+    if !is_valid_id_charset(cloud_pc_id, b"-_") {
         return Err(Error::InvalidInput("Cloud PC ID"));
     }
     let mut url = Url::parse(CLOUD_PCS_URL).map_err(|_| Error::InvalidInput("Cloud PC request URL"))?;
@@ -500,11 +506,8 @@ pub fn continuation_url(value: &str) -> Result<Url, Error> {
 
 fn continuation_url_inner(value: &str) -> Result<Url, Error> {
     let url = Url::parse(value).map_err(|_| Error::InvalidContinuation)?;
-    if url.scheme() != "https"
+    if !is_canonical_https(&url)
         || url.host_str() != Some("graph.microsoft.com")
-        || url.port_or_known_default() != Some(443)
-        || !url.username().is_empty()
-        || url.password().is_some()
         || url.path() != "/v1.0/me/cloudPCs"
         || url.fragment().is_some()
     {
@@ -537,7 +540,7 @@ fn launch_url(segments: &[&str], tenant_id: Option<&str>) -> Result<String, Erro
     if segments
         .iter()
         .chain(tenant_id.iter())
-        .any(|id| id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b)))
+        .any(|id| !is_valid_id_charset(id, b"-_"))
     {
         return Err(Error::InvalidInput("cloud resource or tenant ID"));
     }
@@ -580,7 +583,7 @@ impl AvdCloudEnvironment {
     /// Build the `api/arm/feeddiscovery` URL for this environment and optional Entra tenant ID.
     pub fn feed_discovery_url(self, tenant_id: Option<&str>) -> Result<Url, Error> {
         if let Some(tid) = tenant_id
-            && (tid.is_empty() || !tid.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)))
+            && !is_valid_id_charset(tid, b"-_.")
         {
             return Err(Error::InvalidInput("cloud resource or tenant ID"));
         }
@@ -626,8 +629,11 @@ fn host_matches_domain(host: &str, domain: &str) -> bool {
 pub struct AvdFeedSubscription {
     pub tenant_id: String,
     pub tenant_display_name: Option<String>,
+    // INVARIANT: Validated by `validate_avd_service_url` during feed discovery XML parsing.
     pub feed_url: Url,
+    // INVARIANT: Validated by `validate_avd_service_url` to match `feed_url`'s sovereign cloud environment.
     pub hub_discovery_geo_url: Option<Url>,
+    // INVARIANT: Validated by `validate_avd_service_url` to match `feed_url`'s sovereign cloud environment.
     pub diagnostic_service_url: Option<Url>,
     pub activity_hint: Option<String>,
     pub conditional_access_claims: Option<String>,
@@ -655,8 +661,11 @@ pub struct AvdResource {
     pub kind: AvdResourceKind,
     pub arm_path: Option<String>,
     pub device_state: Option<String>,
+    // INVARIANT: Validated by `validate_avd_service_url` during workspace feed XML parsing.
     pub rdp_file_url: Option<Url>,
     pub rdp_etag: Option<String>,
+    // INVARIANT: When `Some`, contains canonical `.rdp` text whose detached PKCS#7 signature
+    // and `signscope` sensitive-setting coverage were verified by `verify_and_canonicalize_rdp`.
     pub embedded_rdp: Option<String>,
 }
 
@@ -671,18 +680,35 @@ pub struct AvdWorkspaceFeed {
 }
 
 fn validate_avd_service_url(url: &Url) -> Result<AvdCloudEnvironment, Error> {
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port_or_known_default() != Some(443)
-        || url.fragment().is_some()
-    {
+    if !is_canonical_https(url) || url.fragment().is_some() {
         return Err(Error::InvalidAvdUrl);
     }
     let Some(url::Host::Domain(domain)) = url.host() else {
         return Err(Error::InvalidAvdUrl);
     };
     AvdCloudEnvironment::from_host(domain).ok_or(Error::InvalidAvdUrl)
+}
+
+fn parse_optional_avd_url(
+    tag: &str,
+    attr_name: &str,
+    expected_env: AvdCloudEnvironment,
+    invalid_err: &'static str,
+    untrusted_err: &'static str,
+    mismatch_err: &'static str,
+) -> Result<Option<Url>, Error> {
+    let Some(raw) = xml_attr(tag, attr_name)? else {
+        return Ok(None);
+    };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let url = Url::parse(&raw).map_err(|_| Error::InvalidXml(invalid_err))?;
+    let env = validate_avd_service_url(&url).map_err(|_| Error::InvalidXml(untrusted_err))?;
+    if env != expected_env {
+        return Err(Error::InvalidXml(mismatch_err));
+    }
+    Ok(Some(url))
 }
 
 /// Parse an [AVD feed discovery] (`/api/arm/feeddiscovery`) XML document into workspace feed subscriptions.
@@ -706,30 +732,22 @@ pub fn parse_avd_feed_discovery_xml(xml: &str) -> Result<Vec<AvdFeedSubscription
         if tenant_id.is_empty() {
             return Err(Error::InvalidXml("missing TenantId on FeedURL element"));
         }
-        let hub_discovery_geo_url = match xml_attr(tag, "HubDiscoveryGeoURL")? {
-            Some(s) if !s.is_empty() => {
-                let u = Url::parse(&s).map_err(|_| Error::InvalidXml("invalid HubDiscoveryGeoURL"))?;
-                let hub_env =
-                    validate_avd_service_url(&u).map_err(|_| Error::InvalidXml("untrusted HubDiscoveryGeoURL"))?;
-                if hub_env != env {
-                    return Err(Error::InvalidXml("HubDiscoveryGeoURL cloud environment mismatch"));
-                }
-                Some(u)
-            }
-            _ => None,
-        };
-        let diagnostic_service_url = match xml_attr(tag, "DiagnosticServiceURL")? {
-            Some(s) if !s.is_empty() => {
-                let u = Url::parse(&s).map_err(|_| Error::InvalidXml("invalid DiagnosticServiceURL"))?;
-                let diag_env =
-                    validate_avd_service_url(&u).map_err(|_| Error::InvalidXml("untrusted DiagnosticServiceURL"))?;
-                if diag_env != env {
-                    return Err(Error::InvalidXml("DiagnosticServiceURL cloud environment mismatch"));
-                }
-                Some(u)
-            }
-            _ => None,
-        };
+        let hub_discovery_geo_url = parse_optional_avd_url(
+            tag,
+            "HubDiscoveryGeoURL",
+            env,
+            "invalid HubDiscoveryGeoURL",
+            "untrusted HubDiscoveryGeoURL",
+            "HubDiscoveryGeoURL cloud environment mismatch",
+        )?;
+        let diagnostic_service_url = parse_optional_avd_url(
+            tag,
+            "DiagnosticServiceURL",
+            env,
+            "invalid DiagnosticServiceURL",
+            "untrusted DiagnosticServiceURL",
+            "DiagnosticServiceURL cloud environment mismatch",
+        )?;
         subscriptions.push(AvdFeedSubscription {
             tenant_id,
             tenant_display_name: xml_attr(tag, "TenantDisplayName")?,
@@ -831,7 +849,7 @@ pub fn parse_avd_workspace_feed_xml(xml: &str) -> Result<AvdWorkspaceFeed, Error
         let embedded_rdp = match extract_xml_element_text(inner, "RDPFile")? {
             Some(raw) if !raw.trim().is_empty() => {
                 let unescaped = unescape_xml(raw)?;
-                let (canonical_rdp, _) = verify_and_canonicalize_rdp(&unescaped, None, None)?;
+                let (canonical_rdp, _) = verify_and_canonicalize_rdp(None, &unescaped, None)?;
                 Some(canonical_rdp)
             }
             _ => None,
@@ -1194,10 +1212,19 @@ pub struct VerifiedRdpSignature {
 ///
 /// Enforces sensitive-setting coverage (`VerifySensitiveSettings` in `RDCoreSdk.dll`), verifies
 /// the detached PKCS#7 signature over the canonical UTF-16LE `signscope` lines, and validates
-/// the X.509 certificate chain, validity window, CA constraints, and RDP signing EKU against the
-/// platform trust store without network CRL/OCSP revocation lookups.
+/// the X.509 certificate chain, validity window, `BasicConstraints`, `KeyUsage`, and RDP signing
+/// `ExtendedKeyUsage` (`1.3.6.1.4.1.311.54.1.1`, `serverAuth`, `codeSigning`, or `anyExtendedKeyUsage`)
+/// against the platform trust store.
+///
+/// `picky` does not provide a CMS `SignedData` parser or detached `.rdp` `CTsRdpCertSignature`
+/// policy validator, so CMS `SignedData` structure is read directly while `x509-cert` decodes
+/// certificates and extensions and `picky` verifies RSA, ECDSA, and Ed25519 signatures.
+/// Unrecognized critical X.509 extensions (including critical `NameConstraints`) are rejected;
+/// non-critical `NameConstraints`, `CertificatePolicies`, and network CRL/OCSP revocation checks
+/// are not evaluated. Platform trust anchors are loaded via `rustls-native-certs` independently
+/// of the HTTP client's TLS backend, and platform root entries that fail X.509 DER decoding are skipped.
 pub fn verify_rdp_signature(rdp_content: &str) -> Result<VerifiedRdpSignature, Error> {
-    let (_, verified) = verify_and_canonicalize_rdp(rdp_content, None, None)?;
+    let (_, verified) = verify_and_canonicalize_rdp(None, rdp_content, None)?;
     Ok(verified)
 }
 
@@ -1206,18 +1233,18 @@ pub fn verify_rdp_signature_with_roots(
     rdp_content: &str,
     trust_anchors_der: &[&[u8]],
 ) -> Result<VerifiedRdpSignature, Error> {
-    let (_, verified) = verify_and_canonicalize_rdp(rdp_content, Some(trust_anchors_der), None)?;
+    let (_, verified) = verify_and_canonicalize_rdp(None, rdp_content, Some(trust_anchors_der))?;
     Ok(verified)
 }
 
 #[cfg(feature = "__test")]
 #[doc(hidden)]
 pub fn verify_rdp_signature_at(
+    validation_time: Duration,
     rdp_content: &str,
     trust_anchors_der: &[&[u8]],
-    validation_time: Duration,
 ) -> Result<VerifiedRdpSignature, Error> {
-    let (_, verified) = verify_and_canonicalize_rdp(rdp_content, Some(trust_anchors_der), Some(validation_time))?;
+    let (_, verified) = verify_and_canonicalize_rdp(Some(validation_time), rdp_content, Some(trust_anchors_der))?;
     Ok(verified)
 }
 
@@ -1240,21 +1267,16 @@ fn decode_rdp_bytes(body: &[u8]) -> Result<String, Error> {
                 }
             })
             .collect();
-        let text =
-            String::from_utf16(&units).map_err(|_| Error::InvalidRdpSignature("RDP file is not valid UTF-16"))?;
-        Ok(text.trim_end_matches('\0').to_owned())
+        String::from_utf16(&units).map_err(|_| Error::InvalidRdpSignature("RDP file is not valid UTF-16"))
     } else {
-        let text =
-            String::from_utf8(body.to_vec()).map_err(|_| Error::InvalidRdpSignature("RDP file is not valid UTF-8"))?;
-        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-        Ok(text.trim_end_matches('\0').to_owned())
+        String::from_utf8(body.to_vec()).map_err(|_| Error::InvalidRdpSignature("RDP file is not valid UTF-8"))
     }
 }
 
 fn verify_and_canonicalize_rdp(
+    validation_time: Option<Duration>,
     rdp_content: &str,
     explicit_trust_anchors: Option<&[&[u8]]>,
-    validation_time: Option<Duration>,
 ) -> Result<(String, VerifiedRdpSignature), Error> {
     let validation_time = match validation_time {
         Some(t) => t,
@@ -1468,7 +1490,7 @@ fn verify_and_canonicalize_rdp(
         .verify(&public_key, &signed_payload, parsed_pkcs7.signature_bytes)
         .is_err()
     {
-        return Err(Error::InvalidRdpSignature("RSA signature verification failed"));
+        return Err(Error::InvalidRdpSignature("signature verification failed"));
     }
 
     let native_roots;
@@ -1480,6 +1502,9 @@ fn verify_and_canonicalize_rdp(
             parsed_anchors.push(cert);
         }
     } else {
+        // Platform roots are loaded through `rustls-native-certs` independently of the HTTP
+        // transport's TLS backend; entries that fail X.509 DER decoding are skipped so a single
+        // malformed OS trust store entry does not block valid roots.
         native_roots = rustls_native_certs::load_native_certs();
         for cert_der in &native_roots.certs {
             if let Ok(cert) = Certificate::from_der(cert_der.as_ref()) {
@@ -1491,7 +1516,7 @@ fn verify_and_canonicalize_rdp(
         return Err(Error::InvalidRdpSignature("no trusted root certificates available"));
     }
 
-    verify_certificate_chain(leaf_der, leaf_cert, &parsed_certs, &parsed_anchors, validation_time)?;
+    verify_certificate_chain(validation_time, leaf_der, leaf_cert, &parsed_certs, &parsed_anchors)?;
 
     let signer_subject = leaf_cert.tbs_certificate().subject().to_string();
     Ok((
@@ -1604,77 +1629,77 @@ fn verify_signed_attrs(raw_attributes: &[u8], expected_digest: &[u8]) -> Result<
     Ok(())
 }
 
-fn verify_certificate_chain(
-    leaf_der: &[u8],
-    leaf: &Certificate,
-    bag_certs: &[(&[u8], Certificate)],
-    trust_anchors: &[Certificate],
+fn verify_certificate_chain<'a>(
     validation_time: Duration,
+    leaf_der: &'a [u8],
+    leaf: &'a Certificate,
+    bag_certs: &'a [(&'a [u8], Certificate)],
+    trust_anchors: &[Certificate],
 ) -> Result<(), Error> {
-    check_cert_validity(leaf, validation_time)?;
+    check_cert_validity(validation_time, leaf)?;
     check_leaf_extensions(leaf)?;
 
-    let mut current = leaf;
-    let mut visited: Vec<&[u8]> = vec![leaf_der];
-    let mut intermediate_count = 0usize;
-
-    for _ in 0..=bag_certs.len() {
-        for anchor in trust_anchors {
-            if anchor.tbs_certificate().subject() == current.tbs_certificate().issuer()
-                && check_cert_validity(anchor, validation_time).is_ok()
-                && check_ca_extensions(anchor, intermediate_count, true).is_ok()
-                && verify_x509_signature(current, anchor).is_ok()
-                && (anchor.tbs_certificate().subject() != anchor.tbs_certificate().issuer()
-                    || verify_x509_signature(anchor, anchor).is_ok())
-            {
-                return Ok(());
-            }
-        }
-
-        if current.tbs_certificate().subject() == current.tbs_certificate().issuer() {
-            return Err(Error::InvalidRdpSignature(
-                "signer certificate chain is not anchored in a trusted root",
-            ));
-        }
-
-        let mut next_issuer: Option<(&[u8], &Certificate)> = None;
-        let mut last_error: Option<Error> = None;
-        for (cand_der, cand_cert) in bag_certs {
-            if cand_cert.tbs_certificate().subject() != current.tbs_certificate().issuer() {
-                continue;
-            }
-            if visited.contains(cand_der) {
-                last_error = Some(Error::InvalidRdpSignature("cyclic certificate chain in PKCS#7"));
-                continue;
-            }
-            if let Err(err) = check_cert_validity(cand_cert, validation_time)
-                .and_then(|()| check_ca_extensions(cand_cert, intermediate_count, false))
-                .and_then(|()| verify_x509_signature(current, cand_cert))
-            {
-                last_error = Some(err);
-                continue;
-            }
-            next_issuer = Some((cand_der, cand_cert));
-            break;
-        }
-
-        let Some((issuer_der, issuer_cert)) = next_issuer else {
-            return Err(last_error.unwrap_or(Error::InvalidRdpSignature(
-                "signer certificate chain is not anchored in a trusted root",
-            )));
-        };
-
-        visited.push(issuer_der);
-        current = issuer_cert;
-        intermediate_count += 1;
-    }
-
-    Err(Error::InvalidRdpSignature(
-        "signer certificate chain is not anchored in a trusted root",
-    ))
+    let mut visited: Vec<&'a [u8]> = vec![leaf_der];
+    verify_chain_from(validation_time, leaf, bag_certs, trust_anchors, &mut visited)
 }
 
-fn check_cert_validity(cert: &Certificate, validation_time: Duration) -> Result<(), Error> {
+fn verify_chain_from<'a>(
+    validation_time: Duration,
+    current: &'a Certificate,
+    bag_certs: &'a [(&'a [u8], Certificate)],
+    trust_anchors: &[Certificate],
+    visited: &mut Vec<&'a [u8]>,
+) -> Result<(), Error> {
+    let intermediate_count = visited.len() - 1;
+    for anchor in trust_anchors {
+        if anchor.tbs_certificate().subject() == current.tbs_certificate().issuer()
+            && check_cert_validity(validation_time, anchor).is_ok()
+            && check_ca_extensions(anchor, intermediate_count, true).is_ok()
+            && verify_x509_signature(current, anchor).is_ok()
+            && (anchor.tbs_certificate().subject() != anchor.tbs_certificate().issuer()
+                || verify_x509_signature(anchor, anchor).is_ok())
+        {
+            return Ok(());
+        }
+    }
+
+    if current.tbs_certificate().subject() == current.tbs_certificate().issuer() {
+        return Err(Error::InvalidRdpSignature(
+            "signer certificate chain is not anchored in a trusted root",
+        ));
+    }
+
+    let mut last_error: Option<Error> = None;
+    for (cand_der, cand_cert) in bag_certs {
+        if cand_cert.tbs_certificate().subject() != current.tbs_certificate().issuer() {
+            continue;
+        }
+        if visited.contains(cand_der) {
+            last_error = Some(Error::InvalidRdpSignature("cyclic certificate chain in PKCS#7"));
+            continue;
+        }
+        if let Err(err) = check_cert_validity(validation_time, cand_cert)
+            .and_then(|()| check_ca_extensions(cand_cert, intermediate_count, false))
+            .and_then(|()| verify_x509_signature(current, cand_cert))
+        {
+            last_error = Some(err);
+            continue;
+        }
+        visited.push(cand_der);
+        let branch_res = verify_chain_from(validation_time, cand_cert, bag_certs, trust_anchors, visited);
+        visited.pop();
+        match branch_res {
+            Ok(()) => return Ok(()),
+            Err(err) => last_error = Some(err),
+        }
+    }
+
+    Err(last_error.unwrap_or(Error::InvalidRdpSignature(
+        "signer certificate chain is not anchored in a trusted root",
+    )))
+}
+
+fn check_cert_validity(validation_time: Duration, cert: &Certificate) -> Result<(), Error> {
     let validity = cert.tbs_certificate().validity();
     let not_before = validity.not_before.to_unix_duration();
     let not_after = validity.not_after.to_unix_duration();

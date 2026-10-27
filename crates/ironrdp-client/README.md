@@ -81,6 +81,7 @@ For AVD desktops and RemoteApps, call `avd_launch_url` with the workspace and re
 The resource must be assigned to the user; supply the hosting tenant ID for external identities.
 
 For AVD RDWeb feeds, build the discovery URL with `AvdCloudEnvironment::feed_discovery_url`, call `discover_avd_feeds` and `fetch_avd_workspace_feed` with an RDWeb bearer token, and call `download_avd_rdp_file` or `verify_rdp_signature` to validate the detached PKCS#7 signature and `signscope` sensitive-setting coverage on signed `.rdp` files.
+Signature verification loads platform trust anchors through `rustls-native-certs` independently of the HTTP client's selected TLS backend, and skips platform root entries that cannot be decoded as X.509 DER certificates.
 
 Discovery and launch-detail retrieval use only the global Graph endpoint and return one page or launch result per call.
 Pass the previous page's `next_link` to request another page, with a fresh token if necessary; callers control cancellation and page limits.

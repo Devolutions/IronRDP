@@ -564,19 +564,19 @@ fn verify_microsoft_signed_avd_rdp_file_and_detect_tampering() {
     // 2026-10-26T18:00:00Z is within the leaf certificate validity window (2026-10-12..2027-01-20).
     let valid_time = Duration::from_secs(1_793_047_200);
 
-    let verified = verify_rdp_signature_at(&signed_rdp, &anchors, valid_time).unwrap();
+    let verified = verify_rdp_signature_at(valid_time, &signed_rdp, &anchors).unwrap();
     assert_eq!(verified.signed_scope.len(), 30);
     assert!(verified.signer_subject.contains("rdp.wvd.microsoft.com"));
     assert!(!verified.signer_certificate_der.is_empty());
 
-    // Tampering with a signed property must fail RSA signature verification.
+    // Tampering with a signed property must fail signature verification.
     let tampered = signed_rdp.replace(
         "full address:s:rdgateway-r1.wvd.microsoft.com",
         "full address:s:attacker.example.com",
     );
     assert!(matches!(
-        verify_rdp_signature_at(&tampered, &anchors, valid_time),
-        Err(Error::InvalidRdpSignature("RSA signature verification failed"))
+        verify_rdp_signature_at(valid_time, &tampered, &anchors),
+        Err(Error::InvalidRdpSignature("signature verification failed"))
     ));
 
     // Adding an unsigned sensitive setting (alternate shell, server port, kdcproxyname, use redirection server name, or IronRDP transport/TLS overrides) must fail.
@@ -597,7 +597,7 @@ fn verify_microsoft_signed_avd_rdp_file_and_detect_tampering() {
     ] {
         let with_unsigned = format!("{signed_rdp}{unsigned_sensitive}\r\n");
         assert!(matches!(
-            verify_rdp_signature_at(&with_unsigned, &anchors, valid_time),
+            verify_rdp_signature_at(valid_time, &with_unsigned, &anchors),
             Err(Error::InvalidRdpSignature(
                 "sensitive .rdp setting is not covered by signscope"
             ))
@@ -610,7 +610,7 @@ fn verify_microsoft_signed_avd_rdp_file_and_detect_tampering() {
         "Full Address,Alternate Full Address,",
     );
     assert!(matches!(
-        verify_rdp_signature_at(&without_credssp_in_scope, &anchors, valid_time),
+        verify_rdp_signature_at(valid_time, &without_credssp_in_scope, &anchors),
         Err(Error::InvalidRdpSignature(
             "sensitive .rdp setting is not covered by signscope"
         ))
@@ -619,12 +619,12 @@ fn verify_microsoft_signed_avd_rdp_file_and_detect_tampering() {
     // Prepending or appending a duplicate property (even with different case) must fail.
     let duplicate_host = format!("Full Address:s:attacker.example.com\r\n{signed_rdp}");
     assert!(matches!(
-        verify_rdp_signature_at(&duplicate_host, &anchors, valid_time),
+        verify_rdp_signature_at(valid_time, &duplicate_host, &anchors),
         Err(Error::InvalidRdpSignature("duplicate .rdp property"))
     ));
     let duplicate_credssp = format!("{signed_rdp}enablecredsspsupport:i:0\r\n");
     assert!(matches!(
-        verify_rdp_signature_at(&duplicate_credssp, &anchors, valid_time),
+        verify_rdp_signature_at(valid_time, &duplicate_credssp, &anchors),
         Err(Error::InvalidRdpSignature("duplicate .rdp property"))
     ));
 }
@@ -639,23 +639,23 @@ fn certificate_chain_validation_rejects_untrusted_incomplete_or_expired_paths() 
 
     // Expired timestamp (2030-01-01) and not-yet-valid timestamp (2020-01-01) must fail.
     assert!(matches!(
-        verify_rdp_signature_at(&signed_rdp, &anchors, Duration::from_secs(1_893_456_000)),
+        verify_rdp_signature_at(Duration::from_secs(1_893_456_000), &signed_rdp, &anchors),
         Err(Error::InvalidRdpSignature(
             "certificate in PKCS#7 chain is expired or not yet valid"
         ))
     ));
     assert!(matches!(
-        verify_rdp_signature_at(&signed_rdp, &anchors, Duration::from_secs(1_577_836_800)),
+        verify_rdp_signature_at(Duration::from_secs(1_577_836_800), &signed_rdp, &anchors),
         Err(Error::InvalidRdpSignature(
             "certificate in PKCS#7 chain is expired or not yet valid"
         ))
     ));
 
     // Verifying against an unrelated trust anchor (using the leaf cert itself, which is not a CA, as the only anchor) must fail.
-    let verified = verify_rdp_signature_at(&signed_rdp, &anchors, valid_time).unwrap();
+    let verified = verify_rdp_signature_at(valid_time, &signed_rdp, &anchors).unwrap();
     let leaf_as_anchor = [verified.signer_certificate_der.as_slice()];
     assert!(matches!(
-        verify_rdp_signature_at(&signed_rdp, &leaf_as_anchor, valid_time),
+        verify_rdp_signature_at(valid_time, &signed_rdp, &leaf_as_anchor),
         Err(Error::InvalidRdpSignature(
             "signer certificate chain is not anchored in a trusted root"
         ))
@@ -664,19 +664,42 @@ fn certificate_chain_validation_rejects_untrusted_incomplete_or_expired_paths() 
     // Invalid 12-byte RDP signature headers (bad version, bad cert type, missing flag bit 0) must fail.
     let bad_version = signed_rdp.replace("signature:s:AQABAAEAAABsGwAA", "signature:s:AgABAAEAAABsGwAA");
     assert!(matches!(
-        verify_rdp_signature_at(&bad_version, &anchors, valid_time),
+        verify_rdp_signature_at(valid_time, &bad_version, &anchors),
         Err(Error::InvalidRdpSignature("invalid signature header"))
     ));
     let bad_type = signed_rdp.replace("signature:s:AQABAAEAAABsGwAA", "signature:s:AQACAAEAAABsGwAA");
     assert!(matches!(
-        verify_rdp_signature_at(&bad_type, &anchors, valid_time),
+        verify_rdp_signature_at(valid_time, &bad_type, &anchors),
         Err(Error::InvalidRdpSignature("invalid signature header"))
     ));
     let bad_flags = signed_rdp.replace("signature:s:AQABAAEAAABsGwAA", "signature:s:AQABAAAAAABsGwAA");
     assert!(matches!(
-        verify_rdp_signature_at(&bad_flags, &anchors, valid_time),
+        verify_rdp_signature_at(valid_time, &bad_flags, &anchors),
         Err(Error::InvalidRdpSignature("invalid signature header"))
     ));
+
+    // Backtracking across candidate issuers: insert a dead-end cross-signed intermediate
+    // (same Subject and SPKI as Cert 1, so it verifies Cert 2's signature, but its Issuer DN
+    // points to a non-existent root) before the valid Cert 1 in the PKCS#7 certificate bag.
+    let raw_sig = include_bytes!("avd_rdp_signature.bin");
+    let cert1_len: u16 = 1421;
+    let mut dead_end_cert1 = raw_sig[984..984 + usize::from(cert1_len)].to_vec();
+    dead_end_cert1[122..122 + 23].copy_from_slice(b"DigiCert Global Root XX");
+    let mut patched_sig = Vec::with_capacity(raw_sig.len() + dead_end_cert1.len());
+    patched_sig.extend_from_slice(&raw_sig[..984]);
+    patched_sig.extend_from_slice(&dead_end_cert1);
+    patched_sig.extend_from_slice(&raw_sig[984..]);
+    let new_declared_len =
+        u32::from_le_bytes([raw_sig[8], raw_sig[9], raw_sig[10], raw_sig[11]]) + u32::from(cert1_len);
+    patched_sig[8..12].copy_from_slice(&new_declared_len.to_le_bytes());
+    for off in [12usize, 27, 31, 66] {
+        let old_len = u16::from_be_bytes([raw_sig[off + 2], raw_sig[off + 3]]);
+        patched_sig[off + 2..off + 4].copy_from_slice(&(old_len + cert1_len).to_be_bytes());
+    }
+    let orig_sig_b64 = STANDARD.encode(raw_sig);
+    let patched_sig_b64 = STANDARD.encode(&patched_sig);
+    let cross_signed_rdp = signed_rdp.replace(&orig_sig_b64, &patched_sig_b64);
+    assert!(verify_rdp_signature_at(valid_time, &cross_signed_rdp, &anchors).is_ok());
 }
 
 // oracle: spec RFC 5652 §5.3
@@ -750,7 +773,7 @@ async fn download_avd_rdp_file_decodes_utf16le_with_bom_and_verifies() {
 
     let (url, request) = serve(raw_http).await;
     let (rdp_text, verified) = test_client()
-        .download_avd_rdp_file_at(url, "test-token", Some(&anchors), Some(valid_time))
+        .download_avd_rdp_file_at(Some(valid_time), url, "test-token", Some(&anchors))
         .await
         .unwrap();
     assert!(rdp_text.contains("full address:s:rdgateway-r1.wvd.microsoft.com\r\n"));
@@ -776,7 +799,7 @@ proptest! {
         let root_der = digicert_root_g2_der();
         let anchors = [root_der.as_slice()];
         let valid_time = Duration::from_secs(1_793_047_200);
-        let baseline = verify_rdp_signature_at(&signed_rdp, &anchors, valid_time).unwrap();
+        let baseline = verify_rdp_signature_at(valid_time, &signed_rdp, &anchors).unwrap();
 
         let prefix = " ".repeat(leading_spaces);
         let mut lines: Vec<String> = signed_rdp
@@ -798,7 +821,7 @@ proptest! {
         let sep = if use_lf_only { "\n" } else { "\r\n" };
         let mutated = format!("{}{sep}", lines.join(sep));
 
-        let verified = verify_rdp_signature_at(&mutated, &anchors, valid_time).unwrap();
+        let verified = verify_rdp_signature_at(valid_time, &mutated, &anchors).unwrap();
         prop_assert_eq!(verified, baseline);
     }
 
@@ -814,7 +837,7 @@ proptest! {
 
         let _ = parse_avd_feed_discovery_xml(&raw);
         let _ = parse_avd_workspace_feed_xml(&raw);
-        let _ = verify_rdp_signature_at(&raw, &anchors, valid_time);
+        let _ = verify_rdp_signature_at(valid_time, &raw, &anchors);
         let _ = verify_signed_attrs_for_test(&raw_bytes, &[0u8; 32]);
     }
 }
