@@ -144,6 +144,8 @@ impl ByteRangeLocks {
         if let Err(status) = validate(ranges) {
             return (status, Vec::new());
         }
+        // Ranges released before an unmatched one stay released.
+        let mut released = false;
         for range in ranges {
             // [MS-FSA] 2.1.5.9 releases an exact match, preferring an exclusive lock over a shared one.
             let matching = |lock: &ByteRangeLock| {
@@ -158,18 +160,32 @@ impl ByteRangeLocks {
                 .position(|lock| matching(lock) && lock.exclusive)
                 .or_else(|| self.locks.iter().rposition(matching));
             let Some(index) = index else {
-                return (range_not_locked(), self.grant_waiting());
+                let granted = if released {
+                    self.grant_waiting(identity)
+                } else {
+                    Vec::new()
+                };
+                return (range_not_locked(), granted);
             };
             self.locks.swap_remove(index);
+            released = true;
         }
-        (NtStatus::SUCCESS, self.grant_waiting())
+        (NtStatus::SUCCESS, self.grant_waiting(identity))
     }
 
     /// Releases every lock `owner` holds and cancels its waiting requests, as closing a handle does.
     ///
     /// Returns the responses to the cancelled requests and to other waiting requests that can now proceed.
     pub(crate) fn close(&mut self, owner: u32) -> Vec<SvcMessage> {
-        self.locks.retain(|lock| lock.owner != owner);
+        // A handle holds locks on one file only.
+        let mut released = None;
+        self.locks.retain(|lock| {
+            let is_owned = lock.owner == owner;
+            if is_owned {
+                released = Some(lock.identity);
+            }
+            !is_owned
+        });
         let (cancelled, waiting) = std::mem::take(&mut self.waiting)
             .into_iter()
             .partition::<Vec<_>, _>(|waiting| waiting.request.file_id == owner);
@@ -178,7 +194,9 @@ impl ByteRangeLocks {
             .into_iter()
             .map(|waiting| response(waiting.request, NtStatus::CANCELLED))
             .collect::<Vec<_>>();
-        responses.extend(self.grant_waiting());
+        if let Some(identity) = released {
+            responses.extend(self.grant_waiting(identity));
+        }
         responses
     }
 
@@ -214,12 +232,20 @@ impl ByteRangeLocks {
         Ok(())
     }
 
-    /// Grants the waiting requests that no longer conflict, oldest first, and returns their responses.
-    fn grant_waiting(&mut self) -> Vec<SvcMessage> {
+    /// Grants the waiting requests on `identity` that no longer conflict, oldest first, and returns their responses.
+    ///
+    /// UNTESTED: waiting requests are retried only after a lock on their file is released.
+    /// Each retry checks every waiting range against every held lock, so retrying on every close or failed unlock would let a server make each small request cost that much.
+    /// The responses are the same either way, so after changing a caller, check that it calls this only when it released a lock, with that lock's file.
+    fn grant_waiting(&mut self, identity: FileIdentity) -> Vec<SvcMessage> {
         let mut responses = Vec::new();
         let mut index = 0;
         while index < self.waiting.len() {
             let waiting = &self.waiting[index];
+            if waiting.identity != identity {
+                index += 1;
+                continue;
+            }
             let (owner, identity, ranges, exclusive) = (
                 waiting.request.file_id,
                 waiting.identity,
