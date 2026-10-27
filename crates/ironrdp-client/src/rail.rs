@@ -217,6 +217,11 @@ impl RailClient {
     }
 
     /// Queues a RemoteApp launch until initialization and desktop synchronization complete.
+    ///
+    /// [MS-RDPERP] 2.2.2.3.1 "Client Execute PDU (TS_RAIL_ORDER_EXEC)" carries no request ID.
+    /// A server re-handshake while a sent launch awaits its [`ExecuteResultPdu`] therefore fails the channel.
+    ///
+    /// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
     pub fn queue_execute(&mut self, execute: ExecutePdu) -> PduResult<RailSvcMessages> {
         self.queue_pdu(QueuedRailPdu::Execute(execute))
     }

@@ -1,12 +1,13 @@
 use ironrdp_client::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
 use ironrdp_core::{decode, encode_vec};
 use ironrdp_rail::pdu::{
-    AccentColor, ClientStatusPdu, ClientSystemParameter, ClientSystemParametersPdu, CloakPdu, ExecutePdu,
+    AccentColor, ActivatePdu, ClientStatusPdu, ClientSystemParameter, ClientSystemParametersPdu, CloakPdu, ExecutePdu,
     ExecuteResult, ExecuteResultPdu, FilterKeys, HandshakeExPdu, HandshakePdu, HighContrast, LocalMoveSizePdu,
     MinMaxInfoPdu, MoveSizeType, RailPdu, Rectangle, SnapArrangePdu, StickyKeys, SystemParameterRectangle,
     TaskbarInfoPdu, TaskbarMessage, ToggleKeys, WindowMovePdu,
 };
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
+use proptest::prelude::*;
 use rstest::rstest;
 
 #[test]
@@ -159,7 +160,7 @@ fn desktop_size_update_sends_display_change_and_work_area() {
     ));
 }
 
-// oracle: mutant reporting an unchanged size restarts the Windows RemoteApp desktop hook.
+// oracle: spec MS-RDPERP §3.2.5.2.3.1 (System Parameters Update PDU is sent when a client system parameter changes its value)
 #[test]
 fn unchanged_desktop_size_does_not_send_display_change() {
     let mut client = established_client(None);
@@ -169,7 +170,8 @@ fn unchanged_desktop_size_does_not_send_display_change() {
     assert!(sent_pdus(client.update_desktop_size(1024, 768).into()).is_empty());
 }
 
-// oracle: reference Windows Server 2025 restarts its desktop hook on RAIL_SPI_DISPLAYCHANGE.
+// oracle: spec MS-RDPERP §3.2.5.2.3.1 (SPI_SETWORKAREA is sent at the start of every RAIL connection)
+// oracle: mutant initial handshake sends RAIL_SPI_DISPLAYCHANGE before the desktop size changes
 #[test]
 fn handshake_sets_work_area_without_reporting_a_display_change() {
     let mut client = RailClient::new(1, 800, 600);
@@ -184,16 +186,14 @@ fn handshake_sets_work_area_without_reporting_a_display_change() {
     );
 }
 
-// oracle: reference Windows Server 2025 sends a new RAIL handshake when rdpshell restarts.
+// oracle: spec MS-RDPERP §3.2.5.2.3.1 (system parameters are sent at the start of every RAIL connection or reconnection)
+// oracle: mutant reinitialization drops updated system parameters or sends RAIL_SPI_DISPLAYCHANGE
 #[test]
-fn server_reinitialization_resends_current_parameters_and_waits_before_new_input() {
+fn server_reinitialization_resends_current_parameters() {
     let mut client = established_client(Some(ALL_EXTENDED_SPI));
     client.update_desktop_size(1280, 720);
     client
-        .update_system_parameters(vec![
-            ClientSystemParameter::KeyboardPreference(true),
-            ClientSystemParameter::CaretWidth(3),
-        ])
+        .update_system_parameters(vec![ClientSystemParameter::KeyboardPreference(true)])
         .unwrap();
 
     let initialization = sent_pdus(handshake(&mut client, None));
@@ -202,7 +202,6 @@ fn server_reinitialization_resends_current_parameters_and_waits_before_new_input
         initialization.first(),
         Some(RailPdu::Handshake(HandshakePdu { build_number: 1 }))
     ));
-    // oracle: spec MS-RDPERP §3.2.5.2.3.1 (system parameters are sent at each RAIL connection or reconnection).
     assert!(
         initialization.contains(&RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
             parameter: ClientSystemParameter::WorkArea(rectangle(1280, 720)),
@@ -219,17 +218,33 @@ fn server_reinitialization_resends_current_parameters_and_waits_before_new_input
             parameter: ClientSystemParameter::KeyboardPreference(true),
         }))
     );
-    // oracle: spec MS-RDPERP §2.2.2.4.1 (SPI_SETCARETWIDTH requires EXTENDED_SPI_SUPPORTED).
-    assert!(
-        !initialization.contains(&RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
-            parameter: ClientSystemParameter::CaretWidth(3),
-        }))
-    );
-    assert!(!initialization.iter().any(|pdu| matches!(pdu, RailPdu::Execute(_))));
+}
+
+// oracle: spec MS-RDPERP §2.2.2.4.1 ("SHOULD NOT be sent if the server did not advertise the
+// EXTENDED_SPI_SUPPORTED flag in the HandshakeEx PDU")
+#[test]
+fn server_reinitialization_resets_extended_spi_flags() {
+    let mut client = established_client(Some(ALL_EXTENDED_SPI));
+    client
+        .update_system_parameters(vec![ClientSystemParameter::CaretWidth(3)])
+        .unwrap();
+
+    let initialization = sent_system_parameters(handshake(&mut client, None));
+
+    assert!(!initialization.contains(&ClientSystemParameter::CaretWidth(3)));
+}
+
+// oracle: mutant reinitialization leaves desktop_synchronized set and sends new executes before synchronization
+#[test]
+fn server_reinitialization_waits_for_synchronization_before_sending_new_executes() {
+    let mut client = established_client(None);
+
+    handshake(&mut client, None);
+
     let queued: Vec<_> = client.queue_execute(execute()).unwrap().into();
     assert!(queued.is_empty());
     let released = sent_pdus(client.release_queued_after_handshake().unwrap().into());
-    assert!(matches!(released.as_slice(), [RailPdu::Execute(execute)] if execute.executable == "app"));
+    assert_eq!(released, [RailPdu::Execute(execute())]);
 }
 
 // oracle: mutant reinitialization replays completed launches or loses fresh execute correlation.
@@ -289,6 +304,144 @@ fn server_reinitialization_rejects_outstanding_launches() {
             .is_err()
     );
     assert!(client.take_events().is_empty());
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SequenceStep {
+    Handshake(Option<u32>),
+    CompleteSynchronization,
+    ReleaseAfterHandshake,
+    QueueExecute(u8),
+    QueueInput(u32),
+    ExecuteResult(u8),
+}
+
+fn sequence_step_strategy() -> impl Strategy<Value = SequenceStep> {
+    prop_oneof![
+        Just(SequenceStep::Handshake(None)),
+        Just(SequenceStep::Handshake(Some(ALL_EXTENDED_SPI))),
+        Just(SequenceStep::CompleteSynchronization),
+        Just(SequenceStep::ReleaseAfterHandshake),
+        (0u8..4).prop_map(SequenceStep::QueueExecute),
+        (1u32..5).prop_map(SequenceStep::QueueInput),
+        (0u8..4).prop_map(SequenceStep::ExecuteResult),
+    ]
+}
+
+fn non_initialization_pdus(messages: Vec<SvcMessage>) -> Vec<RailPdu> {
+    sent_pdus(messages)
+        .into_iter()
+        .filter(|pdu| {
+            !matches!(
+                pdu,
+                RailPdu::Handshake(_) | RailPdu::ClientStatus(_) | RailPdu::ClientSystemParameters(_)
+            )
+        })
+        .collect()
+}
+
+// oracle: spec MS-RDPERP §1.3.2.3 and §3.2.5.2.2.2 (gate RAIL traffic on desktop synchronization and
+// match each ExecuteResult to a previously sent Execute)
+proptest! {
+    // oracle: mutant unsynchronized execute or input emission, duplicate or dropped queued PDUs across
+    // reinitialization, or ambiguous execute-result matching
+    #[test]
+    fn queued_executes_and_inputs_obey_synchronization_and_execute_once_discipline(
+        steps in proptest::collection::vec(sequence_step_strategy(), 1..40),
+    ) {
+        let mut client = RailClient::new(1, 800, 600);
+        let mut established = false;
+        let mut synchronized = false;
+        let mut queued_requests: Vec<RailPdu> = Vec::new();
+        let mut emitted_requests: Vec<RailPdu> = Vec::new();
+        let mut unmatched_executes: Vec<String> = Vec::new();
+
+        for step in steps {
+            let released = match step {
+                SequenceStep::Handshake(flags) => {
+                    let pdu = match flags {
+                        Some(flags) => RailPdu::HandshakeEx(HandshakeExPdu { build_number: 1, flags }),
+                        None => RailPdu::Handshake(HandshakePdu { build_number: 1 }),
+                    };
+                    let outcome = client.process(&encode_vec(&pdu).unwrap());
+                    if established && !unmatched_executes.is_empty() {
+                        prop_assert!(outcome.is_err());
+                        Vec::new()
+                    } else {
+                        if established {
+                            synchronized = false;
+                        }
+                        established = true;
+                        non_initialization_pdus(outcome.unwrap())
+                    }
+                }
+                SequenceStep::CompleteSynchronization => {
+                    let released = non_initialization_pdus(client.complete_desktop_synchronization().unwrap().into());
+                    synchronized = true;
+                    released
+                }
+                SequenceStep::ReleaseAfterHandshake => {
+                    let released = non_initialization_pdus(client.release_queued_after_handshake().unwrap().into());
+                    if established {
+                        synchronized = true;
+                    }
+                    released
+                }
+                SequenceStep::QueueExecute(id) => {
+                    let execute = ExecutePdu {
+                        flags: 0,
+                        executable: format!("app-{id}"),
+                        working_directory: String::new(),
+                        arguments: String::new(),
+                    };
+                    queued_requests.push(RailPdu::Execute(execute.clone()));
+                    non_initialization_pdus(client.queue_execute(execute).unwrap().into())
+                }
+                SequenceStep::QueueInput(window_id) => {
+                    let activate = ActivatePdu {
+                        window_id,
+                        enabled: true,
+                    };
+                    queued_requests.push(RailPdu::Activate(activate));
+                    non_initialization_pdus(client.queue_input(RailInputEvent::Activate(activate)).unwrap().into())
+                }
+                SequenceStep::ExecuteResult(id) => {
+                    let executable = format!("app-{id}");
+                    let result = ExecuteResultPdu {
+                        flags: 0,
+                        result: ExecuteResult::Ok,
+                        raw_result: 0,
+                        executable: executable.clone(),
+                    };
+                    let outcome = client.process(&encode_vec(&RailPdu::ExecuteResult(result)).unwrap());
+                    if established
+                        && let Some(index) = unmatched_executes.iter().position(|pending| *pending == executable)
+                    {
+                        unmatched_executes.remove(index);
+                        prop_assert!(outcome.is_ok());
+                    } else {
+                        prop_assert!(outcome.is_err());
+                    }
+                    Vec::new()
+                }
+            };
+
+            if !(established && synchronized) {
+                prop_assert!(released.is_empty());
+            }
+            for pdu in &released {
+                if let RailPdu::Execute(execute) = pdu {
+                    unmatched_executes.push(execute.executable.clone());
+                }
+            }
+            emitted_requests.extend(released);
+            let _ = client.take_events();
+            prop_assert!(queued_requests.starts_with(&emitted_requests));
+            if established && synchronized {
+                prop_assert_eq!(&emitted_requests, &queued_requests);
+            }
+        }
+    }
 }
 
 fn handshake(client: &mut RailClient, handshake_ex_flags: Option<u32>) -> Vec<SvcMessage> {
@@ -465,8 +618,9 @@ fn extended_spi_3_parameters_require_extended_spi_3_support(#[case] parameter: C
     assert_gated_on(&parameter, HandshakeExPdu::EXTENDED_SPI_3);
 }
 
-// oracle: spec MS-RDPERP §2.2.2.4.1 (RAIL_SPI_DISPLAYCHANGE reports the display resolution, which
-// the client takes from its desktop size)
+// oracle: spec MS-RDPERP §2.2.2.4.1 (RAIL_SPI_DISPLAYCHANGE reports the new display resolution, which
+// the client takes from its desktop size on resize)
+// oracle: mutant host-supplied or initial DisplayChange sent before the desktop size changes
 #[test]
 fn host_supplied_display_change_is_discarded_for_the_desktop_size() {
     let host_display = ClientSystemParameter::DisplayChange(rectangle(1, 1));
