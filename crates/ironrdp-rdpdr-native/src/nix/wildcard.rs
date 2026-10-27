@@ -36,7 +36,7 @@ pub(crate) fn is_name_in_expression(name: &str, expression: &str) -> bool {
                 '*' => rest[i] || (character.is_some() && matched[i + 1]),
                 '?' => character.is_some() && rest[i + 1],
                 // DOS_STAR matches up to, but not including, the final period.
-                '<' => rest[i] || (character.is_some() && last_dot.is_none_or(|dot| i < dot) && matched[i + 1]),
+                '<' => rest[i] || (character.is_some() && last_dot != Some(i) && matched[i + 1]),
                 // DOS_QM matches one character, or nothing at a period or the end of the name.
                 '>' => match character {
                     Some(character) if character != '.' => rest[i + 1],
@@ -80,6 +80,7 @@ mod tests {
     #[case::dos_qm_matches_at_most_one_character("a>.txt", "abc.txt", false)]
     #[case::literal("notes.txt", "notes.txt", true)]
     #[case::empty_name("*", "", false)]
+    #[case::dos_star_after_the_final_period("a\"<\"*", "a.txt", true)]
     fn matches_names_against_expressions(#[case] expression: &str, #[case] name: &str, #[case] expected: bool) {
         assert_eq!(is_name_in_expression(name, expression), expected);
     }
