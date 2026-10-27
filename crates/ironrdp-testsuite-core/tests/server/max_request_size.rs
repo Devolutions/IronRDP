@@ -5,7 +5,7 @@ use ironrdp_pdu::rdp::capability_sets::{
 };
 use ironrdp_server::{
     BitmapUpdate, ColorPointer, DesktopSize, DisplayUpdate, MAX_FASTPATH_UPDATE_SIZE, PixelFormat, RemoteFxCodec,
-    ServerErrorKind, UpdateEncoder, UpdateEncoderCodecs, client_max_request_size,
+    UpdateEncoder, UpdateEncoderCodecs, client_max_request_size,
 };
 use proptest::prelude::*;
 use rstest::rstest;
@@ -167,17 +167,24 @@ proptest! {
 }
 
 // oracle: spec MS-RDPBCGR §2.2.7.2.6 (a fragmented update larger than MaxRequestSize overflows the client's reassembly buffer)
+#[rstest]
+#[case::larger_than_the_request_size(None, false)]
+#[case::within_the_request_size(Some(65_536), true)]
 #[tokio::test]
-async fn a_color_pointer_larger_than_the_request_size_is_not_sent() {
+async fn a_color_pointer_is_sent_only_within_the_request_size(
+    #[case] max_request_size: Option<u32>,
+    #[case] sent: bool,
+) {
     let mut encoder = UpdateEncoder::new(
         DesktopSize { width: 96, height: 96 },
         CmdFlags::empty(),
         UpdateEncoderCodecs::new(),
-        one_fragment(),
+        max_request_size.unwrap_or_else(one_fragment),
         1,
         LargePointerSupportFlags::UP_TO_96X96_PIXELS,
     )
     .unwrap();
+    // 36,864 bytes of color data, more than one fragment.
     let pointer = ColorPointer {
         cache_index: 0,
         width: 96,
@@ -188,15 +195,10 @@ async fn a_color_pointer_larger_than_the_request_size_is_not_sent() {
         xor_mask: vec![0xAB; 96 * 96 * 4],
     };
 
-    let error = encoder
-        .update(DisplayUpdate::ColorPointer(pointer))
-        .next()
-        .await
-        .unwrap()
-        .expect_err("a 36,864-byte pointer must not reach a one-fragment buffer");
+    let update = encoder.update(DisplayUpdate::ColorPointer(pointer)).next().await;
 
-    assert!(
-        matches!(error.kind(), ServerErrorKind::Reason(reason) if reason.contains("exceeds negotiated maximum")),
-        "the pointer was refused for its size, not for another reason: {error}"
-    );
+    match update {
+        Some(update) => assert!(sent, "the pointer was sent: {} bytes", update.unwrap().data.len()),
+        None => assert!(!sent, "the pointer was dropped"),
+    }
 }

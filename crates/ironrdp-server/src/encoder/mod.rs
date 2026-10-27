@@ -485,6 +485,18 @@ impl EncoderIter<'_> {
     pub(crate) async fn next(&mut self) -> Option<ServerResult<UpdateFragmenter>> {
         loop {
             let state = core::mem::take(&mut self.state);
+            let pointer = matches!(
+                state,
+                State::Start(
+                    DisplayUpdate::PointerPosition(_)
+                        | DisplayUpdate::RGBAPointer(_)
+                        | DisplayUpdate::LargePointer(_)
+                        | DisplayUpdate::ColorPointer(_)
+                        | DisplayUpdate::HidePointer
+                        | DisplayUpdate::DefaultPointer
+                        | DisplayUpdate::CachedPointer(_)
+                )
+            );
             let encoder = &mut self.encoder;
 
             let res = match state {
@@ -632,20 +644,29 @@ impl EncoderIter<'_> {
             // The tiling allowance is an estimate, not a bound for every codec or
             // pointer shape. Never send a fragmented update that could overflow the
             // client's negotiated reassembly buffer, even if encoding expands it.
-            return Some(res.and_then(|update| {
-                if encoder.max_request_size < update.data.len() {
-                    Err(ServerError::reason(
-                        "fast-path update",
-                        format!(
-                            "encoded update of {} bytes exceeds negotiated maximum of {} bytes",
-                            update.data.len(),
-                            encoder.max_request_size
-                        ),
-                    ))
-                } else {
-                    Ok(update)
-                }
-            }));
+            let update = match res {
+                Ok(update) if encoder.max_request_size < update.data.len() => update,
+                res => return Some(res),
+            };
+            // A pointer update is dropped, like one over the negotiated pointer size: the
+            // client keeps its current pointer. Leaving out part of a bitmap would leave the
+            // client's screen wrong, so that ends the update stream instead.
+            if pointer {
+                debug!(
+                    "Dropping pointer update: encoded update of {} bytes exceeds negotiated maximum of {} bytes",
+                    update.data.len(),
+                    encoder.max_request_size
+                );
+                continue;
+            }
+            return Some(Err(ServerError::reason(
+                "fast-path update",
+                format!(
+                    "encoded update of {} bytes exceeds negotiated maximum of {} bytes",
+                    update.data.len(),
+                    encoder.max_request_size
+                ),
+            )));
         }
     }
 }
