@@ -4,6 +4,10 @@ Native backend building blocks for the IronRDP RDPDR static channel.
 
 - On macOS and Linux, the crate exports the existing `nix::backend` filesystem
   backend.
+  It resolves every protocol path one component at a time below the opened shared directory, rejecting `.` and `..` components and never following symbolic links or crossing mount points.
+  Without `openat2`, as on macOS and Linux before 5.6, only mounts of another filesystem are refused, not bind mounts within the same one.
+  Files are opened without blocking, so a FIFO in the shared directory cannot stall the channel.
+  Reads are limited to 1 MiB, and open files to a quarter of the soft descriptor limit, at most 1024.
   The `nix::printer` backend spools PostScript jobs in an exclusively created private directory (0700), using exclusive 0600 files.
   A worker thread submits each closed job to CUPS through `lp`, which gets 60 seconds to accept it, or saves it in the configured folder without replacing existing files.
   A job is limited to 128 MiB and at most 16 jobs are open at once; dropping the backend deletes unfinished spool files.

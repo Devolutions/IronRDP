@@ -2,6 +2,21 @@ use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 
 use self::ffi::PerformanceFlagsType;
 
+/// The bitmap settings used when the caller sets none, matching the native client.
+///
+/// Without a codec on offer, the server falls back to sending the screen as nearly raw bitmaps,
+/// which is so much data that it starts dropping frames. Offering RemoteFX fixes that.
+fn default_bitmap_config() -> Result<ironrdp::connector::BitmapConfig, Box<crate::error::ffi::IronRdpError>> {
+    let codecs = ironrdp::pdu::rdp::capability_sets::client_codecs_capabilities(&[])
+        .map_err(|help| -> Box<crate::error::ffi::IronRdpError> { help.as_str().into() })?;
+
+    Ok(ironrdp::connector::BitmapConfig {
+        color_depth: 32,
+        lossy_compression: true,
+        codecs,
+    })
+}
+
 // `ironrdp::pdu::gcc::KeyboardType` is a permissive newtype (MS-RDPBCGR's value table for this
 // field has grown across revisions), not a fieldless enum, so `diplomat::enum_convert` no longer
 // applies to it; this conversion is written by hand instead. It must live outside the
@@ -228,7 +243,10 @@ pub mod ffi {
                 dig_product_id: self.dig_product_id.clone().unwrap_or_default(),
                 desktop_size: self.desktop_size.ok_or("desktop size not set")?,
                 monitor_layout: None,
-                bitmap: None,
+                bitmap: Some(match &self.bitmap {
+                    Some(bitmap) => bitmap.clone(),
+                    None => super::default_bitmap_config()?,
+                }),
                 client_build: self.client_build.unwrap_or(0),
                 client_name: self.client_name.clone().ok_or("client name not set")?,
                 client_dir: self.client_dir.clone().ok_or("client dir not set")?,
@@ -338,5 +356,37 @@ impl From<PerformanceFlagsType> for PerformanceFlags {
             PerformanceFlagsType::Reserved1 => PerformanceFlags::RESERVED1,
             PerformanceFlagsType::Reserved2 => PerformanceFlags::RESERVED2,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp::pdu::rdp::capability_sets::CodecProperty;
+
+    #[test]
+    fn build_offers_remotefx_when_no_bitmap_config_is_set() {
+        let mut builder = super::ffi::ConfigBuilder::new();
+        builder.with_username_and_password("user", "password");
+        builder.set_desktop_size(768, 1024);
+        builder.set_client_name("client");
+        builder.set_client_dir("C:\\");
+        builder.set_performance_flags(&super::ffi::PerformanceFlags::new_default());
+
+        let Ok(config) = builder.build() else {
+            panic!("a builder with every required field should build");
+        };
+        let Some(bitmap) = config.connector.bitmap else {
+            panic!("the config should carry bitmap settings");
+        };
+
+        assert_eq!(bitmap.color_depth, 32);
+        assert!(bitmap.lossy_compression);
+        assert!(
+            bitmap
+                .codecs
+                .0
+                .iter()
+                .any(|codec| matches!(codec.property, CodecProperty::RemoteFx(_)))
+        );
     }
 }
