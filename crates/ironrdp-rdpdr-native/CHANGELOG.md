@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.8.0...ironrdp-rdpdr-native-v0.9.0)] - 2026-10-27
+
+### <!-- 4 -->Bug Fixes
+
+- Confine Unix drive paths to the share ([#2221](https://github.com/Devolutions/IronRDP/issues/2221)) ([bbebd384ce](https://github.com/Devolutions/IronRDP/commit/bbebd384cec912b5e77d7a64fb0fc7ed9b667014)) 
+
+  The Unix RDPDR drive backend resolved server-supplied paths by joining
+  strings, so `..`, symbolic links and mount points could lead the server
+  outside the shared directory, and its create, rename and delete handling
+  did not follow NT semantics.
+  
+  Server paths are now parsed into components without touching the
+  filesystem and opened one component at a time relative to the share,
+  refusing symbolic links and mount points with `openat2` where available
+  and a device check otherwise.
+  Names Windows cannot hold are refused with STATUS_OBJECT_NAME_INVALID,
+  and opens never block, so a FIFO in the share cannot stall the client.
+  
+  Create, rename, delete and directory queries follow MS-FSA and report
+  the NT status the Windows backend reports for the same condition:
+  
+  - Overwriting dispositions truncate only after every check passes, so a
+  refused open leaves the file intact, and an invalid disposition or
+  directory request fails with STATUS_INVALID_PARAMETER.
+  - A delete marked on a handle runs when the file's last handle closes,
+  the channel resets or the backend drops, and removes the name it was
+  marked through only while that name still refers to the file.
+  - Opening a file marked for deletion, or any path through a directory
+  marked for deletion, fails with STATUS_DELETE_PENDING; only an empty
+  directory can be marked, and the shared directory never.
+  - A rename moves only the handle's own file, follows every handle opened
+  through the renamed link, removes the source when the target is another
+  hard link of the same file, and refuses targets that are directories,
+  marked for deletion or open, as well as directories that hold open
+  files.
+  - Directory listings enumerate a final `*`, return `.` and `..` except
+  in the share, and report errors instead of an early end or an empty
+  match.
+  - FileStandardInformation reports the delete mark and leaves the marked
+  link out of NumberOfLinks.
+  
+  File IDs skip IDs still in use, and the number of open files is capped
+  at a quarter of the descriptor limit, at most 1024.
+  
+  ---------
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.7.0...ironrdp-rdpdr-native-v0.8.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

@@ -6,6 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.8.0...iron-remote-desktop-v0.8.1)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- Add reason error codes ([#2127](https://github.com/Devolutions/IronRDP/issues/2127)) ([0c7e3abfb3](https://github.com/Devolutions/IronRDP/commit/0c7e3abfb3fbbef0027ce74d50c6038c245978e0)) 
+
+  An RDCleanPath error PDU carries a general error code next to an HTTP
+  status, WSA error or TLS alert, so a client cannot tell why a proxy
+  rejected a connection: an expired credential and a misconfigured one
+  both arrive as HTTP 401.
+  
+  Split the open `error_code` space into ranges, specified in the crate
+  README:
+  
+  - 100 to 16383: standard reasons, for conditions any client can explain
+  without knowing which proxy it talks to. This adds `EXPIRED_ERROR_CODE`,
+  `NOT_YET_VALID_ERROR_CODE`, `REVOKED_ERROR_CODE`,
+  `TARGET_UNREACHABLE_ERROR_CODE`, `DNS_RESOLUTION_FAILED_ERROR_CODE` and
+  `TLS_HANDSHAKE_FAILED_ERROR_CODE` (100 to 105), which `Display`
+  describes.
+  - 16384 to 32767 (`IMPLEMENTATION_SPECIFIC_ERROR_CODES`): reasons each
+  proxy defines for checks tied to its own credential format or topology.
+  IronRDP never assigns these, and a client interprets them only when it
+  knows which proxy it talks to.
+  - 32768 and above stay reserved, so that independent implementations
+  storing the code as a signed 16-bit integer can represent every code in
+  use.
+  
+  The web client exposes the code as `RDCleanPathDetails.errorCode`, and
+  `@devolutions/iron-remote-desktop-rdp` exports the standard codes as
+  `RDCleanPathErrorCode`.
+  
+  The reason travels in the existing `error_code` field, not in a new one.
+  A new error field would follow the last one, `[3]`, and IronRDP-based
+  peers decode RDCleanPath with der's derived decoder, which rejects
+  unknown fields at the end of a SEQUENCE with `TrailingData` despite the
+  context-specific tags: deployed IronRDP clients would fail to decode
+  error PDUs carrying it. Deployed IronRDP clients decode any code, show
+  an unknown one as an unknown error, and still read the HTTP status, WSA
+  error and TLS alert, which proxies keep sending alongside the reason.
+  The native client and the FFI already treat any code other than the
+  negotiation one as a general error, so they need no change.
+  
+  Proxies can send these codes with any version, since `error_code` is a
+  plain integer. The constants and the web client's `errorCode` need
+  releases of ironrdp-rdcleanpath and the web packages; the Devolutions
+  Gateway follow-up, which will use the standard codes and its own
+  implementation-specific ones, needs the crates.io release. That release
+  also carries the der 0.8 upgrade already on master, which is breaking
+  because the crate re-exports `der`.
+  
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)
+  
+  ---------
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.7.1...iron-remote-desktop-v0.8.0)] - 2026-10-23
 
 ### <!-- 1 -->Features
