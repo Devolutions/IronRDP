@@ -657,6 +657,7 @@ pub struct ScardAccessStartedEventCall;
 
 impl ScardAccessStartedEventCall {
     pub fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 4);
         ironrdp_pdu::read_padding!(src, 4); // Unused (4 bytes)
         Ok(Self)
     }

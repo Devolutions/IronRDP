@@ -1,6 +1,6 @@
 mod port;
 
-use ironrdp_core::{ReadCursor, WriteCursor, encode_vec, impl_as_any};
+use ironrdp_core::{DecodeErrorKind, ReadCursor, WriteCursor, encode_vec, impl_as_any};
 use ironrdp_pdu::PduResult;
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{
@@ -611,6 +611,16 @@ fn smartcard_error_response_rejects_calls_without_return_structure() {
     let encoded = encode_vec(&RdpdrPdu::DeviceControlResponse(response)).unwrap();
     assert_eq!(ntstatus_at(&encoded, 12), NtStatus::UNSUCCESSFUL);
     assert_eq!(read_u32(&encoded[16..]), 0); // OutputBufferLength
+}
+
+// oracle: spec MS-RDPESC §2.2.2.30 defines ScardAccessStartedEvent_Call as a 4-byte Unused field.
+#[test]
+fn smartcard_access_started_event_call_rejects_truncated_unused_field() {
+    for len in 0..4 {
+        let e =
+            ScardCall::decode(ScardIoCtlCode::AccessStartedEvent, &mut ReadCursor::new(&[0; 3][..len])).unwrap_err();
+        assert!(matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }), "{e:?}");
+    }
 }
 
 #[test]

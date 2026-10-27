@@ -1,4 +1,4 @@
-use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor, encode_vec};
+use ironrdp_core::{Decode as _, DecodeErrorKind, Encode, ReadCursor, WriteCursor, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface};
 use ironrdp_egfx::decode::{DecodedFrame, DecoderResult, H264Decoder};
@@ -401,6 +401,21 @@ fn protocol_reset_truncated_confirmation_is_terminal() {
     assert!(client.process(0, truncated).is_err());
     assert!(client.process(0, &confirm).is_err());
     assert!(!client.is_active());
+}
+
+// oracle: spec MS-RDPEGFX §2.2.2.14 fixes the PDU at 340 bytes, so the trailing pad is part of it.
+#[test]
+fn reset_graphics_truncated_in_padding_is_rejected() {
+    let pdu = GfxPdu::ResetGraphics(ResetGraphicsPdu {
+        width: 16,
+        height: 16,
+        monitors: vec![],
+    });
+    let encoded = encode_pdu(&pdu);
+
+    let e = GfxPdu::decode(&mut ReadCursor::new(&encoded[..encoded.len() - 1])).unwrap_err();
+
+    assert!(matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }), "{e:?}");
 }
 
 // oracle: spec MS-RDPEGFX §1.7 makes the server's confirmed flags authoritative.
