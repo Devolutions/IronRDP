@@ -203,9 +203,9 @@ dependencies = [
 
 [[package]]
 name = "der"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
+checksum = "6a996a108feb8b427a6e12fcf6af4aa83409b79d72c15337d7741368131ee004"
 dependencies = [
  "const-oid 0.10.2",
  "der_derive",
@@ -376,7 +376,7 @@ version = "0.2.0"
 
 [[package]]
 name = "ironrdp-cliprdr"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -395,14 +395,14 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ironrdp-error",
 ]
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ironrdp-bulk",
  "ironrdp-core",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-egfx"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -473,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bit_field",
  "bitflags",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -512,7 +512,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bitflags",
  "getrandom 0.3.4",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpel"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpeusb"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-str"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "ironrdp-core",
@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -864,7 +864,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ef958a98b9d5da290cfc78946e9f3e61e1e62a18db0d92cac0b83cc161491a9"
 dependencies = [
  "base64ct",
- "der 0.8.2",
+ "der 0.8.3",
 ]
 
 [[package]]
@@ -1044,7 +1044,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "105ef4642d9cb137ef83d623d0e4bf08b8adf69e9918ca904a174adb6d3d038b"
 dependencies = [
  "const-oid 0.10.2",
- "der 0.8.2",
+ "der 0.8.3",
  "spki 0.8.1",
  "tls_codec",
 ]

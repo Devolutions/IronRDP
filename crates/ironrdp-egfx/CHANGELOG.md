@@ -5,6 +5,129 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-egfx-v0.4.0...ironrdp-egfx-v0.5.0)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- [**breaking**] Composite surfaces mapped to RemoteApp windows ([#2197](https://github.com/Devolutions/IronRDP/issues/2197)) ([6e54d5e9ec](https://github.com/Devolutions/IronRDP/commit/6e54d5e9ec58c69debaff96fa49bed4343348d3e)) 
+
+  With the graphics pipeline in a RemoteApp session, Windows servers
+  present each application window from its own surface through
+  MapSurfaceToWindow or MapSurfaceToScaledWindow (MS-RDPEGFX 2.2.2.20 and
+  2.2.2.23). The client only forwarded these PDUs to handler callbacks, so
+  nothing those surfaces drew reached the windows.
+  
+  The compositor now records window mappings and, at each EndFrame,
+  materializes dirty regions of window-mapped surfaces into window
+  updates: the RAIL window ID, the presented size and the changed region
+  in window coordinates, scaled when the server asks for a different
+  target size. GraphicsPipelineClient::drain_window_updates exposes them,
+  the session emits ActiveStageOutput::WindowSurfaceUpdates and the client
+  forwards RdpOutputEvent::WindowSurfaceUpdates. A mapping the client
+  cannot present, such as a mapped area larger than its surface, is
+  ignored and the surface keeps its previous mapping; FreeRDP also refuses
+  oversized mappings.
+  
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+### <!-- 4 -->Bug Fixes
+
+- Keep Progressive tile state per surface ([#2117](https://github.com/Devolutions/IronRDP/issues/2117)) ([00820f6e47](https://github.com/Devolutions/IronRDP/commit/00820f6e4765b09721877264e461a2feeb32ac48)) 
+
+  `ProgressiveDecoder` kept its tile grid and the set of tiles sent in the
+  current RDPGFX frame per `(surface_id, codec_context_id)`. Windows moves
+  a surface to a new codec context mid-session, deletes the old one with
+  DeleteEncodingContext, and keeps refining the same tiles under the new
+  id. Two things then went wrong without any error:
+  
+  - A REGION under the new context that relies on a tile sent earlier in
+  the same frame under the old context (MS-RDPEGFX 2.2.4.2.1.5 allows
+  REGION rectangles to be covered by tiles from an earlier REGION in the
+  frame) found no tile in its own set and painted nothing.
+  - A TILE_UPGRADE under the new context for a tile whose first pass
+  arrived under the old context found a fresh tile with `pass == 0` and
+  was skipped.
+  
+  On a Windows 11 host this left vertical 64-pixel columns of earlier
+  animation frames on screen (swiping cards in a browser) until something
+  repainted the area, such as scrolling.
+  
+  ## Change
+  
+  Tile state and frame tile membership are now kept per surface, shared by
+  every codec context on it:
+  
+  - `ProgressiveDecoder` stores one `SurfaceTiles` grid per surface and
+  one frame tile set per surface.
+  - `delete_context` no longer releases tile state. MS-RDPEGFX lets a
+  progressive tile context be associated with several codec contexts, and
+  Windows deletes the previous context while the next one is still
+  refining the same tiles. `delete_surface` and `reset` still release the
+  state.
+  - `decode_bitmap` keeps its signature; the codec context id no longer
+  selects any state.
+  
+  This matches FreeRDP, which keeps one progressive tile grid per surface
+  (`libfreerdp/codec/progressive.c`) and treats DeleteEncodingContext as a
+  no-op (`gdi_DeleteEncodingContext` in `libfreerdp/gdi/gfx.c`).
+  
+  Sub-band difference references were already keyed per surface and are
+  unchanged. Keeping one grid per surface instead of one per codec context
+  also stops the number of codec context ids from multiplying tile memory.
+  
+  ## Validation
+  
+  - New `ironrdp-egfx` test
+  `region_reuses_tile_sent_under_another_codec_context`: a REGION under
+  codec context 8 reuses a tile sent earlier in the same frame under
+  context 7, and the output regions and pixels match the same-context
+  case. It fails on master: the second rectangle is never painted.
+  - New `ironrdp-graphics` test
+  `upgrade_under_a_new_codec_context_refines_the_surface_tile`: an UPGRADE
+  under a new context, after the old context is deleted, refines the tile
+  and produces the same coefficients and pixels as an uninterrupted
+  same-context refinement. On master the upgrade is skipped.
+  - Existing tests that referred to per-context state now use the
+  per-surface keys; `progressive_context_is_deleted_with_encoding_context`
+  is renamed `progressive_tiles_survive_encoding_context_deletion`.
+  - `cargo test -p ironrdp-graphics` (246 passed), `cargo test -p
+  ironrdp-egfx` (58 passed), `cargo test -p ironrdp-testsuite-core --test
+  integration_tests_core` (1835 passed, 2 ignored), `cargo xtask check
+  fmt`, `cargo xtask check lints`.
+  - Live test against the Windows 11 host that showed the artifacts, using
+  a client build with the same decoder change: the stale columns no longer
+  appear.
+  
+  ---------
+
+- Keep read_padding! unchecked ([#2257](https://github.com/Devolutions/IronRDP/issues/2257)) ([7fc80c4dba](https://github.com/Devolutions/IronRDP/commit/7fc80c4dbada6fbfe0349ee01f3b0a5ba9457df0)) 
+
+  `read_padding!` is an unchecked cursor read, like `read_u8` or
+  `advance`: decoders check the remaining length up front with
+  `ensure_size!` or `ensure_fixed_part_size!` and then read without
+  further checks. Making the macro return a `DecodeError` on its own
+  limited it to functions returning `Result<_, DecodeError>`, which breaks
+  outside users of the macro within `ironrdp-core` 0.3.x, and duplicated
+  checks at sites already covered by a fixed-part check.
+  
+  The macro expands to `ironrdp_core::read_padding` again, and its
+  documentation states that the caller checks the remaining length first.
+  
+  The size checks move to the call sites that lacked one:
+  
+  - `ConferenceCreateRequest::decode` before the PER padding byte after
+  the conference name;
+  - `ResetGraphicsPdu::decode` (egfx) before the trailing pad that brings
+  the PDU to 340 bytes;
+  - `ScardAccessStartedEventCall::decode` (rdpdr) before its 4-byte Unused
+  field.
+  
+  Every other `read_padding!` use in the workspace is already covered by a
+  fixed-part check that includes the padding, an explicit `ensure_size!`,
+  or a length condition.
+
+
+
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-egfx-v0.3.0...ironrdp-egfx-v0.4.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

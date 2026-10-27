@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpewa"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 description = "MS-RDPEWA WebAuthn dynamic virtual channel protocol"
 edition.workspace = true
@@ -17,9 +17,9 @@ doctest = false
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["alloc"] } # public
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.9" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10" } # public
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.9" } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.10" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11" } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.10" } # public
 tracing = { version = "0.1", features = ["log"] }
 
 [lints]
