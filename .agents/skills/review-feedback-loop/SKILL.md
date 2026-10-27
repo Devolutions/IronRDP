@@ -3,8 +3,6 @@ name: review-feedback-loop
 description: Work through findings on an open pull request from Copilot, a review pipeline, or human reviewers - fix what is substantive, answer a wrong finding with the governing intent or contract, one review round per change, until a round returns nothing you accept. Use when asked to address review comments or bring a pull request with outstanding findings to approval.
 ---
 
-# Review feedback loop
-
 A finding is a claim about the code: verify it before acting on it, and loop until a round returns no finding you accept, since a reviewer that saw the fixes is the only evidence they held.
 
 ## Triage

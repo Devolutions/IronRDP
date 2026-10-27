@@ -3,8 +3,6 @@ name: protocol-reviewer
 description: Analyze IronRDP changes for RDP protocol conformance against Microsoft Open Specifications. Use when reviewing protocol behavior, wire formats, PDUs, virtual channels, codecs, security, capability negotiation, or protocol-visible errors.
 ---
 
-# Protocol reviewer
-
 First determine whether the diff changes protocol behavior; skip this pass for unrelated changes.
 Use `windows-protocols` to consult the local Microsoft Open Specifications corpus when available.
 Otherwise use Microsoft Learn MCP's `microsoft_docs_search` and `microsoft_docs_fetch`, or another authoritative specification source, and state any evidence gap.

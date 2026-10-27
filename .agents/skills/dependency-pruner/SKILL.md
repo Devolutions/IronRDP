@@ -3,8 +3,6 @@ name: dependency-pruner
 description: Audit the dependencies a change added or widened before its pull request opens, keep each only where it is load-bearing, and replace the rest with a few lines, a lighter package, or one already in the tree. Use at the end of a change, as the last worker task before the pull request opens, or when asked to trim or justify a package's dependencies.
 ---
 
-# Dependency pruner
-
 A dependency is a maintenance contract: every one costs build time, audit surface, and a future upgrade, so each must be load-bearing, which means removing it would cost more than it saves.
 Run once per change, on the diff, after the code is complete, because a package added mid-way is often not needed by the end.
 

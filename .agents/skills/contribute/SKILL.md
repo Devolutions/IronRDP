@@ -3,8 +3,6 @@ name: contribute
 description: Pick the delivery flow by scale - a test-first fix in place, one led pull request, or an orchestrated multi-pull-request effort - and where the intent, contract, test, and review skills enter. Use at the start of any non-trivial change, or when asked how to approach or stage work.
 ---
 
-# Contribute
-
 Every flow is the same loop at a different scale: decide what must hold, write the check that fails without it, make it pass, and have someone who did not write it review.
 
 ## Pick the smallest flow that fits

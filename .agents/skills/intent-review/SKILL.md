@@ -3,8 +3,6 @@ name: intent-review
 description: Review INTENT.md and *.intent.md files or drafts for contradictions, unscoped absolutes, misplaced content, rot, and missing rationale; returns findings and proposed rewordings, never edits. Use when asked to review, check, or tighten intent files.
 ---
 
-# Intent review
-
 Intent files are defined in `intent-files`; agents read them literally before every change in their directory, so a loose sentence becomes a wrong implementation.
 A proposal rewords a commitment the human already holds; when a finding can only be fixed by deciding what the software should be, ask instead of proposing.
 

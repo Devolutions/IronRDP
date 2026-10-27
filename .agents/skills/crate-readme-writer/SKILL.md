@@ -3,8 +3,6 @@ name: crate-readme-writer
 description: Write a Rust crate README as a concise description of its purpose, integration point, and public interface. Use when creating a crate README, documenting a planned crate, or substantially revising an existing crate's introduction.
 ---
 
-# Crate README writer
-
 Use `docs-writer` for the prose.
 For a new crate, write the README before implementation so the proposed interface can be reviewed while changing it is cheap.
 For an existing crate, verify the manifest and implementation before making behavior claims.

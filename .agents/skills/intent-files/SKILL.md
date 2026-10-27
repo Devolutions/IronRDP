@@ -3,8 +3,6 @@ name: intent-files
 description: Discipline for INTENT.md and *.intent.md files - the durable design decisions and rationale behind a component; what belongs there versus CONTRACT*.md or AGENTS.md, where they go, how to word statements so they stay true, and how cited sections keep stable anchors. Use when drafting or revising intent files, when anchoring a section for citation, or when another intent skill needs the vocabulary.
 ---
 
-# Intent files
-
 An intent file holds the design commitments a human has made durable: each one rules out a plausible, locally correct change that was deliberately rejected.
 It is authoritative where present and optional everywhere; `AGENTS.md` constrains how contributors work, `CONTRACT.md` or `CONTRACT.<name>.md` exists only for a surface that two independently built parties must agree on.
 A component's own interface (its CLI, config, storage) with the reason it is shaped so is intent, not contract, until a named second party depends on it.

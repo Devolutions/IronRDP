@@ -3,8 +3,6 @@ name: test-pruner
 description: Prune, strengthen, and consolidate tests in a pass of at most one hour, using oracle classification and domain mutants, with cargo-mutants or Stryker.NET where their estimated run fits that hour. Use when asked to remove redundant tests, consolidate tests into cases or properties, audit test value, clean up AI-written tests, finalize a change's tests before its pull request opens, or get a mutation-backed review of a pull request's tests. For a quick oracle-only check, use `test-oracle-reviewer` instead.
 ---
 
-# Test pruner
-
 Scope each pass to one crate, project, or module, or to one change's diff, so results stay reviewable.
 Decide from two independent measurements: whether the expected value is justified independently of the code, and which faults only this test catches.
 Mutation testing alone cannot tell a test that matches itself from a correct one, and oracle review alone cannot tell which tests are the sole guard for a fault.

@@ -3,8 +3,6 @@ name: grill-intent
 description: Round-based interview in which the human writes each design commitment in their own words and the agent supplies context, consequences, and verification, then drafts INTENT.md or *.intent.md with provenance. Use when the user wants to think through or bootstrap intent files rather than have them written from code or a brief.
 ---
 
-# Grill for intent
-
 Intent is the human's (`intent-files`): the human writes each commitment, and the agent's part is to find the decisions, give the context each needs, verify what the human decides, and tidy the wording to its conventions.
 
 ## The tree

@@ -1,5 +1,3 @@
-# IronRDP
-
 Start a work session with `/contribute`, which picks the delivery flow by scale and the skills each step needs.
 
 ## Intent files

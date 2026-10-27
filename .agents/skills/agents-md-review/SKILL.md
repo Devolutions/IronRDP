@@ -3,8 +3,6 @@ name: agents-md-review
 description: Audit an existing AGENTS.md or CLAUDE.md line by line for wrong, stale, discoverable, duplicated, or content-free guidance and propose the pruned file. Use when asked to review, prune, shrink, or clean up one.
 ---
 
-# AGENTS.md review
-
 Verdicts apply the test in `agents-md`: more than one cheap feedback round to discover and fix, and stated in no skill or always-read file.
 
 ## Verify, then classify
@@ -20,6 +18,8 @@ Check each block against reality before judging it; one piece of evidence per ve
 - Rules against the installed skills and always-read files: **Duplicated**.
 - Everything else against the test above: **Discoverable**, **Content-free**, or **Plain command**.
 - An always-loaded pointer to a long guide: **Misplaced**; it belongs in the skill that needs it.
+- Opening banners against the file location and body: **Content-free** when they add no context, because the scope or purpose is already stated.
+  Keep headings that organize the rules or add context.
 
 A block can earn more than one verdict, each with its own evidence; lead with the one that needs no human confirmation, so pruning can start before the maintainer answers.
 

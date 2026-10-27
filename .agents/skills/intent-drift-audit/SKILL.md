@@ -3,8 +3,6 @@ name: intent-drift-audit
 description: Audit code, a diff, or a PR against the applicable INTENT.md, *.intent.md, or CONTRACT*.md and report conforms, violates, partial, not-yet-realised, or cannot-verify per statement with file:line evidence, ready for a PR comment. Use once an implementation claims to realise its intent, for conformance checks, automated review, or before modifying governed code; not mid-implementation.
 ---
 
-# Intent drift audit
-
 Intent files are defined in `intent-files`; they and contracts hold even when tests pass, so this audit reads code against each statement with evidence instead of trusting the suite.
 It reports; it never edits intent or contract and never silently fixes code during a review.
 

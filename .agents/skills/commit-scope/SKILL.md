@@ -3,8 +3,6 @@ name: commit-scope
 description: Derive and validate the canonical scope for IronRDP Conventional Commit and pull-request titles. Use whenever composing, reviewing, correcting, or checking a commit or PR title, especially when several crates or product surfaces intersect.
 ---
 
-# Commit scope
-
 Choose at most one optional scope for `<type>[optional scope][!]: <description>`.
 
 ## Canonical scopes

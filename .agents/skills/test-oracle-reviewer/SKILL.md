@@ -3,8 +3,6 @@ name: test-oracle-reviewer
 description: Judge whether a test's expected value is justified independently of the code under test, and define the `oracle:` marker that records its source. Use when reviewing tests added or changed in a pull request, auditing a module's tests, marking a test's source, or whenever expected bytes, snapshots, or mock values may have been copied from the implementation's own output.
 ---
 
-# Test oracle reviewer
-
 A test whose expected value came from the code under test detects change, not bugs.
 For each test, ask whether the expected value can be justified without running the code.
 

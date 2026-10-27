@@ -3,8 +3,6 @@ name: code-review
 description: Review IronRDP pull requests and diffs using focused protocol, intent, contract, compression, style, test, dependency, documentation, prose, and skeptical passes. Use whenever Copilot code review is requested or a proposed change needs review.
 ---
 
-# Code review
-
 Inspect the diff, its stated goal, and repository guidance before selecting reviewers:
 
 - Read the root and ancestor `AGENTS.md` and applicable intent files for every changed path before selecting passes.

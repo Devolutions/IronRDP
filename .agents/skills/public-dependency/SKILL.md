@@ -3,8 +3,6 @@ name: public-dependency
 description: Add or change Rust crate dependencies while preserving IronRDP's public-dependency markers. Use whenever adding, updating, renaming, removing, or changing features of a Cargo dependency, or when a public API starts or stops exposing dependency-owned types or traits.
 ---
 
-# Public dependency
-
 Mark a dependency exposed by the crate's public API with `# public` on the same manifest line:
 
 ```toml

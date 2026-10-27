@@ -3,8 +3,6 @@ name: release-prep
 description: Review and correct an IronRDP release-plz release PR before publishing. Use when auditing version bumps, public-dependency propagation, or generated per-crate changelogs in a prepare-for-publishing PR.
 ---
 
-# Release preparation
-
 Apply fixes on the release-plz PR branch.
 Source, README, MSRV, toolchain, and CI changes belong on the repository's default branch first so release-plz can regenerate the release PR.
 Resolve the PR's actual base branch rather than assuming `main` or `master`.

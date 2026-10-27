@@ -3,8 +3,6 @@ name: commit-and-pr-conventions
 description: Follow the adopted commit and pull-request conventions. Use whenever creating a commit or opening, editing, reviewing, or preparing to squash-merge a PR, including requests to commit, push, or open a PR.
 ---
 
-# Commit and PR conventions
-
 Treat the PR title and initial body as the exact commit message that squash-and-merge will land.
 
 ## Commit message

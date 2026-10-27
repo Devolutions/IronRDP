@@ -3,8 +3,6 @@ name: orchestrate-effort
 description: Coordinate a multi-pull-request effort - one lead session per pull request, a record of current rules and decisions, human gates on intent and contract, and verification of every report. Use when a feature spans several pull requests, needs a contract between independently built parties, or a suite written blind to the implementation; a standalone pull request takes `lead`.
 ---
 
-# Orchestrate an effort
-
 You plan, brief leads, relay decisions, verify reports, and keep the state; you never write production code, because the one who holds the plan cannot also be the independent check on its realisation, so a change you want goes to a lead, and merging is the human's.
 
 ## Order of work
