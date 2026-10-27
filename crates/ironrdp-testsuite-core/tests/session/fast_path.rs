@@ -1,11 +1,6 @@
-//! Regression tests for bulk-compressed FastPath updates.
+//! Regression tests for Fast-Path update processing.
 //!
-//! A FastPath `Processor` always owns a bulk decompressor: the library builds
-//! one in `ProcessorBuilder::build`. A server can send a compressed FastPath
-//! update (for example a full-frame redraw after a resize) regardless of what
-//! the client advertised, so the decompressor must always be present. These
-//! tests pin that a compressed update decodes to exactly the same pixels as its
-//! uncompressed twin rather than being dropped or aborting the session.
+//! Covers software-rendered and accelerated pointer updates as well as bulk-compressed Fast-Path frames.
 
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags as bulk_flags};
 use ironrdp_core::{WriteBuf, encode_vec};
@@ -24,28 +19,26 @@ use ironrdp_session::image::DecodedImage;
 const IMAGE_DIM: u16 = 64;
 const RECT_DIM: u16 = 8;
 
-fn processor() -> Processor {
+fn processor_with_pointer(enable_server_pointer: bool, pointer_software_rendering: bool) -> Processor {
     ProcessorBuilder {
         io_channel_id: 0,
         user_channel_id: 0,
         share_id: 0,
-        enable_server_pointer: false,
-        pointer_software_rendering: false,
+        enable_server_pointer,
+        pointer_software_rendering,
     }
     .build()
 }
 
+fn processor() -> Processor {
+    processor_with_pointer(false, false)
+}
+
 fn software_pointer_fixture() -> (Processor, DecodedImage) {
-    let processor = ProcessorBuilder {
-        io_channel_id: 0,
-        user_channel_id: 0,
-        share_id: 0,
-        enable_server_pointer: true,
-        pointer_software_rendering: true,
-    }
-    .build();
-    let image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
-    (processor, image)
+    (
+        processor_with_pointer(true, true),
+        DecodedImage::new(PixelFormat::RgbA32, 4, 4),
+    )
 }
 
 fn assert_visible_pixels(image: &DecodedImage, expected: &[u8]) {
@@ -66,7 +59,7 @@ const CURSOR_IMAGE: ColorPointerAttribute<'static> = ColorPointerAttribute {
     and_mask: &[0x80, 0],
 };
 
-// oracle: mutant (software pointer shape updates leaving use_system_pointer set, omitting UpdateKind::PointerHidden, or SetPosition omitting UpdateKind::PointerPosition)
+// oracle: mutant (software pointer shape updates leaving use_system_pointer set, omitting or misordering UpdateKind::PointerHidden, or SetPosition omitting UpdateKind::PointerPosition)
 #[rstest::rstest]
 #[case::color(PointerUpdateData::Color(CURSOR_IMAGE))]
 #[case::new(PointerUpdateData::New(PointerAttribute { xor_bpp: 24, color_pointer: CURSOR_IMAGE }))]
@@ -86,10 +79,11 @@ fn pointer_shape_reactivates_software_movement_and_hiding(#[case] shape: Pointer
         .unwrap();
     let shape_updates = processor.process_pointer_update(&mut image, shape).unwrap();
     assert!(
-        shape_updates
-            .iter()
-            .any(|update| matches!(update, UpdateKind::PointerHidden)),
-        "software pointer shape activation must hide the system pointer"
+        matches!(
+            shape_updates.as_slice(),
+            [UpdateKind::PointerHidden, UpdateKind::Region(_)]
+        ),
+        "software pointer shape activation must hide the system pointer before redrawing the pointer region"
     );
     let updates = processor
         .process_pointer_update(&mut image, PointerUpdateData::SetPosition(Point16 { x: 2, y: 1 }))
@@ -106,6 +100,30 @@ fn pointer_shape_reactivates_software_movement_and_hiding(#[case] shape: Pointer
     processor
         .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
         .unwrap();
+    assert_visible_pixels(&image, &[0; 48]);
+}
+
+// oracle: mutant (accelerated pointer shape updates emitting UpdateKind::PointerHidden or drawing into the software framebuffer)
+#[rstest::rstest]
+#[case::color(PointerUpdateData::Color(CURSOR_IMAGE))]
+#[case::new(PointerUpdateData::New(PointerAttribute { xor_bpp: 24, color_pointer: CURSOR_IMAGE }))]
+#[case::large(PointerUpdateData::Large(LargePointerAttribute {
+    xor_bpp: 24,
+    cache_index: 0,
+    hot_spot: Point16 { x: 0, y: 0 },
+    width: 1,
+    height: 1,
+    xor_mask: &[255, 255, 255, 0],
+    and_mask: &[0x80, 0],
+}))]
+fn accelerated_pointer_shape_emits_only_pointer_bitmap(#[case] shape: PointerUpdateData<'_>) {
+    let mut processor = processor_with_pointer(true, false);
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    let updates = processor.process_pointer_update(&mut image, shape).unwrap();
+    assert!(
+        matches!(updates.as_slice(), [UpdateKind::PointerBitmap(_)]),
+        "accelerated pointer shapes must emit only PointerBitmap without PointerHidden or software regions"
+    );
     assert_visible_pixels(&image, &[0; 48]);
 }
 

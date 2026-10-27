@@ -685,7 +685,8 @@ impl Processor {
             )
         {
             self.use_system_pointer = false;
-            // Emit the hide first so consumers switch off the system pointer before applying the shape region.
+            // `Cached` handles this transition inline on a cache hit, while accelerated `Color`, `New`, and `Large` updates emit only `PointerBitmap`.
+            // Insert `PointerHidden` before the redrawn region so software-rendered consumers switch off the system pointer first.
             processor_updates.insert(0, UpdateKind::PointerHidden);
         }
 

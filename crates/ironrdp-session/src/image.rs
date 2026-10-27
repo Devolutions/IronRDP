@@ -485,7 +485,7 @@ impl DecodedImage {
     pub(crate) fn update_pointer(&mut self, pointer: Arc<DecodedPointer>) -> SessionResult<Option<InclusiveRectangle>> {
         // Remove old pointer from frame buffer
         // INVARIANT: The background layer is applied while `self.show_pointer` still reflects the previous pointer state.
-        let old_rect = if self.pointer.is_some() && self.show_pointer {
+        let old_rect = if self.show_pointer {
             self.apply_pointer_layer(PointerLayer::Background)?
         } else {
             None
