@@ -1470,16 +1470,41 @@ fn a_shared_lock_refuses_writes_even_through_its_owner() {
     assert_eq!(response_status(&response), NtStatus::from(0xC000_0054));
 }
 
+/// Only the {0, 0} range is exempt; any other range of length 0 ends one byte before its offset.
 // oracle: spec MS-FSA §2.1.4.10
-#[test]
-fn the_zero_range_conflicts_with_nothing() {
+#[rstest]
+#[case::the_zero_range_against_the_zero_range((0, 0), (0, 0), NtStatus::SUCCESS)]
+#[case::a_range_against_the_zero_range((0, 0), (0, 10), NtStatus::SUCCESS)]
+#[case::length_zero_inside_a_lock((0, 10), (5, 0), NtStatus::LOCK_NOT_GRANTED)]
+#[case::length_zero_at_the_start_of_a_lock((5, 10), (5, 0), NtStatus::SUCCESS)]
+fn zero_length_ranges_overlap_by_their_last_byte(
+    #[case] held: (u64, u64),
+    #[case] requested: (u64, u64),
+    #[case] status: NtStatus,
+) {
     let (_fixture, mut backend, first_id, second_id) = two_handles();
+    let first = lock(
+        &mut backend,
+        first_id,
+        1,
+        LockOperation::Exclusive,
+        false,
+        held.0,
+        held.1,
+    );
 
-    let first = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 0);
-    let second = lock(&mut backend, second_id, 2, LockOperation::Exclusive, false, 0, 0);
+    let second = lock(
+        &mut backend,
+        second_id,
+        2,
+        LockOperation::Exclusive,
+        false,
+        requested.0,
+        requested.1,
+    );
 
     assert_eq!(response_status(&first), NtStatus::SUCCESS);
-    assert_eq!(response_status(&second), NtStatus::SUCCESS);
+    assert_eq!(response_status(&second), status);
 }
 
 // oracle: spec MS-ERREF §2.3.1
