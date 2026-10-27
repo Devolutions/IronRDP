@@ -5170,22 +5170,6 @@ impl RdpServer {
             });
         }
 
-        if !result.input_events.is_empty() {
-            debug!("Handling input event backlog from acceptor sequence");
-            // Set on a reactivation pass, where EGFX may already be on the tunnel.
-            let current_udp_transport = udp_transport.borrow().clone();
-            self.handle_input_backlog(
-                conn,
-                writer,
-                result.io_channel_id,
-                result.user_channel_id,
-                result.message_channel_id,
-                result.input_events,
-                current_udp_transport.as_ref(),
-            )
-            .await?;
-        }
-
         #[cfg(feature = "egfx")]
         if let Some(gfx_handle) = conn.gfx_handle.as_ref() {
             let mut server = gfx_handle
@@ -5320,6 +5304,22 @@ impl RdpServer {
                 }
                 _ => {}
             }
+        }
+
+        if !result.input_events.is_empty() {
+            debug!("Handling input event backlog from acceptor sequence");
+            // Set on a reactivation pass, where EGFX may already be on the tunnel.
+            let current_udp_transport = udp_transport.borrow().clone();
+            self.handle_input_backlog(
+                conn,
+                writer,
+                result.io_channel_id,
+                result.user_channel_id,
+                result.message_channel_id,
+                result.input_events,
+                current_udp_transport.as_ref(),
+            )
+            .await?;
         }
 
         let desktop_size = self.display.lock().await.size().await;

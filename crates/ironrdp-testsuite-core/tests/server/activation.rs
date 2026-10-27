@@ -3,14 +3,17 @@ use std::sync::{Arc, Mutex};
 
 use ironrdp_async::FramedWrite as _;
 use ironrdp_core::{WriteBuf, decode, encode_vec};
+use ironrdp_pdu::input::MousePdu;
+use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu};
 use ironrdp_pdu::x224::{X224, X224Data};
 use ironrdp_server::{
-    DesktopSize, DisplayContext, DisplayUpdate, RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, ServerResult,
-    TransportTls,
+    DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent, RdpServer, RdpServerDisplay,
+    RdpServerDisplayUpdates, RdpServerInputHandler, ServerResult, TransportTls,
 };
 use ironrdp_testsuite_core::gcc::CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS;
 use ironrdp_testsuite_core::rdp::{
@@ -31,25 +34,45 @@ const CLIENT_SIZE: DesktopSize = DesktopSize {
 // oracle: mutant clients without desktop resize support never notify the display of their initial size
 #[tokio::test]
 async fn initial_size_is_requested_without_desktop_resize_support() {
-    assert_eq!(activate(false, &[]).await, vec![CLIENT_SIZE]);
+    assert_eq!(activate(false, &[]).await.requests, vec![CLIENT_SIZE]);
+}
+
+// oracle: mutant absolute pointer input queued during activation uses the display's old size
+#[tokio::test]
+async fn input_backlog_observes_the_negotiated_display_size() {
+    let input = FastPathInput::single(FastPathInputEvent::MouseEvent(MousePdu {
+        flags: PointerFlags::MOVE,
+        number_of_wheel_rotation_units: 0,
+        x_position: 1234,
+        y_position: 700,
+    }));
+    let state = activate(true, &encode_vec(&input).unwrap()).await;
+    assert_eq!(state.pointers, vec![(1234, 700, CLIENT_SIZE)]);
+}
+
+#[derive(Debug)]
+struct DisplayState {
+    size: DesktopSize,
+    requests: Vec<DesktopSize>,
+    pointers: Vec<(u16, u16, DesktopSize)>,
 }
 
 struct RecordingDisplay {
-    size: DesktopSize,
-    requests: Arc<Mutex<Vec<DesktopSize>>>,
+    state: Arc<Mutex<DisplayState>>,
     activated: Option<oneshot::Sender<()>>,
 }
 
 #[async_trait::async_trait]
 impl RdpServerDisplay for RecordingDisplay {
     async fn size(&mut self) -> DesktopSize {
-        self.size
+        self.state.lock().unwrap().size
     }
 
     async fn request_initial_size(&mut self, client_size: DesktopSize) -> DesktopSize {
-        self.requests.lock().unwrap().push(client_size);
-        self.size = client_size;
-        self.size
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(client_size);
+        state.size = client_size;
+        state.size
     }
 
     async fn updates(&mut self, _ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
@@ -67,19 +90,36 @@ impl RdpServerDisplayUpdates for PendingUpdates {
     }
 }
 
-async fn activate(desktop_resize_flag: bool, input: &[u8]) -> Vec<DesktopSize> {
-    let requests = Arc::new(Mutex::new(Vec::new()));
+struct RecordingInput(Arc<Mutex<DisplayState>>);
+
+impl RdpServerInputHandler for RecordingInput {
+    fn keyboard(&mut self, _event: KeyboardEvent) {}
+
+    fn mouse(&mut self, event: MouseEvent) {
+        if let MouseEvent::Move { x, y } = event {
+            let mut state = self.0.lock().unwrap();
+            let size = state.size;
+            state.pointers.push((x, y, size));
+        }
+    }
+}
+
+async fn activate(desktop_resize_flag: bool, input: &[u8]) -> DisplayState {
+    let state = Arc::new(Mutex::new(DisplayState {
+        size: DesktopSize {
+            width: 1920,
+            height: 1080,
+        },
+        requests: Vec::new(),
+        pointers: Vec::new(),
+    }));
     let (activated_tx, activated_rx) = oneshot::channel();
     let mut server = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_no_security()
-        .with_no_input()
+        .with_input_handler(RecordingInput(Arc::clone(&state)))
         .with_display_handler(RecordingDisplay {
-            size: DesktopSize {
-                width: 1920,
-                height: 1080,
-            },
-            requests: Arc::clone(&requests),
+            state: Arc::clone(&state),
             activated: Some(activated_tx),
         })
         .with_honor_client_desktop_size(Some(DesktopSize {
@@ -102,7 +142,7 @@ async fn activate(desktop_resize_flag: bool, input: &[u8]) -> Vec<DesktopSize> {
     .await
     .expect("activation completed");
     drop(server);
-    Arc::try_unwrap(requests).unwrap().into_inner().unwrap()
+    Arc::try_unwrap(state).unwrap().into_inner().unwrap()
 }
 
 async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag: bool, input: &[u8]) {
