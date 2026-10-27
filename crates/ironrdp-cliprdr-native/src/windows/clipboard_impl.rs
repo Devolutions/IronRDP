@@ -530,7 +530,15 @@ impl WinClipboardImpl {
 
     fn handle_event(&mut self, event: BackendEvent) {
         let result = match &event {
-            BackendEvent::FormatDataRequest(request) => self.on_format_data_request(request),
+            BackendEvent::FormatDataRequest(request) => {
+                if matches!(self.retry_message, Some(BackendEvent::FormatDataRequest(_))) {
+                    self.retry_message = None;
+                    // Fail an earlier deferred request before handling a newer one so responses stay in order.
+                    self.transport
+                        .send(ClipboardMessage::SendFormatData(FormatDataResponse::new_error()));
+                }
+                self.on_format_data_request(request)
+            }
             BackendEvent::FormatDataResponse(_) | BackendEvent::RemoteFileList { .. } => {
                 // The answer to a paste whose wait gave up.
                 self.transport.drop_late_answer();
@@ -591,7 +599,9 @@ impl WinClipboardImpl {
 
         match retry_err {
             None => {
-                self.attempt = 0;
+                if self.retry_message.is_none() {
+                    self.attempt = 0;
+                }
             }
             Some(err) => {
                 const MAX_PROCESSING_ATTEMPTS: u32 = 10;

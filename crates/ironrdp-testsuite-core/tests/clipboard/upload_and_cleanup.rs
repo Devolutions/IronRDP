@@ -39,6 +39,42 @@ fn sized_file_list(entries: &[(&str, u64)]) -> PackedFileList {
     }
 }
 
+fn timed_backend(cliprdr: &CliprdrClient) -> &TimedRecordingBackend {
+    cliprdr.downcast_backend::<TimedRecordingBackend>().unwrap()
+}
+
+fn locked_file_copy_client() -> CliprdrClient {
+    let backend = TimedRecordingBackend::new(Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
+    let mut cliprdr = CliprdrClient::new(Box::new(backend));
+    let capabilities = ClipboardPdu::Capabilities(Capabilities::new(
+        ClipboardProtocolVersion::V2,
+        ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+            | ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
+            | ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES,
+    ));
+    cliprdr.process(&encode_vec(&capabilities).unwrap()).unwrap();
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::MonitorReady).unwrap())
+        .unwrap();
+    cliprdr.initiate_copy(&[]).unwrap();
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::FormatListResponse(FormatListResponse::Ok)).unwrap())
+        .unwrap();
+    cliprdr
+        .initiate_file_copy(vec![
+            FileDescriptor::new("first.txt").with_file_size(10),
+            FileDescriptor::new("locked.txt").with_file_size(20),
+        ])
+        .unwrap();
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::LockData(LockDataId(42))).unwrap())
+        .unwrap();
+    cliprdr
+        .initiate_file_copy(vec![FileDescriptor::new("replacement.txt").with_file_size(30)])
+        .unwrap();
+    cliprdr
+}
+
 // ── initiate_copy behavior ──────────────────────────────────────────
 
 #[test]
@@ -243,10 +279,7 @@ fn stale_request_cleanup_after_timeout() {
     );
     assert_eq!(cliprdr.__test_sent_file_contents_requests().len(), 2);
 
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(250);
+    timed_backend(&cliprdr).advance_ms(250);
 
     let _messages = cliprdr.drive_timeouts().unwrap();
 
@@ -284,10 +317,7 @@ fn stale_request_cleanup_spares_recent_requests() {
     );
 
     // Advance and insert a recent one (clock=150)
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(150);
+    timed_backend(&cliprdr).advance_ms(150);
 
     cliprdr.__test_sent_file_contents_requests_mut().insert(
         2,
@@ -299,10 +329,7 @@ fn stale_request_cleanup_spares_recent_requests() {
     );
 
     // Advance to 250ms total: request 1 = 250ms old (> 200ms), request 2 = 100ms (< 200ms)
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(100);
+    timed_backend(&cliprdr).advance_ms(100);
 
     let _messages = cliprdr.drive_timeouts().unwrap();
 
@@ -343,10 +370,7 @@ fn idle_locked_file_list_is_released_only_by_peer_unlock() {
     assert_eq!(cliprdr.__test_locked_file_lists().len(), 1);
 
     // Advance past transfer timeout with no FileContentsRequest activity
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(250);
+    timed_backend(&cliprdr).advance_ms(250);
 
     let _messages = cliprdr.drive_timeouts().unwrap();
 
@@ -386,10 +410,7 @@ fn locked_file_list_remains_available_between_reads() {
     cliprdr.process(&buf).unwrap();
 
     // Read once before the transfer timeout.
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(150);
+    timed_backend(&cliprdr).advance_ms(150);
 
     let fcr = FileContentsRequest {
         stream_id: 1,
@@ -409,22 +430,12 @@ fn locked_file_list_remains_available_between_reads() {
     cliprdr
         .submit_file_contents(FileContentsResponse::new_size_response(1, 100))
         .unwrap();
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(10_000);
+    timed_backend(&cliprdr).advance_ms(10_000);
 
     let _messages = cliprdr.drive_timeouts().unwrap();
 
     cliprdr.process(&fcr_buf).unwrap();
-    assert_eq!(
-        cliprdr
-            .downcast_backend::<TimedRecordingBackend>()
-            .unwrap()
-            .file_requests
-            .len(),
-        2
-    );
+    assert_eq!(timed_backend(&cliprdr).file_requests.len(), 2);
 
     let unlock_ids = unlocks.lock().unwrap();
     assert_eq!(unlock_ids.len(), 0);
@@ -457,10 +468,7 @@ fn peer_unlock_releases_only_its_matching_snapshot() {
     assert_eq!(cliprdr.__test_locked_file_lists().len(), 2);
 
     // Advance 150ms and send activity only for lock 20
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(150);
+    timed_backend(&cliprdr).advance_ms(150);
 
     let fcr = FileContentsRequest {
         stream_id: 1,
@@ -477,10 +485,7 @@ fn peer_unlock_releases_only_its_matching_snapshot() {
     cliprdr.process(&fcr_buf).unwrap();
 
     // Both snapshots must survive idle time, regardless of their read history.
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(10_000);
+    timed_backend(&cliprdr).advance_ms(10_000);
 
     let _messages = cliprdr.drive_timeouts().unwrap();
 
@@ -527,10 +532,7 @@ fn first_file_read_after_idle_uses_the_original_lock() {
 
     // First paste attempt fails on the server (no valid target), so no
     // FileContentsRequest is sent. Time passes past the transfer timeout.
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(250);
+    timed_backend(&cliprdr).advance_ms(250);
     let _messages = cliprdr.drive_timeouts().unwrap();
 
     assert!(unlocks.lock().unwrap().is_empty());
@@ -550,60 +552,16 @@ fn first_file_read_after_idle_uses_the_original_lock() {
     fcr_pdu.encode(&mut cursor).unwrap();
 
     cliprdr.process(&fcr_buf).unwrap();
-    assert_eq!(
-        cliprdr
-            .downcast_backend::<TimedRecordingBackend>()
-            .unwrap()
-            .file_requests,
-        [fcr]
-    );
+    assert_eq!(timed_backend(&cliprdr).file_requests, [fcr]);
 }
 
 // oracle: spec MS-RDPECLIP §3.1.5.3.2, §3.1.5.3.4, §3.1.5.4.6
 #[test]
 fn incoming_lock_retains_its_snapshot_until_peer_unlock() {
-    let backend = TimedRecordingBackend::new(Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new())));
-    let mut cliprdr = CliprdrClient::new(Box::new(backend));
-    let capabilities = ClipboardPdu::Capabilities(Capabilities::new(
-        ClipboardProtocolVersion::V2,
-        ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
-            | ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
-            | ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES,
-    ));
-    cliprdr.process(&encode_vec(&capabilities).unwrap()).unwrap();
-    cliprdr
-        .process(&encode_vec(&ClipboardPdu::MonitorReady).unwrap())
-        .unwrap();
-    cliprdr.initiate_copy(&[]).unwrap();
-    cliprdr
-        .process(&encode_vec(&ClipboardPdu::FormatListResponse(FormatListResponse::Ok)).unwrap())
-        .unwrap();
-    cliprdr
-        .initiate_file_copy(vec![
-            FileDescriptor::new("first.txt").with_file_size(10),
-            FileDescriptor::new("locked.txt").with_file_size(20),
-        ])
-        .unwrap();
-    cliprdr
-        .process(&encode_vec(&ClipboardPdu::LockData(LockDataId(42))).unwrap())
-        .unwrap();
-    cliprdr
-        .initiate_file_copy(vec![FileDescriptor::new("replacement.txt").with_file_size(30)])
-        .unwrap();
-    cliprdr
-        .downcast_backend::<TimedRecordingBackend>()
-        .unwrap()
-        .advance_ms(120_001);
+    let mut cliprdr = locked_file_copy_client();
+    timed_backend(&cliprdr).advance_ms(120_001);
     cliprdr.drive_timeouts().unwrap();
-    assert!(
-        cliprdr
-            .downcast_backend::<TimedRecordingBackend>()
-            .unwrap()
-            .unlocks
-            .lock()
-            .unwrap()
-            .is_empty()
-    );
+    assert!(timed_backend(&cliprdr).unlocks.lock().unwrap().is_empty());
 
     let request = FileContentsRequest {
         stream_id: 7,
@@ -616,25 +574,21 @@ fn incoming_lock_retains_its_snapshot_until_peer_unlock() {
     cliprdr
         .process(&encode_vec(&ClipboardPdu::FileContentsRequest(request.clone())).unwrap())
         .unwrap();
-    assert_eq!(
-        cliprdr
-            .downcast_backend::<TimedRecordingBackend>()
-            .unwrap()
-            .file_requests,
-        [request]
-    );
+    assert_eq!(timed_backend(&cliprdr).file_requests, [request]);
     cliprdr
         .process(&encode_vec(&ClipboardPdu::UnlockData(LockDataId(42))).unwrap())
         .unwrap();
-    assert_eq!(
-        *cliprdr
-            .downcast_backend::<TimedRecordingBackend>()
-            .unwrap()
-            .unlocks
-            .lock()
-            .unwrap(),
-        [42]
-    );
+    assert_eq!(*timed_backend(&cliprdr).unlocks.lock().unwrap(), [42]);
+}
+
+// oracle: spec MS-RDPECLIP §3.1.5.3.4, §3.1.5.4.6
+#[test]
+fn request_naming_a_released_lock_fails() {
+    let mut cliprdr = locked_file_copy_client();
+    cliprdr
+        .process(&encode_vec(&ClipboardPdu::UnlockData(LockDataId(42))).unwrap())
+        .unwrap();
+    assert_eq!(*timed_backend(&cliprdr).unlocks.lock().unwrap(), [42]);
 
     let request = FileContentsRequest {
         stream_id: 8,
@@ -653,12 +607,5 @@ fn incoming_lock_retains_its_snapshot_until_peer_unlock() {
         response,
         ClipboardPdu::FileContentsResponse(response) if response.stream_id() == 8 && response.is_error()
     ));
-    assert_eq!(
-        cliprdr
-            .downcast_backend::<TimedRecordingBackend>()
-            .unwrap()
-            .file_requests
-            .len(),
-        1
-    );
+    assert!(timed_backend(&cliprdr).file_requests.is_empty());
 }

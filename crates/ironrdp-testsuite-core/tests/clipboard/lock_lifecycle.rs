@@ -18,7 +18,8 @@ use ironrdp_core::Encode as _;
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
 use ironrdp_testsuite_core::clipboard::{
-    CallbackTrackingBackend, LockingBackend, TestBackend, init_ready_locking_client, set_remote_file_list,
+    CallbackTrackingBackend, LockingBackend, TestBackend, TimedRecordingBackend, init_ready_locking_client,
+    set_remote_file_list,
 };
 
 /// Introduce `let` bindings for the encoded bytes and the decoded
@@ -382,9 +383,14 @@ fn successive_file_format_lists_create_new_locks() {
     assert_eq!(cliprdr.__test_current_lock_id(), Some(id3));
 }
 
+// oracle: spec MS-RDPECLIP §3.1.5.3.2, §3.1.5.3.4
+// oracle: mutant cap eviction bounds retained snapshots at MAX_LOCKED_FILE_LISTS and unlocks the evicted entry
 #[test]
 fn incoming_lock_limit_exceeded() {
-    let mut cliprdr = CliprdrClient::new(Box::new(TestBackend));
+    let responses = Arc::new(Mutex::new(Vec::new()));
+    let unlocks = Arc::new(Mutex::new(Vec::new()));
+    let backend = TimedRecordingBackend::new(Arc::clone(&responses), Arc::clone(&unlocks));
+    let mut cliprdr = CliprdrClient::new(Box::new(backend));
     *cliprdr.__test_state_mut() = CliprdrState::Ready;
     *cliprdr.__test_local_file_list_mut() = Some(sized_file_list(&[("test.txt", 100)]));
 
@@ -401,8 +407,9 @@ fn incoming_lock_limit_exceeded() {
     }
 
     assert_eq!(cliprdr.__test_locked_file_lists().len(), 100);
+    assert!(unlocks.lock().unwrap().is_empty());
 
-    // 101st Lock PDU should be rejected silently
+    // 101st Lock PDU evicts the oldest lock and notifies the backend via on_unlock
     let lock_pdu = ClipboardPdu::LockData(LockDataId(101));
     let mut buf = vec![0u8; lock_pdu.size()];
     let mut cursor = ironrdp_core::WriteCursor::new(&mut buf);
@@ -411,11 +418,13 @@ fn incoming_lock_limit_exceeded() {
     let result = cliprdr.process(&buf);
     assert!(result.is_ok());
     assert_eq!(cliprdr.__test_locked_file_lists().len(), 100);
-    assert!(!cliprdr.__test_locked_file_lists().contains_key(&101));
+    assert!(!cliprdr.__test_locked_file_lists().contains_key(&1));
+    assert_eq!(*unlocks.lock().unwrap(), [1]);
 
-    assert!(cliprdr.__test_locked_file_lists().contains_key(&1));
+    assert!(cliprdr.__test_locked_file_lists().contains_key(&2));
     assert!(cliprdr.__test_locked_file_lists().contains_key(&50));
     assert!(cliprdr.__test_locked_file_lists().contains_key(&100));
+    assert!(cliprdr.__test_locked_file_lists().contains_key(&101));
 }
 
 #[test]

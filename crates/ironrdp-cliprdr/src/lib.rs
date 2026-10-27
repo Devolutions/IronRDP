@@ -513,6 +513,10 @@ pub struct Cliprdr<R: Role> {
     /// This allows us to serve file requests even after the clipboard changes.
     locked_file_lists: HashMap<u32, PackedFileList>,
 
+    /// FIFO insertion order for [`Self::locked_file_lists`] so that exceeding
+    /// [`MAX_LOCKED_FILE_LISTS`] evicts the oldest lock and notifies the backend.
+    locked_file_list_order: VecDeque<u32>,
+
     /// Timeout for individual file contents requests.
     /// Requests older than this are removed and the backend receives a
     /// synthetic error response. Default: 60 seconds.
@@ -615,6 +619,7 @@ impl<R: Role> Cliprdr<R> {
             lock_inactivity_timeout: inactivity_timeout,
             lock_max_lifetime: max_lifetime,
             locked_file_lists: HashMap::new(),
+            locked_file_list_order: VecDeque::new(),
             transfer_timeout,
             _marker: core::marker::PhantomData,
         }
@@ -1177,7 +1182,7 @@ impl<R: Role> Cliprdr<R> {
     /// Incoming snapshots remain locked until the peer sends an Unlock Clipboard Data PDU,
     /// per [MS-RDPECLIP 3.1.5.3.2, "Processing a Lock Clipboard Data PDU"][locking].
     ///
-    /// [locking]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/
+    /// [locking]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/597dee8c-ea46-474c-b2de-2a843932b10c
     ///
     /// Callers must drive this method from a periodic timer in their event loop
     /// (e.g., every 5 seconds). The returned PDUs must be sent on the CLIPRDR channel.
@@ -1674,21 +1679,30 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 // [MS-RDPECLIP] 3.1.5.3.2 - Processing a Lock Clipboard Data PDU
                 // Store a snapshot of the current file list so we can service
                 // FileContentsRequest PDUs with this clipDataId even after clipboard changes.
-
-                // Defense-in-depth: Limit number of locked file lists to prevent memory exhaustion
-                // from malicious remotes sending unlimited Lock PDUs
-                if MAX_LOCKED_FILE_LISTS <= self.locked_file_lists.len() {
-                    warn!(
-                        clip_data_id = id.0,
-                        current_locks = self.locked_file_lists.len(),
-                        "Too many locked file lists, rejecting new lock request"
-                    );
-                    return Ok(Vec::new());
-                }
-
                 if let Some(ref file_list) = self.local_file_list {
+                    let snapshot = file_list.clone();
+                    if self.locked_file_lists.contains_key(&id.0) {
+                        self.locked_file_list_order.retain(|&locked_id| locked_id != id.0);
+                    } else if MAX_LOCKED_FILE_LISTS <= self.locked_file_lists.len()
+                        && let Some(evicted_id) = self
+                            .locked_file_list_order
+                            .pop_front()
+                            .or_else(|| self.locked_file_lists.keys().next().copied())
+                    {
+                        // Defense-in-depth: bound retained snapshots against peers that never
+                        // unlock by evicting the oldest lock and notifying the backend first.
+                        self.locked_file_lists.remove(&evicted_id);
+                        warn!(
+                            evicted_clip_data_id = evicted_id,
+                            clip_data_id = id.0,
+                            max_locks = MAX_LOCKED_FILE_LISTS,
+                            "Too many locked file lists, evicting oldest lock"
+                        );
+                        self.backend.on_unlock(LockDataId(evicted_id));
+                    }
                     debug!(clip_data_id = id.0, "Locking clipboard with file list snapshot");
-                    self.locked_file_lists.insert(id.0, file_list.clone());
+                    self.locked_file_lists.insert(id.0, snapshot);
+                    self.locked_file_list_order.push_back(id.0);
                 } else {
                     // This is expected when the local side has no file list (e.g., browser
                     // client with no pending upload). Per [MS-RDPECLIP] 3.1.5.3.2, the
@@ -1705,6 +1719,7 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 // [MS-RDPECLIP] 3.1.5.3.4 - Processing an Unlock Clipboard Data PDU
                 // Release the file list snapshot associated with this clipDataId.
                 if self.locked_file_lists.remove(&id.0).is_some() {
+                    self.locked_file_list_order.retain(|&locked_id| locked_id != id.0);
                     debug!(
                         clip_data_id = id.0,
                         "Unlocking clipboard and releasing file list snapshot"

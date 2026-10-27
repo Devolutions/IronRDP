@@ -434,6 +434,14 @@ impl Harness {
         }
     }
 
+    #[track_caller]
+    fn expect_format_data_response(&self) -> OwnedFormatDataResponse {
+        self.expect_event(|event| match event {
+            ServerEvent::FormatDataResponse(response) => Some(response),
+            _ => None,
+        })
+    }
+
     fn assert_no_errors(&self) {
         let errors = self.errors.lock().unwrap();
         assert!(errors.is_empty(), "loopback errors: {errors:?}");
@@ -946,10 +954,7 @@ fn replacing_a_native_retry_fails_the_displaced_format_request() {
         harness.synchronize();
     }
 
-    let response = harness.expect_event(|event| match event {
-        ServerEvent::FormatDataResponse(response) => Some(response),
-        _ => None,
-    });
+    let response = harness.expect_format_data_response();
     assert!(response.is_error());
     wait_until("the replacement retry completes", || harness.owns_clipboard());
 
@@ -963,10 +968,7 @@ fn replacing_a_native_retry_fails_the_displaced_format_request() {
         _ => None,
     });
     harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
-    let response = harness.expect_event(|event| match event {
-        ServerEvent::FormatDataResponse(response) => Some(response),
-        _ => None,
-    });
+    let response = harness.expect_format_data_response();
     assert_eq!(response.to_unicode_string().unwrap(), "next request");
     harness.assert_no_errors();
 }
@@ -1124,10 +1126,7 @@ fn background_clipboard_reports_changes_without_activation() {
         _ => None,
     });
     harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
-    let response = harness.expect_event(|event| match event {
-        ServerEvent::FormatDataResponse(response) => Some(response),
-        _ => None,
-    });
+    let response = harness.expect_format_data_response();
     assert_eq!(response.to_unicode_string().unwrap(), "ironrdp-background-copy");
     harness.assert_no_errors();
 }
@@ -1159,11 +1158,9 @@ fn local_bitmap_keeps_pixels_without_synthesized_dibv5() {
     });
     assert_eq!(format, ClipboardFormatId::CF_DIB);
     harness.command(LoopbackCommand::Paste(format));
-    let response = harness.expect_event(|event| match event {
-        ServerEvent::FormatDataResponse(response) => Some(response),
-        _ => None,
-    });
+    let response = harness.expect_format_data_response();
     let dib = response.data();
+    assert_eq!(u16::from_le_bytes(dib[14..16].try_into().unwrap()), 32);
     let compression = u32::from_le_bytes(dib[16..20].try_into().unwrap());
     let pixel_offset = match compression {
         0 => 40,                                                                  /* BITMAPINFOHEADER */

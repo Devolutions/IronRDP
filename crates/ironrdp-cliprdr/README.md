@@ -180,7 +180,7 @@ This method processes:
 - **Expired outgoing locks**: Sends Unlock PDUs for locks past their inactivity timeout or max lifetime
 - **Stale outgoing requests**: Fails file contents requests older than the transfer timeout
 
-Incoming locks retain their file snapshots until the peer sends the matching Unlock Clipboard Data PDU, even across idle periods and clipboard changes.
+Incoming locks retain their file snapshots until the peer sends the matching Unlock Clipboard Data PDU (evicting the oldest lock if `MAX_LOCKED_FILE_LISTS` is exceeded), even across idle periods and clipboard changes.
 Requests naming an unknown or released lock fail rather than reading the current clipboard.
 
 ```rust
