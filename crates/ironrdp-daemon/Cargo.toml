@@ -30,7 +30,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 whoami = "2.1"
-ironrdp-rail = { version = "0.2.0", path = "../ironrdp-rail" }
+ironrdp-rail = { version = "0.3.0", path = "../ironrdp-rail" }
 sha2 = "0.10"
 
 [dev-dependencies]

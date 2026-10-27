@@ -119,7 +119,7 @@ ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.3" }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.2", optional = true }
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.3" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
-ironrdp-rail = { path = "../ironrdp-rail", version = "0.2" }
+ironrdp-rail = { path = "../ironrdp-rail", version = "0.3" }
 
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.9", optional = true } # public
@@ -133,8 +133,8 @@ ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.2", optional = tru
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.8", optional = true } # public
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.8", optional = true }
-ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.3", optional = true }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9", optional = true }
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.1.0", optional = true }
 ironrdp-dvc-pipe-proxy = { path = "../ironrdp-dvc-pipe-proxy", version = "0.7", optional = true }
 ironrdp-rdpeusb-native = { path = "../ironrdp-rdpeusb-native", version = "0.1", optional = true } # public
 
@@ -162,9 +162,9 @@ zeroize = { version = "1", optional = true }
 [target.'cfg(windows)'.dependencies]
 ironrdp-dvc-com-plugin = { path = "../ironrdp-dvc-com-plugin", version = "0.3", optional = true }
 ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.2", optional = true }
-ironrdp-rdpewa-native = { path = "../ironrdp-rdpewa-native", version = "0.1", optional = true }
+ironrdp-rdpewa-native = { path = "../ironrdp-rdpewa-native", version = "0.2", optional = true }
 ironrdp-rdpecam = { path = "../ironrdp-rdpecam", version = "0.2", optional = true }
-ironrdp-rdpecam-native = { path = "../ironrdp-rdpecam-native", version = "0.1", optional = true }
+ironrdp-rdpecam-native = { path = "../ironrdp-rdpecam-native", version = "0.2", optional = true }
 ironrdp-egfx-native = { path = "../ironrdp-egfx-native", version = "0.2" }
 
 [lints]

@@ -80,13 +80,13 @@ ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.11", optional = true
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.10", optional = true } # public
 ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.3", optional = true } # public
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.6", optional = true } # public
-ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.0.3", optional = true } # public
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.1.0", optional = true } # public
 ironrdp-client = { path = "../ironrdp-client", version = "0.1", optional = true } # public
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.2", optional = true } # public
 
 [dev-dependencies]
 ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.12" }
-ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.8" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9" }
 anyhow = "1"
 async-trait = "0.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
