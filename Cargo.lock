@@ -3140,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-mstsgu"
-version = "0.0.3"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.13.2",

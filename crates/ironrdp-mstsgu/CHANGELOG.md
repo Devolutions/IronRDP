@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-## [[0.0.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-mstsgu-v0.0.2...ironrdp-mstsgu-v0.0.3)] - 2026-10-27
+## [[0.1.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-mstsgu-v0.0.2...ironrdp-mstsgu-v0.1.0)] - 2026-10-27
 
 ### <!-- 7 -->Build
 
