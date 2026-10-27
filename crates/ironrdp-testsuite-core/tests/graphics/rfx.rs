@@ -413,3 +413,69 @@ fn a_message_without_a_frame_begin_is_rejected() {
         "{error:?}"
     );
 }
+
+#[test]
+fn a_smooth_gradient_tile_round_trips_without_negative_quantization_spikes() {
+    // oracle: spec MS-RDPRFX §3.1.8.1.5 (quantization divides coefficients by the sub-band scale
+    // value; small negative detail coefficients on a decreasing gradient must quantize to zero
+    // instead of floor-shifting to -1)
+    let mut input = [0u8; TILE_RGBA_LEN];
+    for y in 0..64usize {
+        for x in 0..64usize {
+            let offset = (y * 64 + x) * 4;
+            let step = u8::try_from((x + y) / 4).unwrap();
+            input[offset] = 180 - step;
+            input[offset + 1] = 210 - step;
+            input[offset + 2] = 235 - step;
+            input[offset + 3] = 255;
+        }
+    }
+
+    let (mut luma, mut cb, mut cr) = ([0i16; 4096], [0i16; 4096], [0i16; 4096]);
+    ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile(
+        &input,
+        64,
+        64,
+        64 * 4,
+        ironrdp_graphics::image_processing::PixelFormat::RgbA32,
+        &mut luma,
+        &mut cb,
+        &mut cr,
+    )
+    .unwrap();
+
+    let quant = Quant::default();
+    let encode_plane = |plane: &mut [i16; 4096]| {
+        let mut out = vec![0u8; 4096];
+        let len = rfx_encode_component(plane, &mut out, &quant, EntropyAlgorithm::Rlgr3).unwrap();
+        out.truncate(len);
+        out
+    };
+    let y_data = encode_plane(&mut luma);
+    let blue_chroma = encode_plane(&mut cb);
+    let red_chroma = encode_plane(&mut cr);
+
+    let encoded = Tile {
+        y_quant_index: 0,
+        cb_quant_index: 0,
+        cr_quant_index: 0,
+        x: 0,
+        y: 0,
+        y_data: &y_data,
+        cb_data: &blue_chroma,
+        cr_data: &red_chroma,
+    };
+
+    let mut decoder = TileDecoder::new();
+    let pixels = decoder.decode(&encoded, &[quant], EntropyAlgorithm::Rlgr3).unwrap();
+
+    for (actual, expected) in pixels.chunks_exact(4).zip(input.chunks_exact(4)) {
+        for channel in 0..3 {
+            assert!(
+                actual[channel].abs_diff(expected[channel]) <= 4,
+                "actual={actual:?} expected={expected:?}"
+            );
+        }
+        assert_eq!(actual[3], 255);
+    }
+}

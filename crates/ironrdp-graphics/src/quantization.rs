@@ -38,9 +38,10 @@ fn decode_block(buffer: &mut [i16], factor: i16) {
 }
 
 fn encode_block(buffer: &mut [i16], factor: i16) {
-    if factor > 0 {
+    if (1..15).contains(&factor) {
+        let scale = 1i16 << factor;
         for value in buffer {
-            *value >>= factor;
+            *value /= scale;
         }
     }
 }
