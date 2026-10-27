@@ -183,6 +183,21 @@ jobs:
       - name: Install build dependencies
         uses: ./.github/actions/install-build-deps
 
+      # Inlined rather than ./.github/actions/prune-rust-toolchains because the checkout is the
+      # release tag, which may predate that action.
+      - name: Prune Rust toolchains
+        shell: bash
+        run: |
+          rustup toolchain install
+          pinned="$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)"
+          rustup default "$pinned"
+          rustup toolchain list --quiet | tr -d '\r' | while read -r toolchain; do
+            if [ "$toolchain" != "$pinned" ]; then
+              rustup toolchain uninstall "$toolchain"
+            fi
+          done
+          rustup toolchain list
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
 
