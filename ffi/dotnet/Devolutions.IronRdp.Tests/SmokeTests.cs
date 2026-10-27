@@ -116,6 +116,14 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 3), new byte[stride * 3], stride));
         });
 
+        // oracle: DecodedImage::copy_rect_into doc contract (# Errors)
+        yield return ("decoded image copy rejects a stride whose last row overflows", () =>
+        {
+            var image = DecodedImage.New(PixelFormat.BgrA32, 8, 4);
+            var error = Throws<IronRdpException>(() => image.CopyRectInto(InclusiveRectangle.New(0, 0, 7, 3), new byte[8 * 4 * 4], nuint.MaxValue));
+            True(error.Message.Contains("buffer stride is too large"), $"error message: {error.Message}");
+        });
+
         yield return ("vec u8 round-trips bytes", () =>
         {
             var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });
@@ -275,8 +283,13 @@ internal static class SmokeTests
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
         var buf = WriteBuf.New();
         int i = 0;
-        while (!connector.DynState.IsTerminal())
+        for (int steps = 0; !connector.DynState.IsTerminal(); steps++)
         {
+            if (steps == 100)
+            {
+                throw new InvalidOperationException($"connector did not terminate after {i} server PDUs and {steps} steps");
+            }
+
             buf.Clear();
             if (connector.ShouldPerformSecurityUpgrade())
             {
@@ -286,11 +299,17 @@ internal static class SmokeTests
             {
                 connector.StepNoInput(buf);
             }
+            else if (i == HandshakeServerPdus.Length)
+            {
+                throw new InvalidOperationException($"connector wants more than the {i} server PDUs in HandshakeServerPdus");
+            }
             else
             {
                 connector.Step(HandshakeServerPdus[i++], buf);
             }
         }
+
+        Equal(HandshakeServerPdus.Length, i, "server PDUs consumed by the handshake");
 
         var stage = ActiveStage.New(connector.ConsumeAndCastToClientConnectorState().GetConnectedResult());
         var image = DecodedImage.New(PixelFormat.BgrX32, 8, 4);

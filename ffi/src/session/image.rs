@@ -41,8 +41,12 @@ pub mod ffi {
         /// # Errors
         ///
         /// Fails when `rect` is inverted or reaches past the image, when one row of `rect` does not fit
-        /// in `buffer_stride`, or when `buffer` is too short to hold the last row of `rect`.
-        #[expect(clippy::nonminimal_bool, reason = "STYLE.md spells invariants out positively")]
+        /// in `buffer_stride`, when the last row of `rect` would start past `usize::MAX`, or when `buffer`
+        /// is too short to hold the last row of `rect`.
+        #[expect(
+            clippy::nonminimal_bool,
+            reason = "each check is written as the invariant it guards, e.g. `row_end <= buffer_stride`"
+        )]
         pub fn copy_rect_into(
             &self,
             rect: &InclusiveRectangle,
