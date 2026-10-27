@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-egfx-v0.4.0...ironrdp-egfx-v0.5.0)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- [**breaking**] Composite surfaces that the server maps to RemoteApp windows, exposed as `WindowUpdate`s through `GraphicsPipelineClient::drain_window_updates` ([#2197](https://github.com/Devolutions/IronRDP/issues/2197)) ([6e54d5e9ec](https://github.com/Devolutions/IronRDP/commit/6e54d5e9ec58c69debaff96fa49bed4343348d3e))
+
+- Ignore a window mapping larger than its surface, keeping the previous mapping ([#2197](https://github.com/Devolutions/IronRDP/issues/2197)) ([6e54d5e9ec](https://github.com/Devolutions/IronRDP/commit/6e54d5e9ec58c69debaff96fa49bed4343348d3e))
+
+### <!-- 4 -->Bug Fixes
+
+- Reject a Reset Graphics PDU shorter than its 340 bytes instead of skipping its trailing pad past the end of the buffer ([#2257](https://github.com/Devolutions/IronRDP/issues/2257)) ([7fc80c4dba](https://github.com/Devolutions/IronRDP/commit/7fc80c4dbada6fbfe0349ee01f3b0a5ba9457df0))
+
+- Keep Progressive tile state when the server moves a surface to a new codec context, which left stale 64-pixel columns on screen ([#2117](https://github.com/Devolutions/IronRDP/issues/2117)) ([00820f6e47](https://github.com/Devolutions/IronRDP/commit/00820f6e4765b09721877264e461a2feeb32ac48))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-graphics` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+
+
 ## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-egfx-v0.3.0...ironrdp-egfx-v0.4.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

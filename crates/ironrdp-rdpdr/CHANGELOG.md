@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.8.0...ironrdp-rdpdr-v0.9.0)] - 2026-10-27
+
+### <!-- 4 -->Bug Fixes
+
+- Reject a `ScardAccessStartedEventCall` too short for its 4-byte `Unused` field ([#2257](https://github.com/Devolutions/IronRDP/issues/2257)) ([7fc80c4dba](https://github.com/Devolutions/IronRDP/commit/7fc80c4dbada6fbfe0349ee01f3b0a5ba9457df0))
+
+- Accept a `DR_DRIVE_QUERY_DIRECTORY_RSP` without its optional padding byte ([#2130](https://github.com/Devolutions/IronRDP/issues/2130)) ([b69cda22ec](https://github.com/Devolutions/IronRDP/commit/b69cda22ec692e212caffdbb9fe0c4e5ff1d2696))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-v0.7.0...ironrdp-rdpdr-v0.8.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

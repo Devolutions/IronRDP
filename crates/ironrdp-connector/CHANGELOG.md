@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.12.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.11.0...ironrdp-connector-v0.12.0)] - 2026-10-27
+
+### <!-- 0 -->Security
+
+- Negotiate Entra ID authentication (`SecurityProtocol::RDSAAD`) with `Config::with_entra_auth`, exposing the server nonce through `entra_server_nonce` and sending the signed assertion with `submit_entra_assertion` ([#2248](https://github.com/Devolutions/IronRDP/issues/2248)) ([c790e6d4f2](https://github.com/Devolutions/IronRDP/commit/c790e6d4f2f8bf15ae66b2c29bffeca14ec19ff1))
+
+### <!-- 1 -->Features
+
+- [**breaking**] Add `Config::desktop_physical_size`, `desktop_orientation` and `device_scale_factor`, sent in the Client Core Data ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
+
+- [**breaking**] Add `Config::monitor_extended_layout`, sent as Client Monitor Extended Data when it describes every monitor of `monitor_layout` ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
+
+- [**breaking**] Add `Config::relative_mouse_input`, which announces relative mouse input and RDP 10.12 ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.10.0...ironrdp-connector-v0.11.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

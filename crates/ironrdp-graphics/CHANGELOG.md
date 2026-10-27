@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.10.0...ironrdp-graphics-v0.11.0)] - 2026-10-27
+
+### <!-- 4 -->Bug Fixes
+
+- RLGR3 decoding returns an error instead of overflowing when a value exceeds its remainder ([#2132](https://github.com/Devolutions/IronRDP/issues/2132)) ([e31f2b89ad](https://github.com/Devolutions/IronRDP/commit/e31f2b89adb6bd08c3cc240f9e357601323e1976))
+
+- `ProgressiveDecoder` keeps one tile grid per surface, shared by every codec context, and `delete_context` no longer releases it ([#2117](https://github.com/Devolutions/IronRDP/issues/2117)) ([00820f6e47](https://github.com/Devolutions/IronRDP/commit/00820f6e4765b09721877264e461a2feeb32ac48))
+
+### <!-- 5 -->Performance
+
+- Decode RLGR1 and RLGR3 about twice as fast with a new bit reader ([#2150](https://github.com/Devolutions/IronRDP/issues/2150)) ([9353b49810](https://github.com/Devolutions/IronRDP/commit/9353b4981066b373e56adfd0910902a8c5ea1ada))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.9.0...ironrdp-graphics-v0.10.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

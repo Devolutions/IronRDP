@@ -7,3 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ## [Unreleased]
+
+## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-vmconnect-v0.1.0...ironrdp-vmconnect-v0.2.0)] - 2026-10-27
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-async` public dependency to 0.12
+
+- [**breaking**] Update `ironrdp-connector` public dependency to 0.12
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11

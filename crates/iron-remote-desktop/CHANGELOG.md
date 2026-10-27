@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.1](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.8.0...iron-remote-desktop-v0.8.1)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- Add `RDCleanPathDetails::error_code` and `with_error_code`, carrying the reason code of an RDCleanPath error ([#2127](https://github.com/Devolutions/IronRDP/issues/2127)) ([0c7e3abfb3](https://github.com/Devolutions/IronRDP/commit/0c7e3abfb3fbbef0027ce74d50c6038c245978e0))
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/iron-remote-desktop-v0.7.1...iron-remote-desktop-v0.8.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

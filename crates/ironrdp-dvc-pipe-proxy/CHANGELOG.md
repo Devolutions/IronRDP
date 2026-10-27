@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-pipe-proxy-v0.6.0...ironrdp-dvc-pipe-proxy-v0.7.0)] - 2026-10-27
+
+### <!-- 7 -->Build
+
+- Declare `ironrdp-dvc` as a public dependency, since `DvcNamedPipeProxy` implements its `DvcProcessor` trait ([#2213](https://github.com/Devolutions/IronRDP/issues/2213)) ([405e6576ba](https://github.com/Devolutions/IronRDP/commit/405e6576bac7c64b04efc8a0d00beeecdc648356))
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
+
+
+
 ## [[0.6.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-pipe-proxy-v0.5.0...ironrdp-dvc-pipe-proxy-v0.6.0)] - 2026-10-23
 
 ### <!-- 4 -->Bug Fixes

@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.8.0...ironrdp-rdpdr-native-v0.9.0)] - 2026-10-27
+
+### <!-- 4 -->Bug Fixes
+
+- The Unix drive backend opens server paths one component at a time inside the share and refuses `..`, symbolic links and mount points that lead outside it ([#2221](https://github.com/Devolutions/IronRDP/issues/2221)) ([bbebd384ce](https://github.com/Devolutions/IronRDP/commit/bbebd384cec912b5e77d7a64fb0fc7ed9b667014))
+
+- Refuse names Windows cannot hold with `STATUS_OBJECT_NAME_INVALID`, and open without blocking, so a FIFO in the share cannot stall the client ([#2221](https://github.com/Devolutions/IronRDP/issues/2221)) ([bbebd384ce](https://github.com/Devolutions/IronRDP/commit/bbebd384cec912b5e77d7a64fb0fc7ed9b667014))
+
+- Create, rename, delete and directory queries follow MS-FSA and report the NT status the Windows backend reports ([#2221](https://github.com/Devolutions/IronRDP/issues/2221)) ([bbebd384ce](https://github.com/Devolutions/IronRDP/commit/bbebd384cec912b5e77d7a64fb0fc7ed9b667014))
+
+- Cap open files at a quarter of the descriptor limit, at most 1024 ([#2221](https://github.com/Devolutions/IronRDP/issues/2221)) ([bbebd384ce](https://github.com/Devolutions/IronRDP/commit/bbebd384cec912b5e77d7a64fb0fc7ed9b667014))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-rdpdr` public dependency to 0.9
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
+
+
+
 ## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpdr-native-v0.7.0...ironrdp-rdpdr-native-v0.8.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

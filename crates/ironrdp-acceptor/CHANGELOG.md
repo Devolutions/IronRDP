@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.12.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.11.0...ironrdp-acceptor-v0.12.0)] - 2026-10-27
+
+### <!-- 4 -->Bug Fixes
+
+- Send `RDP` as the Demand Active source descriptor instead of an empty one, which Jump Desktop rejects ([#2119](https://github.com/Devolutions/IronRDP/issues/2119)) ([d921607fc8](https://github.com/Devolutions/IronRDP/commit/d921607fc817b72298cf7434e2bba887ebaf5674))
+
+- Stepping an `Acceptor`, `ChannelConnectionSequence` or `FinalizationSequence` after a failed step or after it finished returns an error instead of panicking ([#2231](https://github.com/Devolutions/IronRDP/issues/2231)) ([e51dcfee4a](https://github.com/Devolutions/IronRDP/commit/e51dcfee4a1edf7e92917c0eb5e8df6cc7a8ad64))
+
+- Send a zero `pduSource` in the Monitor Layout PDU, as MS-RDPBCGR 2.2.12.1 requires ([#2230](https://github.com/Devolutions/IronRDP/issues/2230)) ([3ca12ee636](https://github.com/Devolutions/IronRDP/commit/3ca12ee63687980ace30cd6ed59c2ab4f57cf157))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-async` public dependency to 0.12
+
+- [**breaking**] Update `ironrdp-connector` public dependency to 0.12
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-acceptor-v0.10.0...ironrdp-acceptor-v0.11.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

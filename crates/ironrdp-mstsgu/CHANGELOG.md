@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [[0.1.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-mstsgu-v0.0.2...ironrdp-mstsgu-v0.1.0)] - 2026-10-27
+
+### <!-- 7 -->Build
+
+- Declare `ironrdp-error` as a public dependency, since the `GwClient` methods return its `Error<GwErrorKind>` ([#2213](https://github.com/Devolutions/IronRDP/issues/2213)) ([405e6576ba](https://github.com/Devolutions/IronRDP/commit/405e6576bac7c64b04efc8a0d00beeecdc648356))
+
+
+
 ## [[0.0.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-mstsgu-v0.0.1...ironrdp-mstsgu-v0.0.2)] - 2026-10-23
 
 ### <!-- 1 -->Features

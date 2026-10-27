@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-com-plugin-v0.2.0...ironrdp-dvc-com-plugin-v0.3.0)] - 2026-10-27
+
+### <!-- 7 -->Build
+
+- Declare `ironrdp-dvc`, `ironrdp-pdu` and `ironrdp-svc` as public dependencies, since `load_dvc_plugin` exposes their types ([#2213](https://github.com/Devolutions/IronRDP/issues/2213)) ([405e6576ba](https://github.com/Devolutions/IronRDP/commit/405e6576bac7c64b04efc8a0d00beeecdc648356))
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
+
+
+
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-com-plugin-v0.1.3...ironrdp-dvc-com-plugin-v0.2.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpsnd"
-version = "0.10.0"
+version = "0.11.0"
 readme = "README.md"
 description = "RDPSND and AUDIO_PLAYBACK_DVC audio output channels and wave codecs implemented as described in MS-RDPEA"
 edition.workspace = true
@@ -29,10 +29,10 @@ __test = ["dep:visibility"]
 bitflags = "2.11"
 sha1 = "0.11"
 tracing = { version = "0.1", features = ["log"] }
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.9" } # public
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.9" } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.10" } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.10" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["alloc"] }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10", features = ["alloc"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11", features = ["alloc"] } # public
 visibility = { version = "0.1", optional = true }
 
 [lints]

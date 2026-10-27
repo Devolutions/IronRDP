@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.10.0...ironrdp-pdu-v0.11.0)] - 2026-10-27
+
+### <!-- 0 -->Security
+
+- Add `FailureCode::ENTRA_AUTH_REQUIRED_BY_SERVER` ([#2248](https://github.com/Devolutions/IronRDP/issues/2248)) ([c790e6d4f2](https://github.com/Devolutions/IronRDP/commit/c790e6d4f2f8bf15ae66b2c29bffeca14ec19ff1))
+
+### <!-- 1 -->Features
+
+- [**breaking**] `LogonErrorNotificationType` gains `NtStatus(u32)` for any other error type, so decoding no longer fails on one, and adds `from_u32`, `as_u32` and `carries_session_id` ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
+
+- Add `ConnectionType::from_specified` and `specified_value` ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
+
+- Encode `FastPathInputEvent::MouseEventRel` ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
+
+### <!-- 4 -->Bug Fixes
+
+- Decoding a truncated Client Core Data, MCS Connect Initial or other PDU with padding returns an error instead of panicking ([#2130](https://github.com/Devolutions/IronRDP/issues/2130)) ([b69cda22ec](https://github.com/Devolutions/IronRDP/commit/b69cda22ec692e212caffdbb9fe0c4e5ff1d2696)) ([#2257](https://github.com/Devolutions/IronRDP/issues/2257)) ([7fc80c4dba](https://github.com/Devolutions/IronRDP/commit/7fc80c4dbada6fbfe0349ee01f3b0a5ba9457df0))
+
+- Licensing returns an `InvalidData` error for an RSA modulus below 512 bits instead of panicking on a zero modulus ([#2225](https://github.com/Devolutions/IronRDP/issues/2225)) ([c33861736a](https://github.com/Devolutions/IronRDP/commit/c33861736a9bf6080ba4f840a772f4133700b1d5))
+
+
+
 ## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.9.0...ironrdp-pdu-v0.10.0)] - 2026-10-23
 
 ### <!-- 0 -->Security
