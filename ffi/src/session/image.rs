@@ -1,7 +1,8 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::utils::ffi::BytesSlice;
+    use crate::error::ffi::IronRdpError;
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
     pub struct DecodedImage(pub ironrdp::session::image::DecodedImage);
 
@@ -14,10 +15,19 @@ pub mod ffi {
             )))
         }
 
-        // The bytes array lives as long as the DecodedImage
-        #[diplomat::attr(auto, getter = "data")]
-        pub fn get_data<'a>(&'a self) -> Box<BytesSlice<'a>> {
-            Box::new(BytesSlice(self.0.data()))
+        /// How many bytes the image holds, so you know how big a buffer to hand to [`Self::fill_data`].
+        #[diplomat::attr(auto, getter = "data_size")]
+        pub fn get_data_size(&self) -> usize {
+            self.0.data().len()
+        }
+
+        /// Copies the image bytes into the start of `buffer` and leaves the rest of it alone.
+        ///
+        /// # Errors
+        ///
+        /// Fails when `buffer` is shorter than [`Self::get_data_size`].
+        pub fn fill_data(&self, buffer: &mut [u8]) -> Result<(), Box<IronRdpError>> {
+            crate::utils::fill_prefix(buffer, self.0.data())
         }
 
         #[diplomat::attr(auto, getter = "width")]

@@ -11,19 +11,36 @@ internal static class SmokeTests
 
     internal static IEnumerable<(string Name, System.Action Run)> Cases()
     {
+        // oracle: ffi/INTENT.md "Copying into caller buffers" (bytes past the image)
         yield return ("decoded image exposes its size and zeroed data", () =>
         {
             var image = DecodedImage.New(PixelFormat.BgrA32, 64, 32);
             Equal(64, (int)image.Width, "width");
             Equal(32, (int)image.Height, "height");
 
-            var data = image.Data;
-            Equal(64 * 32 * 4, (int)data.Size, "data size");
-            var bytes = new byte[(int)data.Size + 1];
+            Equal(64 * 32 * 4, (int)image.DataSize, "data size");
+            var bytes = new byte[(int)image.DataSize + 1];
             Array.Fill(bytes, (byte)0xff);
-            data.Fill(bytes);
+            image.FillData(bytes);
             True(bytes[..^1].All(b => b == 0), "new image is zeroed");
             Equal((byte)0xff, bytes[^1], "bytes past the image are untouched");
+        });
+
+        // oracle: ffi/INTENT.md "Copying into caller buffers"
+        yield return ("decoded image rejects a short output buffer", () =>
+        {
+            var image = DecodedImage.New(PixelFormat.BgrA32, 64, 32);
+            var error = Throws<IronRdpException>(() => image.FillData(new byte[4]));
+            Equal(IronRdpErrorKind.Generic, error.Inner.Kind, "error kind");
+            True(error.Message.Contains("buffer is too small"), $"error message: {error.Message}");
+        });
+
+        // oracle: ffi/README.md lists DecodedImage as IDisposable; Diplomat's generated Dispose remarks say later calls throw ObjectDisposedException
+        yield return ("disposed decoded image throws ObjectDisposedException", () =>
+        {
+            var image = DecodedImage.New(PixelFormat.BgrA32, 64, 32);
+            image.Dispose();
+            Throws<ObjectDisposedException>(() => _ = image.DataSize);
         });
 
         yield return ("vec u8 round-trips bytes", () =>
@@ -35,6 +52,7 @@ internal static class SmokeTests
             True(bytes.SequenceEqual(new byte[] { 1, 2, 3 }), "filled bytes");
         });
 
+        // oracle: ffi/INTENT.md "Copying into caller buffers"
         yield return ("fill leaves the rest of a larger buffer alone", () =>
         {
             var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });
@@ -43,6 +61,7 @@ internal static class SmokeTests
             True(bytes.SequenceEqual(new byte[] { 1, 2, 3, 9, 9 }), "filled bytes");
         });
 
+        // oracle: ffi/INTENT.md "Copying into caller buffers"
         yield return ("short output buffer surfaces IronRdpException", () =>
         {
             var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });
@@ -51,6 +70,7 @@ internal static class SmokeTests
             True(error.Message.Contains("buffer is too small"), $"error message: {error.Message}");
         });
 
+        // oracle: ffi/INTENT.md "Copying into caller buffers"
         yield return ("write buf reads into a larger buffer and rejects a short one", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");

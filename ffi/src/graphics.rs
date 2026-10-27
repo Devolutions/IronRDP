@@ -2,8 +2,12 @@
 pub mod ffi {
     use std::sync::Arc;
 
-    use crate::utils::ffi::BytesSlice;
+    use crate::utils::ffi::VecU8;
 
+    /// The client accepts pointers up to 384x384 pixels, and each one decodes to 4 bytes per
+    /// pixel, so a single pointer can hold about 576 KiB the .NET garbage collector never sees.
+    /// That's why .NET callers get `Dispose` to free it right away.
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct DecodedPointer(pub Arc<ironrdp::graphics::pointer::DecodedPointer>);
 
@@ -29,8 +33,8 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "data")]
-        pub fn get_data<'a>(&'a self) -> Box<BytesSlice<'a>> {
-            Box::new(BytesSlice(&self.0.bitmap_data))
+        pub fn get_data(&self) -> Box<VecU8> {
+            Box::new(VecU8(self.0.bitmap_data.clone()))
         }
     }
 }

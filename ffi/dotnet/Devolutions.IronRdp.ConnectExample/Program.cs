@@ -48,7 +48,7 @@ namespace Devolutions.IronRdp.ConnectExample
 
                     while (!outputIterator.IsEmpty())
                     {
-                        var output = outputIterator.Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
+                        using var output = outputIterator.Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
                         Console.WriteLine($"Output type: {output.GetType()}");
                         if (output.EnumType == ActiveStageOutputType.Terminate)
                         {
@@ -58,7 +58,7 @@ namespace Devolutions.IronRdp.ConnectExample
 
                         if (output.EnumType == ActiveStageOutputType.ResponseFrame)
                         {
-                            var responseFrame = output.ResponseFrame!;
+                            using var responseFrame = output.ResponseFrame!;
                             byte[] responseFrameBytes = new byte[responseFrame.Size];
                             responseFrame.Fill(responseFrameBytes);
                             await framed.Write(responseFrameBytes);
@@ -79,10 +79,8 @@ namespace Devolutions.IronRdp.ConnectExample
         {
             int width = decodedImage.Width;
             int height = decodedImage.Height;
-            var data = decodedImage.Data;
-
-            var bytes = new byte[data.Size];
-            data.Fill(bytes);
+            var bytes = new byte[decodedImage.DataSize];
+            decodedImage.FillData(bytes);
 
             using Image<Rgba32> image = new Image<Rgba32>(width, height);
 

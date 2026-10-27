@@ -24,3 +24,8 @@ It does not check overlapping read-only calls.
 The hand-written layer adds locks only at fragile places, such as `Framed`, which lets one `ReadPdu` loop run while other tasks write.
 Outside those places, a consumer makes one call at a time on each native object.
 When a consumer disposes `WinCliprdr`, it does so on the thread that created it.
+
+## Copying into caller buffers
+
+A method that copies native bytes into a caller's buffer (`Fill`, `FillData`, `ReadIntoBuf`) writes them at the start of the buffer.
+It throws `IronRdpException` when the buffer is shorter than the data, and leaves every byte past the data untouched.
