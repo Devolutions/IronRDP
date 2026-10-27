@@ -75,6 +75,12 @@ pub struct RpcApp {
     pending_touch_mouse: Vec<ironrdp::input::Operation>,
     /// Origin of the touch frame timestamps.
     touch_epoch: Instant,
+    /// Whether the user requested closing the local desktop window for the active session.
+    ///
+    /// INVARIANT: set on `CloseRequested`, cleared on `Connected` and `AutoReconnected`, and read by `Terminated`.
+    ///
+    /// UNTESTED: `CloseRequested` sets `close_requested` and `Terminated` reads it on a running winit event loop.
+    /// Keep `close_requested`, `Connected`, `AutoReconnected`, and `Terminated` wired together so close exits cleanly.
     close_requested: bool,
     /// RemoteApp mode: server windows open as local windows and no desktop window is shown.
     remote_app: bool,
@@ -165,43 +171,26 @@ impl RpcApp {
         })
     }
 
-    /// Whether `error` is a transport EOF, abort, or reset expected after a local close request.
-    ///
-    /// UNTESTED: `CloseRequested` sets `close_requested` and `Terminated` checks it on a running winit event loop, so user-initiated window close does not exit with `PROTOCOL_ERR`.
-    /// Keep `close_requested` and `Terminated` wired together when changing shutdown handling.
-    fn is_expected_shutdown_error(error: &ironrdp::session::SessionError) -> bool {
+    /// Whether `error` is a transport EOF, abort, reset, or broken pipe expected after a local close request.
+    pub fn is_expected_shutdown_error(error: &ironrdp::session::SessionError) -> bool {
         use std::io::ErrorKind;
 
-        use ironrdp::core::DecodeErrorKind;
-        use ironrdp::session::SessionErrorKind;
-
-        match error.kind() {
-            SessionErrorKind::Decode(decode) => matches!(decode.kind(), DecodeErrorKind::NotEnoughBytes { .. }),
-            SessionErrorKind::Custom => {
-                let mut source = error.source();
-                while let Some(err) = source {
-                    if let Some(decode) = err.downcast_ref::<ironrdp::core::DecodeError>()
-                        && matches!(decode.kind(), DecodeErrorKind::NotEnoughBytes { .. })
-                    {
-                        return true;
-                    }
-                    if let Some(io) = err.downcast_ref::<std::io::Error>()
-                        && matches!(
-                            io.kind(),
-                            ErrorKind::UnexpectedEof
-                                | ErrorKind::ConnectionAborted
-                                | ErrorKind::ConnectionReset
-                                | ErrorKind::BrokenPipe
-                        )
-                    {
-                        return true;
-                    }
-                    source = err.source();
-                }
-                false
+        let mut source = error.source();
+        while let Some(err) = source {
+            if let Some(io) = err.downcast_ref::<std::io::Error>()
+                && matches!(
+                    io.kind(),
+                    ErrorKind::UnexpectedEof
+                        | ErrorKind::ConnectionAborted
+                        | ErrorKind::ConnectionReset
+                        | ErrorKind::BrokenPipe
+                )
+            {
+                return true;
             }
-            _ => false,
+            source = err.source();
         }
+        false
     }
 
     fn touch_timestamp_us(&self) -> u64 {
@@ -671,7 +660,10 @@ impl RpcApp {
 
     fn handle_output_event(&mut self, event_loop: &ActiveEventLoop, event: RdpOutputEvent) {
         match event {
-            RdpOutputEvent::Connected => info!("RDP session connected"),
+            RdpOutputEvent::Connected => {
+                self.close_requested = false;
+                info!("RDP session connected");
+            }
             RdpOutputEvent::MonitorLayout(monitors) => {
                 debug!(monitor_count = monitors.len(), "Received remote monitor layout");
             }
@@ -774,6 +766,7 @@ impl RpcApp {
                 let _ = response.send(AutoReconnectDecision::Stop);
             }
             RdpOutputEvent::AutoReconnected => {
+                self.close_requested = false;
                 info!("RDP session automatically reconnected");
             }
             RdpOutputEvent::LogonError(errors) => {

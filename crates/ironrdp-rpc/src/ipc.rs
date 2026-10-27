@@ -93,9 +93,7 @@ pub const MAX_TOUCH_FRAMES: usize = 64;
 
 /// Maximum contacts in one MS-RDPEI pen frame accepted over RPC.
 ///
-/// The session enables multipen injection only when the server supports it, and RPC callers cannot
-/// see that negotiation, so only a single pen contact with `deviceId == 0` is accepted
-/// ([MS-RDPEI] 2.2.3.7.1.1).
+/// Stateless conversion keeps `device_id`; the RDPEI channel gates nonzero IDs on multipen ([MS-RDPEI] 2.2.3.7.1.1).
 pub const MAX_PEN_CONTACTS: usize = 1;
 
 /// Maximum pen frames in one [`Request::Pen`] PDU accepted over RPC.
@@ -289,7 +287,7 @@ fn touch_contact_from_request(contact: TouchContactRequest) -> Result<TouchConta
 /// Rejects empty frames/contacts, count limits, a nonzero first-frame offset,
 /// unknown or illegal flag combinations, optional-field semantic ranges, and values outside the
 /// MS-RDPEI varint ranges used on the wire.
-/// The RDPEI channel checks negotiated multipen support before transmitting nonzero device IDs.
+/// Stateless conversion keeps `device_id`; the RDPEI channel gates nonzero IDs on multipen ([MS-RDPEI] 2.2.3.7.1.1).
 pub fn pen_event_from_request(encode_time: u32, frames: Vec<PenFrameRequest>) -> Result<PenEventPdu, Response> {
     if frames.is_empty() {
         return Err(Response::typed_error(
