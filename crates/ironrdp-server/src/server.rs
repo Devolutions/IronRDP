@@ -5170,22 +5170,6 @@ impl RdpServer {
             });
         }
 
-        if !result.input_events.is_empty() {
-            debug!("Handling input event backlog from acceptor sequence");
-            // Set on a reactivation pass, where EGFX may already be on the tunnel.
-            let current_udp_transport = udp_transport.borrow().clone();
-            self.handle_input_backlog(
-                conn,
-                writer,
-                result.io_channel_id,
-                result.user_channel_id,
-                result.message_channel_id,
-                result.input_events,
-                current_udp_transport.as_ref(),
-            )
-            .await?;
-        }
-
         #[cfg(feature = "egfx")]
         if let Some(gfx_handle) = conn.gfx_handle.as_ref() {
             let mut server = gfx_handle
@@ -5239,7 +5223,6 @@ impl RdpServer {
                 CapabilitySet::Bitmap(b) => {
                     if !b.desktop_resize_flag {
                         debug!("Desktop resize is not supported by the client");
-                        continue;
                     }
 
                     let client_size = DesktopSize {
@@ -5250,12 +5233,12 @@ impl RdpServer {
 
                     // It's problematic when the client didn't resize, as we send bitmap updates that don't fit.
                     // The client will likely drop the connection.
-                    if client_size.width < display_size.width || client_size.height < display_size.height {
+                    if (!b.desktop_resize_flag && client_size != display_size)
+                        || client_size.width < display_size.width
+                        || client_size.height < display_size.height
+                    {
                         // TODO: we may have different behaviour instead, such as clipping or scaling?
-                        warn!(
-                            "Client size doesn't fit the server size: {:?} < {:?}",
-                            client_size, display_size
-                        );
+                        warn!(?client_size, ?display_size, "Client size differs from the server size");
                     }
                 }
                 CapabilitySet::SurfaceCommands(c) => {
@@ -5321,6 +5304,22 @@ impl RdpServer {
                 }
                 _ => {}
             }
+        }
+
+        if !result.input_events.is_empty() {
+            debug!("Handling input event backlog from acceptor sequence");
+            // Set on a reactivation pass, where EGFX may already be on the tunnel.
+            let current_udp_transport = udp_transport.borrow().clone();
+            self.handle_input_backlog(
+                conn,
+                writer,
+                result.io_channel_id,
+                result.user_channel_id,
+                result.message_channel_id,
+                result.input_events,
+                current_udp_transport.as_ref(),
+            )
+            .await?;
         }
 
         let desktop_size = self.display.lock().await.size().await;

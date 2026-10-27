@@ -1,4 +1,5 @@
 mod acceptor;
+mod activation;
 mod autodetect;
 mod connection_policy;
 mod credential_validator;
