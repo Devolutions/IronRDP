@@ -13,8 +13,16 @@ use super::backend::FileIdentity;
 /// The most locks the server may hold at once, so it cannot grow the table without bound.
 const MAX_LOCKS: usize = 65_536;
 
-/// The most lock requests that may wait at once, so the server cannot queue them without bound.
-const MAX_WAITING: usize = 1_024;
+/// The most ranges one lock or unlock request may carry.
+///
+/// Windows sends one range per lock request.
+/// Every range is checked against every held lock, so the cap bounds the work one request causes.
+const MAX_RANGES: usize = 64;
+
+/// The most ranges the waiting requests may carry together.
+///
+/// Every unlock and close retries every waiting request, so the cap bounds both the queue and the work each release causes.
+const MAX_WAITING_RANGES: usize = 256;
 
 /// STATUS_FILE_LOCK_CONFLICT, which [`NtStatus`] does not name.
 pub(crate) fn file_lock_conflict() -> NtStatus {
@@ -37,7 +45,7 @@ pub(crate) struct ByteRangeLocks {
     locks: Vec<ByteRangeLock>,
     /// Requests waiting for conflicting locks to go away, oldest first.
     ///
-    /// INVARIANT: holds at most `MAX_WAITING` entries.
+    /// INVARIANT: the entries carry at most `MAX_WAITING_RANGES` ranges together.
     waiting: Vec<WaitingLock>,
 }
 
@@ -110,7 +118,8 @@ impl ByteRangeLocks {
         match self.try_lock(request.file_id, identity, ranges, exclusive) {
             Ok(()) => Some(NtStatus::SUCCESS),
             Err(status) if status == NtStatus::LOCK_NOT_GRANTED && wait => {
-                if MAX_WAITING <= self.waiting.len() {
+                let waiting_ranges = self.waiting.iter().map(|waiting| waiting.ranges.len()).sum::<usize>();
+                if MAX_WAITING_RANGES < waiting_ranges.saturating_add(ranges.len()) {
                     return Some(NtStatus::INSUFFICIENT_RESOURCES);
                 }
                 self.waiting.push(WaitingLock {
@@ -235,10 +244,13 @@ pub(crate) fn response(request: DeviceIoRequest, status: NtStatus) -> SvcMessage
     ))
 }
 
-/// Refuses an empty request and a range past the largest offset, as [MS-FSA] 2.1.5.8 and 2.1.5.9 require.
+/// Refuses an empty request and a range past the largest offset, as [MS-FSA] 2.1.5.8 and 2.1.5.9 require, and more ranges than `MAX_RANGES`.
 fn validate(ranges: &[RdpLockInfo]) -> Result<(), NtStatus> {
     if ranges.is_empty() {
         return Err(NtStatus::INVALID_PARAMETER);
+    }
+    if MAX_RANGES < ranges.len() {
+        return Err(NtStatus::INSUFFICIENT_RESOURCES);
     }
     if ranges
         .iter()
@@ -313,14 +325,32 @@ mod tests {
             table.lock(&request(1), identity(), &[range(0, 10)], true, false),
             Some(NtStatus::SUCCESS)
         );
-        for _ in 0..MAX_WAITING {
+        for _ in 1..MAX_WAITING_RANGES {
             assert_eq!(table.lock(&request(2), identity(), &[range(0, 10)], true, true), None);
         }
 
-        let status = table.lock(&request(2), identity(), &[range(0, 10)], true, true);
+        // One range is left, so a request with two waits for nothing.
+        let status = table.lock(&request(2), identity(), &[range(0, 10), range(5, 1)], true, true);
 
         assert_eq!(status, Some(NtStatus::INSUFFICIENT_RESOURCES));
-        assert_eq!(table.waiting.len(), MAX_WAITING);
+        assert_eq!(table.waiting.len(), MAX_WAITING_RANGES - 1);
+    }
+
+    // oracle: mutant per-request range cap removed
+    #[test]
+    fn a_request_with_too_many_ranges_is_refused() {
+        let mut table = ByteRangeLocks::default();
+        let ranges = (0..=MAX_RANGES)
+            .map(|index| range(u64::try_from(index).expect("index fits u64"), 1))
+            .collect::<Vec<_>>();
+
+        let locked = table.lock(&request(1), identity(), &ranges, true, false);
+        let (unlocked, granted) = table.unlock(1, identity(), &ranges);
+
+        assert_eq!(locked, Some(NtStatus::INSUFFICIENT_RESOURCES));
+        assert_eq!(unlocked, NtStatus::INSUFFICIENT_RESOURCES);
+        assert!(granted.is_empty());
+        assert!(table.locks.is_empty());
     }
 
     // oracle: mutant rollback of the ranges taken before a conflict removed
