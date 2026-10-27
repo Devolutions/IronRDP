@@ -6,6 +6,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.7.0...ironrdp-rdpsnd-native-v0.8.0)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- Harden Windows client playback path ([#1648](https://github.com/Devolutions/IronRDP/issues/1648)) ([2d9a9bf114](https://github.com/Devolutions/IronRDP/commit/2d9a9bf114dcf41a1ddc7343f564bc2e8d1d06db)) 
+
+  Keep client format order for wFormatNo, play pre-v8 Wave PDUs, and apply
+  volume on a broader CPAL PCM offer so ActiveX mode 0 can redirect remote
+  audio reliably.
+  
+  Also fix clippy noise in the RDPSND client suite and keep interleaved
+  volume L/R phase stable across wave blocks. Volume scaling is a simple
+  amplitude map, not a logarithmic MS-RDPEA model.
+
+- Wire MS-RDPEAI capture into Windows client and ActiveX ([#1642](https://github.com/Devolutions/IronRDP/issues/1642)) ([205fe038cc](https://github.com/Devolutions/IronRDP/commit/205fe038cc693598adf803fe181526b789b2ec3d)) 
+
+  Add the client MS-RDPEAI capture path on top of hardened RDPSND
+  playback: connector CFG + static channel wiring, CPAL PCM capture
+  backend, ironrdp-client --audio-capture, and ActiveX
+  AudioCaptureRedirectionMode.
+  
+  PCM capture only accepts encode formats that match the Open capture
+  stream, rejects non-16-bit capture (Data PDU size contract), and gates
+  the capture backend behind ironrdp-rdpsnd-native/capture.
+  
+  Depends on #1648 (playback).
+
+- [**breaking**] Compressed audio over AUDIO_PLAYBACK_DVC ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483)) 
+
+  Windows 8 and later servers stream audio over the AUDIO_PLAYBACK_DVC and
+  AUDIO_PLAYBACK_LOSSY_DVC dynamic channels, preferring AAC or ADPCM on
+  constrained links, but IronRDP declined those channels and could only
+  play PCM and Opus. Wave Confirm PDUs echoed the server timestamp,
+  playback dropped audio when its fixed 500 ms ring filled, and devices
+  could not be chosen.
+  
+  - `ironrdp-rdpsnd` gains a pure `codec` module (PCM, G.711 A-law and
+  µ-law, IMA and Microsoft ADPCM decoders and encoders, bit-exact with the
+  Windows ACM codecs), an `RdpsndDvc` processor whose `RdpsndDvcState`
+  lets both dynamic channels share one negotiation (Windows negotiates on
+  the reliable channel and sends AAC on the lossy one), the UDP Wave
+  datagrams, and a `playout` jitter-buffer policy. Wave Confirm PDUs
+  report the hold time plus the handler's playback latency, and handlers
+  pick the formats to advertise from the server's list.
+  - The CPAL backend decodes every offered format it can, including AAC
+  through Media Foundation on Windows, plays through the jitter buffer
+  with a configurable latency target, reports buffered plus device
+  latency, follows the default device or a selected one, and maps the
+  server volume to the Windows audio session. Microphone capture encodes
+  to PCM, G.711 or ADPCM and selects its device.
+  - `ironrdp-client` registers the dynamic channels next to the static one
+  on a shared backend and adds `AudioConfig` (`ironrdp_audiooutputdevice`,
+  `ironrdp_audioinputdevice`, `ironrdp_audiolatency`); the viewer adds
+  `--audio-output-device`, `--audio-input-device`, `--audio-latency` and
+  `--list-audio-devices`.
+
+### <!-- 4 -->Bug Fixes
+
+- Stop blocking the real-time playback callback ([#1803](https://github.com/Devolutions/IronRDP/issues/1803)) ([850f654673](https://github.com/Devolutions/IronRDP/commit/850f6546730cff1a6b858864f6fbf9cb7d6264fd)) 
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.6.0...ironrdp-rdpsnd-native-v0.7.0)] - 2026-07-10
 
 ### <!-- 4 -->Bug Fixes

@@ -17,9 +17,9 @@ doctest = false
 
 [dependencies]
 futures-core = "0.3"
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.9" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.10" }
-ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.1" } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.10" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11" }
+ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.2" } # public
 ironrdp-usb = { path = "../ironrdp-usb", version = "0.1" }
 nusb = { version = "0.2", features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }

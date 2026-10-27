@@ -6,6 +6,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.12.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.11.0...ironrdp-connector-v0.12.0)] - 2026-10-27
+
+### <!-- 0 -->Security
+
+- Support Entra RDS AAD session authentication ([#2248](https://github.com/Devolutions/IronRDP/issues/2248)) ([c790e6d4f2](https://github.com/Devolutions/IronRDP/commit/c790e6d4f2f8bf15ae66b2c29bffeca14ec19ff1)) 
+
+  Add MS-RDPBCGR RDS AAD (`SecurityProtocol::RDSAAD`) negotiation and
+  NUL-terminated JSON nonce, assertion, and authentication-result framing
+  to `ironrdp-connector`, along with
+  `FailureCode::ENTRA_AUTH_REQUIRED_BY_SERVER` in `ironrdp-pdu`.
+  
+  Expose the optional `entra-auth` feature in `ironrdp-client`
+  (`client-entra-auth` in `ironrdp`) to acquire or accept
+  proof-of-possession RDP access tokens, fetch fresh AAD challenge nonces,
+  sign compact JWS assertions with RSA-256 and `req_cnf` key binding, and
+  enforce strict TLS validation without CredSSP or password fallback.
+  
+  ---------
+
+### <!-- 1 -->Features
+
+- [**breaking**] Broaden mstscax compatibility ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615)) 
+
+  Hosts written against Microsoft's mstscax control (RDM, MsRdpEx,
+  scripting hosts, mstsc-style shells) still hit members that IronRDP's
+  ActiveX control left unimplemented. A comparison against mstscax.dll
+  10.0.26100 (its embedded MSTSCLib type library, AdvancedSettings vtable
+  and property handlers) identified the most-used gaps; this change closes
+  six of them.
+  
+  Late-bound Automation: every published MSTSCLib member of the control
+  and of the Advanced, Secured, Transport and RemoteProgram settings
+  objects is reachable through `IDispatch` by name and DISPID, with
+  arguments coerced to the published Automation types and calls routed to
+  the existing vtable slots through `DispCallFunc`. The control also
+  implements `IProvideClassInfo2`, `IQuickActivate` and
+  `IPersistPropertyBag`/`IPersistPropertyBag2`. No type library is created
+  or registered, so `GetTypeInfo` still returns `E_NOTIMPL`.
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-connector-v0.10.0...ironrdp-connector-v0.11.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

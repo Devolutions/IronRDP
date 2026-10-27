@@ -6,6 +6,109 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.13.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.12.0...ironrdp-session-v0.13.0)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- [**breaking**] Composite surfaces mapped to RemoteApp windows ([#2197](https://github.com/Devolutions/IronRDP/issues/2197)) ([6e54d5e9ec](https://github.com/Devolutions/IronRDP/commit/6e54d5e9ec58c69debaff96fa49bed4343348d3e)) 
+
+  With the graphics pipeline in a RemoteApp session, Windows servers
+  present each application window from its own surface through
+  MapSurfaceToWindow or MapSurfaceToScaledWindow (MS-RDPEGFX 2.2.2.20 and
+  2.2.2.23). The client only forwarded these PDUs to handler callbacks, so
+  nothing those surfaces drew reached the windows.
+  
+  The compositor now records window mappings and, at each EndFrame,
+  materializes dirty regions of window-mapped surfaces into window
+  updates: the RAIL window ID, the presented size and the changed region
+  in window coordinates, scaled when the server asks for a different
+  target size. GraphicsPipelineClient::drain_window_updates exposes them,
+  the session emits ActiveStageOutput::WindowSurfaceUpdates and the client
+  forwards RdpOutputEvent::WindowSurfaceUpdates. A mapping the client
+  cannot present, such as a mapped area larger than its surface, is
+  ignored and the surface keeps its previous mapping; FreeRDP also refuses
+  oversized mappings.
+  
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+- [**breaking**] Broaden mstscax compatibility ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615)) 
+
+  Hosts written against Microsoft's mstscax control (RDM, MsRdpEx,
+  scripting hosts, mstsc-style shells) still hit members that IronRDP's
+  ActiveX control left unimplemented. A comparison against mstscax.dll
+  10.0.26100 (its embedded MSTSCLib type library, AdvancedSettings vtable
+  and property handlers) identified the most-used gaps; this change closes
+  six of them.
+  
+  Late-bound Automation: every published MSTSCLib member of the control
+  and of the Advanced, Secured, Transport and RemoteProgram settings
+  objects is reachable through `IDispatch` by name and DISPID, with
+  arguments coerced to the published Automation types and calls routed to
+  the existing vtable slots through `DispCallFunc`. The control also
+  implements `IProvideClassInfo2`, `IQuickActivate` and
+  `IPersistPropertyBag`/`IPersistPropertyBag2`. No type library is created
+  or registered, so `GetTypeInfo` still returns `E_NOTIMPL`.
+
+- Expose EGFX compositing ([#2120](https://github.com/Devolutions/IronRDP/issues/2120)) ([c25dba154b](https://github.com/Devolutions/IronRDP/commit/c25dba154b39a865c2a9ebc5c9074d16227ff2dd)) 
+
+  `ActiveStage` composites the EGFX output after each PDU. That only works
+  when the `GraphicsPipelineClient` lives inside it.
+  
+  Why run it somewhere else:
+  - H.264 decoding can be slow (a busy GPU).
+  - While it decodes, the session loop doesn't read the socket.
+  - Audio waits behind video, and GNOME Remote Desktop drops audio older
+  than 50 ms.
+  - Running the pipeline on its own thread fixes that, but then nothing
+  composites its output: the reset and composite steps were private.
+  
+  What this adds:
+  - `composite_graphics_pipeline(gfx, image)`: follows a pending
+  `ResetGraphics`, applies the finished output regions, and takes the
+  RemoteApp window regions.
+  - `CompositedGraphics`: whether it reset, the union region, each region,
+  and the window updates.
+  - `ActiveStage` calls it too, so its behavior doesn't change.
+  - `ironrdp-egfx` is now a `# public` dependency, since
+  `GraphicsPipelineClient` is in the signature. `CompositedGraphics` is
+  `#[non_exhaustive]`.
+  
+  Using it off the session loop, the caller also:
+  - registers a channel processor named `ironrdp_egfx::CHANNEL_NAME` that
+  forwards each message to the pipeline;
+  - sends the pipeline's replies (capabilities, frame acks) through the
+  tunnel `dvc_tunnel_for_channel` names, or over TCP with
+  `ActiveStage::encode_dvc_messages`;
+  - shares the image with the session under a lock (bitmaps and the
+  pointer write to it too);
+  - paints the window updates into the RemoteApp windows they name, as
+  `ActiveStage` returns them in `WindowSurfaceUpdates`;
+  - remembers a reset until the next paint, and tracks damage itself.
+  
+  The function's docs say the same.
+  
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)
+  
+  ---------
+
+### <!-- 4 -->Bug Fixes
+
+- Avoid hang on empty QOIZ updates ([#2147](https://github.com/Devolutions/IronRDP/issues/2147)) ([b343a6f9d3](https://github.com/Devolutions/IronRDP/commit/b343a6f9d3fedd2306204f668f745bfc44411ade)) 
+
+  The QOIZ decompressor allocated a zero-length output buffer for empty
+  input and kept doubling it, so a malformed update could spin the client
+  indefinitely.
+  Start with a non-empty buffer and return only the decompressed bytes.
+  
+  Keep the existing zstd-safe backend and streaming format.
+  Extract the compressor and decompressor behind test-only exports, and
+  cover consecutive flushed updates, cross-update history, large payloads,
+  empty input, and fixed streams from both encoders.
+  Defer the pure-Rust backend migration until it can preserve these
+  streaming and interoperability guarantees.
+
+
+
 ## [[0.12.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.11.0...ironrdp-session-v0.12.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

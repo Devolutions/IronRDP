@@ -16,7 +16,7 @@ categories.workspace = true
 doctest = false
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-rdpecam = { version = "0.1", path = "../ironrdp-rdpecam" } # public
+ironrdp-rdpecam = { version = "0.2", path = "../ironrdp-rdpecam" } # public
 tracing = { version = "0.1", features = ["log"] }
 windows = { version = "0.62", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
