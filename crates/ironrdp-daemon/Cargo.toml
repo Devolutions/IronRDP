@@ -12,6 +12,9 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+remote-guard = ["ironrdp-client/remote-guard"]
+
 [dependencies]
 ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["rustls", "dvc-pipe-proxy", "rdpdr", "smartcard", "vmconnect", "gateway", "entra-auth", "clipboard", "video"] } # public
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.3" }

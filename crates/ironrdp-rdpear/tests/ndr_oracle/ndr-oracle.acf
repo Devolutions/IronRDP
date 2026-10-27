@@ -1,0 +1,8 @@
+// Test-only type serialization; this is not an authentication backend.
+interface RdpearOracle
+{
+    typedef [encode, decode] PICKLE;
+    typedef [encode, decode] OPICKLE;
+    typedef [encode, decode] NPICKLE;
+    typedef [encode, decode] RPICKLE;
+}

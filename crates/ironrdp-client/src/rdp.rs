@@ -15,6 +15,8 @@ use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
 
 #[cfg(feature = "clipboard")]
+use ironrdp_cliprdr::backend::ClipboardMessage;
+#[cfg(feature = "clipboard")]
 pub use ironrdp_cliprdr::backend::CliprdrBackendFactory;
 use ironrdp_connector::connection_activation::ConnectionActivationState;
 use ironrdp_connector::{ConnectionOutcome, ConnectionResult, ConnectorResult};
@@ -76,8 +78,6 @@ use tracing::{debug, info, trace, warn};
 
 #[cfg(feature = "clipboard")]
 use crate::config::ClipboardType;
-#[cfg(feature = "clipboard")]
-use ironrdp_cliprdr::backend::ClipboardMessage;
 #[cfg(all(windows, feature = "dvc-com-plugin"))]
 use ironrdp_dvc_com_plugin::load_dvc_plugin_listeners;
 #[cfg(feature = "dvc-pipe-proxy")]
@@ -1070,6 +1070,16 @@ impl RdpClient {
     pub async fn run(mut self) {
         if *self.close_receiver.borrow_and_update() {
             self.emit_user_initiated_termination();
+            return;
+        }
+
+        if self.config.remote_guard_mode.is_enabled() && self.auto_reconnect_maximum_attempts.is_some() {
+            let _ = self
+                .output_event_sender
+                .send(RdpOutputEvent::ConnectionFailure(ironrdp_connector::general_err!(
+                    "remote credential guard does not support automatic reconnection"
+                )))
+                .await;
             return;
         }
 
@@ -2478,8 +2488,22 @@ fn build_connector(
         None
     };
 
-    let mut connector =
-        ironrdp_connector::ClientConnector::new(connector_config, client_addr).with_static_channel(drdynvc);
+    let connector = ironrdp_connector::ClientConnector::new(connector_config, client_addr);
+    let mut connector = match config.remote_guard_mode {
+        crate::config::RemoteGuardMode::Disabled => connector.with_static_channel(drdynvc),
+        #[cfg(feature = "remote-guard")]
+        crate::config::RemoteGuardMode::Negotiate => connector.with_remote_guard_ntlm(drdynvc, None)?,
+        #[cfg(feature = "remote-guard")]
+        crate::config::RemoteGuardMode::Ntlm => connector.with_remote_guard_ntlm_only(drdynvc, None)?,
+        #[cfg(feature = "remote-guard")]
+        crate::config::RemoteGuardMode::Kerberos => connector.with_remote_guard(drdynvc)?,
+        #[cfg(not(feature = "remote-guard"))]
+        _ => {
+            return Err(ironrdp_connector::general_err!(
+                "remote credential guard requires the experimental remote-guard build feature"
+            ));
+        }
+    };
 
     #[cfg(feature = "entra-auth")]
     if config.entra_auth.is_some() {
@@ -2492,7 +2516,9 @@ fn build_connector(
 
     connector = connector.with_cluster_data(client_cluster_data(config, enable_udp));
 
-    if let Some(password_cookie) = config.redirection.as_ref().and_then(|hop| hop.password_cookie.clone()) {
+    if !config.remote_guard_mode.is_enabled()
+        && let Some(password_cookie) = config.redirection.as_ref().and_then(|hop| hop.password_cookie.clone())
+    {
         connector = connector.with_redirection_password_cookie(password_cookie);
     }
 
@@ -2566,6 +2592,11 @@ fn build_connector(
     }
 
     if let Some(cookie) = auto_reconnect_cookie {
+        if config.remote_guard_mode.is_enabled() {
+            return Err(ironrdp_connector::general_err!(
+                "remote credential guard does not support auto-reconnect cookies"
+            ));
+        }
         connector = connector.with_auto_reconnect_cookie(cookie.clone());
     }
 
@@ -3195,6 +3226,11 @@ async fn connect_rdcleanpath_transport(
     rdpdr_factory: RdpdrFactoryRef<'_>,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ConnectOutput> {
+    if config.remote_guard_mode.is_enabled() {
+        return Err(ironrdp_connector::general_err!(
+            "remote credential guard requires a validated TLS connection to the RDP server and is not supported with RDCleanPath"
+        ));
+    }
     let hostname = rdcp
         .url
         .host_str()
@@ -5625,10 +5661,38 @@ fn process_clipboard_message(
     Ok(vec![ActiveStageOutput::ResponseFrame(frame)])
 }
 
+#[cfg(feature = "__test")]
+pub(crate) fn __test_build_connector(
+    config: &Config,
+    auto_reconnect_cookie: Option<&ServerAutoReconnect>,
+) -> ConnectorResult<ironrdp_connector::ClientConnector> {
+    #[cfg(feature = "clipboard")]
+    let cliprdr_factory: CliprdrFactoryRef<'static> = None;
+    #[cfg(not(feature = "clipboard"))]
+    let cliprdr_factory: CliprdrFactoryRef<'static> = core::marker::PhantomData;
+
+    #[cfg(feature = "rdpdr")]
+    let rdpdr_factory: RdpdrFactoryRef<'static> = None;
+    #[cfg(not(feature = "rdpdr"))]
+    let rdpdr_factory: RdpdrFactoryRef<'static> = core::marker::PhantomData;
+
+    let (input_sender, _input_receiver) = RdpInputSender::channel(1);
+    let (output_sender, _output_receiver) = crate::output_channel::output_channel(1);
+    build_connector(
+        config,
+        SocketAddr::from(([192, 0, 2, 1], 3389)),
+        (&input_sender, &output_sender),
+        cliprdr_factory,
+        rdpdr_factory,
+        RdpdrDevicePolicy::ALLOW_ALL,
+        true,
+        false,
+        auto_reconnect_cookie,
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[cfg(feature = "rdpdr")]
     use core::any::TypeId;
     #[cfg(feature = "rdpdr")]
@@ -5650,6 +5714,8 @@ mod tests {
     use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
     #[cfg(feature = "rdpdr")]
     use ironrdp_svc::{StaticChannelSet, SvcProcessor as _};
+
+    use super::*;
 
     fn mouse_move(x: u16, y: u16) -> FastPathInputEvent {
         FastPathInputEvent::MouseEvent(MousePdu {

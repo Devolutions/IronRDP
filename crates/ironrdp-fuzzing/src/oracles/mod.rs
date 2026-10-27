@@ -245,6 +245,12 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
     let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
+    let _ = decode::<ironrdp_rdpear::AuthRedirectionPdu>(data);
+    let _ = decode::<ironrdp_rdpear::RemoteGuardInnerPacket<'_>>(data);
+    let _ = decode::<ironrdp_rdpear::ndr::KerberosRequest>(data);
+    let _ = decode::<ironrdp_rdpear::ndr::KerberosResponse>(data);
+    let _ = decode::<ironrdp_rdpear::ndr::NtlmRequest>(data);
+    let _ = decode::<ironrdp_rdpear::ndr::NtlmResponse>(data);
 
     let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>>(data);
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
@@ -418,10 +424,49 @@ pub fn pdu_round_trip(data: &[u8]) {
 
     // Location
     pdu_round_trip_one!(data, ironrdp_rdpel::pdu::LocationPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpear::AuthRedirectionPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpear::RemoteGuardInnerPacket<'_>);
+    rdpear_ndr_round_trip(data);
 
     // RDPSND
     pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>);
     pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ClientAudioOutputPdu);
+}
+
+/// Bounded package-codec oracle; successful decodes must encode and preserve typed data in both byte orders.
+pub fn rdpear_ndr_round_trip(data: &[u8]) {
+    use ironrdp_rdpear::ndr::{
+        Endianness, KerberosRequest, KerberosResponse, NdrLimits, NdrProfile, NtlmRequest, NtlmResponse,
+    };
+
+    let limits = NdrLimits {
+        max_message_size: 65536,
+        max_allocation: 262144,
+        max_elements: 16384,
+    };
+    macro_rules! check {
+        ($ty:ty) => {
+            for profile in [NdrProfile::Published, NdrProfile::WindowsNative] {
+                if let Ok(value) = <$ty>::decode_with_profile(data, limits, profile) {
+                    for endian in [Endianness::Little, Endianness::Big] {
+                        let bytes = value
+                            .encode_with_profile(endian, limits, profile)
+                            .expect("decoded NDR value must encode");
+                        let decoded =
+                            <$ty>::decode_with_profile(&bytes, limits, profile).expect("encoded NDR value must decode");
+                        assert_eq!(
+                            value, decoded,
+                            "NDR round-trip must preserve typed protocol values"
+                        );
+                    }
+                }
+            }
+        };
+    }
+    check!(KerberosRequest);
+    check!(KerberosResponse);
+    check!(NtlmRequest);
+    check!(NtlmResponse);
 }
 
 /// Round-trip oracle for `ironrdp-egfx` PDU types: `decode` → `encode_vec` → re-`decode`.

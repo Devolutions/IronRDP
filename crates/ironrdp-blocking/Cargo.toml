@@ -23,5 +23,8 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11" } # public
 tracing = { version = "0.1", features = ["log"] }
 bytes = "1" # public
 
+[features]
+remote-guard = ["ironrdp-connector/remote-guard"]
+
 [lints]
 workspace = true

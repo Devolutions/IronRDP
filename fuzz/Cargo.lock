@@ -463,6 +463,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
+ "ironrdp-rdpear",
  "ironrdp-rdpel",
  "ironrdp-rdpemt",
  "ironrdp-rdpeudp",
@@ -521,6 +522,15 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpear"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
 ]
 
 [[package]]

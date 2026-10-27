@@ -19,6 +19,9 @@ name = "ironrdp-agent"
 path = "src/main.rs"
 test = false
 
+[features]
+remote-guard = ["ironrdp-daemon/remote-guard"]
+
 [dependencies]
 # Configuration model and codecs
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }

@@ -51,8 +51,9 @@ publish_no_verify = true
 
 # ironrdp-client cannot be published while its `video` feature depends on ironrdp-rdpegt and ironrdp-rdpevor,
 # which are `publish = false`; ironrdp depends on ironrdp-client and is excluded with it.
-# ironrdp-daemon and ironrdp-rdpeusb-native have never been published: the daemon needs ironrdp-client,
-# and ironrdp-rdpeusb-native builds only against unreleased changes in ironrdp-rdpeusb and ironrdp-usb.
+# ironrdp-daemon, ironrdp-rdpeusb-native, and ironrdp-rdpear have never been published: the daemon needs ironrdp-client,
+# ironrdp-rdpeusb-native builds only against unreleased changes in ironrdp-rdpeusb and ironrdp-usb, and
+# ironrdp-connector (plus its direct and transitive dependents) optionally depends on ironrdp-rdpear.
 # Trusted publishing cannot create a crate, so release-plz would fail on each of them and stop before releasing the rest.
 # Once its dependencies are on crates.io, publish each new crate manually once, then remove its entry;
 # ironrdp-agent and ironrdp-viewer, excluded above, depend on ironrdp-daemon.
@@ -64,4 +65,34 @@ name = "ironrdp-daemon"
 release = false
 [[package]]
 name = "ironrdp-rdpeusb-native"
+release = false
+[[package]]
+name = "ironrdp-rdpear"
+release = false
+[[package]]
+name = "ironrdp-connector"
+release = false
+[[package]]
+name = "ironrdp-acceptor"
+release = false
+[[package]]
+name = "ironrdp-async"
+release = false
+[[package]]
+name = "ironrdp-blocking"
+release = false
+[[package]]
+name = "ironrdp-futures"
+release = false
+[[package]]
+name = "ironrdp-rdpeudp-tokio"
+release = false
+[[package]]
+name = "ironrdp-server"
+release = false
+[[package]]
+name = "ironrdp-tokio"
+release = false
+[[package]]
+name = "ironrdp-vmconnect"
 release = false

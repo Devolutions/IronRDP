@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use ironrdp_cfg::PropertySetExt as _;
+pub use ironrdp_cfg::RemoteGuardMode;
 use ironrdp_connector::credssp::KdcResolution;
 use ironrdp_propertyset::PropertySet;
 use ironrdp_rail::pdu::ExecutePdu;
@@ -20,7 +21,6 @@ pub use ironrdp_cfg::DriveRedirection;
 pub use ironrdp_rdpeudp::pdu::UdpVersion;
 #[cfg(feature = "vmconnect")]
 pub use ironrdp_vmconnect::Mode as VmConnectMode;
-
 // ── Extension registry ────────────────────────────────────────────────────────
 
 type StaticChannelFn = Arc<dyn Fn(&mut ironrdp_connector::ClientConnector, &PropertySet) + Send + Sync>;
@@ -121,6 +121,7 @@ pub struct Config {
     #[cfg(all(windows, feature = "vmconnect"))]
     pub(crate) vmconnect_current_user: bool,
     pub(crate) kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
+    pub(crate) remote_guard_mode: RemoteGuardMode,
     pub(crate) input_send_interval: Option<Duration>,
     pub(crate) input_keepalive_interval: Option<Duration>,
     pub(crate) fake_events_interval: Option<Duration>,
@@ -234,6 +235,17 @@ impl Config {
         self.kerberos_config.as_ref()
     }
 
+    /// Required Remote Credential Guard policy.
+    pub fn remote_guard_mode(&self) -> RemoteGuardMode {
+        self.remote_guard_mode
+    }
+
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn __test_set_remote_guard_mode(&mut self, mode: RemoteGuardMode) {
+        self.remote_guard_mode = mode;
+    }
+
     /// Minimum interval between non-forced input batches.
     pub fn input_send_interval(&self) -> Option<Duration> {
         self.input_send_interval
@@ -333,6 +345,7 @@ impl fmt::Debug for Config {
             );
         }
         s.field("kerberos_config", &self.kerberos_config);
+        s.field("remote_guard_mode", &self.remote_guard_mode);
         s.field("input_send_interval", &self.input_send_interval);
         s.field("input_keepalive_interval", &self.input_keepalive_interval);
         s.field("fake_events_interval", &self.fake_events_interval);
@@ -933,6 +946,7 @@ pub struct ConfigBuilder {
     #[cfg(all(feature = "gateway", feature = "entra-auth"))]
     avd_sso_logon_token: Option<zeroize::Zeroizing<String>>,
     kerberos_config: Option<ironrdp_connector::credssp::KerberosConfig>,
+    remote_guard_mode: RemoteGuardMode,
     input_send_interval: Option<Duration>,
     input_keepalive_interval: Option<Duration>,
     fake_events_interval: Option<Duration>,
@@ -1626,6 +1640,24 @@ impl ConfigBuilder {
         }
         self.kerberos_config = Some(cfg);
         self
+    }
+
+    /// Require experimental RCG instead of ordinary password-delegating CredSSP.
+    ///
+    /// Requires the `remote-guard` feature, strict TLS validation, and Kerberos-capable credentials.
+    /// The mode mirrors CredSSP package selection: `Negotiate` redirects both Kerberos and
+    /// NTLMv2, while `Kerberos` and `Ntlm` restrict redirection to one package.
+    #[must_use]
+    pub fn with_remote_guard_mode(mut self, mode: RemoteGuardMode) -> Self {
+        self.properties.set_remote_guard_mode(mode);
+        self.remote_guard_mode = mode;
+        self
+    }
+
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn __test_remote_guard_mode_and_properties(&self) -> (RemoteGuardMode, &PropertySet) {
+        (self.remote_guard_mode, &self.properties)
     }
 
     /// Set the minimum interval between non-forced input batches.
@@ -2376,7 +2408,7 @@ impl ConfigBuilder {
         }
 
         let client_name = self.client_name.unwrap_or_default();
-        let kerberos_config = self
+        let mut kerberos_config = self
             .kerberos_config
             .or_else(|| kerberos_config_from_properties(&self.properties, &client_name));
         let certificate_validation = if entra_auth_enabled || is_avd_gateway {
@@ -2419,6 +2451,43 @@ impl ConfigBuilder {
         };
         let enable_credssp =
             !entra_auth_enabled && !enable_standard_rdp_security && self.enable_credssp.unwrap_or(true);
+
+        if self.remote_guard_mode.is_enabled() {
+            if !cfg!(feature = "remote-guard") {
+                anyhow::bail!("remote credential guard requires the experimental remote-guard build feature");
+            }
+            if !enable_tls || !enable_credssp || enable_standard_rdp_security {
+                anyhow::bail!("remote credential guard requires TLS and CredSSP");
+            }
+            if matches!(transport, Transport::RDCleanPath(_)) {
+                anyhow::bail!(
+                    "remote credential guard requires a validated TLS connection to the RDP server and is not supported with RDCleanPath"
+                );
+            }
+            #[cfg(feature = "vmconnect")]
+            if self.vm_id.is_some() {
+                anyhow::bail!("remote credential guard is not supported for VMConnect");
+            }
+            if certificate_validation != ironrdp_tls::CertificateValidation::Strict {
+                anyhow::bail!("remote credential guard requires strict TLS certificate validation");
+            }
+            if client_name.is_empty() {
+                anyhow::bail!("remote credential guard requires a client computer name");
+            }
+            if let Some(cfg) = &kerberos_config {
+                if matches!(cfg.kdc_resolution, KdcResolution::IAKerb) {
+                    anyhow::bail!("remote credential guard does not support IAKerb");
+                }
+            } else {
+                if self.properties.kdc_proxy_url().is_some() || self.properties.kdc_proxy_name().is_some() {
+                    anyhow::bail!("invalid KDC proxy configuration for remote credential guard");
+                }
+                kerberos_config = Some(ironrdp_connector::credssp::KerberosConfig {
+                    kdc_resolution: KdcResolution::KdcUrl(None),
+                    hostname: client_name.clone(),
+                });
+            }
+        }
 
         let remote_application_mode = self.remote_application_mode.unwrap_or(false);
         let rail_support_level = self
@@ -2546,6 +2615,7 @@ impl ConfigBuilder {
             #[cfg(all(windows, feature = "vmconnect"))]
             vmconnect_current_user: self.vmconnect_current_user,
             kerberos_config,
+            remote_guard_mode: self.remote_guard_mode,
             input_send_interval: self.input_send_interval,
             input_keepalive_interval: self.input_keepalive_interval,
             fake_events_interval: self.fake_events_interval,
@@ -2644,6 +2714,9 @@ impl ConfigBuilder {
         }
         if let Some(enable_credssp) = ps.enable_credssp_support() {
             self.enable_credssp = Some(enable_credssp);
+        }
+        if let Some(mode) = ps.remote_guard_mode()? {
+            self.remote_guard_mode = mode;
         }
         if let Some(enable_tls) = ps.enable_tls() {
             self.enable_tls = Some(enable_tls);

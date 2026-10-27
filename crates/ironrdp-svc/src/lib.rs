@@ -143,9 +143,11 @@ pub struct StaticVirtualChannel {
 
 impl StaticVirtualChannel {
     pub fn new<T: SvcProcessor + 'static>(channel_processor: T) -> Self {
+        let mut chunk_processor = ChunkProcessor::new();
+        chunk_processor.max_message_size = channel_processor.max_message_size();
         Self {
             channel_processor: Box::new(channel_processor),
-            chunk_processor: ChunkProcessor::new(),
+            chunk_processor,
         }
     }
 
@@ -305,6 +307,16 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
         }
     }
 
+    /// Limits inbound message bytes before static-channel fragments are retained.
+    ///
+    /// The limit excludes the channel PDU header and applies to both the advertised
+    /// plaintext length and accumulated wire bytes, including compressed messages.
+    /// It is captured when the static channel is constructed.
+    /// The default preserves channels without a configured limit.
+    fn max_message_size(&self) -> Option<usize> {
+        None
+    }
+
     /// Start a channel, after the connection is established and the channel is joined.
     ///
     /// Returns a list of PDUs to be sent back.
@@ -332,6 +344,7 @@ assert_obj_safe!(SvcServerProcessor);
 /// ChunkProcessor is used to chunkify/de-chunkify static virtual channel PDUs.
 #[derive(Debug)]
 struct ChunkProcessor {
+    max_message_size: Option<usize>,
     /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
     /// usually chunked when transferred over svc.
     chunked_pdu: Vec<u8>,
@@ -342,6 +355,7 @@ struct ChunkProcessor {
 impl ChunkProcessor {
     fn new() -> Self {
         Self {
+            max_message_size: None,
             chunked_pdu: Vec::new(),
             expected_length: None,
         }
@@ -379,6 +393,18 @@ impl ChunkProcessor {
         let first = header.flags.contains(ChannelControlFlags::FLAG_FIRST);
         let last = header.flags.contains(ChannelControlFlags::FLAG_LAST);
 
+        if self
+            .max_message_size
+            .is_some_and(|limit| limit < expected_length || limit < chunk.len())
+        {
+            self.clear_sequence();
+            return Err(ironrdp_core::invalid_field_err!(
+                "length",
+                "static channel message exceeds configured maximum size",
+                in: cursor
+            ));
+        }
+
         if !first && !last && self.expected_length.is_none() {
             if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && chunk.len() != expected_length {
                 return Err(ironrdp_core::invalid_field_err!(
@@ -411,9 +437,23 @@ impl ChunkProcessor {
             ));
         }
 
-        self.chunked_pdu.extend_from_slice(chunk);
-
-        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && self.chunked_pdu.len() > expected_length {
+        let Some(accumulated_length) = self.chunked_pdu.len().checked_add(chunk.len()) else {
+            self.clear_sequence();
+            return Err(ironrdp_core::invalid_field_err!(
+                "length",
+                "static channel message size overflow",
+                in: cursor
+            ));
+        };
+        if self.max_message_size.is_some_and(|limit| limit < accumulated_length) {
+            self.clear_sequence();
+            return Err(ironrdp_core::invalid_field_err!(
+                "length",
+                "static channel message exceeds configured maximum size",
+                in: cursor
+            ));
+        }
+        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && expected_length < accumulated_length {
             self.clear_sequence();
             return Err(ironrdp_core::invalid_field_err!(
                 "length",
@@ -421,6 +461,8 @@ impl ChunkProcessor {
                 in: cursor
             ));
         }
+
+        self.chunked_pdu.extend_from_slice(chunk);
 
         if !last {
             return Ok(None);

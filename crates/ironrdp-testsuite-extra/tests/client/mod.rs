@@ -6,4 +6,5 @@ mod entra;
 mod input;
 mod output_channel;
 mod rail;
+mod remote_guard;
 mod viewer_rail;

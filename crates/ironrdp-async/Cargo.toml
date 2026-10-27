@@ -24,5 +24,8 @@ tracing = { version = "0.1", features = ["log"] }
 bytes = "1" # public
 web-time = "1.1"
 
+[features]
+remote-guard = ["ironrdp-connector/remote-guard"]
+
 [lints]
 workspace = true

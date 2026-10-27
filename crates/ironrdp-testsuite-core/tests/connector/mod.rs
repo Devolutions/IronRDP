@@ -6,6 +6,8 @@ mod autodetect;
 mod display_data;
 mod early_capabilities;
 mod entra;
+#[cfg(feature = "remote-guard")]
+mod remote_guard;
 
 fn test_config() -> ironrdp_connector::Config {
     ironrdp_connector::Config {

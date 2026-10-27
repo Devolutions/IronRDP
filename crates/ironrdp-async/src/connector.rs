@@ -2,8 +2,7 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, ConnectionOutcome, ConnectorError, ConnectorResult, ServerName, State as _,
-    general_err,
+    ClientConnector, ConnectionOutcome, ConnectorError, ConnectorResult, ServerName, State as _, general_err,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace, warn};
@@ -222,9 +221,33 @@ pub async fn perform_credssp<S, N>(
     framed: &mut Framed<S>,
     network_client: &mut N,
     buf: &mut WriteBuf,
+    sequence: CredsspSequence,
+    ts_request: ironrdp_connector::sspi::credssp::TsRequest,
+) -> ConnectorResult<()>
+where
+    S: FramedRead + FramedWrite,
+    N: NetworkClient,
+{
+    if sequence.remote_guard_enabled() {
+        return Err(general_err!(
+            "RCG requires perform_credssp_with_context and complete_credssp"
+        ));
+    }
+    perform_credssp_with_context(framed, network_client, buf, sequence, ts_request).await?;
+    Ok(())
+}
+
+/// Runs NLA without discarding the authenticated context.
+///
+/// Pass the returned sequence to [`ClientConnector::complete_credssp`] before continuing RDP.
+#[instrument(level = "trace", skip_all)]
+pub async fn perform_credssp_with_context<S, N>(
+    framed: &mut Framed<S>,
+    network_client: &mut N,
+    buf: &mut WriteBuf,
     mut sequence: CredsspSequence,
     mut ts_request: ironrdp_connector::sspi::credssp::TsRequest,
-) -> ConnectorResult<()>
+) -> ConnectorResult<CredsspSequence>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
@@ -268,7 +291,7 @@ where
         }
     }
 
-    Ok(())
+    Ok(sequence)
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -287,25 +310,13 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let selected_protocol = match connector.state {
-        ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
-        _ => return Err(general_err!("invalid connector state for CredSSP sequence")),
-    };
-
     debug!(connector.state = connector.state.name(), "Begin CredSSP");
 
-    let (sequence, ts_request) = CredsspSequence::init(
-        connector.config.credentials.clone(),
-        connector.config.domain.as_deref(),
-        selected_protocol,
-        server_name,
-        server_public_key,
-        kerberos_config,
-    )?;
+    let (sequence, ts_request) =
+        CredsspSequence::init_for_connector(connector, server_name, server_public_key, kerberos_config)?;
 
-    perform_credssp(framed, network_client, buf, sequence, ts_request).await?;
-
-    connector.mark_credssp_as_done();
+    let sequence = perform_credssp_with_context(framed, network_client, buf, sequence, ts_request).await?;
+    connector.complete_credssp(sequence)?;
 
     Ok(())
 }

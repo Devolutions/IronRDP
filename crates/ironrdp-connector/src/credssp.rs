@@ -97,6 +97,9 @@ pub struct CredsspSequence {
     client: CredSspClient,
     state: CredsspState,
     selected_protocol: nego::SecurityProtocol,
+    remote_guard: bool,
+    #[cfg(feature = "remote-guard")]
+    remote_guard_ntlm: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -104,6 +107,7 @@ pub(crate) enum CredsspState {
     Ongoing,
     EarlyUserAuthResult,
     Finished,
+    Failed,
 }
 
 impl CredsspSequence {
@@ -111,8 +115,12 @@ impl CredsspSequence {
         match self.state {
             CredsspState::Ongoing => Some(&CREDSSP_TS_REQUEST_HINT),
             CredsspState::EarlyUserAuthResult => Some(&CREDSSP_EARLY_USER_AUTH_RESULT_HINT),
-            CredsspState::Finished => None,
+            CredsspState::Finished | CredsspState::Failed => None,
         }
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.state == CredsspState::Finished
     }
 
     /// `server_name` must be the actual target server hostname (as opposed to the proxy)
@@ -124,6 +132,109 @@ impl CredsspSequence {
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
+        Self::init_with_mode(
+            credentials,
+            domain,
+            protocol,
+            server_name,
+            server_public_key,
+            kerberos_config,
+            false,
+        )
+    }
+
+    /// Constructs the authentication exchange using the connector's negotiated security policy.
+    pub fn init_for_connector(
+        connector: &crate::ClientConnector,
+        server_name: ServerName,
+        server_public_key: Vec<u8>,
+        kerberos_config: Option<KerberosConfig>,
+    ) -> ConnectorResult<(Self, credssp::TsRequest)> {
+        let crate::ClientConnectorState::Credssp { selected_protocol } = connector.state else {
+            return Err(general_err!("invalid connector state for CredSSP sequence"));
+        };
+        let (mut sequence, initial_request) = Self::init_with_mode(
+            connector.config.credentials.clone(),
+            connector.config.domain.as_deref(),
+            selected_protocol,
+            server_name,
+            server_public_key,
+            kerberos_config,
+            connector.remote_guard_enabled(),
+        )?;
+        #[cfg(feature = "remote-guard")]
+        if let Some(names) = connector.remote_guard_ntlm() {
+            sequence
+                .client
+                .enable_remote_guard_ntlm(names)
+                .map_err(|e| ConnectorError::new("RCG NTLM configuration", ConnectorErrorKind::Credssp(e)))?;
+            sequence.remote_guard_ntlm = true;
+        }
+        #[cfg(not(feature = "remote-guard"))]
+        let _ = &mut sequence;
+        Ok((sequence, initial_request))
+    }
+
+    pub fn remote_guard_enabled(&self) -> bool {
+        self.remote_guard
+    }
+
+    #[cfg(all(feature = "__test", feature = "remote-guard"))]
+    #[doc(hidden)]
+    pub fn __test_is_finished(&self) -> bool {
+        self.is_finished()
+    }
+
+    #[cfg(all(feature = "__test", feature = "remote-guard"))]
+    #[doc(hidden)]
+    pub fn __test_is_failed(&self) -> bool {
+        self.state == CredsspState::Failed
+    }
+
+    #[cfg(all(feature = "__test", feature = "remote-guard"))]
+    #[doc(hidden)]
+    pub fn __test_remote_guard_ntlm_enabled(&self) -> bool {
+        self.remote_guard_ntlm_enabled()
+    }
+
+    #[cfg(all(feature = "__test", feature = "remote-guard"))]
+    #[doc(hidden)]
+    pub fn __test_take_remote_guard_session(&mut self) -> ConnectorResult<sspi::rcg::RemoteGuardSession> {
+        self.take_remote_guard_session()
+    }
+
+    #[cfg(feature = "remote-guard")]
+    pub(crate) fn remote_guard_ntlm_enabled(&self) -> bool {
+        self.remote_guard_ntlm
+    }
+
+    #[cfg(feature = "remote-guard")]
+    pub(crate) fn take_remote_guard_session(&mut self) -> ConnectorResult<sspi::rcg::RemoteGuardSession> {
+        if self.state != CredsspState::Finished {
+            return Err(general_err!("RCG requires a completed CredSSP exchange"));
+        }
+        self.client
+            .take_remote_guard_session()
+            .map_err(|e| ConnectorError::new("RCG context", ConnectorErrorKind::Credssp(e)))
+    }
+
+    fn init_with_mode(
+        credentials: Credentials,
+        domain: Option<&str>,
+        protocol: nego::SecurityProtocol,
+        server_name: ServerName,
+        server_public_key: Vec<u8>,
+        kerberos_config: Option<KerberosConfig>,
+        remote_guard: bool,
+    ) -> ConnectorResult<(Self, credssp::TsRequest)> {
+        if remote_guard
+            && !matches!(
+                kerberos_config.as_ref().map(|cfg| &cfg.kdc_resolution),
+                Some(KdcResolution::KdcUrl(_))
+            )
+        {
+            return Err(general_err!("RCG requires an explicit Kerberos configuration"));
+        }
         let credentials: sspi::Credentials = match &credentials {
             Credentials::UsernamePassword { username, password } => {
                 let username = Username::new(username, domain).map_err(|e| custom_err!("invalid username", e))?;
@@ -180,10 +291,17 @@ impl CredsspSequence {
             None => credssp::ClientMode::Ntlm(sspi::ntlm::NtlmConfig::default()),
         };
 
+        let mode = credssp::CredSspMode::WithCredentials;
+        #[cfg(feature = "remote-guard")]
+        let mode = if remote_guard {
+            credssp::CredSspMode::RemoteGuard
+        } else {
+            mode
+        };
         let client = CredSspClient::new(
             server_public_key,
             credentials,
-            credssp::CredSspMode::WithCredentials,
+            mode,
             client_mode,
             service_principal_name,
         )
@@ -193,6 +311,9 @@ impl CredsspSequence {
             client,
             state: CredsspState::Ongoing,
             selected_protocol: protocol,
+            remote_guard,
+            #[cfg(feature = "remote-guard")]
+            remote_guard_ntlm: false,
         };
 
         let initial_request = credssp::TsRequest::default();
@@ -210,6 +331,9 @@ impl CredsspSequence {
                 Ok(Some(message))
             }
             CredsspState::EarlyUserAuthResult => {
+                if self.remote_guard {
+                    self.state = CredsspState::Failed;
+                }
                 let early_user_auth_result = credssp::EarlyUserAuthResult::from_buffer(input)
                     .map_err(|e| custom_err!("EarlyUserAuthResult", e))?;
 
@@ -256,8 +380,9 @@ impl CredsspSequence {
 
                 Ok((Written::from_size(written)?, next_state))
             }
-            CredsspState::EarlyUserAuthResult => Ok((Written::Nothing, CredsspState::Finished)),
-            CredsspState::Finished => Err(general_err!("CredSSP sequence is already done")),
+            CredsspState::EarlyUserAuthResult if !self.remote_guard => Ok((Written::Nothing, CredsspState::Finished)),
+            CredsspState::EarlyUserAuthResult => Err(general_err!("RCG requires the server early-auth result")),
+            CredsspState::Finished | CredsspState::Failed => Err(general_err!("CredSSP sequence is already done")),
         }?;
 
         self.state = next_state;
