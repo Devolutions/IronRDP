@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn a_full_table_refuses_another_lock() {
         let mut table = ByteRangeLocks {
-            locks: (0..MAX_LOCKS)
+            locks: (1..MAX_LOCKS)
                 .map(|index| ByteRangeLock {
                     identity: identity(),
                     owner: 1,
@@ -337,9 +337,11 @@ mod tests {
             ..ByteRangeLocks::default()
         };
 
-        let status = table.lock(&request(2), identity(), &[range(u64::MAX - 1, 1)], false, false);
+        let at_cap = table.lock(&request(2), identity(), &[range(u64::MAX - 1, 1)], false, false);
+        let over_cap = table.lock(&request(2), identity(), &[range(u64::MAX - 2, 1)], false, false);
 
-        assert_eq!(status, Some(NtStatus::INSUFFICIENT_RESOURCES));
+        assert_eq!(at_cap, Some(NtStatus::SUCCESS));
+        assert_eq!(over_cap, Some(NtStatus::INSUFFICIENT_RESOURCES));
         assert_eq!(table.locks.len(), MAX_LOCKS);
     }
 
@@ -355,11 +357,13 @@ mod tests {
             assert_eq!(table.lock(&request(2), identity(), &[range(0, 10)], true, true), None);
         }
 
-        // One range is left, so a request with two waits for nothing.
-        let status = table.lock(&request(2), identity(), &[range(0, 10), range(5, 1)], true, true);
+        // One range is left, so a request with two cannot wait and a request with one still can.
+        let over_cap = table.lock(&request(2), identity(), &[range(0, 10), range(5, 1)], true, true);
+        let at_cap = table.lock(&request(2), identity(), &[range(0, 10)], true, true);
 
-        assert_eq!(status, Some(NtStatus::INSUFFICIENT_RESOURCES));
-        assert_eq!(table.waiting.len(), MAX_WAITING_RANGES - 1);
+        assert_eq!(over_cap, Some(NtStatus::INSUFFICIENT_RESOURCES));
+        assert_eq!(at_cap, None);
+        assert_eq!(table.waiting.len(), MAX_WAITING_RANGES);
     }
 
     // oracle: mutant per-request range cap removed
@@ -369,13 +373,17 @@ mod tests {
         let ranges = (0..=MAX_RANGES)
             .map(|index| range(u64::try_from(index).expect("index fits u64"), 1))
             .collect::<Vec<_>>();
+        let (at_cap, over_cap) = (&ranges[..MAX_RANGES], ranges.as_slice());
 
-        let locked = table.lock(&request(1), identity(), &ranges, true, false);
-        let (unlocked, granted) = table.unlock(1, identity(), &ranges);
+        let locked_over_cap = table.lock(&request(1), identity(), over_cap, true, false);
+        let locked_at_cap = table.lock(&request(1), identity(), at_cap, true, false);
+        let (unlocked_over_cap, _) = table.unlock(1, identity(), over_cap);
+        let (unlocked_at_cap, _) = table.unlock(1, identity(), at_cap);
 
-        assert_eq!(locked, Some(NtStatus::INSUFFICIENT_RESOURCES));
-        assert_eq!(unlocked, NtStatus::INSUFFICIENT_RESOURCES);
-        assert!(granted.is_empty());
+        assert_eq!(locked_over_cap, Some(NtStatus::INSUFFICIENT_RESOURCES));
+        assert_eq!(locked_at_cap, Some(NtStatus::SUCCESS));
+        assert_eq!(unlocked_over_cap, NtStatus::INSUFFICIENT_RESOURCES);
+        assert_eq!(unlocked_at_cap, NtStatus::SUCCESS);
         assert!(table.locks.is_empty());
     }
 
@@ -392,26 +400,5 @@ mod tests {
 
         assert_eq!(status, Some(NtStatus::LOCK_NOT_GRANTED));
         assert!(!table.conflicts(identity(), 3, 0, 1, true, true));
-    }
-
-    // oracle: spec MS-FSA §2.1.5.8, §2.1.5.20
-    #[test]
-    fn closing_a_handle_cancels_its_waiting_requests_and_grants_others() {
-        let mut table = ByteRangeLocks::default();
-        assert_eq!(
-            table.lock(&request(1), identity(), &[range(0, 10)], true, false),
-            Some(NtStatus::SUCCESS)
-        );
-        assert_eq!(table.lock(&request(2), identity(), &[range(0, 10)], true, true), None);
-        assert_eq!(table.lock(&request(3), identity(), &[range(0, 10)], true, true), None);
-
-        let cancelled = table.close(2);
-        let granted = table.close(1);
-
-        assert_eq!(cancelled.len(), 1);
-        assert_eq!(granted.len(), 1);
-        assert!(table.waiting.is_empty());
-        assert_eq!(table.locks.len(), 1);
-        assert_eq!(table.locks[0].owner, 3);
     }
 }

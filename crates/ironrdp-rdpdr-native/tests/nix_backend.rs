@@ -1177,7 +1177,7 @@ fn opening_an_existing_file_for_write_allows_writes() {
     assert_eq!(std::fs::read(fixture.share.join("doc.txt")).expect("read file"), b"new");
 }
 
-// oracle: spec MS-SMB2 §2.2.13.1
+// oracle: spec MS-SMB2 §3.3.5.13
 #[test]
 fn a_handle_opened_for_reading_cannot_write() {
     let fixture = Fixture::new();
@@ -1222,7 +1222,7 @@ fn delete_on_close_removes_the_file_when_its_handle_closes() {
     assert!(!fixture.share.join("temp.tmp").exists());
 }
 
-// oracle: spec MS-SMB2 §2.2.13
+// oracle: spec MS-FSA §2.1.5.1
 // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
 #[rstest]
 #[case::write_only(DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE)]
@@ -1443,7 +1443,7 @@ fn a_shared_lock_refuses_writes_even_through_its_owner() {
 
 // oracle: spec MS-FSA §2.1.4.10
 #[test]
-fn zero_length_locks_conflict_with_nothing() {
+fn the_zero_range_conflicts_with_nothing() {
     let (_fixture, mut backend, first_id, second_id) = two_handles();
 
     let first = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 0);
@@ -1453,9 +1453,11 @@ fn zero_length_locks_conflict_with_nothing() {
     assert_eq!(response_status(&second), NtStatus::SUCCESS);
 }
 
-// oracle: spec MS-FSA §2.1.5.9
+// oracle: spec MS-ERREF §2.3.1
 #[rstest]
+// oracle: spec MS-FSA §2.1.5.9
 #[case::range_not_locked(LockOperation::Unlock, 0, 10, 0xC000_007E)]
+// oracle: spec MS-FSA §2.1.5.8
 #[case::range_past_the_largest_offset(LockOperation::Exclusive, u64::MAX, 2, 0xC000_001E)]
 fn invalid_lock_requests_report_their_status(
     #[case] operation: LockOperation,
@@ -1480,34 +1482,39 @@ fn a_waiting_lock_is_granted_when_the_conflicting_lock_is_released() {
     let released = lock(&mut backend, first_id, 3, LockOperation::Unlock, false, 0, 10);
 
     assert!(waiting.is_empty());
-    assert_eq!(
-        released
-            .iter()
-            .map(|message| (completion_id(message), message_status(message)))
-            .collect::<Vec<_>>(),
-        [(3, NtStatus::SUCCESS), (2, NtStatus::SUCCESS)]
-    );
+    assert_eq!(completions(&released), [(2, NtStatus::SUCCESS), (3, NtStatus::SUCCESS)]);
 }
 
 // oracle: spec MS-FSA §2.1.5.8
+#[test]
+fn closing_the_lock_holder_grants_a_waiting_lock() {
+    let (_fixture, mut backend, first_id, second_id) = two_handles();
+    let _ = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 10);
+    let waiting = lock(&mut backend, second_id, 2, LockOperation::Exclusive, true, 0, 10);
+
+    let responses = close(&mut backend, first_id);
+
+    assert!(waiting.is_empty());
+    // The close itself is answered with the completion ID of `request_header`.
+    assert_eq!(
+        completions(&responses),
+        [(2, NtStatus::SUCCESS), (7, NtStatus::SUCCESS)]
+    );
+}
+
+/// The server forgets a closed handle, so its waiting request would otherwise never be answered.
+// oracle: mutant waiting lock left unanswered when its handle closes
 #[test]
 fn closing_a_handle_cancels_its_waiting_lock() {
     let (_fixture, mut backend, first_id, second_id) = two_handles();
     let _ = lock(&mut backend, first_id, 1, LockOperation::Exclusive, false, 0, 10);
     let _ = lock(&mut backend, second_id, 2, LockOperation::Exclusive, true, 0, 10);
 
-    let responses = backend
-        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
-            device_io_request: request_header(second_id, MajorFunction::Close),
-        }))
-        .expect("complete close");
+    let responses = close(&mut backend, second_id);
 
     assert_eq!(
-        responses
-            .iter()
-            .map(|message| (completion_id(message), message_status(message)))
-            .collect::<Vec<_>>(),
-        [(7, NtStatus::SUCCESS), (2, NtStatus::CANCELLED)]
+        completions(&responses),
+        [(2, NtStatus::CANCELLED), (7, NtStatus::SUCCESS)]
     );
 }
 
@@ -1575,6 +1582,16 @@ fn write(backend: &mut NixRdpdrBackend, file_id: u32, offset: u64, data: &[u8]) 
             write_data: data.to_vec(),
         }))
         .expect("complete write")
+}
+
+/// The completion ID and status of each response, ordered by completion ID, because nothing orders independent completions.
+fn completions(messages: &[SvcMessage]) -> Vec<(u32, NtStatus)> {
+    let mut completions = messages
+        .iter()
+        .map(|message| (completion_id(message), message_status(message)))
+        .collect::<Vec<_>>();
+    completions.sort_by_key(|(completion_id, _)| *completion_id);
+    completions
 }
 
 fn completion_id(message: &SvcMessage) -> u32 {
@@ -1663,12 +1680,12 @@ fn create(backend: &mut NixRdpdrBackend, path: &str, disposition: CreateDisposit
     response_file_id(&response)
 }
 
-fn close(backend: &mut NixRdpdrBackend, file_id: u32) {
+fn close(backend: &mut NixRdpdrBackend, file_id: u32) -> Vec<SvcMessage> {
     backend
         .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
             device_io_request: request_header(file_id, MajorFunction::Close),
         }))
-        .expect("complete close");
+        .expect("complete close")
 }
 
 fn query_directory(backend: &mut NixRdpdrBackend, file_id: u32, path: &str, initial_query: bool) -> Vec<SvcMessage> {
