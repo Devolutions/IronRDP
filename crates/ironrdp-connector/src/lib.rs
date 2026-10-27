@@ -183,7 +183,7 @@ pub struct Config {
     /// Whether the client sends relative mouse input ([MS-RDPBCGR] 2.2.8.1.2.2.7).
     ///
     /// This sets `RNS_UD_CS_RELATIVE_MOUSE_INPUT` in the `earlyCapabilityFlags` of the
-    /// [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure and advertises RDP 10.12
+    /// [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure and advertises at least RDP 10.12
     /// (`0x00080011`), the lowest version for which servers honor relative mouse support.
     ///
     /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
@@ -357,6 +357,8 @@ pub struct Config {
     /// (`INPUT_FLAG_MOUSE_RELATIVE`) from a client announcing RDP 10.12 (0x00080011) or later.
     ///
     /// [`RdpVersion::V5_PLUS`](gcc::RdpVersion::V5_PLUS) keeps the previous behavior.
+    /// When [`relative_mouse_input`](Self::relative_mouse_input) is enabled, the announced version is
+    /// raised to at least [`RdpVersion::V10_12`](gcc::RdpVersion::V10_12).
     ///
     /// Use [`RdpVersion::V5_PLUS`](gcc::RdpVersion::V5_PLUS) or later: the connector always sends the optional
     /// core data fields (`postBeta2ColorDepth` onward), which RDP 4.0 clients never sent, so announcing
