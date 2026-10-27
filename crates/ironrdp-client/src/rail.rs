@@ -217,6 +217,11 @@ impl RailClient {
     }
 
     /// Queues a RemoteApp launch until initialization and desktop synchronization complete.
+    ///
+    /// [MS-RDPERP] 2.2.2.3.1 "Client Execute PDU (TS_RAIL_ORDER_EXEC)" carries no request ID.
+    /// A server re-handshake while a sent launch awaits its [`ExecuteResultPdu`] therefore fails the channel.
+    ///
+    /// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
     pub fn queue_execute(&mut self, execute: ExecutePdu) -> PduResult<RailSvcMessages> {
         self.queue_pdu(QueuedRailPdu::Execute(execute))
     }
@@ -256,13 +261,16 @@ impl RailClient {
 
     /// Updates the RAIL work area after the client desktop size changes.
     pub fn update_desktop_size(&mut self, desktop_width: u16, desktop_height: u16) -> RailSvcMessages {
+        if self.desktop_width == desktop_width && self.desktop_height == desktop_height {
+            return Vec::new().into();
+        }
         self.desktop_width = desktop_width;
         self.desktop_height = desktop_height;
         if !self.is_established() {
             return Vec::new().into();
         }
 
-        self.desktop_system_parameter_messages().into()
+        self.desktop_system_parameter_messages(true).into()
     }
 
     /// Returns and clears server events accumulated while processing channel PDUs.
@@ -301,7 +309,8 @@ impl RailClient {
                 flags: self.client_status_flags,
             })),
         ];
-        messages.extend(self.desktop_system_parameter_messages());
+        // Core RDP establishes the initial size; DisplayChange would restart Windows' desktop hook.
+        messages.extend(self.desktop_system_parameter_messages(false));
         messages.extend(
             self.system_parameters
                 .iter()
@@ -312,7 +321,7 @@ impl RailClient {
         messages
     }
 
-    fn desktop_system_parameter_messages(&self) -> Vec<SvcMessage> {
+    fn desktop_system_parameter_messages(&self, display_changed: bool) -> Vec<SvcMessage> {
         let screen = SystemParameterRectangle {
             left: 0,
             top: 0,
@@ -324,7 +333,7 @@ impl RailClient {
             .iter()
             .any(|parameter| matches!(parameter, ClientSystemParameter::WorkArea(_)));
         [
-            Some(ClientSystemParameter::DisplayChange(screen)),
+            display_changed.then_some(ClientSystemParameter::DisplayChange(screen)),
             (!has_host_work_area).then_some(ClientSystemParameter::WorkArea(screen)),
         ]
         .into_iter()
@@ -412,6 +421,18 @@ impl RailClient {
     }
 
     fn finish_handshake(&mut self, handshake_ex_flags: Option<u32>) -> PduResult<Vec<SvcMessage>> {
+        if self.is_established() {
+            if !self.pending_executes.is_empty() {
+                // RAIL has no request IDs, so a restart makes outstanding launch results ambiguous.
+                return Err(PduError::new(
+                    "RAIL",
+                    PduErrorKind::Other {
+                        description: "RAIL server reinitialized with pending execute requests",
+                    },
+                ));
+            }
+            self.desktop_synchronized = false;
+        }
         self.state = RailState::Established;
         self.handshake_ex_flags = handshake_ex_flags.unwrap_or(0);
         let queued_execute_count = self.queued_execute_count();
@@ -529,20 +550,12 @@ impl SvcProcessor for RailClient {
         }
 
         match (self.state, pdu) {
-            (RailState::WaitingForHandshake, RailPdu::Handshake(HandshakePdu { .. })) => self.finish_handshake(None),
-            (RailState::WaitingForHandshake, RailPdu::HandshakeEx(HandshakeExPdu { flags, .. })) => {
-                self.finish_handshake(Some(flags))
-            }
+            (_, RailPdu::Handshake(HandshakePdu { .. })) => self.finish_handshake(None),
+            (_, RailPdu::HandshakeEx(HandshakeExPdu { flags, .. })) => self.finish_handshake(Some(flags)),
             (RailState::WaitingForHandshake, _) => Err(PduError::new(
                 "RAIL",
                 PduErrorKind::Other {
                     description: "received RAIL PDU before server handshake",
-                },
-            )),
-            (RailState::Established, RailPdu::Handshake(_) | RailPdu::HandshakeEx(_)) => Err(PduError::new(
-                "RAIL",
-                PduErrorKind::Other {
-                    description: "received duplicate RAIL server handshake",
                 },
             )),
             (RailState::Established, RailPdu::ExecuteResult(result)) => {
