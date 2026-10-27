@@ -1,5 +1,6 @@
 #![allow(clippy::print_stderr, clippy::print_stdout)] // allowed in this module only
 
+use core::error::Error as _;
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
@@ -74,6 +75,7 @@ pub struct RpcApp {
     pending_touch_mouse: Vec<ironrdp::input::Operation>,
     /// Origin of the touch frame timestamps.
     touch_epoch: Instant,
+    close_requested: bool,
     /// RemoteApp mode: server windows open as local windows and no desktop window is shown.
     remote_app: bool,
     rail_windows: RailWindows,
@@ -155,11 +157,51 @@ impl RpcApp {
             mouse_touch: None,
             pending_touch_mouse: Vec::new(),
             touch_epoch: Instant::now(),
+            close_requested: false,
             remote_app,
             rail_windows: RailWindows::default(),
             pending_rail_inputs: std::collections::VecDeque::new(),
             release_pending: false,
         })
+    }
+
+    /// Whether `error` is a transport EOF, abort, or reset expected after a local close request.
+    ///
+    /// UNTESTED: `CloseRequested` sets `close_requested` and `Terminated` checks it on a running winit event loop, so user-initiated window close does not exit with `PROTOCOL_ERR`.
+    /// Keep `close_requested` and `Terminated` wired together when changing shutdown handling.
+    fn is_expected_shutdown_error(error: &ironrdp::session::SessionError) -> bool {
+        use std::io::ErrorKind;
+
+        use ironrdp::core::DecodeErrorKind;
+        use ironrdp::session::SessionErrorKind;
+
+        match error.kind() {
+            SessionErrorKind::Decode(decode) => matches!(decode.kind(), DecodeErrorKind::NotEnoughBytes { .. }),
+            SessionErrorKind::Custom => {
+                let mut source = error.source();
+                while let Some(err) = source {
+                    if let Some(decode) = err.downcast_ref::<ironrdp::core::DecodeError>()
+                        && matches!(decode.kind(), DecodeErrorKind::NotEnoughBytes { .. })
+                    {
+                        return true;
+                    }
+                    if let Some(io) = err.downcast_ref::<std::io::Error>()
+                        && matches!(
+                            io.kind(),
+                            ErrorKind::UnexpectedEof
+                                | ErrorKind::ConnectionAborted
+                                | ErrorKind::ConnectionReset
+                                | ErrorKind::BrokenPipe
+                        )
+                    {
+                        return true;
+                    }
+                    source = err.source();
+                }
+                false
+            }
+            _ => false,
+        }
     }
 
     fn touch_timestamp_us(&self) -> u64 {
@@ -424,7 +466,7 @@ impl RpcApp {
 
     fn on_window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
@@ -447,14 +489,16 @@ impl RpcApp {
                 self.last_size = Some(window.inner_size());
                 self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
-            WindowEvent::CloseRequested => match &self.input_target {
-                InputTarget::Direct(input_event_sender) => input_event_sender.request_graceful_close(),
-                InputTarget::Rpc(daemon) => {
-                    let _ = daemon.disconnect();
-                    daemon.shutdown();
-                    event_loop.exit();
+            WindowEvent::CloseRequested => {
+                self.close_requested = true;
+                match &self.input_target {
+                    InputTarget::Direct(input_event_sender) => input_event_sender.request_graceful_close(),
+                    InputTarget::Rpc(daemon) => {
+                        let _ = daemon.disconnect();
+                        daemon.shutdown();
+                    }
                 }
-            },
+            }
             WindowEvent::DroppedFile(_) => {
                 // TODO(#110): File upload
             }
@@ -668,9 +712,17 @@ impl RpcApp {
                         proc_exit::sysexits::OK
                     }
                     Err(error) => {
-                        error!(?error);
-                        eprintln!("Active session error: {}", error.report().with_locations());
-                        proc_exit::sysexits::PROTOCOL_ERR
+                        if self.close_requested && Self::is_expected_shutdown_error(&error) {
+                            println!(
+                                "Terminated gracefully: {}",
+                                ironrdp::session::GracefulDisconnectReason::UserInitiated
+                            );
+                            proc_exit::sysexits::OK
+                        } else {
+                            error!(?error);
+                            eprintln!("Active session error: {}", error.report().with_locations());
+                            proc_exit::sysexits::PROTOCOL_ERR
+                        }
                     }
                 };
                 // TODO set exit_code.as_raw());
