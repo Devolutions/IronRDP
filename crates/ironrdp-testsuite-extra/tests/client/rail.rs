@@ -1,9 +1,10 @@
 use ironrdp_client::rail::{RailClient, RailControlEvent, RailEvent, RailInputEvent};
 use ironrdp_core::{decode, encode_vec};
 use ironrdp_rail::pdu::{
-    AccentColor, ClientStatusPdu, ClientSystemParameter, ClientSystemParametersPdu, CloakPdu, ExecutePdu, FilterKeys,
-    HandshakeExPdu, HandshakePdu, HighContrast, LocalMoveSizePdu, MinMaxInfoPdu, MoveSizeType, RailPdu, Rectangle,
-    SnapArrangePdu, StickyKeys, SystemParameterRectangle, TaskbarInfoPdu, TaskbarMessage, ToggleKeys, WindowMovePdu,
+    AccentColor, ClientStatusPdu, ClientSystemParameter, ClientSystemParametersPdu, CloakPdu, ExecutePdu,
+    ExecuteResult, ExecuteResultPdu, FilterKeys, HandshakeExPdu, HandshakePdu, HighContrast, LocalMoveSizePdu,
+    MinMaxInfoPdu, MoveSizeType, RailPdu, Rectangle, SnapArrangePdu, StickyKeys, SystemParameterRectangle,
+    TaskbarInfoPdu, TaskbarMessage, ToggleKeys, WindowMovePdu,
 };
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 use rstest::rstest;
@@ -156,6 +157,138 @@ fn desktop_size_update_sends_display_change_and_work_area() {
             })
         })
     ));
+}
+
+// oracle: mutant reporting an unchanged size restarts the Windows RemoteApp desktop hook.
+#[test]
+fn unchanged_desktop_size_does_not_send_display_change() {
+    let mut client = established_client(None);
+
+    assert!(sent_pdus(client.update_desktop_size(800, 600).into()).is_empty());
+    client.update_desktop_size(1024, 768);
+    assert!(sent_pdus(client.update_desktop_size(1024, 768).into()).is_empty());
+}
+
+// oracle: reference Windows Server 2025 restarts its desktop hook on RAIL_SPI_DISPLAYCHANGE.
+#[test]
+fn handshake_sets_work_area_without_reporting_a_display_change() {
+    let mut client = RailClient::new(1, 800, 600);
+
+    let parameters = sent_system_parameters(handshake(&mut client, None));
+
+    assert!(parameters.contains(&ClientSystemParameter::WorkArea(rectangle(800, 600))));
+    assert!(
+        !parameters
+            .iter()
+            .any(|parameter| matches!(parameter, ClientSystemParameter::DisplayChange(_)))
+    );
+}
+
+// oracle: reference Windows Server 2025 sends a new RAIL handshake when rdpshell restarts.
+#[test]
+fn server_reinitialization_resends_current_parameters_and_waits_before_new_input() {
+    let mut client = established_client(Some(ALL_EXTENDED_SPI));
+    client.update_desktop_size(1280, 720);
+    client
+        .update_system_parameters(vec![
+            ClientSystemParameter::KeyboardPreference(true),
+            ClientSystemParameter::CaretWidth(3),
+        ])
+        .unwrap();
+
+    let initialization = sent_pdus(handshake(&mut client, None));
+
+    assert!(matches!(
+        initialization.first(),
+        Some(RailPdu::Handshake(HandshakePdu { build_number: 1 }))
+    ));
+    // oracle: spec MS-RDPERP §3.2.5.2.3.1 (system parameters are sent at each RAIL connection or reconnection).
+    assert!(
+        initialization.contains(&RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
+            parameter: ClientSystemParameter::WorkArea(rectangle(1280, 720)),
+        }))
+    );
+    assert!(!initialization.iter().any(|pdu| matches!(
+        pdu,
+        RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
+            parameter: ClientSystemParameter::DisplayChange(_),
+        })
+    )));
+    assert!(
+        initialization.contains(&RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
+            parameter: ClientSystemParameter::KeyboardPreference(true),
+        }))
+    );
+    // oracle: spec MS-RDPERP §2.2.2.4.1 (SPI_SETCARETWIDTH requires EXTENDED_SPI_SUPPORTED).
+    assert!(
+        !initialization.contains(&RailPdu::ClientSystemParameters(ClientSystemParametersPdu {
+            parameter: ClientSystemParameter::CaretWidth(3),
+        }))
+    );
+    assert!(!initialization.iter().any(|pdu| matches!(pdu, RailPdu::Execute(_))));
+    let queued: Vec<_> = client.queue_execute(execute()).unwrap().into();
+    assert!(queued.is_empty());
+    let released = sent_pdus(client.release_queued_after_handshake().unwrap().into());
+    assert!(matches!(released.as_slice(), [RailPdu::Execute(execute)] if execute.executable == "app"));
+}
+
+// oracle: mutant reinitialization replays completed launches or loses fresh execute correlation.
+#[test]
+fn server_reinitialization_does_not_replay_completed_launches() {
+    let mut client = established_client(None);
+    let result = ExecuteResultPdu {
+        flags: 0,
+        result: ExecuteResult::Ok,
+        raw_result: 0,
+        executable: "app".to_owned(),
+    };
+    let encoded_result = encode_vec(&RailPdu::ExecuteResult(result.clone())).unwrap();
+    client.queue_execute(execute()).unwrap();
+    client.process(&encoded_result).unwrap();
+    client.take_events();
+
+    let initialization = sent_pdus(handshake(&mut client, Some(ALL_EXTENDED_SPI)));
+    assert!(!initialization.iter().any(|pdu| matches!(pdu, RailPdu::Execute(_))));
+    assert!(sent_pdus(client.release_queued_after_handshake().unwrap().into()).is_empty());
+    client.take_events();
+
+    assert_eq!(
+        sent_pdus(client.queue_execute(execute()).unwrap().into()),
+        [RailPdu::Execute(execute())]
+    );
+    client.process(&encoded_result).unwrap();
+    // oracle: spec MS-RDPERP §3.2.5.2.2.2 (match and report the result of the previously sent request).
+    assert_eq!(client.take_events(), [RailEvent::ExecuteResult(result)]);
+}
+
+// oracle: mutant repeated initialization loses an unsent launch or releases it more than once.
+#[test]
+fn server_reinitialization_preserves_unsent_launches() {
+    let mut client = RailClient::new(1, 800, 600);
+    client.queue_execute(execute()).unwrap();
+    handshake(&mut client, None);
+
+    let initialization = sent_pdus(handshake(&mut client, None));
+    assert!(!initialization.iter().any(|pdu| matches!(pdu, RailPdu::Execute(_))));
+    assert_eq!(
+        sent_pdus(client.complete_desktop_synchronization().unwrap().into()),
+        [RailPdu::Execute(execute())]
+    );
+    assert!(sent_pdus(client.release_queued_after_handshake().unwrap().into()).is_empty());
+}
+
+// oracle: mutant reinitialization silently abandons a launch whose result is still outstanding.
+#[test]
+fn server_reinitialization_rejects_outstanding_launches() {
+    let mut client = established_client(None);
+    client.queue_execute(execute()).unwrap();
+
+    assert!(
+        client
+            .process(&encode_vec(&RailPdu::Handshake(HandshakePdu { build_number: 1 })).unwrap())
+            .is_err()
+    );
+    assert!(client.take_events().is_empty());
 }
 
 fn handshake(client: &mut RailClient, handshake_ex_flags: Option<u32>) -> Vec<SvcMessage> {
@@ -345,8 +478,11 @@ fn host_supplied_display_change_is_discarded_for_the_desktop_size() {
     let on_update: Vec<_> = client.update_system_parameters(vec![host_display]).unwrap().into();
     let after_resize = sent_system_parameters(client.update_desktop_size(1024, 768).into());
 
-    assert!(at_initialization.contains(&ClientSystemParameter::DisplayChange(rectangle(800, 600))));
-    assert!(!at_initialization.contains(&ClientSystemParameter::DisplayChange(rectangle(1, 1))));
+    assert!(
+        !at_initialization
+            .iter()
+            .any(|parameter| matches!(parameter, ClientSystemParameter::DisplayChange(_)))
+    );
     assert!(on_update.is_empty());
     assert!(after_resize.contains(&ClientSystemParameter::DisplayChange(rectangle(1024, 768))));
 }
@@ -374,7 +510,6 @@ fn host_work_area_replaces_the_desktop_rectangle() {
 
     let sent = sent_system_parameters(handshake(&mut client, None));
 
-    assert!(sent.contains(&ClientSystemParameter::DisplayChange(rectangle(800, 600))));
     assert!(sent.contains(&ClientSystemParameter::WorkArea(work_area)));
     assert!(!sent.contains(&ClientSystemParameter::WorkArea(rectangle(800, 600))));
 }
