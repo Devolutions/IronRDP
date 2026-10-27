@@ -205,9 +205,15 @@ impl NixRdpdrBackend {
         let Some(open_file) = self.open_files.remove(&file_id) else {
             return responses;
         };
-        // [MS-FSA] 2.1.5.5 marks a file opened with FILE_DELETE_ON_CLOSE for deletion when that handle closes.
+        // [MS-FSA] 2.1.5.5 marks a file opened with FILE_DELETE_ON_CLOSE for deletion when that handle closes, but a directory only while it is empty.
         if open_file.delete_on_close {
-            self.pending_deletes.insert(open_file.identity, open_file.path.clone());
+            match holds_entries(&open_file.file) {
+                Ok(false) => {
+                    self.pending_deletes.insert(open_file.identity, open_file.path.clone());
+                }
+                Ok(true) => trace!("Kept a directory opened with delete on close that is not empty"),
+                Err(error) => warn!(%error, "Delete on close check error"),
+            }
         }
         let still_open = self
             .open_files
@@ -1088,27 +1094,31 @@ fn set_delete_pending(
     if open_file.path.file_name().is_none() {
         return Err(NtStatus::ACCESS_DENIED);
     }
-    let stat = fstat(open_file.file.as_fd()).map_err(status_from_errno)?;
-    if is_read_only(&stat) {
+    if is_read_only(&fstat(open_file.file.as_fd()).map_err(status_from_errno)?) {
         return Err(cannot_delete());
     }
-    if is_directory(&stat) {
-        // The open directory itself is read, not whatever its path names now.
-        // A duplicate of the handle would share its read position, so a second mark would read on from the end of the first.
-        let directory = nix::fcntl::openat(
-            open_file.file.as_fd(),
-            ".",
-            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(status_from_errno)?;
-        let mut listing = DirectoryListing::open(directory, true, None).map_err(status_from_errno)?;
-        if listing.next_entry().map_err(status_from_errno)?.is_some() {
-            return Err(NtStatus::DIRECTORY_NOT_EMPTY);
-        }
+    if holds_entries(&open_file.file).map_err(status_from_errno)? {
+        return Err(NtStatus::DIRECTORY_NOT_EMPTY);
     }
     pending_deletes.insert(open_file.identity, open_file.path.clone());
     Ok(())
+}
+
+/// Whether `file` is a directory with entries, which cannot be marked for deletion.
+fn holds_entries(file: &std::fs::File) -> nix::Result<bool> {
+    if !is_directory(&fstat(file.as_fd())?) {
+        return Ok(false);
+    }
+    // The open directory itself is read, not whatever its path names now.
+    // A duplicate of the handle would share its read position, so a second check would read on from the end of the first.
+    let directory = nix::fcntl::openat(
+        file.as_fd(),
+        ".",
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?;
+    let mut listing = DirectoryListing::open(directory, true, None)?;
+    Ok(listing.next_entry()?.is_some())
 }
 
 fn is_directory(stat: &FileStat) -> bool {
@@ -1376,7 +1386,10 @@ pub(crate) fn create_drive(
                     path,
                     identity,
                     ancestors,
-                    may_delete: grants_delete(&req_inner.desired_access),
+                    // GENERIC_ALL and MAXIMUM_ALLOWED include DELETE ([MS-SMB2] 2.2.13.1).
+                    may_delete: req_inner.desired_access.intersects(
+                        DesiredAccess::DELETE | DesiredAccess::GENERIC_ALL | DesiredAccess::MAXIMUM_ALLOWED,
+                    ),
                     delete_on_close: req_inner.create_options.contains(CreateOptions::FILE_DELETE_ON_CLOSE),
                     listing: None,
                 },
@@ -1434,8 +1447,8 @@ fn open_file(
         return Err(NtStatus::INVALID_PARAMETER);
     }
     let delete_on_close = req.create_options.contains(CreateOptions::FILE_DELETE_ON_CLOSE);
-    // [MS-SMB2] 2.2.13 requires DELETE access with FILE_DELETE_ON_CLOSE.
-    if delete_on_close && !grants_delete(&req.desired_access) {
+    // [MS-SMB2] 2.2.13 requires the DELETE bit itself with FILE_DELETE_ON_CLOSE, which GENERIC_ALL or MAXIMUM_ALLOWED does not replace.
+    if delete_on_close && !req.desired_access.contains(DesiredAccess::DELETE) {
         warn!("Rejected FILE_DELETE_ON_CLOSE without DELETE access");
         return Err(NtStatus::INVALID_PARAMETER);
     }
@@ -1472,6 +1485,11 @@ fn open_file(
                 } else {
                     NtStatus::OBJECT_NAME_COLLISION
                 });
+            }
+            // The shared directory cannot be removed through the share, as on the Windows backend.
+            if delete_on_close && path.file_name().is_none() {
+                trace!("Refused to delete the shared directory on close");
+                return Err(NtStatus::ACCESS_DENIED);
             }
             OFlag::O_RDONLY | OFlag::O_DIRECTORY
         }
@@ -1548,11 +1566,6 @@ fn open_file(
         })?;
     }
     Ok((std::fs::File::from(file), identity, ancestors))
-}
-
-/// Whether a handle opened with `desired_access` is granted DELETE, which GENERIC_ALL and MAXIMUM_ALLOWED include ([MS-SMB2] 2.2.13.1).
-fn grants_delete(desired_access: &DesiredAccess) -> bool {
-    desired_access.intersects(DesiredAccess::DELETE | DesiredAccess::GENERIC_ALL | DesiredAccess::MAXIMUM_ALLOWED)
 }
 
 /// Chooses the descriptor's access mode from the access the server requests, with the bits [MS-SMB2] 2.2.13.1 defines.

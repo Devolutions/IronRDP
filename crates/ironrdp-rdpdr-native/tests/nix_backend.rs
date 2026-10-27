@@ -1223,15 +1223,19 @@ fn delete_on_close_removes_the_file_when_its_handle_closes() {
 }
 
 // oracle: spec MS-SMB2 §2.2.13
-#[test]
-fn delete_on_close_needs_delete_access() {
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
+#[rstest]
+#[case::write_only(DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE)]
+#[case::maximum_allowed(DesiredAccess::MAXIMUM_ALLOWED)]
+#[case::generic_all(DesiredAccess::GENERIC_ALL)]
+fn delete_on_close_needs_the_delete_bit(#[case] desired_access: DesiredAccess) {
     let fixture = Fixture::new();
     let mut backend = fixture.backend();
 
     let response = create_with(
         &mut backend,
         DeviceCreateRequest {
-            desired_access: DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE,
+            desired_access,
             create_options: CreateOptions::FILE_DELETE_ON_CLOSE,
             ..create_request(r"\temp.tmp", CreateDisposition::FILE_CREATE)
         },
@@ -1239,6 +1243,73 @@ fn delete_on_close_needs_delete_access() {
 
     assert_eq!(response_status(&response), NtStatus::INVALID_PARAMETER);
     assert!(!fixture.share.join("temp.tmp").exists());
+}
+
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
+#[test]
+fn the_share_cannot_be_deleted_on_close() {
+    let fixture = Fixture::new();
+    let mut backend = fixture.backend();
+
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            create_options: CreateOptions::FILE_DELETE_ON_CLOSE,
+            ..create_request(r"\", CreateDisposition::FILE_OPEN)
+        },
+    );
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert!(fixture.share.exists());
+}
+
+/// Another handle keeps the directory open across the close, so a mark would show as a refused create below it.
+// oracle: spec MS-FSA §2.1.5.5
+#[test]
+fn delete_on_close_keeps_a_directory_that_is_not_empty() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    std::fs::write(fixture.share.join("dir").join("kept.txt"), b"kept").expect("write file");
+    let mut backend = fixture.backend();
+    let other_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            create_options: CreateOptions::FILE_DELETE_ON_CLOSE | CreateOptions::FILE_DIRECTORY_FILE,
+            ..create_request(r"\dir", CreateDisposition::FILE_OPEN)
+        },
+    );
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    close(&mut backend, response_file_id(&response));
+
+    let created = create_with(
+        &mut backend,
+        create_request(r"\dir\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    close(&mut backend, other_id);
+
+    assert_eq!(response_status(&created), NtStatus::SUCCESS);
+    assert!(fixture.share.join("dir").join("kept.txt").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.5
+#[test]
+fn delete_on_close_removes_an_empty_directory() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("empty")).expect("create directory");
+    let mut backend = fixture.backend();
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            create_options: CreateOptions::FILE_DELETE_ON_CLOSE | CreateOptions::FILE_DIRECTORY_FILE,
+            ..create_request(r"\empty", CreateDisposition::FILE_OPEN)
+        },
+    );
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+
+    close(&mut backend, response_file_id(&response));
+
+    assert!(!fixture.share.join("empty").exists());
 }
 
 // oracle: spec MS-FSA §2.1.5.15.3, §2.1.5.15.12
