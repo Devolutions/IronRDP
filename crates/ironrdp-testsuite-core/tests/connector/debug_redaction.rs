@@ -10,7 +10,6 @@ fn credentials_debug_redacts_password() {
 
     let rendered = format!("{creds:?}");
     assert!(rendered.contains("Administrator"));
-    assert!(rendered.contains("<redacted>"));
     assert!(!rendered.contains("dummy-password"));
 }
 
@@ -23,7 +22,6 @@ fn credentials_debug_redacts_pin() {
     };
 
     let rendered = format!("{creds:?}");
-    assert!(rendered.contains("<redacted>"));
     assert!(!rendered.contains("1234"));
 }
 

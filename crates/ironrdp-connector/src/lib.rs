@@ -104,7 +104,9 @@ pub struct BitmapConfig {
 
 #[derive(Clone)]
 pub struct SmartCardIdentity {
-    /// DER-encoded X509 certificate
+    /// DER-encoded X509 certificate.
+    ///
+    /// INVARIANT: `Debug` output reports only `certificate.len()`, never raw bytes.
     pub certificate: Vec<u8>,
     /// Smart card reader name
     pub reader_name: String,
@@ -112,7 +114,9 @@ pub struct SmartCardIdentity {
     pub container_name: String,
     /// Smart card CSP name
     pub csp_name: String,
-    /// DER-encoded RSA 2048-bit private key
+    /// DER-encoded RSA 2048-bit private key.
+    ///
+    /// INVARIANT: `Debug` output reports only `private_key.len()`, never raw bytes.
     pub private_key: Vec<u8>,
 }
 
@@ -133,9 +137,11 @@ pub enum Credentials {
     UsernamePassword {
         /// An empty username suppresses the X.224 `mstshash` cookie.
         username: String,
+        /// INVARIANT: `Debug` output redacts this field.
         password: String,
     },
     SmartCard {
+        /// INVARIANT: `Debug` output redacts this field.
         pin: String,
         config: Option<SmartCardIdentity>,
     },
