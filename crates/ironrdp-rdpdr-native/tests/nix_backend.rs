@@ -1231,6 +1231,7 @@ fn delete_on_close_needs_delete_access() {
     let response = create_with(
         &mut backend,
         DeviceCreateRequest {
+            desired_access: DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE,
             create_options: CreateOptions::FILE_DELETE_ON_CLOSE,
             ..create_request(r"\temp.tmp", CreateDisposition::FILE_CREATE)
         },
@@ -1238,6 +1239,32 @@ fn delete_on_close_needs_delete_access() {
 
     assert_eq!(response_status(&response), NtStatus::INVALID_PARAMETER);
     assert!(!fixture.share.join("temp.tmp").exists());
+}
+
+// oracle: spec MS-FSA §2.1.5.15.3, §2.1.5.15.12
+#[rstest]
+#[case::mark_for_deletion(delete_pending(true))]
+#[case::rename(rename_to(r"\renamed.txt", false))]
+fn a_handle_without_delete_access_can_neither_rename_nor_delete(#[case] set_buffer: FileInformationClass) {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("doc.txt"), b"kept").expect("write file");
+    let mut backend = fixture.backend();
+    let response = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            desired_access: DesiredAccess::FILE_READ_DATA_OR_FILE_LIST_DIRECTORY
+                | DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE,
+            ..create_request(r"\doc.txt", CreateDisposition::FILE_OPEN)
+        },
+    );
+    let file_id = response_file_id(&response);
+
+    let response = set_information(&mut backend, file_id, set_buffer);
+    close(&mut backend, file_id);
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert!(fixture.share.join("doc.txt").exists());
+    assert!(!fixture.share.join("renamed.txt").exists());
 }
 
 // oracle: spec MS-FSA §2.1.5.15.3
@@ -1575,7 +1602,8 @@ fn query_directory(backend: &mut NixRdpdrBackend, file_id: u32, path: &str, init
 fn create_request(path: &str, disposition: CreateDisposition) -> DeviceCreateRequest {
     DeviceCreateRequest {
         device_io_request: request_header(0, MajorFunction::Create),
-        desired_access: DesiredAccess::from_bits_retain(0x0010_0083),
+        // FILE_READ_DATA, FILE_WRITE_DATA, FILE_READ_ATTRIBUTES, DELETE and SYNCHRONIZE, so a test can rename and delete through any handle.
+        desired_access: DesiredAccess::from_bits_retain(0x0011_0083),
         allocation_size: 0,
         file_attributes: FileAttributes::FILE_ATTRIBUTE_NORMAL,
         shared_access: SharedAccess::from_bits_retain(0x0000_0007),

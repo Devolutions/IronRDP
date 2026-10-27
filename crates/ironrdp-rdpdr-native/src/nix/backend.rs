@@ -72,6 +72,8 @@ struct OpenFile {
     ///
     /// A directory holding open files is found by these rather than by path, so another spelling of a name or a local rename does not hide one.
     ancestors: Vec<FileIdentity>,
+    /// Whether the handle was granted DELETE access, which renaming and marking for deletion need.
+    may_delete: bool,
     /// Whether closing this handle marks the file for deletion, as FILE_DELETE_ON_CLOSE requests.
     delete_on_close: bool,
     /// The enumeration the last initial query-directory request started on this file.
@@ -883,6 +885,11 @@ pub(crate) fn set_information(
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = req_inner.device_io_request.file_id;
+    // [MS-FSA] 2.1.5.15.3 FileDispositionInformation and 2.1.5.15.12 FileRenameInformation refuse a handle without DELETE access before any other check.
+    let needs_delete = matches!(
+        req_inner.set_buffer,
+        FileInformationClass::Rename(_) | FileInformationClass::Disposition(_)
+    );
     // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
     let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
         && backend.open_files.get(&file_id).is_some_and(|open_file| {
@@ -905,6 +912,7 @@ pub(crate) fn set_information(
     let mut renamed = None;
     let status = match backend.open_files.get_mut(&file_id) {
         Some(open_file) => match &req_inner.set_buffer {
+            _ if needs_delete && !open_file.may_delete => NtStatus::ACCESS_DENIED,
             FileInformationClass::Rename(_) if rename_denied => NtStatus::ACCESS_DENIED,
             // The shared directory itself is no name to rename to.
             FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name)
@@ -1366,6 +1374,7 @@ pub(crate) fn create_drive(
                     path,
                     identity,
                     ancestors,
+                    may_delete: grants_delete(&req_inner.desired_access),
                     delete_on_close: req_inner.create_options.contains(CreateOptions::FILE_DELETE_ON_CLOSE),
                     listing: None,
                 },
@@ -1424,7 +1433,7 @@ fn open_file(
     }
     let delete_on_close = req.create_options.contains(CreateOptions::FILE_DELETE_ON_CLOSE);
     // [MS-SMB2] 2.2.13 requires DELETE access with FILE_DELETE_ON_CLOSE.
-    if delete_on_close && !req.desired_access.contains(DesiredAccess::DELETE) {
+    if delete_on_close && !grants_delete(&req.desired_access) {
         warn!("Rejected FILE_DELETE_ON_CLOSE without DELETE access");
         return Err(NtStatus::INVALID_PARAMETER);
     }
@@ -1537,6 +1546,11 @@ fn open_file(
         })?;
     }
     Ok((std::fs::File::from(file), identity, ancestors))
+}
+
+/// Whether a handle opened with `desired_access` is granted DELETE, which GENERIC_ALL and MAXIMUM_ALLOWED include ([MS-SMB2] 2.2.13.1).
+fn grants_delete(desired_access: &DesiredAccess) -> bool {
+    desired_access.intersects(DesiredAccess::DELETE | DesiredAccess::GENERIC_ALL | DesiredAccess::MAXIMUM_ALLOWED)
 }
 
 /// Chooses the descriptor's access mode from the access the server requests, with the bits [MS-SMB2] 2.2.13.1 defines.
