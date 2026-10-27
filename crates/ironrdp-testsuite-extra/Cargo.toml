@@ -57,7 +57,7 @@ ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
-picky = "=7.0.0-rc.26"
+picky = "=7.0.0-rc.27"
 proptest.workspace = true
 rcgen = "0.14"
 rstest.workspace = true
