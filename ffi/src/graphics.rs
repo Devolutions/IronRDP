@@ -4,6 +4,9 @@ pub mod ffi {
 
     use crate::utils::ffi::VecU8;
 
+    /// The client accepts pointers up to 384x384 pixels, and each one decodes to 4 bytes per
+    /// pixel, so a single pointer can hold about 576 KiB the .NET garbage collector never sees.
+    /// That's why .NET callers get `Dispose` to free it right away.
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct DecodedPointer(pub Arc<ironrdp::graphics::pointer::DecodedPointer>);

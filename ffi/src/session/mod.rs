@@ -691,7 +691,8 @@ mod tests {
         assert!(iterator.next().is_none());
     }
 
-    // oracle: spec MS-RDPERP §2.2.1.3.2.2.1 (Version 1 is not a valid notification icon version)
+    // oracle: spec MS-RDPERP §2.2.1.3.2.2.1 (Version 1 is not a valid notification icon version);
+    // the kind comes from `From<EncodeError> for Box<IronRdpError>` in ffi/src/error.rs
     #[test]
     fn windowing_orders_that_cannot_be_encoded_report_an_error() {
         use ironrdp::pdu::window::{NotifyIconOrder, NotifyIconState, WindowingOrder};

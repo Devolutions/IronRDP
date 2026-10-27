@@ -27,6 +27,7 @@ At this point, you may build and run the examples for .NET:
 - Dispose a `CredsspProcessGenerator` before the next call on its `CredsspSequence`.
 - `DecodedImage.Data` is gone: size a buffer with `DataSize` and copy into it with `FillData`.
   `ResponseFrame`, `WindowingOrders` and `DecodedPointer.Data` return a `VecU8` instead of a `BytesSlice`.
+- `WindowingOrders` reports an encoding failure as `IronRdpErrorKind.EncodeError` instead of `Generic`.
 - A native object rejects overlapping calls with `InvalidOperationException`.
   Serialize access to `ActiveStage` and `DecodedImage` across the PDU loop, input handlers and clipboard, as the Avalonia example does with one lock.
 

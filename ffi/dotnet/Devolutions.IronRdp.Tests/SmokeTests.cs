@@ -25,12 +25,16 @@ internal static class SmokeTests
             Equal((byte)0xff, bytes[^1], "bytes past the image are untouched");
         });
 
+        // oracle: DecodedImage::fill_data doc contract (# Errors) and the shared fill_prefix error in ffi/src/utils/mod.rs
         yield return ("decoded image rejects a short output buffer", () =>
         {
             var image = DecodedImage.New(PixelFormat.BgrA32, 64, 32);
-            Throws<IronRdpException>(() => image.FillData(new byte[4]));
+            var error = Throws<IronRdpException>(() => image.FillData(new byte[4]));
+            Equal(IronRdpErrorKind.Generic, error.Inner.Kind, "error kind");
+            True(error.Message.Contains("buffer is too small"), $"error message: {error.Message}");
         });
 
+        // oracle: ffi/README.md lists DecodedImage as IDisposable; Diplomat's generated Dispose remarks say later calls throw ObjectDisposedException
         yield return ("disposed decoded image throws ObjectDisposedException", () =>
         {
             var image = DecodedImage.New(PixelFormat.BgrA32, 64, 32);
