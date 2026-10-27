@@ -11,6 +11,8 @@
 pub mod audio;
 #[cfg(feature = "camera")]
 pub mod camera;
+#[cfg(feature = "cloud")]
+pub mod cloud;
 pub mod config;
 pub mod egfx_cache;
 #[cfg(feature = "entra-auth")]
@@ -31,7 +33,7 @@ pub fn __test_apply_server_redirection(
     redirection::apply_server_redirection(config, redirection)
 }
 
-#[cfg(feature = "entra-auth")]
+#[cfg(any(feature = "cloud", feature = "entra-auth"))]
 fn http_client_builder() -> std::io::Result<reqwest::ClientBuilder> {
     let builder = reqwest::Client::builder();
     #[cfg(feature = "rustls")]

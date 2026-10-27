@@ -2872,6 +2872,7 @@ dependencies = [
  "picky",
  "rand 0.9.5",
  "reqwest",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "smallvec",
