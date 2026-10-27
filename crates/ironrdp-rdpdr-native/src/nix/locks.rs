@@ -1,8 +1,10 @@
-//! Byte-range locks the server takes on redirected files, as [MS-FSA] 2.1.4.10, 2.1.5.8 and 2.1.5.9 describe.
+//! Byte-range locks the server takes on redirected files, as [2.1.4.10] Algorithm for Determining If a Range Access Conflicts with Byte-Range Locks, [2.1.5.8] Server Requests a Byte-Range Lock and [2.1.5.9] Server Requests an Unlock of a Byte-Range describe in MS-FSA.
 //!
 //! The locks bind the server's own handles to each other; local processes do not see them.
 //!
-//! [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/124bb289-eeef-4653-b9c6-4fb93dd07a21
+//! [2.1.4.10]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/124bb289-eeef-4653-b9c6-4fb93dd07a21
+//! [2.1.5.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/369103ec-a8af-452b-8006-aff07b925b61
+//! [2.1.5.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/84e68de6-31a6-4cba-afd4-00b1bac6d1a2
 
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{ClientDriveLockControlResponse, DeviceIoRequest, NtStatus, RdpLockInfo};
@@ -68,9 +70,9 @@ struct WaitingLock {
 }
 
 impl ByteRangeLocks {
-    /// Whether accessing a range conflicts with the locks on the file, as [MS-FSA] 2.1.4.10 decides.
+    /// Whether accessing a range conflicts with the locks on the file, as MS-FSA [2.1.4.10] Algorithm for Determining If a Range Access Conflicts with Byte-Range Locks decides.
     ///
-    /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/124bb289-eeef-4653-b9c6-4fb93dd07a21
+    /// [2.1.4.10]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/124bb289-eeef-4653-b9c6-4fb93dd07a21
     pub(crate) fn conflicts(
         &self,
         identity: FileIdentity,
@@ -186,12 +188,9 @@ impl ByteRangeLocks {
             }
             !is_owned
         });
-        let (cancelled, waiting) = std::mem::take(&mut self.waiting)
-            .into_iter()
-            .partition::<Vec<_>, _>(|waiting| waiting.request.file_id == owner);
-        self.waiting = waiting;
-        let mut responses = cancelled
-            .into_iter()
+        let mut responses = self
+            .waiting
+            .extract_if(.., |waiting| waiting.request.file_id == owner)
             .map(|waiting| response(waiting.request, NtStatus::CANCELLED))
             .collect::<Vec<_>>();
         if let Some(identity) = released {
@@ -239,25 +238,16 @@ impl ByteRangeLocks {
     /// The responses are the same either way, so after changing a caller, check that it calls this only when it released a lock, with that lock's file.
     fn grant_waiting(&mut self, identity: FileIdentity) -> Vec<SvcMessage> {
         let mut responses = Vec::new();
-        let mut index = 0;
-        while index < self.waiting.len() {
-            let waiting = &self.waiting[index];
-            if waiting.identity != identity {
-                index += 1;
-                continue;
-            }
-            let (owner, identity, ranges, exclusive) = (
-                waiting.request.file_id,
-                waiting.identity,
-                waiting.ranges.clone(),
-                waiting.exclusive,
-            );
-            let granted = self.try_lock(owner, identity, &ranges, exclusive).is_ok();
-            if granted {
-                let waiting = self.waiting.remove(index);
+        // `try_lock` touches only the locks, so the queue can be taken out and refilled in order with what stays.
+        for waiting in std::mem::take(&mut self.waiting) {
+            let is_granted = waiting.identity == identity
+                && self
+                    .try_lock(waiting.request.file_id, identity, &waiting.ranges, waiting.exclusive)
+                    .is_ok();
+            if is_granted {
                 responses.push(response(waiting.request, NtStatus::SUCCESS));
             } else {
-                index += 1;
+                self.waiting.push(waiting);
             }
         }
         responses
@@ -270,7 +260,10 @@ pub(crate) fn response(request: DeviceIoRequest, status: NtStatus) -> SvcMessage
     ))
 }
 
-/// Refuses an empty request and a range past the largest offset, as [MS-FSA] 2.1.5.8 and 2.1.5.9 require, and more ranges than `MAX_RANGES`.
+/// Refuses an empty request and a range past the largest offset, as MS-FSA [2.1.5.8] Server Requests a Byte-Range Lock and [2.1.5.9] Server Requests an Unlock of a Byte-Range require, and more ranges than `MAX_RANGES`.
+///
+/// [2.1.5.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/369103ec-a8af-452b-8006-aff07b925b61
+/// [2.1.5.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/84e68de6-31a6-4cba-afd4-00b1bac6d1a2
 fn validate(ranges: &[RdpLockInfo]) -> Result<(), NtStatus> {
     if ranges.is_empty() {
         return Err(NtStatus::INVALID_PARAMETER);

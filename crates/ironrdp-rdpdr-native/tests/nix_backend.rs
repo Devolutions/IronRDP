@@ -1595,8 +1595,7 @@ fn completions(messages: &[SvcMessage]) -> Vec<(u32, NtStatus)> {
 }
 
 fn completion_id(message: &SvcMessage) -> u32 {
-    let response = message.encode_unframed_pdu().expect("encode RDPDR response");
-    u32::from_le_bytes(response[8..12].try_into().expect("completion ID"))
+    read_u32(std::slice::from_ref(message), COMPLETION_ID)
 }
 
 fn message_status(message: &SvcMessage) -> NtStatus {
@@ -1727,6 +1726,7 @@ fn request_header(file_id: u32, major_function: MajorFunction) -> DeviceIoReques
 
 // Every response starts with an RDPDR_HEADER, Component and PacketId, followed by DeviceId, CompletionId and IoStatus,
 // all four bytes ([MS-RDPEFS] 2.2.1.1 Shared Header (RDPDR_HEADER) and 2.2.1.5 Device I/O Response (DR_DEVICE_IOCOMPLETION)).
+const COMPLETION_ID: Range<usize> = 8..12;
 const IO_STATUS: Range<usize> = 12..16;
 // [MS-RDPEFS] 2.2.1.5.1 Device Create Response (DR_CREATE_RSP) continues with FileId.
 const CREATE_FILE_ID: Range<usize> = 16..20;

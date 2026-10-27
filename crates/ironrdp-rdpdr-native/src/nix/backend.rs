@@ -209,7 +209,7 @@ impl NixRdpdrBackend {
         if open_file.delete_on_close {
             match holds_entries(&open_file.file) {
                 Ok(false) => {
-                    self.pending_deletes.insert(open_file.identity, open_file.path.clone());
+                    self.pending_deletes.insert(open_file.identity, open_file.path);
                 }
                 Ok(true) => trace!("Kept a directory opened with delete on close that is not empty"),
                 Err(error) => warn!(%error, "Delete on close check error"),
@@ -497,11 +497,11 @@ pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWrite
                 .conflicts(open_file.identity, file_id, req_inner.offset, length, true, false)
         })
     {
-        let res = RdpdrPdu::DeviceWriteResponse(DeviceWriteResponse {
-            device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, file_lock_conflict()),
-            length: 0u32,
-        });
-        return Ok(vec![SvcMessage::from(res)]);
+        return Ok(vec![SvcMessage::from(write_response(
+            req_inner.device_io_request,
+            0,
+            file_lock_conflict(),
+        ))]);
     }
     return process_dependent_file(
         backend,
@@ -538,7 +538,7 @@ pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWrite
             Err(error) => {
                 warn!(%error, "Write error");
                 let res = RdpdrPdu::DeviceWriteResponse(DeviceWriteResponse {
-                    device_io_reply: DeviceIoResponse::new(request, status_from_io_error(&error)),
+                    device_io_reply: DeviceIoResponse::new(request, status_from_errno(io_to_errno(error))),
                     length: 0u32,
                 });
                 Ok(vec![SvcMessage::from(res)])
@@ -595,7 +595,7 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
                     Ok(buf) => (NtStatus::SUCCESS, buf),
                     Err(error) => {
                         warn!(?error, "Read error");
-                        (status_from_io_error(&error), Vec::new())
+                        (status_from_errno(io_to_errno(error)), Vec::new())
                     }
                 }
             };
@@ -625,30 +625,22 @@ pub(crate) fn lock_control(
     req_inner: ServerDriveLockControlRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = req_inner.device_io_request.file_id;
-    let Some(open_file) = backend.open_files.get(&file_id) else {
-        warn!("No such file");
-        return Ok(vec![locks::response(
-            req_inner.device_io_request,
-            NtStatus::NO_SUCH_FILE,
-        )]);
+    let checked = match backend.open_files.get(&file_id) {
+        None => {
+            warn!("No such file");
+            Err(NtStatus::NO_SUCH_FILE)
+        }
+        // [MS-FSA] 2.1.5.8 and 2.1.5.9 do not permit byte-range locks on a directory.
+        Some(open_file) => match fstat(open_file.file.as_fd()) {
+            Ok(stat) if is_directory(&stat) => Err(NtStatus::INVALID_PARAMETER),
+            Ok(_) => Ok(open_file.identity),
+            Err(error) => Err(status_from_errno(error)),
+        },
     };
-    // [MS-FSA] 2.1.5.8 and 2.1.5.9 do not permit byte-range locks on a directory.
-    match fstat(open_file.file.as_fd()) {
-        Ok(stat) if !is_directory(&stat) => {}
-        Ok(_) => {
-            return Ok(vec![locks::response(
-                req_inner.device_io_request,
-                NtStatus::INVALID_PARAMETER,
-            )]);
-        }
-        Err(error) => {
-            return Ok(vec![locks::response(
-                req_inner.device_io_request,
-                status_from_errno(error),
-            )]);
-        }
-    }
-    let identity = open_file.identity;
+    let identity = match checked {
+        Ok(identity) => identity,
+        Err(status) => return Ok(vec![locks::response(req_inner.device_io_request, status)]),
+    };
     match req_inner.operation {
         LockOperation::Shared | LockOperation::Exclusive => {
             let exclusive = req_inner.operation == LockOperation::Exclusive;
@@ -897,11 +889,6 @@ pub(crate) fn set_information(
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = req_inner.device_io_request.file_id;
-    // [MS-FSA] 2.1.5.15.3 FileDispositionInformation and 2.1.5.15.12 FileRenameInformation refuse a handle without DELETE access before any other check.
-    let needs_delete = matches!(
-        req_inner.set_buffer,
-        FileInformationClass::Rename(_) | FileInformationClass::Disposition(_)
-    );
     // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
     let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
         && backend.open_files.get(&file_id).is_some_and(|open_file| {
@@ -924,7 +911,10 @@ pub(crate) fn set_information(
     let mut renamed = None;
     let status = match backend.open_files.get_mut(&file_id) {
         Some(open_file) => match &req_inner.set_buffer {
-            _ if needs_delete && !open_file.may_delete => NtStatus::ACCESS_DENIED,
+            // [MS-FSA] 2.1.5.15.3 FileDispositionInformation and 2.1.5.15.12 FileRenameInformation refuse a handle without DELETE access before any other check.
+            FileInformationClass::Rename(_) | FileInformationClass::Disposition(_) if !open_file.may_delete => {
+                NtStatus::ACCESS_DENIED
+            }
             FileInformationClass::Rename(_) if rename_denied => NtStatus::ACCESS_DENIED,
             // The shared directory itself is no name to rename to.
             FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name)
@@ -1137,13 +1127,6 @@ fn is_read_only(stat: &FileStat) -> bool {
 /// STATUS_CANNOT_DELETE, which [`NtStatus`] does not name.
 fn cannot_delete() -> NtStatus {
     NtStatus::from(0xC000_0121)
-}
-
-/// Maps a read or write error to the status for the same condition.
-fn status_from_io_error(error: &std::io::Error) -> NtStatus {
-    error
-        .raw_os_error()
-        .map_or(NtStatus::UNSUCCESSFUL, |code| status_from_errno(Errno::from_raw(code)))
 }
 
 /// Maps a filesystem error to the status the Windows drive backend reports for the same condition.
@@ -1529,7 +1512,28 @@ fn open_file(
                 // Refused before the lookup.
                 _ => return Err(NtStatus::INVALID_PARAMETER),
             };
-            disposition | access_mode(&req.desired_access, truncates)
+            // The access mode follows the access the server requests, with the bits [MS-SMB2] 2.2.13.1 defines, and a truncating disposition needs write access whatever it requests.
+            let all = || DesiredAccess::GENERIC_ALL | DesiredAccess::MAXIMUM_ALLOWED;
+            let read = req.desired_access.intersects(
+                DesiredAccess::FILE_READ_DATA_OR_FILE_LIST_DIRECTORY
+                    | DesiredAccess::FILE_EXECUTE
+                    | DesiredAccess::GENERIC_READ
+                    | DesiredAccess::GENERIC_EXECUTE
+                    | all(),
+            );
+            let write = truncates
+                || req.desired_access.intersects(
+                    DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE
+                        | DesiredAccess::FILE_APPEND_DATA_OR_FILE_ADD_SUBDIRECTORY
+                        | DesiredAccess::GENERIC_WRITE
+                        | all(),
+                );
+            let access = match (read, write) {
+                (_, false) => OFlag::O_RDONLY,
+                (false, true) => OFlag::O_WRONLY,
+                (true, true) => OFlag::O_RDWR,
+            };
+            disposition | access
         }
     };
     let mode = Mode::from_bits_truncate(0o666);
@@ -1570,32 +1574,6 @@ fn open_file(
         })?;
     }
     Ok((std::fs::File::from(file), identity, ancestors))
-}
-
-/// Chooses the descriptor's access mode from the access the server requests, with the bits [MS-SMB2] 2.2.13.1 defines.
-///
-/// A truncating disposition needs write access whatever the server requests.
-fn access_mode(desired_access: &DesiredAccess, truncates: bool) -> OFlag {
-    let all = || DesiredAccess::GENERIC_ALL | DesiredAccess::MAXIMUM_ALLOWED;
-    let read = desired_access.intersects(
-        DesiredAccess::FILE_READ_DATA_OR_FILE_LIST_DIRECTORY
-            | DesiredAccess::FILE_EXECUTE
-            | DesiredAccess::GENERIC_READ
-            | DesiredAccess::GENERIC_EXECUTE
-            | all(),
-    );
-    let write = truncates
-        || desired_access.intersects(
-            DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE
-                | DesiredAccess::FILE_APPEND_DATA_OR_FILE_ADD_SUBDIRECTORY
-                | DesiredAccess::GENERIC_WRITE
-                | all(),
-        );
-    match (read, write) {
-        (_, false) => OFlag::O_RDONLY,
-        (false, true) => OFlag::O_WRONLY,
-        (true, true) => OFlag::O_RDWR,
-    }
 }
 
 pub(crate) fn process_dependent_file(

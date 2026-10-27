@@ -1,8 +1,8 @@
-//! Directory-query name patterns, matched as [MS-FSA] 2.1.4.4 describes.
+//! Directory-query name patterns, matched as MS-FSA [2.1.4.4] Algorithm for Determining if a FileName Is in an Expression describes.
 //!
 //! Windows sends the DOS wildcards its Win32 layer produces: `<` (DOS_STAR), `>` (DOS_QM) and `"` (DOS_DOT), besides `*` and `?`.
 //!
-//! [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/0b034646-4e23-4874-8488-2adac231ff23
+//! [2.1.4.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/0b034646-4e23-4874-8488-2adac231ff23
 
 /// Whether `component` is a pattern rather than a literal name.
 pub(crate) fn contains_wildcards(component: &str) -> bool {
@@ -27,8 +27,9 @@ pub(crate) fn is_name_in_expression(name: &str, expression: &str) -> bool {
     // INVARIANT: `rest[i]` holds whether `name[i..]` matches the part of the expression after the current character.
     let mut rest = vec![false; name.len() + 1];
     rest[name.len()] = true;
+    // Every pass writes each entry of `matched` before reading it, so one buffer serves every pass.
+    let mut matched = vec![false; name.len() + 1];
     for wildcard in expression.iter().rev() {
-        let mut matched = vec![false; name.len() + 1];
         for i in (0..=name.len()).rev() {
             let character = name.get(i).copied();
             matched[i] = match wildcard {
@@ -50,7 +51,7 @@ pub(crate) fn is_name_in_expression(name: &str, expression: &str) -> bool {
                 literal => character == Some(*literal) && rest[i + 1],
             };
         }
-        rest = matched;
+        std::mem::swap(&mut rest, &mut matched);
     }
     rest[0]
 }
