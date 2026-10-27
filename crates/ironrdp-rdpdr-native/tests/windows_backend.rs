@@ -442,6 +442,21 @@ fn directory_notifications_are_cancelled_by_close() {
 }
 
 #[test]
+fn issue_2233_colliding_fixture_timestamps_do_not_share_cleanup() {
+    // oracle: regression #2233
+    let timestamp = SystemTime::now();
+    let first = Fixture::with_timestamp(timestamp);
+    let second = Fixture::with_timestamp(timestamp);
+
+    assert_ne!(first.sandbox, second.sandbox, "fixtures must own distinct sandboxes");
+    drop(first);
+    assert!(
+        second.root.is_dir(),
+        "another fixture's cleanup must preserve this root"
+    );
+}
+
+#[test]
 fn security_descriptor_query_and_set_use_the_opened_handle() {
     let fixture = Fixture::new();
     let mut backend = fixture.backend();
@@ -548,21 +563,37 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_timestamp(SystemTime::now())
+    }
+
+    fn with_timestamp(timestamp: SystemTime) -> Self {
         let workspace = std::env::current_dir().expect("current workspace directory");
         let volume_root = workspace
             .ancestors()
             .last()
             .expect("workspace has a volume root")
             .to_owned();
-        let unique = format!(
+        let parent = workspace.join("target");
+        std::fs::create_dir_all(&parent).expect("create fixture parent");
+        let prefix = format!(
             "rdpdr-native-{}-{}",
             std::process::id(),
-            SystemTime::now()
+            timestamp
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock is after Unix epoch")
                 .as_nanos()
         );
-        let sandbox = workspace.join("target").join(unique);
+        let mut suffix = 0u64;
+        let sandbox = loop {
+            let sandbox = parent.join(format!("{prefix}-{suffix}"));
+            match std::fs::create_dir(&sandbox) {
+                Ok(()) => break sandbox,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    suffix = suffix.checked_add(1).expect("fixture directory suffix exhausted");
+                }
+                Err(error) => panic!("create fixture sandbox: {error}"),
+            }
+        };
         let root = sandbox.join("root");
         std::fs::create_dir_all(root.join("root")).expect("create fixture root");
         Self {
