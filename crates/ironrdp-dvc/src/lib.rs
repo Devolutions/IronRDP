@@ -118,6 +118,10 @@ pub trait DvcProcessor: AsAny + Send {
 
 assert_obj_safe!(DvcProcessor);
 
+/// Encodes complete messages as DVC data PDUs, preserving message boundaries.
+///
+/// Empty messages produce a header-only DATA PDU.
+/// Messages of at most 1,590 bytes use DATA; larger messages start with DATA_FIRST.
 pub fn encode_dvc_messages(
     channel_id: u32,
     messages: Vec<DvcMessage>,
@@ -126,12 +130,12 @@ pub fn encode_dvc_messages(
     let mut res = Vec::new();
     for msg in messages {
         let total_length = msg.size();
-        let needs_splitting = total_length >= DrdynvcDataPdu::MAX_DATA_SIZE;
+        let needs_splitting = DrdynvcDataPdu::MAX_DATA_SIZE < total_length;
 
         let msg = encode_vec(msg.as_ref())?;
         let mut off = 0;
 
-        while off < total_length {
+        loop {
             let first = off == 0;
 
             #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked underflow)")]
@@ -155,6 +159,9 @@ pub fn encode_dvc_messages(
 
             res.push(svc);
             off = end;
+            if off == total_length {
+                break;
+            }
         }
     }
 

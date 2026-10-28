@@ -1,3 +1,4 @@
+use core::future::ready;
 use std::sync::{Arc, mpsc};
 
 use ironrdp_core::impl_as_any;
@@ -32,10 +33,25 @@ impl DvcNamedPipeProxy {
     where
         F: Fn(u32, Vec<SvcMessage>) -> PduResult<()> + Send + 'static,
     {
+        Self::new_async(channel_name, named_pipe_name, move |channel_id, messages| {
+            ready(dvc_write_callback(channel_id, messages))
+        })
+    }
+
+    /// Creates a proxy whose write callback can await transport capacity without losing stream bytes.
+    ///
+    /// Callback failure stops the worker; dropping the proxy cancels a pending callback.
+    pub fn new_async<F, Fut>(channel_name: &str, named_pipe_name: &str, dvc_write_callback: F) -> Self
+    where
+        F: Fn(u32, Vec<SvcMessage>) -> Fut + Send + 'static,
+        Fut: Future<Output = PduResult<()>> + Send + 'static,
+    {
         Self {
             channel_name: channel_name.to_owned(),
             named_pipe_name: named_pipe_name.to_owned(),
-            dvc_write_callback: Some(Box::new(dvc_write_callback)),
+            dvc_write_callback: Some(Box::new(move |channel_id, messages| {
+                Box::pin(dvc_write_callback(channel_id, messages))
+            })),
             worker: None,
         }
     }
