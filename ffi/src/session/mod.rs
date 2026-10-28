@@ -345,12 +345,14 @@ pub mod ffi {
             }
         }
 
-        /// Encodes the frames pending in `touches` as one `RDPINPUT_TOUCH_EVENT_PDU` on the MS-RDPEI
-        /// channel and returns the frame to write to the transport.
+        /// Encodes the oldest frames pending in `touches` as one `RDPINPUT_TOUCH_EVENT_PDU` on the
+        /// MS-RDPEI channel and returns the frame to write to the transport.
         ///
         /// Returns `None` when no frame is pending.
+        /// One PDU carries at most 32767 frames, so call again while `touches` has pending frames.
         /// Fails, and leaves the frames pending, when the channel is missing, not ready, or suspended
-        /// ([MS-RDPEI] 3.3.5.4 "Processing an RDPINPUT_SUSPEND_INPUT_PDU message").
+        /// ([MS-RDPEI] 3.3.5.4 "Processing an RDPINPUT_SUSPEND_INPUT_PDU message"), or when the
+        /// event cannot be encoded.
         ///
         /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
         pub fn encode_rdpei_touch(
@@ -369,12 +371,18 @@ pub mod ffi {
                 return Ok(None);
             };
 
-            let frame = self
-                .0
-                .encode_rdpei_touch(event)
-                .ok_or("RDPEI channel is not available")??;
+            let Some(encoded) = self.0.encode_rdpei_touch(event.clone()) else {
+                touches.restore(event);
+                return Err("RDPEI channel is not available".into());
+            };
 
-            Ok(Some(Box::new(VecU8(frame))))
+            match encoded {
+                Ok(frame) => Ok(Some(Box::new(VecU8(frame)))),
+                Err(error) => {
+                    touches.restore(event);
+                    Err(error.into())
+                }
+            }
         }
 
         /// Reports whether the Display Control Virtual Channel can carry a resize request.

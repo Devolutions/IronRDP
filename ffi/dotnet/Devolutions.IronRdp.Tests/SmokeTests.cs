@@ -552,6 +552,54 @@ internal static class SmokeTests
             Equal(0x0001u | 0x0008u | 0x0010u, payload.FourByteUnsigned(), "contactFlags DOWN | INRANGE | INCONTACT");
             True(payload.AtEnd, "nothing follows the contact");
         });
+
+        // oracle: spec MS-RDPEI §2.2.2.1 (a TWO_BYTE_UNSIGNED_INTEGER holds 0..0x7FFF, so frameCount in
+        // §2.2.3.3 caps one RDPINPUT_TOUCH_EVENT_PDU at 32767 frames) and §3.1.1.1 (an engaged contact
+        // leaves with CONTACT_FLAG_UP, which must therefore reach the server in a later PDU)
+        yield return ("rdpei touch splits more than 32767 pending frames across events", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            var touches = TouchFrameBuilder.New(10);
+            touches.Push(1, TouchPhase.Started, 10, 10);
+            // A second change to the same contact starts a new frame, so these are 32767 more frames.
+            for (int i = 1; i <= 32767; i++)
+            {
+                touches.Push(1, TouchPhase.Moved, 10 + i % 7, 10);
+            }
+
+            touches.Push(1, TouchPhase.Ended, 16, 10);
+
+            var first = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiTouch(touches)!));
+            Equal(0x0003, first.U16(), "first eventId EVENTID_TOUCH");
+            first.U32();
+            first.FourByteUnsigned();
+            Equal(32767u, first.TwoByteUnsigned(), "first frameCount is the maximum");
+            True(touches.HasPendingFrames, "the remaining frames stay pending");
+
+            var second = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiTouch(touches)!));
+            Equal(0x0003, second.U16(), "second eventId EVENTID_TOUCH");
+            second.U32();
+            second.FourByteUnsigned();
+            Equal(2u, second.TwoByteUnsigned(), "second frameCount carries the remainder");
+            Equal(1u, second.TwoByteUnsigned(), "last move contactCount");
+            second.EightByteUnsigned();
+            Equal(0, (int)second.U8(), "last move contactId");
+            Equal(0u, second.TwoByteUnsigned(), "last move fieldsPresent");
+            Equal(10 + 32767 % 7, second.FourByteSigned(), "last move x");
+            Equal(10, second.FourByteSigned(), "last move y");
+            Equal(0x0002u | 0x0008u | 0x0010u, second.FourByteUnsigned(), "last move contactFlags UPDATE | INRANGE | INCONTACT");
+            Equal(1u, second.TwoByteUnsigned(), "release contactCount");
+            second.EightByteUnsigned();
+            Equal(0, (int)second.U8(), "release contactId");
+            Equal(0u, second.TwoByteUnsigned(), "release fieldsPresent");
+            Equal(10 + 32767 % 7, second.FourByteSigned(), "release x keeps the last engaged position");
+            Equal(10, second.FourByteSigned(), "release y keeps the last engaged position");
+            Equal(0x0004u, second.FourByteUnsigned(), "release contactFlags UP");
+            True(second.AtEnd, "nothing follows the release");
+
+            True(!touches.HasPendingFrames, "every frame left");
+            True(stage.EncodeRdpeiTouch(touches) is null, "nothing left to encode");
+        });
     }
 
     // Reads MS-RDPEI §2.2.2 variable-length integers and the little-endian RDPINPUT_HEADER fields.
@@ -564,6 +612,29 @@ internal static class SmokeTests
         {
             this.bytes = bytes;
             this.offset = offset;
+        }
+
+        // Starts at the RDPINPUT_HEADER of the first Virtual Channel PDU in `frame`: TPKT and X.224 data
+        // headers (MS-RDPBCGR §2.2.9.1.1), MCS Send Data Request with a one- or two-byte PER length
+        // (T.125), the Virtual Channel PDU header (§2.2.6.1), then the DYNVC_DATA or DYNVC_DATA_FIRST
+        // header with its cbChId and Len fields (MS-RDPEDYC §2.2.3.1, §2.2.3.2).
+        internal RdpInputReader(byte[] frame)
+        {
+            bytes = frame;
+            offset = 4 + 3 + 1 + 2 + 2 + 1;
+            offset += (bytes[offset] & 0x80) != 0 ? 2 : 1;
+            offset += 8;
+            byte dvcHeader = U8();
+            int command = dvcHeader >> 4;
+            offset += (dvcHeader & 0x03) switch { 0 => 1, 1 => 2, _ => 4 };
+            if (command == 0x02)
+            {
+                offset += ((dvcHeader >> 2) & 0x03) switch { 0 => 1, 1 => 2, _ => 4 };
+            }
+            else if (command != 0x03)
+            {
+                throw new InvalidOperationException($"not a DYNVC data PDU: 0x{dvcHeader:x2}");
+            }
         }
 
         internal bool AtEnd => offset == bytes.Length;

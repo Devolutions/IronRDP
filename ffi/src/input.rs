@@ -1,5 +1,7 @@
 #[diplomat::bridge]
 pub mod ffi {
+    use std::collections::VecDeque;
+
     use crate::error::ffi::IronRdpError;
     use crate::pdu::ffi::FastPathInputEventIterator;
 
@@ -148,7 +150,7 @@ pub mod ffi {
     /// Groups per-contact touch events into MS-RDPEI touch frames.
     ///
     /// Push every toolkit event, then hand the builder to `ActiveStage::encode_rdpei_touch`, which
-    /// takes the frames built since the last call.
+    /// takes the oldest pending frames, at most `MAX_FRAMES_PER_EVENT` per call.
     /// Contact ids and `contactFlags` are derived here, so every frame stays within the legal
     /// combinations of [MS-RDPEI] 2.2.3.3.1.1 "RDPINPUT_CONTACT_DATA".
     /// Frame timing comes from a monotonic clock read at each push.
@@ -157,8 +159,22 @@ pub mod ffi {
     #[diplomat::opaque_mut]
     pub struct TouchFrameBuilder {
         inner: ironrdp::rdpei::contact::TouchFrameBuilder,
+        /// Frames taken from `inner` that no event has carried yet, oldest first.
+        ///
+        /// INVARIANT: `pending_oldest_us` is the builder-clock time of `pending[0]` when `pending` is
+        /// not empty, so that each event's `encodeTime` is the age of its oldest frame.
+        pending: VecDeque<ironrdp::rdpei::pdu::TouchFrame>,
+        pending_oldest_us: u64,
+        /// Builder-clock time of the oldest frame of the last event `take_event` returned.
+        taken_oldest_us: u64,
         epoch: std::time::Instant,
     }
+
+    /// Frames one `RDPINPUT_TOUCH_EVENT_PDU` can carry: `frameCount` is a TWO_BYTE_UNSIGNED_INTEGER
+    /// ([MS-RDPEI] 2.2.3.3 "RDPINPUT_TOUCH_EVENT_PDU", 2.2.2.1 "TWO_BYTE_UNSIGNED_INTEGER").
+    ///
+    /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+    pub(crate) const MAX_FRAMES_PER_EVENT: usize = 0x7FFF;
 
     impl TouchFrameBuilder {
         /// Tracks at most `max_contacts` contacts, the `max_touch_contacts` given to
@@ -166,6 +182,9 @@ pub mod ffi {
         pub fn new(max_contacts: u16) -> Box<TouchFrameBuilder> {
             Box::new(TouchFrameBuilder {
                 inner: ironrdp::rdpei::contact::TouchFrameBuilder::new(max_contacts),
+                pending: VecDeque::new(),
+                pending_oldest_us: 0,
+                taken_oldest_us: 0,
                 epoch: std::time::Instant::now(),
             })
         }
@@ -196,18 +215,57 @@ pub mod ffi {
         /// Forgets every contact and pending frame without sending anything, for when the channel closed.
         pub fn reset(&mut self) {
             self.inner.reset();
+            self.pending.clear();
         }
 
         /// Whether frames wait for the next encode.
+        ///
+        /// More than `MAX_FRAMES_PER_EVENT` frames, as after a long suspension, take several encodes.
         #[diplomat::attr(auto, getter = "has_pending_frames")]
         pub fn get_has_pending_frames(&self) -> bool {
-            self.inner.has_pending_frames()
+            self.inner.has_pending_frames() || !self.pending.is_empty()
         }
 
-        /// Takes the frames built since the last call as one touch event, stamped with the builder's clock.
+        /// Takes the oldest pending frames, at most `MAX_FRAMES_PER_EVENT`, as one touch event.
+        ///
+        /// The frames built since the last call queue behind the frames an earlier call left pending,
+        /// so frames leave in the order they were built.
         pub(crate) fn take_event(&mut self) -> Option<ironrdp::rdpei::pdu::TouchEventPdu> {
             let now_us = self.now_us();
-            self.inner.take_event(now_us)
+            if let Some(event) = self.inner.take_event(now_us) {
+                if self.pending.is_empty() {
+                    self.pending_oldest_us = now_us.saturating_sub(u64::from(event.encode_time) * 1000);
+                }
+                self.pending.extend(event.frames);
+            }
+            if self.pending.is_empty() {
+                return None;
+            }
+
+            let count = self.pending.len().min(MAX_FRAMES_PER_EVENT);
+            let frames: Vec<_> = self.pending.drain(..count).collect();
+            self.taken_oldest_us = self.pending_oldest_us;
+            // Each frame's offset is relative to the frame before it, so the time of the next pending
+            // frame is the time of the taken frames plus the offsets after the first.
+            // The offset is 0 at the start of a transaction, which can only age the remainder.
+            let taken_span_us: u64 = frames.iter().skip(1).map(|frame| frame.frame_offset).sum();
+            if let Some(next) = self.pending.front() {
+                self.pending_oldest_us = self
+                    .pending_oldest_us
+                    .saturating_add(taken_span_us)
+                    .saturating_add(next.frame_offset);
+            }
+
+            let encode_time = u32::try_from(now_us.saturating_sub(self.taken_oldest_us) / 1000).unwrap_or(u32::MAX);
+            Some(ironrdp::rdpei::pdu::TouchEventPdu::new(encode_time, frames))
+        }
+
+        /// Puts back the event the last `take_event` returned, for when it could not be encoded.
+        pub(crate) fn restore(&mut self, event: ironrdp::rdpei::pdu::TouchEventPdu) {
+            for frame in event.frames.into_iter().rev() {
+                self.pending.push_front(frame);
+            }
+            self.pending_oldest_us = self.taken_oldest_us;
         }
 
         fn now_us(&self) -> u64 {
