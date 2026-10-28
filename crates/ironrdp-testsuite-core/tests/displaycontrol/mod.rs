@@ -488,3 +488,50 @@ fn server_start_encodes_the_default_capabilities_when_not_overridden() {
         other => panic!("expected DisplayControlPdu::Caps, got {other:?}"),
     }
 }
+
+#[test]
+fn client_reopened_by_the_server_waits_for_new_caps() {
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::pdu::{ClosePdu, CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu};
+    use ironrdp_svc::SvcProcessor as _;
+
+    // xrdp closes and reopens every channel after a Deactivation-Reactivation
+    // Sequence; the reopened channel is ready only once the server sends caps again.
+    let mut client =
+        ironrdp_dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_caps| Ok(Vec::new())));
+    let create = |channel_id| {
+        encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+            channel_id,
+            ironrdp_displaycontrol::CHANNEL_NAME.to_owned(),
+        )))
+        .expect("Create Request should encode")
+    };
+    let headered_caps = vec![
+        0x05, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x80, 0x07, 0x00, 0x00, 0x38, 0x04,
+        0x00, 0x00,
+    ];
+    client.process(&create(1)).expect("Create Request should be processed");
+    let caps = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        1,
+        headered_caps,
+    ))))
+    .expect("caps should encode");
+    client.process(&caps).expect("caps should be processed");
+    assert!(
+        client
+            .get_dvc::<DisplayControlClient>()
+            .expect("open")
+            .processor()
+            .ready()
+    );
+
+    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(1))).expect("Close should encode");
+    client.process(&close).expect("Close should be processed");
+    client.process(&create(2)).expect("Create Request should be processed");
+
+    let reopened = client.get_dvc::<DisplayControlClient>().expect("reopened");
+    assert!(
+        !reopened.processor().ready(),
+        "ready before the reopened channel's caps"
+    );
+}
