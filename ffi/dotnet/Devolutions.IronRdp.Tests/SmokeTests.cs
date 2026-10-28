@@ -43,6 +43,77 @@ internal static class SmokeTests
             Throws<ObjectDisposedException>(() => _ = image.DataSize);
         });
 
+        // oracle: mutant source and destination row offsets and inclusive bounds; the rectangle is the GraphicsUpdate IronRDP reports
+        yield return ("decoded image copies only the damaged rectangle", () =>
+        {
+            var (stage, image) = ConnectedStage(8, 4);
+            var damage = PaintSurface(stage, image, 2, 1, 3, 2);
+            Equal((2, 1, 4, 2), ((int)damage.Left, (int)damage.Top, (int)damage.Right, (int)damage.Bottom), "damage");
+            const int stride = 8 * 4 + 4;
+            var buffer = new byte[stride * 4];
+            Array.Fill(buffer, (byte)0xff);
+
+            image.CopyRectInto(damage, buffer, stride);
+
+            for (int y = 0; y < 4; y++)
+            {
+                for (int x = 0; x < stride; x++)
+                {
+                    bool inside = y is >= 1 and <= 2 && x >= 2 * 4 && x < 5 * 4;
+                    byte expected = inside ? SurfaceByte(3, x - 2 * 4, y - 1) : (byte)0xff;
+                    Equal(expected, buffer[y * stride + x], $"byte ({x}, {y})");
+                }
+            }
+        });
+
+        // oracle: intent ffi/INTENT.md §copying-a-rectangle
+        yield return ("decoded image copy rejects a rectangle outside the image", () =>
+        {
+            var (stage, image) = ConnectedStage(8, 4);
+            var full = PaintSurface(stage, image, 0, 0, 8, 4);
+            var buffer = new byte[8 * 4 * 4];
+            Array.Fill(buffer, (byte)0xff);
+            var narrow = DecodedImage.New(PixelFormat.BgrX32, 7, 4);
+            Throws<IronRdpException>(() => narrow.CopyRectInto(full, buffer, 8 * 4));
+            var shallow = DecodedImage.New(PixelFormat.BgrX32, 8, 3);
+            Throws<IronRdpException>(() => shallow.CopyRectInto(full, buffer, 8 * 4));
+            True(buffer.All(b => b == 0xff), "buffer untouched");
+        });
+
+        // oracle: intent ffi/INTENT.md §copying-a-rectangle
+        yield return ("decoded image copy rejects a short stride", () =>
+        {
+            var (stage, image) = ConnectedStage(8, 4);
+            var full = PaintSurface(stage, image, 0, 0, 8, 4);
+            var buffer = new byte[8 * 4 * 4];
+            Array.Fill(buffer, (byte)0xff);
+            Throws<IronRdpException>(() => image.CopyRectInto(full, buffer, 8 * 4 - 1));
+            True(buffer.All(b => b == 0xff), "buffer untouched");
+        });
+
+        // oracle: intent ffi/INTENT.md §copying-a-rectangle
+        yield return ("decoded image copy rejects a short buffer", () =>
+        {
+            var (stage, image) = ConnectedStage(8, 4);
+            var full = PaintSurface(stage, image, 0, 0, 8, 4);
+            const int stride = 8 * 4;
+            var buffer = new byte[stride * 3];
+            Array.Fill(buffer, (byte)0xff);
+            Throws<IronRdpException>(() => image.CopyRectInto(full, buffer, stride));
+            True(buffer.All(b => b == 0xff), "buffer untouched");
+        });
+
+        // oracle: intent ffi/INTENT.md §copying-a-rectangle
+        yield return ("decoded image copy rejects a stride whose last row overflows", () =>
+        {
+            var (stage, image) = ConnectedStage(8, 4);
+            var full = PaintSurface(stage, image, 0, 0, 8, 4);
+            var buffer = new byte[8 * 4 * 4];
+            Array.Fill(buffer, (byte)0xff);
+            Throws<IronRdpException>(() => image.CopyRectInto(full, buffer, nuint.MaxValue));
+            True(buffer.All(b => b == 0xff), "buffer untouched");
+        });
+
         yield return ("vec u8 round-trips bytes", () =>
         {
             var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });
@@ -156,6 +227,119 @@ internal static class SmokeTests
                 True(clipboard.NextClipboardMessageTimeout(10) == null, "no message before a session");
             });
         }
+    }
+
+    private static readonly byte[][] HandshakeServerPdus =
+    {
+        TpktX224ConfirmSelectingTls,
+        // MCS Connect Response with SKIP_CHANNELJOIN_SUPPORTED (MS-RDPBCGR §2.2.1.4).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x68, 0x02, 0xf0, 0x80, 0x7f, 0x66, 0x5e, 0x0a, 0x01, 0x00, 0x02, 0x01, 0x00,
+            0x30, 0x1a, 0x02, 0x01, 0x22, 0x02, 0x01, 0x03, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x01,
+            0x00, 0x02, 0x01, 0x01, 0x02, 0x03, 0x00, 0xff, 0xf8, 0x02, 0x01, 0x02, 0x04, 0x3a, 0x00, 0x05,
+            0x00, 0x14, 0x7c, 0x00, 0x01, 0x33, 0x14, 0x76, 0x0a, 0x01, 0x01, 0x00, 0x01, 0xc0, 0x00, 0x4d,
+            0x63, 0x44, 0x6e, 0x24, 0x01, 0x0c, 0x10, 0x00, 0x04, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+            0x08, 0x00, 0x00, 0x00, 0x03, 0x0c, 0x08, 0x00, 0xeb, 0x03, 0x00, 0x00, 0x02, 0x0c, 0x0c, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        },
+        // MCS Attach User Confirm for channel 1007 (MS-RDPBCGR §2.2.1.6).
+        new byte[] { 0x03, 0x00, 0x00, 0x0b, 0x02, 0xf0, 0x80, 0x2e, 0x00, 0x00, 0x06 },
+        // Licensing Error Message STATUS_VALID_CLIENT (MS-RDPBCGR §2.2.1.12).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x22, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xeb, 0x70, 0x14, 0x80, 0x00,
+            0x00, 0x00, 0xff, 0x03, 0x14, 0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00,
+            0x00, 0x00,
+        },
+        // Server Demand Active with zero capability sets (MS-RDPBCGR §2.2.1.13.1).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x24, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xeb, 0x70, 0x16, 0x16, 0x00,
+            0x11, 0x00, 0xea, 0x03, 0xea, 0x03, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        },
+        // Server Font Map PDU (MS-RDPBCGR §2.2.1.22).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x28, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xeb, 0x70, 0x1a, 0x1a, 0x00,
+            0x17, 0x00, 0xea, 0x03, 0xea, 0x03, 0x01, 0x00, 0x00, 0x02, 0x08, 0x00, 0x28, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x04, 0x00,
+        },
+    };
+
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height)
+    {
+        var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+        var buf = WriteBuf.New();
+        int i = 0;
+        for (int steps = 0; !connector.DynState.IsTerminal(); steps++)
+        {
+            if (steps == 100)
+            {
+                throw new InvalidOperationException($"connector did not terminate after {i} server PDUs and {steps} steps");
+            }
+
+            buf.Clear();
+            if (connector.ShouldPerformSecurityUpgrade())
+            {
+                connector.MarkSecurityUpgradeAsDone();
+            }
+            else if (connector.NextPduHint() is null)
+            {
+                connector.StepNoInput(buf);
+            }
+            else if (i == HandshakeServerPdus.Length)
+            {
+                throw new InvalidOperationException($"connector wants more than the {i} server PDUs in HandshakeServerPdus");
+            }
+            else
+            {
+                connector.Step(HandshakeServerPdus[i++], buf);
+            }
+        }
+
+        Equal(HandshakeServerPdus.Length, i, "server PDUs consumed by the handshake");
+        var stage = ActiveStage.New(connector.ConsumeAndCastToClientConnectorState().GetConnectedResult());
+        return (stage, DecodedImage.New(PixelFormat.BgrX32, width, height));
+    }
+
+    private static byte SurfaceByte(int width, int x, int y) => (byte)(y * width * 4 + x + 1);
+
+    // Sends one Fast-Path SetSurfaceBits (CODEC_ID_NONE, 32 bpp, bottom-up rows, MS-RDPBCGR §2.2.9.2.1)
+    // and returns the GraphicsUpdate rectangle IronRDP reports for it.
+    private static InclusiveRectangle PaintSurface(ActiveStage stage, DecodedImage image, ushort left, ushort top, ushort width, ushort height)
+    {
+        int dataLength = width * height * 4;
+        var frame = new byte[28 + dataLength];
+        int right = left + width;
+        int bottom = top + height;
+        new byte[]
+        {
+            0x00, (byte)(0x80 | frame.Length >> 8), (byte)frame.Length, 0x04, (byte)(22 + dataLength), (byte)(22 + dataLength >> 8),
+            0x01, 0x00, (byte)left, (byte)(left >> 8), (byte)top, (byte)(top >> 8), (byte)right, (byte)(right >> 8), (byte)bottom, (byte)(bottom >> 8),
+            0x20, 0x00, 0x00, 0x00, (byte)width, (byte)(width >> 8), (byte)height, (byte)(height >> 8),
+            (byte)dataLength, (byte)(dataLength >> 8), (byte)(dataLength >> 16), (byte)(dataLength >> 24),
+        }.CopyTo(frame, 0);
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width * 4; x++)
+            {
+                frame[28 + (height - 1 - y) * width * 4 + x] = SurfaceByte(width, x, y);
+            }
+        }
+
+        var action = IronRdpPdu.New().FindSize(frame)!.Action;
+        var outputs = stage.Process(image, action, frame);
+        while (outputs.Next() is { } output)
+        {
+            if (output.EnumType == ActiveStageOutputType.GraphicsUpdate)
+            {
+                return output.GraphicsUpdate;
+            }
+        }
+
+        throw new InvalidOperationException("SetSurfaceBits produced no GraphicsUpdate");
     }
 
     private static Config TlsConfig()

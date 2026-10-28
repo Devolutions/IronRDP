@@ -18,6 +18,9 @@ internal partial struct DecodedImage
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "DecodedImage_fill_data", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultVoidIronRdpError FillData(DecodedImage* handle, DiplomatSliceMutU8 buffer);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "DecodedImage_copy_rect_into", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVoidIronRdpError CopyRectInto(DecodedImage* handle, InclusiveRectangle* rect, DiplomatSliceMutU8 buffer, nuint bufferStride);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "DecodedImage_get_width", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern ushort GetWidth(DecodedImage* handle);
 
