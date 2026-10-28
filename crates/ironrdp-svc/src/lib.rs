@@ -319,9 +319,10 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     }
 
     /// Identifies the current recipient of a message, or returns `None` to discard incoming data.
-    /// Changing this value discards any partial message without skipping fragment validation.
-    /// Reusing a value while that recipient still has a partial message appends later fragments to it.
-    /// The combined payload is then delivered under that reused value.
+    /// Any change to this value permanently discards the in-flight message without skipping
+    /// fragment validation, even if the original value is later restored.
+    /// Only an unchanged `Some` value across every fragment of a sequence accumulates and delivers
+    /// the message, so each attached recipient must use a distinct value.
     /// The default keeps all messages in the same context.
     fn message_context(&self) -> Option<u64> {
         Some(0)
@@ -369,7 +370,8 @@ struct ChunkProcessor {
     expected_length: Option<usize>,
     /// Bytes accepted in the current sequence, including fragments whose payload was discarded.
     ///
-    /// INVARIANT: This counts every fragment byte accepted since `expected_length` was set, whether or not those bytes were retained in `chunked_pdu`.
+    /// INVARIANT: This counts every fragment byte accepted since `expected_length` was set,
+    /// whether or not those bytes were retained in `chunked_pdu`.
     received_length: usize,
     /// Recipient captured at the first fragment, or `None` after that recipient was invalidated.
     ///
@@ -406,8 +408,12 @@ impl ChunkProcessor {
         Ok(results)
     }
 
+    /// [3.1.5.2.2.1] Reassembly of Chunked Virtual Channel Data
+    ///
     /// Reassembles a message for the context captured at its first fragment.
     /// Returns `None` until complete, or when discarding an invalidated context.
+    ///
+    /// [3.1.5.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
     fn dechunkify(&mut self, context: Option<u64>, payload: &[u8]) -> DecodeResult<Option<(u64, Vec<u8>)>> {
         let mut cursor = ReadCursor::new(payload);
         let header: ironrdp_pdu::rdp::vc::ChannelPduHeader = decode_cursor(&mut cursor)?;
@@ -489,10 +495,7 @@ impl ChunkProcessor {
 
         self.received_length = received_length;
         if self.message_context != context {
-            // UNTESTED: Release capacity on recipient invalidation so detached sequences cannot pin reassembly memory.
-            // Check retained allocation, not just buffer length, when changing this reset.
-            self.chunked_pdu = Vec::new();
-            self.message_context = None;
+            self.discard_partial_message();
         }
         if self.message_context.is_some() {
             self.chunked_pdu.extend_from_slice(chunk);
@@ -527,13 +530,18 @@ impl ChunkProcessor {
             .map(|context| (context, core::mem::take(&mut self.chunked_pdu))))
     }
 
-    fn clear_sequence(&mut self) {
-        // UNTESTED: Release capacity on rejection so malformed input cannot pin reassembly memory.
+    fn discard_partial_message(&mut self) {
+        // UNTESTED: Release capacity when discarding a partial or rejected sequence so it cannot
+        // pin reassembly memory.
         // Check retained allocation, not just buffer length, when changing this reset.
         self.chunked_pdu = Vec::new();
+        self.message_context = None;
+    }
+
+    fn clear_sequence(&mut self) {
+        self.discard_partial_message();
         self.expected_length = None;
         self.received_length = 0;
-        self.message_context = None;
     }
 
     /// Takes a single PDU and breaks it into chunks prefixed with a [`ChannelPduHeader`].

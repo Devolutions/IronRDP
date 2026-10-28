@@ -1,20 +1,29 @@
-use ironrdp_core::{ReadCursor, decode, decode_cursor, encode_vec};
+use core::error::Error as _;
+
+use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, decode, decode_cursor, encode_vec};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
-use ironrdp_pdu::mcs;
 use ironrdp_pdu::rdp::headers::ShareControlHeader;
 use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
+use ironrdp_pdu::{PduErrorKind, mcs};
 use ironrdp_session::{ActiveStageBuilder, x224::Processor};
 use ironrdp_svc::{
     CHANNEL_CHUNK_LENGTH, ChannelFlags, MAX_CHANNEL_CHUNK_LENGTH, MAX_STATIC_CHANNELS, StaticChannelKey,
     StaticChannelSet, StaticVirtualChannel, SvcClientProcessor, SvcMessage, SvcProcessor, SvcServerProcessor,
     make_channel_options,
 };
+use proptest::prelude::*;
+
+const UNFRAGMENTED_MISMATCH: &str = "unfragmented channel data does not match its declared length";
+const EXCEEDS_DECLARED: &str = "channel fragment sequence exceeds its declared length";
+const TERMINAL_MISMATCH: &str = "terminal channel fragment does not match its declared length";
+const EXCEEDS_MAX_SIZE: &str = "static channel message exceeds configured maximum size";
 
 #[derive(Debug)]
 struct RuntimeChannel {
     name: ChannelName,
     options: ChannelOptions,
+    delivered: Vec<Vec<u8>>,
 }
 
 impl RuntimeChannel {
@@ -22,6 +31,7 @@ impl RuntimeChannel {
         Self {
             name: ChannelName::from_utf8(name).expect("valid static channel name"),
             options,
+            delivered: Vec::new(),
         }
     }
 }
@@ -37,8 +47,9 @@ impl SvcProcessor for RuntimeChannel {
         self.options
     }
 
-    fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
-        Ok(Vec::new())
+    fn process(&mut self, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        self.delivered.push(payload.to_vec());
+        Ok(vec![SvcMessage::from(payload.to_vec())])
     }
 }
 
@@ -151,288 +162,313 @@ fn delivered(channel: &StaticVirtualChannel) -> &[(u64, Vec<u8>)] {
         .delivered
 }
 
-// oracle: mutant StaticVirtualChannel::process bypassing process_with_context or delivering the wrong message_context
-#[test]
-fn static_channel_delivers_messages_with_their_captured_context() {
-    let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(7), None));
-
-    let reply = channel
-        .process(&channel_chunk(b"plain", 5, ChannelControlFlags::empty()))
-        .expect("unflagged message");
-    assert_eq!(reply.len(), 1);
-    assert_eq!(
-        reply[0].encode_unframed_pdu().expect("encode reply"),
-        7u64.to_le_bytes()
-    );
-
-    set_context(&mut channel, Some(11));
-    let reply = channel
-        .process(&channel_chunk(
-            b"single",
-            6,
-            ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
-        ))
-        .expect("single-chunk message");
-    assert_eq!(reply.len(), 1);
-    assert_eq!(
-        reply[0].encode_unframed_pdu().expect("encode reply"),
-        11u64.to_le_bytes()
-    );
-
-    set_context(&mut channel, Some(42));
+fn expect_discarded(channel: &mut StaticVirtualChannel, data: &[u8], length: u32, flags: ChannelControlFlags) {
     assert!(
         channel
-            .process(&channel_chunk(b"he", 5, ChannelControlFlags::FLAG_FIRST))
-            .expect("first fragment")
+            .process(&channel_chunk(data, length, flags))
+            .expect("chunk should succeed without delivery")
             .is_empty()
-    );
-    assert!(
-        channel
-            .process(&channel_chunk(b"ll", 5, ChannelControlFlags::empty()))
-            .expect("middle fragment")
-            .is_empty()
-    );
-    let reply = channel
-        .process(&channel_chunk(b"o", 5, ChannelControlFlags::FLAG_LAST))
-        .expect("last fragment");
-    assert_eq!(reply.len(), 1);
-    assert_eq!(
-        reply[0].encode_unframed_pdu().expect("encode reply"),
-        42u64.to_le_bytes()
-    );
-
-    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and processed on CHANNEL_FLAG_LAST)
-    assert_eq!(
-        delivered(&channel),
-        [
-            (7, b"plain".to_vec()),
-            (11, b"single".to_vec()),
-            (42, b"hello".to_vec()),
-        ]
     );
 }
 
-// oracle: mutant delivering payloads when message_context is None or skipping length and size-limit checks on discarded messages
+fn expect_delivered(
+    channel: &mut StaticVirtualChannel,
+    data: &[u8],
+    length: u32,
+    flags: ChannelControlFlags,
+    expected_context: u64,
+) {
+    let reply = channel
+        .process(&channel_chunk(data, length, flags))
+        .expect("chunk should complete delivery");
+    assert_eq!(reply.len(), 1);
+    assert_eq!(
+        reply[0].encode_unframed_pdu().expect("encode reply"),
+        expected_context.to_le_bytes()
+    );
+}
+
+fn expect_invalid_length(
+    channel: &mut StaticVirtualChannel,
+    data: &[u8],
+    length: u32,
+    flags: ChannelControlFlags,
+    expected_reason: &str,
+) {
+    let error = channel
+        .process(&channel_chunk(data, length, flags))
+        .expect_err("chunk should fail length validation");
+    assert!(matches!(error.kind(), PduErrorKind::Decode));
+    let source = error
+        .source()
+        .expect("nested decode error")
+        .downcast_ref::<DecodeError>()
+        .expect("structured decode error");
+    assert!(
+        matches!(
+            source.kind(),
+            DecodeErrorKind::InvalidField {
+                field: "length",
+                reason,
+                offset: Some(8),
+            } if *reason == expected_reason
+        ),
+        "expected length error `{expected_reason}`, got {:?}",
+        source.kind()
+    );
+}
+
+#[test]
+fn static_channel_delivers_messages_with_their_captured_context() {
+    let mut default_channel = StaticVirtualChannel::new(RuntimeChannel::new("default", ChannelOptions::empty()));
+    expect_discarded(&mut default_channel, b"de", 7, ChannelControlFlags::FLAG_FIRST);
+    let default_reply = default_channel
+        .process(&channel_chunk(b"fault", 7, ChannelControlFlags::FLAG_LAST))
+        .expect("default process_with_context should forward to process");
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and dispatched on CHANNEL_FLAG_LAST)
+    // oracle: mutant SvcProcessor::process_with_context or SvcProcessor::message_context default dropping the payload
+    assert_eq!(default_reply.len(), 1);
+    assert_eq!(
+        default_reply[0].encode_unframed_pdu().expect("encode reply"),
+        b"default"
+    );
+    assert_eq!(
+        default_channel
+            .channel_processor_downcast_ref::<RuntimeChannel>()
+            .expect("runtime channel")
+            .delivered,
+        [b"default".to_vec()]
+    );
+
+    let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(7), None));
+    expect_delivered(&mut channel, b"plain", 5, ChannelControlFlags::empty(), 7);
+
+    set_context(&mut channel, Some(11));
+    expect_delivered(
+        &mut channel,
+        b"single",
+        6,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+        11,
+    );
+
+    set_context(&mut channel, Some(42));
+    expect_discarded(&mut channel, b"he", 5, ChannelControlFlags::FLAG_FIRST);
+    expect_discarded(&mut channel, b"ll", 5, ChannelControlFlags::empty());
+    expect_delivered(&mut channel, b"o", 5, ChannelControlFlags::FLAG_LAST, 42);
+
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2 (unflagged payload is dispatched without reassembly)
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and dispatched on CHANNEL_FLAG_LAST)
+    let payloads: Vec<&[u8]> = delivered(&channel)
+        .iter()
+        .map(|(_, payload)| payload.as_slice())
+        .collect();
+    assert_eq!(
+        payloads,
+        [b"plain".as_slice(), b"single".as_slice(), b"hello".as_slice()]
+    );
+    // oracle: mutant bypassing process_with_context or capturing message_context on the wrong fragment
+    let contexts: Vec<u64> = delivered(&channel).iter().map(|(context, _)| *context).collect();
+    assert_eq!(contexts, [7, 11, 42]);
+}
+
 #[test]
 fn static_channel_without_context_validates_and_discards_messages() {
     let mut channel = StaticVirtualChannel::new(ContextChannel::new(None, Some(4)));
 
-    assert!(
-        channel
-            .process(&channel_chunk(b"abcd", 4, ChannelControlFlags::empty()))
-            .expect("unflagged discarded message")
-            .is_empty()
+    expect_discarded(&mut channel, b"abcd", 4, ChannelControlFlags::empty());
+    expect_discarded(
+        &mut channel,
+        b"abcd",
+        4,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
     );
-    assert!(
-        channel
-            .process(&channel_chunk(
-                b"abcd",
-                4,
-                ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
-            ))
-            .expect("single-chunk discarded message")
-            .is_empty()
-    );
-    assert!(
-        channel
-            .process(&channel_chunk(b"ab", 4, ChannelControlFlags::FLAG_FIRST))
-            .expect("first discarded fragment")
-            .is_empty()
-    );
-    assert!(
-        channel
-            .process(&channel_chunk(b"c", 4, ChannelControlFlags::empty()))
-            .expect("middle discarded fragment")
-            .is_empty()
-    );
-    assert!(
-        channel
-            .process(&channel_chunk(b"d", 4, ChannelControlFlags::FLAG_LAST))
-            .expect("last discarded fragment")
-            .is_empty()
-    );
+    expect_discarded(&mut channel, b"ab", 4, ChannelControlFlags::FLAG_FIRST);
+    expect_discarded(&mut channel, b"c", 4, ChannelControlFlags::empty());
+    expect_discarded(&mut channel, b"d", 4, ChannelControlFlags::FLAG_LAST);
 
-    assert!(
-        channel
-            .process(&channel_chunk(b"ab", 3, ChannelControlFlags::empty()))
-            .is_err()
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1; spec MS-RDPBCGR §3.1.5.2.2.1
+    // oracle: mutant skipping declared-length validation when message_context is None
+    expect_invalid_length(
+        &mut channel,
+        b"ab",
+        3,
+        ChannelControlFlags::empty(),
+        UNFRAGMENTED_MISMATCH,
     );
-    assert!(
-        channel
-            .process(&channel_chunk(b"12345", 5, ChannelControlFlags::empty()))
-            .is_err()
+    expect_discarded(&mut channel, b"ab", 4, ChannelControlFlags::FLAG_FIRST);
+    expect_invalid_length(&mut channel, b"c", 4, ChannelControlFlags::FLAG_LAST, TERMINAL_MISMATCH);
+
+    // oracle: mutant retaining or delivering payload bytes or skipping max_message_size when message_context is None
+    expect_invalid_length(
+        &mut channel,
+        b"12345",
+        5,
+        ChannelControlFlags::empty(),
+        EXCEEDS_MAX_SIZE,
     );
-    assert!(
-        channel
-            .process(&channel_chunk(b"ab", 4, ChannelControlFlags::FLAG_FIRST))
-            .expect("first fragment before mismatch")
-            .is_empty()
+    expect_discarded(
+        &mut channel,
+        b"123",
+        2,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::PACKET_COMPRESSED,
     );
-    assert!(
-        channel
-            .process(&channel_chunk(b"c", 4, ChannelControlFlags::FLAG_LAST))
-            .is_err()
-    );
-    assert!(
-        channel
-            .process(&channel_chunk(
-                b"123",
-                2,
-                ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::PACKET_COMPRESSED,
-            ))
-            .expect("first compressed fragment")
-            .is_empty()
-    );
-    assert!(
-        channel
-            .process(&channel_chunk(
-                b"45",
-                2,
-                ChannelControlFlags::FLAG_LAST | ChannelControlFlags::PACKET_COMPRESSED,
-            ))
-            .is_err()
+    expect_invalid_length(
+        &mut channel,
+        b"45",
+        2,
+        ChannelControlFlags::FLAG_LAST | ChannelControlFlags::PACKET_COMPRESSED,
+        EXCEEDS_MAX_SIZE,
     );
     assert!(delivered(&channel).is_empty());
 
-    set_context(&mut channel, Some(9));
-    assert!(
-        channel
-            .process(&channel_chunk(b"ok", 3, ChannelControlFlags::FLAG_FIRST))
-            .expect("first fragment with context")
-            .is_empty()
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1; mutant retaining discarded sequence bytes before a recipient attaches
+    expect_discarded(
+        &mut channel,
+        b"xx",
+        2,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
     );
-    let reply = channel
-        .process(&channel_chunk(b"!", 3, ChannelControlFlags::FLAG_LAST))
-        .expect("last fragment with context");
-    assert_eq!(reply.len(), 1);
+    set_context(&mut channel, Some(9));
+    expect_discarded(&mut channel, b"ok", 3, ChannelControlFlags::FLAG_FIRST);
+    expect_delivered(&mut channel, b"!", 3, ChannelControlFlags::FLAG_LAST, 9);
     assert_eq!(delivered(&channel), [(9, b"ok!".to_vec())]);
 }
 
-// oracle: mutant delivering a partial sequence across a message_context change or skipping fragment length and size-limit checks after discarding
 #[test]
 fn static_channel_context_change_mid_sequence_discards_partial_message_and_still_validates() {
     let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(1), Some(8)));
 
-    assert!(
-        channel
-            .process(&channel_chunk(b"old-", 8, ChannelControlFlags::FLAG_FIRST))
-            .expect("first fragment for recipient 1")
-            .is_empty()
-    );
+    expect_discarded(&mut channel, b"old-", 8, ChannelControlFlags::FLAG_FIRST);
     set_context(&mut channel, Some(2));
-    assert!(
-        channel
-            .process(&channel_chunk(b"mid-", 8, ChannelControlFlags::empty()))
-            .expect("middle fragment after context change")
-            .is_empty()
-    );
+    expect_discarded(&mut channel, b"mid-", 8, ChannelControlFlags::empty());
     set_context(&mut channel, Some(1));
-    assert!(
-        channel
-            .process(&channel_chunk(b"", 8, ChannelControlFlags::FLAG_LAST))
-            .expect("last fragment after context change")
-            .is_empty()
-    );
-    assert!(delivered(&channel).is_empty());
+    expect_discarded(&mut channel, b"", 8, ChannelControlFlags::FLAG_LAST);
 
     set_context(&mut channel, Some(1));
-    assert!(
-        channel
-            .process(&channel_chunk(b"head", 8, ChannelControlFlags::FLAG_FIRST))
-            .expect("first fragment before terminal swap")
-            .is_empty()
-    );
+    expect_discarded(&mut channel, b"head", 8, ChannelControlFlags::FLAG_FIRST);
     set_context(&mut channel, Some(2));
-    assert!(
-        channel
-            .process(&channel_chunk(b"tail", 8, ChannelControlFlags::FLAG_LAST))
-            .expect("valid last fragment after terminal context change")
-            .is_empty()
-    );
-    assert!(delivered(&channel).is_empty());
+    expect_discarded(&mut channel, b"tail", 8, ChannelControlFlags::FLAG_LAST);
 
     set_context(&mut channel, None);
-    assert!(
-        channel
-            .process(&channel_chunk(b"drop", 8, ChannelControlFlags::FLAG_FIRST))
-            .expect("first fragment with no recipient")
-            .is_empty()
-    );
+    expect_discarded(&mut channel, b"drop", 8, ChannelControlFlags::FLAG_FIRST);
     set_context(&mut channel, Some(2));
-    assert!(
-        channel
-            .process(&channel_chunk(b"keep", 8, ChannelControlFlags::FLAG_LAST))
-            .expect("last fragment after recipient attaches mid-sequence")
-            .is_empty()
-    );
-    assert!(delivered(&channel).is_empty());
+    expect_discarded(&mut channel, b"keep", 8, ChannelControlFlags::FLAG_LAST);
 
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1; spec MS-RDPBCGR §3.1.5.2.2.1
+    // oracle: mutant skipping declared-length validation after message_context changes
     set_context(&mut channel, Some(2));
-    assert!(
-        channel
-            .process(&channel_chunk(b"ab", 4, ChannelControlFlags::FLAG_FIRST))
-            .expect("first fragment before short last")
-            .is_empty()
-    );
+    expect_discarded(&mut channel, b"ab", 4, ChannelControlFlags::FLAG_FIRST);
     set_context(&mut channel, Some(3));
-    assert!(
-        channel
-            .process(&channel_chunk(b"c", 4, ChannelControlFlags::FLAG_LAST))
-            .is_err()
-    );
+    expect_invalid_length(&mut channel, b"c", 4, ChannelControlFlags::FLAG_LAST, TERMINAL_MISMATCH);
 
-    assert!(
-        channel
-            .process(&channel_chunk(b"ab", 3, ChannelControlFlags::FLAG_FIRST))
-            .expect("first fragment before overrun")
-            .is_empty()
-    );
+    expect_discarded(&mut channel, b"ab", 3, ChannelControlFlags::FLAG_FIRST);
     set_context(&mut channel, None);
-    assert!(
-        channel
-            .process(&channel_chunk(b"cde", 3, ChannelControlFlags::FLAG_LAST))
-            .is_err()
+    expect_invalid_length(
+        &mut channel,
+        b"cde",
+        3,
+        ChannelControlFlags::FLAG_LAST,
+        EXCEEDS_DECLARED,
     );
 
+    // oracle: mutant delivering a partial sequence across a context change or skipping max_message_size after discard
     set_context(&mut channel, Some(2));
-    assert!(
-        channel
-            .process(&channel_chunk(
-                b"12345",
-                4,
-                ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::PACKET_COMPRESSED,
-            ))
-            .expect("compressed first fragment within cap")
-            .is_empty()
+    expect_discarded(
+        &mut channel,
+        b"12345",
+        4,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::PACKET_COMPRESSED,
     );
     set_context(&mut channel, Some(3));
-    assert!(
-        channel
-            .process(&channel_chunk(
-                b"6789",
-                4,
-                ChannelControlFlags::FLAG_LAST | ChannelControlFlags::PACKET_COMPRESSED,
-            ))
-            .is_err()
+    expect_invalid_length(
+        &mut channel,
+        b"6789",
+        4,
+        ChannelControlFlags::FLAG_LAST | ChannelControlFlags::PACKET_COMPRESSED,
+        EXCEEDS_MAX_SIZE,
     );
     assert!(delivered(&channel).is_empty());
 
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1; mutant retaining discarded prefix bytes or failing to recover
     set_context(&mut channel, Some(3));
-    assert!(
-        channel
-            .process(&channel_chunk(b"new-", 7, ChannelControlFlags::FLAG_FIRST))
-            .expect("first fragment for recipient 3")
-            .is_empty()
-    );
-    let reply = channel
-        .process(&channel_chunk(b"msg", 7, ChannelControlFlags::FLAG_LAST))
-        .expect("last fragment for recipient 3");
-    assert_eq!(reply.len(), 1);
-    assert_eq!(
-        reply[0].encode_unframed_pdu().expect("encode reply"),
-        3u64.to_le_bytes()
-    );
+    expect_discarded(&mut channel, b"new-", 7, ChannelControlFlags::FLAG_FIRST);
+    expect_delivered(&mut channel, b"msg", 7, ChannelControlFlags::FLAG_LAST, 3);
     assert_eq!(delivered(&channel), [(3, b"new-msg".to_vec())]);
+}
+
+// oracle: property round-trip; spec MS-RDPBCGR §3.1.5.2.1; spec MS-RDPBCGR §3.1.5.2.2.1
+proptest! {
+    #[test]
+    fn static_channel_chunkify_and_dechunkify_round_trip_with_context(
+        context in any::<u64>(),
+        payload in proptest::collection::vec(any::<u8>(), 0..=4096),
+    ) {
+        let chunks = StaticVirtualChannel::chunkify(vec![SvcMessage::from(payload.clone())])
+            .expect("chunkify should succeed");
+        let (last_chunk, leading_chunks) = chunks.split_last().expect("chunkify always emits at least one chunk");
+        let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(context), None));
+
+        for chunk in leading_chunks {
+            prop_assert!(
+                channel
+                    .process(chunk.filled())
+                    .expect("non-final chunk should buffer")
+                    .is_empty()
+            );
+        }
+
+        let reply = channel
+            .process(last_chunk.filled())
+            .expect("final chunk should complete reassembly");
+        prop_assert_eq!(reply.len(), 1);
+        prop_assert_eq!(
+            reply[0].encode_unframed_pdu().expect("encode reply"),
+            context.to_le_bytes()
+        );
+        prop_assert_eq!(delivered(&channel), &[(context, payload)]);
+    }
+}
+
+// oracle: mutant violating max_message_size or poisoning recovery across arbitrary fragment and context sequences
+proptest! {
+    #[test]
+    fn static_channel_arbitrary_fragments_preserve_cap_and_recover(
+        steps in proptest::collection::vec(
+            (
+                proptest::option::of(0u64..4),
+                0u32..=24,
+                any::<u32>(),
+                proptest::collection::vec(any::<u8>(), 0..=24),
+            ),
+            1..=16,
+        ),
+    ) {
+        const CAP: usize = 16;
+        let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(0), Some(CAP)));
+
+        for (context, length, raw_flags, data) in steps {
+            set_context(&mut channel, context);
+            let flags = ChannelControlFlags::from_bits_retain(raw_flags);
+            let _ = channel.process(&channel_chunk(&data, length, flags));
+        }
+
+        for (_, payload) in delivered(&channel) {
+            prop_assert!(payload.len() <= CAP);
+        }
+
+        // Sending an initial fragment when a sequence may still be open either starts a new
+        // sequence or clears the stale sequence with an error; after that, a fresh sequence succeeds.
+        set_context(&mut channel, Some(99));
+        if channel
+            .process(&channel_chunk(b"o", 2, ChannelControlFlags::FLAG_FIRST))
+            .is_err()
+        {
+            expect_discarded(&mut channel, b"o", 2, ChannelControlFlags::FLAG_FIRST);
+        }
+        expect_delivered(&mut channel, b"k", 2, ChannelControlFlags::FLAG_LAST, 99);
+        prop_assert_eq!(delivered(&channel).last(), Some(&(99, b"ok".to_vec())));
+    }
 }
 
 #[test]
