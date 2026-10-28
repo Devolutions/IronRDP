@@ -427,7 +427,7 @@ enum RailCommand {
 
 #[derive(Args, Debug)]
 struct NowRunArgs {
-    /// Command line for the remote agent.
+    /// Remote file or URI to open, without command-line arguments.
     command: String,
     /// Optional remote working directory.
     #[arg(long)]
