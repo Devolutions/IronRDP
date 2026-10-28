@@ -216,6 +216,10 @@ impl DrdynvcClient {
     /// Registers a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
+    /// A channel the server closes is kept and started again on its next Create Request
+    /// (xrdp reopens every channel after a Deactivation-Reactivation Sequence), so the
+    /// processor must accept [`DvcProcessor::start`] after [`DvcProcessor::close`].
+    ///
     /// # Note
     ///
     /// If a listener or a pre-registered channel with the same name already exists,

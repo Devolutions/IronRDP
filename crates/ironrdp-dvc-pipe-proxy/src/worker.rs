@@ -17,7 +17,7 @@ const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(100);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 pub(crate) type OnWriteDvcMessage =
-    Box<dyn Fn(u32, Vec<SvcMessage>) -> Pin<Box<dyn Future<Output = PduResult<()>> + Send>> + Send>;
+    Arc<dyn Fn(u32, Vec<SvcMessage>) -> Pin<Box<dyn Future<Output = PduResult<()>> + Send>> + Send + Sync>;
 
 pub(crate) struct WorkerCtx {
     pub(crate) on_write_dvc: OnWriteDvcMessage,

@@ -1971,6 +1971,9 @@ impl DvcProcessor for GraphicsPipelineClient {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        // A server that closed the channel can open it again with the same client; it
+        // confirms capabilities anew.
+        self.state = ClientState::WaitingForConfirm;
         if let Some(decoder) = self.h264_decoder.as_mut()
             && !decoder.wait_until_ready()
         {
@@ -2547,6 +2550,26 @@ mod tests {
         client.close(0);
         assert_eq!(client.state, ClientState::Closed);
         assert!(!client.is_active());
+    }
+
+    /// xrdp closes and reopens the channel after a Deactivation-Reactivation Sequence;
+    /// the client it hands back must take the server's new CapabilitiesConfirm.
+    #[test]
+    fn reopened_channel_waits_for_confirm() {
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        client.close(1);
+
+        client.start(2).unwrap();
+        assert_eq!(client.state, ClientState::WaitingForConfirm);
+
+        let confirm = ironrdp_core::encode_vec(&GfxPdu::CapabilitiesConfirm(
+            crate::pdu::CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V8 {
+                flags: CapabilitiesV8Flags::empty(),
+            }),
+        ))
+        .unwrap();
+        client.process(2, &zgfx::wrap_uncompressed(&confirm)).unwrap();
+        assert_eq!(client.state, ClientState::Active);
     }
 
     #[test]
