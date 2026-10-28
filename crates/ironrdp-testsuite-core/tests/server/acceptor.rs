@@ -12,11 +12,18 @@ use ironrdp_acceptor::{
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
 use ironrdp_connector::credssp::CredsspSequence;
-use ironrdp_connector::sspi::credssp::{NStatusCode, TsRequest};
+use ironrdp_connector::sspi::credssp::{ClientMode, ClientState, CredSspClient, CredSspMode, NStatusCode, TsRequest};
 use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
-use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult};
-use ironrdp_connector::{DesktopSize, Sequence, Written, encode_x224_packet};
+use ironrdp_connector::sspi::ntlm::NtlmConfig;
+use ironrdp_connector::sspi::{AuthIdentity, NegotiateConfig, Username};
+use ironrdp_connector::{
+    ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, Sequence, Written,
+    encode_x224_packet,
+};
 use ironrdp_core::{WriteBuf, decode, encode_vec};
+use ironrdp_dvc::DrdynvcServer;
+use ironrdp_dvc::pdu::{CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
+use ironrdp_echo::server::EchoServer;
 use ironrdp_pdu::gcc::{
     ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientMessageChannelData, ClientMonitorData, Monitor,
     MonitorFlags, MultiTransportChannelData, MultiTransportFlags,
@@ -24,7 +31,8 @@ use ironrdp_pdu::gcc::{
 use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
 use ironrdp_pdu::rdp::ClientInfoPdu;
-use ironrdp_pdu::rdp::client_info::{CompressionType, Credentials};
+use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
+use ironrdp_pdu::rdp::client_info::{ClientInfoFlags, CompressionType, Credentials};
 use ironrdp_pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
@@ -33,6 +41,7 @@ use ironrdp_pdu::rdp::headers::{
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::x224::{X224, X224Data};
+use ironrdp_svc::{StaticVirtualChannel, SvcMessage, SvcProcessor as _, client_encode_svc_messages};
 use ironrdp_testsuite_core::client_info::CLIENT_INFO_UNICODE;
 use ironrdp_testsuite_core::gcc::CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS;
 use ironrdp_testsuite_core::rdp::{CLIENT_DEMAND_ACTIVE_PDU_BUFFER, CLIENT_INFO_PDU_BUFFER};
@@ -265,6 +274,14 @@ fn drive_to_secure_settings_exchange(
     acceptor: &mut Acceptor,
     client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
 ) -> (u16, u16, Option<u16>, Option<MultiTransportFlags>) {
+    drive_to_secure_settings_exchange_with_info(acceptor, client_blocks, &CLIENT_INFO_PDU_BUFFER)
+}
+
+fn drive_to_secure_settings_exchange_with_info(
+    acceptor: &mut Acceptor,
+    client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
+    client_info: &[u8],
+) -> (u16, u16, Option<u16>, Option<MultiTransportFlags>) {
     let request_bytes = encode_connection_request(SecurityProtocol::SSL);
     acceptor.step(&request_bytes, None, &mut WriteBuf::new()).unwrap();
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
@@ -281,6 +298,7 @@ fn drive_to_secure_settings_exchange(
     let response = decode::<mcs::ConnectResponse>(payload.data.as_ref()).unwrap();
     let server_blocks = response.conference_create_response.gcc_blocks();
     let io_channel_id = server_blocks.network.io_channel;
+    let static_channel_ids = server_blocks.network.channel_ids.clone();
     let message_channel_id = server_blocks.message_channel.as_ref().map(|m| m.mcs_message_channel_id);
     let server_multitransport = server_blocks.multi_transport_channel.as_ref().map(|m| m.flags);
 
@@ -305,10 +323,8 @@ fn drive_to_secure_settings_exchange(
     let attach_user_confirm = decode::<X224<mcs::AttachUserConfirm>>(output.filled()).unwrap().0;
     let user_channel_id = attach_user_confirm.initiator_id;
 
-    // Join every channel the server expects: the user and I/O channels, plus
-    // the message channel when one was negotiated. No other static channels
-    // are requested by `client_blocks.network` in these tests.
     let mut to_join = vec![user_channel_id, io_channel_id];
+    to_join.extend(static_channel_ids);
     to_join.extend(message_channel_id);
     for channel_id in to_join {
         let mut buf = WriteBuf::new();
@@ -327,7 +343,7 @@ fn drive_to_secure_settings_exchange(
     // RdpSecurityCommencement (no input) -> SecureSettingsExchange, then the
     // Client Info PDU on the I/O channel.
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
-    let client_info = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_INFO_PDU_BUFFER);
+    let client_info = encode_send_data_request(user_channel_id, io_channel_id, client_info);
     acceptor.step(&client_info, None, &mut WriteBuf::new()).unwrap();
 
     (
@@ -336,6 +352,202 @@ fn drive_to_secure_settings_exchange(
         message_channel_id,
         server_multitransport,
     )
+}
+
+fn rail_acceptor_waiting_confirm() -> (Acceptor, u16, u16) {
+    let mut acceptor = Acceptor::new(
+        SecurityProtocol::SSL,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        vec![
+            CapabilitySet::Rail(Rail {
+                support_level: RailSupportLevel::SUPPORTED,
+            }),
+            CapabilitySet::WindowList(WindowList {
+                support_level: WindowSupportLevel::SupportedEx,
+                num_icon_caches: 3,
+                num_icon_cache_entries: 12,
+            }),
+        ],
+        None,
+    );
+    let mut info = decode::<ClientInfoPdu>(&CLIENT_INFO_PDU_BUFFER).unwrap();
+    info.client_info.flags.insert(ClientInfoFlags::RAIL);
+    let mut gcc = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    gcc.network = None;
+    let (user_channel_id, io_channel_id, _, _) =
+        drive_to_secure_settings_exchange_with_info(&mut acceptor, gcc, &encode_vec(&info).unwrap());
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    (acceptor, user_channel_id, io_channel_id)
+}
+
+fn rail_confirm(capabilities: Vec<CapabilitySet>, user_channel_id: u16, io_channel_id: u16) -> Vec<u8> {
+    let mut confirm = decode::<ShareControlHeader>(&CLIENT_DEMAND_ACTIVE_PDU_BUFFER).unwrap();
+    let ShareControlPdu::ClientConfirmActive(active) = &mut confirm.share_control_pdu else {
+        panic!("fixture must contain Confirm Active");
+    };
+    active.pdu.capability_sets = capabilities;
+    encode_send_data_request(user_channel_id, io_channel_id, &encode_vec(&confirm).unwrap())
+}
+
+#[test]
+fn rail_confirmation_requires_window_list_capability() {
+    // oracle: spec MS-RDPERP §3.3.5.1.5: an agreed RAIL connection requires both client capability sets.
+    let (mut acceptor, user_channel_id, io_channel_id) = rail_acceptor_waiting_confirm();
+    let capabilities = vec![CapabilitySet::Rail(Rail {
+        support_level: RailSupportLevel::SUPPORTED,
+    })];
+    let result = acceptor.step(
+        &rail_confirm(capabilities, user_channel_id, io_channel_id),
+        None,
+        &mut WriteBuf::new(),
+    );
+
+    assert!(result.is_err(), "RAIL must reject a client without Window List support");
+}
+
+#[test]
+fn rail_confirmation_disables_icon_caches_larger_than_the_server_offer() {
+    // oracle: reference MS-RDPERP §3.3.5.1.5 and §6 note 36: Windows disables icon caches exceeding the server offer.
+    let (mut acceptor, user_channel_id, io_channel_id) = rail_acceptor_waiting_confirm();
+    let capabilities = vec![
+        CapabilitySet::Rail(Rail {
+            support_level: RailSupportLevel::SUPPORTED,
+        }),
+        CapabilitySet::WindowList(WindowList {
+            support_level: WindowSupportLevel::SupportedEx,
+            num_icon_caches: 4,
+            num_icon_cache_entries: 13,
+        }),
+    ];
+    acceptor
+        .step(
+            &rail_confirm(capabilities, user_channel_id, io_channel_id),
+            None,
+            &mut WriteBuf::new(),
+        )
+        .unwrap();
+    let remote_app = acceptor.remote_app_capabilities().expect("RAIL should be negotiated");
+    assert_eq!(remote_app.window_list.num_icon_caches, 0);
+    assert_eq!(remote_app.window_list.num_icon_cache_entries, 0);
+}
+
+// oracle: spec MS-RDPERP §3.3.5.1.5: Rail must be present and both support levels must be nonzero.
+#[rstest::rstest]
+#[case::missing_rail(None, WindowSupportLevel::SupportedEx)]
+#[case::rail_disabled(Some(RailSupportLevel::empty()), WindowSupportLevel::SupportedEx)]
+#[case::window_disabled(Some(RailSupportLevel::SUPPORTED), WindowSupportLevel::NotSupported)]
+fn rail_confirmation_rejects_missing_or_disabled_support(
+    #[case] rail: Option<RailSupportLevel>,
+    #[case] window: WindowSupportLevel,
+) {
+    let (mut acceptor, user, io) = rail_acceptor_waiting_confirm();
+    let capabilities = rail
+        .map(|support_level| CapabilitySet::Rail(Rail { support_level }))
+        .into_iter()
+        .chain(Some(CapabilitySet::WindowList(WindowList {
+            support_level: window,
+            num_icon_caches: 3,
+            num_icon_cache_entries: 12,
+        })))
+        .collect();
+    assert!(
+        acceptor
+            .step(&rail_confirm(capabilities, user, io), None, &mut WriteBuf::new())
+            .is_err()
+    );
+}
+
+// oracle: spec MS-RDPERP §3.3.5.1.5: client icon-cache dimensions can be at or below the server offer.
+#[rstest::rstest]
+#[case::smaller(2, 8)]
+#[case::equal(3, 12)]
+#[case::disabled(0, 0)]
+fn rail_confirmation_preserves_supported_icon_cache_limits(#[case] caches: u8, #[case] entries: u16) {
+    let (mut acceptor, user, io) = rail_acceptor_waiting_confirm();
+    let capabilities = vec![
+        CapabilitySet::Rail(Rail {
+            support_level: RailSupportLevel::SUPPORTED,
+        }),
+        CapabilitySet::WindowList(WindowList {
+            support_level: WindowSupportLevel::Supported,
+            num_icon_caches: caches,
+            num_icon_cache_entries: entries,
+        }),
+    ];
+    acceptor
+        .step(&rail_confirm(capabilities, user, io), None, &mut WriteBuf::new())
+        .unwrap();
+    let effective = &acceptor.remote_app_capabilities().unwrap().window_list;
+    assert_eq!(effective.num_icon_caches, caches);
+    assert_eq!(effective.num_icon_cache_entries, entries);
+    assert_eq!(effective.support_level, WindowSupportLevel::Supported);
+}
+
+// oracle: reference MS-RDPERP §3.3.5.1.5, §6 product behavior note 36: either excessive dimension disables both caches.
+#[rstest::rstest]
+#[case::too_many_caches(4, 12)]
+#[case::too_many_entries(3, 13)]
+fn rail_confirmation_checks_each_icon_cache_dimension(#[case] caches: u8, #[case] entries: u16) {
+    let (mut acceptor, user, io) = rail_acceptor_waiting_confirm();
+    let capabilities = vec![
+        CapabilitySet::Rail(Rail {
+            support_level: RailSupportLevel::SUPPORTED,
+        }),
+        CapabilitySet::WindowList(WindowList {
+            support_level: WindowSupportLevel::SupportedEx,
+            num_icon_caches: caches,
+            num_icon_cache_entries: entries,
+        }),
+    ];
+    acceptor
+        .step(&rail_confirm(capabilities, user, io), None, &mut WriteBuf::new())
+        .unwrap();
+    let effective = &acceptor.remote_app_capabilities().unwrap().window_list;
+    assert_eq!(effective.num_icon_caches, 0);
+    assert_eq!(effective.num_icon_cache_entries, 0);
+}
+
+// oracle: spec MS-RDPBCGR §1.3.1.3 and MS-RDPERP §3.3.5.1.5: reactivation rechecks capabilities without resending Client Info.
+#[test]
+fn rail_reactivation_preserves_client_info_and_reconfirms_window_support() {
+    let (mut acceptor, user, io) = rail_acceptor_waiting_confirm();
+    let capabilities = vec![
+        CapabilitySet::Rail(Rail {
+            support_level: RailSupportLevel::SUPPORTED,
+        }),
+        CapabilitySet::WindowList(WindowList {
+            support_level: WindowSupportLevel::SupportedEx,
+            num_icon_caches: 3,
+            num_icon_cache_entries: 12,
+        }),
+    ];
+    let confirm = rail_confirm(capabilities, user, io);
+    acceptor.step(&confirm, None, &mut WriteBuf::new()).unwrap();
+    complete_finalization(&mut acceptor, user, io);
+    let result = acceptor.get_result().unwrap();
+    let mut acceptor = Acceptor::new_deactivation_reactivation(
+        acceptor,
+        result.static_channels,
+        DesktopSize {
+            width: 1280,
+            height: 720,
+        },
+    )
+    .unwrap();
+    assert!(acceptor.client_info_flags().unwrap().contains(ClientInfoFlags::RAIL));
+    assert!(acceptor.remote_app_capabilities().is_none());
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    acceptor.step(&confirm, None, &mut WriteBuf::new()).unwrap();
+    complete_finalization(&mut acceptor, user, io);
+    assert_eq!(
+        acceptor.remote_app_capabilities().unwrap().window_list.num_icon_caches,
+        3
+    );
 }
 
 pub(super) fn client_gcc_with_message_channel_and_multitransport(
@@ -848,12 +1060,128 @@ fn a_client_without_monitor_data_announces_no_monitors() {
     assert!(client_monitors_after_accepting(None).is_empty());
 }
 
+fn complete_activation(acceptor: &mut Acceptor, user_channel_id: u16, io_channel_id: u16) {
+    let confirm = encode_send_data_request(user_channel_id, io_channel_id, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
+    acceptor.step(&confirm, None, &mut WriteBuf::new()).unwrap();
+    complete_finalization(acceptor, user_channel_id, io_channel_id);
+}
+
+fn complete_finalization(acceptor: &mut Acceptor, user_channel_id: u16, io_channel_id: u16) {
+    for pdu in [
+        ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0 }),
+        ShareDataPdu::Control(ControlPdu {
+            action: ControlAction::Cooperate,
+            grant_id: 0,
+            control_id: 0,
+        }),
+        ShareDataPdu::Control(ControlPdu {
+            action: ControlAction::RequestControl,
+            grant_id: 0,
+            control_id: 0,
+        }),
+        ShareDataPdu::FontList(Default::default()),
+    ] {
+        let frame = encode_send_data_request(user_channel_id, io_channel_id, &encode_client_share_data(pdu));
+        acceptor.step(&frame, None, &mut WriteBuf::new()).unwrap();
+    }
+    for _ in 0..4 {
+        acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    }
+}
+
+fn reactivating_dvc_acceptor() -> (Acceptor, u16, u16, Vec<u8>) {
+    let desktop = DesktopSize {
+        width: 1280,
+        height: 720,
+    };
+    let mut acceptor = Acceptor::new(SecurityProtocol::SSL, desktop, Vec::new(), None);
+    acceptor.attach_static_channel(DrdynvcServer::new().with_dynamic_channel(EchoServer::new()));
+    let mut blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    blocks.network = Some(ironrdp_pdu::gcc::ClientNetworkData {
+        channels: vec![ironrdp_svc::make_channel_definition(&StaticVirtualChannel::new(
+            DrdynvcServer::new(),
+        ))],
+    });
+    let (user, io, ..) = drive_to_secure_settings_exchange(&mut acceptor, blocks);
+    for _ in 0..3 {
+        acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    }
+    complete_activation(&mut acceptor, user, io);
+    let mut result = acceptor.get_result().unwrap();
+    let channel_id = result
+        .static_channels
+        .get_channel_id_by_type::<DrdynvcServer>()
+        .unwrap();
+    let dvc = result
+        .static_channels
+        .get_by_type_mut::<DrdynvcServer>()
+        .unwrap()
+        .channel_processor_downcast_mut::<DrdynvcServer>()
+        .unwrap();
+    // oracle: spec MS-RDPEDYC §2.2.1.2: version 2 Capability Response.
+    dvc.process(&[0x50, 0x00, 0x02, 0x00]).unwrap();
+    let echo_id = dvc.get_channel_id_by_type::<EchoServer>().unwrap();
+    let reply = client_encode_svc_messages(
+        vec![SvcMessage::from(DrdynvcClientPdu::Create(CreateResponsePdu::new(
+            echo_id,
+            CreationStatus::OK,
+        )))],
+        channel_id,
+        user,
+    )
+    .unwrap();
+    let mut acceptor = Acceptor::new_deactivation_reactivation(acceptor, result.static_channels, desktop).unwrap();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    (acceptor, user, io, reply)
+}
+
+#[test]
+fn dvc_create_reply_before_reactivation_confirm_is_preserved() {
+    // oracle: spec MS-RDPBCGR §1.3.3: each virtual channel is an independent, lossless stream.
+    let (mut acceptor, user, io, reply) = reactivating_dvc_acceptor();
+    acceptor.step(&reply, None, &mut WriteBuf::new()).unwrap();
+    complete_activation(&mut acceptor, user, io);
+    let result = acceptor.get_result().unwrap();
+    assert_eq!(result.input_events, vec![reply]);
+}
+
+#[test]
+fn dvc_create_reply_does_not_advance_reactivation_finalization() {
+    // oracle: spec MS-RDPBCGR §1.3.3: virtual-channel data is independent of I/O-channel finalization.
+    let (mut acceptor, user, io, reply) = reactivating_dvc_acceptor();
+    let confirm = encode_send_data_request(user, io, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER);
+    acceptor.step(&confirm, None, &mut WriteBuf::new()).unwrap();
+    acceptor.step(&reply, None, &mut WriteBuf::new()).unwrap();
+    complete_finalization(&mut acceptor, user, io);
+    let result = acceptor.get_result().unwrap();
+    assert_eq!(result.input_events, vec![reply]);
+}
+
+#[test]
+fn reactivation_backlog_rejects_frames_beyond_sixteen_mib() {
+    // oracle: mutant accepting virtual-channel frames past the 16 MiB reactivation backlog cap.
+    let (mut acceptor, user, _, reply) = reactivating_dvc_acceptor();
+    let channel = decode::<X224<mcs::SendDataRequest<'_>>>(&reply).unwrap().0.channel_id;
+    let mut payload = vec![0; 1009];
+    payload[..4].copy_from_slice(&1001u32.to_le_bytes());
+    payload[4..8].copy_from_slice(&3u32.to_le_bytes());
+    let frame = encode_send_data_request(user, channel, &payload);
+    // oracle: spec MS-RDPBCGR §2.2.6.1: 7-byte TPKT/X.224 + 8-byte MCS + 1009-byte user data.
+    assert_eq!(frame.len(), 1024);
+    for _ in 0..16 * 1024 {
+        acceptor.step(&frame, None, &mut WriteBuf::new()).unwrap();
+    }
+    let error = acceptor.step(&frame, None, &mut WriteBuf::new()).unwrap_err();
+    assert!(error.to_string().contains("backlog"));
+}
+
 #[derive(Default)]
 struct HandshakeStream {
     incoming: VecDeque<Vec<u8>>,
     outgoing: Rc<RefCell<Vec<Vec<u8>>>>,
     credssp_client: Option<CredsspSequence>,
     fail_writes: bool,
+    spnego_credssp_client: Option<Box<CredSspClient>>,
 }
 
 impl StreamWrapper for HandshakeStream {
@@ -903,6 +1231,14 @@ impl FramedWrite for HandshakeStream {
                 self.incoming.push_back(client_credssp_message(client, request));
             }
         }
+        if let Some(client) = self.spnego_credssp_client.as_mut()
+            && buf.len() != 4
+        {
+            let request = TsRequest::from_buffer(buf).unwrap();
+            if request.error_code.is_none() {
+                self.incoming.push_back(spnego_credssp_message(client, request));
+            }
+        }
         ready(Ok(()))
     }
 }
@@ -920,6 +1256,41 @@ fn client_credssp_message(client: &mut CredsspSequence, request: TsRequest) -> V
     buf.filled().to_vec()
 }
 
+/// Builds a CredSSP client that wraps NTLM in SPNEGO, as mstsc does.
+/// The connector's client sends bare NTLM instead.
+fn spnego_credssp_client(username: &str, password: &str, public_key: &[u8]) -> CredSspClient {
+    CredSspClient::new(
+        public_key.to_vec(),
+        AuthIdentity {
+            username: Username::new(username, None).unwrap(),
+            password: password.to_owned().into(),
+        }
+        .into(),
+        CredSspMode::WithCredentials,
+        ClientMode::Negotiate(NegotiateConfig {
+            protocol_config: Box::new(NtlmConfig::default()),
+            package_list: Some("!kerberos,!pku2u".to_owned()),
+            client_computer_name: "client.example.com".to_owned(),
+        }),
+        "TERMSRV/server.example.com".to_owned(),
+    )
+    .unwrap()
+}
+
+fn spnego_credssp_message(client: &mut CredSspClient, request: TsRequest) -> Vec<u8> {
+    let state = {
+        let mut generator = client.process(request);
+        let GeneratorState::Completed(state) = generator.start() else {
+            panic!("NTLM should not make network requests");
+        };
+        state.unwrap()
+    };
+    let (ClientState::ReplyNeeded(reply) | ClientState::FinalMessage(reply)) = state;
+    let mut message = Vec::new();
+    reply.encode_ts_request(&mut message).unwrap();
+    message
+}
+
 struct NoNetwork;
 
 impl NetworkClient for NoNetwork {
@@ -931,6 +1302,8 @@ impl NetworkClient for NoNetwork {
 #[derive(Default)]
 struct SetupHandler {
     received: Vec<ReceivedCredentials>,
+    client_info: Option<ClientInfoFlags>,
+    client_info_at_capabilities: Option<ClientInfoFlags>,
     reject_credentials: bool,
     reject_capabilities: bool,
     capability_calls: usize,
@@ -938,6 +1311,11 @@ struct SetupHandler {
 
 #[async_trait::async_trait(?Send)]
 impl ConnectionSetupHandler for SetupHandler {
+    async fn handle_client_info(&mut self, flags: ClientInfoFlags) -> ConnectorResult<()> {
+        self.client_info = Some(flags);
+        Ok(())
+    }
+
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> ConnectorResult<()> {
         self.received
             .push(credentials.expect("handshake should supply credentials"));
@@ -950,12 +1328,41 @@ impl ConnectionSetupHandler for SetupHandler {
 
     async fn prepare_capability_exchange(&mut self, _: DesktopSize) -> ConnectorResult<()> {
         self.capability_calls += 1;
+        self.client_info_at_capabilities = self.client_info;
         if self.reject_capabilities {
             Err(ConnectorError::general("test capability rejection"))
         } else {
             Ok(())
         }
     }
+}
+
+#[tokio::test]
+async fn client_info_reaches_setup_before_capability_exchange() {
+    // oracle: spec MS-RDPERP §3.3.5.1.3-.4: Client Info selects RemoteApp before Demand Active is constructed.
+    let mut acceptor = negotiated_acceptor(SecurityProtocol::SSL);
+    let mut handler = SetupHandler {
+        reject_capabilities: true,
+        ..SetupHandler::default()
+    };
+    let mut incoming = post_credssp_messages(None);
+    let mut info = ClientInfoPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::INFO_PKT,
+        },
+        client_info: CLIENT_INFO_UNICODE.clone(),
+    };
+    info.client_info.flags |= ClientInfoFlags::RAIL | ClientInfoFlags::HIDEF_RAIL_SUPPORTED;
+    *incoming.back_mut().unwrap() = encode_send_data_request(1002, 1003, &encode_vec(&info).unwrap());
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming,
+        ..HandshakeStream::default()
+    });
+
+    let result = accept_finalize_with(framed, &mut acceptor, &mut handler).await;
+
+    assert!(result.err().unwrap().to_string().contains("test capability rejection"));
+    assert_eq!(handler.client_info_at_capabilities, Some(info.client_info.flags));
 }
 
 fn negotiated_acceptor(protocol: SecurityProtocol) -> Acceptor {
@@ -1224,6 +1631,61 @@ async fn accept_finalize_sends_no_error_info_to_a_client_without_support(
 
     // Only the Connect Response, the Attach User Confirm and two Channel Join Confirms.
     assert_eq!(outgoing.borrow().len(), 4);
+}
+
+fn step_client_info_credentials(
+    expected_username: &str,
+    expected_domain: Option<&str>,
+    actual_username: &str,
+    actual_domain: Option<&str>,
+) -> ConnectorResult<Acceptor> {
+    let mut acceptor = negotiated_acceptor_expecting(
+        SecurityProtocol::SSL,
+        Some(Credentials {
+            username: expected_username.to_owned(),
+            password: "secret".to_owned(),
+            domain: expected_domain.map(str::to_owned),
+        }),
+    );
+    let mut incoming = post_credssp_messages(None);
+    let mut info = ClientInfoPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::INFO_PKT,
+        },
+        client_info: CLIENT_INFO_UNICODE.clone(),
+    };
+    info.client_info.credentials = Credentials {
+        username: actual_username.to_owned(),
+        password: "secret".to_owned(),
+        domain: actual_domain.map(str::to_owned),
+    };
+    *incoming.back_mut().unwrap() = encode_send_data_request(1002, 1003, &encode_vec(&info).unwrap());
+
+    while let Some(message) = incoming.pop_front() {
+        while acceptor.next_pdu_hint().is_none() {
+            acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+        }
+        acceptor.step(&message, None, &mut WriteBuf::new())?;
+    }
+    Ok(acceptor)
+}
+
+// oracle: mutant rejecting a Client Info UPN or Down-Level Logon Name that matches the configured domain.
+#[rstest::rstest]
+#[case::upn("alice@corp")]
+#[case::down_level("CORP\\alice")]
+fn client_info_matches_qualified_username_against_expected_domain(#[case] username: &str) {
+    let acceptor = step_client_info_credentials("alice", Some("CORP"), username, None).unwrap();
+    assert_eq!(acceptor.received_credentials().unwrap().credentials.username, username);
+}
+
+// oracle: mutant accepting a Client Info username whose domain is missing or does not match the configured domain.
+#[rstest::rstest]
+#[case::different_upn_realm("alice@evil.example")]
+#[case::different_down_level_domain("OTHER\\alice")]
+#[case::unqualified("alice")]
+fn client_info_rejects_username_with_mismatched_or_missing_domain(#[case] username: &str) {
+    assert!(step_client_info_credentials("alice", Some("CORP"), username, None).is_err());
 }
 
 // oracle: mutant driver returning the error of sending the failing step's PDU instead of the step error
@@ -1509,6 +1971,9 @@ fn stepping_a_finished_finalization_returns_an_error() {
     assert!(sequence.is_done());
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    let vc_frame = encode_send_data_request(USER_CHANNEL_ID, IO_CHANNEL_ID + 1, b"vc");
+    // oracle: mutant buffering non-I/O-channel frames after finalization has already finished.
+    sequence.step(&vc_frame, None, &mut WriteBuf::new()).unwrap_err();
     // oracle: mutant the Finished arm of `FinalizationSequence::step` not putting the state back
     assert!(sequence.is_done());
 }
@@ -1532,6 +1997,9 @@ fn stepping_a_failed_finalization_returns_an_error() {
         .unwrap_err();
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    let vc_frame = encode_send_data_request(USER_CHANNEL_ID, IO_CHANNEL_ID + 1, b"vc");
+    // oracle: mutant buffering non-I/O-channel frames after finalization has already failed.
+    sequence.step(&vc_frame, None, &mut WriteBuf::new()).unwrap_err();
 }
 
 // oracle: spec MS-RDPBCGR §2.2.12.1 (the pduSource field of the Monitor Layout PDU MUST be set to zero)
@@ -1563,4 +2031,332 @@ fn monitor_layout_pdu_source_is_zero() {
         panic!("expected a Monitor Layout PDU");
     };
     assert_eq!(share_control.pdu_source, 0);
+}
+
+async fn accept_spnego_credssp(
+    protocol: SecurityProtocol,
+    username: &str,
+    password: &str,
+) -> (ConnectorResult<()>, SetupHandler, Vec<Vec<u8>>) {
+    let mut acceptor = negotiated_acceptor(protocol);
+    let public_key = vec![0x42; 32];
+    let mut client = spnego_credssp_client(username, password, &public_key);
+    let first_message = spnego_credssp_message(&mut client, TsRequest::default());
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [first_message].into(),
+        spnego_credssp_client: Some(Box::new(client)),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+    let mut handler = SetupHandler::default();
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "client.example.com".to_owned().into(),
+        public_key,
+        None,
+        &mut handler,
+    )
+    .await;
+    let outgoing = outgoing.borrow().clone();
+    (result, handler, outgoing)
+}
+
+/// The mstsc client wraps NTLM in SPNEGO.
+/// An acceptor that sent every client to the bare-NTLM server would fail this exchange.
+#[tokio::test]
+async fn credssp_authenticates_ntlm_wrapped_in_spnego() {
+    // oracle: spec MS-CSSP §2.2.1.1, §2.2.1 and MS-RDPBCGR §2.2.10.2:
+    // SPNEGO-wrapped NTLM delegates the client's credentials and ends with AUTHZ_SUCCESS (0).
+    let (result, handler, outgoing) = accept_spnego_credssp(SecurityProtocol::HYBRID_EX, "alice", "secret").await;
+
+    result.unwrap();
+    assert_eq!(outgoing.last().unwrap(), &0u32.to_le_bytes());
+    assert_eq!(handler.received.len(), 1);
+    let received = &handler.received[0];
+    assert_eq!(received.origin, ironrdp_acceptor::CredentialOrigin::CredSspDelegated);
+    assert_eq!(received.credentials.username, "alice");
+    assert_eq!(received.credentials.domain, None);
+    assert_eq!(received.credentials.password, "secret");
+}
+
+#[tokio::test]
+async fn credssp_preserves_explicit_domain_when_username_contains_at_sign() {
+    // oracle: mutant discarding an explicit domain when the configured username contains '@'.
+    let protocol = SecurityProtocol::HYBRID_EX;
+    let mut acceptor = negotiated_acceptor_expecting(
+        protocol,
+        Some(Credentials {
+            username: "alice@example.com".to_owned(),
+            password: "secret".to_owned(),
+            domain: Some("MicrosoftAccount".to_owned()),
+        }),
+    );
+    let public_key = vec![0x42; 32];
+    let (mut client, request) = CredsspSequence::init(
+        ironrdp_connector::Credentials::UsernamePassword {
+            username: "alice@example.com".to_owned(),
+            password: "secret".to_owned(),
+        },
+        Some("MicrosoftAccount"),
+        protocol,
+        "server.example.com".to_owned().into(),
+        public_key.clone(),
+        None,
+    )
+    .unwrap();
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [client_credssp_message(&mut client, request)].into(),
+        credssp_client: Some(client),
+        ..HandshakeStream::default()
+    });
+    let mut handler = SetupHandler::default();
+    accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "client.example.com".to_owned().into(),
+        public_key,
+        None,
+        &mut handler,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(handler.received.len(), 1);
+    assert_eq!(handler.received[0].credentials.username, "alice@example.com");
+    assert_eq!(
+        handler.received[0].credentials.domain.as_deref(),
+        Some("MicrosoftAccount")
+    );
+}
+
+/// The sspi crate rejects an unknown user in the SPNEGO exchange with a different error than a wrong password.
+/// Both must reach the client as STATUS_LOGON_FAILURE, so that it asks for new credentials
+/// instead of reporting an internal error.
+#[rstest::rstest]
+#[case::wrong_password("alice", "wrong")]
+#[case::unknown_user("bob", "secret")]
+#[tokio::test]
+async fn credssp_failed_spnego_logon_is_reported_as_logon_failure(#[case] username: &str, #[case] password: &str) {
+    // oracle: spec MS-CSSP §2.2.1 and MS-ERREF §2.3.1: errorCode carries STATUS_LOGON_FAILURE for bad authentication information.
+    // oracle: mutant reporting sspi's NoCredentials instead of STATUS_LOGON_FAILURE for an unknown SPNEGO user.
+    let (result, handler, outgoing) = accept_spnego_credssp(SecurityProtocol::HYBRID, username, password).await;
+
+    assert!(result.is_err(), "the logon should fail");
+    assert!(handler.received.is_empty());
+    let ts_request = TsRequest::from_buffer(outgoing.last().unwrap()).unwrap();
+    assert_eq!(ts_request.error_code, Some(NStatusCode::LOGON_FAILURE));
+}
+
+#[cfg(windows)]
+fn native_acceptor() -> Acceptor {
+    let protocol = SecurityProtocol::HYBRID_EX;
+    let mut acceptor = Acceptor::new(
+        protocol,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        Vec::new(),
+        None,
+    );
+    acceptor.set_credssp_backend(ironrdp_acceptor::CredsspBackend::Windows);
+    acceptor
+        .step(&encode_connection_request(protocol), None, &mut WriteBuf::new())
+        .unwrap();
+    acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
+    acceptor.mark_security_upgrade_as_done();
+    acceptor
+}
+
+#[cfg(windows)]
+fn native_negotiate_message() -> Vec<u8> {
+    let (mut client, request) = CredsspSequence::init(
+        ironrdp_connector::Credentials::UsernamePassword {
+            username: "unused-before-authentication".to_owned(),
+            password: "unused-before-authentication".to_owned(),
+        },
+        None,
+        SecurityProtocol::HYBRID_EX,
+        "localhost".to_owned().into(),
+        vec![0x42; 32],
+        None,
+    )
+    .unwrap();
+    client_credssp_message(&mut client, request)
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn native_credssp_challenges_without_a_configured_identity() {
+    // oracle: mutant requiring the fixed-credential identity before dispatching to Windows.
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [native_negotiate_message()].into(),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+    let mut acceptor = native_acceptor();
+    let mut handler = SetupHandler::default();
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "localhost".to_owned().into(),
+        vec![0x42; 32],
+        None,
+        &mut handler,
+    )
+    .await;
+
+    assert!(result.is_err(), "the client never answered the challenge");
+    assert!(handler.received.is_empty());
+    assert!(acceptor.received_credentials().is_none());
+    let outgoing = outgoing.borrow();
+    let challenge = TsRequest::from_buffer(outgoing.first().expect("Windows must issue a challenge")).unwrap();
+    assert!(challenge.nego_tokens.is_some());
+    assert_eq!(challenge.error_code, None);
+    assert_eq!(outgoing.last().unwrap(), &5u32.to_le_bytes());
+}
+
+#[cfg(windows)]
+#[rstest::rstest]
+#[case::legacy_version(4, None)]
+#[case::credentials_before_authentication(6, Some(vec![0; 32]))]
+#[tokio::test]
+async fn native_credssp_rejects_invalid_initial_requests(#[case] version: u32, #[case] auth_info: Option<Vec<u8>>) {
+    // oracle: mutant accepting obsolete binding versions or credentials before Negotiate completes.
+    let mut request = TsRequest::from_buffer(&native_negotiate_message()).unwrap();
+    request.version = version;
+    request.auth_info = auth_info;
+    let mut message = Vec::new();
+    request.encode_ts_request(&mut message).unwrap();
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [message].into(),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+    let mut acceptor = native_acceptor();
+    let mut handler = SetupHandler::default();
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "localhost".to_owned().into(),
+        vec![0x42; 32],
+        None,
+        &mut handler,
+    )
+    .await;
+
+    assert!(result.is_err());
+    assert!(handler.received.is_empty());
+    assert!(acceptor.received_credentials().is_none());
+    assert!(
+        outgoing
+            .borrow()
+            .iter()
+            .filter(|message| message.len() != 4)
+            .all(|message| TsRequest::from_buffer(message).unwrap().nego_tokens.is_none()),
+        "invalid initial requests must not advance Negotiate"
+    );
+    if version == 4 {
+        // oracle: spec MS-CSSP §3.1.5: unsupported version returns STATUS_NOT_SUPPORTED (0xC00000BB).
+        let rejection = TsRequest::from_buffer(outgoing.borrow().first().unwrap()).unwrap();
+        assert_eq!(rejection.error_code, Some(NStatusCode(0xc000_00bb)));
+    }
+    assert_eq!(outgoing.borrow().last().unwrap(), &5u32.to_le_bytes());
+}
+
+#[cfg(windows)]
+fn native_test_identity() -> (String, String) {
+    (
+        std::env::var("IRONRDP_NATIVE_TEST_USERNAME").expect("a disposable local test account is required"),
+        std::env::var("IRONRDP_NATIVE_TEST_PASSWORD").expect("the disposable account password is required"),
+    )
+}
+
+#[cfg(windows)]
+async fn native_test_exchange(
+    username: String,
+    password: String,
+    client_public_key: Vec<u8>,
+) -> (ConnectorResult<()>, SetupHandler) {
+    let (mut client, request) = CredsspSequence::init(
+        ironrdp_connector::Credentials::UsernamePassword { username, password },
+        None,
+        SecurityProtocol::HYBRID_EX,
+        "localhost".to_owned().into(),
+        client_public_key,
+        None,
+    )
+    .unwrap();
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [client_credssp_message(&mut client, request)].into(),
+        credssp_client: Some(client),
+        ..HandshakeStream::default()
+    });
+    let mut handler = SetupHandler::default();
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut native_acceptor(),
+        &mut NoNetwork,
+        "localhost".to_owned().into(),
+        vec![0x42; 32],
+        None,
+        &mut handler,
+    )
+    .await;
+    (result, handler)
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires a disposable local Windows account in IRONRDP_NATIVE_TEST_USERNAME/PASSWORD"]
+async fn native_credssp_delegates_authenticated_local_credentials() {
+    // oracle: spec MS-CSSP §3.1.5, steps 4-5: verify the binding before accepting delegated credentials.
+    let (username, password) = native_test_identity();
+    let (result, handler) = native_test_exchange(username.clone(), password.clone(), vec![0x42; 32]).await;
+    result.unwrap();
+    assert_eq!(handler.received.len(), 1);
+    assert_eq!(
+        handler.received[0].origin,
+        ironrdp_acceptor::CredentialOrigin::CredSspDelegated
+    );
+    let expected = Username::parse(&username).unwrap();
+    let ironrdp_connector::sspi::UsernameParts::DownLevelLogonName(parts) = expected.parts() else {
+        panic!("the fixture must use a local account");
+    };
+    assert_eq!(handler.received[0].credentials.username, parts.account_name());
+    assert_eq!(
+        handler.received[0].credentials.domain.as_deref(),
+        parts.netbios_domain()
+    );
+    assert!(
+        handler.received[0].credentials.password == password,
+        "the delegated password changed"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires a disposable local Windows account in IRONRDP_NATIVE_TEST_USERNAME/PASSWORD"]
+async fn native_credssp_rejects_wrong_local_password() {
+    // oracle: spec MS-CSSP §3.1.5: authentication must complete successfully before delegation.
+    let (username, password) = native_test_identity();
+    let (result, handler) = native_test_exchange(username, format!("{password}-incorrect"), vec![0x42; 32]).await;
+    assert!(result.is_err());
+    assert!(handler.received.is_empty());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+#[ignore = "requires a disposable local Windows account in IRONRDP_NATIVE_TEST_USERNAME/PASSWORD"]
+async fn native_credssp_rejects_a_different_tls_public_key() {
+    // oracle: spec MS-CSSP §3.1.5, step 4: reject a mismatched Client-To-Server binding hash.
+    let (username, password) = native_test_identity();
+    let (result, handler) = native_test_exchange(username, password, vec![0x24; 32]).await;
+    assert!(result.is_err());
+    assert!(handler.received.is_empty());
 }

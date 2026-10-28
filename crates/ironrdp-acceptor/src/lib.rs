@@ -12,15 +12,21 @@ mod channel_connection;
 mod connection;
 pub mod credssp;
 mod finalization;
+#[cfg(windows)]
+mod native_credssp;
 mod util;
 
+pub use ironrdp_connector::sspi::{AuthIdentity as CredsspAuthIdentity, UsernameParts};
 pub use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize};
 use ironrdp_pdu::nego;
+use ironrdp_pdu::rdp::client_info::ClientInfoFlags;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use self::connection::{
     Acceptor, AcceptorResult, AcceptorState, CredentialOrigin, MultitransportSecurityRng, ReceivedCredentials,
+    RemoteAppCapabilities,
 };
+pub use self::credssp::CredsspBackend;
 pub use self::finalization::{FinalizationSequence, FinalizationState};
 use crate::credssp::resolve_generator;
 
@@ -40,6 +46,41 @@ where
 #[async_trait::async_trait(?Send)]
 pub trait ConnectionSetupHandler {
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> ConnectorResult<()>;
+
+    /// Observes Client Info before capability setup, without establishing an authenticated identity.
+    async fn handle_client_info(&mut self, flags: ClientInfoFlags) -> ConnectorResult<()> {
+        let _ = flags;
+        Ok(())
+    }
+
+    /// Observes Client Info and Client Core Data session settings before capability setup.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards Client Info and GCC Client Core Data fields together"
+    )]
+    async fn handle_client_session_config(
+        &mut self,
+        flags: ClientInfoFlags,
+        performance_flags: ironrdp_pdu::rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> ConnectorResult<()> {
+        let _ = (
+            flags,
+            performance_flags,
+            keyboard_layout,
+            keyboard_type,
+            keyboard_subtype,
+            keyboard_functional_keys_count,
+            ime_file_name,
+            desktop_size,
+        );
+        Ok(())
+    }
 
     async fn prepare_capability_exchange(&mut self, desktop_size: DesktopSize) -> ConnectorResult<()> {
         let _ = desktop_size;
@@ -228,6 +269,7 @@ where
     // this the first loop iteration of that fresh call would treat the
     // carried-over request as newly sent and notify the handler again.
     let mut notified = acceptor.multitransport_request().is_some();
+    let mut client_info_notified = acceptor.is_reactivation();
 
     loop {
         if let Some(result) = acceptor.get_result() {
@@ -235,6 +277,22 @@ where
         }
 
         acceptor_step(&mut framed, acceptor, &mut buf).await?;
+        if !client_info_notified && let Some(flags) = acceptor.client_info_flags() {
+            credentials_handler.handle_client_info(flags).await?;
+            credentials_handler
+                .handle_client_session_config(
+                    flags,
+                    acceptor.performance_flags(),
+                    acceptor.keyboard_layout(),
+                    acceptor.keyboard_type(),
+                    acceptor.keyboard_subtype(),
+                    acceptor.keyboard_functional_keys_count(),
+                    acceptor.ime_file_name(),
+                    acceptor.desktop_size(),
+                )
+                .await?;
+            client_info_notified = true;
+        }
         if acceptor.credentials_need_handling() {
             if let Err(error) = credentials_handler
                 .handle_credentials(acceptor.received_credentials().cloned())
@@ -415,12 +473,26 @@ where
         S: FramedRead + FramedWrite,
         N: NetworkClient,
     {
+        match acceptor.credssp_backend {
+            CredsspBackend::Rust => {}
+            #[cfg(windows)]
+            CredsspBackend::Windows => {
+                let credentials = native_credssp::accept(framed, &public_key).await?;
+                acceptor.set_received_credssp_credentials(credentials);
+                return Ok(());
+            }
+        }
+
         let creds = acceptor
             .creds
             .as_ref()
             .ok_or_else(|| general_err!("no credentials while doing credssp"))?;
-        let username =
-            Username::new(&creds.username, creds.domain.as_deref()).map_err(|e| custom_err!("invalid username", e))?;
+        let username = if creds.domain.is_none() && creds.username.contains(['\\', '@']) {
+            Username::parse(&creds.username)
+        } else {
+            Username::new(&creds.username, creds.domain.as_deref())
+        }
+        .map_err(|e| custom_err!("invalid username", e))?;
         let identity = AuthIdentity {
             username,
             password: creds.password.clone().into(),

@@ -28,3 +28,7 @@ tracing = { version = "0.1", features = ["log"] }
 
 [lints]
 workspace = true
+
+[target."cfg(windows)".dependencies]
+sha2 = "0.10"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials"] }

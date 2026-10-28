@@ -2672,7 +2672,9 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
  "rand 0.9.5",
+ "sha2 0.10.9",
  "tracing",
+ "windows",
 ]
 
 [[package]]
