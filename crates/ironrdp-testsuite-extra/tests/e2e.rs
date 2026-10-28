@@ -44,7 +44,7 @@ use ironrdp_rdpdr::pdu::efs::{
 };
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::{Rdpdr, RdpdrBackend, RdpdrBackendFactory, RdpdrBackendProduct, RdpdrDrive};
-use ironrdp_server::{GfxContext, GfxServerFactory, ServerEventSender};
+use ironrdp_server::{GfxContext, GfxServerFactory, MAX_FASTPATH_UPDATE_SIZE, ServerEventSender};
 use ironrdp_testsuite_extra as _;
 use ironrdp_tls::TlsStream;
 use ironrdp_tokio::TokioStream;
@@ -114,6 +114,7 @@ async fn test_client_server_advertising_dyn_vc_gfx_protocol() {
 /// keeps advertising its default of 8 MB.
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
+// oracle: spec MS-RDPBCGR §2.2.7.2.6 (MaxRequestSize is the size of the client's reassembly buffer)
 #[tokio::test]
 async fn fast_path_updates_fit_the_client_max_request_size() {
     let largest = largest_fast_path_update(65_536).await;
@@ -129,13 +130,13 @@ async fn fast_path_updates_fit_the_client_max_request_size() {
 /// client's buffer does not bound it.
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a1c4caa8-00ed-45bb-a06e-5177473766d3
+// oracle: spec MS-RDPBCGR §2.2.9.1.2.1 (an update sent as a single FASTPATH_FRAGMENT_SINGLE is never reassembled)
 #[tokio::test]
 async fn a_client_max_request_size_below_one_fragment_gets_single_fragments() {
     let largest = largest_fast_path_update(4_096).await;
-    // The server's fragment size, `MAX_FASTPATH_UPDATE_SIZE`.
     assert!(
-        4_096 < largest && largest <= 16_374,
-        "the largest update has {largest} bytes, not up to one 16,374-byte fragment"
+        4_096 < largest && largest <= MAX_FASTPATH_UPDATE_SIZE,
+        "the largest update has {largest} bytes, not up to one {MAX_FASTPATH_UPDATE_SIZE}-byte fragment"
     );
 }
 
@@ -271,6 +272,8 @@ async fn largest_fast_path_update(client_max_request_size: u32) -> usize {
 }
 
 /// A Multifragment Update Capability Set ([MS-RDPBCGR] 2.2.7.2.6) as it is encoded.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
 fn multifragment_update_capability(max_request_size: u32) -> [u8; 8] {
     let mut capability = [0x1a, 0x00, 0x08, 0x00, 0, 0, 0, 0];
     capability[4..].copy_from_slice(&max_request_size.to_le_bytes());

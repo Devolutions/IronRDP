@@ -16,17 +16,22 @@ fn multifragment_update(max_request_size: u32) -> CapabilitySet {
 
 // oracle: spec MS-RDPBCGR §2.2.7.2.6 (MaxRequestSize is the size of the client's reassembly buffer)
 #[rstest]
-#[case::client_smaller_than_server(8 * 1024 * 1024, Some(65_536), 65_536)]
-#[case::client_larger_than_server(65_536, Some(8 * 1024 * 1024), 65_536)]
-#[case::client_sends_zero(65_536, Some(0), 65_536)]
-#[case::client_sends_no_capability_set(65_536, None, 65_536)]
-fn negotiated_max_request_size_is_the_smaller_of_both(
-    #[case] server: u32,
-    #[case] client: Option<u32>,
-    #[case] expected: u32,
-) {
+#[case::client_smaller_than_server(8 * 1024 * 1024, 65_536, 65_536)]
+#[case::client_larger_than_server(65_536, 8 * 1024 * 1024, 65_536)]
+fn negotiated_max_request_size_is_the_smaller_of_both(#[case] server: u32, #[case] client: u32, #[case] expected: u32) {
+    assert_eq!(
+        client_max_request_size(server, &[multifragment_update(client)]),
+        expected
+    );
+}
+
+// oracle: mutant a zero or missing client size taken as the limit instead of the server's own
+#[rstest]
+#[case::client_sends_zero(Some(0))]
+#[case::client_sends_no_capability_set(None)]
+fn without_a_client_size_the_server_keeps_its_own(#[case] client: Option<u32>) {
     let capabilities: Vec<_> = client.into_iter().map(multifragment_update).collect();
-    assert_eq!(client_max_request_size(server, &capabilities), expected);
+    assert_eq!(client_max_request_size(65_536, &capabilities), 65_536);
 }
 
 fn one_fragment() -> u32 {
@@ -166,25 +171,17 @@ proptest! {
     }
 }
 
-// oracle: spec MS-RDPBCGR §2.2.7.2.6 (a fragmented update larger than MaxRequestSize overflows the client's reassembly buffer)
-#[rstest]
-#[case::larger_than_the_request_size(None, false)]
-#[case::within_the_request_size(Some(65_536), true)]
-#[tokio::test]
-async fn a_color_pointer_is_sent_only_within_the_request_size(
-    #[case] max_request_size: Option<u32>,
-    #[case] sent: bool,
-) {
+/// A 96x96 color pointer: 36,864 bytes of color data, more than one fragment.
+async fn color_pointer_update(max_request_size: u32) -> Option<ironrdp_server::ServerResult<usize>> {
     let mut encoder = UpdateEncoder::new(
         DesktopSize { width: 96, height: 96 },
         CmdFlags::empty(),
         UpdateEncoderCodecs::new(),
-        max_request_size.unwrap_or_else(one_fragment),
+        max_request_size,
         1,
         LargePointerSupportFlags::UP_TO_96X96_PIXELS,
     )
     .unwrap();
-    // 36,864 bytes of color data, more than one fragment.
     let pointer = ColorPointer {
         cache_index: 0,
         width: 96,
@@ -196,9 +193,54 @@ async fn a_color_pointer_is_sent_only_within_the_request_size(
     };
 
     let update = encoder.update(DisplayUpdate::ColorPointer(pointer)).next().await;
+    update.map(|update| update.map(|update| update.data.len()))
+}
 
-    match update {
-        Some(update) => assert!(sent, "the pointer was sent: {} bytes", update.unwrap().data.len()),
-        None => assert!(!sent, "the pointer was dropped"),
+// oracle: spec MS-RDPBCGR §2.2.7.2.6 (a fragmented update larger than MaxRequestSize overflows the client's reassembly buffer)
+#[tokio::test]
+async fn an_oversized_color_pointer_is_dropped() {
+    let max_request_size = one_fragment();
+    let update = color_pointer_update(max_request_size).await;
+    assert!(
+        update.is_none(),
+        "a {:?}-byte pointer update was sent with a {max_request_size}-byte request size",
+        update.map(|update| update.unwrap())
+    );
+}
+
+// oracle: mutant pointer updates dropped regardless of their size
+#[tokio::test]
+async fn a_color_pointer_within_the_request_size_is_sent() {
+    let update = color_pointer_update(65_536).await;
+    assert!(update.is_some_and(|update| update.is_ok()), "the pointer was dropped");
+}
+
+// oracle: spec MS-RDPBCGR §2.2.7.2.6 (a fragmented update larger than MaxRequestSize overflows the client's reassembly buffer)
+// oracle: mutant an oversized bitmap update skipped instead of reported as an error
+#[tokio::test]
+async fn a_bitmap_update_that_cannot_fit_is_an_error() {
+    // A one-row strip is tiled by its pixel size, but RemoteFX encodes whole 64x64 tiles,
+    // so the encoded update outgrows a one-fragment request size.
+    let max_request_size = one_fragment();
+    let mut encoder = encoder(Codec::RemoteFx, 4096, 1, max_request_size);
+    let mut updates = encoder.update(DisplayUpdate::Bitmap(incompressible_frame(4096, 1)));
+
+    let mut error = None;
+    while let Some(update) = updates.next().await {
+        match update {
+            Ok(update) => assert!(
+                update.data.len() <= usize::try_from(max_request_size).unwrap(),
+                "a {}-byte update exceeds the {max_request_size}-byte request size",
+                update.data.len()
+            ),
+            Err(e) => {
+                error = Some(e);
+                break;
+            }
+        }
     }
+    assert!(
+        error.is_some(),
+        "no error for an update that cannot fit the request size"
+    );
 }

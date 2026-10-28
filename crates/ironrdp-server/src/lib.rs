@@ -60,10 +60,6 @@ pub use rdpei::{
 pub use server::autodetect_response_from_sub_header;
 #[cfg(all(feature = "__test", feature = "egfx"))]
 pub use server::autodetect_sub_header;
-#[cfg(feature = "__test")]
-pub use server::client_max_request_size;
-#[cfg(feature = "__test")]
-pub use server::pick_remotefx_codec;
 pub use server::{
     AuthenticatedConnection, AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler,
     ConnectionInfo, ConnectionPolicy, ConnectionSource, CredentialDecision, CredentialValidationError,
@@ -72,6 +68,8 @@ pub use server::{
     ServerEventSender, ServerRedirectionHandle, SessionOutcome, StaticChannelFactory, TransportTls,
     pick_remotefx_entropy_coder,
 };
+#[cfg(feature = "__test")]
+pub use server::{client_max_request_size, pick_remotefx_codec};
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]
 pub use urbdrc::{

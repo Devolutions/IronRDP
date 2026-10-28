@@ -52,7 +52,7 @@ ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", features = ["captur
 ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 # The EGFX-over-UDP migration in ironrdp-server is behind its `egfx` feature,
 # which nothing else in the workspace enables.
-ironrdp-server = { path = "../ironrdp-server", features = ["egfx"] }
+ironrdp-server = { path = "../ironrdp-server", features = ["egfx", "__test"] }
 ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }

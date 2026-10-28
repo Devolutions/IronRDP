@@ -653,9 +653,9 @@ impl EncoderIter<'_> {
             // client's screen wrong, so that ends the update stream instead.
             if pointer {
                 debug!(
-                    "Dropping pointer update: encoded update of {} bytes exceeds negotiated maximum of {} bytes",
-                    update.data.len(),
-                    encoder.max_request_size
+                    len = update.data.len(),
+                    max_request_size = encoder.max_request_size,
+                    "Dropping pointer update: encoded update exceeds negotiated maximum"
                 );
                 continue;
             }
