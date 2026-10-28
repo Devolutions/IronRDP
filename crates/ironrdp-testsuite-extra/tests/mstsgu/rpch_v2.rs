@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use core::time::Duration;
 
 use ironrdp_mstsgu::rpc::{

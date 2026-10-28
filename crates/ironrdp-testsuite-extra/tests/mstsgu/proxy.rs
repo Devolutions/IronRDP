@@ -1,7 +1,4 @@
-#![allow(unused_crate_dependencies)]
-
 use core::convert::Infallible;
-use std::ffi::OsString;
 
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt as _, Full};
@@ -10,20 +7,16 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use ironrdp_mstsgu::GwConnectTarget;
 use ironrdp_mstsgu::test_support::{
-    GatewayTransport, gateway_endpoint_is_valid, gateway_endpoint_summary, proxy_debug, proxy_summary,
-    proxy_uses_basic_authorization, validate_proxy_response,
+    gateway_endpoint_is_valid, gateway_endpoint_summary, proxy_debug, proxy_summary, proxy_uses_basic_authorization,
+    validate_proxy_response,
 };
-use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_native_tls::TlsAcceptor;
 use tokio_native_tls::native_tls::{Identity, TlsAcceptor as NativeTlsAcceptor};
 
 type TestBody = BoxBody<Bytes, Infallible>;
-
-static ENVIRONMENT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[test]
 fn parses_supported_proxy_urls_without_exposing_credentials() {
@@ -240,7 +233,6 @@ async fn validates_bounded_http_connect_responses() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn http_proxy_tunnels_both_dual_http_legs() {
-    let _environment_lock = ENVIRONMENT_LOCK.lock().await;
     let (gateway_listener, gateway_acceptor) = tls_listener().await;
     let gateway_addr = gateway_listener.local_addr().expect("gateway listener address");
     let gateway = tokio::spawn(serve_dual_http_gateway(gateway_listener, gateway_acceptor));
@@ -249,18 +241,13 @@ async fn http_proxy_tunnels_both_dual_http_legs() {
         .expect("bind HTTP proxy listener");
     let proxy_port = proxy_listener.local_addr().expect("proxy listener address").port();
     let proxy = tokio::spawn(serve_http_proxy(proxy_listener, gateway_addr));
-    let _environment = ProxyEnvironment::set(&format!("http://user:password@127.0.0.1:{proxy_port}"));
-
-    let target = gateway_target(gateway_addr);
-    let mut transport = GatewayTransport::connect_tls(
-        &target,
-        CertificateValidation::DangerouslyAcceptInvalidCertificate,
-        None,
+    super::process::run(
+        "proxy-connect",
+        Some(&format!("localhost:{}", gateway_addr.port())),
+        Some(&format!("http://user:password@127.0.0.1:{proxy_port}")),
     )
     .await
     .expect("connect through HTTP proxy");
-    transport.close().await.expect("close dual HTTP transport");
-    drop(transport);
 
     gateway.await.expect("gateway task");
     proxy.await.expect("proxy task");
@@ -268,7 +255,6 @@ async fn http_proxy_tunnels_both_dual_http_legs() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn socks_proxies_tunnel_both_dual_http_legs() {
-    let _environment_lock = ENVIRONMENT_LOCK.lock().await;
     for (scheme, remote_dns) in [("socks5", false), ("socks5h", true)] {
         let (gateway_listener, gateway_acceptor) = tls_listener().await;
         let gateway_addr = gateway_listener.local_addr().expect("gateway listener address");
@@ -279,68 +265,23 @@ async fn socks_proxies_tunnel_both_dual_http_legs() {
         let proxy_port = proxy_listener.local_addr().expect("proxy listener address").port();
         let proxy = tokio::spawn(serve_socks_proxy(proxy_listener, gateway_addr, remote_dns));
         let proxy_url = format!("{scheme}://user:password@127.0.0.1:{proxy_port}");
-        let _environment = ProxyEnvironment::set(&proxy_url);
-
-        let target = gateway_target(gateway_addr);
-        let mut transport = GatewayTransport::connect_tls(
-            &target,
-            CertificateValidation::DangerouslyAcceptInvalidCertificate,
-            None,
+        super::process::run(
+            "proxy-connect",
+            Some(&format!("localhost:{}", gateway_addr.port())),
+            Some(&proxy_url),
         )
         .await
         .expect("connect through SOCKS proxy");
-        transport.close().await.expect("close dual HTTP transport");
-        drop(transport);
 
         gateway.await.expect("gateway task");
         proxy.await.expect("proxy task");
     }
 }
 
-struct ProxyEnvironment {
-    previous: Vec<(&'static str, Option<OsString>)>,
-}
-
-impl ProxyEnvironment {
-    fn set(proxy: &str) -> Self {
-        let mut previous = Vec::new();
-        for variable in ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"] {
-            previous.push((variable, std::env::var_os(variable)));
-        }
-        // SAFETY: the test serializes environment mutation and no spawned task reads these variables.
-        unsafe {
-            std::env::set_var("HTTPS_PROXY", proxy);
-        }
-        // SAFETY: the test serializes environment mutation and no spawned task reads these variables.
-        unsafe {
-            std::env::set_var("NO_PROXY", "");
-        }
-        Self { previous }
-    }
-}
-
-impl Drop for ProxyEnvironment {
-    fn drop(&mut self) {
-        for (variable, value) in &self.previous {
-            if let Some(value) = value {
-                // SAFETY: the test serializes environment mutation and has completed all proxy connections.
-                unsafe {
-                    std::env::set_var(variable, value);
-                }
-            } else {
-                // SAFETY: the test serializes environment mutation and has completed all proxy connections.
-                unsafe {
-                    std::env::remove_var(variable);
-                }
-            }
-        }
-    }
-}
-
 async fn tls_listener() -> (TcpListener, TlsAcceptor) {
     let identity = Identity::from_pkcs8(
-        include_bytes!("../../ironrdp-tls/tests/certs/server-cert.pem"),
-        include_bytes!("../../ironrdp-tls/tests/certs/server-key.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-cert.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-key.pem"),
     )
     .expect("create TLS identity");
     let acceptor = TlsAcceptor::from(NativeTlsAcceptor::new(identity).expect("create TLS acceptor"));
@@ -486,14 +427,4 @@ fn response(status: StatusCode, body: Bytes) -> Response<TestBody> {
     let mut response = Response::new(Full::new(body).boxed());
     *response.status_mut() = status;
     response
-}
-
-fn gateway_target(address: core::net::SocketAddr) -> GwConnectTarget {
-    GwConnectTarget {
-        gw_endpoint: format!("localhost:{}", address.port()),
-        gw_user: "user".to_owned(),
-        gw_pass: "pass".to_owned(),
-        smart_card: None,
-        server: "server.test".to_owned(),
-    }
 }

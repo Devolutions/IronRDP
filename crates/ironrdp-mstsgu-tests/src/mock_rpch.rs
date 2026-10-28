@@ -1,20 +1,26 @@
-//! In-process RPC proxy used only by the RPCH session orchestration tests.
+//! RPC proxy fixture for the process-isolated gateway checks.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
 use sspi::{
     AuthIdentity, AuthIdentityBuffers, BufferType, CredentialUse, DataRepresentation, Ntlm, SecurityBuffer,
     SecurityBufferRef, ServerRequestFlags, Sspi as _, SspiImpl as _, Username,
 };
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, DuplexStream};
 use tokio::sync::mpsc;
 
-use crate::rpc::tsgu::{
-    TSPROXY_AUTHORIZE_TUNNEL_OPNUM, TSPROXY_CLOSE_CHANNEL_OPNUM, TSPROXY_CLOSE_TUNNEL_OPNUM,
-    TSPROXY_CREATE_CHANNEL_OPNUM, TSPROXY_CREATE_TUNNEL_OPNUM, TSPROXY_MAKE_TUNNEL_CALL_OPNUM,
-    TSPROXY_SEND_TO_SERVER_OPNUM, TSPROXY_SETUP_RECEIVE_PIPE_OPNUM,
-};
-use crate::rpc::{
+// oracle: spec MS-TSGU §3.2.6.1.
+const TSPROXY_CREATE_TUNNEL_OPNUM: u16 = 1;
+const TSPROXY_AUTHORIZE_TUNNEL_OPNUM: u16 = 2;
+const TSPROXY_MAKE_TUNNEL_CALL_OPNUM: u16 = 3;
+const TSPROXY_CREATE_CHANNEL_OPNUM: u16 = 4;
+const TSPROXY_CLOSE_CHANNEL_OPNUM: u16 = 6;
+const TSPROXY_CLOSE_TUNNEL_OPNUM: u16 = 7;
+const TSPROXY_SETUP_RECEIVE_PIPE_OPNUM: u16 = 8;
+const TSPROXY_SEND_TO_SERVER_OPNUM: u16 = 9;
+use ironrdp_mstsgu::rpc::{
     PFC_FIRST_FRAG, PFC_LAST_FRAG, PFC_SUPPORT_HEADER_SIGN, PTYPE_BIND, PTYPE_REQUEST, PTYPE_RPC_AUTH_3, PTYPE_RTS,
     RPC_AUTH_LEVEL_PACKET_INTEGRITY, RPC_AUTH_TYPE_WINNT, RPC_COMMON_HEADER_SIZE, RPC_NTLM_VERIFIER_LENGTH,
     RPC_SECURITY_TRAILER_SIZE, RpcAuthenticationInfo, RtsCookie, RtsFlowControlAck, decode_rpc_authenticated_fragment,
@@ -26,18 +32,31 @@ const PEER_RECEIVE_WINDOW: u32 = 8 * 1024;
 const TUNNEL_CONTEXT: [u8; 20] = [0xaa; 20];
 const CHANNEL_CONTEXT: [u8; 20] = [0xbb; 20];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum MockRpchScenario {
     Echo,
+    NoCapabilities,
+    OutBodyLength(u32),
+    MalformedReply {
+        opnum: u16,
+        offset: usize,
+        bytes: &'static [u8],
+    },
+    MalformedConsent {
+        offset: usize,
+        bytes: &'static [u8],
+    },
+    TruncatedReply {
+        opnum: u16,
+        length: usize,
+    },
+    InvalidHttpResponse(&'static [u8]),
     ReceivePipeError(u32),
     TamperedResponse,
     TamperedReceivePipeResponse,
     FragmentedReceivePipePdu,
     InvalidOutFragmentLength,
     BasicAuthentication,
-    /// The client recycles its IN channel once its bounded IN body runs low.
-    RecycleIn,
-    RecycleInR2,
     /// The proxy recycles the OUT channel with the OUT_R1 sequence on the first send.
     RecycleOutR1,
     /// The proxy recycles the OUT channel with the OUT_R2 sequence on the first send.
@@ -46,8 +65,7 @@ pub(crate) enum MockRpchScenario {
     RecycleOutRejectedHead,
     /// The proxy fails the IN channel with an RPC-Error response on the first send.
     InHttpError(u32),
-    /// The proxy negotiates consent and service messages, sends a consent message with the tunnel, answers the
-    /// first message call with a service message and keeps the next one pending until the client cancels it.
+    /// The proxy negotiates consent and service messages, sends a consent message with the tunnel, answers the first message call with a service message and keeps the next one pending until the client cancels it.
     Messaging,
     MessageCallFault,
     TamperedMessageCallFault,
@@ -58,11 +76,9 @@ pub(crate) enum MockRpchScenario {
     ReceivePipeOverflow,
     InvalidReceivePipeFinal,
     UnexpectedResponse,
-    /// The proxy negotiates reauthentication, answers the first message call with a reauthentication message and
-    /// keeps the next one pending until the client cancels it.
+    /// The proxy negotiates reauthentication, answers the first message call with a reauthentication message and keeps the next one pending until the client cancels it.
     Reauth,
-    /// The reauthentication connection: the proxy requires a reauthentication tunnel naming [`REAUTH_TUNNEL_CONTEXT`]
-    /// and reports it once the client closes that tunnel.
+    /// The reauthentication connection requires a tunnel naming [`REAUTH_TUNNEL_CONTEXT`] and reports it once the client closes that tunnel.
     ReauthConnection,
 }
 
@@ -84,9 +100,14 @@ const STREAM_BUFFER: usize = 256 * 1024;
 pub(crate) struct MockRpchConnector {
     in_connections: mpsc::UnboundedSender<DuplexStream>,
     out_connections: mpsc::UnboundedSender<DuplexStream>,
+    in_recycles: Arc<AtomicUsize>,
 }
 
 impl MockRpchConnector {
+    pub(crate) fn completed_in_recycles(&self) -> usize {
+        self.in_recycles.load(Ordering::SeqCst)
+    }
+
     pub(crate) fn connect_in(&self) -> Option<DuplexStream> {
         let (client, server) = tokio::io::duplex(STREAM_BUFFER);
         self.in_connections.send(server).ok()?;
@@ -195,26 +216,45 @@ impl MockRpcSecurity {
         Some(verified.body().to_vec())
     }
 
-    fn signed_response(&mut self, call_id: u32, flags: u8, stub: &[u8]) -> Result<Vec<u8>, crate::rpc::RpcPduError> {
+    fn signed_response(
+        &mut self,
+        call_id: u32,
+        flags: u8,
+        stub: &[u8],
+    ) -> Result<Vec<u8>, ironrdp_mstsgu::rpc::RpcPduError> {
         let mut body = Vec::with_capacity(8 + stub.len());
         body.extend_from_slice(&u32::try_from(stub.len()).unwrap_or(u32::MAX).to_le_bytes());
         body.extend_from_slice(&0u16.to_le_bytes());
         body.extend_from_slice(&[0, 0]);
         body.extend_from_slice(stub);
-        let mut pdu =
-            prepare_rpc_authenticated_pdu(crate::rpc::PTYPE_RESPONSE, flags, call_id, &body, self.authentication)?
-                .finish(&[0; 16])?;
+        let mut pdu = prepare_rpc_authenticated_pdu(
+            ironrdp_mstsgu::rpc::PTYPE_RESPONSE,
+            flags,
+            call_id,
+            &body,
+            self.authentication,
+        )?
+        .finish(&[0; 16])?;
         sign_server_fragment(&mut self.ntlm, &mut pdu, self.send_sequence);
         self.send_sequence = self.send_sequence.checked_add(1).expect("test sequence fits");
         Ok(pdu)
     }
 
     fn bind_ack(call_id: u32, type2_token: &[u8]) -> Vec<u8> {
-        encode_authenticated_token_pdu(crate::rpc::PTYPE_BIND_ACK, call_id, bind_ack_body(), type2_token)
+        encode_authenticated_token_pdu(
+            ironrdp_mstsgu::rpc::PTYPE_BIND_ACK,
+            call_id,
+            bind_ack_body(),
+            type2_token,
+        )
     }
 
-    fn fault_response(&mut self, call_id: u32, authenticated: bool) -> Result<Vec<u8>, crate::rpc::RpcPduError> {
-        let fault = crate::rpc::encode_rpc_fault(crate::rpc::RpcFault {
+    fn fault_response(
+        &mut self,
+        call_id: u32,
+        authenticated: bool,
+    ) -> Result<Vec<u8>, ironrdp_mstsgu::rpc::RpcPduError> {
+        let fault = ironrdp_mstsgu::rpc::encode_rpc_fault(ironrdp_mstsgu::rpc::RpcFault {
             call_id,
             pfc_flags: PFC_FIRST_FRAG | PFC_LAST_FRAG,
             alloc_hint: 0,
@@ -228,7 +268,7 @@ impl MockRpcSecurity {
             return Ok(fault);
         }
         let mut pdu = prepare_rpc_authenticated_pdu(
-            crate::rpc::PTYPE_FAULT,
+            ironrdp_mstsgu::rpc::PTYPE_FAULT,
             PFC_FIRST_FRAG | PFC_LAST_FRAG,
             call_id,
             &fault[RPC_COMMON_HEADER_SIZE..],
@@ -263,6 +303,7 @@ fn spawn_proxy(scenario: MockRpchScenario, reauth_report: Option<mpsc::Unbounded
     let (in_client, in_server) = tokio::io::duplex(STREAM_BUFFER);
     let (in_connections, in_accept) = mpsc::unbounded_channel();
     let (out_connections, out_accept) = mpsc::unbounded_channel();
+    let in_recycles = Arc::new(AtomicUsize::new(0));
     let task = tokio::spawn(run_proxy(
         out_server,
         in_server,
@@ -270,6 +311,7 @@ fn spawn_proxy(scenario: MockRpchScenario, reauth_report: Option<mpsc::Unbounded
         out_accept,
         scenario,
         reauth_report,
+        Arc::clone(&in_recycles),
     ));
     (
         out_client,
@@ -277,6 +319,7 @@ fn spawn_proxy(scenario: MockRpchScenario, reauth_report: Option<mpsc::Unbounded
         MockRpchConnector {
             in_connections,
             out_connections,
+            in_recycles,
         },
         task,
     )
@@ -308,6 +351,7 @@ async fn run_proxy(
     mut out_accept: mpsc::UnboundedReceiver<DuplexStream>,
     scenario: MockRpchScenario,
     reauth_report: Option<mpsc::UnboundedSender<u64>>,
+    in_recycles: Arc<AtomicUsize>,
 ) {
     let requires_basic_auth = matches!(scenario, MockRpchScenario::BasicAuthentication);
     if !begin_in_channel(&mut input, requires_basic_auth, false).await {
@@ -316,13 +360,16 @@ async fn run_proxy(
     if !accept_out_channel(&mut out, requires_basic_auth).await {
         return;
     }
-    if write_all(
-        &mut out,
-        b"HTTP/1.1 200 OK\r\nContent-Type: application/rpc\r\nContent-Length: 1073741824\r\n\r\n",
-    )
-    .await
-    .is_err()
-    {
+    let out_length = match scenario {
+        MockRpchScenario::OutBodyLength(length) => length,
+        _ => 1024 * 1024 * 1024,
+    };
+    let head = match scenario {
+        MockRpchScenario::InvalidHttpResponse(response) => response.to_vec(),
+        _ => format!("HTTP/1.1 200 OK\r\nContent-Type: application/rpc\r\nContent-Length: {out_length}\r\n\r\n")
+            .into_bytes(),
+    };
+    if write_all(&mut out, &head).await.is_err() {
         return;
     }
     let Some(mut in_cookie) = complete_in_channel(&mut input).await else {
@@ -351,7 +398,6 @@ async fn run_proxy(
     let mut successor_in: Option<(usize, RtsCookie)> = None;
     let mut deferred = VecDeque::new();
     let mut ready: VecDeque<InEvent> = VecDeque::new();
-    let mut in_recycled = false;
     let mut out_recycled = false;
 
     let receive_pipe_result = match scenario {
@@ -375,7 +421,10 @@ async fn run_proxy(
     );
     let messaging = matches!(
         scenario,
-        MockRpchScenario::Messaging | MockRpchScenario::Reauth | MockRpchScenario::LargeConsent
+        MockRpchScenario::Messaging
+            | MockRpchScenario::Reauth
+            | MockRpchScenario::LargeConsent
+            | MockRpchScenario::MalformedConsent { .. }
     ) || message_call_fault
         || interleaved_message;
     let mut message_calls = 0u32;
@@ -418,14 +467,7 @@ async fn run_proxy(
                         return;
                     };
                     successor_in = Some((id, RtsCookie::new(cookie)));
-                    // oracle: spec MS-RPCH §2.2.4.21: IN_R2/A4 contains only Destination(FDClient).
-                    let response = if matches!(scenario, MockRpchScenario::RecycleInR2) {
-                        vec![
-                            5, 0, 20, 3, 16, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 13, 0, 0, 0, 0, 0, 0, 0,
-                        ]
-                    } else {
-                        rts_in_recycle_a4(PEER_RECEIVE_WINDOW, 120_000)
-                    };
+                    let response = rts_in_recycle_a4(PEER_RECEIVE_WINDOW, 120_000);
                     if write_all(&mut out, &response).await.is_err() {
                         return;
                     }
@@ -437,11 +479,11 @@ async fn run_proxy(
         }
         if let Some((successor, cookie)) = successor_in {
             if is_in_recycle_a5(&pdu, cookie) {
+                in_recycles.fetch_add(1, Ordering::SeqCst);
                 active_in = successor;
                 in_cookie = cookie;
                 bytes_received = 0;
                 successor_in = None;
-                in_recycled = true;
                 ready.extend(deferred.drain(..));
                 continue;
             }
@@ -537,7 +579,7 @@ async fn run_proxy(
                             return;
                         }
                         reauth_tunnel_context = reauth;
-                        let response = if messaging {
+                        let mut response = if messaging {
                             // The client must advertise every messaging capability it handles.
                             if stub.get(stub.len().saturating_sub(4)..) != Some(0x1fu32.to_le_bytes().as_slice()) {
                                 return;
@@ -551,6 +593,11 @@ async fn run_proxy(
                         } else {
                             create_tunnel_response(&TUNNEL_CONTEXT, 7)
                         };
+                        mutate_reply(scenario, opnum, &mut response);
+                        if matches!(scenario, MockRpchScenario::NoCapabilities) {
+                            response[52..60].fill(0);
+                            response.drain(68..84);
+                        }
                         if matches!(scenario, MockRpchScenario::TamperedResponse) {
                             let Ok(mut response) = rpc_security.signed_response(
                                 request_call_id,
@@ -644,14 +691,11 @@ async fn run_proxy(
                         }
                     }
                     TSPROXY_AUTHORIZE_TUNNEL_OPNUM => {
-                        if write_response(
-                            &mut out,
-                            &mut rpc_security,
-                            request_call_id,
-                            &authorize_tunnel_response(),
-                        )
-                        .await
-                        .is_err()
+                        let mut response = authorize_tunnel_response();
+                        mutate_reply(scenario, opnum, &mut response);
+                        if write_response(&mut out, &mut rpc_security, request_call_id, &response)
+                            .await
+                            .is_err()
                         {
                             return;
                         }
@@ -683,14 +727,11 @@ async fn run_proxy(
                         } else {
                             CHANNEL_CONTEXT
                         };
-                        if write_response(
-                            &mut out,
-                            &mut rpc_security,
-                            request_call_id,
-                            &create_channel_response(&channel_context, 3),
-                        )
-                        .await
-                        .is_err()
+                        let mut response = create_channel_response(&channel_context, 3);
+                        mutate_reply(scenario, opnum, &mut response);
+                        if write_response(&mut out, &mut rpc_security, request_call_id, &response)
+                            .await
+                            .is_err()
                         {
                             return;
                         }
@@ -804,12 +845,6 @@ async fn run_proxy(
                     TSPROXY_CLOSE_CHANNEL_OPNUM | TSPROXY_CLOSE_TUNNEL_OPNUM => {
                         if opnum == TSPROXY_CLOSE_CHANNEL_OPNUM
                             && matches!(scenario, MockRpchScenario::ReauthConnection)
-                        {
-                            return;
-                        }
-                        // The scripted recycle scenarios must have run before the client closes.
-                        if matches!(scenario, MockRpchScenario::RecycleIn | MockRpchScenario::RecycleInR2)
-                            && !in_recycled
                         {
                             return;
                         }
@@ -1219,7 +1254,7 @@ fn auth_token(pdu: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn sign_server_fragment(server: &mut Ntlm, fragment: &mut [u8], sequence_number: u32) {
-    let header = crate::rpc::RpcCommonHeader::decode(fragment).expect("RPC response header");
+    let header = ironrdp_mstsgu::rpc::RpcCommonHeader::decode(fragment).expect("RPC response header");
     let verifier_offset = fragment.len() - usize::from(header.auth_length());
     let (data, verifier) = fragment.split_at_mut(verifier_offset);
     server
@@ -1269,6 +1304,29 @@ fn rts_pdu_with_flags(flags: u16, commands: &[u8], command_count: u16) -> Vec<u8
     pdu.extend_from_slice(&command_count.to_le_bytes());
     pdu.extend_from_slice(commands);
     pdu
+}
+
+fn mutate_reply(scenario: MockRpchScenario, opnum: u16, response: &mut Vec<u8>) {
+    if let MockRpchScenario::TruncatedReply {
+        opnum: expected,
+        length,
+    } = scenario
+    {
+        if expected == opnum {
+            response.truncate(length);
+        }
+        return;
+    }
+    let (offset, bytes) = match scenario {
+        MockRpchScenario::MalformedReply {
+            opnum: expected,
+            offset,
+            bytes,
+        } if expected == opnum => (offset, bytes),
+        MockRpchScenario::MalformedConsent { offset, bytes } if opnum == TSPROXY_CREATE_TUNNEL_OPNUM => (offset, bytes),
+        _ => return,
+    };
+    response[offset..offset + bytes.len()].copy_from_slice(bytes);
 }
 
 fn create_tunnel_response(tunnel_context: &[u8; 20], tunnel_id: u32) -> Vec<u8> {
@@ -1347,12 +1405,14 @@ fn create_tunnel_caps_response(tunnel_context: &[u8; 20], tunnel_id: u32, consen
 fn string_message(text: &str, referent: u32) -> Vec<u8> {
     let units: Vec<u16> = text.encode_utf16().chain([0]).collect();
     let count = u32::try_from(units.len()).expect("test message fits");
+    // oracle: reference Windows RD Gateway consent capture, #2202 (issuecomment-6366222426).
+    let byte_count = count.checked_mul(2).expect("test message byte count fits");
     let mut output = [
         1u32.to_le_bytes(),
         0u32.to_le_bytes(),
-        count.to_le_bytes(),
+        byte_count.to_le_bytes(),
         referent.to_le_bytes(),
-        count.to_le_bytes(),
+        byte_count.to_le_bytes(),
         0u32.to_le_bytes(),
         count.to_le_bytes(),
     ]

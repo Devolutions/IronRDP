@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use std::sync::{Arc, Mutex};
 
 use core::convert::Infallible;
@@ -228,13 +226,18 @@ async fn http_sspi_ntlm_is_selected_and_reused_for_the_in_channel() {
     );
 }
 
+// oracle: spec MS-TSGU §2.2.10.7.
+#[rstest::rstest]
+#[case::empty(&[0; 6])]
+#[case::missing_length(&[0; 5])]
+#[case::truncated_blob(&[0, 0, 0, 0, 3, 0, 0xaa, 0xbb])]
 #[tokio::test]
-async fn extended_sspi_ntlm_sends_an_initial_token_and_rejects_an_empty_challenge() {
+async fn extended_sspi_ntlm_sends_an_initial_token_and_rejects_invalid_challenges(#[case] challenge: &[u8]) {
     let (out_client, out_server) = tokio::io::duplex(4096);
     let (in_client, in_server) = tokio::io::duplex(4096);
     let mut out_response = Vec::from([0; 10]);
     out_response.extend(packet(2, &handshake_response_with_extended_auth(0, 0x0004)));
-    out_response.extend(packet(3, &extended_auth_response(0, &[])));
+    out_response.extend(packet(3, challenge));
 
     let out_server = tokio::spawn(mock_out_server(out_server, vec![out_response.split_off(10)]));
     let in_server = tokio::spawn(async move {
@@ -265,6 +268,11 @@ async fn extended_sspi_ntlm_sends_an_initial_token_and_rejects_an_empty_challeng
                 .expect("extended authentication data frame");
             assert_eq!(packet_type(&extended_auth), 3);
             assert_ne!(&extended_auth[12..14], &0u16.to_le_bytes());
+            let blob_length = usize::from(u16::from_le_bytes([extended_auth[12], extended_auth[13]]));
+            assert_eq!(
+                extended_auth.len(),
+                8 /* header */ + 4 /* errorCode */ + 2 /* cbBlobLen */ + blob_length
+            );
             Ok::<_, Infallible>(response(StatusCode::OK, Bytes::new()))
         });
         http1::Builder::new()
@@ -276,32 +284,38 @@ async fn extended_sspi_ntlm_sends_an_initial_token_and_rejects_an_empty_challeng
     let transport = GatewayTransport::connect(out_client, in_client)
         .await
         .expect("connect transport");
-    let error = match transport
+    let result = transport
         .connect_tunnel_with_session_authentication(
             test_target(),
             "client.test",
             3389,
             GwSessionAuthentication::NtlmSspi,
         )
-        .await
-    {
-        Ok(_) => panic!("empty extended authentication challenge"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(error.kind(), GwErrorKind::Connect));
+        .await;
+    assert!(
+        result.is_err(),
+        "an invalid extended challenge must not complete authentication"
+    );
     out_server.await.expect("OUT task");
     in_server.await.expect("IN task");
 }
 
+// oracle: regression Devolutions/IronRDP#1743.
+#[rstest::rstest]
+#[case::none(0)]
+#[case::smartcard_and_pluggable(3)]
+#[case::ntlm(4)]
+#[case::unknown(0x8000)]
 #[tokio::test]
-async fn ordinary_http_authentication_ignores_advertised_extended_authentication_capabilities() {
+async fn ordinary_http_authentication_ignores_advertised_extended_authentication_capabilities(
+    #[case] extended_auth: u16,
+) {
     let (out_client, out_server) = tokio::io::duplex(4096);
     let (in_client, in_server) = tokio::io::duplex(4096);
     let out_server = tokio::spawn(mock_out_server(
         out_server,
         vec![
-            packet(2, &handshake_response_with_extended_auth(0, 0x0003)),
+            packet(2, &handshake_response_with_extended_auth(0, extended_auth)),
             packet(5, &tunnel_response(0, &[])),
             packet(7, &control_response(0)),
             packet(9, &control_response(0)),
@@ -327,6 +341,10 @@ async fn ordinary_http_authentication_ignores_advertised_extended_authentication
                 if expected_packet_type == 1 {
                     assert_eq!(&frame[12..14], &0u16.to_le_bytes());
                 }
+                if expected_packet_type == 8 {
+                    // oracle: spec MS-TSGU §2.2.10.2.
+                    assert_eq!(&frame[10..12], &2179u16.to_le_bytes());
+                }
             }
             Ok::<_, Infallible>(response(StatusCode::OK, Bytes::new()))
         });
@@ -340,7 +358,7 @@ async fn ordinary_http_authentication_ignores_advertised_extended_authentication
         .await
         .expect("connect transport");
     let client = transport
-        .connect_tunnel(test_target(), "client.test", 3389, None)
+        .connect_tunnel(test_target(), "client.test", 2179, None)
         .await
         .expect("connect tunnel");
 
@@ -797,18 +815,6 @@ fn control_response(error_code: u32) -> [u8; 8] {
     response
 }
 
-fn extended_auth_response(error_code: u32, auth_blob: &[u8]) -> Vec<u8> {
-    let mut response = Vec::with_capacity(6 + auth_blob.len());
-    response.extend(error_code.to_le_bytes());
-    response.extend(
-        u16::try_from(auth_blob.len())
-            .expect("extended authentication blob length")
-            .to_le_bytes(),
-    );
-    response.extend(auth_blob);
-    response
-}
-
 fn reauth_message(reauth_tunnel_context: u64) -> [u8; 8] {
     reauth_tunnel_context.to_le_bytes()
 }
@@ -826,6 +832,33 @@ fn out_response(packets: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
         response_body.extend(packet);
     }
     response_body
+}
+
+pub(super) async fn connect_gateway_policy(policy: &[u8]) -> ironrdp_mstsgu::GwTunnelPolicy {
+    let (out_client, out_server) = tokio::io::duplex(4096);
+    let (in_client, in_server) = tokio::io::duplex(4096);
+    let out_server = tokio::spawn(mock_out_server(
+        out_server,
+        vec![
+            packet(2, &handshake_response(0)),
+            packet(5, &tunnel_response(0, &[])),
+            packet(7, policy),
+            packet(9, &control_response(0)),
+        ],
+    ));
+    let in_server = tokio::spawn(mock_in_server(in_server, None, None));
+    let transport = GatewayTransport::connect(out_client, in_client)
+        .await
+        .expect("gateway transport");
+    let client = transport
+        .connect_tunnel(test_target(), "client.test", 3389, None)
+        .await
+        .expect("gateway tunnel");
+    let policy = client.tunnel_policy().clone();
+    drop(client);
+    out_server.await.expect("OUT task");
+    in_server.await.expect("IN task");
+    policy
 }
 
 async fn mock_out_server(stream: tokio::io::DuplexStream, packets: Vec<Vec<u8>>) {

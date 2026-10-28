@@ -1,0 +1,38 @@
+[package]
+name = "ironrdp-mstsgu-tests"
+version = "0.0.0"
+publish = false
+description = "Process-isolated Mstsgu authentication and proxy checks"
+readme = "README.md"
+rust-version = "1.94"
+autotests = false
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+anyhow = "1.0"
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", features = ["test-support"] }
+ironrdp-tls.path = "../ironrdp-tls"
+sspi = { version = "0.23", features = ["network_client"] }
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util", "sync", "time"] }
+tokio-native-tls = "0.3"
+
+[features]
+default = []
+rustls = ["ironrdp-mstsgu/rustls"]
+smartcard = ["ironrdp-mstsgu/smartcard"]
+
+[[bin]]
+name = "ironrdp-mstsgu-tests"
+path = "src/main.rs"
+test = false
+doctest = false
+bench = false
+
+[lints]
+workspace = true

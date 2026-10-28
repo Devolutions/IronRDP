@@ -29,6 +29,7 @@ harness = true
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
+escargot = "0.5"
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-async.path = "../ironrdp-async"
@@ -70,13 +71,22 @@ semver = "1.0"
 serde_json = "1"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thread", "macros", "io-util", "test-util"] }
+tokio = { version = "1", features = ["sync", "time", "net", "rt", "rt-multi-thread", "macros", "io-util", "test-util", "process"] }
 # No provider feature here on purpose: `ironrdp-tls` already brings
 # aws-lc-rs, and enabling a second one leaves rustls unable to pick a
 # process default, which fails every TLS test in this binary.
 tokio-rustls = { version = "0.26", default-features = false }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", features = ["rustls", "test-support"] }
+futures-util = "0.3"
+http-body-util = "0.1.4"
+hyper = { version = "1.9", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio-native-tls = "0.3"
+tokio-tungstenite = "0.29"
+sspi = { version = "0.23", features = ["network_client"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 ironrdp-cliprdr.path = "../ironrdp-cliprdr"

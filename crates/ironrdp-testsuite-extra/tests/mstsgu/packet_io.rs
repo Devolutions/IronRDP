@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use core::convert::Infallible;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -46,28 +44,6 @@ async fn strict_policy_rejects_self_signed_gateway_certificate() {
         Err(error) => error,
     };
     assert!(error.to_string().contains("tls connect"));
-
-    server.await.expect("TLS server task");
-}
-
-#[tokio::test]
-async fn native_tls_rejects_gateway_certificate_callback() {
-    let (listener, acceptor) = tls_listener().await;
-    let target = gateway_target(listener.local_addr().expect("gateway listener address"));
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("accept callback TLS client");
-        assert!(acceptor.accept(stream).await.is_err());
-    });
-    let callback: CertificateValidationCallback = Arc::new(|_, _, _| true);
-
-    let error = match GatewayTransport::connect_tls(&target, CertificateValidation::Strict, Some(callback)).await {
-        Ok(_) => panic!("native TLS must reject certificate callbacks"),
-        Err(error) => error,
-    };
-    assert!(
-        format!("{error:?}").contains("certificate validation callbacks require the rustls backend"),
-        "{error:?}"
-    );
 
     server.await.expect("TLS server task");
 }
@@ -440,8 +416,8 @@ fn response(status: StatusCode, headers: &[(&str, &str)], body: Bytes) -> Respon
 
 async fn tls_listener() -> (tokio::net::TcpListener, TlsAcceptor) {
     let identity = Identity::from_pkcs8(
-        include_bytes!("../../ironrdp-tls/tests/certs/server-cert.pem"),
-        include_bytes!("../../ironrdp-tls/tests/certs/server-key.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-cert.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-key.pem"),
     )
     .expect("create TLS identity");
     let acceptor = TlsAcceptor::from(NativeTlsAcceptor::new(identity).expect("create TLS acceptor"));

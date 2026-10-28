@@ -1,6 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use core::time::Duration;
 
 use ironrdp_mstsgu::rpc::{
@@ -8,7 +5,6 @@ use ironrdp_mstsgu::rpc::{
     RPC_NTLM_VERIFIER_LENGTH, RPC_SECURITY_TRAILER_SIZE, RpcAuthenticationInfo, RpcNtlmAuth,
     prepare_rpc_authenticated_pdu,
 };
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use ironrdp_mstsgu::rpc::{
     PTYPE_RTS, RtsCookie, RtsDestination, RtsFlowControlAck, decode_rts_flow_control_ack_with_destination,
     encode_rpc_response, encode_rts_flow_control_ack_with_destination, encode_rts_ping,
@@ -19,19 +15,13 @@ use sspi::{
     AuthIdentity, BufferType, CredentialUse, DataRepresentation, Ntlm, SecurityBuffer, SecurityBufferRef,
     ServerRequestFlags, Sspi as _, SspiImpl as _, Username,
 };
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio::net::{TcpListener, TcpStream};
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio_native_tls::native_tls::{Identity, TlsAcceptor as NativeTlsAcceptor};
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 use tokio_native_tls::{TlsAcceptor, TlsStream};
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 type ServerStream = TlsStream<TcpStream>;
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_authenticates_both_channels_and_preserves_caller_verifiers() {
     // oracle: regression #2202 keeps the low-level transport opaque to caller-owned RPC verifiers.
@@ -65,7 +55,6 @@ async fn live_rpch_authenticates_both_channels_and_preserves_caller_verifiers() 
     );
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_rejects_unsigned_malformed_and_batched_requests_before_writing() {
     let (mut client, mut input, _out, _, _) = live_channel(8192).await;
@@ -100,7 +89,6 @@ async fn live_rpch_rejects_unsigned_malformed_and_batched_requests_before_writin
     assert_eq!(read_pdu(&mut input).await, encode_rts_ping().expect("ping"));
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_respects_send_credit_and_excludes_rts_from_accounting() {
     // oracle: spec MS-RPCH §3.2.1.1.4 excludes RTS from RPC flow-control accounting.
@@ -131,7 +119,6 @@ async fn live_rpch_respects_send_credit_and_excludes_rts_from_accounting() {
     assert_eq!(read_pdu(&mut input).await, fragment);
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_releases_receive_credit_and_stops_at_declared_out_body() {
     // oracle: spec MS-RPCH §3.2.1.4.1.1 releases consumed RPC PDUs and advertises available credit.
@@ -159,7 +146,6 @@ async fn live_rpch_releases_receive_credit_and_stops_at_declared_out_body() {
     assert!(error.to_string().contains("exceeds OUT body"), "{error}");
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_stops_at_in_body_limit_without_recycling() {
     // oracle: spec MS-RPCH §2.1.2.1.7 forbids an IN PDU from exceeding the declared Content-Length.
@@ -175,7 +161,6 @@ async fn live_rpch_stops_at_in_body_limit_without_recycling() {
     assert_eq!(client.send_available_window(), credit);
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_rejects_peer_header_with_unsupported_version() {
     // oracle: spec MS-RPCH §2.2.3.2 requires rpc_vers to be 5.
@@ -187,7 +172,6 @@ async fn live_rpch_rejects_peer_header_with_unsupported_version() {
     assert!(error.to_string().contains("validate rpch pdu header"), "{error}");
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_rejects_peer_fragment_length_smaller_than_header() {
     // oracle: spec MS-RPCH §2.2.3.2 includes the common header in frag_length.
@@ -199,7 +183,6 @@ async fn live_rpch_rejects_peer_fragment_length_smaller_than_header() {
     assert!(error.to_string().contains("validate rpch pdu header"), "{error}");
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_rejects_unsupported_rts_flags() {
     // oracle: regression #2202 requires unsupported RTS shapes to fail explicitly.
@@ -593,7 +576,6 @@ async fn live_rpch_validates_configuration_before_connecting() {
     assert!(matches!(result, Err(error) if matches!(error.kind(), GwErrorKind::InvalidCertificateValidation)));
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 #[tokio::test]
 async fn live_rpch_strict_tls_rejects_self_signed_gateway() {
     let (listener, acceptor) = tls_listener().await;
@@ -613,7 +595,6 @@ async fn live_rpch_strict_tls_rejects_self_signed_gateway() {
     assert!(matches!(result, Err(error) if error.to_string().contains("tls connect")));
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn live_channel(peer_window: u32) -> (RpchClient, ServerStream, ServerStream, RtsCookie, u32) {
     let (listener, acceptor) = tls_listener().await;
     let port = listener.local_addr().expect("address").port();
@@ -693,7 +674,6 @@ async fn live_channel(peer_window: u32) -> (RpchClient, ServerStream, ServerStre
     (client, input, out, cookie, receive_window)
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 fn rts(words: &[u32], commands: u16) -> Vec<u8> {
     let mut pdu = vec![5, 0, PTYPE_RTS, 3, 0x10, 0, 0, 0];
     pdu.extend_from_slice(&u16::try_from(20 + words.len() * 4).expect("RTS length").to_le_bytes());
@@ -706,7 +686,6 @@ fn rts(words: &[u32], commands: u16) -> Vec<u8> {
     pdu
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 fn authenticated_fragment(ptype: u8, body_length: usize) -> Vec<u8> {
     let mut fragment = rpc_fragment(
         ptype,
@@ -823,7 +802,6 @@ fn server_signature_buffers(
     ]
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn read_head<S: AsyncRead + Unpin>(stream: &mut S) -> String {
     let mut bytes = Vec::new();
     while !bytes.ends_with(b"\r\n\r\n") {
@@ -833,7 +811,6 @@ async fn read_head<S: AsyncRead + Unpin>(stream: &mut S) -> String {
     String::from_utf8(bytes).expect("request headers")
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn read_pdu<S: AsyncRead + Unpin>(stream: &mut S) -> Vec<u8> {
     let mut header = [0; 16];
     stream.read_exact(&mut header).await.expect("RPC header");
@@ -845,11 +822,10 @@ async fn read_pdu<S: AsyncRead + Unpin>(stream: &mut S) -> Vec<u8> {
     pdu
 }
 
-#[cfg(any(feature = "native-tls", feature = "rustls"))]
 async fn tls_listener() -> (TcpListener, TlsAcceptor) {
     let identity = Identity::from_pkcs8(
-        include_bytes!("../../ironrdp-tls/tests/certs/server-cert.pem"),
-        include_bytes!("../../ironrdp-tls/tests/certs/server-key.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-cert.pem"),
+        include_bytes!("../../../ironrdp-tls/tests/certs/server-key.pem"),
     )
     .expect("TLS identity");
     let acceptor = TlsAcceptor::from(NativeTlsAcceptor::new(identity).expect("TLS acceptor"));

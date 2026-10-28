@@ -1,5 +1,3 @@
-#![allow(unused_crate_dependencies)]
-
 use ironrdp_mstsgu::GwSmartCardCredentials;
 use ironrdp_mstsgu::http_auth::{AuthStep, GatewayHttpAuth, basic_authorization, split_auth_challenge};
 
@@ -113,6 +111,7 @@ fn quoted_comma_in_basic_realm_is_one_challenge() {
     assert!(matches!(step, AuthStep::TryBasic));
 }
 
+// oracle: regression Devolutions/IronRDP#1743.
 #[test]
 fn smart_card_debug_redacts_secrets() {
     let debug = format!("{:?}", smart_card_credentials());
@@ -122,86 +121,18 @@ fn smart_card_debug_redacts_secrets() {
     assert!(!debug.contains("sensitive-private-key"));
 }
 
-#[cfg(not(feature = "smartcard"))]
-#[test]
-fn smart_card_without_feature_is_an_explicit_error() {
-    let smart_card = smart_card_credentials();
-    let result = GatewayHttpAuth::from_challenges("alice", "password", Some(&smart_card), None, &["Negotiate"]);
-    let Err(error) = result else {
-        panic!("smart-card authentication needs its feature");
-    };
-    let error = error.to_string();
-
-    assert!(error.contains("smart-card"));
-    assert!(error.contains("smartcard"));
-    assert!(!error.contains("sensitive-pin"));
-    assert!(!error.contains("sensitive-certificate"));
-    assert!(!error.contains("sensitive-private-key"));
+// oracle: regression Devolutions/IronRDP#1743.
+#[tokio::test]
+async fn smart_card_rejects_invalid_credentials_and_challenges() {
+    super::process::run("smartcard-auth", None, None)
+        .await
+        .expect("isolated smartcard authentication checks");
 }
 
-#[cfg(feature = "smartcard")]
-#[test]
-fn smart_card_requires_username() {
-    let mut smart_card = smart_card_credentials();
-    smart_card.username.clear();
-    let result = GatewayHttpAuth::from_challenges("alice", "password", Some(&smart_card), None, &["Negotiate"]);
-    let Err(error) = result else {
-        panic!("smart-card authentication requires a username");
-    };
-
-    assert!(error.to_string().contains("username"));
-}
-
-#[cfg(feature = "smartcard")]
-#[test]
-fn smart_card_requires_negotiate() {
-    let smart_card = smart_card_credentials();
-    let result = GatewayHttpAuth::from_challenges("alice", "password", Some(&smart_card), None, &["NTLM"]);
-    let Err(error) = result else {
-        panic!("smart-card authentication requires Negotiate");
-    };
-    let error = error.to_string();
-
-    assert!(error.contains("Negotiate"));
-    assert!(!error.contains("sensitive-pin"));
-    assert!(!error.contains("sensitive-certificate"));
-    assert!(!error.contains("sensitive-private-key"));
-}
-
-#[cfg(feature = "smartcard")]
-#[test]
-fn smart_card_rejects_malformed_negotiate_token() {
-    let smart_card = smart_card_credentials();
-    let result = GatewayHttpAuth::from_challenges("alice", "password", Some(&smart_card), None, &["Negotiate !"]);
-    let Err(error) = result else {
-        panic!("malformed Negotiate token must fail before PKINIT initialization");
-    };
-    let error = error.to_string();
-
-    assert!(error.contains("decode negotiate challenge"));
-    assert!(!error.contains("sensitive-pin"));
-    assert!(!error.contains("sensitive-certificate"));
-    assert!(!error.contains("sensitive-private-key"));
-}
-
-#[cfg(feature = "smartcard")]
-#[test]
-fn smart_card_recognizes_combined_negotiate_challenge() {
-    let smart_card = smart_card_credentials();
-    let result = GatewayHttpAuth::from_challenges(
-        "alice",
-        "password",
-        Some(&smart_card),
-        None,
-        &[r#"NTLM, Negotiate !, Basic realm="RDG""#],
-    );
-    let Err(error) = result else {
-        panic!("malformed Negotiate token must fail before PKINIT initialization");
-    };
-    let error = error.to_string();
-
-    assert!(error.contains("decode negotiate challenge"));
-    assert!(!error.contains("sensitive-pin"));
-    assert!(!error.contains("sensitive-certificate"));
-    assert!(!error.contains("sensitive-private-key"));
+// oracle: regression Devolutions/IronRDP#1743.
+#[tokio::test]
+async fn smart_card_without_feature_is_an_explicit_error() {
+    super::process::run("smartcard-disabled", None, None)
+        .await
+        .expect("isolated missing-smartcard-feature check");
 }
