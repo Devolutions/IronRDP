@@ -37,7 +37,7 @@ pub mod proto {
 
     /// Returns the bit representation for no HTTP extended authentication.
     pub const fn no_extended_auth_bits() -> u16 {
-        0
+        crate::proto::HttpExtendedAuth::HTTP_EXTENDED_AUTH_NONE.bits()
     }
 
     /// Returns tunnel authorization redirection flags.
