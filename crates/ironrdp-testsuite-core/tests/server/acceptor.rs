@@ -6,9 +6,9 @@ use std::io;
 use std::rc::Rc;
 
 use ironrdp_acceptor::{
-    Acceptor, ChannelConnectionSequence, ConnectionSetupHandler, FinalizationSequence, MultitransportSecurityRng,
-    ReceivedCredentials, accept_begin, accept_credssp_with, accept_finalize, accept_finalize_with,
-    AcceptorResult,
+    Acceptor, AcceptorResult, ChannelConnectionSequence, ConnectionSetupHandler, FinalizationSequence,
+    MultitransportSecurityRng, ReceivedCredentials, accept_begin, accept_credssp_with, accept_finalize,
+    accept_finalize_with,
 };
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};

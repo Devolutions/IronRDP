@@ -1477,7 +1477,6 @@ impl Sequence for Acceptor {
                 self.password_cookie
                     .clone_from(&client_info.client_info.password_cookie);
 
-
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
 
