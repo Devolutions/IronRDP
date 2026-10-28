@@ -319,6 +319,32 @@ pub mod ffi {
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
+        /// Reports whether the Display Control Virtual Channel can carry a resize request.
+        ///
+        /// Check this after each `process` call: it becomes `Ready` once the server's
+        /// capabilities PDU is processed, which is when `encoded_resize` starts returning frames.
+        #[diplomat::attr(auto, getter = "display_control_state")]
+        pub fn get_display_control_state(&self) -> DisplayControlState {
+            match self.0.display_control_ready() {
+                None => DisplayControlState::Unavailable,
+                Some(false) => DisplayControlState::Pending,
+                Some(true) => DisplayControlState::Ready,
+            }
+        }
+
+        /// Returns the capabilities the server sent over the Display Control Virtual Channel,
+        /// or `None` while `display_control_state` is not `Ready`.
+        #[diplomat::attr(auto, getter = "display_control_capabilities")]
+        pub fn get_display_control_capabilities(&self) -> Option<Box<DisplayControlCapabilities>> {
+            self.0
+                .display_control_capabilities()
+                .map(DisplayControlCapabilities)
+                .map(Box::new)
+        }
+
+        /// Encodes a resize request for the Display Control Virtual Channel.
+        ///
+        /// Returns `None` while `display_control_state` is not `Ready`.
         pub fn encoded_resize(
             &mut self,
             width: u32,
@@ -417,6 +443,38 @@ pub mod ffi {
                 .0
                 .process_svc_messages_by_name(&ironrdp::rdpdr::Rdpdr::NAME, messages)?;
             Ok(vec![ironrdp::session::ActiveStageOutput::ResponseFrame(frame)])
+        }
+    }
+
+    /// Whether the Display Control Virtual Channel ([MS-RDPEDISP]) accepts resize requests.
+    ///
+    /// [MS-RDPEDISP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp
+    pub enum DisplayControlState {
+        /// No Display Control client is configured; see `ClientConnector.with_dynamic_channel_display_control`.
+        Unavailable = 0,
+        /// The channel is configured but still opening or waiting for the server's capabilities PDU.
+        Pending = 1,
+        /// The server's capabilities were received; `ActiveStage.encoded_resize` returns frames.
+        Ready = 2,
+    }
+
+    /// The DISPLAYCONTROL_CAPS_PDU ([MS-RDPEDISP] 2.2.2.1) the server sent.
+    ///
+    /// [MS-RDPEDISP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/8989a211-984e-4ecc-80f3-60694fc4b476
+    #[diplomat::opaque]
+    pub struct DisplayControlCapabilities(pub ironrdp::displaycontrol::pdu::DisplayControlCapabilities);
+
+    impl DisplayControlCapabilities {
+        /// The maximum number of monitors the server accepts in a monitor layout.
+        #[diplomat::attr(auto, getter = "max_num_monitors")]
+        pub fn get_max_num_monitors(&self) -> u32 {
+            self.0.max_num_monitors()
+        }
+
+        /// The maximum total area, in square pixels, of a monitor layout.
+        #[diplomat::attr(auto, getter = "max_monitor_area")]
+        pub fn get_max_monitor_area(&self) -> u64 {
+            self.0.max_monitor_area()
         }
     }
 

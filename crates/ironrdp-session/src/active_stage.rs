@@ -546,9 +546,10 @@ impl ActiveStage {
     ///
     /// `None` means no Display Control client is configured. `Some(false)` means it is configured
     /// but its dynamic channel is still opening or has not received its capabilities PDU.
-    pub fn display_control_ready(&mut self) -> Option<bool> {
+    pub fn display_control_ready(&self) -> Option<bool> {
         let Some(dvc) = self.get_dvc::<DisplayControlClient>() else {
             return self
+                .x224_processor
                 .get_svc_processor::<DrdynvcClient>()
                 .and_then(|drdynvc| drdynvc.has_registered_dvc::<DisplayControlClient>().then_some(false));
         };
