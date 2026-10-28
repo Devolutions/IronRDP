@@ -120,6 +120,9 @@ fn incompressible_frame(width: u16, height: u16) -> BitmapUpdate {
 #[case::remotefx_surface_rows_of_2048_pixels(Codec::RemoteFx, 2048, 64, Some(65_536))]
 #[case::legacy_bitmap(Codec::Bitmap, 1440, 900, Some(65_536))]
 #[case::legacy_bitmap_at_one_fragment(Codec::Bitmap, 1440, 900, None)]
+// Wider than one fragment's worth of pixels: each row is split by width.
+#[case::legacy_bitmap_one_row_strip_at_one_fragment(Codec::Bitmap, 4096, 1, None)]
+#[case::legacy_bitmap_rows_split_by_width(Codec::Bitmap, 8188, 64, Some(20_000))]
 // RemoteFX encodes whole 64x64 tiles, so a short strip costs as much as 64 rows.
 #[case::remotefx_one_row_strip_at_one_fragment(Codec::RemoteFx, 4096, 1, None)]
 #[case::remotefx_one_row_strip(Codec::RemoteFx, 8188, 1, Some(65_536))]
@@ -206,9 +209,12 @@ proptest! {
             Just(Codec::Qoiz),
             Just(Codec::RemoteFx),
         ],
-        // The legacy bitmap encoder takes widths in multiples of 4.
-        width in (1u16..=256).prop_map(|width| width * 4),
-        height in 1u16..=256,
+        // The legacy bitmap encoder takes widths in multiples of 4. Strips wider than one
+        // fragment's worth of pixels are split by width, and short ones are padded by RemoteFX.
+        (width, height) in prop_oneof![
+            ((1u16..=256).prop_map(|width| width * 4), 1u16..=256),
+            ((1024u16..=2047).prop_map(|width| width * 4), 1u16..=4),
+        ],
         max_request_size in 16_374u32..=262_144,
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();

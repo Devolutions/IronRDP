@@ -400,13 +400,14 @@ impl UpdateEncoder {
 
     /// The grid, in pixels, a tile's encoding covers. RemoteFX encodes whole 64x64 tiles
     /// ([2.2.2.3.4.1] TS_RFX_TILE), padding the ones at a rect's right and bottom edges, so a
-    /// one-row strip costs as much as 64 rows.
+    /// one-row strip costs as much as 64 rows. Other tiles keep widths in multiples of 4, which
+    /// the legacy bitmap encoder requires.
     ///
     /// [2.2.2.3.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/89e669ed-b6dd-4591-a267-73a72bc6d84e
     fn tile_grid(&self) -> (usize, usize) {
         match self.bitmap_updater {
             Some(BitmapUpdater::RemoteFx(_)) => (64, 64),
-            _ => (1, 1),
+            _ => (4, 1),
         }
     }
 
