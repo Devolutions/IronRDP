@@ -128,7 +128,7 @@ ironrdp-tls = { path = "../ironrdp-tls", version = "0.3" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.12", features = ["reqwest"] }
 ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath", version = "0.3" }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.2", optional = true }
-ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.3" } # public
+ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.4" } # public
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
 ironrdp-rail = { path = "../ironrdp-rail", version = "0.3" }
 
@@ -137,7 +137,7 @@ ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.9", optional = tru
 ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.9", optional = true } # public
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.11", optional = true }
 ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.2", optional = true }
-ironrdp-rdpel = { path = "../ironrdp-rdpel", version = "0.0.2", optional = true }
+ironrdp-rdpel = { path = "../ironrdp-rdpel", version = "0.0.3", optional = true }
 ironrdp-rdpegt = { path = "../ironrdp-rdpegt", version = "0.2", optional = true }
 ironrdp-rdpevor = { path = "../ironrdp-rdpevor", version = "0.2", optional = true }
 ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.2", optional = true }
@@ -145,7 +145,7 @@ ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.2", optional = tru
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.8", optional = true } # public
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9", optional = true }
-ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.1.0", optional = true }
+ironrdp-mstsgu = { path = "../ironrdp-mstsgu", version = "0.1.1", optional = true }
 ironrdp-dvc-pipe-proxy = { path = "../ironrdp-dvc-pipe-proxy", version = "0.7", optional = true }
 ironrdp-rdpeusb-native = { path = "../ironrdp-rdpeusb-native", version = "0.1", optional = true } # public
 
