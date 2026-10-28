@@ -35,6 +35,10 @@ public class Framed<TS> where TS : Stream
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly IronRdpPdu _pdu = IronRdpPdu.New();
 
+    // The stream read in flight. A cancelled read leaves it here, and the next read finishes it first, so the bytes
+    // it delivers are neither lost nor read twice.
+    private Task<int>? _pendingRead;
+
     public Framed(TS stream)
     {
         _stream = stream;
@@ -65,7 +69,8 @@ public class Framed<TS> where TS : Stream
     /// Reads the next active-stage PDU, reading from the stream until it is complete.
     /// </summary>
     /// <remarks>
-    /// Cancellation abandons the pending stream read; bytes already buffered stay available to the next read.
+    /// Cancellation stops waiting but leaves the stream read in flight; the next read, asynchronous or synchronous,
+    /// finishes it first, so bytes already buffered or still arriving stay available in order.
     /// </remarks>
     public async Task<(Action Action, byte[] Payload)> ReadPdu(CancellationToken cancellationToken)
     {
@@ -183,14 +188,36 @@ public class Framed<TS> where TS : Stream
 
     async Task<int> Read(CancellationToken cancellationToken)
     {
-        var size = await this._stream.ReadAsync(_readBuffer, cancellationToken);
+        var pending = _pendingRead ??= _stream.ReadAsync(_readBuffer.AsMemory(), CancellationToken.None).AsTask();
+        int size;
+        try
+        {
+            size = await pending.WaitAsync(cancellationToken);
+        }
+        catch when (pending.IsFaulted || pending.IsCanceled)
+        {
+            _pendingRead = null;
+            throw;
+        }
+
+        _pendingRead = null;
         this._buffer.AddRange(_readBuffer.AsSpan(0, size));
         return size;
     }
 
     int ReadSync()
     {
-        var size = this._stream.Read(_readBuffer, 0, _readBuffer.Length);
+        int size;
+        if (_pendingRead is { } pending)
+        {
+            _pendingRead = null;
+            size = pending.GetAwaiter().GetResult();
+        }
+        else
+        {
+            size = this._stream.Read(_readBuffer, 0, _readBuffer.Length);
+        }
+
         this._buffer.AddRange(_readBuffer.AsSpan(0, size));
         return size;
     }

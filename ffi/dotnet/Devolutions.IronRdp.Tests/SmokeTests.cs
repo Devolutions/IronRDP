@@ -295,8 +295,9 @@ internal static class SmokeTests
             Equal(IronRdpLibExceptionType.EndOfFile, hintError.ErrorType, "ReadExact EOF error type");
         });
 
-        // oracle: Framed remarks (cancellation abandons the stream read; buffered bytes stay for the next read)
-        yield return ("framed read pdu stops when cancelled and keeps buffered bytes", () =>
+        // oracle: Framed remarks (a cancelled read leaves the stream read in flight and the next read finishes it);
+        // mutant for the ReadCount assertions, which pin that the in-flight read is finished rather than reissued
+        yield return ("framed read pdu stops when cancelled and the next read finishes the pending stream read", () =>
         {
             var stream = new BlockingReadStream(TpktX224ConfirmSelectingTls[..6]);
             var framed = new Framed<BlockingReadStream>(stream);
@@ -304,14 +305,37 @@ internal static class SmokeTests
 
             var read = framed.ReadPdu(cancellation.Token);
             True(!read.IsCompleted, "read waits for the stream");
+            Equal(2, stream.ReadCount, "the first six bytes and the blocked read");
 
             cancellation.Cancel();
             Throws<OperationCanceledException>(() => read.GetAwaiter().GetResult());
             Equal(6, framed.Peek().Length, "bytes read before the cancellation stay buffered");
 
-            stream.Unblock(TpktX224ConfirmSelectingTls[6..]);
-            var (_, pdu) = framed.ReadPdu().GetAwaiter().GetResult();
-            True(pdu.SequenceEqual(TpktX224ConfirmSelectingTls), "next read completes the PDU from the buffered bytes");
+            // The abandoned stream read completes only after the next read has started waiting on it.
+            var next = framed.ReadPdu();
+            True(!next.IsCompleted, "next read waits for the pending stream read");
+            Equal(2, stream.ReadCount, "next read does not reissue the stream read");
+            stream.Unblock(TpktX224ConfirmSelectingTls[6..].Concat(TpktX224ConfirmWithoutNegotiation).ToArray());
+            var (_, pdu) = next.GetAwaiter().GetResult();
+            True(pdu.SequenceEqual(TpktX224ConfirmSelectingTls), "next read completes the PDU in order");
+
+            True(framed.TryReadBufferedPdu(out var buffered), "the second PDU arrived in the same stream read");
+            True(buffered.Payload.SequenceEqual(TpktX224ConfirmWithoutNegotiation), "second PDU bytes");
+
+            // Same handoff into the synchronous read.
+            var cancelled = framed.ReadPdu(new CancellationToken(canceled: true));
+            Throws<OperationCanceledException>(() => cancelled.GetAwaiter().GetResult());
+            Equal(3, stream.ReadCount, "the cancelled read left a stream read in flight");
+            var unblock = new Thread(() =>
+            {
+                Thread.Sleep(50);
+                stream.Unblock(FastPathShortLength);
+            });
+            unblock.Start();
+            var sync = framed.ReadPduSync();
+            unblock.Join();
+            True(sync.Payload.SequenceEqual(FastPathShortLength), "sync read finishes the pending stream read");
+            Equal(3, stream.ReadCount, "one stream read per blocked wait");
         });
 
         yield return ("config builder reports the first missing field", () =>
@@ -542,6 +566,8 @@ internal static class SmokeTests
             Position = 0;
         }
 
+        public int ReadCount { get; private set; }
+
         public void Unblock(byte[] bytes)
         {
             _more.SetResult(bytes);
@@ -549,6 +575,7 @@ internal static class SmokeTests
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
+            ReadCount++;
             if (Position == Length)
             {
                 var bytes = await _more.Task.WaitAsync(cancellationToken);
