@@ -15,12 +15,11 @@
 use core::ffi::c_void;
 use core::time::Duration;
 use std::collections::VecDeque;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
 use std::time::Instant;
+use std::{fs, thread};
 
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy, CliprdrBackend, CliprdrBackendFactory};
 use ironrdp_cliprdr::pdu::{
@@ -33,7 +32,7 @@ use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_cliprdr_native::windows_file_list::{is_directory, is_file_list_format};
 use ironrdp_core::{IntoOwned as _, impl_as_any};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
-use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, HGLOBAL, HWND, LPARAM, SetLastError, WIN32_ERROR, WPARAM};
 use windows::Win32::System::Com::{
     DVASPECT_CONTENT, FORMATETC, IStream, STATFLAG_NONAME, STATSTG, STREAM_SEEK_SET, TYMED_HGLOBAL, TYMED_ISTREAM,
 };
@@ -46,7 +45,7 @@ use windows::Win32::System::Ole::{OleGetClipboard, OleInitialize, OleUninitializ
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EnumThreadWindows, GetClassNameA, GetMessageW, GetWindowThreadProcessId, MSG, PostMessageW,
-    PostThreadMessageW, TranslateMessage, WM_ACTIVATEAPP, WM_QUIT,
+    PostThreadMessageW, TranslateMessage, WM_ACTIVATEAPP, WM_APP, WM_QUIT,
 };
 use windows::core::{BOOL, w};
 
@@ -198,6 +197,7 @@ enum LoopbackCommand {
     CopyFormats(Vec<ClipboardFormat>, String),
     Paste(ClipboardFormatId),
     RequestFileContents(FileContentsRequest),
+    Synchronize(mpsc::Sender<()>),
 }
 
 #[derive(Clone, Copy)]
@@ -312,6 +312,10 @@ impl Loopback {
             }
             LoopbackCommand::Paste(format) => self.server.initiate_paste(format),
             LoopbackCommand::RequestFileContents(request) => self.server.request_file_contents(request),
+            LoopbackCommand::Synchronize(done) => {
+                done.send(()).unwrap();
+                return;
+            }
         };
 
         match result {
@@ -324,6 +328,7 @@ impl Loopback {
 /// [`WinClipboard`] on its own STA thread with a message loop, wired to an in-memory server.
 struct Harness {
     gui_thread_id: u32,
+    gui_synchronized: mpsc::Receiver<()>,
     gui: Option<thread::JoinHandle<()>>,
     commands: Option<mpsc::Sender<LoopbackCommand>>,
     session: Option<thread::JoinHandle<()>>,
@@ -333,6 +338,10 @@ struct Harness {
 
 impl Harness {
     fn start() -> Self {
+        Self::with_last_error(None)
+    }
+
+    fn with_last_error(last_error: Option<WIN32_ERROR>) -> Self {
         // `RUST_LOG=ironrdp_cliprdr_native=trace` shows what the backend does.
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -341,6 +350,7 @@ impl Harness {
 
         let (client_tx, client_rx) = mpsc::channel();
         let (gui_tx, gui_rx) = mpsc::channel();
+        let (synchronized_tx, gui_synchronized) = mpsc::channel();
 
         let gui = thread::spawn(move || {
             // SAFETY: Balanced below, on this thread.
@@ -354,8 +364,16 @@ impl Harness {
             let mut message = MSG::default();
             // SAFETY: `message` is valid for writes; this thread owns its queue.
             while unsafe { GetMessageW(&mut message, None, 0, 0) }.0 > 0 {
+                if message.hwnd.0.is_null() && message.message == WM_APP {
+                    synchronized_tx.send(()).unwrap();
+                    continue;
+                }
                 // SAFETY: `message` came from `GetMessageW`.
                 let _ = unsafe { TranslateMessage(&message) };
+                if let Some(last_error) = last_error {
+                    // SAFETY: Only changes this GUI thread's last-error value.
+                    unsafe { SetLastError(last_error) };
+                }
                 // SAFETY: Same as above.
                 unsafe { DispatchMessageW(&message) };
             }
@@ -376,6 +394,7 @@ impl Harness {
 
         let harness = Self {
             gui_thread_id,
+            gui_synchronized,
             gui: Some(gui),
             commands: Some(command_tx),
             session: Some(session),
@@ -393,6 +412,16 @@ impl Harness {
         self.commands.as_ref().unwrap().send(command).unwrap();
     }
 
+    fn synchronize(&self) {
+        let (done, processed) = mpsc::channel();
+        self.command(LoopbackCommand::Synchronize(done));
+        processed.recv_timeout(TIMEOUT).unwrap();
+        // SAFETY: The harness owns this GUI thread; preceding callbacks are already queued.
+        unsafe { PostThreadMessageW(self.gui_thread_id, WM_APP, WPARAM(0), LPARAM(0)) }.unwrap();
+        self.gui_synchronized.recv_timeout(TIMEOUT).unwrap();
+    }
+
+    #[track_caller]
     fn expect_event<T>(&self, mut accept: impl FnMut(ServerEvent) -> Option<T>) -> T {
         let deadline = Instant::now() + TIMEOUT;
         loop {
@@ -403,6 +432,14 @@ impl Harness {
                 return value;
             }
         }
+    }
+
+    #[track_caller]
+    fn expect_format_data_response(&self) -> OwnedFormatDataResponse {
+        self.expect_event(|event| match event {
+            ServerEvent::FormatDataResponse(response) => Some(response),
+            _ => None,
+        })
     }
 
     fn assert_no_errors(&self) {
@@ -859,6 +896,118 @@ fn remote_formats_that_cannot_be_rendered_are_not_offered() {
     harness.assert_no_errors();
 }
 
+// oracle: spec SetClipboardData (winuser.h) §Parameters: NULL hMem registers delayed rendering.
+#[test]
+#[ignore = "replaces the Windows clipboard contents, set IRONRDP_WIN_CLIPBOARD_LIVE=1 to run"]
+fn delayed_formats_survive_a_stale_win32_error() {
+    if !enabled() {
+        return;
+    }
+
+    let harness = Harness::with_last_error(Some(ERROR_ACCESS_DENIED));
+    harness.command(LoopbackCommand::CopyFormats(
+        vec![
+            ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+            ClipboardFormat::new(ClipboardFormatId::new(0xC0A1))
+                .with_name(ClipboardFormatName::new_static("HTML Format")),
+        ],
+        "delayed text".to_owned(),
+    ));
+    let html = registered_format(w!("HTML Format"));
+    wait_until("both delayed formats are on the clipboard", || {
+        harness.owns_clipboard() && clipboard_has(ClipboardFormatId::CF_UNICODETEXT.value()) && clipboard_has(html)
+    });
+    assert_eq!(read_clipboard_text().as_deref(), Some("delayed text"));
+    harness.assert_no_errors();
+}
+
+/// Holds the Windows clipboard open on the current thread until dropped.
+struct ClipboardLock;
+
+impl ClipboardLock {
+    fn acquire() -> Self {
+        wait_until("clipboard can be held by the test thread", || {
+            // SAFETY: Balanced by `CloseClipboard` in `Drop` on this thread.
+            unsafe { OpenClipboard(None) }.is_ok()
+        });
+        Self
+    }
+}
+
+impl Drop for ClipboardLock {
+    fn drop(&mut self) {
+        // SAFETY: This thread opened the clipboard in `ClipboardLock::acquire`.
+        unsafe { CloseClipboard() }.unwrap();
+    }
+}
+
+// oracle: spec MS-RDPECLIP §3.1.5.4.2, §3.1.5.4.3
+#[test]
+#[ignore = "replaces the Windows clipboard contents, set IRONRDP_WIN_CLIPBOARD_LIVE=1 to run"]
+fn replacing_a_native_retry_fails_the_displaced_format_request() {
+    if !enabled() {
+        return;
+    }
+
+    powershell("Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::SetText('retry source')");
+    let harness = Harness::start();
+    harness.synchronize();
+    {
+        let _lock = ClipboardLock::acquire();
+        harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
+        harness.synchronize();
+        harness.command(LoopbackCommand::CopyFormats(
+            vec![ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)],
+            "replacement".to_owned(),
+        ));
+        harness.synchronize();
+    }
+
+    let response = harness.expect_format_data_response();
+    assert!(response.is_error());
+    wait_until("the replacement retry completes", || harness.owns_clipboard());
+
+    harness.deactivate();
+    powershell("Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::SetText('next request')");
+    harness.expect_event(|event| match event {
+        ServerEvent::RemoteCopy(formats) => formats
+            .iter()
+            .any(|format| format.id() == ClipboardFormatId::CF_UNICODETEXT)
+            .then_some(()),
+        _ => None,
+    });
+    harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
+    let response = harness.expect_format_data_response();
+    assert_eq!(response.to_unicode_string().unwrap(), "next request");
+    harness.assert_no_errors();
+}
+
+// oracle: spec MS-RDPECLIP §3.1.5.4.2, §3.1.5.4.3
+#[test]
+#[ignore = "replaces the Windows clipboard contents, set IRONRDP_WIN_CLIPBOARD_LIVE=1 to run"]
+fn subsequent_format_request_fails_an_earlier_deferred_request() {
+    if !enabled() {
+        return;
+    }
+
+    powershell("Add-Type -AssemblyName System.Windows.Forms; [Windows.Forms.Clipboard]::SetText('retry source')");
+    let harness = Harness::start();
+    harness.synchronize();
+    {
+        let _lock = ClipboardLock::acquire();
+        harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
+        harness.synchronize();
+        harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
+        harness.synchronize();
+    }
+
+    let first = harness.expect_format_data_response();
+    assert!(first.is_error());
+    let second = harness.expect_format_data_response();
+    assert_eq!(second.to_unicode_string().unwrap(), "retry source");
+    harness.assert_no_errors();
+}
+
 /// Fetches the file list the client advertised, then every file through SIZE and RANGE requests.
 fn fetch_local_files(harness: &Harness) -> Vec<(FileDescriptor, Vec<u8>)> {
     let file_list_format = harness.expect_event(|event| match event {
@@ -983,6 +1132,83 @@ fn local_files_reach_the_remote() {
     assert_eq!(fetched[0].0.name, "second.txt");
     assert_eq!(fetched[0].1, b"second copy");
 
+    harness.assert_no_errors();
+}
+
+// oracle: reference Windows clipboard text written by another process.
+#[test]
+#[ignore = "replaces the Windows clipboard contents, set IRONRDP_WIN_CLIPBOARD_LIVE=1 to run"]
+fn background_clipboard_reports_changes_without_activation() {
+    if !enabled() {
+        return;
+    }
+
+    powershell("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()");
+    let harness = Harness::start();
+
+    powershell(
+        "Add-Type -AssemblyName System.Windows.Forms; \
+         [System.Windows.Forms.Clipboard]::SetText('ironrdp-background-copy')",
+    );
+    harness.expect_event(|event| match event {
+        ServerEvent::RemoteCopy(formats)
+            if formats
+                .iter()
+                .any(|format| format.id() == ClipboardFormatId::CF_UNICODETEXT) =>
+        {
+            Some(())
+        }
+        _ => None,
+    });
+    harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
+    let response = harness.expect_format_data_response();
+    assert_eq!(response.to_unicode_string().unwrap(), "ironrdp-background-copy");
+    harness.assert_no_errors();
+}
+
+// oracle: reference Windows Forms writes the four asserted colors to the Windows clipboard.
+#[test]
+#[ignore = "replaces the Windows clipboard contents, set IRONRDP_WIN_CLIPBOARD_LIVE=1 to run"]
+fn local_bitmap_keeps_pixels_without_synthesized_dibv5() {
+    if !enabled() {
+        return;
+    }
+
+    powershell("Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()");
+    let harness = Harness::start();
+    powershell(
+        "Add-Type -AssemblyName System.Windows.Forms, System.Drawing; \
+         $image = New-Object System.Drawing.Bitmap 2, 2; \
+         $image.SetPixel(0, 0, [System.Drawing.Color]::Cyan); \
+         $image.SetPixel(1, 0, [System.Drawing.Color]::Magenta); \
+         $image.SetPixel(0, 1, [System.Drawing.Color]::Yellow); \
+         $image.SetPixel(1, 1, [System.Drawing.Color]::FromArgb(255, 31, 63, 127)); \
+         [System.Windows.Forms.Clipboard]::SetImage($image); $image.Dispose()",
+    );
+    let format = harness.expect_event(|event| match event {
+        ServerEvent::RemoteCopy(formats) => [ClipboardFormatId::CF_DIBV5, ClipboardFormatId::CF_DIB]
+            .into_iter()
+            .find(|id| formats.iter().any(|format| format.id() == *id)),
+        _ => None,
+    });
+    assert_eq!(format, ClipboardFormatId::CF_DIB);
+    harness.command(LoopbackCommand::Paste(format));
+    let response = harness.expect_format_data_response();
+    let dib = response.data();
+    assert_eq!(i32::from_le_bytes(dib[4..8].try_into().unwrap()), 2);
+    assert_eq!(i32::from_le_bytes(dib[8..12].try_into().unwrap()), 2);
+    assert_eq!(u16::from_le_bytes(dib[14..16].try_into().unwrap()), 32);
+    let compression = u32::from_le_bytes(dib[16..20].try_into().unwrap());
+    let pixel_offset = match compression {
+        0 => 40,                                                                  /* BITMAPINFOHEADER */
+        3 => 40 /* BITMAPINFOHEADER */ + 4 /* RedMask */ + 4 /* GreenMask */ + 4, /* BlueMask */
+        other => panic!("unexpected DIB compression {other}"),
+    };
+    let pixels = &dib[pixel_offset..pixel_offset + 16];
+    assert_eq!(
+        [&pixels[0..3], &pixels[4..7], &pixels[8..11], &pixels[12..15]],
+        [&[0, 255, 255][..], &[127, 63, 31], &[255, 255, 0], &[255, 0, 255]]
+    );
     harness.assert_no_errors();
 }
 
