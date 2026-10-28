@@ -151,7 +151,7 @@ fn delivered(channel: &StaticVirtualChannel) -> &[(u64, Vec<u8>)] {
         .delivered
 }
 
-// oracle: spec MS-RDPBCGR §2.2.6.1.1; mutant StaticVirtualChannel::process bypassing process_with_context or delivering the wrong message_context
+// oracle: mutant StaticVirtualChannel::process bypassing process_with_context or delivering the wrong message_context
 #[test]
 fn static_channel_delivers_messages_with_their_captured_context() {
     let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(7), None));
@@ -201,6 +201,7 @@ fn static_channel_delivers_messages_with_their_captured_context() {
         42u64.to_le_bytes()
     );
 
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and processed on CHANNEL_FLAG_LAST)
     assert_eq!(
         delivered(&channel),
         [
@@ -211,7 +212,7 @@ fn static_channel_delivers_messages_with_their_captured_context() {
     );
 }
 
-// oracle: spec MS-RDPBCGR §2.2.6.1.1; mutant delivering payloads when message_context is None or skipping length and size-limit checks on discarded messages
+// oracle: mutant delivering payloads when message_context is None or skipping length and size-limit checks on discarded messages
 #[test]
 fn static_channel_without_context_validates_and_discards_messages() {
     let mut channel = StaticVirtualChannel::new(ContextChannel::new(None, Some(4)));
@@ -307,7 +308,7 @@ fn static_channel_without_context_validates_and_discards_messages() {
     assert_eq!(delivered(&channel), [(9, b"ok!".to_vec())]);
 }
 
-// oracle: spec MS-RDPBCGR §2.2.6.1.1; mutant delivering a partial sequence across a message_context change or skipping fragment length checks after discarding
+// oracle: mutant delivering a partial sequence across a message_context change or skipping fragment length and size-limit checks after discarding
 #[test]
 fn static_channel_context_change_mid_sequence_discards_partial_message_and_still_validates() {
     let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(1), Some(8)));
@@ -330,6 +331,38 @@ fn static_channel_context_change_mid_sequence_discards_partial_message_and_still
         channel
             .process(&channel_chunk(b"", 8, ChannelControlFlags::FLAG_LAST))
             .expect("last fragment after context change")
+            .is_empty()
+    );
+    assert!(delivered(&channel).is_empty());
+
+    set_context(&mut channel, Some(1));
+    assert!(
+        channel
+            .process(&channel_chunk(b"head", 8, ChannelControlFlags::FLAG_FIRST))
+            .expect("first fragment before terminal swap")
+            .is_empty()
+    );
+    set_context(&mut channel, Some(2));
+    assert!(
+        channel
+            .process(&channel_chunk(b"tail", 8, ChannelControlFlags::FLAG_LAST))
+            .expect("valid last fragment after terminal context change")
+            .is_empty()
+    );
+    assert!(delivered(&channel).is_empty());
+
+    set_context(&mut channel, None);
+    assert!(
+        channel
+            .process(&channel_chunk(b"drop", 8, ChannelControlFlags::FLAG_FIRST))
+            .expect("first fragment with no recipient")
+            .is_empty()
+    );
+    set_context(&mut channel, Some(2));
+    assert!(
+        channel
+            .process(&channel_chunk(b"keep", 8, ChannelControlFlags::FLAG_LAST))
+            .expect("last fragment after recipient attaches mid-sequence")
             .is_empty()
     );
     assert!(delivered(&channel).is_empty());
@@ -358,6 +391,28 @@ fn static_channel_context_change_mid_sequence_discards_partial_message_and_still
     assert!(
         channel
             .process(&channel_chunk(b"cde", 3, ChannelControlFlags::FLAG_LAST))
+            .is_err()
+    );
+
+    set_context(&mut channel, Some(2));
+    assert!(
+        channel
+            .process(&channel_chunk(
+                b"12345",
+                4,
+                ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::PACKET_COMPRESSED,
+            ))
+            .expect("compressed first fragment within cap")
+            .is_empty()
+    );
+    set_context(&mut channel, Some(3));
+    assert!(
+        channel
+            .process(&channel_chunk(
+                b"6789",
+                4,
+                ChannelControlFlags::FLAG_LAST | ChannelControlFlags::PACKET_COMPRESSED,
+            ))
             .is_err()
     );
     assert!(delivered(&channel).is_empty());

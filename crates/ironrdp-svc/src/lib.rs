@@ -320,7 +320,8 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
 
     /// Identifies the current recipient of a message, or returns `None` to discard incoming data.
     /// Changing this value discards any partial message without skipping fragment validation.
-    /// Do not reuse a value while fragments for its previous recipient may remain.
+    /// Reusing a value while that recipient still has a partial message appends later fragments to it.
+    /// The combined payload is then delivered under that reused value.
     /// The default keeps all messages in the same context.
     fn message_context(&self) -> Option<u64> {
         Some(0)
@@ -366,8 +367,13 @@ struct ChunkProcessor {
     chunked_pdu: Vec<u8>,
     /// Declared total length of the current chunk sequence.
     expected_length: Option<usize>,
-    /// Counts discarded fragments too, so consumer changes do not bypass length validation.
+    /// Bytes accepted in the current sequence, including fragments whose payload was discarded.
+    ///
+    /// INVARIANT: This counts every fragment byte accepted since `expected_length` was set, whether or not those bytes were retained in `chunked_pdu`.
     received_length: usize,
+    /// Recipient captured at the first fragment, or `None` after that recipient was invalidated.
+    ///
+    /// INVARIANT: `chunked_pdu` is empty whenever this is `None`.
     message_context: Option<u64>,
 }
 
@@ -483,6 +489,8 @@ impl ChunkProcessor {
 
         self.received_length = received_length;
         if self.message_context != context {
+            // UNTESTED: Release capacity on recipient invalidation so detached sequences cannot pin reassembly memory.
+            // Check retained allocation, not just buffer length, when changing this reset.
             self.chunked_pdu = Vec::new();
             self.message_context = None;
         }
