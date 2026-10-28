@@ -902,8 +902,13 @@ impl Daemon {
             .with_pointer_software_rendering(true);
         // Under strict validation, a certificate that fails is still accepted when the user has
         // pinned its exact fingerprint for this endpoint in the known-certificates store.
+        // Entra RDS AAD connections forbid caller certificate-validation callbacks (AVD pins
+        // `redirectedServerCert` internally during gateway orchestration).
         let certificate_rejection = Arc::new(Mutex::new(None));
-        let builder = if certificate_validation == CertificateValidation::Strict {
+        let entra_auth_enabled = properties.get::<bool>("enablerdsaadauth").unwrap_or(false);
+        let builder = if certificate_validation == CertificateValidation::Strict
+            && (!entra_auth_enabled || properties.get::<&str>(ACCEPT_CERTIFICATE_PROPERTY).is_some())
+        {
             let mut store = match KnownCertificates::default_path().and_then(|path| KnownCertificates::load(&path)) {
                 Ok(store) => store,
                 Err(error) => {
@@ -3438,6 +3443,20 @@ mod tests {
                 if error.message
                     == "missing required fields: server address, username, password, gateway username, gateway password"
         ));
+    }
+
+    #[tokio::test]
+    async fn avd_entra_property_set_builds_without_known_certificates_callback_conflict() {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        let mut properties = PropertySet::new();
+        properties.insert("full address", "rdgateway-r1.wvd.microsoft.com");
+        properties.set_gateway_hostname("127.0.0.1:1");
+        properties.set_gateway_usage_method(GatewayUsageMethod::UseAlways);
+        properties.insert("gatewaybrokeringtype", 1i64);
+        properties.insert("enablerdsaadauth", 1i64);
+
+        assert!(matches!(daemon.connect(properties, None), Response::Ok(_)));
+        let _ = daemon.disconnect();
     }
 
     #[test]
