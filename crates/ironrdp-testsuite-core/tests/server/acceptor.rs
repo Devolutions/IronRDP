@@ -7,14 +7,14 @@ use std::rc::Rc;
 
 use ironrdp_acceptor::{
     Acceptor, ChannelConnectionSequence, ConnectionSetupHandler, FinalizationSequence, MultitransportSecurityRng,
-    ReceivedCredentials, accept_credssp_with, accept_finalize_with,
+    ReceivedCredentials, accept_begin, accept_credssp_with, accept_finalize, accept_finalize_with,
 };
 use ironrdp_async::bytes::BytesMut;
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper};
 use ironrdp_connector::credssp::CredsspSequence;
 use ironrdp_connector::sspi::credssp::{NStatusCode, TsRequest};
 use ironrdp_connector::sspi::generator::{GeneratorState, NetworkRequest};
-use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
+use ironrdp_connector::{ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult};
 use ironrdp_connector::{DesktopSize, Sequence, Written, encode_x224_packet};
 use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc::{
@@ -853,6 +853,7 @@ struct HandshakeStream {
     incoming: VecDeque<Vec<u8>>,
     outgoing: Rc<RefCell<Vec<Vec<u8>>>>,
     credssp_client: Option<CredsspSequence>,
+    fail_writes: bool,
 }
 
 impl StreamWrapper for HandshakeStream {
@@ -889,6 +890,9 @@ impl FramedWrite for HandshakeStream {
     type WriteAllFut<'write> = Ready<io::Result<()>>;
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+        if self.fail_writes {
+            return ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)));
+        }
         self.outgoing.borrow_mut().push(buf.to_vec());
         if let Some(client) = self.credssp_client.as_mut()
             && buf.len() != 4
@@ -955,13 +959,8 @@ impl ConnectionSetupHandler for SetupHandler {
 }
 
 fn negotiated_acceptor(protocol: SecurityProtocol) -> Acceptor {
-    let mut acceptor = Acceptor::new(
+    negotiated_acceptor_expecting(
         protocol,
-        DesktopSize {
-            width: 1024,
-            height: 768,
-        },
-        Vec::new(),
         protocol
             .intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX)
             .then(|| Credentials {
@@ -969,6 +968,19 @@ fn negotiated_acceptor(protocol: SecurityProtocol) -> Acceptor {
                 password: "secret".to_owned(),
                 domain: None,
             }),
+    )
+}
+
+/// Returns an acceptor for `protocol` that expects `creds`, past the security upgrade.
+fn negotiated_acceptor_expecting(protocol: SecurityProtocol, creds: Option<Credentials>) -> Acceptor {
+    let mut acceptor = Acceptor::new(
+        protocol,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        Vec::new(),
+        creds,
     );
     acceptor
         .step(&encode_connection_request(protocol), None, &mut WriteBuf::new())
@@ -1104,6 +1116,142 @@ async fn tls_hook_rejection_respects_error_info_support(
         assert_eq!(written, 0);
         assert!(denied.filled().is_empty());
     }
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.2.2 (the server informs the client of a security negotiation failure with an RDP
+// Negotiation Failure)
+// oracle: mutant driver dropping what a failing step wrote
+#[tokio::test]
+async fn accept_begin_sends_the_negotiation_failure() {
+    let mut acceptor = Acceptor::new(
+        SecurityProtocol::SSL,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        Vec::new(),
+        None,
+    );
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [encode_connection_request(SecurityProtocol::HYBRID)].into(),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+
+    let result = accept_begin(framed, &mut acceptor).await;
+    assert!(
+        result.is_err(),
+        "a security protocol mismatch should fail the handshake"
+    );
+
+    let outgoing = outgoing.borrow();
+    let [failure] = outgoing.as_slice() else {
+        panic!("expected only the RDP Negotiation Failure, got {} PDUs", outgoing.len());
+    };
+    assert_eq!(
+        decode::<X224<nego::ConnectionConfirm>>(failure).unwrap().0,
+        nego::ConnectionConfirm::Failure {
+            code: nego::FailureCode::SSL_REQUIRED_BY_SERVER,
+        }
+    );
+}
+
+// oracle: spec MS-RDPBCGR §2.2.5.1.1 (the fields of the Set Error Info PDU that `assert_access_denied` checks)
+// oracle: mutant driver dropping what a failing step wrote
+#[tokio::test]
+async fn accept_finalize_sends_the_error_info_for_other_credentials() {
+    let mut acceptor = negotiated_acceptor_expecting(
+        SecurityProtocol::SSL,
+        Some(Credentials {
+            username: "mallory".to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        }),
+    );
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: post_credssp_messages(Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU)),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+
+    let error = accept_finalize(framed, &mut acceptor)
+        .await
+        .err()
+        .expect("other credentials should fail the handshake");
+    assert!(
+        matches!(error.kind(), ConnectorErrorKind::General),
+        "expected the credentials rejection, got {error}"
+    );
+
+    // The Connect Response, the Attach User Confirm and two Channel Join Confirms come first.
+    let outgoing = outgoing.borrow();
+    assert_eq!(outgoing.len(), 5);
+    assert_access_denied(&outgoing[4]);
+}
+
+// oracle: spec MS-RDPBCGR §2.2.5.1 (the Set Error Info PDU is only sent to clients that set
+// RNS_UD_CS_SUPPORT_ERRINFO_PDU)
+// oracle: mutant Client Info step writing the Set Error Info PDU without checking the client supports it
+#[rstest::rstest]
+#[case::no_early_capability_flags(None)]
+#[case::no_error_info_flag(Some(ClientEarlyCapabilityFlags::empty()))]
+#[tokio::test]
+async fn accept_finalize_sends_no_error_info_to_a_client_without_support(
+    #[case] error_info: Option<ClientEarlyCapabilityFlags>,
+) {
+    let mut acceptor = negotiated_acceptor_expecting(
+        SecurityProtocol::SSL,
+        Some(Credentials {
+            username: "mallory".to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        }),
+    );
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: post_credssp_messages(error_info),
+        ..HandshakeStream::default()
+    });
+    let outgoing = Rc::clone(&framed.get_inner().0.outgoing);
+
+    let error = accept_finalize(framed, &mut acceptor)
+        .await
+        .err()
+        .expect("other credentials should fail the handshake");
+    assert!(
+        matches!(error.kind(), ConnectorErrorKind::General),
+        "expected the credentials rejection, got {error}"
+    );
+
+    // Only the Connect Response, the Attach User Confirm and two Channel Join Confirms.
+    assert_eq!(outgoing.borrow().len(), 4);
+}
+
+// oracle: mutant driver returning the error of sending the failing step's PDU instead of the step error
+#[tokio::test]
+async fn accept_begin_reports_the_step_error_when_sending_its_pdu_fails() {
+    let mut acceptor = Acceptor::new(
+        SecurityProtocol::SSL,
+        DesktopSize {
+            width: 1024,
+            height: 768,
+        },
+        Vec::new(),
+        None,
+    );
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [encode_connection_request(SecurityProtocol::HYBRID)].into(),
+        fail_writes: true,
+        ..HandshakeStream::default()
+    });
+
+    let error = accept_begin(framed, &mut acceptor)
+        .await
+        .err()
+        .expect("a security protocol mismatch should fail the handshake");
+    assert!(
+        matches!(error.kind(), ConnectorErrorKind::Reason(_)),
+        "expected the security protocol mismatch, got {error}"
+    );
 }
 
 #[rstest::rstest]

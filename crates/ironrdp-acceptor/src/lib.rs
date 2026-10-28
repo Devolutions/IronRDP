@@ -1,7 +1,7 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step};
+use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step_read};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
 use ironrdp_connector::{ServerName, custom_err, general_err};
@@ -73,7 +73,7 @@ where
             return Ok(result);
         }
 
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        acceptor_step(&mut framed, acceptor, &mut buf).await?;
     }
 }
 
@@ -234,7 +234,7 @@ where
             return Ok((framed, result));
         }
 
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        acceptor_step(&mut framed, acceptor, &mut buf).await?;
         if acceptor.credentials_need_handling() {
             if let Err(error) = credentials_handler
                 .handle_credentials(acceptor.received_credentials().cloned())
@@ -243,10 +243,7 @@ where
                 buf.clear();
                 let written = acceptor.encode_access_denied(&mut buf)?;
                 if written != 0 {
-                    framed
-                        .write_all(&buf[..written])
-                        .await
-                        .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+                    send_rejection(&mut framed, &buf[..written]).await;
                 }
                 return Err(error);
             }
@@ -262,10 +259,7 @@ where
             buf.clear();
             let written = acceptor.encode_access_denied(&mut buf)?;
             if written != 0 {
-                framed
-                    .write_all(&buf[..written])
-                    .await
-                    .map_err(|e| ironrdp_connector::custom_err!("write access denied", e))?;
+                send_rejection(&mut framed, &buf[..written]).await;
             }
             return Err(error);
         }
@@ -277,6 +271,62 @@ where
             multitransport_handler(request, soft_sync).await;
             notified = true;
         }
+    }
+}
+
+/// Runs one acceptor step and sends what it writes, also when the step fails.
+///
+/// A failing step can write a PDU that tells the client why the server ends the connection: the [2.2.1.2.2] RDP
+/// Negotiation Failure when no security protocol is common, or the [2.2.5.1.1] Set Error Info PDU when the Client Info
+/// PDU carries credentials other than the expected ones.
+///
+/// [2.2.1.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/1b3920e7-0116-4345-bc45-f2c4ad012761
+/// [2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
+async fn acceptor_step<S>(framed: &mut Framed<S>, acceptor: &mut Acceptor, buf: &mut WriteBuf) -> ConnectorResult<()>
+where
+    S: FramedRead + FramedWrite,
+{
+    match single_sequence_step_read(framed, acceptor, buf).await {
+        Ok(written) => {
+            if let Some(response_len) = written.size() {
+                debug_assert_eq!(buf.filled_len(), response_len);
+                trace!(response_len, "Send response");
+                framed
+                    .write_all(&buf[..response_len])
+                    .await
+                    .map_err(|e| custom_err!("write all", e))?;
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if 0 < buf.filled_len() {
+                // A failing step writes one whole PDU or nothing, so the client never receives a truncated frame.
+                // Only debug builds check this, so a new error path that writes output needs a test driving it here.
+                debug_assert!(
+                    ironrdp_pdu::find_size(buf.filled())
+                        .ok()
+                        .flatten()
+                        .is_some_and(|pdu| pdu.length == buf.filled_len()),
+                    "a failing step wrote something other than one whole PDU"
+                );
+                send_rejection(framed, buf.filled()).await;
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Sends a PDU that tells the client why the server ends the connection.
+///
+/// A failed send is only logged, because the caller's error says why the connection ends and the write error would
+/// hide it.
+async fn send_rejection<S>(framed: &mut Framed<S>, pdu: &[u8])
+where
+    S: FramedWrite,
+{
+    trace!(pdu_len = pdu.len(), "Send rejection");
+    if let Err(error) = framed.write_all(pdu).await {
+        debug!(%error, "Failed to send the rejection");
     }
 }
 
