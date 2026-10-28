@@ -550,7 +550,19 @@ public partial class MainWindow : Window
         using var frame = fastpath.Encode();
         byte[] frameBytes = new byte[frame.Size];
         frame.Fill(frameBytes);
-        _ = _framed!.Write(frameBytes);
+        _ = WriteInput(frameBytes);
+    }
+
+    private async Task WriteInput(byte[] frameBytes)
+    {
+        try
+        {
+            await _framed!.Write(frameBytes);
+        }
+        catch (Exception e)
+        {
+            Trace.TraceError("Error sending input: " + e.Message);
+        }
     }
 
     private T WithStageLock<T>(Func<T> call)
