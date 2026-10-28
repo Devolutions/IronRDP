@@ -12,8 +12,8 @@ use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::rdp::client_info::PasswordCookie;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, SvcServerProcessor};
-use pdu::rdp::capability_sets::CapabilitySet;
-use pdu::rdp::client_info::{ClientAutoReconnect, Credentials};
+use pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
+use pdu::rdp::client_info::{ClientAutoReconnect, ClientInfoFlags, Credentials, PerformanceFlags};
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
@@ -22,7 +22,7 @@ use rand::RngCore as _;
 use tracing::{debug, warn};
 
 use super::channel_connection::ChannelConnectionSequence;
-use super::finalization::FinalizationSequence;
+use super::finalization::{FinalizationSequence, InputEventBuffer};
 use crate::util::{self, wrap_share_data};
 
 const IO_CHANNEL_ID: u16 = 1003;
@@ -31,6 +31,85 @@ const IO_CHANNEL_ID: u16 = 1003;
 // Indication in this file (License, Demand Active, Initiate Multitransport Request
 // per 3.3.5.15.1) rather than the user's own MCS channel ID.
 const USER_CHANNEL_ID: u16 = 1002;
+
+#[derive(Clone, Copy, Debug)]
+struct CredentialIdentity<'a> {
+    username: &'a str,
+    domain: Option<&'a str>,
+}
+
+fn split_down_level_logon_name(s: &str) -> Option<(&str, &str)> {
+    let (domain, username) = s.split_once('\\')?;
+    if domain.is_empty() || username.is_empty() {
+        return None;
+    }
+    Some((username, domain))
+}
+
+fn split_upn(s: &str) -> Option<(&str, &str)> {
+    let (username, domain) = s.rsplit_once('@')?;
+    if username.is_empty() || domain.is_empty() {
+        return None;
+    }
+    Some((username, domain))
+}
+
+fn credential_identities(creds: &Credentials) -> [Option<CredentialIdentity<'_>>; 3] {
+    let mut out = [None, None, None];
+    out[0] = Some(CredentialIdentity {
+        username: creds.username.as_str(),
+        domain: creds.domain.as_deref(),
+    });
+
+    if creds.domain.is_none() {
+        if let Some((username, domain)) = split_down_level_logon_name(&creds.username) {
+            out[1] = Some(CredentialIdentity {
+                username,
+                domain: Some(domain),
+            });
+        }
+
+        if let Some((username, domain)) = split_upn(&creds.username) {
+            out[2] = Some(CredentialIdentity {
+                username,
+                domain: Some(domain),
+            });
+        }
+    }
+
+    out
+}
+
+fn credential_identity_equal(a: CredentialIdentity<'_>, b: CredentialIdentity<'_>) -> bool {
+    if !a.username.eq_ignore_ascii_case(b.username) {
+        return false;
+    }
+
+    match (a.domain, b.domain) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+        _ => false,
+    }
+}
+
+fn credentials_match(expected: &Credentials, actual: &Credentials) -> bool {
+    if expected.password != actual.password {
+        return false;
+    }
+
+    let expected_ids = credential_identities(expected);
+    let actual_ids = credential_identities(actual);
+
+    for expected_id in expected_ids.into_iter().flatten() {
+        for actual_id in actual_ids.into_iter().flatten() {
+            if credential_identity_equal(expected_id, actual_id) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
 
 /// Server side of the [1.3.1.1] Connection Sequence.
 ///
@@ -47,6 +126,8 @@ pub struct Acceptor {
     desktop_size: DesktopSize,
     keyboard_layout: u32,
     keyboard_type: gcc::KeyboardType,
+    keyboard_subtype: u32,
+    keyboard_functional_keys_count: u32,
     ime_file_name: String,
     /// The client's MultiTransportChannelData block flags (MS-RDPBCGR
     /// 2.2.1.3.8), when it sent one. `None` when the client did not send the
@@ -59,13 +140,19 @@ pub struct Acceptor {
     routing_token: Option<String>,
     client_cluster_data: Option<gcc::ClientClusterData>,
     password_cookie: Option<PasswordCookie>,
+    client_info_flags: Option<ClientInfoFlags>,
+    performance_flags: PerformanceFlags,
+    remote_app_capabilities: Option<RemoteAppCapabilities>,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
+    pending_input_events: InputEventBuffer,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
+    pub(crate) credssp_backend: crate::CredsspBackend,
     received_credentials: Option<ReceivedCredentials>,
     credentials_handled: bool,
     received_auto_reconnect: Option<ClientAutoReconnect>,
+    allow_unverified_credentials: bool,
     reactivation: bool,
     honor_client_desktop_size: Option<DesktopSize>,
     /// UDP multitransport flags to advertise to the client and, if it
@@ -185,6 +272,35 @@ pub struct ReceivedCredentials {
     pub origin: CredentialOrigin,
 }
 
+/// Remote Programs and Window List capabilities negotiated together for RemoteApp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAppCapabilities {
+    pub rail: Rail,
+    pub window_list: WindowList,
+}
+
+impl RemoteAppCapabilities {
+    fn from_capabilities(capabilities: &[CapabilitySet]) -> Option<Self> {
+        let rail = capabilities.iter().find_map(|capability| match capability {
+            CapabilitySet::Rail(rail) => Some(rail),
+            _ => None,
+        })?;
+        let window_list = capabilities.iter().find_map(|capability| match capability {
+            CapabilitySet::WindowList(window) => Some(window),
+            _ => None,
+        })?;
+        if !rail.support_level.contains(RailSupportLevel::SUPPORTED)
+            || window_list.support_level == WindowSupportLevel::NotSupported
+        {
+            return None;
+        }
+        Some(Self {
+            rail: rail.clone(),
+            window_list: window_list.clone(),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct AcceptorResult {
     pub static_channels: StaticChannelSet,
@@ -215,11 +331,17 @@ pub struct AcceptorResult {
     /// documented values, so it doubles as "unset" the same way `keyboard_layout`'s
     /// `0` does).
     pub keyboard_type: gcc::KeyboardType,
+    /// Keyboard subtype announced by the client in its GCC Client Core Data (`keyboardSubType`).
+    pub keyboard_subtype: u32,
+    /// Number of function keys announced by the client in its GCC Client Core Data (`keyboardFunctionKey`).
+    pub keyboard_functional_keys_count: u32,
     /// Input method editor file name announced by the client in its GCC Client Core
     /// Data (section 2.2.1.3.2, `imeFileName`).
     ///
     /// Populated for East Asian IME-based input locales; empty otherwise.
     pub ime_file_name: String,
+    /// Desktop shell performance flags requested by the client in its Extended Client Info PDU (`performanceFlags`).
+    pub performance_flags: PerformanceFlags,
     /// Early capability flags announced by the client in its GCC Client Core
     /// Data (section 2.2.1.3.2, `earlyCapabilityFlags`).
     ///
@@ -300,6 +422,8 @@ impl Acceptor {
             desktop_size,
             keyboard_layout: 0,
             keyboard_type: gcc::KeyboardType(0),
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 0,
             ime_file_name: String::new(),
             multitransport_flags: None,
             early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
@@ -307,13 +431,19 @@ impl Acceptor {
             routing_token: None,
             client_cluster_data: None,
             password_cookie: None,
+            client_info_flags: None,
+            performance_flags: PerformanceFlags::empty(),
+            remote_app_capabilities: None,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
+            pending_input_events: InputEventBuffer::default(),
             saved_for_reactivation: Default::default(),
             creds,
+            credssp_backend: crate::CredsspBackend::default(),
             received_credentials: None,
             credentials_handled: false,
             received_auto_reconnect: None,
+            allow_unverified_credentials: false,
             reactivation: false,
             honor_client_desktop_size: None,
             offer_multitransport: None,
@@ -373,6 +503,16 @@ impl Acceptor {
     /// [`RdpServerDisplay`]: <https://docs.rs/ironrdp-server/latest/ironrdp_server/trait.RdpServerDisplay.html>
     pub fn set_honor_client_desktop_size(&mut self, max: Option<DesktopSize>) {
         self.honor_client_desktop_size = max;
+    }
+
+    /// Selects the CredSSP authentication provider before negotiation begins.
+    pub fn set_credssp_backend(&mut self, backend: crate::CredsspBackend) {
+        self.credssp_backend = backend;
+    }
+
+    /// Allows ClientInfo credentials to be validated by an external logon provider.
+    pub fn set_allow_unverified_credentials(&mut self, allow: bool) {
+        self.allow_unverified_credentials = allow;
     }
 
     /// Advertise UDP multitransport support (MS-RDPBCGR 2.2.1.4.6) and offer
@@ -540,6 +680,8 @@ impl Acceptor {
             desktop_size,
             keyboard_layout: consumed.keyboard_layout,
             keyboard_type: consumed.keyboard_type,
+            keyboard_subtype: consumed.keyboard_subtype,
+            keyboard_functional_keys_count: consumed.keyboard_functional_keys_count,
             ime_file_name: consumed.ime_file_name,
             multitransport_flags: consumed.multitransport_flags,
             early_capability_flags: consumed.early_capability_flags,
@@ -547,13 +689,19 @@ impl Acceptor {
             routing_token: consumed.routing_token,
             client_cluster_data: consumed.client_cluster_data,
             password_cookie: consumed.password_cookie,
+            client_info_flags: consumed.client_info_flags,
+            performance_flags: consumed.performance_flags,
+            remote_app_capabilities: None,
             server_capabilities: consumed.server_capabilities,
             static_channels,
+            pending_input_events: InputEventBuffer::default(),
             saved_for_reactivation,
             creds: consumed.creds,
+            credssp_backend: consumed.credssp_backend,
             received_credentials: consumed.received_credentials,
             credentials_handled: consumed.credentials_handled,
             received_auto_reconnect: consumed.received_auto_reconnect,
+            allow_unverified_credentials: consumed.allow_unverified_credentials,
             reactivation: true,
             honor_client_desktop_size: consumed.honor_client_desktop_size,
             offer_multitransport: consumed.offer_multitransport,
@@ -644,8 +792,48 @@ impl Acceptor {
     }
 
     /// Returns credentials received during the current handshake, if any.
-    pub(crate) fn received_credentials(&self) -> Option<&ReceivedCredentials> {
+    pub fn received_credentials(&self) -> Option<&ReceivedCredentials> {
         self.received_credentials.as_ref()
+    }
+
+    /// Returns the received Client Info flags, preserving them across reactivation.
+    pub fn client_info_flags(&self) -> Option<ClientInfoFlags> {
+        self.client_info_flags
+    }
+
+    /// Returns the received Extended Client Info performance flags.
+    pub fn performance_flags(&self) -> PerformanceFlags {
+        self.performance_flags
+    }
+
+    /// Returns the client's GCC Client Core Data keyboard layout ID (KLID).
+    pub fn keyboard_layout(&self) -> u32 {
+        self.keyboard_layout
+    }
+
+    /// Returns the client's GCC Client Core Data keyboard type.
+    pub fn keyboard_type(&self) -> gcc::KeyboardType {
+        self.keyboard_type
+    }
+
+    /// Returns the client's GCC Client Core Data keyboard subtype.
+    pub fn keyboard_subtype(&self) -> u32 {
+        self.keyboard_subtype
+    }
+
+    /// Returns the client's GCC Client Core Data function-key count.
+    pub fn keyboard_functional_keys_count(&self) -> u32 {
+        self.keyboard_functional_keys_count
+    }
+
+    /// Returns the client's GCC Client Core Data IME file name.
+    pub fn ime_file_name(&self) -> &str {
+        &self.ime_file_name
+    }
+
+    /// Returns the effective RemoteApp capabilities after Confirm Active.
+    pub fn remote_app_capabilities(&self) -> Option<&RemoteAppCapabilities> {
+        self.remote_app_capabilities.as_ref()
     }
 
     /// Whether credentials need handling after channel joins and ClientInfo.
@@ -738,7 +926,10 @@ impl Acceptor {
                 message_channel_id: self.message_channel_id,
                 keyboard_layout: self.keyboard_layout,
                 keyboard_type: self.keyboard_type,
+                keyboard_subtype: self.keyboard_subtype,
+                keyboard_functional_keys_count: self.keyboard_functional_keys_count,
                 ime_file_name: self.ime_file_name.clone(),
+                performance_flags: self.performance_flags,
                 multitransport_flags: self
                     .multitransport_flags
                     .unwrap_or_else(gcc::MultiTransportFlags::empty),
@@ -1060,6 +1251,8 @@ impl Sequence for Acceptor {
                 self.client_cluster_data.clone_from(&gcc_blocks.cluster);
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;
+                self.keyboard_subtype = gcc_blocks.core.keyboard_subtype;
+                self.keyboard_functional_keys_count = gcc_blocks.core.keyboard_functional_keys_count;
                 self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
                 self.multitransport_flags = gcc_blocks.multi_transport_channel.as_ref().map(|m| m.flags);
 
@@ -1250,6 +1443,13 @@ impl Sequence for Acceptor {
                 let data = data.0;
                 let client_info: rdp::ClientInfoPdu =
                     decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
+                self.client_info_flags = Some(client_info.client_info.flags);
+                self.performance_flags = client_info
+                    .client_info
+                    .extra_info
+                    .optional_data
+                    .performance_flags()
+                    .unwrap_or_else(PerformanceFlags::empty);
 
                 let auto_reconnect = client_info
                     .client_info
@@ -1268,11 +1468,12 @@ impl Sequence for Acceptor {
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
 
-                    if let Some(expected) = &self.creds {
-                        if expected != &creds {
-                            self.encode_access_denied(output)?;
-                            return Err(ConnectorError::general("invalid credentials"));
-                        }
+                    if !self.allow_unverified_credentials
+                        && let Some(expected) = &self.creds
+                        && !credentials_match(expected, &creds)
+                    {
+                        self.encode_access_denied(output)?;
+                        return Err(ConnectorError::general("invalid credentials"));
                     }
 
                     // Store credentials for later retrieval via AcceptorResult.
@@ -1390,7 +1591,17 @@ impl Sequence for Acceptor {
                     share_control_pdu: ShareControlPdu::ServerDemandActive(rdp::capability_sets::ServerDemandActive {
                         pdu: rdp::capability_sets::DemandActive {
                             source_descriptor: "RDP".into(),
-                            capability_sets: self.server_capabilities.clone(),
+                            capability_sets: self
+                                .server_capabilities
+                                .iter()
+                                .filter(|capability| {
+                                    !matches!(capability, CapabilitySet::Rail(_) | CapabilitySet::WindowList(_))
+                                        || self
+                                            .client_info_flags
+                                            .is_some_and(|flags| flags.contains(ClientInfoFlags::RAIL))
+                                })
+                                .cloned()
+                                .collect(),
                         },
                     }),
                 };
@@ -1458,6 +1669,12 @@ impl Sequence for Acceptor {
                 };
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {
+                        if self.reactivation && self.static_channels.get_by_channel_id(data.channel_id).is_some() {
+                            self.pending_input_events.push(input)?;
+                            self.state = prev_state;
+                            return Ok(Written::Nothing);
+                        }
+
                         // An Initiate Multitransport Response can legitimately land
                         // here: it travels on the message channel, and the client
                         // sends it (when it sends one at all) while resolving its
@@ -1499,11 +1716,39 @@ impl Sequence for Acceptor {
                             return Err(ConnectorError::general("expected client confirm active"));
                         };
 
+                        if self
+                            .client_info_flags
+                            .is_some_and(|flags| flags.contains(ClientInfoFlags::RAIL))
+                            && self.server_capabilities.iter().any(|capability| {
+                                matches!(capability, CapabilitySet::Rail(rail)
+                                    if rail.support_level.contains(RailSupportLevel::SUPPORTED))
+                            })
+                        {
+                            let server = RemoteAppCapabilities::from_capabilities(&self.server_capabilities)
+                                .ok_or_else(|| general_err!("server RemoteApp capabilities are incomplete"))?;
+                            let mut client = RemoteAppCapabilities::from_capabilities(&confirm.pdu.capability_sets)
+                                .ok_or_else(|| general_err!("client did not confirm RemoteApp capabilities"))?;
+                            if !(client.window_list.num_icon_caches <= server.window_list.num_icon_caches
+                                && client.window_list.num_icon_cache_entries
+                                    <= server.window_list.num_icon_cache_entries)
+                            {
+                                warn!(
+                                    client_caches = client.window_list.num_icon_caches,
+                                    client_entries = client.window_list.num_icon_cache_entries,
+                                    "Client exceeded RemoteApp icon-cache limits, disabling caching"
+                                );
+                                client.window_list.num_icon_caches = 0;
+                                client.window_list.num_icon_cache_entries = 0;
+                            }
+                            self.remote_app_capabilities = Some(client);
+                        }
+
                         (
                             Written::Nothing,
                             AcceptorState::ConnectionFinalization {
                                 channels: channels.clone(),
-                                finalization: FinalizationSequence::new(self.user_channel_id, self.io_channel_id),
+                                finalization: FinalizationSequence::new(self.user_channel_id, self.io_channel_id)
+                                    .with_input_events(mem::take(&mut self.pending_input_events)),
                                 client_capabilities: confirm.pdu.capability_sets,
                             },
                         )
