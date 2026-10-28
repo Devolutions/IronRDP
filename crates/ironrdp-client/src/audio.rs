@@ -152,12 +152,10 @@ pub(crate) fn attach_playback(
 ///
 /// Windows opens and closes the AUDIO_INPUT (MS-RDPEAI) dynamic virtual channel repeatedly
 /// over the lifetime of a session, as applications on the remote side grab and release the
-/// microphone. Registering this channel via `with_dynamic_channel` (the `OnceListener` path)
-/// hands out its `RdpeaiClient` exactly once: after the first Close, `OnceListener::create`
-/// keeps returning `None`, so the client answers every later Create Request with
-/// `NO_LISTENER` and the microphone silently stops working for the rest of the session.
-/// `with_listener` + this factory recreates the processor (and the underlying capture
-/// backend/cpal stream) on every open, matching how the RDPEWA listener is wired.
+/// microphone. Registering this channel via `with_dynamic_channel` would hand the same
+/// `RdpeaiClient` back on every open. `with_listener` + this factory recreates the processor
+/// (and the underlying capture backend/cpal stream) on every open, matching how the RDPEWA
+/// listener is wired.
 pub(crate) struct AudioInputListener {
     pub(crate) sender: RdpInputSender,
     pub(crate) config: AudioConfig,
