@@ -1,6 +1,7 @@
 [package]
 name = "ironrdp-replay-client"
 version = "0.1.0"
+publish = false
 readme = "README.md"
 description = "Utility tool to replay RDP graphics pipeline for debugging purposes"
 edition.workspace = true
