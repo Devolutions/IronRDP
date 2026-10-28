@@ -249,12 +249,11 @@ impl NowEndpoint {
                 Err(_elapsed) => return Err(NowEndpointError::Unavailable { timeout, last_error }),
             }
 
+            // The pause ends no later than the deadline, so the request never answers after it.
+            sleep_until((Instant::now() + RETRY_DELAY).min(deadline)).await;
             if deadline <= Instant::now() {
                 return Err(NowEndpointError::Unavailable { timeout, last_error });
             }
-
-            // The pause ends no later than the deadline, so the request never answers after it.
-            sleep_until((Instant::now() + RETRY_DELAY).min(deadline)).await;
         }
     }
 

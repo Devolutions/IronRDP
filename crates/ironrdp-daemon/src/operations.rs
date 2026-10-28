@@ -85,7 +85,7 @@ pub struct LiveEvents {
     state: Weak<Mutex<OperationStateStore>>,
     operation_id: u64,
     next_sequence: u64,
-    changed: watch::Receiver<()>,
+    changed: Option<watch::Receiver<()>>,
 }
 
 impl LiveEvents {
@@ -100,8 +100,15 @@ impl LiveEvents {
                     self.next_sequence = event.sequence.saturating_add(1);
                     return Some(event);
                 }
-                NextEvent::End => return None,
-                NextEvent::Pending => self.changed.changed().await.ok()?,
+                NextEvent::End => {
+                    self.changed = None;
+                    return None;
+                }
+                NextEvent::Pending => {
+                    if self.changed.as_mut()?.changed().await.is_err() {
+                        self.changed = None;
+                    }
+                }
             }
         }
     }
@@ -264,7 +271,7 @@ impl OperationManager {
                 state: Arc::downgrade(&self.state),
                 operation_id,
                 next_sequence: record.info.next_sequence,
-                changed: state.changed.subscribe(),
+                changed: running.then(|| state.changed.subscribe()),
             },
         })
     }
@@ -537,7 +544,7 @@ impl OperationManager {
         }
         state.terminal_order.push_back(operation_id);
         trim_retention(&mut state);
-        state.changed.send_replace(());
+        state.changed = watch::Sender::new(());
     }
 
     fn clear_cancellation_requested(&self, operation_id: u64) {
@@ -1104,15 +1111,41 @@ mod tests {
     // oracle: mutant a replay of a finished operation refused because other attachments are waiting on a running one
     #[test]
     fn a_finished_operation_can_be_replayed_while_live_attachments_are_at_their_bound() {
-        let (manager, id) = running_manager();
-        let _attachments: Vec<_> =
-            core::iter::repeat_with(|| manager.attach(id, None).expect("attachment is accepted"))
+        let (manager, finished_id) = running_manager();
+        let _prior_attachments: Vec<_> =
+            core::iter::repeat_with(|| manager.attach(finished_id, None).expect("attachment is accepted"))
                 .take(MAX_LIVE_SUBSCRIBERS)
                 .collect();
-        manager.finish(id, OperationState::Completed, Some(0), None);
+        manager.finish(finished_id, OperationState::Completed, Some(0), None);
+        let _replays: Vec<_> =
+            core::iter::repeat_with(|| manager.attach(finished_id, None).expect("replay is accepted"))
+                .take(MAX_LIVE_SUBSCRIBERS)
+                .collect();
+
+        let running_id = 2;
+        lock(&manager.state).records.insert(
+            running_id,
+            OperationRecord {
+                info: OperationInfo {
+                    id: running_id,
+                    kind: NowExecutionKind::Process,
+                    state: OperationState::Running,
+                    detached: false,
+                    exit_code: None,
+                    error: None,
+                    retained_output_bytes: 0,
+                    next_sequence: 0,
+                },
+                events: VecDeque::new(),
+            },
+        );
+        let _live_attachments: Vec<_> =
+            core::iter::repeat_with(|| manager.attach(running_id, None).expect("live attachment is accepted"))
+                .take(MAX_LIVE_SUBSCRIBERS)
+                .collect();
 
         manager
-            .attach(id, None)
+            .attach(finished_id, None)
             .expect("a finished operation has no live stream to bound");
     }
 }
