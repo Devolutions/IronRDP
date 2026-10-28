@@ -11,14 +11,11 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+autotests = false
 
 [lib]
 doctest = false
 test = false
-
-[[test]]
-name = "rpch_client"
-path = "tests/rpch_client.rs"
 
 [features]
 default = []

@@ -161,16 +161,12 @@ impl Encode for HandshakeReqPkt {
 
 /// 2.2.10.11 HTTP_HANDSHAKE_RESPONSE_PACKET Structure
 #[derive(Debug)]
-#[cfg_attr(
-    not(feature = "test-support"),
-    expect(unreachable_pub, reason = "exposed only through test-support")
-)]
-pub struct HandshakeRespPkt {
-    pub(crate) error_code: u32,
-    pub(crate) ver_major: u8,
-    pub(crate) ver_minor: u8,
-    pub(crate) server_version: u16,
-    pub(crate) extended_auth: HttpExtendedAuth,
+pub(crate) struct HandshakeRespPkt {
+    pub error_code: u32,
+    pub ver_major: u8,
+    pub ver_minor: u8,
+    pub server_version: u16,
+    pub extended_auth: HttpExtendedAuth,
 }
 
 impl HandshakeRespPkt {
@@ -197,15 +193,11 @@ const HTTP_TUNNEL_PACKET_FIELD_REAUTH: u16 = 0x2;
 
 /// 2.2.10.18 HTTP_TUNNEL_PACKET
 #[derive(Default)]
-#[cfg_attr(
-    not(feature = "test-support"),
-    expect(unreachable_pub, reason = "exposed only through test-support")
-)]
-pub struct TunnelReqPkt {
-    pub(crate) caps: u32,
-    pub(crate) fields_present: u16,
-    pub(crate) _reserved: u16,
-    pub(crate) reauth_tunnel_context: Option<u64>,
+pub(crate) struct TunnelReqPkt {
+    pub caps: u32,
+    pub fields_present: u16,
+    pub _reserved: u16,
+    pub reauth_tunnel_context: Option<u64>,
 }
 
 impl Encode for TunnelReqPkt {
@@ -352,11 +344,7 @@ impl Decode<'_> for TunnelRespPkt {
 
 /// 2.2.10.7 HTTP_EXTENDED_AUTH_PACKET Structure
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(feature = "test-support"),
-    expect(unreachable_pub, reason = "exposed only through test-support")
-)]
-pub struct ExtendedAuthPkt {
+pub(crate) struct ExtendedAuthPkt {
     pub(crate) error_code: u32,
     pub(crate) auth_blob: Vec<u8>,
 }
@@ -456,11 +444,7 @@ const HTTP_TUNNEL_AUTH_RESPONSE_FIELD_SOH_RESPONSE: u16 = 0x4;
 /// [2.2.10.16]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
 /// [2.2.10.17]: https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-TSGU/%5bMS-TSGU%5d.pdf#page=70
 #[derive(Debug, Default)]
-#[cfg_attr(
-    not(feature = "test-support"),
-    expect(unreachable_pub, reason = "exposed only through test-support")
-)]
-pub struct TunnelAuthRespPkt {
+pub(crate) struct TunnelAuthRespPkt {
     pub(crate) error_code: u32,
     fields_present: u16,
     _reserved: u16,
@@ -837,24 +821,4 @@ pub fn gateway_code_label(code: u32) -> Option<&'static str> {
         0x8009_030C => "SEC_E_LOGON_DENIED",
         _ => return None,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn channel_pkt_encodes_requested_port() {
-        let pkt = ChannelPkt {
-            resources: vec!["rdp.example.com".to_owned()],
-            port: 2179,
-            protocol: 3,
-        };
-        let mut buf = vec![0; pkt.size()];
-        let mut dst = WriteCursor::new(&mut buf);
-        pkt.encode(&mut dst).expect("encode");
-
-        // HTTP_PACKET_HEADER is 8 bytes; the next two bytes are resources/alt_names counts.
-        assert_eq!(&buf[10..12], &2179u16.to_le_bytes());
-    }
 }

@@ -340,6 +340,10 @@ This is to keep iteration time short.
 
 Contains all integration tests for code living in the extra tier, in a single binary, organized in modules.
 
+#### [`crates/ironrdp-mstsgu-tests`](./crates/ironrdp-mstsgu-tests)
+
+Process-isolated Mstsgu authentication and proxy checks, built and launched by `ironrdp-testsuite-extra` with child-specific environment variables.
+
 #### [`crates/ironrdp-fuzzing`](./crates/ironrdp-fuzzing)
 
 Provides test case generators and oracles for use with fuzzing.

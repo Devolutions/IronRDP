@@ -6,8 +6,6 @@ mod macros;
 
 #[doc(hidden)]
 pub mod http_auth;
-#[cfg(test)]
-mod mock_rpch;
 mod packet_io;
 mod proto;
 #[doc(hidden)]

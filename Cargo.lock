@@ -1713,6 +1713,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "escargot"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11c3aea32bc97b500c9ca6a72b768a26e558264303d101d3409cf6d57a9ed0cf"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "expect-test"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3169,6 +3180,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-mstsgu-tests"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "ironrdp-mstsgu",
+ "ironrdp-tls",
+ "sspi",
+ "tokio",
+ "tokio-native-tls",
+]
+
+[[package]]
 name = "ironrdp-nscodec"
 version = "0.4.0"
 dependencies = [
@@ -3635,7 +3658,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
- "bitflags 2.13.1",
+ "escargot",
  "futures-util",
  "http-body-util",
  "hyper",
@@ -3655,7 +3678,6 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-egfx",
- "ironrdp-error 0.2.0",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-mstsgu",
@@ -3680,9 +3702,6 @@ dependencies = [
  "picky",
  "png",
  "proptest",
- "log",
- "picky-asn1-der",
- "picky-asn1-x509",
  "rcgen",
  "rstest",
  "semver",

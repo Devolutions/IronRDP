@@ -122,90 +122,17 @@ fn smart_card_debug_redacts_secrets() {
 }
 
 // oracle: regression Devolutions/IronRDP#1743.
-#[cfg(not(feature = "smartcard"))]
-#[test]
-fn smart_card_without_feature_is_an_explicit_error() {
-    let smart_card = smart_card_credentials();
-    let result = GatewayHttpAuth::from_challenges("alice", "password", Some(&smart_card), None, &["Negotiate"]);
-    let Err(error) = result else {
-        panic!("smart-card authentication needs its feature");
-    };
-    let error = error.to_string();
-
-    assert!(error.contains("smart-card"));
-    assert!(error.contains("smartcard"));
-    assert!(!error.contains("sensitive-pin"));
-    assert!(!error.contains("sensitive-certificate"));
-    assert!(!error.contains("sensitive-private-key"));
+#[tokio::test]
+async fn smart_card_rejects_invalid_credentials_and_challenges() {
+    super::process::run("smartcard-auth", None, None)
+        .await
+        .expect("isolated smartcard authentication checks");
 }
 
 // oracle: regression Devolutions/IronRDP#1743.
-#[cfg(feature = "smartcard")]
-#[test]
-fn smart_card_requires_username() {
-    let mut smart_card = smart_card_credentials();
-    smart_card.username.clear();
-    let result = GatewayHttpAuth::from_challenges("alice", "password", Some(&smart_card), None, &["Negotiate"]);
-    let Err(error) = result else {
-        panic!("smart-card authentication requires a username");
-    };
-
-    assert!(error.to_string().contains("username"));
-}
-
-// oracle: regression Devolutions/IronRDP#1743.
-#[cfg(feature = "smartcard")]
-#[test]
-fn smart_card_requires_negotiate() {
-    let smart_card = smart_card_credentials();
-    let result = GatewayHttpAuth::from_challenges("alice", "password", Some(&smart_card), None, &["NTLM"]);
-    let Err(error) = result else {
-        panic!("smart-card authentication requires Negotiate");
-    };
-    let error = error.to_string();
-
-    assert!(error.contains("Negotiate"));
-    assert!(!error.contains("sensitive-pin"));
-    assert!(!error.contains("sensitive-certificate"));
-    assert!(!error.contains("sensitive-private-key"));
-}
-
-// oracle: regression Devolutions/IronRDP#1743.
-#[cfg(feature = "smartcard")]
-#[test]
-fn smart_card_rejects_malformed_negotiate_token() {
-    let smart_card = smart_card_credentials();
-    let result = GatewayHttpAuth::from_challenges("alice", "password", Some(&smart_card), None, &["Negotiate !"]);
-    let Err(error) = result else {
-        panic!("malformed Negotiate token must fail before PKINIT initialization");
-    };
-    let error = error.to_string();
-
-    assert!(error.contains("decode negotiate challenge"));
-    assert!(!error.contains("sensitive-pin"));
-    assert!(!error.contains("sensitive-certificate"));
-    assert!(!error.contains("sensitive-private-key"));
-}
-
-// oracle: regression Devolutions/IronRDP#1743.
-#[cfg(feature = "smartcard")]
-#[test]
-fn smart_card_recognizes_combined_negotiate_challenge() {
-    let smart_card = smart_card_credentials();
-    let result = GatewayHttpAuth::from_challenges(
-        "alice",
-        "password",
-        Some(&smart_card),
-        None,
-        &[r#"NTLM, Negotiate !, Basic realm="RDG""#],
-    );
-    let Err(error) = result else {
-        panic!("malformed Negotiate token must fail before PKINIT initialization");
-    };
-    let error = error.to_string();
-
-    assert!(error.contains("decode negotiate challenge"));
-    assert!(!error.contains("sensitive-pin"));
-    assert!(!error.contains("sensitive-certificate"));
-    assert!(!error.contains("sensitive-private-key"));
+#[tokio::test]
+async fn smart_card_without_feature_is_an_explicit_error() {
+    super::process::run("smartcard-disabled", None, None)
+        .await
+        .expect("isolated missing-smartcard-feature check");
 }
