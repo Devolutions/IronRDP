@@ -7,7 +7,7 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class TouchFrameBuilder
+public partial class TouchFrameBuilder: IDisposable
 {
     private unsafe RustHandle<Raw.TouchFrameBuilder>? _inner;
 
@@ -170,5 +170,19 @@ public partial class TouchFrameBuilder
             inner.ReleaseWrapper();
             _inner = null;
         }
+    }
+    /// <summary>
+    /// Releases this wrapper's native resource immediately.
+    /// </summary>
+    /// <remarks>
+    /// Retained-borrow returns sourced from a manually_disposable opaque are
+    /// rejected during generation, so Dispose is not a parent-invalidation API.
+    /// Callers must not race Dispose with calls from another thread. Later calls
+    /// throw <see cref="ObjectDisposedException"/>.
+    /// </remarks>
+    public void Dispose()
+    {
+        Cleanup();
+        GC.SuppressFinalize(this);
     }
 }

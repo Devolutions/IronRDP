@@ -35,12 +35,12 @@ Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from 
   It throws while the channel is not ready or the server suspended input, and the frames stay pending.
   One frame carries at most 32767 touch or pen frames, so call again while `HasPendingFrames` is true.
 - `activeStage.EncodeRdpeiDismissHovering(contactId)` tells the server to stop tracking a hovering touch contact.
-- Call `CancelAll()` when the window loses focus and `Reset()` when the session ends.
+- Call `CancelAll()` when the window loses focus, `Reset()` when the session ends, and dispose the builders with it: a long suspension can leave tens of thousands of frames pending in native memory.
 
 ## Migrating from 2026.10.19
 
 - Properties replace the `GetX()` and `SetX()` methods they duplicated.
-- Only these types are `IDisposable`: `ActiveStage`, `ActiveStageOutput`, `ActiveStageOutputIterator`, `ClipboardMessage`, `ClipboardSvcMessage`, `CredsspProcessGenerator`, `DecodedImage`, `DecodedPointer`, `FfiFileContentsResponse`, `FormatDataResponse`, `VecU8`, `WinCliprdr` and `WriteBuf`.
+- Only these types are `IDisposable`: `ActiveStage`, `ActiveStageOutput`, `ActiveStageOutputIterator`, `ClipboardMessage`, `ClipboardSvcMessage`, `CredsspProcessGenerator`, `DecodedImage`, `DecodedPointer`, `FfiFileContentsResponse`, `FormatDataResponse`, `PenFrameBuilder`, `TouchFrameBuilder`, `VecU8`, `WinCliprdr` and `WriteBuf`.
   Every other type is released by its finalizer, so drop `using` and `Dispose()` on it.
 - Dispose `WinCliprdr` on the thread that created it, because only that thread can remove its window subclass.
 - Dispose a `CredsspProcessGenerator` before the next call on its `CredsspSequence`.

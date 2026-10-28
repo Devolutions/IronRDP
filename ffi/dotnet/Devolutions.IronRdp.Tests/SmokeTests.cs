@@ -498,7 +498,7 @@ internal static class SmokeTests
             var state = stage.RdpeiInputState;
             True(!state.Touch && !state.Suspended, "channel is not ready before SC_READY");
 
-            var touches = TouchFrameBuilder.New(10);
+            using var touches = TouchFrameBuilder.New(10);
             touches.Push(1, TouchPhase.Started, 100, 200);
             var error = Throws<IronRdpException>(() => stage.EncodeRdpeiTouch(touches));
             True(error.Message.Contains("not ready"), $"error message: {error.Message}");
@@ -509,7 +509,8 @@ internal static class SmokeTests
         yield return ("rdpei touch with nothing pending encodes nothing", () =>
         {
             var stage = ReadyRdpeiStage();
-            True(stage.EncodeRdpeiTouch(TouchFrameBuilder.New(10)) is null, "no frame without touches");
+            using var touches = TouchFrameBuilder.New(10);
+            True(stage.EncodeRdpeiTouch(touches) is null, "no frame without touches");
         });
 
         // oracle: spec MS-RDPBCGR §2.2.6.1 (Virtual Channel PDU), MS-RDPEDYC §2.2.3.1 (DYNVC_DATA),
@@ -521,7 +522,7 @@ internal static class SmokeTests
             var stage = ReadyRdpeiStage();
             True(stage.RdpeiInputState.Touch, "channel negotiated touch");
 
-            var touches = TouchFrameBuilder.New(10);
+            using var touches = TouchFrameBuilder.New(10);
             touches.Push(7, TouchPhase.Started, 100, 200);
             var frame = ToArray(stage.EncodeRdpeiTouch(touches)!);
             True(!touches.HasPendingFrames, "frames were taken");
@@ -559,7 +560,7 @@ internal static class SmokeTests
         yield return ("rdpei touch splits more than 32767 pending frames across events", () =>
         {
             var stage = ReadyRdpeiStage();
-            var touches = TouchFrameBuilder.New(10);
+            using var touches = TouchFrameBuilder.New(10);
             touches.Push(1, TouchPhase.Started, 10, 10);
             // A second change to the same contact starts a new frame, so these are 32767 more frames.
             for (int i = 1; i <= 32767; i++)
@@ -601,6 +602,37 @@ internal static class SmokeTests
             True(stage.EncodeRdpeiTouch(touches) is null, "nothing left to encode");
         });
 
+        // oracle: spec MS-RDPEI §2.2.3.3 (encodeTime is the time since the oldest frame in this PDU was
+        // generated) and §2.2.3.3.1 (frameOffset is 0 for the first frame of a transaction, so it does
+        // not carry the idle time between two gestures)
+        yield return ("rdpei touch encodeTime after a split ignores the idle gap between gestures", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            using var touches = TouchFrameBuilder.New(10);
+            touches.Push(1, TouchPhase.Started, 10, 10);
+            touches.Push(1, TouchPhase.Ended, 10, 10);
+            Thread.Sleep(800);
+            touches.Push(2, TouchPhase.Started, 20, 20);
+            for (int i = 1; i <= 32766; i++)
+            {
+                touches.Push(2, TouchPhase.Moved, 20 + i % 7, 20);
+            }
+
+            touches.Push(2, TouchPhase.Ended, 20, 20);
+
+            var first = new RdpInputReader(ToArray(stage.EncodeRdpeiTouch(touches)!));
+            first.U16();
+            first.U32();
+            True(800 <= first.FourByteUnsigned(), "first encodeTime spans the idle gap before the first gesture's frames");
+            Equal(32767u, first.TwoByteUnsigned(), "first frameCount is the maximum");
+
+            var second = new RdpInputReader(ToArray(stage.EncodeRdpeiTouch(touches)!));
+            second.U16();
+            second.U32();
+            True(second.FourByteUnsigned() < 400, "second encodeTime is the age of the second gesture's last frames, not the idle gap");
+            Equal(3u, second.TwoByteUnsigned(), "second frameCount carries the remainder");
+        });
+
         // oracle: spec MS-RDPEI §3.2.5.1 (the client sends CS_READY only after SC_READY) and the rustdoc of
         // ActiveStage::encode_rdpei_pen (a refused encode leaves the frames pending)
         yield return ("rdpei pen and dismiss hovering are refused before the channel is ready", () =>
@@ -608,7 +640,7 @@ internal static class SmokeTests
             var (stage, _) = ConnectedStage(8, 4, rdpei: true);
             True(!stage.RdpeiInputState.Pen, "pen is not negotiated before SC_READY");
 
-            var pens = PenFrameBuilder.New();
+            using var pens = PenFrameBuilder.New();
             pens.Push(1, PenPhase.Touching, 100, 200);
             var error = Throws<IronRdpException>(() => stage.EncodeRdpeiPen(pens));
             True(error.Message.Contains("not ready"), $"pen error message: {error.Message}");
@@ -627,7 +659,7 @@ internal static class SmokeTests
             var stage = ReadyRdpeiStage();
             True(stage.RdpeiInputState.Pen, "protocol version 2 negotiates pen");
 
-            var pens = PenFrameBuilder.New();
+            using var pens = PenFrameBuilder.New();
             pens.Push(1, PenPhase.Hovering, 50, 60);
             pens.PushWithAttributes(1, PenPhase.Touching, 51, 61, new PenAttributes
             {
@@ -698,7 +730,7 @@ internal static class SmokeTests
         yield return ("rdpei pen splits more than 32767 pending frames across events", () =>
         {
             var stage = ReadyRdpeiStage();
-            var pens = PenFrameBuilder.New();
+            using var pens = PenFrameBuilder.New();
             pens.Push(1, PenPhase.Touching, 10, 10);
             // Every sample is one frame, so these are 32767 more frames.
             for (int i = 1; i <= 32767; i++)
