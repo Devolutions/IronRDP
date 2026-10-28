@@ -173,6 +173,34 @@ internal static class SmokeTests
             Equal(TpktX224ConfirmSelectingTls.Length, (int)info!.Length, "PDU length");
         });
 
+        // oracle: spec MS-RDPEPS §2.2.1.1 (RDP_PRECONNECTION_PDU_V1), same vector as ironrdp-testsuite-core tests/pcb.rs
+        yield return ("preconnection blob v1 encodes the id", () =>
+        {
+            var bytes = ToArray(PreconnectionBlob.NewV1(0xEEC699EB).Encode());
+            True(bytes.SequenceEqual(new byte[]
+            {
+                0x10, 0x00, 0x00, 0x00, // cbSize = 16
+                0x00, 0x00, 0x00, 0x00, // Flags = 0
+                0x01, 0x00, 0x00, 0x00, // Version = 1
+                0xeb, 0x99, 0xc6, 0xee, // Id = 0xEEC699EB
+            }), $"encoded bytes: {Convert.ToHexString(bytes)}");
+        });
+
+        // oracle: spec MS-RDPEPS §2.2.1.2 (cchPCB counts the null terminator), same vector as ironrdp-testsuite-core tests/pcb.rs
+        yield return ("preconnection blob v2 encodes a null-terminated UTF-16 payload", () =>
+        {
+            var bytes = ToArray(PreconnectionBlob.NewV2(0, "TestVM").Encode());
+            True(bytes.SequenceEqual(new byte[]
+            {
+                0x20, 0x00, 0x00, 0x00, // cbSize = 32
+                0x00, 0x00, 0x00, 0x00, // Flags = 0
+                0x02, 0x00, 0x00, 0x00, // Version = 2
+                0x00, 0x00, 0x00, 0x00, // Id = 0
+                0x07, 0x00, // cchPCB = 7 characters, "TestVM" plus the null terminator
+                0x54, 0x00, 0x65, 0x00, 0x73, 0x00, 0x74, 0x00, 0x56, 0x00, 0x4d, 0x00, 0x00, 0x00, // wszPCB = "TestVM\0"
+            }), $"encoded bytes: {Convert.ToHexString(bytes)}");
+        });
+
         yield return ("framed serializes writes and releases its lock on another thread", () =>
         {
             var stream = new PendingWriteStream();
@@ -327,6 +355,16 @@ internal static class SmokeTests
     }
 
     private static byte SurfaceByte(int width, int x, int y) => (byte)(y * width * 4 + x + 1);
+
+    private static byte[] ToArray(VecU8 vec)
+    {
+        using (vec)
+        {
+            var bytes = new byte[(int)vec.Size];
+            vec.Fill(bytes);
+            return bytes;
+        }
+    }
 
     // Sends one Fast-Path SetSurfaceBits (CODEC_ID_NONE, 32 bpp, bottom-up rows, MS-RDPBCGR §2.2.9.2.1)
     // and returns the GraphicsUpdate rectangle IronRDP reports for it.
