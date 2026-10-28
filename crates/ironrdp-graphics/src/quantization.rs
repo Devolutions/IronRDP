@@ -29,17 +29,10 @@ pub fn decode(buffer: &mut [i16], quant: &Quant) {
         .for_each(decode_chunk);
 }
 
-#[expect(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    reason = "clamped to i16::MIN..=i16::MAX before cast"
-)]
 fn decode_block(buffer: &mut [i16], factor: i16) {
     if factor > 0 {
-        let shift = factor.min(16);
-        // INVARIANT: 1 <= shift <= 16.
         for value in buffer {
-            *value = (i32::from(*value) << shift).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+            *value <<= factor;
         }
     }
 }
