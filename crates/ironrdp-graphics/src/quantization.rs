@@ -37,10 +37,19 @@ fn decode_block(buffer: &mut [i16], factor: i16) {
     }
 }
 
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "1 <= shift <= 16, so rounded right-shift of i16 fits in i16"
+)]
 fn encode_block(buffer: &mut [i16], factor: i16) {
     if factor > 0 {
+        // For factor >= 16, scale >= 65536 and half >= 32768, so every i16 rounds to 0, matching shift = 16.
+        let shift = factor.min(16);
+        // INVARIANT: 1 <= shift <= 16.
+        let half = 1i32 << (shift - 1);
         for value in buffer {
-            *value >>= factor;
+            *value = ((i32::from(*value) + half) >> shift) as i16;
         }
     }
 }
