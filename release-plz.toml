@@ -96,14 +96,3 @@ release = false
 [[package]]
 name = "ironrdp-vmconnect"
 release = false
-
-# ironrdp-client-glutin, ironrdp-glutin-renderer, and ironrdp-replay-client are not ready to be published yet.
-[[package]]
-name = "ironrdp-client-glutin"
-release = false
-[[package]]
-name = "ironrdp-glutin-renderer"
-release = false
-[[package]]
-name = "ironrdp-replay-client"
-release = false
