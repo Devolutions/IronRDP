@@ -84,7 +84,7 @@ fn tunneled_capture(client_body: Vec<u8>, server_body: Vec<u8>) -> Plaintext {
 }
 
 #[test]
-// oracle: regression #2153 gateway upgrade and payload selection
+// oracle: mutant treating the gateway upgrade as a direct RDP stream
 fn detects_gateway_upgrade() {
     let plaintext = tunneled_capture(Vec::new(), Vec::new());
     assert!(is_gateway_tunnel(&plaintext));
@@ -107,12 +107,14 @@ fn extracts_data_packets_from_masked_client_frames() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, rdp.to_vec())]);
 }
 
 #[test]
-// oracle: regression #2153 gateway upgrade and payload selection
+// oracle: mutant treating interim HTTP authentication responses as tunnel payload
 fn skips_interim_authentication_round_trips() {
     let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
     let mut client = request_head();
@@ -129,7 +131,9 @@ fn skips_interim_authentication_round_trips() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, rdp.to_vec())]);
 }
 
@@ -145,7 +149,9 @@ fn reassembles_packets_split_across_frames() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.clone())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, rdp)]);
 }
 
@@ -161,7 +167,9 @@ fn merges_packets_coalesced_in_one_frame() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, first.to_vec()), (1, second.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, first.to_vec())]);
 }
 
@@ -177,11 +185,12 @@ fn skips_ping_frames_and_stops_at_close() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
 }
 
 #[test]
-// oracle: regression #2153 gateway upgrade and payload selection
+// oracle: regression #2153 empty gateway tunnel diagnostic
 fn rejects_tunneled_capture_without_data_packets() {
     let plaintext = tunneled_capture(client_frame(&tsgu_control_packet(0x1, &[0; 12])), server_frame(&[]));
 

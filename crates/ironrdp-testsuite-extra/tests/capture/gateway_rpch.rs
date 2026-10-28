@@ -53,11 +53,14 @@ fn response_pdu(call_id: u32, stub: &[u8]) -> Vec<u8> {
 
 fn authenticated_response_pdu(call_id: u32, stub: &[u8]) -> Vec<u8> {
     let mut pdu = response_pdu(call_id, stub);
-    pdu.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]); // Security trailer.
-    pdu.push(0); // Authentication token.
+    let auth_pad_length =
+        u8::try_from((16 - (pdu.len() - COMMON_HEADER) % 16) % 16).expect("authentication padding fits u8");
+    pdu.resize(pdu.len() + usize::from(auth_pad_length), 0); // Authentication padding.
+    pdu.extend_from_slice(&[0x0a, 0x05, auth_pad_length, 0, 0, 0, 0, 0]); // NTLM integrity security trailer.
+    pdu.extend_from_slice(&[0; 16]); // NTLM message-integrity verifier.
     let fragment_length = u16::try_from(pdu.len()).expect("fragment length fits u16");
     pdu[8..10].copy_from_slice(&fragment_length.to_le_bytes());
-    pdu[10..12].copy_from_slice(&1u16.to_le_bytes());
+    pdu[10..12].copy_from_slice(&16u16.to_le_bytes());
     pdu
 }
 
@@ -129,7 +132,9 @@ fn extracts_send_to_server_and_receive_pipe_payloads() {
 
     let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, cc.to_vec())]);
 }
 
@@ -143,6 +148,7 @@ fn handles_dce_rpc_authentication_trailers() {
 
     let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, cc.to_vec())]);
 }
 
@@ -162,7 +168,9 @@ fn extracts_authenticated_send_to_server_payload_after_receive_pipe_setup() {
 
     let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, cc.to_vec())]);
 }
 
@@ -197,12 +205,14 @@ fn skips_non_data_requests_and_control_responses() {
 
     let inner = extract_rpch_tunneled_rdp(&in_channel(client_body), &out_channel(server_body)).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, cc.to_vec()), (2, data.to_vec())]);
 }
 
 #[test]
-// oracle: regression #2153 RPC-over-HTTP payload and provenance preservation
+// oracle: mutant treating interim HTTP authentication responses as RPC payload
 fn strips_authentication_round_trips() {
     let rdp = [1u8, 2, 3];
     let mut client = b"RPC_IN_DATA /rpc/rpcproxy.dll?x HTTP/1.1\r\nContent-Length: 0\r\n\r\n".to_vec();
@@ -222,7 +232,9 @@ fn strips_authentication_round_trips() {
 
     let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, vec![0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0])]);
 }
 
@@ -243,11 +255,12 @@ fn reassembles_fragmented_send_to_server_stubs() {
 
     let inner = extract_rpch_tunneled_rdp(&in_channel(body), &out_channel(response_pdu(6, &cc))).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
 }
 
 #[test]
-// oracle: regression #2153 RPC-over-HTTP payload and provenance preservation
+// oracle: regression #2153 empty gateway tunnel diagnostic
 fn rejects_a_tunnel_without_rdp_payloads() {
     let input = in_channel(request_pdu(1, 1, &[0u8; 32]));
     let output = out_channel(response_pdu(1, &[0u8; 16]));
@@ -259,7 +272,7 @@ fn rejects_a_tunnel_without_rdp_payloads() {
 }
 
 #[test]
-// oracle: regression #2153 RPC-over-HTTP payload and provenance preservation
+// oracle: mutant losing the source-packet attribution of recovered RPC payloads
 fn preserves_source_packet_numbers() {
     let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
     let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
@@ -278,12 +291,14 @@ fn preserves_source_packet_numbers() {
 
     let inner = extract_rpch_tunneled_rdp(&input, &output).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(10, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(20, cc.to_vec())]);
 }
 
 #[test]
-// oracle: regression #2153 RPC-over-HTTP payload and provenance preservation
+// oracle: mutant rejecting captured little-endian SendToServer buffer lengths
 fn accepts_little_endian_send_to_server_lengths() {
     let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
     let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
@@ -295,6 +310,7 @@ fn accepts_little_endian_send_to_server_lengths() {
 
     let inner = extract_rpch_tunneled_rdp(&input, &out_channel(response_pdu(6, &cc))).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
 }
 
@@ -313,6 +329,7 @@ fn extracts_receive_pipe_without_last_frag() {
     )
     .unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, cc.to_vec()), (2, data.to_vec())]);
 }
 
@@ -330,11 +347,12 @@ fn skips_receive_pipe_final_return_code() {
     )
     .unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, cc.to_vec())]);
 }
 
 #[test]
-// oracle: spec MS-TSGU §3.6.5.1 and §3.6.5.4
+// oracle: mutant stopping at the first RPC IN candidate without RDP data
 fn pairs_a_later_in_channel_when_the_first_has_no_rdp() {
     let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
     let cc = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0];
@@ -344,6 +362,8 @@ fn pairs_a_later_in_channel_when_the_first_has_no_rdp() {
 
     let inner = extract_rpch_from_flows(&[dead_in, live_in, output]).unwrap().unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, cc.to_vec())]);
 }

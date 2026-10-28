@@ -9,7 +9,7 @@ use super::transport::{confirm, read, request};
 const TLS_VERSION_1_2: u16 = 0x0303;
 
 #[test]
-// oracle: regression #2153 direct RDP without TLS diagnostic
+// oracle: mutant misclassifying a direct RDP stream without TLS as a missing-secret error
 fn reports_standard_security_for_direct_rdp_without_tls() {
     let capture = read(
         "standard-security",
@@ -25,7 +25,7 @@ fn reports_standard_security_for_direct_rdp_without_tls() {
 }
 
 #[test]
-// oracle: regression #2153 missing TLS secret diagnostic
+// oracle: mutant accepting TLS without the matching key-log entry
 fn rejects_tls_without_matching_key_log_entry() {
     let client_hello = hello(1, [1; 32], None);
     let server_hello = hello(2, [3; 32], Some(0x009c));
@@ -94,6 +94,7 @@ fn ignores_a_truncated_trailing_tls_record() {
     );
 
     let plaintext = decrypt_tls(&capture).expect("decrypt complete record before truncated trailing record");
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(plaintext.client, vec![(2, b"client".to_vec())]);
 }
 
@@ -158,7 +159,9 @@ fn decrypts_tls13_handshake_and_application_records() {
 
     let plaintext = decrypt_tls(&capture).expect("decrypt TLS 1.3 capture");
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(plaintext.client, vec![(4, b"client".to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(plaintext.server, vec![(5, b"server".to_vec())]);
 }
 
@@ -209,7 +212,9 @@ fn decrypts_tls12_application_data() {
 
     let plaintext = decrypt_tls(&capture).expect("decrypt TLS 1.2 capture");
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(plaintext.client, vec![(2, b"client".to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(plaintext.server, vec![(3, b"server".to_vec())]);
 }
 

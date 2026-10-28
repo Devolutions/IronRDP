@@ -291,6 +291,7 @@ fn decrypts_resumed_tls12_with_external_key_log() {
     capture.add_tls_key_log(&key_log);
 
     let plaintext = decrypt_tls(&capture).expect("decrypt with external synthetic key log");
+    // oracle: mutant losing the source-packet attribution of decrypted application data.
     assert_eq!(plaintext.client, vec![(3, b"client".to_vec())]);
     assert_eq!(plaintext.server, vec![(4, b"server".to_vec())]);
 
@@ -359,7 +360,7 @@ fn decrypts_gateway_tunnel_with_external_key_log() {
 }
 
 #[test]
-// oracle: regression #2153 unreadable external TLS key-log diagnostic
+// oracle: mutant swallowing external TLS key-log read errors
 fn reports_invalid_key_log_file() {
     let capture_path = temporary_path("invalid-key-log");
     let key_log_path = capture_path.with_extension("log");

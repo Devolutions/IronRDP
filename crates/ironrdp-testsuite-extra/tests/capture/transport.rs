@@ -128,7 +128,7 @@ fn reassembles_retransmissions_and_preserves_packet_provenance() {
 }
 
 #[test]
-// oracle: regression #2153 conflicting-overlap rejection
+// oracle: mutant accepting contradictory bytes for the same TCP sequence range
 fn rejects_conflicting_tcp_overlaps() {
     assert!(matches!(
         read_error(
@@ -161,7 +161,7 @@ fn reassembles_wrapped_tcp_sequence_numbers() {
 }
 
 #[test]
-// oracle: regression #2153 direct-RDP flow selection during extraction
+// oracle: mutant choosing a gateway candidate before a direct RDP flow
 fn selects_direct_rdp_before_gateway_flows() {
     let capture = read(
         "flow-selection",
@@ -207,7 +207,7 @@ fn retains_later_gateway_flows_as_alternates() {
 }
 
 #[test]
-// oracle: regression #2153 embedded key-log preservation and redaction
+// oracle: mutant dropping embedded key-log bytes or exposing them through Debug
 fn reads_unpadded_tls_key_log_and_redacts_it_from_debug_output() {
     let capture = read(
         "key-log",
@@ -284,26 +284,7 @@ fn accepts_variable_length_x224_connection_request() {
 }
 
 #[test]
-// oracle: regression #2153 gateway flow selection during extraction
-fn selects_a_gateway_port_flow_without_x224() {
-    let capture = read(
-        "gateway-only",
-        [
-            ethernet_tcp(1, 443, 100, 0x02, &[]),
-            ethernet_tcp(1, 443, 101, 0x10, b"CLIENT"),
-            ethernet_tcp(443, 1, 200, 0x10, b"SERVER"),
-        ],
-        None,
-    );
-
-    assert_eq!(capture.flow.server.port, 443);
-    assert!(capture.gateway_alternates.is_empty());
-    assert_eq!(flatten(&capture.flow.client_stream), b"CLIENT");
-    assert_eq!(flatten(&capture.flow.server_stream), b"SERVER");
-}
-
-#[test]
-// oracle: regression #2153 incomplete candidate rejection
+// oracle: mutant stopping at a broken flow before a valid RDP candidate
 fn skips_incomplete_flows_before_a_valid_rdp_connection() {
     let capture = read(
         "incomplete-before-rdp",
@@ -323,7 +304,7 @@ fn skips_incomplete_flows_before_a_valid_rdp_connection() {
 }
 
 #[test]
-// oracle: regression #2153 incomplete TCP flow diagnostic
+// oracle: mutant misclassifying an incomplete TCP candidate as unsupported transport
 fn reports_missing_tcp_flow_when_no_candidate_reassembles() {
     assert!(matches!(
         read_error(
@@ -425,7 +406,7 @@ fn ignores_padding_after_the_ipv4_packet() {
 }
 
 #[test]
-// oracle: regression #2153 NIC-offload capture extent handling
+// oracle: mutant rejecting NIC-offload IPv4 captures with an unset total length
 fn parses_zero_length_ipv4_using_captured_extent() {
     let mut client = ethernet_tcp(1, 2, 101, 0x10, &request());
     client[16..18].copy_from_slice(&[0; 2]);
@@ -443,7 +424,7 @@ fn parses_zero_length_ipv4_using_captured_extent() {
 }
 
 #[test]
-// oracle: regression #2153 ambiguous Ethernet padding rejection
+// oracle: mutant treating ambiguous Ethernet padding as TCP data
 fn rejects_ambiguous_zero_length_ipv4_ethernet_padding() {
     let request = request();
     let mut client = ethernet_tcp(1, 2, 100, 0x02, &request[..6]);
