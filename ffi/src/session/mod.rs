@@ -34,7 +34,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::graphics::ffi::DecodedPointer;
-    use crate::input::ffi::TouchFrameBuilder;
+    use crate::input::ffi::{PenFrameBuilder, TouchFrameBuilder};
     use crate::pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle};
     use crate::utils::ffi::{Position, VecU8};
 
@@ -383,6 +383,65 @@ pub mod ffi {
                     Err(error.into())
                 }
             }
+        }
+
+        /// Encodes the oldest frames pending in `pens` as one `RDPINPUT_PEN_EVENT_PDU` on the MS-RDPEI
+        /// channel and returns the frame to write to the transport.
+        ///
+        /// Returns `None` when no frame is pending.
+        /// One PDU carries at most 32767 frames, so call again while `pens` has pending frames.
+        /// Fails, and leaves the frames pending, when the channel is missing, not ready, did not
+        /// negotiate pen input (protocol version 2 or later), or is suspended, or when the event cannot
+        /// be encoded.
+        pub fn encode_rdpei_pen(
+            &mut self,
+            pens: &mut PenFrameBuilder,
+        ) -> Result<Option<Box<VecU8>>, Box<IronRdpError>> {
+            let state = self.0.rdpei_input_state();
+            if !state.touch {
+                return Err("RDPEI channel is not ready".into());
+            }
+            if !state.pen {
+                return Err("RDPEI pen input is not negotiated".into());
+            }
+            if state.suspended {
+                return Err("RDPEI input is suspended".into());
+            }
+
+            let Some(event) = pens.take_event() else {
+                return Ok(None);
+            };
+
+            let Some(encoded) = self.0.encode_rdpei_pen(event.clone()) else {
+                pens.restore(event);
+                return Err("RDPEI channel is not available".into());
+            };
+
+            match encoded {
+                Ok(frame) => Ok(Some(Box::new(VecU8(frame)))),
+                Err(error) => {
+                    pens.restore(event);
+                    Err(error.into())
+                }
+            }
+        }
+
+        /// Encodes an `RDPINPUT_DISMISS_HOVERING_CONTACT_PDU` for the touch contact `contact_id`
+        /// ([MS-RDPEI] 2.2.3.6), telling the server to stop tracking a contact that hovers over
+        /// the surface.
+        ///
+        /// Fails when the channel is missing or not ready.
+        ///
+        /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+        pub fn encode_rdpei_dismiss_hovering(&mut self, contact_id: u8) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            if !self.0.rdpei_input_state().touch {
+                return Err("RDPEI channel is not ready".into());
+            }
+            let frame = self
+                .0
+                .encode_rdpei_dismiss_hovering(contact_id)
+                .ok_or("RDPEI channel is not available")??;
+            Ok(Box::new(VecU8(frame)))
         }
 
         /// Reports whether the Display Control Virtual Channel can carry a resize request.

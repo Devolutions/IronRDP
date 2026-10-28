@@ -128,7 +128,8 @@ pub mod ffi {
         /// `max_touch_contacts` is the `maxTouchContacts` advertised in `RDPINPUT_CS_READY_PDU`
         /// ([MS-RDPEI] 2.2.3.2 "Client Ready PDU") and is the limit to give `TouchFrameBuilder`.
         /// `show_touch_visuals` asks the server to draw its touch visuals.
-        /// Protocol version 2 is advertised; this API encodes touch frames only, not pen frames.
+        /// Protocol version 2 is advertised, which covers touch and pen frames; multipen injection is
+        /// not requested, so pen frames use `deviceId` 0.
         ///
         /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
         pub fn with_dynamic_channel_rdpei(

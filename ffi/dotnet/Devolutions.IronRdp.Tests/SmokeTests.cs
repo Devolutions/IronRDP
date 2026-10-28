@@ -600,6 +600,145 @@ internal static class SmokeTests
             True(!touches.HasPendingFrames, "every frame left");
             True(stage.EncodeRdpeiTouch(touches) is null, "nothing left to encode");
         });
+
+        // oracle: spec MS-RDPEI §3.2.5.1 (the client sends CS_READY only after SC_READY) and the rustdoc of
+        // ActiveStage::encode_rdpei_pen (a refused encode leaves the frames pending)
+        yield return ("rdpei pen and dismiss hovering are refused before the channel is ready", () =>
+        {
+            var (stage, _) = ConnectedStage(8, 4, rdpei: true);
+            True(!stage.RdpeiInputState.Pen, "pen is not negotiated before SC_READY");
+
+            var pens = PenFrameBuilder.New();
+            pens.Push(1, PenPhase.Touching, 100, 200);
+            var error = Throws<IronRdpException>(() => stage.EncodeRdpeiPen(pens));
+            True(error.Message.Contains("not ready"), $"pen error message: {error.Message}");
+            True(pens.HasPendingFrames, "pen frames stay pending");
+
+            error = Throws<IronRdpException>(() => stage.EncodeRdpeiDismissHovering(0));
+            True(error.Message.Contains("not ready"), $"dismiss error message: {error.Message}");
+        });
+
+        // oracle: spec MS-RDPEI §2.2.3.7 (RDPINPUT_PEN_EVENT_PDU), §2.2.3.7.1 (RDPINPUT_PEN_FRAME),
+        // §2.2.3.7.1.1 (RDPINPUT_PEN_CONTACT field order, fieldsPresent and penFlags values) and §3.1.1.1
+        // (hover enters with UPDATE | INRANGE, touching starts with DOWN | INRANGE | INCONTACT, leaving
+        // the range from contact sends UP at the last engaged position)
+        yield return ("rdpei pen encodes hover, down and leave after SC_READY", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            True(stage.RdpeiInputState.Pen, "protocol version 2 negotiates pen");
+
+            var pens = PenFrameBuilder.New();
+            pens.Push(1, PenPhase.Hovering, 50, 60);
+            pens.PushWithAttributes(1, PenPhase.Touching, 51, 61, new PenAttributes
+            {
+                BarrelPressed = true,
+                HasPressure = true,
+                Pressure = 512,
+                HasRotation = true,
+                Rotation = 90,
+                HasTiltX = true,
+                TiltX = 10,
+                HasTiltY = true,
+                TiltY = -20,
+            });
+            pens.Push(1, PenPhase.OutOfRange, 99, 99);
+
+            var payload = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiPen(pens)!));
+            True(!pens.HasPendingFrames, "frames were taken");
+            Equal(0x0008, payload.U16(), "eventId EVENTID_PEN");
+            payload.U32();
+            True(payload.FourByteUnsigned() < 1000, "encodeTime is the few milliseconds since the first sample");
+            Equal(3u, payload.TwoByteUnsigned(), "frameCount");
+
+            Equal(1u, payload.TwoByteUnsigned(), "hover contactCount");
+            Equal(0ul, payload.EightByteUnsigned(), "hover frameOffset starts the transaction");
+            Equal(0, (int)payload.U8(), "hover deviceId");
+            Equal(0u, payload.TwoByteUnsigned(), "hover fieldsPresent");
+            Equal(50, payload.FourByteSigned(), "hover x");
+            Equal(60, payload.FourByteSigned(), "hover y");
+            Equal(0x0002u | 0x0008u, payload.FourByteUnsigned(), "hover contactFlags UPDATE | INRANGE");
+
+            Equal(1u, payload.TwoByteUnsigned(), "down contactCount");
+            payload.EightByteUnsigned();
+            Equal(0, (int)payload.U8(), "down deviceId");
+            Equal(0x0001u | 0x0002u | 0x0004u | 0x0008u | 0x0010u, payload.TwoByteUnsigned(), "down fieldsPresent PENFLAGS | PRESSURE | ROTATION | TILTX | TILTY");
+            Equal(51, payload.FourByteSigned(), "down x");
+            Equal(61, payload.FourByteSigned(), "down y");
+            Equal(0x0001u | 0x0008u | 0x0010u, payload.FourByteUnsigned(), "down contactFlags DOWN | INRANGE | INCONTACT");
+            Equal(0x0001u, payload.FourByteUnsigned(), "penFlags PEN_FLAG_BARREL_PRESSED");
+            Equal(512u, payload.FourByteUnsigned(), "pressure");
+            Equal(90u, payload.TwoByteUnsigned(), "rotation");
+            Equal(10, (int)payload.TwoByteSigned(), "tiltX");
+            Equal(-20, (int)payload.TwoByteSigned(), "tiltY");
+
+            Equal(1u, payload.TwoByteUnsigned(), "leave contactCount");
+            payload.EightByteUnsigned();
+            Equal(0, (int)payload.U8(), "leave deviceId");
+            Equal(0u, payload.TwoByteUnsigned(), "leave fieldsPresent");
+            Equal(51, payload.FourByteSigned(), "leave x keeps the last engaged position");
+            Equal(61, payload.FourByteSigned(), "leave y keeps the last engaged position");
+            Equal(0x0004u, payload.FourByteUnsigned(), "leave contactFlags UP");
+            True(payload.AtEnd, "nothing follows the last contact");
+        });
+
+        // oracle: spec MS-RDPEI §2.2.3.6 (RDPINPUT_DISMISS_HOVERING_CONTACT_PDU is the 6-byte header
+        // with EVENTID_DISMISS_HOVERING_CONTACT followed by the one-byte contactId)
+        yield return ("rdpei dismiss hovering contact encodes the contact id", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            var payload = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiDismissHovering(5)));
+            Equal(0x0006, payload.U16(), "eventId EVENTID_DISMISS_HOVERING_CONTACT");
+            Equal(7u, payload.U32(), "pduLength");
+            Equal(5, (int)payload.U8(), "contactId");
+            True(payload.AtEnd, "nothing follows the contactId");
+        });
+
+        // oracle: spec MS-RDPEI §2.2.2.1 (frameCount in §2.2.3.7 caps one RDPINPUT_PEN_EVENT_PDU at 32767
+        // frames) and §3.1.1.1 (a pen leaving the range from contact sends UP, which must reach the server)
+        yield return ("rdpei pen splits more than 32767 pending frames across events", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            var pens = PenFrameBuilder.New();
+            pens.Push(1, PenPhase.Touching, 10, 10);
+            // Every sample is one frame, so these are 32767 more frames.
+            for (int i = 1; i <= 32767; i++)
+            {
+                pens.Push(1, PenPhase.Touching, 10 + i % 7, 10);
+            }
+
+            pens.Push(1, PenPhase.OutOfRange, 0, 0);
+
+            var first = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiPen(pens)!));
+            Equal(0x0008, first.U16(), "first eventId EVENTID_PEN");
+            first.U32();
+            first.FourByteUnsigned();
+            Equal(32767u, first.TwoByteUnsigned(), "first frameCount is the maximum");
+            True(pens.HasPendingFrames, "the remaining frames stay pending");
+
+            var second = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiPen(pens)!));
+            Equal(0x0008, second.U16(), "second eventId EVENTID_PEN");
+            second.U32();
+            second.FourByteUnsigned();
+            Equal(2u, second.TwoByteUnsigned(), "second frameCount carries the remainder");
+            Equal(1u, second.TwoByteUnsigned(), "last move contactCount");
+            second.EightByteUnsigned();
+            second.U8();
+            second.TwoByteUnsigned();
+            second.FourByteSigned();
+            second.FourByteSigned();
+            Equal(0x0002u | 0x0008u | 0x0010u, second.FourByteUnsigned(), "last move contactFlags UPDATE | INRANGE | INCONTACT");
+            Equal(1u, second.TwoByteUnsigned(), "leave contactCount");
+            second.EightByteUnsigned();
+            Equal(0, (int)second.U8(), "leave deviceId");
+            Equal(0u, second.TwoByteUnsigned(), "leave fieldsPresent");
+            Equal(10 + 32767 % 7, second.FourByteSigned(), "leave x keeps the last engaged position");
+            Equal(10, second.FourByteSigned(), "leave y keeps the last engaged position");
+            Equal(0x0004u, second.FourByteUnsigned(), "leave contactFlags UP");
+            True(second.AtEnd, "nothing follows the leave");
+
+            True(!pens.HasPendingFrames, "every frame left");
+            True(stage.EncodeRdpeiPen(pens) is null, "nothing left to encode");
+        });
     }
 
     // Reads MS-RDPEI §2.2.2 variable-length integers and the little-endian RDPINPUT_HEADER fields.
@@ -650,6 +789,14 @@ internal static class SmokeTests
 
         // c (2 bits) counts the extra bytes.
         internal uint FourByteUnsigned() => (uint)BigEndian(bytes[offset] >> 6, 0x3f);
+
+        // c (1 bit) selects one more byte, s (1 bit) is the sign.
+        internal short TwoByteSigned()
+        {
+            bool negative = (bytes[offset] & 0x40) != 0;
+            int magnitude = (int)BigEndian(bytes[offset] >> 7, 0x3f);
+            return (short)(negative ? -magnitude : magnitude);
+        }
 
         // c (2 bits) counts the extra bytes, s (1 bit) is the sign.
         internal int FourByteSigned()

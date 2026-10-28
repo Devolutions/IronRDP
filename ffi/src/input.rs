@@ -1,3 +1,17 @@
+/// A pen the server knows about.
+struct TrackedPen {
+    external_id: u64,
+    state: ironrdp::rdpei::contact::ContactState,
+    /// Last contact sent for this pen.
+    last: ironrdp::rdpei::pdu::PenContact,
+}
+
+/// A pen frame no event has carried yet.
+struct PendingPenFrame {
+    timestamp_us: u64,
+    frame: ironrdp::rdpei::pdu::PenFrame,
+}
+
 #[diplomat::bridge]
 pub mod ffi {
     use std::collections::VecDeque;
@@ -266,6 +280,237 @@ pub mod ffi {
                 self.pending.push_front(frame);
             }
             self.pending_oldest_us = self.taken_oldest_us;
+        }
+
+        fn now_us(&self) -> u64 {
+            u64::try_from(self.epoch.elapsed().as_micros()).unwrap_or(u64::MAX)
+        }
+    }
+
+    /// How a pen relates to the digitizer in one toolkit sample.
+    pub enum PenPhase {
+        /// In range of the digitizer without touching it.
+        Hovering,
+        /// Touching the digitizer.
+        Touching,
+        /// Out of range of the digitizer.
+        OutOfRange,
+        /// The system canceled the pen input.
+        Canceled,
+    }
+
+    /// Optional attributes of a pen sample ([MS-RDPEI] 2.2.3.7.1.1 "RDPINPUT_PEN_CONTACT").
+    ///
+    /// Each value travels only when its `has_` flag is set, except the button and inversion flags,
+    /// which always travel.
+    ///
+    /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+    pub struct PenAttributes {
+        pub barrel_pressed: bool,
+        pub eraser_pressed: bool,
+        pub inverted: bool,
+        pub has_pressure: bool,
+        /// Normalized to `0..=1024`.
+        pub pressure: u32,
+        pub has_rotation: bool,
+        /// Clockwise degrees, `0..=359`.
+        pub rotation: u16,
+        pub has_tilt_x: bool,
+        /// Degrees, `-90..=90`.
+        pub tilt_x: i16,
+        pub has_tilt_y: bool,
+        /// Degrees, `-90..=90`.
+        pub tilt_y: i16,
+    }
+
+    /// Turns pen samples into MS-RDPEI pen frames, one frame per sample.
+    ///
+    /// Push every toolkit sample, then hand the builder to `ActiveStage::encode_rdpei_pen`, which takes
+    /// the oldest pending frames, at most `MAX_FRAMES_PER_EVENT` per call.
+    /// `contactFlags` follow the contact lifetime of [MS-RDPEI] 3.1.1.1 "Touch Contact State Transitions".
+    /// One pen is tracked at a time with `deviceId` 0, because multipen injection is not requested;
+    /// samples of another pen are ignored until the tracked pen leaves the range.
+    ///
+    /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+    #[diplomat::opaque_mut]
+    pub struct PenFrameBuilder {
+        tracked: Option<super::TrackedPen>,
+        /// Frames no event has carried yet, oldest first.
+        pending: VecDeque<super::PendingPenFrame>,
+        /// Timestamps of the frames of the last event `take_event` returned, for `restore`.
+        taken_timestamps_us: Vec<u64>,
+        /// Time of the last frame, for `frameOffset`; `None` between transactions.
+        last_frame_us: Option<u64>,
+        epoch: std::time::Instant,
+    }
+
+    impl PenFrameBuilder {
+        pub fn new() -> Box<PenFrameBuilder> {
+            Box::new(PenFrameBuilder {
+                tracked: None,
+                pending: VecDeque::new(),
+                taken_timestamps_us: Vec::new(),
+                last_frame_us: None,
+                epoch: std::time::Instant::now(),
+            })
+        }
+
+        /// Adds one toolkit sample of the pen `external_id`, in desktop coordinates.
+        ///
+        /// A sample that produces no contact transition is ignored: a pen out of range that stays so,
+        /// or a cancel for a pen the server never saw.
+        pub fn push(&mut self, external_id: u64, phase: PenPhase, x: i32, y: i32) {
+            self.push_sample(external_id, phase, x, y, None);
+        }
+
+        /// Like `push`, with the pen buttons, pressure, rotation and tilt of the sample.
+        pub fn push_with_attributes(
+            &mut self,
+            external_id: u64,
+            phase: PenPhase,
+            x: i32,
+            y: i32,
+            attributes: PenAttributes,
+        ) {
+            self.push_sample(external_id, phase, x, y, Some(attributes));
+        }
+
+        /// Cancels the tracked pen, for example when the window loses focus.
+        ///
+        /// The cancellation waits with the other pending frames for the next encode.
+        pub fn cancel_all(&mut self) {
+            if let Some(pen) = &self.tracked {
+                let (external_id, x, y) = (pen.external_id, pen.last.x, pen.last.y);
+                self.push_sample(external_id, PenPhase::Canceled, x, y, None);
+            }
+        }
+
+        /// Forgets the pen and every pending frame without sending anything, for when the channel closed.
+        pub fn reset(&mut self) {
+            self.tracked = None;
+            self.pending.clear();
+            self.taken_timestamps_us.clear();
+            self.last_frame_us = None;
+        }
+
+        /// Whether frames wait for the next encode.
+        ///
+        /// More than `MAX_FRAMES_PER_EVENT` frames, as after a long suspension, take several encodes.
+        #[diplomat::attr(auto, getter = "has_pending_frames")]
+        pub fn get_has_pending_frames(&self) -> bool {
+            !self.pending.is_empty()
+        }
+
+        /// Takes the oldest pending frames, at most `MAX_FRAMES_PER_EVENT`, as one pen event.
+        pub(crate) fn take_event(&mut self) -> Option<ironrdp::rdpei::pdu::PenEventPdu> {
+            let now_us = self.now_us();
+            let count = self.pending.len().min(MAX_FRAMES_PER_EVENT);
+            let oldest_us = self.pending.front()?.timestamp_us;
+            self.taken_timestamps_us.clear();
+            let frames: Vec<ironrdp::rdpei::pdu::PenFrame> = self
+                .pending
+                .drain(..count)
+                .map(|pending| {
+                    self.taken_timestamps_us.push(pending.timestamp_us);
+                    pending.frame
+                })
+                .collect();
+            let encode_time = u32::try_from(now_us.saturating_sub(oldest_us) / 1000).unwrap_or(u32::MAX);
+            Some(ironrdp::rdpei::pdu::PenEventPdu::new(encode_time, frames))
+        }
+
+        /// Puts back the event the last `take_event` returned, for when it could not be encoded.
+        pub(crate) fn restore(&mut self, event: ironrdp::rdpei::pdu::PenEventPdu) {
+            let timestamps = core::mem::take(&mut self.taken_timestamps_us);
+            for (timestamp_us, frame) in timestamps.into_iter().zip(event.frames).rev() {
+                self.pending.push_front(super::PendingPenFrame { timestamp_us, frame });
+            }
+        }
+
+        fn push_sample(
+            &mut self,
+            external_id: u64,
+            phase: PenPhase,
+            x: i32,
+            y: i32,
+            attributes: Option<PenAttributes>,
+        ) {
+            let tracked = match &self.tracked {
+                Some(pen) if pen.external_id != external_id => return,
+                tracked => tracked.as_ref(),
+            };
+            let sample = match phase {
+                PenPhase::Hovering => ironrdp::rdpei::contact::ContactSample {
+                    in_range: true,
+                    in_contact: false,
+                    canceled: false,
+                },
+                PenPhase::Touching => ironrdp::rdpei::contact::ContactSample {
+                    in_range: true,
+                    in_contact: true,
+                    canceled: false,
+                },
+                PenPhase::OutOfRange => ironrdp::rdpei::contact::ContactSample {
+                    in_range: false,
+                    in_contact: false,
+                    canceled: false,
+                },
+                PenPhase::Canceled => ironrdp::rdpei::contact::ContactSample {
+                    in_range: false,
+                    in_contact: false,
+                    canceled: true,
+                },
+            };
+            let Some(transition) = ironrdp::rdpei::contact::transition(tracked.map(|pen| pen.state), sample) else {
+                return;
+            };
+
+            // A lift or cancel is sent where the pen last touched; it moves only after the transition.
+            let (x, y) = match tracked {
+                Some(pen) if transition.keeps_position() => (pen.last.x, pen.last.y),
+                _ => (x, y),
+            };
+            let mut contact = ironrdp::rdpei::pdu::PenContact::new(0, x, y, transition.pen_flags());
+            if let Some(attributes) = attributes {
+                let mut pen_flags = ironrdp::rdpei::pdu::PenFlags::empty();
+                pen_flags.set(ironrdp::rdpei::pdu::PenFlags::BARREL_PRESSED, attributes.barrel_pressed);
+                pen_flags.set(ironrdp::rdpei::pdu::PenFlags::ERASER_PRESSED, attributes.eraser_pressed);
+                pen_flags.set(ironrdp::rdpei::pdu::PenFlags::INVERTED, attributes.inverted);
+                contact = contact.with_pen_flags(pen_flags);
+                if attributes.has_pressure {
+                    contact = contact.with_pressure(attributes.pressure.min(1024));
+                }
+                if attributes.has_rotation {
+                    contact = contact.with_rotation(attributes.rotation % 360);
+                }
+                // Digitizers may report one tilt axis only, so each axis has its own field flag.
+                if attributes.has_tilt_x {
+                    contact
+                        .fields_present
+                        .insert(ironrdp::rdpei::pdu::PenContactDataFlags::TILTX_PRESENT);
+                    contact.fields.tilt_x = Some(attributes.tilt_x.clamp(-90, 90));
+                }
+                if attributes.has_tilt_y {
+                    contact
+                        .fields_present
+                        .insert(ironrdp::rdpei::pdu::PenContactDataFlags::TILTY_PRESENT);
+                    contact.fields.tilt_y = Some(attributes.tilt_y.clamp(-90, 90));
+                }
+            }
+
+            let now_us = self.now_us();
+            let frame_offset = self.last_frame_us.map_or(0, |last| now_us.saturating_sub(last));
+            // The transaction ends once the pen is out of range, and the next one starts at offset 0.
+            self.last_frame_us = transition.next.map(|_| now_us);
+            self.pending.push_back(super::PendingPenFrame {
+                timestamp_us: now_us,
+                frame: ironrdp::rdpei::pdu::PenFrame::new(frame_offset, vec![contact.clone()]),
+            });
+            self.tracked = transition.next.map(|state| super::TrackedPen {
+                external_id,
+                state,
+                last: contact,
+            });
         }
 
         fn now_us(&self) -> u64 {

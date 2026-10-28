@@ -26,12 +26,15 @@ Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from 
 `Unavailable` means the channel was not requested.
 `ActiveStage.DisplayControlCapabilities` exposes the server's monitor count and area limits once `Ready`.
 
-## Touch input (MS-RDPEI)
+## Touch and pen input (MS-RDPEI)
 
 - Attach the channel before connecting: `connector.WithDynamicChannelRdpei(maxTouchContacts, showTouchVisuals)`.
 - Feed toolkit touch events to a `TouchFrameBuilder.New(maxTouchContacts)` with `Push(touchId, TouchPhase, x, y)` or `PushWithPressure`, in desktop coordinates.
-- Once `activeStage.RdpeiInputState.Touch` is true, `activeStage.EncodeRdpeiTouch(builder)` returns the frame to write to the transport, or `null` when nothing is pending.
+- Feed pen samples to a `PenFrameBuilder.New()` with `Push(penId, PenPhase, x, y)` or `PushWithAttributes` for buttons, pressure, rotation and tilt; one pen is tracked at a time.
+- Once `activeStage.RdpeiInputState.Touch` (or `.Pen`) is true, `activeStage.EncodeRdpeiTouch(builder)` or `EncodeRdpeiPen(builder)` returns the frame to write to the transport, or `null` when nothing is pending.
   It throws while the channel is not ready or the server suspended input, and the frames stay pending.
+  One frame carries at most 32767 touch or pen frames, so call again while `HasPendingFrames` is true.
+- `activeStage.EncodeRdpeiDismissHovering(contactId)` tells the server to stop tracking a hovering touch contact.
 - Call `CancelAll()` when the window loses focus and `Reset()` when the session ends.
 
 ## Migrating from 2026.10.19

@@ -522,6 +522,62 @@ public partial class ActiveStage: IDisposable
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8? EncodeRdpeiPen(PenFrameBuilder pens)
+    {
+        unsafe
+        {
+            if (pens == null) throw new ArgumentNullException(nameof(pens));
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            BorrowLease<Raw.PenFrameBuilder>? pensLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                pensLease = pens._diplomatHandle.Lease(BorrowKind.Exclusive);
+                var result = Raw.ActiveStage.EncodeRdpeiPen(selfLease!.Ptr, pensLease!.Ptr);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return result.Ok == null ? null : new VecU8(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+                pensLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 EncodeRdpeiDismissHovering(byte contactId)
+    {
+        unsafe
+        {
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                var result = Raw.ActiveStage.EncodeRdpeiDismissHovering(selfLease!.Ptr, contactId);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return new VecU8(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
     /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
     /// </returns>
     public ActiveStageOutputIterator? EncodedResize(uint width, uint height)
