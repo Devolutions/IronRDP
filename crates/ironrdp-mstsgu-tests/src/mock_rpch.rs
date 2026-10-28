@@ -360,16 +360,16 @@ async fn run_proxy(
     if !accept_out_channel(&mut out, requires_basic_auth).await {
         return;
     }
-    if let MockRpchScenario::InvalidHttpResponse(response) = scenario {
-        let _ = write_all(&mut out, response).await;
-        return;
-    }
     let out_length = match scenario {
         MockRpchScenario::OutBodyLength(length) => length,
         _ => 1024 * 1024 * 1024,
     };
-    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/rpc\r\nContent-Length: {out_length}\r\n\r\n");
-    if write_all(&mut out, head.as_bytes()).await.is_err() {
+    let head = match scenario {
+        MockRpchScenario::InvalidHttpResponse(response) => response.to_vec(),
+        _ => format!("HTTP/1.1 200 OK\r\nContent-Type: application/rpc\r\nContent-Length: {out_length}\r\n\r\n")
+            .into_bytes(),
+    };
+    if write_all(&mut out, &head).await.is_err() {
         return;
     }
     let Some(mut in_cookie) = complete_in_channel(&mut input).await else {

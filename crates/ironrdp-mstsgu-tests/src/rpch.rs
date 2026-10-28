@@ -17,6 +17,9 @@ use crate::mock_rpch::{
 };
 
 pub(crate) async fn check_gateway() -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(20), check_receive_backpressure())
+        .await
+        .context("unread inbound data blocked outgoing commands")??;
     // oracle: regression Devolutions/IronRDP#2202.
     // oracle: spec MS-TSGU §3.6.4 and MS-RPCE §3.3.2.5.2.
     for scenario in [
@@ -98,6 +101,11 @@ pub(crate) async fn check_gateway() -> anyhow::Result<()> {
 
 pub(crate) async fn check_malformed_replies() -> anyhow::Result<()> {
     echo(MockRpchScenario::Echo).await.context("valid response control")?;
+    echo(MockRpchScenario::InvalidHttpResponse(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 131072\r\n\r\n",
+    ))
+    .await
+    .context("valid custom HTTP response control")?;
     // oracle: spec MS-TSGU §2.2.9.2.1.6, §2.2.9.2.1.5, §2.2.9.2.1.9.1.1 and §3.2.6.1.4.
     // Offsets name fields in the fixed NDR32 fixture, before RPC authentication is added.
     for (name, opnum, offset, bytes) in [
@@ -146,20 +154,65 @@ pub(crate) async fn check_malformed_replies() -> anyhow::Result<()> {
         ensure!(result.is_err(), "embedded NUL reached a gateway resource");
     }
     // oracle: spec MS-RPCH §2.1.2.1.4 requires a bounded OUT channel body.
-    for response in [
-        b"HTTP/2 200 OK\r\nContent-Length: 131072\r\n\r\n".as_slice(),
-        b"HTTP/1.1 99 Invalid\r\nContent-Length: 131072\r\n\r\n",
-        b"HTTP/1.1 600 Invalid\r\nContent-Length: 131072\r\n\r\n",
-        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
-        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
-        b"HTTP/1.1 200 OK\r\nContent-Length: 131071\r\n\r\n",
-        b"HTTP/1.1 200 OK\r\nContent-Length: 2147483649\r\n\r\n",
-        b"HTTP/1.1 200 OK\r\n\r\n",
+    for (response, diagnostic) in [
+        (
+            b"HTTP/2 200 OK\r\nContent-Length: 131072\r\n\r\n".as_slice(),
+            "invalid rpch HTTP version",
+        ),
+        (
+            b"HTTP/1.1 99 Invalid\r\nContent-Length: 131072\r\n\r\n",
+            "invalid rpch response status",
+        ),
+        (
+            b"HTTP/1.1 600 Invalid\r\nContent-Length: 131072\r\n\r\n",
+            "invalid rpch response status",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "unsupported RPCH response transfer encoding",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+            "invalid rpch OUT content length",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 131071\r\n\r\n",
+            "invalid rpch OUT content length",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2147483649\r\n\r\n",
+            "invalid rpch OUT content length",
+        ),
+        (b"HTTP/1.1 200 OK\r\n\r\n", "invalid rpch OUT content length"),
     ] {
         let gateway = Gateway::start(MockRpchScenario::InvalidHttpResponse(response)).await?;
         let result = tokio::time::timeout(Duration::from_secs(20), gateway.connect()).await?;
-        ensure!(result.is_err(), "invalid OUT response opened a target stream");
+        let error = result.err().context("invalid OUT response opened a target stream")?;
+        ensure!(
+            format!("{error:#}").contains(diagnostic),
+            "invalid OUT response failed outside HTTP validation: {error:#}"
+        );
     }
+    Ok(())
+}
+
+async fn check_receive_backpressure() -> anyhow::Result<()> {
+    // oracle: regression Devolutions/IronRDP#2202: unread responses must not block outgoing commands.
+    let gateway = Gateway::start(MockRpchScenario::Echo).await?;
+    let mut stream = gateway.connect().await?;
+    let mut expected = Vec::new();
+    for index in 0..20u8 {
+        let chunk = [b'a' + index; 4];
+        stream.write_all(&chunk).await?;
+        expected.extend_from_slice(&chunk);
+    }
+    let mut response = vec![0; expected.len()];
+    stream.read_exact(&mut response).await?;
+    ensure!(
+        response == expected,
+        "receive backpressure lost or reordered target data"
+    );
+    stream.shutdown().await.context("shutdown after receive backpressure")?;
     Ok(())
 }
 
