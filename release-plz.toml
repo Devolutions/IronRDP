@@ -49,8 +49,8 @@ publish_no_verify = true
 name = "ironrdp-rdpewa-native"
 publish_no_verify = true
 
-# ironrdp-client cannot be published while its `video` feature depends on ironrdp-rdpegt and ironrdp-rdpevor,
-# which are `publish = false`; ironrdp depends on ironrdp-client and is excluded with it.
+# ironrdp-client cannot be published while it depends on ironrdp-rdpear (through ironrdp-connector) and ironrdp-rdpeusb-native,
+# which have never been published; ironrdp depends on ironrdp-client and is excluded with it.
 # ironrdp-daemon, ironrdp-rdpeusb-native, and ironrdp-rdpear have never been published: the daemon needs ironrdp-client,
 # ironrdp-rdpeusb-native builds only against unreleased changes in ironrdp-rdpeusb and ironrdp-usb, and
 # ironrdp-connector (plus its direct and transitive dependents) optionally depends on ironrdp-rdpear.
