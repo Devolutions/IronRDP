@@ -135,8 +135,12 @@ pub(crate) struct UpdateEncoder {
     /// Client's advertised New Pointer Update cache size (MS-RDPBCGR 2.2.7.1.5
     /// `pointerCacheSize`). Zero means the client did not advertise support for the
     /// New Pointer Update; `RGBAPointer`/`CachedPointer` emission is skipped in that
-    /// case rather than sending a PDU the client did not agree to accept.
+    /// case rather than sending a PDU the client did not agree to accept. It is also the
+    /// number of cache entries a New, Large or Cached Pointer Update can use.
     pointer_cache_size: u16,
+    /// Client's advertised Color Pointer Update cache size (MS-RDPBCGR 2.2.7.1.5
+    /// `colorPointerCacheSize`): the number of cache entries a Color Pointer Update can use.
+    color_pointer_cache_size: u16,
     /// Client's advertised Large Pointer Capability Set flags (MS-RDPBCGR 2.2.7.2.7).
     /// Empty when the client didn't send this capability set at all. Governs both the
     /// pointer size ceiling for `RGBAPointer` (32x32 with no flags, 96x96 with
@@ -161,6 +165,7 @@ impl UpdateEncoder {
         codecs: UpdateEncoderCodecs,
         max_request_size: u32,
         pointer_cache_size: u16,
+        color_pointer_cache_size: u16,
         large_pointer_flags: LargePointerSupportFlags,
     ) -> ServerResult<Self> {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
@@ -201,6 +206,7 @@ impl UpdateEncoder {
             max_request_size: usize::try_from(max_request_size)
                 .map_err(|e| ServerError::custom("max_request_size", e))?,
             pointer_cache_size,
+            color_pointer_cache_size,
             large_pointer_flags,
         })
     }
@@ -221,6 +227,20 @@ impl UpdateEncoder {
             32
         };
         width <= max && height <= max
+    }
+
+    /// Whether `cache_index` is a cache entry the client has (MS-RDPBCGR 2.2.9.1.1.4.4: the number
+    /// of cache entries is given by the Pointer Capability Set). mstsc ends the session when a
+    /// pointer update names an entry past its cache, and FreeRDP drops the connection.
+    fn cache_index_ok(update: &str, cache_index: u16, cache_size: u16) -> bool {
+        if cache_index < cache_size {
+            return true;
+        }
+        warn!(
+            cache_index,
+            cache_size, "Dropping {update} update: cache index is not in the client's pointer cache"
+        );
+        false
     }
 
     /// Whether the client negotiated the dedicated Fast-Path Large Pointer Update
@@ -505,6 +525,9 @@ impl EncoderIter<'_> {
                             );
                             continue;
                         }
+                        if !UpdateEncoder::cache_index_ok("RGBAPointer", ptr.cache_index, encoder.pointer_cache_size) {
+                            continue;
+                        }
                         UpdateEncoder::rgba_pointer(ptr)
                     }
                     DisplayUpdate::LargePointer(ptr) => {
@@ -526,9 +549,21 @@ impl EncoderIter<'_> {
                             );
                             continue;
                         }
+                        if !UpdateEncoder::cache_index_ok("LargePointer", ptr.cache_index, encoder.pointer_cache_size) {
+                            continue;
+                        }
                         UpdateEncoder::large_pointer(ptr)
                     }
-                    DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),
+                    DisplayUpdate::ColorPointer(ptr) => {
+                        if !UpdateEncoder::cache_index_ok(
+                            "ColorPointer",
+                            ptr.cache_index,
+                            encoder.color_pointer_cache_size,
+                        ) {
+                            continue;
+                        }
+                        UpdateEncoder::color_pointer(ptr)
+                    }
                     DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),
                     DisplayUpdate::DefaultPointer => UpdateEncoder::default_pointer(),
                     DisplayUpdate::CachedPointer(idx) => {
@@ -536,6 +571,11 @@ impl EncoderIter<'_> {
                             debug!(
                                 "Dropping CachedPointer update: client did not advertise New Pointer Update support"
                             );
+                            continue;
+                        }
+                        // The entry was filled by a Color or a New Pointer Update.
+                        let cache_size = encoder.pointer_cache_size.max(encoder.color_pointer_cache_size);
+                        if !UpdateEncoder::cache_index_ok("CachedPointer", idx, cache_size) {
                             continue;
                         }
                         UpdateEncoder::cached_pointer(idx)

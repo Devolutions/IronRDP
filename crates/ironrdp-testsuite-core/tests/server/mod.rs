@@ -6,6 +6,7 @@ mod credential_validator;
 mod fast_path;
 mod finalize_timeout;
 mod multitransport_finalize;
+mod pointer_cache_index;
 mod pointer_mask;
 mod rdpdr;
 mod rdpei;

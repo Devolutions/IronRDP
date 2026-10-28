@@ -329,6 +329,19 @@ pub struct DisplayContext {
     /// and then signals the event loop via `ServerEvent::Egfx`.
     #[cfg(feature = "egfx")]
     pub gfx_handle: Option<GfxServerHandle>,
+
+    /// Number of entries in the client's pointer cache, from its Pointer Capability Set
+    /// (MS-RDPBCGR 2.2.7.1.5, `pointerCacheSize`): the `cache_index` of [`RGBAPointer`] and
+    /// [`LargePointer`] must be less than this. `0` when the client does not support the New
+    /// Pointer Update.
+    ///
+    /// mstsc sends 21, FreeRDP 128. The server drops a pointer update whose `cache_index` is out of
+    /// range, as mstsc ends the session and FreeRDP drops the connection on one.
+    pub pointer_cache_size: u16,
+
+    /// Number of entries in the client's color pointer cache (MS-RDPBCGR 2.2.7.1.5,
+    /// `colorPointerCacheSize`): the `cache_index` of [`ColorPointer`] must be less than this.
+    pub color_pointer_cache_size: u16,
 }
 
 impl core::fmt::Debug for DisplayContext {
@@ -336,6 +349,8 @@ impl core::fmt::Debug for DisplayContext {
         f.debug_struct("DisplayContext")
             .field("display_suppressed", &self.display_suppressed)
             .field("autodetect", &self.autodetect)
+            .field("pointer_cache_size", &self.pointer_cache_size)
+            .field("color_pointer_cache_size", &self.color_pointer_cache_size)
             .finish_non_exhaustive()
     }
 }

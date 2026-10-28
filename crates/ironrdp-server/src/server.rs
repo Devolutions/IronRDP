@@ -1827,6 +1827,10 @@ struct ConnectionState {
     /// eligible for the hourly update when cookies are on request (see
     /// [`RdpServer::set_auto_reconnect_on_request`]).
     auto_reconnect_issued: bool,
+    /// The client's Pointer Capability Set (MS-RDPBCGR 2.2.7.1.5) from the last activation, for
+    /// [`DisplayContext::pointer_cache_size`] and [`DisplayContext::color_pointer_cache_size`].
+    pointer_cache_size: u16,
+    color_pointer_cache_size: u16,
 }
 
 impl ConnectionState {
@@ -1839,6 +1843,8 @@ impl ConnectionState {
             autodetect: self.autodetect_handles.clone(),
             #[cfg(feature = "egfx")]
             gfx_handle: self.gfx_handle.clone(),
+            pointer_cache_size: self.pointer_cache_size,
+            color_pointer_cache_size: self.color_pointer_cache_size,
         }
     }
 
@@ -2786,6 +2792,8 @@ impl RdpServer {
             egfx_on_udp: false,
             early_tunnel_payloads: VecDeque::new(),
             auto_reconnect_issued: false,
+            pointer_cache_size: 0,
+            color_pointer_cache_size: 0,
         }
     }
 
@@ -5208,6 +5216,7 @@ impl RdpServer {
         let mut update_codecs = UpdateEncoderCodecs::new();
         let mut surface_flags = CmdFlags::empty();
         let mut pointer_cache_size: u16 = 0;
+        let mut color_pointer_cache_size: u16 = 0;
         // Absence means the client did not send a Large Pointer Capability Set at all,
         // which per MS-RDPBCGR 2.2.7.2.7 leaves the pointer size ceiling at 32x32 (the
         // base Color/New Pointer Update limit with no large-pointer flags set).
@@ -5293,6 +5302,7 @@ impl RdpServer {
                     // must not reference a cache slot via CachedPointer either, since nothing
                     // else in this crate populates that cache via the Color Pointer Update.
                     pointer_cache_size = p.pointer_cache_size;
+                    color_pointer_cache_size = p.color_pointer_cache_size;
                 }
                 CapabilitySet::LargePointer(lp) => {
                     // MS-RDPBCGR 2.2.7.2.7: LARGE_POINTER_FLAG_96x96 raises the Color/New
@@ -5329,8 +5339,11 @@ impl RdpServer {
             update_codecs,
             self.opts.max_request_size,
             pointer_cache_size,
+            color_pointer_cache_size,
             large_pointer_flags,
         )?;
+        conn.pointer_cache_size = pointer_cache_size;
+        conn.color_pointer_cache_size = color_pointer_cache_size;
 
         // By default every connection gets a cookie at activation. On request, only one that came
         // back with a verified cookie does.
