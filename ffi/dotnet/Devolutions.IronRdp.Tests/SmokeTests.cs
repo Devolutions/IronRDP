@@ -66,43 +66,52 @@ internal static class SmokeTests
             }
         });
 
-        // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
+        // oracle: intent ffi/INTENT.md §copying-a-rectangle
         yield return ("decoded image copy rejects a rectangle outside the image", () =>
         {
             var (stage, image) = ConnectedStage(8, 4);
             var full = PaintSurface(stage, image, 0, 0, 8, 4);
+            var buffer = new byte[8 * 4 * 4];
+            Array.Fill(buffer, (byte)0xff);
             var narrow = DecodedImage.New(PixelFormat.BgrX32, 7, 4);
-            var outside = Throws<IronRdpException>(() => narrow.CopyRectInto(full, new byte[8 * 4 * 4], 8 * 4));
-            True(outside.Message.Contains("rectangle is outside the image"), $"error message: {outside.Message}");
+            Throws<IronRdpException>(() => narrow.CopyRectInto(full, buffer, 8 * 4));
             var shallow = DecodedImage.New(PixelFormat.BgrX32, 8, 3);
-            var outsideVertical = Throws<IronRdpException>(() => shallow.CopyRectInto(full, new byte[8 * 4 * 4], 8 * 4));
-            True(outsideVertical.Message.Contains("rectangle is outside the image"), $"error message: {outsideVertical.Message}");
+            Throws<IronRdpException>(() => shallow.CopyRectInto(full, buffer, 8 * 4));
+            True(buffer.All(b => b == 0xff), "buffer untouched");
         });
 
-        // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
+        // oracle: intent ffi/INTENT.md §copying-a-rectangle
         yield return ("decoded image copy rejects a short stride", () =>
         {
             var (stage, image) = ConnectedStage(8, 4);
             var full = PaintSurface(stage, image, 0, 0, 8, 4);
-            Throws<IronRdpException>(() => image.CopyRectInto(full, new byte[8 * 4 * 4], 8 * 4 - 1));
+            var buffer = new byte[8 * 4 * 4];
+            Array.Fill(buffer, (byte)0xff);
+            Throws<IronRdpException>(() => image.CopyRectInto(full, buffer, 8 * 4 - 1));
+            True(buffer.All(b => b == 0xff), "buffer untouched");
         });
 
-        // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
+        // oracle: intent ffi/INTENT.md §copying-a-rectangle
         yield return ("decoded image copy rejects a short buffer", () =>
         {
             var (stage, image) = ConnectedStage(8, 4);
             var full = PaintSurface(stage, image, 0, 0, 8, 4);
             const int stride = 8 * 4;
-            Throws<IronRdpException>(() => image.CopyRectInto(full, new byte[stride * 3], stride));
+            var buffer = new byte[stride * 3];
+            Array.Fill(buffer, (byte)0xff);
+            Throws<IronRdpException>(() => image.CopyRectInto(full, buffer, stride));
+            True(buffer.All(b => b == 0xff), "buffer untouched");
         });
 
-        // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
+        // oracle: intent ffi/INTENT.md §copying-a-rectangle
         yield return ("decoded image copy rejects a stride whose last row overflows", () =>
         {
             var (stage, image) = ConnectedStage(8, 4);
             var full = PaintSurface(stage, image, 0, 0, 8, 4);
-            var error = Throws<IronRdpException>(() => image.CopyRectInto(full, new byte[8 * 4 * 4], nuint.MaxValue));
-            True(error.Message.Contains("buffer stride is too large"), $"error message: {error.Message}");
+            var buffer = new byte[8 * 4 * 4];
+            Array.Fill(buffer, (byte)0xff);
+            Throws<IronRdpException>(() => image.CopyRectInto(full, buffer, nuint.MaxValue));
+            True(buffer.All(b => b == 0xff), "buffer untouched");
         });
 
         yield return ("vec u8 round-trips bytes", () =>

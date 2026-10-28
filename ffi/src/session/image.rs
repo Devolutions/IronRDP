@@ -37,12 +37,15 @@ pub mod ffi {
         /// another from the top, and `buffer_stride` bytes from the start of one row to the start of
         /// the next.
         /// Only the bytes under `rect` are written, and the rest of `buffer` stays as it was.
+        /// The rules it follows are in [ffi/INTENT.md], "Copying a rectangle into a caller buffer".
         ///
         /// # Errors
         ///
         /// Fails when `rect` is inverted or reaches past the image, when one row of `rect` does not fit
         /// in `buffer_stride`, when the last row of `rect` would start past `usize::MAX`, or when `buffer`
         /// is too short to hold the last row of `rect`.
+        ///
+        /// [ffi/INTENT.md]: ../../INTENT.md#copying-a-rectangle
         #[expect(
             clippy::nonminimal_bool,
             reason = "each check is written as the invariant it guards, e.g. `row_end <= buffer_stride`"
@@ -123,10 +126,9 @@ pub mod ffi {
 #[cfg(test)]
 mod tests {
     use super::ffi::{DecodedImage, PixelFormat};
-    use crate::error::ffi::IronRdpErrorKind;
     use crate::pdu::ffi::InclusiveRectangle;
 
-    // oracle: ffi/INTENT.md "Copying a rectangle into a caller buffer"
+    // oracle: intent ffi/INTENT.md §copying-a-rectangle
     #[test]
     fn copy_rect_into_rejects_an_inverted_rectangle() {
         let image = DecodedImage::new(PixelFormat::BgrA32, 8, 4);
@@ -139,9 +141,8 @@ mod tests {
 
         let mut buffer = [0xff; 8 * 4 * 4];
 
-        let error = image.copy_rect_into(&rect, &mut buffer, 8 * 4).unwrap_err();
+        image.copy_rect_into(&rect, &mut buffer, 8 * 4).unwrap_err();
 
-        assert!(matches!(error.get_kind(), IronRdpErrorKind::Generic));
         assert!(buffer.iter().all(|&b| b == 0xff));
     }
 }
