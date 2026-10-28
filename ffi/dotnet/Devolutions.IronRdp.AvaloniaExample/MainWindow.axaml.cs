@@ -265,19 +265,16 @@ public partial class MainWindow : Window
                     if (resized)
                     {
                         _frameBuffer = new byte[stride * size.Height];
-                    }
-
-                    frameBuffer = _frameBuffer!;
-                    if (resized)
-                    {
-                        image.FillData(frameBuffer);
+                        image.FillData(_frameBuffer);
                         (left, top, right, bottom) = (0, 0, size.Width - 1, size.Height - 1);
                     }
                     else
                     {
-                        image.CopyRectInto(damage, frameBuffer, (nuint)stride);
+                        image.CopyRectInto(damage, _frameBuffer!, (nuint)stride);
                         (left, top, right, bottom) = (damage.Left, damage.Top, damage.Right, damage.Bottom);
                     }
+
+                    frameBuffer = _frameBuffer!;
                 }
 
                 if (resized)
