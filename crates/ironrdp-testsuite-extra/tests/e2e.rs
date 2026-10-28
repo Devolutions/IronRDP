@@ -653,6 +653,10 @@ async fn each_connection_gets_its_own_display_context() {
                 let (mut stage, activation_factory, mut framed) =
                     connect_active_client(server_addr, default_client_config(), None).await;
                 let first = ctx_rx.recv().await.expect("first connection's display context");
+                // The pointer caches from the client's Pointer Capability Set: the IronRDP client
+                // sends 32 entries for both.
+                assert_eq!(first.pointer_cache_size, 32);
+                assert_eq!(first.color_pointer_cache_size, 32);
 
                 // The client answers an RTT probe on its own, and the server
                 // records the result on the handles it gave the display.

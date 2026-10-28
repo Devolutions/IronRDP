@@ -37,6 +37,7 @@ async fn first_surface_command(surface_flags: CmdFlags, codec: RemoteFxCodec, co
         codecs,
         16 * 1024 * 1024,
         0,
+        0,
         LargePointerSupportFlags::empty(),
     )
     .unwrap();
