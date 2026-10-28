@@ -2120,6 +2120,99 @@ fn reliable_udp_multitransport_flags(enabled: bool) -> Option<ironrdp_pdu::gcc::
     )
 }
 
+#[cfg(feature = "dvc-pipe-proxy")]
+struct PipeEndpointReservation(Arc<AtomicBool>);
+
+#[cfg(feature = "dvc-pipe-proxy")]
+impl Drop for PipeEndpointReservation {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+struct ReservedDvcPipeProxy {
+    proxy: DvcNamedPipeProxy,
+    _reservation: PipeEndpointReservation,
+}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+ironrdp_core::impl_as_any!(ReservedDvcPipeProxy);
+
+#[cfg(feature = "dvc-pipe-proxy")]
+impl ironrdp_dvc::DvcProcessor for ReservedDvcPipeProxy {
+    fn channel_name(&self) -> &str {
+        self.proxy.channel_name()
+    }
+
+    fn max_message_size(&self) -> Option<usize> {
+        self.proxy.max_message_size()
+    }
+
+    fn start(&mut self, channel_id: u32) -> ironrdp_pdu::PduResult<Vec<ironrdp_dvc::DvcMessage>> {
+        self.proxy.start(channel_id)
+    }
+
+    fn process(&mut self, channel_id: u32, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<ironrdp_dvc::DvcMessage>> {
+        self.proxy.process(channel_id, payload)
+    }
+
+    fn close(&mut self, channel_id: u32) {
+        self.proxy.close(channel_id);
+    }
+}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+impl ironrdp_dvc::DvcClientProcessor for ReservedDvcPipeProxy {}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+struct DvcPipeProxyListener {
+    channel_name: String,
+    pipe_name: String,
+    sender: RdpInputSender,
+    active: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+impl ironrdp_dvc::DvcChannelListener for DvcPipeProxyListener {
+    fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
+    fn create(
+        &mut self,
+        _channel_id: ironrdp_dvc::DynamicChannelId,
+    ) -> Option<Box<dyn ironrdp_dvc::DvcClientProcessor>> {
+        if self.active.swap(true, Ordering::AcqRel) {
+            debug!(
+                channel_name = %self.channel_name,
+                pipe_name = %self.pipe_name,
+                "Rejecting overlapping DVC pipe proxy open while the pipe endpoint is already active"
+            );
+            return None;
+        }
+        let sender = self.sender.input_sender.clone();
+        let proxy = DvcNamedPipeProxy::new_async(&self.channel_name, &self.pipe_name, move |channel_id, messages| {
+            let sender = sender.clone();
+            async move {
+                sender
+                    .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                    .await
+                    .map_err(|_| pdu_other_err!("send DVC messages to the event loop"))?;
+                Ok(())
+            }
+        });
+        Some(Box::new(ReservedDvcPipeProxy {
+            proxy,
+            _reservation: PipeEndpointReservation(Arc::clone(&self.active)),
+        }))
+    }
+
+    fn is_available(&self) -> bool {
+        !self.active.load(Ordering::Acquire)
+    }
+}
+
 /// Build a fully wired [`ironrdp_connector::ClientConnector`] with all feature-gated channels attached.
 ///
 /// This helper is used by all transport paths.
@@ -2236,19 +2329,11 @@ fn build_connector(
         let channel_name = proxy.channel_name.clone();
         let pipe_name = proxy.pipe_name.clone();
         trace!(%channel_name, %pipe_name, "Creating DVC pipe proxy");
-        let sender = input_sender.clone();
-        drdynvc = drdynvc.with_dynamic_channel_factory(channel_name.clone(), move || {
-            let sender = sender.clone();
-            DvcNamedPipeProxy::new_async(&channel_name, &pipe_name, move |channel_id, messages| {
-                let sender = sender.input_sender.clone();
-                async move {
-                    sender
-                        .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                        .await
-                        .map_err(|_| pdu_other_err!("send DVC messages to the event loop"))?;
-                    Ok(())
-                }
-            })
+        drdynvc = drdynvc.with_listener(DvcPipeProxyListener {
+            channel_name,
+            pipe_name,
+            sender: input_sender.clone(),
+            active: Arc::new(AtomicBool::new(false)),
         });
     }
 
@@ -7063,6 +7148,26 @@ mod tests {
             assert_eq!(response_pdu.creation_status(), CreationStatus::OK);
             server.process(&response).unwrap();
             assert!(server.is_channel_opened(id));
+
+            let overlapping = server.create_channel(Peer).unwrap();
+            let overlapping_wire = overlapping.encode_unframed_pdu().unwrap();
+            let DrdynvcServerPdu::Create(overlapping_request) = ironrdp_core::decode(&overlapping_wire).unwrap() else {
+                panic!("expected overlapping create request");
+            };
+            let overlapping_id = overlapping_request.channel_id();
+            let overlapping_responses = client.process(&overlapping_wire).unwrap();
+            assert_eq!(overlapping_responses.len(), 1);
+            let overlapping_response = overlapping_responses[0].encode_unframed_pdu().unwrap();
+            let DrdynvcClientPdu::Create(overlapping_response_pdu) =
+                ironrdp_core::decode(&overlapping_response).unwrap()
+            else {
+                panic!("expected overlapping create response");
+            };
+            assert_eq!(overlapping_response_pdu.creation_status(), CreationStatus::NO_LISTENER);
+            server.process(&overlapping_response).unwrap();
+            assert!(!server.is_channel_opened(overlapping_id));
+            assert!(server.is_channel_opened(id));
+
             let close = server.close_channel(id).unwrap();
             client.process(&close.encode_unframed_pdu().unwrap()).unwrap();
         }
