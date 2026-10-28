@@ -22,7 +22,7 @@ use core::fmt;
 pub use active_stage::composite_graphics_updates;
 pub use active_stage::{
     ActiveStage, ActiveStageBuilder, ActiveStageOutput, CompositedGraphics, GracefulDisconnectReason,
-    composite_graphics_pipeline,
+    composite_graphics_pipeline, encode_fastpath_input,
 };
 pub use fast_path::{BulkDecompressionErrorKind, FastPathBulkDecompressionFailure};
 #[cfg(all(feature = "__test", feature = "qoiz"))]

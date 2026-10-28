@@ -118,6 +118,25 @@ fn new_bulk_decompressor(compression_type: Option<CompressionType>) -> Option<Bu
     compression_type.map(|compression_type| BulkCompressor::new(to_bulk_compression_type(compression_type)))
 }
 
+/// Encodes `events` into Fast-Path Input PDUs ([\[MS-RDPBCGR\] 2.2.8.1.2]), one PDU per
+/// [`FastPathInput::MAX_EVENTS`] events, in order.
+///
+/// It reads no session state, so a client can call it while another thread drives
+/// [`ActiveStage::process`]. It does not redraw the client-side software pointer:
+/// [`ActiveStage::process_fastpath_input`] does that on top of these frames.
+///
+/// [\[MS-RDPBCGR\] 2.2.8.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b8e7c588-51cb-455b-bb73-92d480903133
+pub fn encode_fastpath_input(events: &[FastPathInputEvent]) -> SessionResult<Vec<Vec<u8>>> {
+    events
+        .chunks(FastPathInput::MAX_EVENTS)
+        .map(|event_chunk| {
+            // PERF: unnecessary copy
+            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
+            ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)
+        })
+        .collect()
+}
+
 impl ActiveStage {
     pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
         self.fast_path_processor.update_mouse_pos(x, y);
@@ -137,6 +156,9 @@ impl ActiveStage {
 
     /// Encodes outgoing input events and modifies image if necessary (e.g for client-side pointer
     /// rendering).
+    ///
+    /// Without software pointer rendering, the frames are exactly those of
+    /// [`encode_fastpath_input`], which needs neither the stage nor the image.
     pub fn process_fastpath_input(
         &mut self,
         image: &mut DecodedImage,
@@ -150,13 +172,11 @@ impl ActiveStage {
         // Mouse move events are prevalent, so we can preallocate space for
         // response frames + graphics update.
         let mut output = Vec::with_capacity(events.len().div_ceil(FastPathInput::MAX_EVENTS) + 1);
-
-        for event_chunk in events.chunks(FastPathInput::MAX_EVENTS) {
-            // PERF: unnecessary copy
-            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
-            let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
-            output.push(ActiveStageOutput::ResponseFrame(frame));
-        }
+        output.extend(
+            encode_fastpath_input(events)?
+                .into_iter()
+                .map(ActiveStageOutput::ResponseFrame),
+        );
 
         // If pointer rendering is disabled - we can skip the rest
         if !self.enable_server_pointer {
