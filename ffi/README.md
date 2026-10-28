@@ -26,6 +26,14 @@ Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from 
 `Unavailable` means the channel was not requested.
 `ActiveStage.DisplayControlCapabilities` exposes the server's monitor count and area limits once `Ready`.
 
+## Touch input (MS-RDPEI)
+
+- Attach the channel before connecting: `connector.WithDynamicChannelRdpei(maxTouchContacts, showTouchVisuals)`.
+- Feed toolkit touch events to a `TouchFrameBuilder.New(maxTouchContacts)` with `Push(touchId, TouchPhase, x, y)` or `PushWithPressure`, in desktop coordinates.
+- Once `activeStage.RdpeiInputState.Touch` is true, `activeStage.EncodeRdpeiTouch(builder)` returns the frame to write to the transport, or `null` when nothing is pending.
+  It throws while the channel is not ready or the server suspended input, and the frames stay pending.
+- Call `CancelAll()` when the window loses focus and `Reset()` when the session ends.
+
 ## Migrating from 2026.10.19
 
 - Properties replace the `GetX()` and `SetX()` methods they duplicated.

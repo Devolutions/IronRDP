@@ -489,6 +489,118 @@ internal static class SmokeTests
                 True(clipboard.NextClipboardMessageTimeout(10) == null, "no message before a session");
             });
         }
+
+        // oracle: spec MS-RDPEI §3.2.5.1 (the client sends CS_READY only after SC_READY) and the rustdoc of
+        // ActiveStage::encode_rdpei_touch (a refused encode leaves the frames pending)
+        yield return ("rdpei touch is refused before the channel is ready", () =>
+        {
+            var (stage, _) = ConnectedStage(8, 4, rdpei: true);
+            var state = stage.RdpeiInputState;
+            True(!state.Touch && !state.Suspended, "channel is not ready before SC_READY");
+
+            var touches = TouchFrameBuilder.New(10);
+            touches.Push(1, TouchPhase.Started, 100, 200);
+            var error = Throws<IronRdpException>(() => stage.EncodeRdpeiTouch(touches));
+            True(error.Message.Contains("not ready"), $"error message: {error.Message}");
+            True(touches.HasPendingFrames, "frames stay pending");
+        });
+
+        // oracle: rustdoc of ActiveStage::encode_rdpei_touch (None when no frame is pending)
+        yield return ("rdpei touch with nothing pending encodes nothing", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            True(stage.EncodeRdpeiTouch(TouchFrameBuilder.New(10)) is null, "no frame without touches");
+        });
+
+        // oracle: spec MS-RDPBCGR §2.2.6.1 (Virtual Channel PDU), MS-RDPEDYC §2.2.3.1 (DYNVC_DATA),
+        // MS-RDPEI §2.2.2 (variable-length integers), §2.2.3.3 (RDPINPUT_TOUCH_EVENT_PDU),
+        // §2.2.3.3.1 (RDPINPUT_TOUCH_FRAME), §2.2.3.3.1.1 (RDPINPUT_CONTACT_DATA) and §3.1.1.1 (a new
+        // contact in contact is sent with CONTACT_FLAG_DOWN | CONTACT_FLAG_INRANGE | CONTACT_FLAG_INCONTACT)
+        yield return ("rdpei touch encodes a finger down after SC_READY", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            True(stage.RdpeiInputState.Touch, "channel negotiated touch");
+
+            var touches = TouchFrameBuilder.New(10);
+            touches.Push(7, TouchPhase.Started, 100, 200);
+            var frame = ToArray(stage.EncodeRdpeiTouch(touches)!);
+            True(!touches.HasPendingFrames, "frames were taken");
+
+            // TPKT, X.224 data, MCS Send Data Request from user 1007 to channel 1004, Virtual Channel PDU
+            // header (CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST) and DYNVC_DATA for channel 1.
+            int payloadLength = frame.Length - 24;
+            var transport = new byte[]
+            {
+                0x03, 0x00, (byte)(frame.Length >> 8), (byte)frame.Length, 0x02, 0xf0, 0x80,
+                0x64, 0x00, 0x06, 0x03, 0xec, 0x70, (byte)(payloadLength + 10),
+                (byte)(payloadLength + 2), 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+                0x30, 0x01,
+            };
+            True(frame.Take(transport.Length).SequenceEqual(transport), $"transport prefix: {Convert.ToHexString(frame)}");
+
+            var payload = new RdpInputReader(frame, transport.Length);
+            Equal(0x0003, payload.U16(), "eventId EVENTID_TOUCH");
+            Equal(payloadLength, (int)payload.U32(), "pduLength");
+            True(payload.FourByteUnsigned() < 1000, "encodeTime is the few milliseconds since the push");
+            Equal(1u, payload.TwoByteUnsigned(), "frameCount");
+            Equal(1u, payload.TwoByteUnsigned(), "contactCount");
+            Equal(0ul, payload.EightByteUnsigned(), "frameOffset of the first frame");
+            Equal(0, (int)payload.U8(), "contactId");
+            Equal(0u, payload.TwoByteUnsigned(), "fieldsPresent");
+            Equal(100, payload.FourByteSigned(), "x");
+            Equal(200, payload.FourByteSigned(), "y");
+            Equal(0x0001u | 0x0008u | 0x0010u, payload.FourByteUnsigned(), "contactFlags DOWN | INRANGE | INCONTACT");
+            True(payload.AtEnd, "nothing follows the contact");
+        });
+    }
+
+    // Reads MS-RDPEI §2.2.2 variable-length integers and the little-endian RDPINPUT_HEADER fields.
+    private sealed class RdpInputReader
+    {
+        private readonly byte[] bytes;
+        private int offset;
+
+        internal RdpInputReader(byte[] bytes, int offset)
+        {
+            this.bytes = bytes;
+            this.offset = offset;
+        }
+
+        internal bool AtEnd => offset == bytes.Length;
+
+        internal byte U8() => bytes[offset++];
+
+        internal ushort U16() => (ushort)(U8() | U8() << 8);
+
+        internal uint U32() => (uint)(U16() | U16() << 16);
+
+        // c (1 bit) selects one more byte; the value is big-endian.
+        internal uint TwoByteUnsigned() => (uint)BigEndian(bytes[offset] >> 7, 0x7f);
+
+        // c (2 bits) counts the extra bytes.
+        internal uint FourByteUnsigned() => (uint)BigEndian(bytes[offset] >> 6, 0x3f);
+
+        // c (2 bits) counts the extra bytes, s (1 bit) is the sign.
+        internal int FourByteSigned()
+        {
+            bool negative = (bytes[offset] & 0x20) != 0;
+            uint magnitude = (uint)BigEndian(bytes[offset] >> 6, 0x1f);
+            return negative ? -(int)magnitude : (int)magnitude;
+        }
+
+        // c (3 bits) counts the extra bytes.
+        internal ulong EightByteUnsigned() => BigEndian(bytes[offset] >> 5, 0x1f);
+
+        private ulong BigEndian(int extraBytes, byte firstByteMask)
+        {
+            ulong value = (ulong)(U8() & firstByteMask);
+            for (int i = 0; i < extraBytes; i++)
+            {
+                value = value << 8 | U8();
+            }
+
+            return value;
+        }
     }
 
     // MCS Connect Response with SKIP_CHANNELJOIN_SUPPORTED and no static channels (MS-RDPBCGR §2.2.1.4).
@@ -563,13 +675,49 @@ internal static class SmokeTests
         0x02, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x60, 0x09, 0x00, 0x00,
     };
 
-    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false)
+    // Server PDUs on static channel 1004 (MCS Send Data Indication, Virtual Channel PDU header with
+    // CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST) that open the RDPEI dynamic channel as channel 1.
+    private static readonly byte[][] RdpeiOpeningServerPdus =
+    {
+        // DYNVC_CAPS_VERSION1 (MS-RDPEDYC §2.2.1.1.1).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x1a, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x0c, 0x04, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x50, 0x00, 0x01, 0x00,
+        },
+        // DYNVC_CREATE_REQ for "Microsoft::Windows::RDS::Input" (MS-RDPEDYC §2.2.2.1).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x37, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x29, 0x21, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x10, 0x01, 0x4d, 0x69, 0x63, 0x72, 0x6f, 0x73, 0x6f, 0x66,
+            0x74, 0x3a, 0x3a, 0x57, 0x69, 0x6e, 0x64, 0x6f, 0x77, 0x73, 0x3a, 0x3a, 0x52, 0x44, 0x53, 0x3a,
+            0x3a, 0x49, 0x6e, 0x70, 0x75, 0x74, 0x00,
+        },
+        // DYNVC_DATA carrying RDPINPUT_SC_READY_PDU with RDPINPUT_PROTOCOL_V200 (MS-RDPEI §2.2.3.1).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x22, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x14, 0x0c, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x30, 0x01, 0x01, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00,
+        },
+    };
+
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false)
     {
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
         var serverPdus = HandshakeServerPdus.ToArray();
         if (displayControl)
         {
             connector.WithDynamicChannelDisplayControl();
+        }
+
+        if (rdpei)
+        {
+            connector.WithDynamicChannelRdpei(10, false);
+        }
+
+        if (displayControl || rdpei)
+        {
             serverPdus[1] = McsConnectResponseWithDrdynvc;
         }
 
@@ -617,6 +765,19 @@ internal static class SmokeTests
         }
 
         return collected;
+    }
+
+    // Connects with the RDPEI channel attached and plays the server side of its opening: the DRDYNVC
+    // capabilities request, the create request for Microsoft::Windows::RDS::Input and SC_READY.
+    private static ActiveStage ReadyRdpeiStage()
+    {
+        var (stage, image) = ConnectedStage(8, 4, rdpei: true);
+        foreach (var frame in RdpeiOpeningServerPdus)
+        {
+            True(ProcessFrame(stage, image, frame).All(o => o.EnumType == ActiveStageOutputType.ResponseFrame), "only response frames while opening");
+        }
+
+        return stage;
     }
 
     private static byte SurfaceByte(int width, int x, int y) => (byte)(y * width * 4 + x + 1);

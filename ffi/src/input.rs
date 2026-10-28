@@ -131,4 +131,87 @@ pub mod ffi {
             Box::new(Operation(operation))
         }
     }
+
+    /// Phase of a touch point, as windowing toolkits report one event per contact.
+    #[diplomat::enum_convert(ironrdp::rdpei::contact::TouchPhase)]
+    pub enum TouchPhase {
+        /// The finger touched the surface.
+        Started,
+        /// The finger moved while touching the surface.
+        Moved,
+        /// The finger left the surface.
+        Ended,
+        /// The system canceled the touch.
+        Canceled,
+    }
+
+    /// Groups per-contact touch events into MS-RDPEI touch frames.
+    ///
+    /// Push every toolkit event, then hand the builder to `ActiveStage::encode_rdpei_touch`, which
+    /// takes the frames built since the last call.
+    /// Contact ids and `contactFlags` are derived here, so every frame stays within the legal
+    /// combinations of [MS-RDPEI] 2.2.3.3.1.1 "RDPINPUT_CONTACT_DATA".
+    /// Frame timing comes from a monotonic clock read at each push.
+    ///
+    /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+    #[diplomat::opaque_mut]
+    pub struct TouchFrameBuilder {
+        inner: ironrdp::rdpei::contact::TouchFrameBuilder,
+        epoch: std::time::Instant,
+    }
+
+    impl TouchFrameBuilder {
+        /// Tracks at most `max_contacts` contacts, the `max_touch_contacts` given to
+        /// `ClientConnector::with_dynamic_channel_rdpei`.
+        pub fn new(max_contacts: u16) -> Box<TouchFrameBuilder> {
+            Box::new(TouchFrameBuilder {
+                inner: ironrdp::rdpei::contact::TouchFrameBuilder::new(max_contacts),
+                epoch: std::time::Instant::now(),
+            })
+        }
+
+        /// Adds one toolkit event for the touch point `external_id`, in desktop coordinates.
+        ///
+        /// A `Moved` or `Ended` event for an unknown touch point is ignored, as is a `Started` event
+        /// beyond `max_contacts`.
+        pub fn push(&mut self, external_id: u64, phase: TouchPhase, x: i32, y: i32) {
+            let now_us = self.now_us();
+            self.inner.push(external_id, phase.into(), x, y, None, now_us);
+        }
+
+        /// Like `push`, with the contact pressure normalized to `0..=1024`.
+        pub fn push_with_pressure(&mut self, external_id: u64, phase: TouchPhase, x: i32, y: i32, pressure: u32) {
+            let now_us = self.now_us();
+            self.inner.push(external_id, phase.into(), x, y, Some(pressure), now_us);
+        }
+
+        /// Cancels every tracked contact, for example when the window loses focus.
+        ///
+        /// The cancellations wait with the other pending frames for the next encode.
+        pub fn cancel_all(&mut self) {
+            let now_us = self.now_us();
+            self.inner.cancel_all(now_us);
+        }
+
+        /// Forgets every contact and pending frame without sending anything, for when the channel closed.
+        pub fn reset(&mut self) {
+            self.inner.reset();
+        }
+
+        /// Whether frames wait for the next encode.
+        #[diplomat::attr(auto, getter = "has_pending_frames")]
+        pub fn get_has_pending_frames(&self) -> bool {
+            self.inner.has_pending_frames()
+        }
+
+        /// Takes the frames built since the last call as one touch event, stamped with the builder's clock.
+        pub(crate) fn take_event(&mut self) -> Option<ironrdp::rdpei::pdu::TouchEventPdu> {
+            let now_us = self.now_us();
+            self.inner.take_event(now_us)
+        }
+
+        fn now_us(&self) -> u64 {
+            u64::try_from(self.epoch.elapsed().as_micros()).unwrap_or(u64::MAX)
+        }
+    }
 }

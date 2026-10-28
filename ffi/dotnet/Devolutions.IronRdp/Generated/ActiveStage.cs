@@ -77,6 +77,27 @@ public partial class ActiveStage: IDisposable
         }
     }
 
+    public RdpeiInputState RdpeiInputState
+    {
+        get
+        {
+            unsafe
+            {
+                BorrowLease<Raw.ActiveStage>? selfLease = null;
+                try
+                {
+                    selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                    Raw.RdpeiInputState result = Raw.ActiveStage.GetRdpeiInputState(selfLease!.Ptr);
+                    return RdpeiInputState.FromFFI(result);
+                }
+                finally
+                {
+                    selfLease?.Release();
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ActiveStage</c> from a raw handle.
     /// </summary>
@@ -465,6 +486,36 @@ public partial class ActiveStage: IDisposable
             finally
             {
                 selfLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8? EncodeRdpeiTouch(TouchFrameBuilder touches)
+    {
+        unsafe
+        {
+            if (touches == null) throw new ArgumentNullException(nameof(touches));
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            BorrowLease<Raw.TouchFrameBuilder>? touchesLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                touchesLease = touches._diplomatHandle.Lease(BorrowKind.Exclusive);
+                var result = Raw.ActiveStage.EncodeRdpeiTouch(selfLease!.Ptr, touchesLease!.Ptr);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return result.Ok == null ? null : new VecU8(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+                touchesLease?.Release();
             }
         }
     }

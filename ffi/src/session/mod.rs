@@ -34,6 +34,7 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::graphics::ffi::DecodedPointer;
+    use crate::input::ffi::TouchFrameBuilder;
     use crate::pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle};
     use crate::utils::ffi::{Position, VecU8};
 
@@ -57,6 +58,18 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct MonitorLayoutEntry(pub ironrdp::pdu::gcc::Monitor);
+
+    /// What the MS-RDPEI channel accepts.
+    pub struct RdpeiInputState {
+        /// The channel negotiated touch input.
+        pub touch: bool,
+        /// The channel negotiated pen input.
+        pub pen: bool,
+        /// Up to four pens may be injected at once.
+        pub multipen: bool,
+        /// The server paused input transmission; pending frames are held until it resumes.
+        pub suspended: bool,
+    }
 
     impl ActiveStageOutputIterator {
         pub fn len(&self) -> usize {
@@ -317,6 +330,51 @@ pub mod ffi {
         pub fn graceful_shutdown(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             let outputs = self.0.graceful_shutdown()?;
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
+        }
+
+        /// What the MS-RDPEI channel accepts right now; every field is false until the channel
+        /// is attached, open and has exchanged `SC_READY` / `CS_READY`.
+        #[diplomat::attr(auto, getter = "rdpei_input_state")]
+        pub fn get_rdpei_input_state(&self) -> RdpeiInputState {
+            let state = self.0.rdpei_input_state();
+            RdpeiInputState {
+                touch: state.touch,
+                pen: state.pen,
+                multipen: state.multipen,
+                suspended: state.suspended,
+            }
+        }
+
+        /// Encodes the frames pending in `touches` as one `RDPINPUT_TOUCH_EVENT_PDU` on the MS-RDPEI
+        /// channel and returns the frame to write to the transport.
+        ///
+        /// Returns `None` when no frame is pending.
+        /// Fails, and leaves the frames pending, when the channel is missing, not ready, or suspended
+        /// ([MS-RDPEI] 3.3.5.4 "Processing an RDPINPUT_SUSPEND_INPUT_PDU message").
+        ///
+        /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+        pub fn encode_rdpei_touch(
+            &mut self,
+            touches: &mut TouchFrameBuilder,
+        ) -> Result<Option<Box<VecU8>>, Box<IronRdpError>> {
+            let state = self.0.rdpei_input_state();
+            if !state.touch {
+                return Err("RDPEI channel is not ready".into());
+            }
+            if state.suspended {
+                return Err("RDPEI input is suspended".into());
+            }
+
+            let Some(event) = touches.take_event() else {
+                return Ok(None);
+            };
+
+            let frame = self
+                .0
+                .encode_rdpei_touch(event)
+                .ok_or("RDPEI channel is not available")??;
+
+            Ok(Some(Box::new(VecU8(frame))))
         }
 
         /// Reports whether the Display Control Virtual Channel can carry a resize request.
