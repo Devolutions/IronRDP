@@ -412,7 +412,7 @@ fn rail_confirmation_requires_window_list_capability() {
 
 #[test]
 fn rail_confirmation_disables_icon_caches_larger_than_the_server_offer() {
-    // oracle: spec MS-RDPERP §3.3.5.1.5 and §7 note 36: Windows disables icon caches exceeding the server offer.
+    // oracle: reference MS-RDPERP §3.3.5.1.5 and §6 note 36: Windows disables icon caches exceeding the server offer.
     let (mut acceptor, user_channel_id, io_channel_id) = rail_acceptor_waiting_confirm();
     let capabilities = vec![
         CapabilitySet::Rail(Rail {
@@ -488,7 +488,7 @@ fn rail_confirmation_preserves_supported_icon_cache_limits(#[case] caches: u8, #
     assert_eq!(effective.support_level, WindowSupportLevel::Supported);
 }
 
-// oracle: spec MS-RDPERP §3.3.5.1.5, product behavior note 36: either excessive dimension disables both caches.
+// oracle: reference MS-RDPERP §3.3.5.1.5, §6 product behavior note 36: either excessive dimension disables both caches.
 #[rstest::rstest]
 #[case::too_many_caches(4, 12)]
 #[case::too_many_entries(3, 13)]
@@ -1670,7 +1670,7 @@ fn step_client_info_credentials(
     Ok(acceptor)
 }
 
-// oracle: spec MS-RDPBCGR §2.2.1.11.1.1: Client Info carries UserName and Domain, which clients also encode as a UPN or Down-Level Logon Name when Domain is empty.
+// oracle: mutant rejecting a Client Info UPN or Down-Level Logon Name that matches the configured domain.
 #[rstest::rstest]
 #[case::upn("alice@corp")]
 #[case::down_level("CORP\\alice")]
@@ -1679,7 +1679,7 @@ fn client_info_matches_qualified_username_against_expected_domain(#[case] userna
     assert_eq!(acceptor.received_credentials().unwrap().credentials.username, username);
 }
 
-// oracle: spec MS-RDPBCGR §2.2.1.11.1.1: a domain mismatch in Client Info credentials must fail authentication.
+// oracle: mutant accepting a Client Info username whose domain is missing or does not match the configured domain.
 #[rstest::rstest]
 #[case::different_upn_realm("alice@evil.example")]
 #[case::different_down_level_domain("OTHER\\alice")]
@@ -1971,6 +1971,9 @@ fn stepping_a_finished_finalization_returns_an_error() {
     assert!(sequence.is_done());
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    let vc_frame = encode_send_data_request(USER_CHANNEL_ID, IO_CHANNEL_ID + 1, b"vc");
+    // oracle: mutant buffering non-I/O-channel frames after finalization has already finished.
+    sequence.step(&vc_frame, None, &mut WriteBuf::new()).unwrap_err();
     // oracle: mutant the Finished arm of `FinalizationSequence::step` not putting the state back
     assert!(sequence.is_done());
 }
@@ -1994,6 +1997,9 @@ fn stepping_a_failed_finalization_returns_an_error() {
         .unwrap_err();
 
     sequence.step(&[], None, &mut WriteBuf::new()).unwrap_err();
+    let vc_frame = encode_send_data_request(USER_CHANNEL_ID, IO_CHANNEL_ID + 1, b"vc");
+    // oracle: mutant buffering non-I/O-channel frames after finalization has already failed.
+    sequence.step(&vc_frame, None, &mut WriteBuf::new()).unwrap_err();
 }
 
 // oracle: spec MS-RDPBCGR §2.2.12.1 (the pduSource field of the Monitor Layout PDU MUST be set to zero)
@@ -2057,11 +2063,12 @@ async fn accept_spnego_credssp(
     (result, handler, outgoing)
 }
 
-/// mstsc wraps NTLM in SPNEGO.
+/// The mstsc client wraps NTLM in SPNEGO.
 /// An acceptor that sent every client to the bare-NTLM server would fail this exchange.
 #[tokio::test]
 async fn credssp_authenticates_ntlm_wrapped_in_spnego() {
-    // oracle: spec MS-CSSP §2.2.1.1, §2.2.1 and MS-RDPBCGR §2.2.10.2: SPNEGO-wrapped NTLM delegates the client's credentials and ends with AUTHZ_SUCCESS (0).
+    // oracle: spec MS-CSSP §2.2.1.1, §2.2.1 and MS-RDPBCGR §2.2.10.2:
+    // SPNEGO-wrapped NTLM delegates the client's credentials and ends with AUTHZ_SUCCESS (0).
     let (result, handler, outgoing) = accept_spnego_credssp(SecurityProtocol::HYBRID_EX, "alice", "secret").await;
 
     result.unwrap();
@@ -2074,14 +2081,67 @@ async fn credssp_authenticates_ntlm_wrapped_in_spnego() {
     assert_eq!(received.credentials.password, "secret");
 }
 
-/// sspi rejects an unknown user in the SPNEGO exchange with a different error than a wrong password.
-/// Both must reach the client as STATUS_LOGON_FAILURE, so that it asks for new credentials instead of reporting an internal error.
+#[tokio::test]
+async fn credssp_preserves_explicit_domain_when_username_contains_at_sign() {
+    // oracle: mutant discarding an explicit domain when the configured username contains '@'.
+    let protocol = SecurityProtocol::HYBRID_EX;
+    let mut acceptor = negotiated_acceptor_expecting(
+        protocol,
+        Some(Credentials {
+            username: "alice@example.com".to_owned(),
+            password: "secret".to_owned(),
+            domain: Some("MicrosoftAccount".to_owned()),
+        }),
+    );
+    let public_key = vec![0x42; 32];
+    let (mut client, request) = CredsspSequence::init(
+        ironrdp_connector::Credentials::UsernamePassword {
+            username: "alice@example.com".to_owned(),
+            password: "secret".to_owned(),
+        },
+        Some("MicrosoftAccount"),
+        protocol,
+        "server.example.com".to_owned().into(),
+        public_key.clone(),
+        None,
+    )
+    .unwrap();
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [client_credssp_message(&mut client, request)].into(),
+        credssp_client: Some(client),
+        ..HandshakeStream::default()
+    });
+    let mut handler = SetupHandler::default();
+    accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "client.example.com".to_owned().into(),
+        public_key,
+        None,
+        &mut handler,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(handler.received.len(), 1);
+    assert_eq!(handler.received[0].credentials.username, "alice@example.com");
+    assert_eq!(
+        handler.received[0].credentials.domain.as_deref(),
+        Some("MicrosoftAccount")
+    );
+}
+
+/// The sspi crate rejects an unknown user in the SPNEGO exchange with a different error than a wrong password.
+/// Both must reach the client as STATUS_LOGON_FAILURE, so that it asks for new credentials
+/// instead of reporting an internal error.
 #[rstest::rstest]
 #[case::wrong_password("alice", "wrong")]
 #[case::unknown_user("bob", "secret")]
 #[tokio::test]
 async fn credssp_failed_spnego_logon_is_reported_as_logon_failure(#[case] username: &str, #[case] password: &str) {
-    // oracle: spec MS-CSSP §2.2.1 and MS-ERREF §2.3.1: errorCode carries STATUS_LOGON_FAILURE, the NTSTATUS for a bad username or authentication information.
+    // oracle: spec MS-CSSP §2.2.1 and MS-ERREF §2.3.1: errorCode carries STATUS_LOGON_FAILURE for bad authentication information.
+    // oracle: mutant reporting sspi's NoCredentials instead of STATUS_LOGON_FAILURE for an unknown SPNEGO user.
     let (result, handler, outgoing) = accept_spnego_credssp(SecurityProtocol::HYBRID, username, password).await;
 
     assert!(result.is_err(), "the logon should fail");
@@ -2201,6 +2261,11 @@ async fn native_credssp_rejects_invalid_initial_requests(#[case] version: u32, #
             .all(|message| TsRequest::from_buffer(message).unwrap().nego_tokens.is_none()),
         "invalid initial requests must not advance Negotiate"
     );
+    if version == 4 {
+        // oracle: spec MS-CSSP §3.1.5: unsupported version returns STATUS_NOT_SUPPORTED (0xC00000BB).
+        let rejection = TsRequest::from_buffer(outgoing.borrow().first().unwrap()).unwrap();
+        assert_eq!(rejection.error_code, Some(NStatusCode(0xc000_00bb)));
+    }
     assert_eq!(outgoing.borrow().last().unwrap(), &5u32.to_le_bytes());
 }
 

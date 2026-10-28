@@ -487,7 +487,7 @@ where
             .creds
             .as_ref()
             .ok_or_else(|| general_err!("no credentials while doing credssp"))?;
-        let username = if creds.username.contains(['\\', '@']) {
+        let username = if creds.domain.is_none() && creds.username.contains(['\\', '@']) {
             Username::parse(&creds.username)
         } else {
             Username::new(&creds.username, creds.domain.as_deref())

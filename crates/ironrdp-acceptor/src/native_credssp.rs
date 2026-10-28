@@ -137,9 +137,9 @@ where
                 return Err(general_err!("native CredSSP requires delegated password credentials"));
             };
             if credentials.user.is_empty()
-                || credentials.user.as_slice().contains(&0)
-                || credentials.domain.as_slice().contains(&0)
-                || credentials.password.as_ref().as_ref().as_slice().contains(&0)
+                || credentials.user.as_slice().contains(&0u16)
+                || credentials.domain.as_slice().contains(&0u16)
+                || credentials.password.as_ref().as_ref().as_slice().contains(&0u16)
             {
                 return Err(general_err!(
                     "native CredSSP credentials contain an empty user or embedded NUL"

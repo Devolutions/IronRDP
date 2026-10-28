@@ -53,9 +53,11 @@ const NTLM_SIGNATURE: &[u8] = b"NTLMSSP\0";
 
 /// NTSTATUS code sent to the client in `TsRequest.errorCode` when CredSSP fails ([MS-CSSP] 2.2.1).
 ///
-/// sspi derives the code from the SSPI error, which is not an NTSTATUS value.
-/// A wrong password or an unknown user is reported as STATUS_LOGON_FAILURE, as Windows does, so that the client can ask for new credentials.
-/// sspi signals them as `LogonDenied`, or as `NoCredentials` when SPNEGO finds no configured identity for the user.
+/// The sspi crate derives the code from the SSPI error, which is not an NTSTATUS value.
+/// A wrong password or an unknown user is reported as STATUS_LOGON_FAILURE, as Windows does,
+/// so that the client can ask for new credentials.
+/// The sspi crate signals them as `LogonDenied`, or as `NoCredentials` when SPNEGO finds no
+/// configured identity for the user.
 /// Other errors keep the code from sspi.
 fn client_error_code(error: &sspi::Error) -> Option<NStatusCode> {
     match error.error_type {
@@ -209,10 +211,12 @@ impl<'a> CredsspSequence<'a> {
 
     /// Starts the server side of a CredSSP exchange.
     ///
-    /// Without a Kerberos configuration, the server authenticates with NTLM, either bare or wrapped in SPNEGO as mstsc sends it.
+    /// Without a Kerberos configuration, the server authenticates with NTLM, either bare or wrapped
+    /// in SPNEGO as mstsc sends it.
     /// The first client token selects which one.
     /// A bare NTLM client may qualify the configured account name with a domain or a UPN suffix.
-    /// A SPNEGO client must send the configured username in exactly the configured form, because sspi matches it against the configured identity before the NTLM exchange completes.
+    /// A SPNEGO client must send the configured username in exactly the configured form, because
+    /// sspi matches it against the configured identity before the NTLM exchange completes.
     pub fn init(
         creds: &'a AuthIdentity,
         client_computer_name: ServerName,

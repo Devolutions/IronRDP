@@ -13,11 +13,13 @@ const MAX_INPUT_BACKLOG_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Debug, Default)]
 pub(crate) struct InputEventBuffer {
     events: Vec<Vec<u8>>,
+    /// INVARIANT: `bytes <= MAX_INPUT_BACKLOG_BYTES`.
     bytes: usize,
 }
 
 impl InputEventBuffer {
     pub(crate) fn push(&mut self, input: &[u8]) -> ConnectorResult<()> {
+        // Per invariant: bytes <= MAX_INPUT_BACKLOG_BYTES, so this subtraction does not underflow.
         if MAX_INPUT_BACKLOG_BYTES - self.bytes < input.len() {
             return Err(general_err!("input event backlog exceeds 16 MiB"));
         }
@@ -115,14 +117,22 @@ impl Sequence for FinalizationSequence {
         _received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
-        if let Ok(X224(data)) = decode::<X224<mcs::SendDataRequest<'_>>>(input)
+        let prev_state = core::mem::take(&mut self.state);
+        if matches!(
+            prev_state,
+            FinalizationState::WaitSynchronize
+                | FinalizationState::WaitControlCooperate
+                | FinalizationState::WaitRequestControl
+                | FinalizationState::WaitFontList
+        ) && let Ok(X224(data)) = decode::<X224<mcs::SendDataRequest<'_>>>(input)
             && data.channel_id != self.io_channel_id
         {
             self.input_events.push(input)?;
+            self.state = prev_state;
             return Ok(Written::Nothing);
         }
 
-        let (written, next_state) = match core::mem::take(&mut self.state) {
+        let (written, next_state) = match prev_state {
             FinalizationState::WaitSynchronize => {
                 let synchronize = decode_share_control(input);
 
