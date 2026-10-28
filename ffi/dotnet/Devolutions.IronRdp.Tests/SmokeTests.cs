@@ -120,6 +120,51 @@ internal static class SmokeTests
             True(buffer.All(b => b == 0xff), "buffer untouched");
         });
 
+        // oracle: spec MS-RDPBCGR §2.2.8.1.2 (TS_FP_INPUT_PDU) and §2.2.8.1.2.2.3 (TS_FP_POINTER_EVENT)
+        yield return ("fast-path input encodes to the spec bytes without a stage", () =>
+        {
+            var events = InputDatabase.New().Apply(MousePosition.New(10, 20).AsMoveOperation());
+            using var frame = events.Encode();
+            var bytes = new byte[(int)frame.Size];
+            frame.Fill(bytes);
+            True(bytes.SequenceEqual(new byte[] { 0x04, 0x09, 0x20, 0x00, 0x08, 0x0a, 0x00, 0x14, 0x00 }), $"frame: {Convert.ToHexString(bytes)}");
+        });
+
+        // oracle: ffi/README.md says Encode() sends the same bytes as ProcessFastpathInput
+        yield return ("fast-path input encodes the bytes the stage would send", () =>
+        {
+            var (stage, image) = ConnectedStage(8, 4);
+            var events = InputDatabase.New().Apply(MouseButton.New(MouseButtonType.Left).AsOperationMouseButtonPressed());
+
+            using var encoded = events.Encode();
+            var encodedBytes = new byte[(int)encoded.Size];
+            encoded.Fill(encodedBytes);
+
+            var sent = new List<byte>();
+            var outputs = stage.ProcessFastpathInput(image, events);
+            while (outputs.Next() is { } output)
+            {
+                Equal(ActiveStageOutputType.ResponseFrame, output.EnumType, "output type");
+                using var responseFrame = output.ResponseFrame;
+                var responseBytes = new byte[(int)responseFrame.Size];
+                responseFrame.Fill(responseBytes);
+                sent.AddRange(responseBytes);
+            }
+
+            True(encodedBytes.Length > 0 && sent.SequenceEqual(encodedBytes), "same bytes on the wire");
+        });
+
+        // oracle: ffi/README.md says Encode() reads no ActiveStage or DecodedImage
+        yield return ("fast-path input encodes after the stage and image are disposed", () =>
+        {
+            var (stage, image) = ConnectedStage(8, 4);
+            var events = InputDatabase.New().Apply(WheelRotations.New(true, 120).AsOperation());
+            stage.Dispose();
+            image.Dispose();
+            using var frame = events.Encode();
+            True(frame.Size > 0, "frame is not empty");
+        });
+
         yield return ("vec u8 round-trips bytes", () =>
         {
             var vec = VecU8.FromBytes(new byte[] { 1, 2, 3 });

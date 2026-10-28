@@ -57,6 +57,32 @@ public partial class FastPathInputEventIterator
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 Encode()
+    {
+        unsafe
+        {
+            BorrowLease<Raw.FastPathInputEventIterator>? selfLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                var result = Raw.FastPathInputEventIterator.Encode(selfLease!.Ptr);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return new VecU8(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+            }
+        }
+    }
+
     private void Cleanup()
     {
         unsafe

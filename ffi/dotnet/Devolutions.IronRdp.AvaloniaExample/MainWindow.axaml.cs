@@ -27,6 +27,8 @@ public partial class MainWindow : Window
     readonly InputDatabase? _inputDatabase = InputDatabase.New();
     ActiveStage? _activeStage;
     DecodedImage? _decodedImage;
+    // With software pointer rendering, input also redraws the pointer in the image, which needs the stage lock.
+    bool _pointerSoftwareRendering;
     byte[]? _frameBuffer;
     readonly object _stageLock = new();
     Framed<Stream>? _framed;
@@ -207,6 +209,7 @@ public partial class MainWindow : Window
 
                 this._decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.DesktopSize.Width,
                     res.DesktopSize.Height);
+                this._pointerSoftwareRendering = res.PointerSoftwareRendering;
                 this._activeStage = ActiveStage.New(res);
                 ReadPduAndProcessActiveStage();
 
@@ -536,8 +539,30 @@ public partial class MainWindow : Window
             return;
         }
 
-        var output = WithStageLock(() => _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath));
-        var _ = HandleActiveStageOutput(output);
+        if (_pointerSoftwareRendering)
+        {
+            var output = WithStageLock(() => _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath));
+            _ = HandleActiveStageOutput(output);
+            return;
+        }
+
+        // Encoding reads neither the stage nor the image, so the PDU loop never delays input.
+        using var frame = fastpath.Encode();
+        byte[] frameBytes = new byte[frame.Size];
+        frame.Fill(frameBytes);
+        _ = WriteInput(frameBytes);
+    }
+
+    private async Task WriteInput(byte[] frameBytes)
+    {
+        try
+        {
+            await _framed!.Write(frameBytes);
+        }
+        catch (Exception e)
+        {
+            Trace.TraceError("Error sending input: " + e.Message);
+        }
     }
 
     private T WithStageLock<T>(Func<T> call)
@@ -615,6 +640,7 @@ public partial class MainWindow : Window
                             );
 
                             _activeStage.EnableServerPointer = enableServerPointer;
+                            _pointerSoftwareRendering = pointerSoftwareRendering;
                         }
 
                         break;
