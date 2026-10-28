@@ -29,10 +29,17 @@ pub fn decode(buffer: &mut [i16], quant: &Quant) {
         .for_each(decode_chunk);
 }
 
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "clamped to i16::MIN..=i16::MAX before cast"
+)]
 fn decode_block(buffer: &mut [i16], factor: i16) {
     if factor > 0 {
+        let shift = factor.min(16);
+        // INVARIANT: 1 <= shift <= 16.
         for value in buffer {
-            *value <<= factor;
+            *value = (i32::from(*value) << shift).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         }
     }
 }
@@ -40,12 +47,13 @@ fn decode_block(buffer: &mut [i16], factor: i16) {
 #[expect(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
-    reason = "rounded shift of i16 by shift in 1..=16 fits in i16"
+    reason = "1 <= shift <= 16, so rounded right-shift of i16 fits in i16"
 )]
 fn encode_block(buffer: &mut [i16], factor: i16) {
     if factor > 0 {
         // For factor >= 16, scale >= 65536 and half >= 32768, so every i16 rounds to 0, matching shift = 16.
         let shift = factor.min(16);
+        // INVARIANT: 1 <= shift <= 16.
         let half = 1i32 << (shift - 1);
         for value in buffer {
             *value = ((i32::from(*value) + half) >> shift) as i16;

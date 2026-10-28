@@ -282,8 +282,9 @@ impl DecodedPointer {
                     bitmap_data.extend_from_slice(&compute_inverted_pixel(row_idx, col_idx));
                 } else if target.should_premultiply_alpha() {
                     let mut with_premultiplied_alpha = color;
+                    let alpha = u16::from(color[3]);
                     for component in &mut with_premultiplied_alpha[..3] {
-                        *component = u8::try_from((u16::from(*component) * u16::from(color[3]) + 127) / 255)
+                        *component = u8::try_from((u16::from(*component) * alpha + 127) / 255)
                             .expect("multiplying by normalized alpha fits into u8");
                     }
                     bitmap_data.extend_from_slice(&with_premultiplied_alpha);
