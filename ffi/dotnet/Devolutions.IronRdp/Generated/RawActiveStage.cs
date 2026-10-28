@@ -45,6 +45,12 @@ internal partial struct ActiveStage
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_graceful_shutdown", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError GracefulShutdown(ActiveStage* handle);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_get_display_control_state", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DisplayControlState GetDisplayControlState(ActiveStage* handle);
+
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_get_display_control_capabilities", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DisplayControlCapabilities* GetDisplayControlCapabilities(ActiveStage* handle);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_encoded_resize", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError EncodedResize(ActiveStage* handle, uint width, uint height);
 

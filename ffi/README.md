@@ -18,6 +18,14 @@ At this point, you may build and run the examples for .NET:
 - `dotnet run --project Devolutions.IronRdp.ConnectExample`
 - `dotnet run --project Devolutions.IronRdp.AvaloniaExample`
 
+## Dynamic resize
+
+`ClientConnector.WithDynamicChannelDisplayControl()` requests the Display Control channel ([MS-RDPEDISP]).
+The server opens it and sends its capabilities some time after the connection is established, so `ActiveStage.EncodedResize` returns `null` until then.
+Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from `Pending` to `Ready` when the capabilities arrive, which is when to send the first resize.
+`Unavailable` means the channel was not requested.
+`ActiveStage.DisplayControlCapabilities` exposes the server's monitor count and area limits once `Ready`.
+
 ## Migrating from 2026.10.19
 
 - Properties replace the `GetX()` and `SetX()` methods they duplicated.
@@ -32,3 +40,4 @@ At this point, you may build and run the examples for .NET:
   Serialize access to `ActiveStage` and `DecodedImage` across the PDU loop, input handlers and clipboard, as the Avalonia example does with one lock.
 
 [Diplomat]: https://github.com/rust-diplomat/diplomat
+[MS-RDPEDISP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp

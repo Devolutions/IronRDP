@@ -13,6 +13,50 @@ public partial class ActiveStage: IDisposable
 
     private static readonly unsafe RustDestructor<Raw.ActiveStage> _destroy = Raw.ActiveStage.Destroy;
 
+    /// <returns>
+    /// A <c>DisplayControlCapabilities</c> allocated on Rust side.
+    /// </returns>
+    public DisplayControlCapabilities? DisplayControlCapabilities
+    {
+        get
+        {
+            unsafe
+            {
+                BorrowLease<Raw.ActiveStage>? selfLease = null;
+                try
+                {
+                    selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                    Raw.DisplayControlCapabilities* result = Raw.ActiveStage.GetDisplayControlCapabilities(selfLease!.Ptr);
+                    return result == null ? null : new DisplayControlCapabilities(result);
+                }
+                finally
+                {
+                    selfLease?.Release();
+                }
+            }
+        }
+    }
+
+    public DisplayControlState DisplayControlState
+    {
+        get
+        {
+            unsafe
+            {
+                BorrowLease<Raw.ActiveStage>? selfLease = null;
+                try
+                {
+                    selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                    return Raw.ActiveStage.GetDisplayControlState(selfLease!.Ptr);
+                }
+                finally
+                {
+                    selfLease?.Release();
+                }
+            }
+        }
+    }
+
     public bool EnableServerPointer
     {
         set

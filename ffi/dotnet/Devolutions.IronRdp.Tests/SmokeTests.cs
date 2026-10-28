@@ -268,6 +268,40 @@ internal static class SmokeTests
             True(!state.IsTerminal(), "state is not terminal");
         });
 
+        yield return ("display control is unavailable without its dynamic channel", () =>
+        {
+            var (stage, _) = ConnectedStage(8, 4);
+            Equal(DisplayControlState.Unavailable, stage.DisplayControlState, "state");
+            True(stage.DisplayControlCapabilities is null, "no capabilities");
+            True(stage.EncodedResize(1024, 768) is null, "no resize frame");
+        });
+
+        // oracle: spec MS-RDPEDISP §1.3 (the client sends a monitor layout only after the server's DISPLAYCONTROL_CAPS_PDU)
+        // and §2.2.2.1 (MaxNumMonitors=2, MaxMonitorAreaFactorA=3840, MaxMonitorAreaFactorB=2400 in DisplayControlCapsPdu)
+        yield return ("display control becomes ready when the server capabilities arrive", () =>
+        {
+            var (stage, image) = ConnectedStage(8, 4, displayControl: true);
+            Equal(DisplayControlState.Pending, stage.DisplayControlState, "state before the channel opens");
+            True(stage.EncodedResize(1024, 768) is null, "no resize frame before the channel opens");
+
+            var createResponses = ProcessFrame(stage, image, DrdynvcDisplayControlCreateRequest);
+            True(createResponses.Any(o => o.EnumType == ActiveStageOutputType.ResponseFrame), "create response is sent");
+            Equal(DisplayControlState.Pending, stage.DisplayControlState, "state before the capabilities");
+            True(stage.DisplayControlCapabilities is null, "no capabilities before the server sends them");
+            True(stage.EncodedResize(1024, 768) is null, "no resize frame before the capabilities");
+
+            ProcessFrame(stage, image, DisplayControlCapsPdu);
+            Equal(DisplayControlState.Ready, stage.DisplayControlState, "state after the capabilities");
+            var capabilities = stage.DisplayControlCapabilities;
+            True(capabilities is not null, "capabilities after the server sends them");
+            Equal(2u, capabilities!.MaxNumMonitors, "max monitors");
+            Equal(2ul * 3840 * 2400, capabilities.MaxMonitorArea, "max monitor area");
+
+            var resize = stage.EncodedResize(1024, 768);
+            True(resize is not null, "resize frame after the capabilities");
+            True(resize!.Next() is { EnumType: ActiveStageOutputType.ResponseFrame }, "resize is a response frame");
+        });
+
         if (OperatingSystem.IsWindows())
         {
             yield return ("windows clipboard with file transfer starts idle", () =>
@@ -279,20 +313,22 @@ internal static class SmokeTests
         }
     }
 
+    // MCS Connect Response with SKIP_CHANNELJOIN_SUPPORTED and no static channels (MS-RDPBCGR §2.2.1.4).
+    private static readonly byte[] McsConnectResponse =
+    {
+        0x03, 0x00, 0x00, 0x68, 0x02, 0xf0, 0x80, 0x7f, 0x66, 0x5e, 0x0a, 0x01, 0x00, 0x02, 0x01, 0x00,
+        0x30, 0x1a, 0x02, 0x01, 0x22, 0x02, 0x01, 0x03, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x01,
+        0x00, 0x02, 0x01, 0x01, 0x02, 0x03, 0x00, 0xff, 0xf8, 0x02, 0x01, 0x02, 0x04, 0x3a, 0x00, 0x05,
+        0x00, 0x14, 0x7c, 0x00, 0x01, 0x33, 0x14, 0x76, 0x0a, 0x01, 0x01, 0x00, 0x01, 0xc0, 0x00, 0x4d,
+        0x63, 0x44, 0x6e, 0x24, 0x01, 0x0c, 0x10, 0x00, 0x04, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x08, 0x00, 0x00, 0x00, 0x03, 0x0c, 0x08, 0x00, 0xeb, 0x03, 0x00, 0x00, 0x02, 0x0c, 0x0c, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+
     private static readonly byte[][] HandshakeServerPdus =
     {
         TpktX224ConfirmSelectingTls,
-        // MCS Connect Response with SKIP_CHANNELJOIN_SUPPORTED (MS-RDPBCGR §2.2.1.4).
-        new byte[]
-        {
-            0x03, 0x00, 0x00, 0x68, 0x02, 0xf0, 0x80, 0x7f, 0x66, 0x5e, 0x0a, 0x01, 0x00, 0x02, 0x01, 0x00,
-            0x30, 0x1a, 0x02, 0x01, 0x22, 0x02, 0x01, 0x03, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x01,
-            0x00, 0x02, 0x01, 0x01, 0x02, 0x03, 0x00, 0xff, 0xf8, 0x02, 0x01, 0x02, 0x04, 0x3a, 0x00, 0x05,
-            0x00, 0x14, 0x7c, 0x00, 0x01, 0x33, 0x14, 0x76, 0x0a, 0x01, 0x01, 0x00, 0x01, 0xc0, 0x00, 0x4d,
-            0x63, 0x44, 0x6e, 0x24, 0x01, 0x0c, 0x10, 0x00, 0x04, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
-            0x08, 0x00, 0x00, 0x00, 0x03, 0x0c, 0x08, 0x00, 0xeb, 0x03, 0x00, 0x00, 0x02, 0x0c, 0x0c, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        },
+        McsConnectResponse,
         // MCS Attach User Confirm for channel 1007 (MS-RDPBCGR §2.2.1.6).
         new byte[] { 0x03, 0x00, 0x00, 0x0b, 0x02, 0xf0, 0x80, 0x2e, 0x00, 0x00, 0x06 },
         // Licensing Error Message STATUS_VALID_CLIENT (MS-RDPBCGR §2.2.1.12).
@@ -318,9 +354,47 @@ internal static class SmokeTests
         },
     };
 
-    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height)
+    // The same Connect Response with one static channel, 1004, for the drdynvc channel the client requests.
+    private static readonly byte[] McsConnectResponseWithDrdynvc =
+    {
+        0x03, 0x00, 0x00, 0x6c, 0x02, 0xf0, 0x80, 0x7f, 0x66, 0x62, 0x0a, 0x01, 0x00, 0x02, 0x01, 0x00,
+        0x30, 0x1a, 0x02, 0x01, 0x22, 0x02, 0x01, 0x03, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x01,
+        0x00, 0x02, 0x01, 0x01, 0x02, 0x03, 0x00, 0xff, 0xf8, 0x02, 0x01, 0x02, 0x04, 0x3e, 0x00, 0x05,
+        0x00, 0x14, 0x7c, 0x00, 0x01, 0x36, 0x14, 0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0xc0, 0x00, 0x4d,
+        0x63, 0x44, 0x6e, 0x28, 0x01, 0x0c, 0x10, 0x00, 0x04, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x08, 0x00, 0x00, 0x00, 0x03, 0x0c, 0x0c, 0x00, 0xeb, 0x03, 0x01, 0x00, 0xec, 0x03, 0x00, 0x00,
+        0x02, 0x0c, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+
+    // DRDYNVC Create Request for "Microsoft::Windows::RDS::DisplayControl" as channel 1 on static channel 1004
+    // (MS-RDPEDYC §2.2.2.1), inside an MCS Send Data Indication.
+    private static readonly byte[] DrdynvcDisplayControlCreateRequest =
+    {
+        0x03, 0x00, 0x00, 0x40, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x32, 0x2a, 0x00,
+        0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x10, 0x01, 0x4d, 0x69, 0x63, 0x72, 0x6f, 0x73, 0x6f, 0x66,
+        0x74, 0x3a, 0x3a, 0x57, 0x69, 0x6e, 0x64, 0x6f, 0x77, 0x73, 0x3a, 0x3a, 0x52, 0x44, 0x53, 0x3a,
+        0x3a, 0x44, 0x69, 0x73, 0x70, 0x6c, 0x61, 0x79, 0x43, 0x6f, 0x6e, 0x74, 0x72, 0x6f, 0x6c, 0x00,
+    };
+
+    // DISPLAYCONTROL_CAPS_PDU with MaxNumMonitors=2, MaxMonitorAreaFactorA=3840, MaxMonitorAreaFactorB=2400
+    // (MS-RDPEDISP §2.2.2.1) as DRDYNVC data on channel 1.
+    private static readonly byte[] DisplayControlCapsPdu =
+    {
+        0x03, 0x00, 0x00, 0x2c, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x1e, 0x16, 0x00,
+        0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x30, 0x01, 0x05, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x60, 0x09, 0x00, 0x00,
+    };
+
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false)
     {
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+        var serverPdus = HandshakeServerPdus.ToArray();
+        if (displayControl)
+        {
+            connector.WithDynamicChannelDisplayControl();
+            serverPdus[1] = McsConnectResponseWithDrdynvc;
+        }
+
         var buf = WriteBuf.New();
         int i = 0;
         for (int steps = 0; !connector.DynState.IsTerminal(); steps++)
@@ -339,19 +413,32 @@ internal static class SmokeTests
             {
                 connector.StepNoInput(buf);
             }
-            else if (i == HandshakeServerPdus.Length)
+            else if (i == serverPdus.Length)
             {
                 throw new InvalidOperationException($"connector wants more than the {i} server PDUs in HandshakeServerPdus");
             }
             else
             {
-                connector.Step(HandshakeServerPdus[i++], buf);
+                connector.Step(serverPdus[i++], buf);
             }
         }
 
-        Equal(HandshakeServerPdus.Length, i, "server PDUs consumed by the handshake");
+        Equal(serverPdus.Length, i, "server PDUs consumed by the handshake");
         var stage = ActiveStage.New(connector.ConsumeAndCastToClientConnectorState().GetConnectedResult());
         return (stage, DecodedImage.New(PixelFormat.BgrX32, width, height));
+    }
+
+    private static List<ActiveStageOutput> ProcessFrame(ActiveStage stage, DecodedImage image, byte[] frame)
+    {
+        var action = IronRdpPdu.New().FindSize(frame)!.Action;
+        var outputs = stage.Process(image, action, frame);
+        var collected = new List<ActiveStageOutput>();
+        while (outputs.Next() is { } output)
+        {
+            collected.Add(output);
+        }
+
+        return collected;
     }
 
     private static byte SurfaceByte(int width, int x, int y) => (byte)(y * width * 4 + x + 1);
