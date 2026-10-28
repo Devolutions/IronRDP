@@ -8,6 +8,10 @@ on:
         required: true
         type: boolean
         default: true
+      version:
+        description: 'Package version (1.2.3.4 or latest)'
+        default: "latest"
+        required: true
   schedule:
     - cron: '21 3 * * 1' # 3:21 AM UTC every Monday
 
@@ -21,9 +25,6 @@ jobs:
       package-version: ${{ steps.get-version.outputs.package-version }}
 
     steps:
-      - name: Checkout ${{ github.repository }}
-        uses: actions/checkout@v6
-
       - name: Get dry run
         id: get-dry-run
         run: |
@@ -38,10 +39,26 @@ jobs:
 
       - name: Get version
         id: get-version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          $CsprojXml = [Xml] (Get-Content .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj)
-          $ProjectVersion = $CsprojXml.Project.PropertyGroup.Version | Select-Object -First 1
-          $PackageVersion = $ProjectVersion -Replace "^(\d+)\.(\d+)\.(\d+).(\d+)$", "`$1.`$2.`$3"
+          $ProjectVersion = $Env:REQUESTED_VERSION
+          if ([string]::IsNullOrEmpty($ProjectVersion) -or $ProjectVersion -eq 'latest') {
+            $ProjectVersion = (Get-Date -Format "yyyy.M.d") + ".0"
+          }
+
+          if ($ProjectVersion -notmatch '^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){3}$') {
+            throw "invalid version format: $ProjectVersion, expected: 1.2.3.4 without leading zeros"
+          }
+
+          foreach ($Component in $ProjectVersion.Split('.')) {
+            $ParsedComponent = 0
+            if (-not [int]::TryParse($Component, [ref]$ParsedComponent) -or $ParsedComponent -gt 65534) {
+              throw "invalid version component: $Component, expected: 0-65534"
+            }
+          }
+
+          $PackageVersion = $ProjectVersion -replace '\.[0-9]+$', ''
           echo "project-version=$ProjectVersion" >> $Env:GITHUB_OUTPUT
           echo "package-version=$PackageVersion" >> $Env:GITHUB_OUTPUT
         shell: pwsh
@@ -321,7 +338,7 @@ jobs:
 
   build-managed:
     name: Managed build
-    needs: [build-universal]
+    needs: [preflight, build-universal]
     runs-on: windows-2022
 
     steps:
@@ -352,11 +369,13 @@ jobs:
         shell: pwsh
 
       - name: Build Devolutions.IronRdp (managed)
+        env:
+          PROJECT_VERSION: ${{ needs.preflight.outputs.project-version }}
         run: |
           # net8.0 target packaged as Devolutions.IronRdp
-          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release
+          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:Version=$Env:PROJECT_VERSION
           # net9.0-ios target packaged as Devolutions.IronRdp.iOS
-          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS
+          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS /p:Version=$Env:PROJECT_VERSION
         shell: pwsh
 
       - name: Upload managed components
