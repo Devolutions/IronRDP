@@ -85,3 +85,28 @@ fn relative_mouse_input_is_advertised_only_when_enabled() {
     config.relative_mouse_input = true;
     assert_eq!(advertised(config), (true, RdpVersion::V10_12));
 }
+
+#[test]
+fn configured_rdp_version_preserves_the_relative_mouse_minimum() {
+    use ironrdp_pdu::gcc::RdpVersion;
+
+    for version in [
+        RdpVersion::V5_PLUS,
+        RdpVersion::V10_11,
+        RdpVersion::V10_12,
+        RdpVersion(RdpVersion::V10_12.0 + 1),
+    ] {
+        for relative_mouse_input in [false, true] {
+            let mut config = super::test_config();
+            config.rdp_version = version;
+            config.relative_mouse_input = relative_mouse_input;
+
+            let expected = if relative_mouse_input && version.0 < RdpVersion::V10_12.0 {
+                RdpVersion::V10_12
+            } else {
+                version
+            };
+            assert_eq!(gcc_blocks(config).core.version, expected);
+        }
+    }
+}

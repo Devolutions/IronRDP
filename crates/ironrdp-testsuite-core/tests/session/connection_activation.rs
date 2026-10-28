@@ -72,6 +72,7 @@ fn test_config() -> ironrdp_connector::Config {
         pointer_software_rendering: false,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
+        rdp_version: gcc::RdpVersion::V5_PLUS,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
         alternate_shell: String::new(),

@@ -2517,6 +2517,7 @@ pub(super) fn default_client_config() -> connector::Config {
         pointer_software_rendering: true,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
+        rdp_version: gcc::RdpVersion::V5_PLUS,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
         alternate_shell: String::new(),

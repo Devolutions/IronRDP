@@ -2028,8 +2028,8 @@ fn create_gcc_blocks<'a>(
 ) -> ConnectorResult<gcc::ClientGccBlocks> {
     use ironrdp_pdu::gcc::{
         ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks, ClientNetworkData,
-        ClientSecurityData, ColorDepth, EncryptionMethod, HighColorDepth, MonitorOrientation, RdpVersion,
-        SecureAccessSequence, SupportedColorDepths,
+        ClientSecurityData, ColorDepth, EncryptionMethod, HighColorDepth, MonitorOrientation, SecureAccessSequence,
+        SupportedColorDepths,
     };
 
     let max_color_depth = config.bitmap.as_ref().map(|bitmap| bitmap.color_depth).unwrap_or(32);
@@ -2063,11 +2063,11 @@ fn create_gcc_blocks<'a>(
     Ok(ClientGccBlocks {
         core: ClientCoreData {
             // Servers ignore the relative mouse capabilities below RDP 10.12 ([MS-RDPBCGR] 2.2.1.3.2,
-            // 2.2.7.1.6), so only a client that sends relative input announces that version.
+            // 2.2.7.1.6), so relative input requires at least that version.
             version: if config.relative_mouse_input {
-                RdpVersion::V10_12
+                gcc::RdpVersion(config.rdp_version.0.max(gcc::RdpVersion::V10_12.0))
             } else {
-                RdpVersion::V5_PLUS
+                config.rdp_version
             },
             desktop_width: config.desktop_size.width,
             desktop_height: config.desktop_size.height,
@@ -2358,6 +2358,7 @@ mod tests {
             pointer_software_rendering: false,
             multitransport_flags: None,
             support_dyn_vc_gfx_protocol: false,
+            rdp_version: gcc::RdpVersion::V5_PLUS,
         };
 
         let client_info =
@@ -2420,6 +2421,7 @@ mod tests {
             pointer_software_rendering: false,
             multitransport_flags: None,
             support_dyn_vc_gfx_protocol: false,
+            rdp_version: gcc::RdpVersion::V5_PLUS,
         };
 
         let client_info =
@@ -2431,6 +2433,88 @@ mod tests {
         let client_info =
             create_client_info_pdu(&config, &"127.0.0.1:3389".parse().unwrap(), None, None, false, false).client_info;
         assert!(!client_info.flags.contains(ClientInfoFlags::AUDIO_CAPTURE));
+    }
+
+    /// A plain client [`Config`] for tests to change what they look at.
+    fn test_config() -> Config {
+        Config {
+            desktop_size: DesktopSize {
+                width: 1_920,
+                height: 1_080,
+            },
+            monitor_layout: None,
+            desktop_scale_factor: 0,
+            desktop_physical_size: None,
+            desktop_orientation: None,
+            device_scale_factor: None,
+            monitor_extended_layout: None,
+            relative_mouse_input: false,
+            enable_tls: true,
+            enable_credssp: false,
+            enable_standard_rdp_security: false,
+            credentials: Credentials::UsernamePassword {
+                username: "test".into(),
+                password: "test".into(),
+            },
+            domain: None,
+            client_build: 0,
+            client_name: "test".into(),
+            keyboard_type: gcc::KeyboardType::IBM_ENHANCED,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 12,
+            keyboard_layout: 0,
+            connection_type: gcc::ConnectionType::Lan,
+            ime_file_name: String::new(),
+            bitmap: None,
+            dig_product_id: String::new(),
+            client_dir: String::new(),
+            alternate_shell: String::new(),
+            work_dir: String::new(),
+            remote_application_mode: false,
+            rail_support_level: RailSupportLevel::empty(),
+            platform: MajorPlatformType::UNIX,
+            hardware_id: None,
+            request_data: None,
+            autologon: false,
+            enable_audio_playback: false,
+            enable_audio_capture: false,
+            performance_flags: Default::default(),
+            license_cache: None,
+            timezone_info: Default::default(),
+            compression_type: None,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+            multitransport_flags: None,
+            support_dyn_vc_gfx_protocol: false,
+            rdp_version: gcc::RdpVersion::V5_PLUS,
+        }
+    }
+
+    #[test]
+    fn gcc_blocks_announce_the_configured_rdp_version() {
+        let mut config = test_config();
+
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC blocks");
+        assert_eq!(blocks.core.version, gcc::RdpVersion::V5_PLUS);
+
+        // RDP 10.12 is what lets a server take relative mouse events.
+        config.rdp_version = gcc::RdpVersion::V10_12;
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC blocks");
+        assert_eq!(blocks.core.version, gcc::RdpVersion::V10_12);
     }
 
     #[test]
@@ -2492,6 +2576,7 @@ mod tests {
             pointer_software_rendering: false,
             multitransport_flags: None,
             support_dyn_vc_gfx_protocol: false,
+            rdp_version: gcc::RdpVersion::V5_PLUS,
         };
 
         let blocks = create_gcc_blocks(
