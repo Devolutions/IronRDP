@@ -247,6 +247,7 @@ fn format_list_response_fail_notifies_backend_for_pending_requests() {
 
 // ── Stale request cleanup ───────────────────────────────────────────
 
+// oracle: mutant failing to remove timed-out outgoing file requests or failing to deliver synthetic error responses to the backend
 #[test]
 fn stale_request_cleanup_after_timeout() {
     let responses = Arc::new(Mutex::new(Vec::new()));
@@ -292,6 +293,7 @@ fn stale_request_cleanup_after_timeout() {
     }
 }
 
+// oracle: mutant expiring recent outgoing file requests that have not yet reached transfer_timeout
 #[test]
 fn stale_request_cleanup_spares_recent_requests() {
     let responses = Arc::new(Mutex::new(Vec::new()));
@@ -606,6 +608,62 @@ fn request_naming_a_released_lock_fails() {
     assert!(matches!(
         response,
         ClipboardPdu::FileContentsResponse(response) if response.stream_id() == 8 && response.is_error()
+    ));
+    assert!(timed_backend(&cliprdr).file_requests.is_empty());
+}
+
+// oracle: spec MS-RDPECLIP §3.1.5.4.6
+#[test]
+fn request_naming_an_unknown_lock_fails() {
+    let mut cliprdr = locked_file_copy_client();
+    let request = FileContentsRequest {
+        stream_id: 9,
+        index: 0,
+        flags: FileContentsFlags::SIZE,
+        position: 0,
+        requested_size: 8,
+        data_id: Some(999),
+    };
+    let messages = cliprdr
+        .process(&encode_vec(&ClipboardPdu::FileContentsRequest(request)).unwrap())
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    decode_pdu!(messages[0] => _bytes, response);
+    assert!(matches!(
+        response,
+        ClipboardPdu::FileContentsResponse(response) if response.stream_id() == 9 && response.is_error()
+    ));
+    assert!(timed_backend(&cliprdr).file_requests.is_empty());
+}
+
+// oracle: spec MS-RDPECLIP §3.1.5.4.6
+// oracle: mutant serving an evicted lock from the current unlocked clipboard instead of failing the request
+#[test]
+fn request_naming_an_evicted_lock_fails() {
+    let mut cliprdr = locked_file_copy_client();
+    for lock_id in 100..200 {
+        cliprdr
+            .process(&encode_vec(&ClipboardPdu::LockData(LockDataId(lock_id))).unwrap())
+            .unwrap();
+    }
+    assert_eq!(*timed_backend(&cliprdr).unlocks.lock().unwrap(), [42]);
+
+    let request = FileContentsRequest {
+        stream_id: 10,
+        index: 0,
+        flags: FileContentsFlags::SIZE,
+        position: 0,
+        requested_size: 8,
+        data_id: Some(42),
+    };
+    let messages = cliprdr
+        .process(&encode_vec(&ClipboardPdu::FileContentsRequest(request)).unwrap())
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    decode_pdu!(messages[0] => _bytes, response);
+    assert!(matches!(
+        response,
+        ClipboardPdu::FileContentsResponse(response) if response.stream_id() == 10 && response.is_error()
     ));
     assert!(timed_backend(&cliprdr).file_requests.is_empty());
 }

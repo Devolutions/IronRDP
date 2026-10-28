@@ -1688,10 +1688,12 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                     let snapshot = file_list.clone();
                     if self.locked_file_lists.contains_key(&id.0) {
                         self.locked_file_list_order.retain(|&locked_id| locked_id != id.0);
-                    } else if MAX_LOCKED_FILE_LISTS <= self.locked_file_lists.len()
+                    } else if MAX_LOCKED_FILE_LISTS <= self.locked_file_lists.len() {
                         // locked_file_list_order holds the exact keys of locked_file_lists.
-                        && let Some(evicted_id) = self.locked_file_list_order.pop_front()
-                    {
+                        let evicted_id = self
+                            .locked_file_list_order
+                            .pop_front()
+                            .expect("locked_file_list_order is non-empty when locked_file_lists is at capacity");
                         // Intentional bounded-memory deviation from [MS-RDPECLIP] 3.1.5.3.2:
                         // when a peer exceeds MAX_LOCKED_FILE_LISTS without unlocking, evict
                         // the oldest snapshot and notify the backend so later requests for
@@ -1708,6 +1710,7 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                     debug!(clip_data_id = id.0, "Locking clipboard with file list snapshot");
                     self.locked_file_lists.insert(id.0, snapshot);
                     self.locked_file_list_order.push_back(id.0);
+                    debug_assert_eq!(self.locked_file_list_order.len(), self.locked_file_lists.len());
                 } else {
                     // This is expected when the local side has no file list (e.g., browser
                     // client with no pending upload). Per [MS-RDPECLIP] 3.1.5.3.2, the
@@ -1725,6 +1728,7 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 // Release the file list snapshot associated with this clipDataId.
                 if self.locked_file_lists.remove(&id.0).is_some() {
                     self.locked_file_list_order.retain(|&locked_id| locked_id != id.0);
+                    debug_assert_eq!(self.locked_file_list_order.len(), self.locked_file_lists.len());
                     debug!(
                         clip_data_id = id.0,
                         "Unlocking clipboard and releasing file list snapshot"
@@ -2112,6 +2116,10 @@ impl<R: Role> Cliprdr<R> {
 
     pub fn __test_locked_file_lists(&self) -> &HashMap<u32, PackedFileList> {
         &self.locked_file_lists
+    }
+
+    pub fn __test_locked_file_list_order(&self) -> &VecDeque<u32> {
+        &self.locked_file_list_order
     }
 
     pub fn __test_locked_file_lists_mut(&mut self) -> &mut HashMap<u32, PackedFileList> {

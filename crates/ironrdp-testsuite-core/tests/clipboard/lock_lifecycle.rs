@@ -383,7 +383,7 @@ fn successive_file_format_lists_create_new_locks() {
     assert_eq!(cliprdr.__test_current_lock_id(), Some(id3));
 }
 
-// oracle: mutant cap eviction bounds retained snapshots at MAX_LOCKED_FILE_LISTS and unlocks the evicted entry
+// oracle: mutant evicting the newest lock, dropping the new lock at capacity, or skipping on_unlock for the evicted lock
 #[test]
 fn incoming_lock_limit_exceeded() {
     let responses = Arc::new(Mutex::new(Vec::new()));
@@ -426,7 +426,7 @@ fn incoming_lock_limit_exceeded() {
     assert!(cliprdr.__test_locked_file_lists().contains_key(&101));
 }
 
-// oracle: mutant relocking a live clipDataId moves it to the back of the FIFO eviction queue
+// oracle: mutant leaving a relocked clipDataId at its old FIFO position so it is evicted before older locks
 #[test]
 fn relocking_an_existing_id_refreshes_its_eviction_order() {
     let responses = Arc::new(Mutex::new(Vec::new()));
@@ -463,6 +463,56 @@ fn relocking_an_existing_id_refreshes_its_eviction_order() {
     assert!(!cliprdr.__test_locked_file_lists().contains_key(&2));
     assert!(cliprdr.__test_locked_file_lists().contains_key(&101));
     assert_eq!(*unlocks.lock().unwrap(), [2]);
+}
+
+// oracle: mutant desynchronizing locked_file_list_order from locked_file_lists across lock, relock, unlock, or eviction
+#[test]
+fn locked_file_list_order_matches_active_snapshots_across_operations() {
+    use std::collections::VecDeque;
+
+    use ironrdp_cliprdr::MAX_LOCKED_FILE_LISTS;
+    use proptest::prelude::*;
+
+    proptest!(ProptestConfig::with_cases(32), |(
+        ops in proptest::collection::vec((any::<bool>(), 1u32..140), 1..250),
+    )| {
+        let responses = Arc::new(Mutex::new(Vec::new()));
+        let unlocks = Arc::new(Mutex::new(Vec::new()));
+        let backend = TimedRecordingBackend::new(Arc::clone(&responses), Arc::clone(&unlocks));
+        let mut cliprdr = CliprdrClient::new(Box::new(backend));
+        *cliprdr.__test_state_mut() = CliprdrState::Ready;
+        *cliprdr.__test_local_file_list_mut() = Some(sized_file_list(&[("test.txt", 100)]));
+
+        let mut expected_order: VecDeque<u32> = VecDeque::new();
+
+        for (is_lock, id) in ops {
+            let pdu = if is_lock {
+                if let Some(pos) = expected_order.iter().position(|&x| x == id) {
+                    expected_order.remove(pos);
+                } else if expected_order.len() == MAX_LOCKED_FILE_LISTS {
+                    expected_order.pop_front();
+                }
+                expected_order.push_back(id);
+                ClipboardPdu::LockData(LockDataId(id))
+            } else {
+                if let Some(pos) = expected_order.iter().position(|&x| x == id) {
+                    expected_order.remove(pos);
+                }
+                ClipboardPdu::UnlockData(LockDataId(id))
+            };
+
+            let mut buf = vec![0u8; pdu.size()];
+            let mut cursor = ironrdp_core::WriteCursor::new(&mut buf);
+            pdu.encode(&mut cursor).unwrap();
+            cliprdr.process(&buf).unwrap();
+
+            prop_assert_eq!(cliprdr.__test_locked_file_list_order(), &expected_order);
+            prop_assert_eq!(cliprdr.__test_locked_file_lists().len(), expected_order.len());
+            for &locked_id in &expected_order {
+                prop_assert!(cliprdr.__test_locked_file_lists().contains_key(&locked_id));
+            }
+        }
+    });
 }
 
 #[test]

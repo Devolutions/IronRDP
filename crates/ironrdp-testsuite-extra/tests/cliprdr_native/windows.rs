@@ -79,6 +79,7 @@ fn byte_formats_are_portable() {
 }
 
 // oracle: spec EnumClipboardFormats (winuser.h) §Remarks: original formats precede synthesized ones.
+// oracle: reference https://techcommunity.microsoft.com/discussions/windows11/serious-bug-in-windows-clipboard---images-get-corrupted/4466584
 #[test]
 fn synthesized_dibv5_is_omitted_only_when_dib_precedes_it() {
     let mut dib_first = vec![

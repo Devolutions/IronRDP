@@ -921,6 +921,26 @@ fn delayed_formats_survive_a_stale_win32_error() {
     harness.assert_no_errors();
 }
 
+/// Holds the Windows clipboard open on the current thread until dropped.
+struct ClipboardLock;
+
+impl ClipboardLock {
+    fn acquire() -> Self {
+        wait_until("clipboard can be held by the test thread", || {
+            // SAFETY: Balanced by `CloseClipboard` in `Drop` on this thread.
+            unsafe { OpenClipboard(None) }.is_ok()
+        });
+        Self
+    }
+}
+
+impl Drop for ClipboardLock {
+    fn drop(&mut self) {
+        // SAFETY: This thread opened the clipboard in `ClipboardLock::acquire`.
+        unsafe { CloseClipboard() }.unwrap();
+    }
+}
+
 // oracle: spec MS-RDPECLIP §3.1.5.4.2, §3.1.5.4.3
 #[test]
 #[ignore = "replaces the Windows clipboard contents, set IRONRDP_WIN_CLIPBOARD_LIVE=1 to run"]
@@ -933,18 +953,7 @@ fn replacing_a_native_retry_fails_the_displaced_format_request() {
     let harness = Harness::start();
     harness.synchronize();
     {
-        wait_until("clipboard can be held by the test thread", || {
-            // SAFETY: Balanced by the guard below on this thread.
-            unsafe { OpenClipboard(None) }.is_ok()
-        });
-        struct ClipboardLock;
-        impl Drop for ClipboardLock {
-            fn drop(&mut self) {
-                // SAFETY: This test thread successfully opened the clipboard.
-                unsafe { CloseClipboard() }.unwrap();
-            }
-        }
-        let _lock = ClipboardLock;
+        let _lock = ClipboardLock::acquire();
         harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
         harness.synchronize();
         harness.command(LoopbackCommand::CopyFormats(
@@ -985,18 +994,7 @@ fn subsequent_format_request_fails_an_earlier_deferred_request() {
     let harness = Harness::start();
     harness.synchronize();
     {
-        wait_until("clipboard can be held by the test thread", || {
-            // SAFETY: Balanced by the guard below on this thread.
-            unsafe { OpenClipboard(None) }.is_ok()
-        });
-        struct ClipboardLock;
-        impl Drop for ClipboardLock {
-            fn drop(&mut self) {
-                // SAFETY: This test thread successfully opened the clipboard.
-                unsafe { CloseClipboard() }.unwrap();
-            }
-        }
-        let _lock = ClipboardLock;
+        let _lock = ClipboardLock::acquire();
         harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));
         harness.synchronize();
         harness.command(LoopbackCommand::Paste(ClipboardFormatId::CF_UNICODETEXT));

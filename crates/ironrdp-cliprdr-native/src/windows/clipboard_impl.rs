@@ -522,6 +522,7 @@ impl WinClipboardImpl {
     fn fail_deferred_format_request(&mut self) {
         if matches!(self.retry_message, Some(BackendEvent::FormatDataRequest(_))) {
             self.retry_message = None;
+            self.attempt = 0;
             // Displacing a deferred format request must not leave the remote request unanswered.
             self.transport
                 .send(ClipboardMessage::SendFormatData(FormatDataResponse::new_error()));
@@ -602,12 +603,16 @@ impl WinClipboardImpl {
                 const MAX_PROCESSING_ATTEMPTS: u32 = 10;
                 const PROCESSING_TIMEOUT_MS: u32 = 100;
 
+                if self.retry_message.is_some() {
+                    self.fail_deferred_format_request();
+                    self.retry_message = None;
+                    self.attempt = 0;
+                }
+
                 #[expect(clippy::arithmetic_side_effects)]
                 // self.attempt can’t be greater than MAX_PROCESSING_ATTEMPTS, so the arithmetic is safe here
                 if self.attempt < MAX_PROCESSING_ATTEMPTS {
                     self.attempt += 1;
-
-                    self.fail_deferred_format_request();
                     self.retry_message = Some(event);
 
                     // SAFETY: `SetTimer` is always safe to call when `hwnd` is a valid window handle
