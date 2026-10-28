@@ -57,8 +57,6 @@ publish_no_verify = true
 # Trusted publishing cannot create a crate, so release-plz would fail on each of them and stop before releasing the rest.
 # Once its dependencies are on crates.io, publish each new crate manually once, then remove its entry;
 # ironrdp-agent and ironrdp-viewer, excluded above, depend on ironrdp-daemon.
-# ironrdp-server and ironrdp-vmconnect depend on ironrdp-connector but are released anyway:
-# their sources build against the ironrdp-connector on crates.io, and crates.io accepts their versions only from this workflow.
 [[package]]
 name = "ironrdp"
 release = false
@@ -90,5 +88,11 @@ release = false
 name = "ironrdp-rdpeudp-tokio"
 release = false
 [[package]]
+name = "ironrdp-server"
+release = false
+[[package]]
 name = "ironrdp-tokio"
+release = false
+[[package]]
+name = "ironrdp-vmconnect"
 release = false
