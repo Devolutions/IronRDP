@@ -3,6 +3,7 @@ name = "ironrdp-capture"
 version = "0.0.0"
 publish = false
 description = "Offline decoding of RDP packet captures"
+readme = "README.md"
 edition.workspace = true
 rust-version = "1.94"
 license.workspace = true

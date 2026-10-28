@@ -9,7 +9,7 @@ use super::transport::{confirm, read, request};
 const TLS_VERSION_1_2: u16 = 0x0303;
 
 #[test]
-// oracle: spec
+// oracle: regression #2153 direct RDP without TLS diagnostic
 fn reports_standard_security_for_direct_rdp_without_tls() {
     let capture = read(
         "standard-security",
@@ -25,7 +25,7 @@ fn reports_standard_security_for_direct_rdp_without_tls() {
 }
 
 #[test]
-// oracle: reference
+// oracle: regression #2153 missing TLS secret diagnostic
 fn rejects_tls_without_matching_key_log_entry() {
     let client_hello = hello(1, [1; 32], None);
     let server_hello = hello(2, [3; 32], Some(0x009c));
@@ -55,10 +55,15 @@ fn rejects_tls_without_matching_key_log_entry() {
 }
 
 #[test]
-// oracle: regression
+// oracle: regression #2153 complete TLS record before truncated trailing record
 fn ignores_a_truncated_trailing_tls_record() {
-    let client_hello = hello(1, [1; 32], None);
-    let server_hello = hello(2, [3; 32], Some(0x009c));
+    let client_random = [1; 32];
+    let server_random = [3; 32];
+    let master = [2; 48];
+    let key_log = format!("CLIENT_RANDOM {} {}", hex(&client_random), hex(&master));
+    let client_hello = hello(1, client_random, None);
+    let server_hello = hello(2, server_random, Some(0x009c));
+    let (client_key, _, client_iv, _) = tls12_keys(&master, &client_random, &server_random);
     let capture = read(
         "truncated-tls-record",
         [
@@ -71,7 +76,9 @@ fn ignores_a_truncated_trailing_tls_record() {
                 &[
                     request().as_slice(),
                     handshake_record(1, &client_hello).as_slice(),
-                    &[22, 3, 3, 0, 1],
+                    change_cipher_spec().as_slice(),
+                    encrypt_tls12_record(&client_key, client_iv, 0, b"client").as_slice(),
+                    &[23, 3, 3, 0, 1],
                 ]
                 .concat(),
             ),
@@ -83,14 +90,15 @@ fn ignores_a_truncated_trailing_tls_record() {
                 &[confirm().as_slice(), handshake_record(2, &server_hello).as_slice()].concat(),
             ),
         ],
-        None,
+        Some(&key_log),
     );
 
-    assert!(matches!(decrypt_tls(&capture), Err(CaptureError::MissingTlsSecret)));
+    let plaintext = decrypt_tls(&capture).expect("decrypt complete record before truncated trailing record");
+    assert_eq!(plaintext.client, vec![(2, b"client".to_vec())]);
 }
 
 #[test]
-// oracle: reference
+// oracle: spec RFC 8446 §5.2, §5.3 and §7.3
 fn decrypts_tls13_handshake_and_application_records() {
     let client_random = [1; 32];
     let secrets = [
@@ -111,36 +119,38 @@ fn decrypts_tls13_handshake_and_application_records() {
     let server_handshake = traffic_key(&[3; 32]);
     let client_application = traffic_key(&[4; 32]);
     let server_application = traffic_key(&[5; 32]);
+    let client_prefix = [
+        request().as_slice(),
+        handshake_record(1, &client_hello).as_slice(),
+        encrypt_tls13_record(&client_handshake, 0, &finished, 22).as_slice(),
+    ]
+    .concat();
+    let server_prefix = [
+        confirm().as_slice(),
+        handshake_record(2, &server_hello).as_slice(),
+        encrypt_tls13_record(&server_handshake, 0, &finished, 22).as_slice(),
+    ]
+    .concat();
 
     let capture = read(
         "tls13",
         [
             super::transport::ethernet_tcp(1, 2, 100, 0x02, &[]),
+            super::transport::ethernet_tcp(1, 2, 101, 0x10, &client_prefix),
+            super::transport::ethernet_tcp(2, 1, 200, 0x10, &server_prefix),
             super::transport::ethernet_tcp(
                 1,
                 2,
-                101,
+                101 + u32::try_from(client_prefix.len()).expect("prefix length fits u32"),
                 0x10,
-                &[
-                    request().as_slice(),
-                    handshake_record(1, &client_hello).as_slice(),
-                    encrypt_tls13_record(&client_handshake, 0, &finished, 22).as_slice(),
-                    encrypt_tls13_record(&client_application, 0, b"client", 23).as_slice(),
-                ]
-                .concat(),
+                &encrypt_tls13_record(&client_application, 0, b"client", 23),
             ),
             super::transport::ethernet_tcp(
                 2,
                 1,
-                200,
+                200 + u32::try_from(server_prefix.len()).expect("prefix length fits u32"),
                 0x10,
-                &[
-                    confirm().as_slice(),
-                    handshake_record(2, &server_hello).as_slice(),
-                    encrypt_tls13_record(&server_handshake, 0, &finished, 22).as_slice(),
-                    encrypt_tls13_record(&server_application, 0, b"server", 23).as_slice(),
-                ]
-                .concat(),
+                &encrypt_tls13_record(&server_application, 0, b"server", 23),
             ),
         ],
         Some(&key_log),
@@ -148,12 +158,12 @@ fn decrypts_tls13_handshake_and_application_records() {
 
     let plaintext = decrypt_tls(&capture).expect("decrypt TLS 1.3 capture");
 
-    assert_eq!(plaintext.client, vec![(2, b"client".to_vec())]);
-    assert_eq!(plaintext.server, vec![(3, b"server".to_vec())]);
+    assert_eq!(plaintext.client, vec![(4, b"client".to_vec())]);
+    assert_eq!(plaintext.server, vec![(5, b"server".to_vec())]);
 }
 
 #[test]
-// oracle: reference
+// oracle: spec RFC 5246 §6.3; RFC 5288 §3
 fn decrypts_tls12_application_data() {
     let client_random = [1; 32];
     let server_random = [3; 32];

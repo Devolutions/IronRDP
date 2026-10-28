@@ -34,8 +34,7 @@ impl NonEmptyPlaintexts {
 
 /// Decrypt the RDP plaintext of a capture.
 ///
-/// This unwraps a supported RD Gateway WebSocket or RPC-over-HTTP tunnel before
-/// decrypting its inner TLS session.
+/// This unwraps supported RD Gateway tunnels before decrypting their inner TLS sessions.
 pub fn decrypt_rdp(capture: &Capture) -> Result<Plaintext, CaptureError> {
     let mut decrypted = match tls::decrypt_tls_streams(
         &capture.flow.client_stream,

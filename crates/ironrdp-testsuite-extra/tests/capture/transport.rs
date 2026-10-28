@@ -95,61 +95,56 @@ pub(super) fn read(
 ) -> ironrdp_capture::Capture {
     let path = temporary_path(name);
     std::fs::write(&path, capture(frames, key_log)).expect("write synthetic capture");
-    let result = read_capture(&path).expect("read synthetic capture");
+    let result = read_capture(&path);
     std::fs::remove_file(path).expect("remove synthetic capture");
-    result
+    result.expect("read synthetic capture")
 }
 
 fn read_error(name: &str, frames: impl IntoIterator<Item = Vec<u8>>) -> CaptureError {
     let path = temporary_path(name);
     std::fs::write(&path, capture(frames, None)).expect("write synthetic capture");
-    let result = read_capture(&path).expect_err("synthetic capture is rejected");
+    let result = read_capture(&path);
     std::fs::remove_file(path).expect("remove synthetic capture");
-    result
+    result.expect_err("synthetic capture is rejected")
 }
 
 #[test]
-// oracle: scaffold
+// oracle: regression #2153; RFC 9293 §3.4 sequence ordering and duplicate detection
 fn reassembles_retransmissions_and_preserves_packet_provenance() {
     let capture = read(
         "retransmission",
         [
             ethernet_tcp(1, 2, 100, 0x02, &[]),
-            ethernet_tcp(1, 2, 101, 0x10, &request()[..10]),
-            ethernet_tcp(1, 2, 101, 0x10, &request()[..10]),
             ethernet_tcp(1, 2, 111, 0x10, &request()[10..]),
+            ethernet_tcp(1, 2, 101, 0x10, &request()[..10]),
+            ethernet_tcp(1, 2, 101, 0x10, &request()[..10]),
             ethernet_tcp(2, 1, 200, 0x10, &confirm()),
         ],
         None,
     );
 
-    assert_eq!(capture.flow.client_stream[0].0, 2);
+    assert_eq!(capture.flow.client_stream[0].0, 3);
     assert_eq!(flatten(&capture.flow.client_stream), request());
 }
 
 #[test]
-// oracle: regression
+// oracle: regression #2153 conflicting-overlap rejection
 fn rejects_conflicting_tcp_overlaps() {
-    let path = temporary_path("conflicting-overlap");
-    std::fs::write(
-        &path,
-        capture(
+    assert!(matches!(
+        read_error(
+            "conflicting-overlap",
             [
                 ethernet_tcp(1, 2, 100, 0x02, &[]),
                 ethernet_tcp(1, 2, 101, 0x10, &request()),
                 ethernet_tcp(1, 2, 105, 0x10, b"conflict"),
             ],
-            None,
         ),
-    )
-    .expect("write synthetic capture");
-
-    assert!(matches!(read_capture(&path), Err(CaptureError::MissingTcpFlow)));
-    std::fs::remove_file(path).expect("remove synthetic capture");
+        CaptureError::MissingTcpFlow
+    ));
 }
 
 #[test]
-// oracle: regression
+// oracle: spec RFC 9293 §3.4
 fn reassembles_wrapped_tcp_sequence_numbers() {
     let capture = read(
         "wrapped-sequence",
@@ -166,7 +161,7 @@ fn reassembles_wrapped_tcp_sequence_numbers() {
 }
 
 #[test]
-// oracle: scaffold
+// oracle: regression #2153 direct-RDP flow selection during extraction
 fn selects_direct_rdp_before_gateway_flows() {
     let capture = read(
         "flow-selection",
@@ -189,7 +184,7 @@ fn selects_direct_rdp_before_gateway_flows() {
 }
 
 #[test]
-// oracle: scaffold
+// oracle: regression #2153 alternate flow payload preservation
 fn retains_later_gateway_flows_as_alternates() {
     let capture = read(
         "gateway-alternates",
@@ -207,10 +202,12 @@ fn retains_later_gateway_flows_as_alternates() {
     assert_eq!(capture.flow.client.port, 1);
     assert_eq!(capture.gateway_alternates.len(), 1);
     assert_eq!(capture.gateway_alternates[0].client.port, 2);
+    assert_eq!(flatten(&capture.flow.client_stream), b"KDC");
+    assert_eq!(flatten(&capture.gateway_alternates[0].client_stream), b"RDG");
 }
 
 #[test]
-// oracle: spec
+// oracle: regression #2153 embedded key-log preservation and redaction
 fn reads_unpadded_tls_key_log_and_redacts_it_from_debug_output() {
     let capture = read(
         "key-log",
@@ -227,7 +224,7 @@ fn reads_unpadded_tls_key_log_and_redacts_it_from_debug_output() {
 }
 
 #[test]
-// oracle: spec
+// oracle: spec MS-RDPBCGR §2.2.1.1
 fn rejects_invalid_x224_connection_initiation() {
     let capture = read(
         "invalid-x224",
@@ -246,7 +243,7 @@ fn rejects_invalid_x224_connection_initiation() {
 }
 
 #[test]
-// oracle: spec
+// oracle: spec MS-RDPBCGR §2.2.1.1
 fn rejects_x224_connection_request_after_leading_data() {
     let capture = read(
         "leading-data",
@@ -265,7 +262,7 @@ fn rejects_x224_connection_request_after_leading_data() {
 }
 
 #[test]
-// oracle: spec
+// oracle: spec MS-RDPBCGR §2.2.1.1
 fn accepts_variable_length_x224_connection_request() {
     let mut request = Vec::from([
         3, 0, 0, 47, 42, 0xe0, 0, 0, 0, 0, 0, b'C', b'o', b'o', b'k', b'i', b'e', b':', b' ', b'm', b's', b't', b's',
@@ -287,7 +284,7 @@ fn accepts_variable_length_x224_connection_request() {
 }
 
 #[test]
-// oracle: scaffold
+// oracle: regression #2153 gateway flow selection during extraction
 fn selects_a_gateway_port_flow_without_x224() {
     let capture = read(
         "gateway-only",
@@ -306,7 +303,7 @@ fn selects_a_gateway_port_flow_without_x224() {
 }
 
 #[test]
-// oracle: regression
+// oracle: regression #2153 incomplete candidate rejection
 fn skips_incomplete_flows_before_a_valid_rdp_connection() {
     let capture = read(
         "incomplete-before-rdp",
@@ -326,7 +323,7 @@ fn skips_incomplete_flows_before_a_valid_rdp_connection() {
 }
 
 #[test]
-// oracle: regression
+// oracle: regression #2153 incomplete TCP flow diagnostic
 fn reports_missing_tcp_flow_when_no_candidate_reassembles() {
     assert!(matches!(
         read_error(
@@ -348,7 +345,7 @@ fn reports_missing_tcp_flow_when_no_candidate_reassembles() {
 }
 
 #[test]
-// oracle: regression
+// oracle: spec RFC 9293 §3.4.1
 fn separates_connections_that_reuse_a_tcp_tuple() {
     let capture = read(
         "reused-tuple",
@@ -368,7 +365,7 @@ fn separates_connections_that_reuse_a_tcp_tuple() {
 }
 
 #[test]
-// oracle: regression
+// oracle: spec RFC 9293 §3.6.1
 fn preserves_peer_data_after_a_half_close() {
     let request = request();
     let confirm = confirm();
@@ -410,7 +407,7 @@ fn preserves_peer_data_after_a_half_close() {
 }
 
 #[test]
-// oracle: spec
+// oracle: spec RFC 791 §3.1
 fn ignores_padding_after_the_ipv4_packet() {
     let mut client = ethernet_tcp(1, 2, 101, 0x10, &request());
     client.extend([0; 16]);
@@ -428,7 +425,7 @@ fn ignores_padding_after_the_ipv4_packet() {
 }
 
 #[test]
-// oracle: regression
+// oracle: regression #2153 NIC-offload capture extent handling
 fn parses_zero_length_ipv4_using_captured_extent() {
     let mut client = ethernet_tcp(1, 2, 101, 0x10, &request());
     client[16..18].copy_from_slice(&[0; 2]);
@@ -446,7 +443,7 @@ fn parses_zero_length_ipv4_using_captured_extent() {
 }
 
 #[test]
-// oracle: regression
+// oracle: regression #2153 ambiguous Ethernet padding rejection
 fn rejects_ambiguous_zero_length_ipv4_ethernet_padding() {
     let request = request();
     let mut client = ethernet_tcp(1, 2, 100, 0x02, &request[..6]);
@@ -466,9 +463,9 @@ fn rejects_ambiguous_zero_length_ipv4_ethernet_padding() {
 }
 
 #[test]
-// oracle: regression
+// oracle: regression #2153 truncated zero-length IPv4 TCP header
 fn rejects_zero_length_ipv4_without_a_complete_tcp_header() {
-    let mut client = ethernet_tcp(1, 2, 101, 0x10, b"payload");
+    let mut client = ethernet_tcp(1, 2, 100, 0x02, b"payload");
     client[16..18].copy_from_slice(&[0; 2]);
     client.truncate(
         14 /* Ethernet */
@@ -477,13 +474,20 @@ fn rejects_zero_length_ipv4_without_a_complete_tcp_header() {
     );
 
     assert!(matches!(
-        read_error("truncated-tcp-header", [ethernet_tcp(1, 2, 100, 0x02, &[]), client]),
+        read_error(
+            "truncated-tcp-header",
+            [
+                client,
+                ethernet_tcp(1, 2, 101, 0x10, &request()),
+                ethernet_tcp(2, 1, 200, 0x10, &confirm()),
+            ],
+        ),
         CaptureError::UnsupportedTransport
     ));
 }
 
 #[test]
-// oracle: regression
+// oracle: spec RFC 8200 §4.1
 fn parses_tcp_after_an_ipv6_hop_by_hop_header() {
     let capture = read(
         "ipv6-hop-by-hop",

@@ -1,7 +1,7 @@
+use core::net::IpAddr;
 use std::fs::File;
 use std::path::Path;
 
-use core::net::IpAddr;
 use pcap_parser::pcapng::{Block, SecretsType};
 use pcap_parser::traits::{PcapNGPacketBlock as _, PcapReaderIterator as _};
 use pcap_parser::{PcapBlockOwned, PcapError, PcapNGReader};
@@ -36,13 +36,12 @@ pub struct Flow {
     pub server_stream: PacketStream,
 }
 
-/// Capture data used by later replay stages.
+/// Capture data used as input for offline decoding.
 #[derive(Clone)]
 pub struct Capture {
     /// Direct TCP RDP flow selected from the pcapng input.
     pub flow: Flow,
-    /// Other TLS flows to TCP port 443, tried when the primary flow is not a
-    /// complete RD Gateway tunnel (one WebSocket flow, or paired RPCH IN+OUT).
+    /// Other TLS flows on port 443, tried if the primary flow is not a complete RD Gateway tunnel.
     pub gateway_alternates: Vec<Flow>,
     /// NSS-compatible TLS key-log entries embedded in the capture.
     pub tls_key_log: TlsKeyLog,
