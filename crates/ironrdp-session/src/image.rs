@@ -948,18 +948,36 @@ impl DecodedImage {
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
-        rgba32.enumerate().for_each(|(row_idx, row)| {
-            row.chunks_exact(SRC_COLOR_DEPTH)
-                .enumerate()
-                .for_each(|(col_idx, src_pixel)| {
-                    let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
-
-                    self.data[dst_idx + ri] = src_pixel[0];
-                    self.data[dst_idx + gi] = src_pixel[1];
-                    self.data[dst_idx + bi] = src_pixel[2];
-                    self.data[dst_idx + ai] = src_pixel[3];
-                })
-        });
+        // Row by row, with the channel order fixed per loop so the copy can
+        // be vectorized: a plain copy for RGBA images, a swap of R and B for
+        // BGRA images (the usual layouts), and the general reorder for others.
+        for (row_idx, row) in rgba32.enumerate() {
+            let row = &row[..row.len() / SRC_COLOR_DEPTH * SRC_COLOR_DEPTH];
+            let start = ((top + row_idx) * image_width + left) * DST_COLOR_DEPTH;
+            let dst = &mut self.data[start..start + row.len()];
+            match [ri, gi, bi, ai] {
+                [0, 1, 2, 3] => dst.copy_from_slice(row),
+                [2, 1, 0, 3] => {
+                    for (dst, src) in dst
+                        .chunks_exact_mut(DST_COLOR_DEPTH)
+                        .zip(row.chunks_exact(SRC_COLOR_DEPTH))
+                    {
+                        dst.copy_from_slice(&[src[2], src[1], src[0], src[3]]);
+                    }
+                }
+                _ => {
+                    for (dst, src) in dst
+                        .chunks_exact_mut(DST_COLOR_DEPTH)
+                        .zip(row.chunks_exact(SRC_COLOR_DEPTH))
+                    {
+                        dst[ri] = src[0];
+                        dst[gi] = src[1];
+                        dst[bi] = src[2];
+                        dst[ai] = src[3];
+                    }
+                }
+            }
+        }
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
 
@@ -1080,6 +1098,58 @@ mod tests {
         image.data()[offset..offset + 4]
             .try_into()
             .expect("pixel has four channels")
+    }
+
+    /// Every pixel format, top-down and flipped: each pixel of the RGBA
+    /// source lands in its place with its channels reordered for the format,
+    /// and nothing outside the rectangle changes.
+    #[test]
+    fn rgba32_lands_in_every_pixel_format() {
+        let formats = [
+            PixelFormat::ARgb32,
+            PixelFormat::XRgb32,
+            PixelFormat::ABgr32,
+            PixelFormat::XBgr32,
+            PixelFormat::BgrA32,
+            PixelFormat::BgrX32,
+            PixelFormat::RgbA32,
+            PixelFormat::RgbX32,
+        ];
+        let rectangle = InclusiveRectangle {
+            left: 1,
+            top: 2,
+            right: 5,
+            bottom: 4,
+        };
+        let (width, height) = (5, 3);
+        let source: Vec<u8> = (0..width * height * 4)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        for format in formats {
+            for flip in [false, true] {
+                let mut image = DecodedImage::new(format, 7, 6);
+                image.apply_rgba32(&source, &rectangle, flip).unwrap();
+                let [ri, gi, bi, ai] = format.channel_offsets();
+                for y in 0..6 {
+                    for x in 0..7 {
+                        let inside = (1..=5).contains(&x) && (2..=4).contains(&y);
+                        let expected = if inside {
+                            let row = if flip { height - 1 - (y - 2) } else { y - 2 };
+                            let i = (row * width + (x - 1)) * 4;
+                            let mut pixel = [0; 4];
+                            pixel[ri] = source[i];
+                            pixel[gi] = source[i + 1];
+                            pixel[bi] = source[i + 2];
+                            pixel[ai] = source[i + 3];
+                            pixel
+                        } else {
+                            [0; 4]
+                        };
+                        assert_eq!(pixel(&image, x, y), expected, "{format:?} flip {flip} at ({x}, {y})");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
