@@ -29,21 +29,19 @@ namespace Devolutions.IronRdp.ConnectExample
                 var keepLooping = true;
                 while (keepLooping)
                 {
-                    var readPduTask = framed.ReadPdu();
-                    Action? action = null;
-                    byte[]? payload = null;
-                    if (readPduTask == await Task.WhenAny(readPduTask, Task.Delay(2000)))
+                    Action action;
+                    byte[] payload;
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    try
                     {
-                        var pduReadTask = await readPduTask;
-                        action = pduReadTask.Item1;
-                        payload = pduReadTask.Item2;
-                        Console.WriteLine($"Action: {action}");
+                        (action, payload) = await framed.ReadPdu(timeout.Token);
                     }
-                    else
+                    catch (OperationCanceledException)
                     {
                         Console.WriteLine("Timeout");
                         break;
                     }
+                    Console.WriteLine($"Action: {action}");
                     var outputIterator = activeState.Process(decodedImage, action, payload);
 
                     while (!outputIterator.IsEmpty())

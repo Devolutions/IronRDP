@@ -9,10 +9,18 @@ public class Framed<TS> where TS : Stream
 {
     private const int ReadChunkSize = 8192;
 
+    // An active-stage PDU announces its length in its first bytes: four for TPKT (MS-RDPBCGR 2.2.9.1.1),
+    // at most three for fast-path (MS-RDPBCGR 2.2.9.1.2).
+    private const int HeaderProbeBytes = 4;
+
     private readonly TS _stream;
     private readonly List<byte> _buffer;
     private readonly byte[] _readBuffer = new byte[ReadChunkSize];
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly IronRdpPdu _pdu = IronRdpPdu.New();
+
+    // FindSize takes an array and reads its length, so each probe length keeps its own array.
+    private readonly byte[]?[] _probes = new byte[HeaderProbeBytes + 1][];
 
     public Framed(TS stream)
     {
@@ -32,29 +40,86 @@ public class Framed<TS> where TS : Stream
         return (_stream, _buffer);
     }
 
-    public async Task<(Action, byte[])> ReadPdu()
+    /// <summary>
+    /// Reads the next active-stage PDU, reading from the stream until it is complete.
+    /// </summary>
+    public Task<(Action Action, byte[] Payload)> ReadPdu()
     {
-        var pdu = IronRdpPdu.New();
-        while (true)
-        {
-            var pduInfo = pdu.FindSize(this._buffer.ToArray());
+        return ReadPdu(CancellationToken.None);
+    }
 
-            // Don't remove, FindSize is generated and can return null
-            if (null != pduInfo)
+    /// <summary>
+    /// Reads the next active-stage PDU, reading from the stream until it is complete.
+    /// </summary>
+    /// <remarks>
+    /// Cancellation abandons the pending stream read; bytes already buffered stay available to the next read.
+    /// </remarks>
+    public async Task<(Action Action, byte[] Payload)> ReadPdu(CancellationToken cancellationToken)
+    {
+        (Action Action, byte[] Payload) pdu;
+        while (!TryReadBufferedPdu(out pdu))
+        {
+            if (await Read(cancellationToken) == 0)
             {
-                var frame = await this.ReadExact(pduInfo.Length);
-                var action = pduInfo.Action;
-                return (action, frame);
-            }
-            else
-            {
-                var len = await this.Read();
-                if (len == 0)
-                {
-                    throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
-                }
+                throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
             }
         }
+
+        return pdu;
+    }
+
+    /// <summary>
+    /// Reads the next active-stage PDU, blocking the calling thread until it is complete.
+    /// </summary>
+    /// <remarks>
+    /// For a read loop on a dedicated thread; closing the stream unblocks it.
+    /// </remarks>
+    public (Action Action, byte[] Payload) ReadPduSync()
+    {
+        (Action Action, byte[] Payload) pdu;
+        while (!TryReadBufferedPdu(out pdu))
+        {
+            if (ReadSync() == 0)
+            {
+                throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
+            }
+        }
+
+        return pdu;
+    }
+
+    /// <summary>
+    /// Takes the next active-stage PDU when it is already buffered, without reading from the stream.
+    /// </summary>
+    /// <returns>False when the buffer holds no complete PDU; the buffer is left as it was.</returns>
+    public bool TryReadBufferedPdu(out (Action Action, byte[] Payload) pdu)
+    {
+        pdu = default;
+        var buffered = CollectionsMarshal.AsSpan(_buffer);
+        if (buffered.IsEmpty)
+        {
+            return false;
+        }
+
+        var probeLength = Math.Min(buffered.Length, HeaderProbeBytes);
+        var probe = _probes[probeLength] ??= new byte[probeLength];
+        buffered[..probeLength].CopyTo(probe);
+
+        var info = _pdu.FindSize(probe);
+        if (info is null)
+        {
+            return false;
+        }
+
+        var length = checked((int)info.Length);
+        if (buffered.Length < length)
+        {
+            return false;
+        }
+
+        pdu = (info.Action, buffered[..length].ToArray());
+        _buffer.RemoveRange(0, length);
+        return true;
     }
 
     /// <summary>
@@ -72,7 +137,13 @@ public class Framed<TS> where TS : Stream
     /// </summary>
     /// <param name="size">The number of bytes to read.</param>
     /// <returns>An array of bytes containing the read data.</returns>
-    public async Task<byte[]> ReadExact(nuint size)
+    public Task<byte[]> ReadExact(nuint size)
+    {
+        return ReadExact(size, CancellationToken.None);
+    }
+
+    /// <inheritdoc cref="ReadExact(nuint)"/>
+    public async Task<byte[]> ReadExact(nuint size, CancellationToken cancellationToken)
     {
         while (true)
         {
@@ -83,7 +154,7 @@ public class Framed<TS> where TS : Stream
                 return res;
             }
 
-            var len = await this.Read();
+            var len = await this.Read(cancellationToken);
             if (len == 0)
             {
                 throw new Exception("EOF");
@@ -91,9 +162,16 @@ public class Framed<TS> where TS : Stream
         }
     }
 
-    async Task<int> Read()
+    async Task<int> Read(CancellationToken cancellationToken)
     {
-        var size = await this._stream.ReadAsync(_readBuffer);
+        var size = await this._stream.ReadAsync(_readBuffer, cancellationToken);
+        this._buffer.AddRange(_readBuffer.AsSpan(0, size));
+        return size;
+    }
+
+    int ReadSync()
+    {
+        var size = this._stream.Read(_readBuffer, 0, _readBuffer.Length);
         this._buffer.AddRange(_readBuffer.AsSpan(0, size));
         return size;
     }
@@ -127,18 +205,25 @@ public class Framed<TS> where TS : Stream
     /// </summary>
     /// <param name="pduHint">The PduHint object used to determine the size of the data to read.</param>
     /// <returns>An asynchronous task that represents the operation. The task result contains the read data as a byte array.</returns>
-    public async Task<byte[]> ReadByHint(PduHint pduHint)
+    public Task<byte[]> ReadByHint(PduHint pduHint)
+    {
+        return ReadByHint(pduHint, CancellationToken.None);
+    }
+
+    /// <inheritdoc cref="ReadByHint(PduHint)"/>
+    public async Task<byte[]> ReadByHint(PduHint pduHint, CancellationToken cancellationToken)
     {
         while (true)
         {
+            // Connection-time PDUs are few and small, so the hint sees everything buffered.
             var size = pduHint.FindSize(this._buffer.ToArray());
             if (size.IsSome())
             {
-                return await this.ReadExact(size.Get());
+                return await this.ReadExact(size.Get(), cancellationToken);
             }
             else
             {
-                var len = await this.Read();
+                var len = await this.Read(cancellationToken);
                 if (len == 0)
                 {
                     throw new Exception("EOF");
@@ -152,18 +237,24 @@ public class Framed<TS> where TS : Stream
     /// </summary>
     /// <param name="customHint">A custom hint object implementing IPduHint interface.</param>
     /// <returns>An asynchronous task that represents the operation. The task result contains the read data as a byte array.</returns>
-    public async Task<byte[]> ReadByHint(IPduHint customHint)
+    public Task<byte[]> ReadByHint(IPduHint customHint)
+    {
+        return ReadByHint(customHint, CancellationToken.None);
+    }
+
+    /// <inheritdoc cref="ReadByHint(IPduHint)"/>
+    public async Task<byte[]> ReadByHint(IPduHint customHint, CancellationToken cancellationToken)
     {
         while (true)
         {
             var result = customHint.FindSize(this._buffer.ToArray());
             if (result.HasValue)
             {
-                return await this.ReadExact((nuint)result.Value.Item2);
+                return await this.ReadExact((nuint)result.Value.Item2, cancellationToken);
             }
             else
             {
-                var len = await this.Read();
+                var len = await this.Read(cancellationToken);
                 if (len == 0)
                 {
                     throw new Exception("EOF");
