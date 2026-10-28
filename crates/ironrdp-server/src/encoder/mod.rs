@@ -254,6 +254,29 @@ impl UpdateEncoder {
             .contains(LargePointerSupportFlags::UP_TO_384X384_PIXELS)
     }
 
+    /// Whether a `width`x`height` pointer shape fits the negotiated pointer size ceiling,
+    /// and whether it must be promoted to a Fast-Path Large Pointer Update (`Some(true)`),
+    /// sent as a regular Color/New Pointer Update (`Some(false)`), or dropped (`None`).
+    ///
+    /// Uses [2.2.7.1.5] Pointer Capability Set (`pointerCacheSize`), [2.2.7.2.7] Large Pointer
+    /// Capability Set (`largePointerSupportFlags`), [2.2.9.1.1.4.4] Color Pointer Update, and
+    /// [2.2.9.1.2.1.11] Fast-Path Large Pointer Update.
+    ///
+    /// [2.2.7.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/92fd4b15-c3c1-4435-8f5b-fb0101e0f105
+    /// [2.2.7.2.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4ef45f93-42a2-4989-9308-9e1fd5eedd3e
+    /// [2.2.9.1.1.4.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/09cb545c-6947-4090-a7bd-9a9ab4c2a225
+    /// [2.2.9.1.2.1.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f2bfd2bc-cb5f-416a-8c80-acbf14a6f4fd
+    fn pointer_needs_large_update(&self, width: u16, height: u16) -> Option<bool> {
+        if self.color_or_new_pointer_size_ok(width, height) {
+            Some(false)
+        } else if self.pointer_cache_size != 0 && self.large_pointer_update_supported() && width <= 384 && height <= 384
+        {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
     #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn update(&mut self, update: DisplayUpdate) -> EncoderIter<'_> {
         EncoderIter {
@@ -319,23 +342,37 @@ impl UpdateEncoder {
         ))
     }
 
-    fn color_pointer(ptr: ColorPointer) -> ServerResult<UpdateFragmenter> {
+    fn color_pointer(ptr: ColorPointer, large: bool) -> ServerResult<UpdateFragmenter> {
         let hot_spot = Point16 {
             x: ptr.hot_x,
             y: ptr.hot_y,
         };
-        let ptr = ColorPointerAttribute {
-            cache_index: ptr.cache_index,
-            hot_spot,
-            width: ptr.width,
-            height: ptr.height,
-            xor_mask: &ptr.xor_mask,
-            and_mask: &ptr.and_mask,
+        let (code, data) = if large {
+            // MS-RDPBCGR 2.2.9.1.1.4.4 defines TS_COLORPOINTERATTRIBUTE's xorMaskData
+            // as 24 bpp, and MS-RDPBCGR 2.2.9.1.2.1.11 carries that bit depth in
+            // TS_FP_LARGEPOINTERATTRIBUTE::xorBpp.
+            let ptr = LargePointerAttribute {
+                xor_bpp: 24,
+                cache_index: ptr.cache_index,
+                hot_spot,
+                width: ptr.width,
+                height: ptr.height,
+                xor_mask: &ptr.xor_mask,
+                and_mask: &ptr.and_mask,
+            };
+            (UpdateCode::LargePointer, encode_vec(&ptr).map_err(ServerError::encode)?)
+        } else {
+            let ptr = ColorPointerAttribute {
+                cache_index: ptr.cache_index,
+                hot_spot,
+                width: ptr.width,
+                height: ptr.height,
+                xor_mask: &ptr.xor_mask,
+                and_mask: &ptr.and_mask,
+            };
+            (UpdateCode::ColorPointer, encode_vec(&ptr).map_err(ServerError::encode)?)
         };
-        Ok(UpdateFragmenter::new(
-            UpdateCode::ColorPointer,
-            encode_vec(&ptr).map_err(ServerError::encode)?,
-        ))
+        Ok(UpdateFragmenter::new(code, data))
     }
 
     fn cached_pointer(cache_index: u16) -> ServerResult<UpdateFragmenter> {
@@ -561,18 +598,29 @@ impl EncoderIter<'_> {
                             debug!("Dropping RGBAPointer update: client did not advertise New Pointer Update support");
                             continue;
                         }
-                        if !encoder.color_or_new_pointer_size_ok(ptr.width, ptr.height) {
+                        let Some(large) = encoder.pointer_needs_large_update(ptr.width, ptr.height) else {
                             debug!(
                                 "Dropping RGBAPointer update: {}x{} exceeds the client's negotiated pointer size \
                                  ceiling",
                                 ptr.width, ptr.height,
                             );
                             continue;
-                        }
+                        };
                         if !UpdateEncoder::cache_index_ok("RGBAPointer", ptr.cache_index, encoder.pointer_cache_size) {
                             continue;
                         }
-                        UpdateEncoder::rgba_pointer(ptr)
+                        if large {
+                            UpdateEncoder::large_pointer(LargePointer {
+                                cache_index: ptr.cache_index,
+                                width: ptr.width,
+                                height: ptr.height,
+                                hot_x: ptr.hot_x,
+                                hot_y: ptr.hot_y,
+                                data: ptr.data,
+                            })
+                        } else {
+                            UpdateEncoder::rgba_pointer(ptr)
+                        }
                     }
                     DisplayUpdate::LargePointer(ptr) => {
                         if encoder.pointer_cache_size == 0 {
@@ -599,14 +647,23 @@ impl EncoderIter<'_> {
                         UpdateEncoder::large_pointer(ptr)
                     }
                     DisplayUpdate::ColorPointer(ptr) => {
-                        if !UpdateEncoder::cache_index_ok(
-                            "ColorPointer",
-                            ptr.cache_index,
-                            encoder.color_pointer_cache_size,
-                        ) {
+                        let Some(large) = encoder.pointer_needs_large_update(ptr.width, ptr.height) else {
+                            debug!(
+                                width = ptr.width,
+                                height = ptr.height,
+                                "Dropping ColorPointer update exceeding the negotiated pointer size"
+                            );
+                            continue;
+                        };
+                        let cache_size = if large {
+                            encoder.pointer_cache_size
+                        } else {
+                            encoder.color_pointer_cache_size
+                        };
+                        if !UpdateEncoder::cache_index_ok("ColorPointer", ptr.cache_index, cache_size) {
                             continue;
                         }
-                        UpdateEncoder::color_pointer(ptr)
+                        UpdateEncoder::color_pointer(ptr, large)
                     }
                     DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),
                     DisplayUpdate::DefaultPointer => UpdateEncoder::default_pointer(),
@@ -881,6 +938,7 @@ struct RemoteFxHandler {
     codec_id: u8,
     desktop_size: Option<DesktopSize>,
     command: SurfaceBitsCommand,
+    buffer: Vec<u8>,
 }
 
 impl RemoteFxHandler {
@@ -896,6 +954,7 @@ impl RemoteFxHandler {
             desktop_size: Some(desktop_size),
             codec_id,
             command,
+            buffer: Vec::new(),
         }
     }
 
@@ -906,16 +965,19 @@ impl RemoteFxHandler {
 
 impl BitmapUpdateHandler for RemoteFxHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
-        let mut buffer = vec![0; bitmap.data.len()];
+        let tiles_x = usize::from(bitmap.width.get().div_ceil(64));
+        let tiles_y = usize::from(bitmap.height.get().div_ceil(64));
+        let min_len = tiles_x * tiles_y * (64 /* TileWidth */ * 64 /* TileHeight */ * 4/* BytesPerPixel */);
+        if self.buffer.len() < min_len {
+            self.buffer.resize(min_len, 0);
+        }
+        let desktop_size = self.desktop_size.take();
         let len = loop {
-            match self
-                .remotefx
-                .encode(bitmap, buffer.as_mut_slice(), self.desktop_size.take())
-            {
+            match self.remotefx.encode(bitmap, self.buffer.as_mut_slice(), desktop_size) {
                 Err(e) => match e.kind() {
                     ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
-                        buffer.resize(buffer.len() * 2, 0);
-                        debug!("encoder buffer resized to: {}", buffer.len() * 2);
+                        self.buffer.resize(self.buffer.len() * 2, 0);
+                        debug!(len = self.buffer.len(), "Resized RemoteFX encoder buffer");
                     }
                     _ => return Err(ServerError::encode(e)).with_context("RemoteFX encode error"),
                 },
@@ -923,7 +985,7 @@ impl BitmapUpdateHandler for RemoteFxHandler {
             }
         };
 
-        surface_bits(bitmap, self.codec_id, &buffer[..len], self.command)
+        surface_bits(bitmap, self.codec_id, &self.buffer[..len], self.command)
     }
 }
 
