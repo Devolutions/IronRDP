@@ -21,7 +21,7 @@ pub(crate) type OnWriteDvcMessage =
 
 pub(crate) struct WorkerCtx {
     pub(crate) on_write_dvc: OnWriteDvcMessage,
-    pub(crate) to_pipe_rx: mpsc::Receiver<Vec<u8>>,
+    pub(crate) to_pipe_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     pub(crate) abort_event: Arc<Notify>,
     pub(crate) pipe_name: String,
     pub(crate) channel_name: String,
@@ -51,43 +51,6 @@ pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) -> std::io::Result<()> {
             }
         };
 
-        let (async_tx, async_rx) = tokio::sync::mpsc::unbounded_channel();
-        let WorkerCtx {
-            on_write_dvc,
-            to_pipe_rx: std_rx,
-            abort_event,
-            pipe_name,
-            channel_name,
-            channel_id,
-        } = ctx;
-
-        let bridge_thread_name = format!("ironrdp-dvc-pipe-{channel_id}-bridge");
-        if let Err(error) = std::thread::Builder::new().name(bridge_thread_name).spawn(move || {
-            while let Ok(data) = std_rx.recv() {
-                if async_tx.send(data).is_err() {
-                    break; // Receiver dropped
-                }
-            }
-        }) {
-            error!(
-                %channel_name,
-                %pipe_name,
-                %error,
-                "Failed to start DVC pipe proxy bridge thread"
-            );
-            let _ = startup_tx.send(Err(error));
-            return;
-        }
-
-        let ctx = BridgedWorkerCtx {
-            on_write_dvc,
-            to_pipe_rx: async_rx,
-            abort_event,
-            pipe_name,
-            channel_name,
-            channel_id,
-        };
-
         if startup_tx.send(Ok(())).is_err() {
             return;
         }
@@ -114,16 +77,7 @@ enum NextWorkerState {
     Reconnect,
 }
 
-struct BridgedWorkerCtx {
-    on_write_dvc: OnWriteDvcMessage,
-    to_pipe_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
-    abort_event: Arc<Notify>,
-    pipe_name: String,
-    channel_name: String,
-    channel_id: u32,
-}
-
-async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWorkerState, DvcPipeProxyError> {
+async fn process_client<P: OsPipe>(ctx: &mut WorkerCtx) -> Result<NextWorkerState, DvcPipeProxyError> {
     let pipe_name = &ctx.pipe_name;
     let channel_name = &ctx.channel_name;
 
@@ -202,7 +156,7 @@ async fn process_client<P: OsPipe>(ctx: &mut BridgedWorkerCtx) -> Result<NextWor
     }
 }
 
-async fn worker<P: OsPipe>(mut bridged_ctx: BridgedWorkerCtx) -> Result<(), DvcPipeProxyError> {
+async fn worker<P: OsPipe>(mut bridged_ctx: WorkerCtx) -> Result<(), DvcPipeProxyError> {
     let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
 
     loop {

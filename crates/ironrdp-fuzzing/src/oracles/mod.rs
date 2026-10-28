@@ -708,6 +708,56 @@ pub fn channel_process(input: &[u8]) {
         ));
 
     let _ = rdpdr.process(input);
+    dvc_server_process(input);
+}
+
+fn dvc_server_process(input: &[u8]) {
+    use ironrdp_core::{encode_vec, impl_as_any};
+    use ironrdp_dvc::pdu::{CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
+    use ironrdp_dvc::{DrdynvcServer, DvcMessage, DvcProcessor, DvcServerProcessor};
+    use ironrdp_pdu::PduResult;
+    use ironrdp_svc::SvcProcessor as _;
+
+    let mut server = DrdynvcServer::new().with_dynamic_channel(NoopServerDvc);
+    let _ = server.start();
+    if let Ok(caps) = encode_vec(&DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(
+        CapsVersion::V3,
+    ))) {
+        let _ = server.process(&caps);
+    }
+    if let Ok(open) = encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(0, CreationStatus::OK))) {
+        let _ = server.process(&open);
+    }
+    if server.create_channel(NoopServerDvc).is_ok() {
+        let _ = server.close_channel(1);
+    }
+    let _ = server.create_channel(NoopServerDvc);
+    let _ = server.process(input);
+    return;
+
+    struct NoopServerDvc;
+
+    impl_as_any!(NoopServerDvc);
+
+    impl DvcProcessor for NoopServerDvc {
+        fn channel_name(&self) -> &str {
+            "fuzz"
+        }
+
+        fn max_message_size(&self) -> Option<usize> {
+            Some(4096)
+        }
+
+        fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl DvcServerProcessor for NoopServerDvc {}
 }
 
 pub fn cliprdr_channel_process(input: &[u8]) {

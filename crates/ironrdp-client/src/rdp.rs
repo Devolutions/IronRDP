@@ -2121,19 +2121,16 @@ fn reliable_udp_multitransport_flags(enabled: bool) -> Option<ironrdp_pdu::gcc::
 }
 
 #[cfg(feature = "dvc-pipe-proxy")]
-struct PipeEndpointReservation(Arc<AtomicBool>);
-
-#[cfg(feature = "dvc-pipe-proxy")]
-impl Drop for PipeEndpointReservation {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
+struct ReservedDvcPipeProxy {
+    proxy: DvcNamedPipeProxy,
+    active: Arc<AtomicBool>,
 }
 
 #[cfg(feature = "dvc-pipe-proxy")]
-struct ReservedDvcPipeProxy {
-    proxy: DvcNamedPipeProxy,
-    _reservation: PipeEndpointReservation,
+impl Drop for ReservedDvcPipeProxy {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
 }
 
 #[cfg(feature = "dvc-pipe-proxy")]
@@ -2204,12 +2201,8 @@ impl ironrdp_dvc::DvcChannelListener for DvcPipeProxyListener {
         });
         Some(Box::new(ReservedDvcPipeProxy {
             proxy,
-            _reservation: PipeEndpointReservation(Arc::clone(&self.active)),
+            active: Arc::clone(&self.active),
         }))
-    }
-
-    fn is_available(&self) -> bool {
-        !self.active.load(Ordering::Acquire)
     }
 }
 

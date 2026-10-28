@@ -1,18 +1,17 @@
 use core::future::ready;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
+use tokio::sync::mpsc;
 use tracing::{debug, error};
 
 use crate::worker::{OnWriteDvcMessage, WorkerCtx, run_worker};
 
-const IO_MPSC_CHANNEL_SIZE: usize = 100;
-
 struct WorkerControlCtx {
-    to_pipe_tx: mpsc::SyncSender<Vec<u8>>,
+    to_pipe_tx: mpsc::UnboundedSender<Vec<u8>>,
     abort_event: Arc<tokio::sync::Notify>,
 }
 
@@ -72,7 +71,7 @@ impl DvcProcessor for DvcNamedPipeProxy {
             .take()
             .expect("DvcProcessor::start called multiple times");
 
-        let (to_pipe_tx, to_pipe_rx) = mpsc::sync_channel(IO_MPSC_CHANNEL_SIZE);
+        let (to_pipe_tx, to_pipe_rx) = mpsc::unbounded_channel();
 
         let abort_event = Arc::new(tokio::sync::Notify::new());
 
@@ -111,27 +110,8 @@ impl DvcProcessor for DvcNamedPipeProxy {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         if let Some(worker) = &self.worker {
-            // TODO(@pacmancoder): Whatever buffer size we use here, we will hit buffer limit
-            // eventually and fail if we are not send it in a blocking manner.
-            //
-            // Architecturally, blocking whole IronRDP/async runtime is not ideal (even if we know
-            // that proxy worker is running on a separate thread and there should be no risk of
-            // deadlock).
-            //
-            // Therefore it is only a temporary solution until we have a better design for DVC
-            // channels which could block. However its the only way to stop the DVC message flow
-            // from the host.
-            //
-            // During testing, blocking here don't seem to affect performance in any noticeable
-            // way - there is no visible main RDP functionality slowdown during large IO
-            // stream transfer.
-            let result = worker.to_pipe_tx.send(payload.to_vec());
-            if let Err(error) = result {
-                match error {
-                    mpsc::SendError(_) => {
-                        return Err(pdu_other_err!("DVC pipe proxy channel is closed"));
-                    }
-                }
+            if worker.to_pipe_tx.send(payload.to_vec()).is_err() {
+                return Err(pdu_other_err!("DVC pipe proxy channel is closed"));
             }
         } else {
             debug!("Attempt to process DVC packet on non-initialized DVC pipe proxy.");
