@@ -423,6 +423,27 @@ fn ready_training_sends_confirm() {
     assert_eq!(responses.len(), 1);
 }
 
+/// The Training Confirm echoes the server's wPackSize ([MS-RDPEA] 2.2.3.2),
+/// the size of the whole Training PDU. The FreeRDP server (GNOME Remote
+/// Desktop) ignores a confirm with any other value and then plays nothing.
+#[rstest]
+#[case::windows(1016)] // 8 bytes of header and fields, then 1016 of data
+#[case::freerdp_server(1024)] // 1024 bytes of data after the fields
+fn training_confirm_echoes_the_server_pack_size(#[case] data_len: u16) {
+    let mut training = vec![0x06, 0x00]; // SNDC_TRAINING, bPad
+    training.extend_from_slice(&(4 + data_len).to_le_bytes()); // BodySize
+    training.extend_from_slice(&0x1234u16.to_le_bytes()); // wTimeStamp
+    training.extend_from_slice(&1024u16.to_le_bytes()); // wPackSize
+    training.extend(core::iter::repeat_n(0, usize::from(data_len)));
+
+    let mut client = client_in_waiting();
+    let confirm = decode_single_response(&client.process(&training).unwrap());
+    let pdu::ClientAudioOutputPdu::TrainingConfirm(confirm) = confirm else {
+        panic!("expected a Training Confirm, got {confirm:?}");
+    };
+    assert_eq!((confirm.timestamp, confirm.pack_size), (0x1234, 1024));
+}
+
 // Ready -> AudioFormat -> QualityMode -> Training -> Wave2
 //
 // Verifies that receiving a new AudioFormat PDU in Ready state restarts
