@@ -118,6 +118,11 @@ fn incompressible_frame(width: u16, height: u16) -> BitmapUpdate {
 #[case::remotefx_surface_rows_of_2048_pixels(Codec::RemoteFx, 2048, 64, Some(65_536))]
 #[case::legacy_bitmap(Codec::Bitmap, 1440, 900, Some(65_536))]
 #[case::legacy_bitmap_at_one_fragment(Codec::Bitmap, 1440, 900, None)]
+// RemoteFX encodes whole 64x64 tiles, so a short strip costs as much as 64 rows.
+#[case::remotefx_one_row_strip_at_one_fragment(Codec::RemoteFx, 4096, 1, None)]
+#[case::remotefx_one_row_strip(Codec::RemoteFx, 8188, 1, Some(65_536))]
+#[case::remotefx_1080p_at_one_fragment(Codec::RemoteFx, 1920, 1080, None)]
+#[case::remotefx_1440p(Codec::RemoteFx, 2560, 1440, Some(32_768))]
 #[tokio::test]
 async fn every_encoded_update_fits_the_negotiated_request_size(
     #[case] codec: Codec,
@@ -213,34 +218,4 @@ async fn an_oversized_color_pointer_is_dropped() {
 async fn a_color_pointer_within_the_request_size_is_sent() {
     let update = color_pointer_update(65_536).await;
     assert!(update.is_some_and(|update| update.is_ok()), "the pointer was dropped");
-}
-
-// oracle: spec MS-RDPBCGR §2.2.7.2.6 (a fragmented update larger than MaxRequestSize overflows the client's reassembly buffer)
-// oracle: mutant an oversized bitmap update skipped instead of reported as an error
-#[tokio::test]
-async fn a_bitmap_update_that_cannot_fit_is_an_error() {
-    // A one-row strip is tiled by its pixel size, but RemoteFX encodes whole 64x64 tiles,
-    // so the encoded update outgrows a one-fragment request size.
-    let max_request_size = one_fragment();
-    let mut encoder = encoder(Codec::RemoteFx, 4096, 1, max_request_size);
-    let mut updates = encoder.update(DisplayUpdate::Bitmap(incompressible_frame(4096, 1)));
-
-    let mut error = None;
-    while let Some(update) = updates.next().await {
-        match update {
-            Ok(update) => assert!(
-                update.data.len() <= usize::try_from(max_request_size).unwrap(),
-                "a {}-byte update exceeds the {max_request_size}-byte request size",
-                update.data.len()
-            ),
-            Err(e) => {
-                error = Some(e);
-                break;
-            }
-        }
-    }
-    assert!(
-        error.is_some(),
-        "no error for an update that cannot fit the request size"
-    );
 }

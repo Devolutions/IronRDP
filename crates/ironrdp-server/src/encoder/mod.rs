@@ -378,7 +378,7 @@ impl UpdateEncoder {
         // MultifragmentUpdate reassembly buffer.
         let mut tiled = Vec::with_capacity(diffs.len());
         for rect in diffs {
-            if rect.width * rect.height * 4 <= self.max_tile_bytes() {
+            if self.tile_bytes(rect.width, rect.height) <= self.max_tile_bytes() {
                 tiled.push(rect);
             } else {
                 let rects = self.split_diff(rect);
@@ -398,19 +398,38 @@ impl UpdateEncoder {
         self.max_request_size - self.max_request_size / 64
     }
 
-    /// Split a rect into tiles that fit within `max_tile_bytes`.
+    /// The grid, in pixels, a tile's encoding covers. RemoteFX encodes whole 64x64 tiles
+    /// ([2.2.2.3.4.1] TS_RFX_TILE), padding the ones at a rect's right and bottom edges, so a
+    /// one-row strip costs as much as 64 rows.
+    ///
+    /// [2.2.2.3.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/89e669ed-b6dd-4591-a267-73a72bc6d84e
+    fn tile_grid(&self) -> (usize, usize) {
+        match self.bitmap_updater {
+            Some(BitmapUpdater::RemoteFx(_)) => (64, 64),
+            _ => (1, 1),
+        }
+    }
+
+    /// Uncompressed size of a tile once its encoding is padded to [`Self::tile_grid`].
+    fn tile_bytes(&self, width: usize, height: usize) -> usize {
+        let (grid_width, grid_height) = self.tile_grid();
+        width.next_multiple_of(grid_width) * height.next_multiple_of(grid_height) * 4
+    }
+
+    /// Split a rect into tiles that fit within `max_tile_bytes`, on the codec's tile grid.
     /// Splits by height first, then by width within each horizontal strip.
     fn split_diff(&self, rect: Rect) -> Vec<Rect> {
         let mut rects = Vec::new();
+        let (grid_width, grid_height) = self.tile_grid();
 
-        let max_height = (self.max_tile_bytes() / (rect.width * 4)).max(1);
+        let max_height = (self.max_tile_bytes() / self.tile_bytes(rect.width, grid_height)).max(1) * grid_height;
         let mut y = rect.y;
         let y_end = rect.y + rect.height;
         while y < y_end {
             let h = (y_end - y).min(max_height);
             // Width splitting is unlikely in practice (would require
             // max_request_size < ~256 KB), but ensures correctness.
-            let max_width = (self.max_tile_bytes() / (h * 4)).max(1);
+            let max_width = (self.max_tile_bytes() / self.tile_bytes(grid_width, h)).max(1) * grid_width;
             let mut x = rect.x;
             let x_end = rect.x + rect.width;
             while x < x_end {
