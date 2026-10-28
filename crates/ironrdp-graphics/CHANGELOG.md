@@ -10,19 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- Fix RemoteFX quantization, DWT rounding, and pointer alpha ([#2263](https://github.com/Devolutions/IronRDP/issues/2263)) ([cf15d041c3](https://github.com/Devolutions/IronRDP/commit/cf15d041c3f1f252d794b3e38e787302b170efed)) 
+- Round RemoteFX quantization as `[MS-RDPRFX]` 3.1.8.1.5 specifies, instead of flooring small negative coefficients to `-1`, which produced color speckles on smooth gradients ([#2263](https://github.com/Devolutions/IronRDP/issues/2263)) ([cf15d041c3](https://github.com/Devolutions/IronRDP/commit/cf15d041c3f1f252d794b3e38e787302b170efed))
 
-  Round RemoteFX wavelet coefficients during quantization using `(value +
-  (1 << (factor - 1))) >> factor` with widened `i32` intermediates as
-  specified in `[MS-RDPRFX]` 3.1.8.1.5 instead of unrounded arithmetic
-  right-shifting, which floored negative coefficients in `[-(scale / 2),
-  -1]` to `-1` and produced color speckles on smooth gradients and icons.
-  
-  Use ceiling average `(a + b + 1) >> 1` in forward DWT low-pass sub-bands
-  to match the `[MS-RDPRFX]` 3.1.8.2.4 inverse DWT lifting step.
-  
-  Premultiply software pointer RGB channels by normalized alpha instead of
-  squaring each color component.
+- Round the forward DWT low-pass sub-bands up, matching the inverse DWT lifting step in `[MS-RDPRFX]` 3.1.8.2.4 ([#2263](https://github.com/Devolutions/IronRDP/issues/2263)) ([cf15d041c3](https://github.com/Devolutions/IronRDP/commit/cf15d041c3f1f252d794b3e38e787302b170efed))
+
+- Premultiply software pointer colors by their alpha instead of squaring each color component ([#2263](https://github.com/Devolutions/IronRDP/issues/2263)) ([cf15d041c3](https://github.com/Devolutions/IronRDP/commit/cf15d041c3f1f252d794b3e38e787302b170efed))
 
 
 

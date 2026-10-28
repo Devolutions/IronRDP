@@ -9,13 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.1.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-mstsgu-v0.1.0...ironrdp-mstsgu-v0.1.1)] - 2026-10-28
 
-### <!-- 1 -->Features
+### <!-- 7 -->Build
 
-- Use the `KdcResolution` enum instead of KDC url ([#1987](https://github.com/Devolutions/IronRDP/issues/1987)) ([d23348621a](https://github.com/Devolutions/IronRDP/commit/d23348621a05ee4fcc82de9bffd8806df0e3d789)) 
-
-  This PR adds the `KdcResolution` enum, which specifies how Kerberos
-  should resolve the KDC, either by using IAKERB proxy or by connecting
-  directly to an external KDC specified by URL.
+- Require `picky` 7.0.0-rc.27, the version `sspi` 0.23.1 uses ([#1987](https://github.com/Devolutions/IronRDP/issues/1987)) ([d23348621a](https://github.com/Devolutions/IronRDP/commit/d23348621a05ee4fcc82de9bffd8806df0e3d789))
 
 
 

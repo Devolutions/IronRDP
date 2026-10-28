@@ -10,30 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 1 -->Features
 
-- Support Remote Credential Guard over RDPEAR ([#2256](https://github.com/Devolutions/IronRDP/issues/2256)) ([376eb8f566](https://github.com/Devolutions/IronRDP/commit/376eb8f56634e5c92d7137886e62ddeb6bbb280f)) 
+- Add `DvcProcessor::max_message_size` to bound the reassembled message size of a dynamic channel, and `DrdynvcClient::with_max_transport_message_size` to bound each DRDYNVC carrier message ([#2256](https://github.com/Devolutions/IronRDP/issues/2256)) ([376eb8f566](https://github.com/Devolutions/IronRDP/commit/376eb8f56634e5c92d7137886e62ddeb6bbb280f))
 
-  Remote Credential Guard redirects Kerberos and NTLMv2 operations over
-  the `Microsoft::Windows::RDS::AuthRedirection` dynamic virtual channel
-  (MS-RDPEAR) so TGT keys and password hashes remain client-owned instead
-  of delegating credentials through CredSSP `TSTicketCreds`.
-  
-  Add `ironrdp-rdpear` with `no_std`/`alloc` outer envelope framing,
-  strict ASN.1 DER `TSRemoteGuardInnerPacket` codecs, and portable NDR32
-  type-serialization codecs for all 23 MS-RDPEAR Kerberos and NTLM
-  request/response calls under both the published IDL profile and the
-  Windows-native wire profile. Bound inbound static and dynamic channel
-  reassembly before fragment retention via
-  `SvcProcessor::max_message_size`, `DvcProcessor::max_message_size`, and
-  `DrdynvcClient::with_max_transport_message_size`.
-  
-  Wire the opt-in `remote-guard` feature through `ironrdp-connector`, the
-  async/blocking/Tokio drivers, `ironrdp-cfg`, `ironrdp-client`,
-  `ironrdp-daemon`, and `ironrdp-agent` (`--remote-guard` and
-  `ironrdp_remote_guard` with `Disabled`, `Negotiate`, `Ntlm`, and
-  `Kerberos` modes) backed by `sspi` 0.23.1. RCG requires `HYBRID` or
-  `HYBRID_EX` with `REDIRECTED_AUTHENTICATION_MODE_SUPPORTED`, strict TLS
-  validation, and a completed CredSSP context handoff, and omits
-  passwords, smart-card PINs, and auto-reconnect cookies from Client Info.
+  Both are checked before fragments are retained, and both default to no limit.
+
+- Add `DrdynvcClient::has_channel_name` ([#2256](https://github.com/Devolutions/IronRDP/issues/2256)) ([376eb8f566](https://github.com/Devolutions/IronRDP/commit/376eb8f56634e5c92d7137886e62ddeb6bbb280f))
 
 
 

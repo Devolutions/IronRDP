@@ -10,26 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- Harden Windows native clipboard and file lock lifetime ([#2267](https://github.com/Devolutions/IronRDP/issues/2267)) ([3f9a1149b3](https://github.com/Devolutions/IronRDP/commit/3f9a1149b3f4d5d288106d1f8c502b5f4215276b)) 
+- Keep each incoming locked file list until the peer sends the matching Unlock Clipboard Data PDU instead of expiring it after upload inactivity, and evict the oldest lock instead of rejecting a new one past `MAX_LOCKED_FILE_LISTS` ([#2267](https://github.com/Devolutions/IronRDP/issues/2267)) ([3f9a1149b3](https://github.com/Devolutions/IronRDP/commit/3f9a1149b3f4d5d288106d1f8c502b5f4215276b))
 
-  Retain incoming locked file-list snapshots until the peer sends
-  \UnlockClipboardData\ per \[MS-RDPECLIP]\ §3.1.5.3.2 instead of expiring
-  them on upload inactivity (evicting the oldest lock and notifying
-  \on_unlock\ if \MAX_LOCKED_FILE_LISTS\ is exceeded), and reject unknown
-  or released lock IDs instead of falling back to the current unlocked
-  clipboard.
-  
-  On Windows, omit synthesized \CF_DIBV5\ when \CF_DIB\ precedes it in
-  \EnumClipboardFormats\ to avoid Windows' corrupting \BI_BITFIELDS\
-  DIB-to-DIBV5 conversion, fail displaced \FormatDataRequest\ entries when
-  retry coalescing replaces a deferred event or a newer
-  \FormatDataRequest\ arrives, initialize \window_is_active\ from the
-  foreground window process so background clipboard hosts report clipboard
-  changes without waiting for an activation message, and clear
-  \SetLastError(ERROR_SUCCESS)\ before registering delayed rendering with
-  \SetClipboardData(format, None)\.
-  
-  ---------
+  `Cliprdr::drive_timeouts` no longer releases incoming locks.
+  The backend's `on_unlock` is called for an evicted lock.
+
+- Fail a file contents request that names an unknown or released lock instead of reading the current clipboard ([#2267](https://github.com/Devolutions/IronRDP/issues/2267)) ([3f9a1149b3](https://github.com/Devolutions/IronRDP/commit/3f9a1149b3f4d5d288106d1f8c502b5f4215276b))
 
 
 
