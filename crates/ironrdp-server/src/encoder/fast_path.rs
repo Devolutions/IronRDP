@@ -4,7 +4,8 @@ use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu,
 use ironrdp_pdu::{Encode as _, WriteCursor};
 
 // this is the maximum amount of data (not including headers) we can send in a single TS_FP_UPDATE_PDU
-const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+pub(crate) const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
 
 const FASTPATH_HEADER_SIZE: usize = 6;
 

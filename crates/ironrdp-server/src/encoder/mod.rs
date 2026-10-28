@@ -16,6 +16,8 @@ use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, Surfa
 use tracing::{debug, warn};
 
 use self::bitmap::BitmapEncoder;
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+pub(crate) use self::fast_path::MAX_FASTPATH_UPDATE_SIZE;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
 use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
@@ -97,13 +99,13 @@ impl UpdateEncoderCodecs {
     }
 
     #[cfg(feature = "qoi")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_qoi(&mut self, qoi: Option<u8>) {
         self.qoi = qoi
     }
 
     #[cfg(feature = "qoiz")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_qoiz(&mut self, qoiz: Option<u8>) {
         self.qoiz = qoiz
     }
@@ -111,7 +113,7 @@ impl UpdateEncoderCodecs {
     /// Record the negotiated NsCodec codec id and color-loss level so the
     /// encoder selection path can build an `NsCodecHandler` for this session.
     #[cfg(feature = "nscodec")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_nscodec(&mut self, nscodec: Option<(u8, u8)>) {
         self.nscodec = nscodec
     }
@@ -396,7 +398,7 @@ impl UpdateEncoder {
         // MultifragmentUpdate reassembly buffer.
         let mut tiled = Vec::with_capacity(diffs.len());
         for rect in diffs {
-            if rect.width * rect.height * 4 <= self.max_request_size {
+            if self.tile_bytes(rect.width, rect.height) <= self.max_tile_bytes() {
                 tiled.push(rect);
             } else {
                 let rects = self.split_diff(rect);
@@ -406,19 +408,49 @@ impl UpdateEncoder {
         tiled
     }
 
-    /// Split a rect into tiles that fit within `max_request_size`.
+    /// Uncompressed size a tile may have so that its encoded update fits `max_request_size`.
+    ///
+    /// A tile is sized before it is encoded and cannot be re-encoded smaller afterwards
+    /// (RemoteFX and QOIZ keep state across updates), so room is held back for what encoding
+    /// adds: the update and bitmap headers (tens of bytes; raw and QOI output is otherwise
+    /// no larger than the pixels, and the other codecs compress).
+    fn max_tile_bytes(&self) -> usize {
+        self.max_request_size - self.max_request_size / 64
+    }
+
+    /// The grid, in pixels, a tile's encoding covers. RemoteFX encodes whole 64x64 tiles
+    /// ([2.2.2.3.4.1] TS_RFX_TILE), padding the ones at a rect's right and bottom edges, so a
+    /// one-row strip costs as much as 64 rows. Other tiles keep widths in multiples of 4, which
+    /// the legacy bitmap encoder requires.
+    ///
+    /// [2.2.2.3.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/89e669ed-b6dd-4591-a267-73a72bc6d84e
+    fn tile_grid(&self) -> (usize, usize) {
+        match self.bitmap_updater {
+            Some(BitmapUpdater::RemoteFx(_)) => (64, 64),
+            _ => (4, 1),
+        }
+    }
+
+    /// Uncompressed size of a tile once its encoding is padded to [`Self::tile_grid`].
+    fn tile_bytes(&self, width: usize, height: usize) -> usize {
+        let (grid_width, grid_height) = self.tile_grid();
+        width.next_multiple_of(grid_width) * height.next_multiple_of(grid_height) * 4
+    }
+
+    /// Split a rect into tiles that fit within `max_tile_bytes`, on the codec's tile grid.
     /// Splits by height first, then by width within each horizontal strip.
     fn split_diff(&self, rect: Rect) -> Vec<Rect> {
         let mut rects = Vec::new();
+        let (grid_width, grid_height) = self.tile_grid();
 
-        let max_height = (self.max_request_size / (rect.width * 4)).max(1);
+        let max_height = (self.max_tile_bytes() / self.tile_bytes(rect.width, grid_height)).max(1) * grid_height;
         let mut y = rect.y;
         let y_end = rect.y + rect.height;
         while y < y_end {
             let h = (y_end - y).min(max_height);
             // Width splitting is unlikely in practice (would require
             // max_request_size < ~256 KB), but ensures correctness.
-            let max_width = (self.max_request_size / (h * 4)).max(1);
+            let max_width = (self.max_tile_bytes() / self.tile_bytes(grid_width, h)).max(1) * grid_width;
             let mut x = rect.x;
             let x_end = rect.x + rect.width;
             while x < x_end {
@@ -493,6 +525,18 @@ impl EncoderIter<'_> {
     pub(crate) async fn next(&mut self) -> Option<ServerResult<UpdateFragmenter>> {
         loop {
             let state = core::mem::take(&mut self.state);
+            let pointer = matches!(
+                state,
+                State::Start(
+                    DisplayUpdate::PointerPosition(_)
+                        | DisplayUpdate::RGBAPointer(_)
+                        | DisplayUpdate::LargePointer(_)
+                        | DisplayUpdate::ColorPointer(_)
+                        | DisplayUpdate::HidePointer
+                        | DisplayUpdate::DefaultPointer
+                        | DisplayUpdate::CachedPointer(_)
+                )
+            );
             let encoder = &mut self.encoder;
 
             let res = match state {
@@ -657,7 +701,32 @@ impl EncoderIter<'_> {
                 State::Ended => return None,
             };
 
-            return Some(res);
+            // The tiling allowance is an estimate, not a bound for every codec or
+            // pointer shape. Never send a fragmented update that could overflow the
+            // client's negotiated reassembly buffer, even if encoding expands it.
+            let update = match res {
+                Ok(update) if encoder.max_request_size < update.data.len() => update,
+                res => return Some(res),
+            };
+            // A pointer update is dropped, like one over the negotiated pointer size: the
+            // client keeps its current pointer. Leaving out part of a bitmap would leave the
+            // client's screen wrong, so that ends the update stream instead.
+            if pointer {
+                debug!(
+                    len = update.data.len(),
+                    max_request_size = encoder.max_request_size,
+                    "Dropping pointer update: encoded update exceeds negotiated maximum"
+                );
+                continue;
+            }
+            return Some(Err(ServerError::reason(
+                "fast-path update",
+                format!(
+                    "encoded update of {} bytes exceeds negotiated maximum of {} bytes",
+                    update.data.len(),
+                    encoder.max_request_size
+                ),
+            )));
         }
     }
 }

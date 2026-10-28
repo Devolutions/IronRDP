@@ -36,7 +36,7 @@ pub use echo::{EchoDvcBridge, EchoRoundTripMeasurement, EchoServerHandle, EchoSe
 #[cfg(all(feature = "__test", feature = "qoiz"))]
 pub use encoder::qoiz::Compressor as QoizCompressor;
 #[cfg(feature = "__test")]
-pub use encoder::{RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
+pub use encoder::{MAX_FASTPATH_UPDATE_SIZE, RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
 pub use error::{ServerError, ServerErrorExt, ServerErrorKind, ServerResult, ServerResultExt};
 #[cfg(feature = "egfx")]
 pub use gfx::{EgfxServerMessage, GfxContext, GfxDvcBridge, GfxServerFactory, GfxServerHandle};
@@ -60,8 +60,6 @@ pub use rdpei::{
 pub use server::autodetect_response_from_sub_header;
 #[cfg(all(feature = "__test", feature = "egfx"))]
 pub use server::autodetect_sub_header;
-#[cfg(feature = "__test")]
-pub use server::pick_remotefx_codec;
 pub use server::{
     AuthenticatedConnection, AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler,
     ConnectionInfo, ConnectionPolicy, ConnectionSource, CredentialDecision, CredentialValidationError,
@@ -70,6 +68,8 @@ pub use server::{
     ServerEventSender, ServerRedirectionHandle, SessionOutcome, StaticChannelFactory, TransportTls,
     pick_remotefx_entropy_coder,
 };
+#[cfg(feature = "__test")]
+pub use server::{client_max_request_size, pick_remotefx_codec};
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]
 pub use urbdrc::{
