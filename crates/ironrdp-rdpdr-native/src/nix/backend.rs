@@ -20,8 +20,11 @@ use nix::sys::stat::{FileStat, Mode, SFlag, dev_t, fstat, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, ftruncate, unlinkat};
 use tracing::{debug, trace, warn};
 
+use super::locks;
+use super::locks::{ByteRangeLocks, file_lock_conflict};
 use super::path::{InvalidPath, RelativePath, Root, io_to_errno};
 use super::printer::{PrintTarget, PrinterSpooler, unsupported_response, write_response};
+use super::wildcard::{contains_wildcards, is_name_in_expression};
 
 /// The most files the server may hold open at once, however high the descriptor limit is.
 const MAX_OPEN_FILES: usize = 1_024;
@@ -49,6 +52,7 @@ pub struct NixRdpdrBackend {
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/d142c93a-72bc-4b05-9d96-8e00371c3308
     pending_deletes: HashMap<FileIdentity, RelativePath>,
+    locks: ByteRangeLocks,
     /// Print-job handling for the virtual printer, when one is announced.
     printer: Option<Printer>,
 }
@@ -68,19 +72,23 @@ struct OpenFile {
     ///
     /// A directory holding open files is found by these rather than by path, so another spelling of a name or a local rename does not hide one.
     ancestors: Vec<FileIdentity>,
+    /// Whether the handle was granted DELETE access, which renaming and marking for deletion need.
+    may_delete: bool,
+    /// Whether closing this handle marks the file for deletion, as FILE_DELETE_ON_CLOSE requests.
+    delete_on_close: bool,
     /// The enumeration the last initial query-directory request started on this file.
     listing: Option<DirectoryListing>,
 }
 
 /// Identifies a file independently of its name, so a rename does not lose track of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct FileIdentity {
+pub(crate) struct FileIdentity {
     device: dev_t,
     inode: nix::libc::ino_t,
 }
 
 impl FileIdentity {
-    fn of(stat: &FileStat) -> Self {
+    pub(crate) fn of(stat: &FileStat) -> Self {
         Self {
             device: stat.st_dev,
             inode: stat.st_ino,
@@ -93,24 +101,34 @@ struct DirectoryListing {
     /// The enumerated directory, which entry names are resolved against.
     directory: OwnedFd,
     /// `.` and `..`, still to be returned first, which every directory but the root lists ([MS-FSA] 2.1.5.6.3 Directory Information Queries).
+    /// The pair is listed together, when `.` matches the pattern.
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/fa8194e0-53ec-413b-8315-e8fa85396fd8
     dot_entries: &'static [&'static str],
     entries: OwningIter,
+    /// The pattern entry names must match, or `None` for every entry.
+    pattern: Option<String>,
 }
 
 impl DirectoryListing {
-    fn open(directory: OwnedFd, is_root: bool) -> nix::Result<Self> {
+    fn open(directory: OwnedFd, is_root: bool, pattern: Option<String>) -> nix::Result<Self> {
         let entries = Dir::from_fd(directory.try_clone().map_err(io_to_errno)?)?.into_iter();
+        let lists_dot_entries = !is_root
+            && pattern
+                .as_deref()
+                .is_none_or(|pattern| is_name_in_expression(".", pattern));
         Ok(Self {
             directory,
-            dot_entries: if is_root { &[] } else { &[".", ".."] },
+            dot_entries: if lists_dot_entries { &[".", ".."] } else { &[] },
             entries,
+            pattern,
         })
     }
 
-    /// Returns the next entry, or `None` once enumeration ends, skipping entries removed since it started.
+    /// Returns the next entry matching the pattern, or `None` once enumeration ends, skipping entries removed since it started.
     fn next_entry(&mut self) -> nix::Result<Option<DirectoryEntry>> {
+        let pattern = self.pattern.as_deref();
+        let is_match = |name: &str| pattern.is_none_or(|pattern| is_name_in_expression(name, pattern));
         if let Some((name, rest)) = self.dot_entries.split_first() {
             self.dot_entries = rest;
             let stat = fstatat(self.directory.as_fd(), *name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
@@ -125,6 +143,10 @@ impl DirectoryListing {
             if matches!(name.to_bytes(), b"." | b"..") {
                 continue;
             }
+            let lossy_name = name.to_string_lossy();
+            if !is_match(&lossy_name) {
+                continue;
+            }
             // UNTESTED: only an entry removed since enumeration started is skipped, and any other error fails the listing.
             // Skipping an entry that cannot be inspected, as in a directory the process may not search, would make the directory look empty, so a delete could be marked on it.
             // The tests can run as root, which no permission stops, so after changing this, check that only ENOENT is skipped.
@@ -134,7 +156,7 @@ impl DirectoryListing {
                 Err(error) => return Err(error),
             };
             return Ok(Some(DirectoryEntry {
-                name: name.to_string_lossy().into_owned(),
+                name: lossy_name.into_owned(),
                 stat,
             }));
         }
@@ -173,15 +195,29 @@ impl NixRdpdrBackend {
                 }
             },
             pending_deletes: HashMap::new(),
+            locks: ByteRangeLocks::default(),
             printer: None,
         }
     }
 
     /// Closes `file_id`, deleting the file when it is marked for deletion and no other handle holds it.
-    fn close_file(&mut self, file_id: u32) {
+    ///
+    /// Returns the responses to lock requests that closing the file cancels or lets proceed.
+    fn close_file(&mut self, file_id: u32) -> Vec<SvcMessage> {
+        let responses = self.locks.close(file_id);
         let Some(open_file) = self.open_files.remove(&file_id) else {
-            return;
+            return responses;
         };
+        // [MS-FSA] 2.1.5.5 marks a file opened with FILE_DELETE_ON_CLOSE for deletion when that handle closes, but a directory only while it is empty.
+        if open_file.delete_on_close {
+            match holds_entries(&open_file.file) {
+                Ok(false) => {
+                    self.pending_deletes.insert(open_file.identity, open_file.path);
+                }
+                Ok(true) => trace!("Kept a directory opened with delete on close that is not empty"),
+                Err(error) => warn!(%error, "Delete on close check error"),
+            }
+        }
         let still_open = self
             .open_files
             .values()
@@ -192,6 +228,7 @@ impl NixRdpdrBackend {
         {
             warn!(%error, "Delete on close error");
         }
+        responses
     }
 
     /// Returns an ID no open file holds, counting up and wrapping around after the last one.
@@ -369,7 +406,7 @@ impl RdpdrBackend for NixRdpdrBackend {
         if let Some(printer) = self.printer.as_mut() {
             printer.spooler.reset();
         }
-        // The server forgets its handles when the channel restarts, so they are closed as if it had closed them.
+        // The server forgets its handles when the channel restarts, so they are closed as if it had closed them, which releases their locks and lock requests.
         self.close_all_files();
         Ok(())
     }
@@ -434,10 +471,7 @@ impl RdpdrBackend for NixRdpdrBackend {
                     output_buffer: None,
                 }),
             )]),
-            ServerDriveIoRequest::ServerDriveLockControlRequest(_) => {
-                // TODO
-                Ok(Vec::new())
-            }
+            ServerDriveIoRequest::ServerDriveLockControlRequest(req_inner) => lock_control(self, req_inner),
             ServerDriveIoRequest::ServerDriveQuerySecurityRequest(req_inner) => Ok(vec![SvcMessage::from(
                 RdpdrPdu::ClientDriveQuerySecurityResponse(ClientDriveQuerySecurityResponse {
                     device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::NOT_SUPPORTED),
@@ -456,6 +490,22 @@ impl RdpdrBackend for NixRdpdrBackend {
 }
 
 pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWriteRequest) -> PduResult<Vec<SvcMessage>> {
+    let file_id = req_inner.device_io_request.file_id;
+    let length = u64::try_from(req_inner.write_data.len()).unwrap_or(u64::MAX);
+    // [MS-FSA] 2.1.5.4 refuses a write into a range another handle locked, or that any shared lock covers, after a write of no bytes has already succeeded.
+    if length != 0
+        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+            backend
+                .locks
+                .conflicts(open_file.identity, file_id, req_inner.offset, length, true, false)
+        })
+    {
+        return Ok(vec![SvcMessage::from(write_response(
+            req_inner.device_io_request,
+            0,
+            file_lock_conflict(),
+        ))]);
+    }
     return process_dependent_file(
         backend,
         req_inner.device_io_request,
@@ -491,7 +541,7 @@ pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWrite
             Err(error) => {
                 warn!(%error, "Write error");
                 let res = RdpdrPdu::DeviceWriteResponse(DeviceWriteResponse {
-                    device_io_reply: DeviceIoResponse::new(request, NtStatus::UNSUCCESSFUL),
+                    device_io_reply: DeviceIoResponse::new(request, status_from_errno(io_to_errno(error))),
                     length: 0u32,
                 });
                 Ok(vec![SvcMessage::from(res)])
@@ -508,6 +558,26 @@ pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWrite
 }
 
 pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRequest) -> PduResult<Vec<SvcMessage>> {
+    let file_id = req_inner.device_io_request.file_id;
+    // [MS-FSA] 2.1.5.3 refuses a read from a range another handle locked exclusively, after a read of no bytes has already succeeded.
+    if req_inner.length != 0
+        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+            backend.locks.conflicts(
+                open_file.identity,
+                file_id,
+                req_inner.offset,
+                u64::from(req_inner.length),
+                false,
+                false,
+            )
+        })
+    {
+        let res = RdpdrPdu::DeviceReadResponse(DeviceReadResponse {
+            device_io_reply: DeviceIoResponse::new(req_inner.device_io_request, file_lock_conflict()),
+            read_data: Vec::new(),
+        });
+        return Ok(vec![SvcMessage::from(res)]);
+    }
     return process_dependent_file(
         backend,
         req_inner.device_io_request,
@@ -528,7 +598,7 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
                     Ok(buf) => (NtStatus::SUCCESS, buf),
                     Err(error) => {
                         warn!(?error, "Read error");
-                        (NtStatus::UNSUCCESSFUL, Vec::new())
+                        (status_from_errno(io_to_errno(error)), Vec::new())
                     }
                 }
             };
@@ -550,14 +620,66 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
     }
 }
 
+/// Takes or releases byte-range locks on the file `req_inner` names, as MS-FSA [2.1.5.8] Server Requests a Byte-Range Lock and [2.1.5.9] Server Requests an Unlock of a Byte-Range describe.
+///
+/// [2.1.5.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/369103ec-a8af-452b-8006-aff07b925b61
+/// [2.1.5.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/84e68de6-31a6-4cba-afd4-00b1bac6d1a2
+pub(crate) fn lock_control(
+    backend: &mut NixRdpdrBackend,
+    req_inner: ServerDriveLockControlRequest,
+) -> PduResult<Vec<SvcMessage>> {
+    let file_id = req_inner.device_io_request.file_id;
+    let checked = match backend.open_files.get(&file_id) {
+        None => {
+            warn!("No such file");
+            Err(NtStatus::NO_SUCH_FILE)
+        }
+        // [MS-FSA] 2.1.5.8 and 2.1.5.9 do not permit byte-range locks on a directory.
+        Some(open_file) => match fstat(open_file.file.as_fd()) {
+            Ok(stat) if is_directory(&stat) => Err(NtStatus::INVALID_PARAMETER),
+            Ok(_) => Ok(open_file.identity),
+            Err(error) => Err(status_from_errno(error)),
+        },
+    };
+    let identity = match checked {
+        Ok(identity) => identity,
+        Err(status) => return Ok(vec![locks::response(req_inner.device_io_request, status)]),
+    };
+    match req_inner.operation {
+        LockOperation::Shared | LockOperation::Exclusive => {
+            let exclusive = req_inner.operation == LockOperation::Exclusive;
+            let status = backend.locks.lock(
+                &req_inner.device_io_request,
+                identity,
+                &req_inner.locks,
+                exclusive,
+                req_inner.wait,
+            );
+            // A waiting request is answered when the conflicting lock goes away.
+            Ok(status
+                .map(|status| locks::response(req_inner.device_io_request, status))
+                .into_iter()
+                .collect())
+        }
+        LockOperation::Unlock | LockOperation::UnlockMultiple => {
+            let (status, granted) = backend.locks.unlock(file_id, identity, &req_inner.locks);
+            let mut messages = vec![locks::response(req_inner.device_io_request, status)];
+            messages.extend(granted);
+            Ok(messages)
+        }
+    }
+}
+
 pub(crate) fn close_device(backend: &mut NixRdpdrBackend, req_inner: DeviceCloseRequest) -> PduResult<Vec<SvcMessage>> {
     // A failed delete on close is only logged, and the close still reports success.
     // [MS-FSA] 2.1.5.5 Server Requests Closing an Open defines no failure status, and Windows does not report a failed delete on close to the caller closing the handle either.
-    backend.close_file(req_inner.device_io_request.file_id);
+    let lock_responses = backend.close_file(req_inner.device_io_request.file_id);
     let res = RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
         device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::SUCCESS),
     });
-    Ok(vec![SvcMessage::from(res)])
+    let mut messages = vec![SvcMessage::from(res)];
+    messages.extend(lock_responses);
+    Ok(messages)
 }
 
 pub(crate) fn query_information(
@@ -793,6 +915,10 @@ pub(crate) fn set_information(
     let mut renamed = None;
     let status = match backend.open_files.get_mut(&file_id) {
         Some(open_file) => match &req_inner.set_buffer {
+            // [MS-FSA] 2.1.5.15.3 FileDispositionInformation and 2.1.5.15.12 FileRenameInformation refuse a handle without DELETE access before any other check.
+            FileInformationClass::Rename(_) | FileInformationClass::Disposition(_) if !open_file.may_delete => {
+                NtStatus::ACCESS_DENIED
+            }
             FileInformationClass::Rename(_) if rename_denied => NtStatus::ACCESS_DENIED,
             // The shared directory itself is no name to rename to.
             FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name)
@@ -825,9 +951,9 @@ pub(crate) fn set_information(
             FileInformationClass::Disposition(info) => {
                 match set_delete_pending(open_file, &mut backend.pending_deletes, info.delete_pending != 0) {
                     Ok(()) => NtStatus::SUCCESS,
-                    Err(error) => {
-                        trace!(%error, "Set delete pending failed");
-                        status_from_errno(error)
+                    Err(status) => {
+                        trace!(?status, "Set delete pending failed");
+                        status
                     }
                 }
             }
@@ -950,42 +1076,61 @@ fn contains_entry(directory: BorrowedFd<'_>, name: &str) -> nix::Result<bool> {
 
 /// Marks `open_file` for deletion when its last handle closes, or clears the mark.
 ///
-/// A directory is marked only when it is empty ([MS-FSA] 2.1.5.15.3 FileDispositionInformation).
+/// A read-only file is not marked, and a directory is marked only when it is empty ([MS-FSA] 2.1.5.15.3 FileDispositionInformation).
 ///
 /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/386d9ec5-e0f6-4853-b175-c05be01419e0
 fn set_delete_pending(
     open_file: &OpenFile,
     pending_deletes: &mut HashMap<FileIdentity, RelativePath>,
     delete_pending: bool,
-) -> nix::Result<()> {
+) -> Result<(), NtStatus> {
     if !delete_pending {
         pending_deletes.remove(&open_file.identity);
         return Ok(());
     }
     // The shared directory cannot be removed through the share, and a mark on it would refuse every create in it until its handles close.
     if open_file.path.file_name().is_none() {
-        return Err(Errno::EACCES);
+        return Err(NtStatus::ACCESS_DENIED);
     }
-    if is_directory(&fstat(open_file.file.as_fd())?) {
-        // The open directory itself is read, not whatever its path names now.
-        // A duplicate of the handle would share its read position, so a second mark would read on from the end of the first.
-        let directory = nix::fcntl::openat(
-            open_file.file.as_fd(),
-            ".",
-            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
-            Mode::empty(),
-        )?;
-        let mut listing = DirectoryListing::open(directory, true)?;
-        if listing.next_entry()?.is_some() {
-            return Err(Errno::ENOTEMPTY);
-        }
+    if is_read_only(&fstat(open_file.file.as_fd()).map_err(status_from_errno)?) {
+        return Err(cannot_delete());
+    }
+    if holds_entries(&open_file.file).map_err(status_from_errno)? {
+        return Err(NtStatus::DIRECTORY_NOT_EMPTY);
     }
     pending_deletes.insert(open_file.identity, open_file.path.clone());
     Ok(())
 }
 
+/// Whether `file` is a directory with entries, which cannot be marked for deletion.
+fn holds_entries(file: &std::fs::File) -> nix::Result<bool> {
+    if !is_directory(&fstat(file.as_fd())?) {
+        return Ok(false);
+    }
+    // The open directory itself is read, not whatever its path names now.
+    // A duplicate of the handle would share its read position, so a second check would read on from the end of the first.
+    let directory = nix::fcntl::openat(
+        file.as_fd(),
+        ".",
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?;
+    let mut listing = DirectoryListing::open(directory, true, None)?;
+    Ok(listing.next_entry()?.is_some())
+}
+
 fn is_directory(stat: &FileStat) -> bool {
     SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFDIR
+}
+
+/// Whether the file is reported with FILE_ATTRIBUTE_READONLY, which a file without any write permission is.
+fn is_read_only(stat: &FileStat) -> bool {
+    !Mode::from_bits_truncate(stat.st_mode).intersects(Mode::S_IWUSR | Mode::S_IWGRP | Mode::S_IWOTH)
+}
+
+/// STATUS_CANNOT_DELETE, which [`NtStatus`] does not name.
+fn cannot_delete() -> NtStatus {
+    NtStatus::from(0xC000_0121)
 }
 
 /// Maps a filesystem error to the status the Windows drive backend reports for the same condition.
@@ -1002,6 +1147,8 @@ fn status_from_errno(error: Errno) -> NtStatus {
         Errno::EROFS => NtStatus::MEDIA_WRITE_PROTECTED,
         Errno::ENOSPC | Errno::EDQUOT => NtStatus::DISK_FULL,
         Errno::EMFILE | Errno::ENFILE => NtStatus::INSUFFICIENT_RESOURCES,
+        // A read or write through a handle opened without the access it needs.
+        Errno::EBADF => NtStatus::ACCESS_DENIED,
         _ => NtStatus::UNSUCCESSFUL,
     }
 }
@@ -1081,9 +1228,7 @@ fn make_query_dir_resp(
         Ok(DirectoryEntry { name, stat }) => {
             if file_class == FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION {
                 let is_dir = is_directory(&stat);
-                let readonly =
-                    !Mode::from_bits_truncate(stat.st_mode).intersects(Mode::S_IWUSR | Mode::S_IWGRP | Mode::S_IWOTH);
-                let file_attribute = get_file_attributes(is_dir, readonly, &name);
+                let file_attribute = get_file_attributes(is_dir, is_read_only(&stat), &name);
                 let info = FileBothDirectoryInformation::new(
                     transform_to_filetime(stat.st_ctime),
                     transform_to_filetime(stat.st_ctime),
@@ -1157,7 +1302,7 @@ pub(crate) fn query_directory(
     };
     return make_query_dir_resp(entry, req_inner.device_io_request, req_inner.file_info_class_lvl);
 
-    /// Returns the first match for `pattern` in `directory`, where a `*` pattern enumerates the directory.
+    /// Returns the first match for `pattern` in `directory`, where a pattern with wildcards enumerates the matching entries.
     fn start_query(
         file_base: &str,
         open_file: &mut OpenFile,
@@ -1166,8 +1311,9 @@ pub(crate) fn query_directory(
     ) -> nix::Result<Option<DirectoryEntry>> {
         let root = Root::open(file_base)?;
         let opened = directory.open_directory(&root)?;
-        if pattern == "*" {
-            let mut listing = DirectoryListing::open(opened, directory.file_name().is_none())?;
+        if contains_wildcards(pattern) {
+            let filter = (pattern != "*").then(|| pattern.to_owned());
+            let mut listing = DirectoryListing::open(opened, directory.file_name().is_none(), filter)?;
             let entry = listing.next_entry()?;
             open_file.listing = Some(listing);
             return Ok(entry);
@@ -1231,6 +1377,12 @@ pub(crate) fn create_drive(
                     path,
                     identity,
                     ancestors,
+                    // GENERIC_ALL and MAXIMUM_ALLOWED include DELETE ([MS-SMB2] 2.2.13.1).
+                    // A MAXIMUM_ALLOWED open that fell back to read-only keeps it, as Windows lets a read-only file be renamed: the parent directory's permissions decide a rename, and the read-only check before a delete decides a delete.
+                    may_delete: req_inner.desired_access.intersects(
+                        DesiredAccess::DELETE | DesiredAccess::GENERIC_ALL | DesiredAccess::MAXIMUM_ALLOWED,
+                    ),
+                    delete_on_close: req_inner.create_options.contains(CreateOptions::FILE_DELETE_ON_CLOSE),
                     listing: None,
                 },
             );
@@ -1286,6 +1438,12 @@ fn open_file(
         warn!(disposition = ?req.create_disposition, "Rejected an invalid directory create request");
         return Err(NtStatus::INVALID_PARAMETER);
     }
+    let delete_on_close = req.create_options.contains(CreateOptions::FILE_DELETE_ON_CLOSE);
+    // [MS-SMB2] 2.2.13 requires the DELETE bit itself with FILE_DELETE_ON_CLOSE, which GENERIC_ALL or MAXIMUM_ALLOWED does not replace.
+    if delete_on_close && !req.desired_access.contains(DesiredAccess::DELETE) {
+        warn!("Rejected FILE_DELETE_ON_CLOSE without DELETE access");
+        return Err(NtStatus::INVALID_PARAMETER);
+    }
     let (parent, name, ancestors) = path.open_parent_with_ancestors(&root).map_err(|error| {
         trace!(%error, ?path, "Open parent directory failed");
         status_from_parent_errno(error)
@@ -1297,6 +1455,10 @@ fn open_file(
         return Err(NtStatus::DELETE_PENDING);
     }
 
+    let truncates = matches!(
+        req.create_disposition,
+        CreateDisposition::FILE_SUPERSEDE | CreateDisposition::FILE_OVERWRITE | CreateDisposition::FILE_OVERWRITE_IF
+    );
     // Statuses follow [MS-FSA] 2.1.5.1 Server Requests an Open of a File and 2.1.5.1.2 Open of an Existing File.
     let flags = match fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW) {
         Ok(stat) if is_directory(&stat) => {
@@ -1315,6 +1477,11 @@ fn open_file(
                 } else {
                     NtStatus::OBJECT_NAME_COLLISION
                 });
+            }
+            // The shared directory cannot be removed through the share, as on the Windows backend.
+            if delete_on_close && path.file_name().is_none() {
+                trace!("Refused to delete the shared directory on close");
+                return Err(NtStatus::ACCESS_DENIED);
             }
             OFlag::O_RDONLY | OFlag::O_DIRECTORY
         }
@@ -1340,40 +1507,70 @@ fn open_file(
             trace!(%error, ?path, "Look up file failed");
             return Err(status_from_errno(error));
         }
-        _ => match req.create_disposition {
-            CreateDisposition::FILE_OPEN_IF => OFlag::O_CREAT | OFlag::O_RDWR,
-            CreateDisposition::FILE_CREATE => OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR,
-            CreateDisposition::FILE_SUPERSEDE => OFlag::O_CREAT | OFlag::O_RDWR,
-            CreateDisposition::FILE_OPEN => OFlag::O_RDONLY,
-            CreateDisposition::FILE_OVERWRITE => OFlag::O_RDWR,
-            CreateDisposition::FILE_OVERWRITE_IF => OFlag::O_CREAT | OFlag::O_RDWR,
-            // Refused before the lookup.
-            _ => return Err(NtStatus::INVALID_PARAMETER),
-        },
+        _ => {
+            let disposition = match req.create_disposition {
+                CreateDisposition::FILE_OPEN_IF
+                | CreateDisposition::FILE_SUPERSEDE
+                | CreateDisposition::FILE_OVERWRITE_IF => OFlag::O_CREAT,
+                CreateDisposition::FILE_CREATE => OFlag::O_CREAT | OFlag::O_EXCL,
+                CreateDisposition::FILE_OPEN | CreateDisposition::FILE_OVERWRITE => OFlag::empty(),
+                // Refused before the lookup.
+                _ => return Err(NtStatus::INVALID_PARAMETER),
+            };
+            // The access mode follows the access the server requests, with the bits [MS-SMB2] 2.2.13.1 defines, and a truncating disposition needs write access whatever it requests.
+            let all = || DesiredAccess::GENERIC_ALL | DesiredAccess::MAXIMUM_ALLOWED;
+            let read = req.desired_access.intersects(
+                DesiredAccess::FILE_READ_DATA_OR_FILE_LIST_DIRECTORY
+                    | DesiredAccess::FILE_EXECUTE
+                    | DesiredAccess::GENERIC_READ
+                    | DesiredAccess::GENERIC_EXECUTE
+                    | all(),
+            );
+            let write = truncates
+                || req.desired_access.intersects(
+                    DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE
+                        | DesiredAccess::FILE_APPEND_DATA_OR_FILE_ADD_SUBDIRECTORY
+                        | DesiredAccess::GENERIC_WRITE
+                        | all(),
+                );
+            let access = match (read, write) {
+                (_, false) => OFlag::O_RDONLY,
+                (false, true) => OFlag::O_WRONLY,
+                (true, true) => OFlag::O_RDWR,
+            };
+            disposition | access
+        }
     };
-    let file = root
-        .open_at(parent.as_fd(), name, flags, Mode::from_bits_truncate(0o666))
-        .map_err(|error| {
-            trace!(%error, ?name, "Open file failed");
-            status_from_errno(error)
-        })?;
+    let mode = Mode::from_bits_truncate(0o666);
+    let opened = match root.open_at(parent.as_fd(), name, flags, mode) {
+        // MAXIMUM_ALLOWED asks for whatever access the file allows, so a refused write still leaves read access.
+        Err(Errno::EACCES | Errno::EROFS)
+            if req.desired_access.contains(DesiredAccess::MAXIMUM_ALLOWED)
+                && flags.contains(OFlag::O_RDWR)
+                && !truncates =>
+        {
+            root.open_at(parent.as_fd(), name, flags.difference(OFlag::O_RDWR), mode)
+        }
+        opened => opened,
+    };
+    let file = opened.map_err(|error| {
+        trace!(%error, ?name, "Open file failed");
+        status_from_errno(error)
+    })?;
     let stat = fstat(file.as_fd()).map_err(status_from_errno)?;
     let identity = FileIdentity::of(&stat);
     // Windows refuses to open a file marked for deletion, where [MS-FSA] 2.1.5.1 Server Requests an Open of a File states this only for the directories on the path.
     if pending_deletes.contains_key(&identity) {
         return Err(NtStatus::DELETE_PENDING);
     }
+    // [MS-FSA] 2.1.5.1.2.1 refuses to delete a read-only file on close.
+    if delete_on_close && is_read_only(&stat) {
+        return Err(cannot_delete());
+    }
     // Truncating only once the open can no longer fail keeps a refused file intact, where O_TRUNC would empty it first.
     // Like O_TRUNC, this leaves anything but a regular file, such as a FIFO, unchanged.
     let is_regular_file = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFREG;
-    if is_regular_file
-        && matches!(
-            req.create_disposition,
-            CreateDisposition::FILE_SUPERSEDE
-                | CreateDisposition::FILE_OVERWRITE
-                | CreateDisposition::FILE_OVERWRITE_IF
-        )
-    {
+    if is_regular_file && truncates {
         ftruncate(file.as_fd(), 0).map_err(|error| {
             warn!(%error, ?name, "Truncate file error");
             status_from_errno(error)
