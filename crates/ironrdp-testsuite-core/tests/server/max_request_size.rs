@@ -1,5 +1,7 @@
 use core::num::{NonZeroU16, NonZeroUsize};
 
+use ironrdp_core::decode;
+use ironrdp_pdu::bitmap::BitmapUpdateData;
 use ironrdp_pdu::rdp::capability_sets::{
     CapabilitySet, CmdFlags, EntropyBits, LargePointerSupportFlags, MultifragmentUpdate,
 };
@@ -147,6 +149,48 @@ async fn largest_update(codec: Codec, width: u16, height: u16, max_request_size:
         largest = largest.max(update.unwrap().data.len());
     }
     largest
+}
+
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.2 (TS_BITMAP_DATA's destination rectangle and height describe the same rows)
+#[tokio::test]
+async fn a_legacy_bitmap_tile_narrower_than_the_frame_keeps_all_its_rows() {
+    let (width, height) = (256, 64);
+    let mut encoder = encoder(Codec::Bitmap, width, height, 65_536);
+    let frame = incompressible_frame(width, height);
+    let mut updates = encoder.update(DisplayUpdate::Bitmap(frame.clone()));
+    while let Some(update) = updates.next().await {
+        update.unwrap();
+    }
+
+    // Change the second 64x64 tile only: its rows end short of the frame's stride.
+    let stride = frame.stride.get();
+    let mut data = frame.data.to_vec();
+    for row in data.chunks_mut(stride) {
+        for byte in &mut row[64 * 4..128 * 4] {
+            *byte ^= 0xFF;
+        }
+    }
+    let mut updates = encoder.update(DisplayUpdate::Bitmap(BitmapUpdate {
+        data: data.into(),
+        ..frame
+    }));
+
+    let mut rows = 0;
+    while let Some(update) = updates.next().await {
+        let update = update.unwrap();
+        for bitmap in decode::<BitmapUpdateData<'_>>(&update.data).unwrap().rectangles {
+            let rect = bitmap.rectangle;
+            assert_eq!((rect.left, rect.right), (64, 127));
+            assert_eq!(
+                rect.bottom - rect.top + 1,
+                bitmap.height,
+                "{rect:?} is not {} rows",
+                bitmap.height
+            );
+            rows += bitmap.height;
+        }
+    }
+    assert_eq!(rows, 64);
 }
 
 // oracle: spec MS-RDPBCGR §2.2.7.2.6 (a fragmented update larger than MaxRequestSize overflows the client's reassembly buffer)
