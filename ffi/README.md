@@ -30,5 +30,9 @@ At this point, you may build and run the examples for .NET:
 - `WindowingOrders` reports an encoding failure as `IronRdpErrorKind.EncodeError` instead of `Generic`.
 - A native object rejects overlapping calls with `InvalidOperationException`.
   Serialize access to `ActiveStage` and `DecodedImage` across the PDU loop, input handlers and clipboard, as the Avalonia example does with one lock.
+- `FastPathInputEventIterator.Encode()` returns the Fast-Path Input PDUs for the events of one `InputDatabase.Apply` as a `VecU8`, ready for `Framed.Write`.
+  It reads no `ActiveStage` or `DecodedImage`, so call it outside that lock and input no longer waits on frame decoding.
+  `ActiveStage.ProcessFastpathInput` sends the same bytes; keep it, under the lock, only when `PointerSoftwareRendering` is on, because it also redraws the pointer in the image.
+  `InputDatabase` tracks pressed keys and buttons, so keep calling `Apply` from one thread.
 
 [Diplomat]: https://github.com/rust-diplomat/diplomat
