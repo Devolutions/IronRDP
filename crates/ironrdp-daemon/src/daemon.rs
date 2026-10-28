@@ -3455,7 +3455,7 @@ mod tests {
         properties.insert("gatewaybrokeringtype", 1i64);
         properties.insert("enablerdsaadauth", 1i64);
 
-        assert!(matches!(daemon.connect(properties, None), Response::Ok));
+        assert!(matches!(daemon.connect(properties, None), Response::Ok(_)));
         let _ = daemon.disconnect();
     }
 
