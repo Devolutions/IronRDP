@@ -2,8 +2,24 @@ using System.Runtime.InteropServices;
 
 namespace Devolutions.IronRdp;
 
+/// <summary>
+/// Splits a stream into RDP PDUs.
+/// </summary>
 /// <remarks>
-/// All reads share one buffer, so run one read at a time. Writes are locked and may overlap a read.
+/// <para>
+/// All reads share one buffer, so run one read at a time; <see cref="TryReadBufferedPdu"/> and <see cref="Peek"/>
+/// are reads too. Writes are locked and may overlap a read.
+/// </para>
+/// <para>
+/// <see cref="ReadPdu()"/> sizes an active-stage PDU from the first <see cref="HeaderProbeBytes"/> buffered bytes,
+/// so its cost does not grow with the bytes buffered behind it. <see cref="ReadByHint(PduHint)"/> hands the hint
+/// everything buffered, because a connection-sequence hint may need more than a fixed header and those PDUs are
+/// few and small.
+/// </para>
+/// <para>
+/// Every read reports a stream that ends before the PDU is complete, in its header or its body, as
+/// <see cref="IronRdpLibException"/> with <see cref="IronRdpLibExceptionType.EndOfFile"/>.
+/// </para>
 /// </remarks>
 public class Framed<TS> where TS : Stream
 {
@@ -18,9 +34,6 @@ public class Framed<TS> where TS : Stream
     private readonly byte[] _readBuffer = new byte[ReadChunkSize];
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly IronRdpPdu _pdu = IronRdpPdu.New();
-
-    // FindSize takes an array and reads its length, so each probe length keeps its own array.
-    private readonly byte[]?[] _probes = new byte[HeaderProbeBytes + 1][];
 
     public Framed(TS stream)
     {
@@ -61,7 +74,7 @@ public class Framed<TS> where TS : Stream
         {
             if (await Read(cancellationToken) == 0)
             {
-                throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
+                throw EndOfFile();
             }
         }
 
@@ -81,7 +94,7 @@ public class Framed<TS> where TS : Stream
         {
             if (ReadSync() == 0)
             {
-                throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
+                throw EndOfFile();
             }
         }
 
@@ -91,6 +104,10 @@ public class Framed<TS> where TS : Stream
     /// <summary>
     /// Takes the next active-stage PDU when it is already buffered, without reading from the stream.
     /// </summary>
+    /// <remarks>
+    /// This is a read: it consumes from the shared buffer, so do not call it while a <c>ReadPdu</c>, <c>ReadExact</c>
+    /// or <c>ReadByHint</c> is pending. Call it between reads of the same loop.
+    /// </remarks>
     /// <returns>False when the buffer holds no complete PDU; the buffer is left as it was.</returns>
     public bool TryReadBufferedPdu(out (Action Action, byte[] Payload) pdu)
     {
@@ -102,10 +119,7 @@ public class Framed<TS> where TS : Stream
         }
 
         var probeLength = Math.Min(buffered.Length, HeaderProbeBytes);
-        var probe = _probes[probeLength] ??= new byte[probeLength];
-        buffered[..probeLength].CopyTo(probe);
-
-        var info = _pdu.FindSize(probe);
+        var info = _pdu.FindSize(buffered[..probeLength].ToArray());
         if (info is null)
         {
             return false;
@@ -157,9 +171,14 @@ public class Framed<TS> where TS : Stream
             var len = await this.Read(cancellationToken);
             if (len == 0)
             {
-                throw new Exception("EOF");
+                throw EndOfFile();
             }
         }
+    }
+
+    private static IronRdpLibException EndOfFile()
+    {
+        return new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "stream ended before the PDU was complete");
     }
 
     async Task<int> Read(CancellationToken cancellationToken)
@@ -226,7 +245,7 @@ public class Framed<TS> where TS : Stream
                 var len = await this.Read(cancellationToken);
                 if (len == 0)
                 {
-                    throw new Exception("EOF");
+                    throw EndOfFile();
                 }
             }
         }
@@ -257,7 +276,7 @@ public class Framed<TS> where TS : Stream
                 var len = await this.Read(cancellationToken);
                 if (len == 0)
                 {
-                    throw new Exception("EOF");
+                    throw EndOfFile();
                 }
             }
         }

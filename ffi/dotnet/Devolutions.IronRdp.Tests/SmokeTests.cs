@@ -219,6 +219,8 @@ internal static class SmokeTests
             True(pdu.FindSize(FastPathLongLength[..2]) is null, "two-byte fast-path length needs its second byte");
         });
 
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1 and §2.2.9.1.2 for the PDU boundaries; mutant for the ReadCount
+        // assertions, which pin that a buffered PDU never reads the stream
         yield return ("framed takes buffered PDUs without reading again", () =>
         {
             var bytes = TpktX224ConfirmSelectingTls.Concat(FastPathLongLength).Concat(FastPathShortLength).ToArray();
@@ -239,6 +241,7 @@ internal static class SmokeTests
             Equal(1, stream.ReadCount, "buffered PDUs did not read the stream");
         });
 
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1 (TPKT length counts the header, so 19 + 6 bytes hold one PDU and part of the next)
         yield return ("framed leaves a partial PDU buffered", () =>
         {
             var bytes = TpktX224ConfirmSelectingTls.Concat(TpktX224ConfirmWithoutNegotiation).ToArray();
@@ -253,6 +256,8 @@ internal static class SmokeTests
             True(second.SequenceEqual(TpktX224ConfirmWithoutNegotiation), "second PDU bytes");
         });
 
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1 and §2.2.9.1.2 for the PDU boundaries; mutant for the read count
+        // (1 + 6 + 20 bytes, then the 3 left), which pins that no read is redundant
         yield return ("framed sync read splits PDUs across reads", () =>
         {
             var bytes = FastPathLongLength.Concat(TpktX224ConfirmSelectingTls).Concat(FastPathShortLength).ToArray();
@@ -272,9 +277,29 @@ internal static class SmokeTests
             Equal(IronRdpLibExceptionType.EndOfFile, error.ErrorType, "EOF error type");
         });
 
-        yield return ("framed read pdu stops when cancelled", () =>
+        // oracle: Framed remarks (a stream ending inside a PDU body is EndOfFile, like one ending between PDUs)
+        yield return ("framed reports a stream that ends inside a PDU body as EndOfFile", () =>
         {
-            var framed = new Framed<BlockingReadStream>(new BlockingReadStream());
+            var truncated = TpktX224ConfirmSelectingTls[..^3];
+
+            var asyncFramed = new Framed<ChunkedReadStream>(new ChunkedReadStream(truncated));
+            var asyncError = Throws<IronRdpLibException>(() => asyncFramed.ReadPdu().GetAwaiter().GetResult());
+            Equal(IronRdpLibExceptionType.EndOfFile, asyncError.ErrorType, "async EOF error type");
+
+            var syncFramed = new Framed<ChunkedReadStream>(new ChunkedReadStream(truncated));
+            var syncError = Throws<IronRdpLibException>(() => syncFramed.ReadPduSync());
+            Equal(IronRdpLibExceptionType.EndOfFile, syncError.ErrorType, "sync EOF error type");
+
+            var hintFramed = new Framed<ChunkedReadStream>(new ChunkedReadStream(truncated));
+            var hintError = Throws<IronRdpLibException>(() => hintFramed.ReadExact((nuint)TpktX224ConfirmSelectingTls.Length).GetAwaiter().GetResult());
+            Equal(IronRdpLibExceptionType.EndOfFile, hintError.ErrorType, "ReadExact EOF error type");
+        });
+
+        // oracle: Framed remarks (cancellation abandons the stream read; buffered bytes stay for the next read)
+        yield return ("framed read pdu stops when cancelled and keeps buffered bytes", () =>
+        {
+            var stream = new BlockingReadStream(TpktX224ConfirmSelectingTls[..6]);
+            var framed = new Framed<BlockingReadStream>(stream);
             using var cancellation = new CancellationTokenSource();
 
             var read = framed.ReadPdu(cancellation.Token);
@@ -282,6 +307,11 @@ internal static class SmokeTests
 
             cancellation.Cancel();
             Throws<OperationCanceledException>(() => read.GetAwaiter().GetResult());
+            Equal(6, framed.Peek().Length, "bytes read before the cancellation stay buffered");
+
+            stream.Unblock(TpktX224ConfirmSelectingTls[6..]);
+            var (_, pdu) = framed.ReadPdu().GetAwaiter().GetResult();
+            True(pdu.SequenceEqual(TpktX224ConfirmSelectingTls), "next read completes the PDU from the buffered bytes");
         });
 
         yield return ("config builder reports the first missing field", () =>
@@ -501,12 +531,34 @@ internal static class SmokeTests
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
+    // Serves the bytes it holds, then blocks until Unblock supplies more.
     private sealed class BlockingReadStream : MemoryStream
     {
+        private TaskCompletionSource<byte[]> _more = new();
+
+        public BlockingReadStream(byte[] first)
+        {
+            Write(first);
+            Position = 0;
+        }
+
+        public void Unblock(byte[] bytes)
+        {
+            _more.SetResult(bytes);
+        }
+
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            await Task.Delay(Timeout.Infinite, cancellationToken);
-            return 0;
+            if (Position == Length)
+            {
+                var bytes = await _more.Task.WaitAsync(cancellationToken);
+                _more = new TaskCompletionSource<byte[]>();
+                SetLength(0);
+                Write(bytes);
+                Position = 0;
+            }
+
+            return Read(buffer.Span);
         }
     }
 
