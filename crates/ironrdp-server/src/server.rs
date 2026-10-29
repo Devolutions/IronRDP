@@ -2737,11 +2737,17 @@ impl RdpServer {
         self.advanced_input_active.store(false, Ordering::Release);
     }
 
+    /// Returns the raw event sender for requests not exposed by [`Self::handle`].
+    ///
+    /// Prefer the typed handle for quit, credential updates, and listener-address queries.
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
     }
 
     /// Returns a runtime handle that can be cloned before running the server.
+    ///
+    /// Prefer this typed interface for its supported requests; [`Self::event_sender`] exposes the
+    /// same queue for other [`ServerEvent`] variants.
     ///
     /// ```no_run
     /// # async fn example(mut server: ironrdp_server::RdpServer) -> ironrdp_server::ServerResult<()> {
