@@ -11,22 +11,38 @@ use ironrdp_dvc::pdu::{
 use ironrdp_dvc::{DrdynvcClient, DvcChannelListener, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
-#[derive(Default)]
 struct RecordedDvc {
+    name: &'static str,
     started_with: Option<u32>,
+    closed_with: Option<u32>,
     received: Vec<Vec<u8>>,
+}
+
+impl Default for RecordedDvc {
+    fn default() -> Self {
+        Self {
+            name: "recorded",
+            started_with: None,
+            closed_with: None,
+            received: Vec::new(),
+        }
+    }
 }
 
 impl_as_any!(RecordedDvc);
 
 impl DvcProcessor for RecordedDvc {
     fn channel_name(&self) -> &str {
-        "recorded"
+        self.name
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         self.started_with = Some(channel_id);
         Ok(Vec::new())
+    }
+
+    fn close(&mut self, channel_id: u32) {
+        self.closed_with = Some(channel_id);
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
@@ -56,30 +72,6 @@ impl DvcProcessor for FailingDvc {
 }
 
 impl DvcClientProcessor for FailingDvc {}
-
-struct NamedDvc {
-    name: &'static str,
-    started_with: Option<u32>,
-}
-
-impl_as_any!(NamedDvc);
-
-impl DvcProcessor for NamedDvc {
-    fn channel_name(&self) -> &str {
-        self.name
-    }
-
-    fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        self.started_with = Some(channel_id);
-        Ok(Vec::new())
-    }
-
-    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        Ok(Vec::new())
-    }
-}
-
-impl DvcClientProcessor for NamedDvc {}
 
 struct DropFlagDvc(Arc<AtomicBool>);
 
@@ -198,9 +190,9 @@ fn failed_established_dynamic_channel_attachment_is_not_registered() {
     );
 }
 
+// oracle: reference xrdp closes and reopens every dynamic channel after a Deactivation-Reactivation Sequence
 #[test]
 fn closed_pre_registered_channel_stays_registered_for_reopening() {
-    // xrdp closes and reopens every channel after a Deactivation-Reactivation Sequence.
     let mut client = DrdynvcClient::new().with_dynamic_channel(RecordedDvc::default());
     let create = |channel_id| {
         encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
@@ -221,15 +213,18 @@ fn closed_pre_registered_channel_stays_registered_for_reopening() {
 
     client.process(&create(2)).expect("Create Request should be processed");
     let channel = client.get_dvc::<RecordedDvc>().expect("channel reopened");
+    // oracle: mutant keeping a closed channel without calling its processor's close
+    assert_eq!(channel.processor().closed_with, Some(1), "closed before it was kept");
     assert_eq!(channel.processor().started_with, Some(2));
 }
 
+// oracle: reference xrdp closes and reopens every dynamic channel after a Deactivation-Reactivation Sequence
 #[test]
 fn closed_channels_of_one_type_reopen_under_their_own_names() {
     // One pipe proxy per channel shares a processor type; a reopen must get its own back.
-    let named = |name| NamedDvc {
+    let named = |name| RecordedDvc {
         name,
-        started_with: None,
+        ..RecordedDvc::default()
     };
     let mut client = DrdynvcClient::new()
         .with_dynamic_channel(named("first"))
@@ -262,13 +257,14 @@ fn closed_channels_of_one_type_reopen_under_their_own_names() {
         };
         assert_eq!(response.creation_status(), CreationStatus::OK, "{name}");
         let channel = client
-            .get_dvc_by_channel_id::<NamedDvc>(channel_id)
+            .get_dvc_by_channel_id::<RecordedDvc>(channel_id)
             .expect("channel reopened");
         assert_eq!(channel.processor().name, name);
         assert_eq!(channel.processor().started_with, Some(channel_id));
     }
 }
 
+// oracle: mutant keeping a factory-made processor for reopening instead of dropping it
 #[test]
 fn factory_channel_processor_is_dropped_on_close() {
     let dropped = Arc::new(AtomicBool::new(false));
@@ -312,6 +308,7 @@ impl DvcChannelListener for WithdrawableListener {
     }
 }
 
+// oracle: mutant reopening a custom listener's channel with its previous processor after it withdraws
 #[test]
 fn listener_withdrawn_while_its_channel_is_open_refuses_the_reopen() {
     let available = Arc::new(AtomicBool::new(true));
