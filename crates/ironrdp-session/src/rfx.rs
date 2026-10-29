@@ -6,7 +6,7 @@ use ironrdp_graphics::rfx::{TILE_SIZE, TileDecoder};
 use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, RfxRectangle, Tile};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::{Decode as _, ReadCursor, decode_cursor};
-use tracing::{instrument, trace};
+use tracing::{debug, instrument, trace};
 
 use crate::image::DecodedImage;
 use crate::{SessionResult, custom_err, general_err, reason_err};
@@ -153,6 +153,11 @@ impl DecodingContext {
         for (update_rectangle, tile) in tiles_to_rectangles(tile_set.tiles.as_slice(), destination).zip(&tile_set.tiles)
         {
             let Some(update_rectangle) = update_rectangle else {
+                debug!(
+                    x = tile.x,
+                    y = tile.y,
+                    "Skipping tile placed past the u16 coordinate range"
+                );
                 continue;
             };
 

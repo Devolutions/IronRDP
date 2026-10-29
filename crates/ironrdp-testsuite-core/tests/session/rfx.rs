@@ -1062,19 +1062,36 @@ pub(crate) const DECODED_IMAGE: [u8; IMAGE_WIDTH * IMAGE_HEIGHT * FORMAT_SIZE] =
 fn decode_draws_nothing_for_unreachable_geometry(#[case] edit: Edit) {
     use ironrdp_pdu::codecs::rfx::{Block, CodecChannel};
 
-    let image = decode_edited_messages(|block| match (edit, block) {
-        // 1024 * 64 does not fit in u16.
-        (Edit::TileX, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].x = 1024,
-        (Edit::TileY, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].y = 1024,
-        (Edit::RegionWidth, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].width = 0,
-        (Edit::RegionHeight, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].height = 0,
-        // The channel is 64x64.
-        (Edit::RegionX, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].x = 100,
-        (Edit::RegionY, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].y = 100,
-        (Edit::ChannelWidth, Block::Channels(channels)) => channels.0[0].width = 0,
-        (Edit::ChannelHeight, Block::Channels(channels)) => channels.0[0].height = 0,
-        _ => {}
-    });
+    let encoded = {
+        use ironrdp_pdu::Decode as _;
+
+        let mut src = ReadCursor::new(ENCODED_MESSAGES.as_ref());
+        let mut encoded = Vec::new();
+        while !src.is_empty() {
+            let mut block = Block::decode(&mut src).unwrap();
+            match (edit, &mut block) {
+                // 1024 * 64 does not fit in u16.
+                (Edit::TileX, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].x = 1024,
+                (Edit::TileY, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].y = 1024,
+                (Edit::RegionWidth, Block::CodecChannel(CodecChannel::Region(region))) => {
+                    region.rectangles[0].width = 0
+                }
+                (Edit::RegionHeight, Block::CodecChannel(CodecChannel::Region(region))) => {
+                    region.rectangles[0].height = 0
+                }
+                // The channel is 64x64.
+                (Edit::RegionX, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].x = 100,
+                (Edit::RegionY, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].y = 100,
+                (Edit::ChannelWidth, Block::Channels(channels)) => channels.0[0].width = 0,
+                (Edit::ChannelHeight, Block::Channels(channels)) => channels.0[0].height = 0,
+                _ => {}
+            }
+            encoded.extend(ironrdp_core::encode_vec(&block).unwrap());
+        }
+        encoded
+    };
+
+    let image = decode_messages(&encoded);
 
     assert!(image.data().iter().all(|&byte| byte == 0));
 }
@@ -1089,22 +1106,6 @@ enum Edit {
     RegionY,
     ChannelWidth,
     ChannelHeight,
-}
-
-/// Decodes [`ENCODED_MESSAGES`] after `edit` has changed its blocks, and returns the image.
-fn decode_edited_messages(edit: impl Fn(&mut ironrdp_pdu::codecs::rfx::Block<'_>)) -> DecodedImage {
-    use ironrdp_pdu::Decode as _;
-    use ironrdp_pdu::codecs::rfx::Block;
-
-    let mut src = ReadCursor::new(ENCODED_MESSAGES.as_ref());
-    let mut encoded = Vec::new();
-    while !src.is_empty() {
-        let mut block = Block::decode(&mut src).unwrap();
-        edit(&mut block);
-        encoded.extend(ironrdp_core::encode_vec(&block).unwrap());
-    }
-
-    decode_messages(&encoded)
 }
 
 /// Decodes `messages` into a fresh image covering the whole 64x64 channel.
@@ -1179,22 +1180,7 @@ fn clipping_rectangles_track_surface_framebuffer_offset() {
 
     let region = clipping_rectangles(&rects, &destination, channel_width, channel_height);
 
-    assert_eq!(
-        region.extents.left, 2000,
-        "clip collapsed away from the surface's framebuffer position (left)"
-    );
-    assert_eq!(
-        region.extents.right, 2999,
-        "clip collapsed away from the surface's framebuffer position (right)"
-    );
-    assert_eq!(
-        region.extents.top, 1000,
-        "clip collapsed away from the surface's framebuffer position (top)"
-    );
-    assert_eq!(
-        region.extents.bottom, 2199,
-        "clip collapsed away from the surface's framebuffer position (bottom)"
-    );
+    assert_eq!(region.extents, destination);
 }
 
 fn tile_at(x: u16, y: u16) -> ironrdp_pdu::codecs::rfx::Tile<'static> {
