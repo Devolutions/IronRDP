@@ -2737,6 +2737,12 @@ fn build_connector(
         drdynvc = drdynvc.with_listener(crate::urbdrc::urbdrc_listener(usb, input_sender.clone()));
     }
 
+    // MS-RDPEPNP Plug and Play device redirection.
+    #[cfg(feature = "pnp")]
+    if let Some(pnp) = &config.channels.pnp {
+        drdynvc = crate::pnp::attach(drdynvc, pnp, input_sender);
+    }
+
     // Audio output: one backend for the static RDPSND channel and the AUDIO_PLAYBACK_DVC channels.
     #[cfg(feature = "sound")]
     let playback = (config.channels.sound && config.connector.enable_audio_playback)
