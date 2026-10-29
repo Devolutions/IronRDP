@@ -19,7 +19,7 @@ use ironrdp_acceptor::{
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::ClipboardMessage;
-use ironrdp_core::{WriteBuf, decode, encode_vec, impl_as_any};
+use ironrdp_core::{Encode as _, WriteBuf, decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout};
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc as dvc;
@@ -29,6 +29,7 @@ use ironrdp_error::ResultExt as _;
 #[cfg(feature = "usb")]
 use ironrdp_pdu::PduError;
 use ironrdp_pdu::codecs::rfx::Quant;
+use ironrdp_pdu::fast_path::UpdateCode;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -41,6 +42,7 @@ pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
+use ironrdp_pdu::window::WindowingOrder;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpdr as rdpdr;
@@ -63,7 +65,7 @@ use crate::autodetect::{AutoDetectHandles, AutoDetectManager, AutoDetectOutcome}
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayContext, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
-use crate::encoder::{MAX_FASTPATH_UPDATE_SIZE, RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
+use crate::encoder::{MAX_FASTPATH_UPDATE_SIZE, RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs, UpdateFragmenter};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxContext, GfxServerFactory, GfxServerHandle};
@@ -298,6 +300,16 @@ pub trait ConnectionHandler: Send {
     /// validation succeed and before the session loop starts.
     fn on_connection_info(&mut self, info: &ConnectionInfo) {
         let _ = info;
+    }
+
+    /// Reports effective RemoteApp capabilities after each activation, including reactivation.
+    /// `None` means the connection did not negotiate RemoteApp.
+    fn on_remote_app_capabilities(
+        &mut self,
+        capabilities: Option<&ironrdp_acceptor::RemoteAppCapabilities>,
+    ) -> ServerResult<()> {
+        let _ = capabilities;
+        Ok(())
     }
 
     /// Called after `run_connection()` completes (successfully or with error).
@@ -755,6 +767,9 @@ pub struct RdpServerOptions {
     pub security: RdpServerSecurity,
     pub codecs: BitmapCodecs,
     pub max_request_size: u32,
+    /// RemoteApp capabilities offered to clients that request RAIL.
+    /// The embedder supplies the RAIL channel processor and window orders.
+    pub remote_app: Option<ironrdp_acceptor::RemoteAppCapabilities>,
     /// When `Some(max)`, each connection's acceptor adopts the desktop size the
     /// client requests in its Client Core Data (instead of the size reported by
     /// the display handler), negotiating that size from the start without a
@@ -1462,6 +1477,58 @@ impl ServerRedirectionHandle {
     }
 }
 
+/// Whether a window-order batch reached the transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowingOrdersStatus {
+    /// All update fragments were accepted by the transport, not necessarily processed by the client.
+    Written,
+    /// No bytes were written, so the producer may retry on the same connection.
+    NotStarted,
+}
+
+/// A batch of window orders with transport-write completion.
+///
+/// Dropping an unstarted batch reports [`WindowingOrdersStatus::NotStarted`].
+/// Cancellation or failure after writing starts reports an error; retrying could duplicate orders.
+#[derive(Debug)]
+pub struct WindowingOrders {
+    orders: Vec<WindowingOrder>,
+    completion: Option<oneshot::Sender<ServerResult<WindowingOrdersStatus>>>,
+    started: bool,
+}
+
+impl WindowingOrders {
+    /// Creates a batch and a receiver for its transport-write result.
+    /// Dropping the receiver before writing starts cancels delivery.
+    pub fn new(orders: Vec<WindowingOrder>) -> (Self, oneshot::Receiver<ServerResult<WindowingOrdersStatus>>) {
+        let (completion, receiver) = oneshot::channel();
+        (
+            Self {
+                orders,
+                completion: Some(completion),
+                started: false,
+            },
+            receiver,
+        )
+    }
+
+    fn complete(&mut self, result: ServerResult<WindowingOrdersStatus>) {
+        if let Some(completion) = self.completion.take() {
+            let _ = completion.send(result);
+        }
+    }
+}
+
+impl Drop for WindowingOrders {
+    fn drop(&mut self) {
+        self.complete(if self.started {
+            Err(ServerError::reason("window orders", "transport write did not complete"))
+        } else {
+            Ok(WindowingOrdersStatus::NotStarted)
+        });
+    }
+}
+
 pub enum ServerEvent {
     Quit(String),
     /// End this connection because an authenticated candidate is taking the
@@ -1548,6 +1615,8 @@ pub enum ServerEvent {
     /// Replace or clear the Server Auto-Reconnect Cookie.
     SetAutoReconnectCookie(Option<rdp::session_info::ServerAutoReconnect>),
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
+    /// Writes window orders only after RemoteApp negotiation.
+    WindowingOrders(WindowingOrders),
     #[cfg(feature = "egfx")]
     Egfx(EgfxServerMessage),
     /// Trigger an RTT measurement probe (requires auto-detect enabled).
@@ -1587,6 +1656,7 @@ impl fmt::Debug for ServerEvent {
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
             Self::SetAutoReconnectCookie(None) => f.write_str("SetAutoReconnectCookie(None)"),
             Self::GetLocalAddr(..) => f.write_str("GetLocalAddr(..)"),
+            Self::WindowingOrders(request) => f.debug_tuple("WindowingOrders").field(&request.orders.len()).finish(),
             #[cfg(feature = "egfx")]
             Self::Egfx(..) => f.write_str("Egfx(..)"),
             #[cfg(feature = "usb")]
@@ -1912,6 +1982,10 @@ struct NegotiatedConnection<S> {
 /// manual reset between connections.
 #[derive(Default)]
 struct ConnectionState {
+    remote_app: Option<ironrdp_acceptor::RemoteAppCapabilities>,
+    max_graphics_size: Option<usize>,
+    /// Keeps fragmented display and window updates contiguous, including across resize.
+    graphics_write: Arc<Mutex<()>>,
     /// The static channels this connection negotiated.
     ///
     /// Empty until the acceptor hands them back after finalization. Handed to
@@ -2960,6 +3034,9 @@ impl RdpServer {
         }
 
         ConnectionState {
+            remote_app: None,
+            max_graphics_size: None,
+            graphics_write: Arc::new(Mutex::new(())),
             static_channels: StaticChannelSet::new(),
             client_supports_heartbeat: false,
             client_supports_errinfo: false,
@@ -3969,6 +4046,66 @@ impl RdpServer {
                     if reply.send(joined).is_err() {
                         trace!(channel = ?name.as_str(), "Static channel query stopped waiting for its answer");
                     }
+                }
+                ServerEvent::WindowingOrders(mut request) => {
+                    if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
+                        continue;
+                    }
+                    let encoded: ServerResult<Vec<u8>> = (|| {
+                        let remote_app = conn
+                            .remote_app
+                            .as_ref()
+                            .ok_or_else(|| ServerError::reason("window orders", "RemoteApp was not negotiated"))?;
+                        if remote_app.window_list.support_level != rdp::capability_sets::WindowSupportLevel::SupportedEx
+                            && request.orders.iter().any(WindowingOrder::requires_extended_support)
+                        {
+                            return Err(ServerError::reason(
+                                "window orders",
+                                "extended Window List support was not negotiated",
+                            ));
+                        }
+                        let count = u16::try_from(request.orders.len())
+                            .map_err(|error| ServerError::custom("window order count", error))?;
+                        let maximum = usize::try_from(self.opts.max_request_size)
+                            .map_err(|error| ServerError::custom("window update limit", error))?
+                            .min(conn.max_graphics_size.unwrap_or(0).max(MAX_FASTPATH_UPDATE_SIZE));
+                        let length = request
+                            .orders
+                            .iter()
+                            .try_fold(2 /* numberOrders */, |length: usize, order| {
+                                length.checked_add(order.size()).filter(|length| *length <= maximum)
+                            })
+                            .filter(|length| *length <= maximum)
+                            .ok_or_else(|| ServerError::reason("window orders", "update exceeds the graphics limit"))?;
+                        let mut data = vec![0; length];
+                        let mut cursor = ironrdp_core::WriteCursor::new(&mut data);
+                        cursor.write_u16(count);
+                        for order in &request.orders {
+                            order.encode(&mut cursor).map_err(ServerError::encode)?;
+                        }
+                        Ok(data)
+                    })();
+                    let data = match encoded {
+                        Ok(data) => data,
+                        Err(error) => {
+                            request.complete(Err(error));
+                            continue;
+                        }
+                    };
+                    let _graphics = conn.graphics_write.lock().await;
+                    if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
+                        continue;
+                    }
+                    request.started = true;
+                    let mut fragments = UpdateFragmenter::new(UpdateCode::Orders, data);
+                    let mut buffer = vec![0; fragments.size_hint()];
+                    while let Some(written) = fragments.next(&mut buffer) {
+                        writer
+                            .write_all(&buffer[..written])
+                            .await
+                            .map_err(|error| ServerError::io("write window orders", error))?;
+                    }
+                    request.complete(Ok(WindowingOrdersStatus::Written));
                 }
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
@@ -5044,12 +5181,14 @@ impl RdpServer {
             }
         };
 
+        let graphics_write = Arc::clone(&s.lock().await.1.graphics_write);
         let dispatch_display = async move {
             let mut buffer = vec![0u8; 4096];
 
             loop {
                 match display_updates.next_update().await {
                     Ok(Some(update)) => {
+                        let _graphics = graphics_write.lock().await;
                         match Self::dispatch_display_update(
                             update,
                             &mut display_writer,
@@ -5430,6 +5569,21 @@ impl RdpServer {
                 None
             };
             server.set_client_frame_ack_limit(core_limit);
+        }
+        conn.remote_app = acceptor.remote_app_capabilities().cloned();
+        conn.max_graphics_size = result
+            .capabilities
+            .iter()
+            .find_map(|capability| match capability {
+                CapabilitySet::MultiFragmentUpdate(capability) => Some(usize::try_from(capability.max_request_size)),
+                _ => None,
+            })
+            .transpose()
+            .map_err(|error| ServerError::custom("client graphics limit", error))?;
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_remote_app_capabilities(conn.remote_app.as_ref())
+        }) {
+            result?;
         }
         conn.static_channels = result.static_channels;
         conn.client_supports_heartbeat = result
@@ -6640,6 +6794,7 @@ mod preempt_tests {
 
         NegotiationContext {
             opts: RdpServerOptions {
+                remote_app: None,
                 addr: (Ipv4Addr::LOCALHOST, 0).into(),
                 security: RdpServerSecurity::None,
                 codecs: BitmapCodecs(Vec::new()),

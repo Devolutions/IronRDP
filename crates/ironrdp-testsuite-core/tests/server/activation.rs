@@ -146,6 +146,15 @@ async fn activate(desktop_resize_flag: bool, input: &[u8]) -> DisplayState {
 }
 
 async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag: bool, input: &[u8]) {
+    play_client_with_capabilities(framed, desktop_resize_flag, input, None).await;
+}
+
+pub(super) async fn play_client_with_capabilities(
+    framed: &mut TokioFramed<DuplexStream>,
+    desktop_resize_flag: bool,
+    input: &[u8],
+    remote_capabilities: Option<Vec<CapabilitySet>>,
+) -> Vec<CapabilitySet> {
     let request = nego::ConnectionRequest {
         nego_data: None,
         flags: nego::RequestFlags::empty(),
@@ -196,11 +205,18 @@ async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag
             .unwrap();
         let _confirm = framed.read_pdu().await.unwrap();
     }
+    let mut client_info = decode::<ironrdp_pdu::rdp::ClientInfoPdu>(&CLIENT_INFO_PDU_BUFFER).unwrap();
+    if remote_capabilities.is_some() {
+        client_info
+            .client_info
+            .flags
+            .insert(ironrdp_pdu::rdp::client_info::ClientInfoFlags::RAIL);
+    }
     framed
         .write_all(&encode_send_data_request(
             user_channel_id,
             io_channel_id,
-            &CLIENT_INFO_PDU_BUFFER,
+            &encode_vec(&client_info).unwrap(),
         ))
         .await
         .unwrap();
@@ -236,6 +252,17 @@ async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag
             bitmap.desktop_resize_flag = desktop_resize_flag;
         }
     }
+    if let Some(capabilities) = remote_capabilities {
+        active.pdu.capability_sets.retain(|capability| {
+            !matches!(
+                capability,
+                CapabilitySet::MultiFragmentUpdate(_)
+                    | CapabilitySet::BitmapCodecs(_)
+                    | CapabilitySet::SurfaceCommands(_)
+            )
+        });
+        active.pdu.capability_sets.extend(capabilities);
+    }
     framed
         .write_all(&encode_send_data_request(
             user_channel_id,
@@ -266,4 +293,5 @@ async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag
     for _ in 0..4 {
         let _response = framed.read_pdu().await.unwrap();
     }
+    demand.pdu.capability_sets
 }
