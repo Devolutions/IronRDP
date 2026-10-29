@@ -67,7 +67,7 @@ const RDPDR_COMPLETION_ID: u32 = 1;
 #[cfg(windows)]
 const RDPDR_READ_LENGTH: u32 = 32 * 1024;
 
-// oracle: reference crates/ironrdp-server/src/server.rs (RdpServer::serve stops on ServerEvent::Quit)
+// oracle: mutant quit not queuing ServerEvent::Quit
 #[tokio::test]
 async fn server_handle_quit_stops_the_listener() {
     let mut server = server_for_handle_tests();
@@ -80,7 +80,7 @@ async fn server_handle_quit_stops_the_listener() {
         .unwrap();
 }
 
-// oracle: reference crates/ironrdp-server/src/server.rs (RdpServer::run records the bound address for ServerEvent::GetLocalAddr)
+// oracle: mutant local_addr discarding the event loop's address reply
 #[tokio::test]
 async fn server_handle_local_addr_reports_the_bound_listener() {
     let mut server = server_for_handle_tests();
@@ -100,9 +100,9 @@ async fn server_handle_local_addr_reports_the_bound_listener() {
     .expect("address query and shutdown must finish");
 }
 
-// oracle: reference crates/ironrdp-server/src/server.rs (ServerEvent::SetCredentials replaces the credentials for later negotiation)
+// oracle: mutant set_credentials not queuing ServerEvent::SetCredentials
 #[tokio::test]
-async fn server_handle_updates_credentials_for_subsequent_connections() {
+async fn server_handle_set_credentials_applies_to_the_next_connection() {
     let (mut server, _display_tx) = hybrid_server();
     let handle = server.handle().clone();
     handle
@@ -143,7 +143,7 @@ async fn server_handle_updates_credentials_for_subsequent_connections() {
         .expect("credential updates and shutdown must finish");
 }
 
-// oracle: reference crates/ironrdp-server/src/server.rs (RdpServer::serve answers ServerEvent::GetLocalAddr with the address run bound)
+// oracle: mutant local_addr fabricating an address when none is bound
 #[tokio::test]
 async fn server_handle_local_addr_is_none_for_an_external_source() {
     let mut server = server_for_handle_tests();
@@ -162,6 +162,7 @@ async fn server_handle_local_addr_is_none_for_an_external_source() {
     .expect("external source must still service control requests");
 }
 
+// oracle: mutant quit or set_credentials reporting success after the server is dropped
 #[tokio::test]
 async fn server_handle_requests_fail_after_server_is_dropped() {
     let server = server_for_handle_tests();
@@ -181,6 +182,7 @@ async fn server_handle_requests_fail_after_server_is_dropped() {
     assert!(handle.local_addr().await.is_err());
 }
 
+// oracle: mutant local_addr reporting None for a dropped reply
 #[tokio::test]
 async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
     let server = server_for_handle_tests();
