@@ -1280,7 +1280,7 @@ impl ClientConnector {
             } => {
                 warn!(
                     sequence_number,
-                    request_type, "Unexpected Bandwidth Measure Stop requestType during connect-time auto-detection"
+                    request_type, "Unexpected Bandwidth Measure Stop requestType during the connection sequence"
                 );
                 Ok(Written::Nothing)
             }
@@ -1288,9 +1288,10 @@ impl ClientConnector {
             //
             // This also catches the continuous-detection Bandwidth Measure Start,
             // answered on a multitransport channel under a different procedure.
-            // Reaching it here means a server sent a continuous request during
-            // connect-time detection, which [MS-RDPBCGR] 3.2.5.14 does not provide for;
-            // ignoring is the conservative response.
+            // Reaching it here means a server started continuous detection before the
+            // connection sequence completed (Windows Server 2022 does, during
+            // licensing), which [MS-RDPBCGR] 3.2.5.14 does not provide for; ignoring is
+            // the conservative response.
             _ => Ok(Written::Nothing),
         }
     }
