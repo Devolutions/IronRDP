@@ -1425,7 +1425,7 @@ impl ProgressiveDecoder {
             };
 
             let mut region_tiles = BTreeMap::new();
-            let tiles = decode_tile_blocks(
+            decode_tile_blocks(
                 surface_id,
                 surface,
                 references,
@@ -1433,12 +1433,12 @@ impl ProgressiveDecoder {
                 &region.quant_vals,
                 &region.quant_prog_vals,
                 use_reduce_extrapolate,
+                |tile| {
+                    let key = (tile.x_idx, tile.y_idx);
+                    frame_tiles.insert(key);
+                    region_tiles.insert(key, tile);
+                },
             )?;
-            for tile in tiles {
-                let key = (tile.x_idx, tile.y_idx);
-                frame_tiles.insert(key);
-                region_tiles.insert(key, tile);
-            }
 
             let mut clipping_region = Region::new();
             for rectangle in &region.rects {
@@ -1583,10 +1583,11 @@ fn progressive_quant_for(
 #[cfg(feature = "rayon")]
 const PARALLEL_MIN_TILES: usize = 8;
 
-/// Decodes a region's tile blocks, in order. Tiles are independent unless one
-/// appears twice in the region, so a large region of distinct tiles is decoded
-/// in parallel; there, if one fails the others still decode, and the first
-/// error in block order is returned.
+/// Decodes a region's tile blocks, in order, handing each decoded tile to `emit`.
+/// Tiles are independent unless one appears twice in the region, so a large
+/// region of distinct tiles is decoded in parallel; there, if one fails the
+/// others still decode, and the first error in block order is returned.
+#[expect(clippy::too_many_arguments, reason = "the region's decode inputs, passed through")]
 fn decode_tile_blocks(
     surface_id: u16,
     surface: &mut SurfaceTiles,
@@ -1595,9 +1596,10 @@ fn decode_tile_blocks(
     quant_vals: &[ComponentCodecQuant],
     prog_quant_vals: &[ProgressiveCodecQuant],
     use_reduce_extrapolate: bool,
-) -> Result<Vec<DecodedTile>, ProgressiveDecodeError> {
+    mut emit: impl FnMut(DecodedTile),
+) -> Result<(), ProgressiveDecodeError> {
     #[cfg(feature = "rayon")]
-    if tile_blocks.len() >= PARALLEL_MIN_TILES {
+    if tile_blocks.len() >= PARALLEL_MIN_TILES && !lacks_reference(surface_id, references, tile_blocks) {
         let indices: Option<Vec<usize>> = tile_blocks
             .iter()
             .map(|block| {
@@ -1617,12 +1619,12 @@ fn decode_tile_blocks(
                     quant_vals,
                     prog_quant_vals,
                     use_reduce_extrapolate,
+                    emit,
                 );
             }
         }
     }
 
-    let mut decoded = Vec::new();
     for tile_block in tile_blocks {
         let (x_idx, y_idx) = (tile_block.x_idx(), tile_block.y_idx());
         let index = surface
@@ -1649,9 +1651,30 @@ fn decode_tile_blocks(
         if let Some(reference) = reference {
             references.insert(key, reference);
         }
-        decoded.extend(result?);
+        // A repeated tile replaces its earlier copy in the caller only if each is handed over as it decodes.
+        result?.into_iter().for_each(&mut emit);
     }
-    Ok(decoded)
+    Ok(())
+}
+
+/// Whether a difference tile in the region has no reference. The sequential path
+/// fails at that tile, before the parallel path would allocate every tile's state.
+#[cfg(feature = "rayon")]
+fn lacks_reference(
+    surface_id: u16,
+    references: &BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
+    tile_blocks: &[ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>],
+) -> bool {
+    use ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile;
+
+    tile_blocks.iter().any(|block| {
+        let (flags, x_idx, y_idx) = match block {
+            ProgressiveTile::Simple(tile) => (tile.flags, tile.x_idx, tile.y_idx),
+            ProgressiveTile::First(tile) => (tile.flags, tile.x_idx, tile.y_idx),
+            ProgressiveTile::Upgrade(_) => return false,
+        };
+        flags & TILE_FLAG_DIFFERENCE != 0 && !references.contains_key(&(surface_id, x_idx, y_idx))
+    })
 }
 
 #[cfg(feature = "rayon")]
@@ -1665,7 +1688,8 @@ fn decode_tile_blocks_parallel(
     quant_vals: &[ComponentCodecQuant],
     prog_quant_vals: &[ProgressiveCodecQuant],
     use_reduce_extrapolate: bool,
-) -> Result<Vec<DecodedTile>, ProgressiveDecodeError> {
+    mut emit: impl FnMut(DecodedTile),
+) -> Result<(), ProgressiveDecodeError> {
     use rayon::prelude::*;
 
     // Take each tile's state and reference out, decode on the pool, put them back.
@@ -1713,11 +1737,10 @@ fn decode_tile_blocks_parallel(
         }
     }
 
-    let mut decoded = Vec::new();
     for result in results {
-        decoded.extend(result?);
+        result?.into_iter().for_each(&mut emit);
     }
-    Ok(decoded)
+    Ok(())
 }
 
 /// Decodes one tile block into its tile's state. `reference` is the tile's
@@ -4160,6 +4183,30 @@ mod tests {
         }
     }
 
+    /// Runs `decode_tile_blocks`, returning the tiles it emitted along with its result.
+    fn collect_tile_blocks(
+        surface_id: u16,
+        surface: &mut SurfaceTiles,
+        references: &mut BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
+        tile_blocks: &[ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>],
+        quant_vals: &[ComponentCodecQuant],
+        prog_quant_vals: &[ProgressiveCodecQuant],
+        use_reduce_extrapolate: bool,
+    ) -> (Vec<DecodedTile>, Result<(), ProgressiveDecodeError>) {
+        let mut tiles = Vec::new();
+        let result = decode_tile_blocks(
+            surface_id,
+            surface,
+            references,
+            tile_blocks,
+            quant_vals,
+            prog_quant_vals,
+            use_reduce_extrapolate,
+            |tile| tiles.push(tile),
+        );
+        (tiles, result)
+    }
+
     #[test]
     fn difference_tiles_without_references_leave_no_tile_state() {
         use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileSimple};
@@ -4183,7 +4230,7 @@ mod tests {
                 })
                 .collect();
             let mut surface = SurfaceTiles::new(256, 192, false).unwrap();
-            let result = decode_tile_blocks(
+            let (_, result) = collect_tile_blocks(
                 1,
                 &mut surface,
                 &mut BTreeMap::new(),
@@ -4201,33 +4248,70 @@ mod tests {
         }
     }
 
-    #[test]
-    fn region_with_failing_tiles_returns_the_first_error_in_block_order() {
+    /// Twelve valid original tiles in a 4x3 grid, except where `tile` overrides one.
+    fn failing_region<'a>(
+        data: &'a [u8],
+        tile: impl Fn(
+            u16,
+            ironrdp_pdu::codecs::rfx::progressive::TileSimple<'a>,
+        ) -> ironrdp_pdu::codecs::rfx::progressive::TileSimple<'a>,
+    ) -> Vec<ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'a>> {
         use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileSimple};
 
-        // Tile 3 is a difference tile without a reference and tile 7 has a
-        // truncated payload; the other ten tiles are valid originals.
-        let data = encode_full_quality_component(7);
-        let region: Vec<ProgressiveTile<'_>> = (0..12u16)
+        (0..12u16)
             .map(|i| {
-                ProgressiveTile::Simple(TileSimple {
-                    quant_idx_y: 0,
-                    quant_idx_cb: 0,
-                    quant_idx_cr: 0,
-                    x_idx: i % 4,
-                    y_idx: i / 4,
-                    flags: if i == 3 { TILE_FLAG_DIFFERENCE } else { 0 },
-                    y_data: &data,
-                    cb_data: &data,
-                    cr_data: if i == 7 { &[] } else { &data },
-                    tail_data: &[],
-                })
+                ProgressiveTile::Simple(tile(
+                    i,
+                    TileSimple {
+                        quant_idx_y: 0,
+                        quant_idx_cb: 0,
+                        quant_idx_cr: 0,
+                        x_idx: i % 4,
+                        y_idx: i / 4,
+                        flags: 0,
+                        y_data: data,
+                        cb_data: data,
+                        cr_data: data,
+                        tail_data: &[],
+                    },
+                ))
             })
+            .collect()
+    }
+
+    /// The grid indices of the tiles that have state, and of those that have a reference.
+    fn tiles_with_state_and_reference(
+        surface: &SurfaceTiles,
+        references: &BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
+    ) -> (Vec<u16>, Vec<u16>) {
+        let with_state = (0..12u16)
+            .filter(|&i| surface.tiles[usize::from(i)].is_some())
             .collect();
+        let mut with_reference: Vec<u16> = references.keys().map(|&(_, x_idx, y_idx)| y_idx * 4 + x_idx).collect();
+        with_reference.sort_unstable();
+        (with_state, with_reference)
+    }
+
+    // oracle: mutant decoding a large region in parallel before finding a difference tile without a reference
+    #[test]
+    fn region_with_a_missing_reference_stops_at_that_tile() {
+        // Tile 3 is a difference tile without a reference. Finding it before any tile is
+        // decoded keeps a crafted region from allocating every tile's state first.
+        let data = encode_full_quality_component(7);
+        let region = failing_region(&data, |i, tile| {
+            if i == 3 {
+                ironrdp_pdu::codecs::rfx::progressive::TileSimple {
+                    flags: TILE_FLAG_DIFFERENCE,
+                    ..tile
+                }
+            } else {
+                tile
+            }
+        });
         let mut surface = SurfaceTiles::new(256, 192, false).unwrap();
         let mut references = BTreeMap::new();
 
-        let result = decode_tile_blocks(
+        let (_, result) = collect_tile_blocks(
             1,
             &mut surface,
             &mut references,
@@ -4241,29 +4325,90 @@ mod tests {
             result,
             Err(ProgressiveDecodeError::MissingTileReference { x_idx: 3, y_idx: 0 })
         ));
-
-        // The sequential path stops at tile 3. The parallel path decodes every
-        // tile: the valid ones advance their state and reference, and tile 7
-        // keeps the state created for it.
-        let (expected_state, expected_reference): (Vec<u16>, Vec<u16>) = if cfg!(feature = "rayon") {
-            (
-                (0..12).filter(|&i| i != 3).collect(),
-                (0..12).filter(|&i| i != 3 && i != 7).collect(),
-            )
-        } else {
+        assert_eq!(
+            tiles_with_state_and_reference(&surface, &references),
             ((0..3).collect(), (0..3).collect())
+        );
+    }
+
+    // oracle: mutant returning a later block's error, or dropping the state of tiles decoded beside a failing one
+    #[test]
+    fn region_with_failing_tiles_returns_the_first_error_in_block_order() {
+        // Tile 3 names a quant index past the table and tile 7 has a truncated payload;
+        // the other ten tiles are valid originals.
+        let data = encode_full_quality_component(7);
+        let region = failing_region(&data, |i, tile| match i {
+            3 => ironrdp_pdu::codecs::rfx::progressive::TileSimple { quant_idx_y: 5, ..tile },
+            7 => ironrdp_pdu::codecs::rfx::progressive::TileSimple { cr_data: &[], ..tile },
+            _ => tile,
+        });
+        let mut surface = SurfaceTiles::new(256, 192, false).unwrap();
+        let mut references = BTreeMap::new();
+
+        let (_, result) = collect_tile_blocks(
+            1,
+            &mut surface,
+            &mut references,
+            &region,
+            &[ComponentCodecQuant::LOSSLESS],
+            &[],
+            false,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProgressiveDecodeError::InvalidQuantIndex { index: 5, table_len: 1 })
+        ));
+
+        // The sequential path stops at tile 3, which keeps the state created for it. The
+        // parallel path decodes every tile: the valid ones advance their state and
+        // reference, and the failing ones keep the state created for them.
+        let expected: (Vec<u16>, Vec<u16>) = if cfg!(feature = "rayon") {
+            ((0..12).collect(), (0..12).filter(|&i| i != 3 && i != 7).collect())
+        } else {
+            ((0..4).collect(), (0..3).collect())
         };
-        for i in 0..12u16 {
-            assert_eq!(
-                surface.tiles[usize::from(i)].is_some(),
-                expected_state.contains(&i),
-                "tile {i} state"
-            );
-        }
-        let mut tiles_with_reference: Vec<u16> =
-            references.keys().map(|&(_, x_idx, y_idx)| y_idx * 4 + x_idx).collect();
-        tiles_with_reference.sort_unstable();
-        assert_eq!(tiles_with_reference, expected_reference);
+        assert_eq!(tiles_with_state_and_reference(&surface, &references), expected);
+    }
+
+    // oracle: mutant collecting every decoded tile before handing any to emit
+    #[test]
+    fn sequential_decode_emits_each_tile_before_decoding_the_next() {
+        // A region that repeats a tile is decoded one tile at a time; handing each tile
+        // over as it decodes lets the caller replace the earlier copy instead of holding
+        // every copy until the region ends.
+        let data = encode_full_quality_component(7);
+        let region: Vec<_> = failing_region(&data, |i, tile| {
+            if i == 1 {
+                ironrdp_pdu::codecs::rfx::progressive::TileSimple {
+                    flags: TILE_FLAG_DIFFERENCE,
+                    ..tile
+                }
+            } else {
+                tile
+            }
+        })
+        .into_iter()
+        .take(2)
+        .collect();
+        let mut surface = SurfaceTiles::new(256, 192, false).unwrap();
+
+        let (emitted, result) = collect_tile_blocks(
+            1,
+            &mut surface,
+            &mut BTreeMap::new(),
+            &region,
+            &[ComponentCodecQuant::LOSSLESS],
+            &[],
+            false,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProgressiveDecodeError::MissingTileReference { x_idx: 1, y_idx: 0 })
+        ));
+        let emitted: Vec<(u16, u16)> = emitted.iter().map(|tile| (tile.x_idx, tile.y_idx)).collect();
+        assert_eq!(emitted, [(0, 0)]);
     }
 
     #[test]
@@ -4341,7 +4486,7 @@ mod tests {
         let mut single_references = BTreeMap::new();
 
         for region in &regions {
-            let whole = decode_tile_blocks(
+            let (whole, result) = collect_tile_blocks(
                 1,
                 &mut whole_surface,
                 &mut whole_references,
@@ -4349,12 +4494,12 @@ mod tests {
                 &quant_vals,
                 &prog_quant_vals,
                 false,
-            )
-            .expect("whole region should decode");
+            );
+            result.expect("whole region should decode");
             let single: Vec<DecodedTile> = region
                 .chunks(1)
                 .flat_map(|block| {
-                    decode_tile_blocks(
+                    let (tiles, result) = collect_tile_blocks(
                         1,
                         &mut single_surface,
                         &mut single_references,
@@ -4362,8 +4507,9 @@ mod tests {
                         &quant_vals,
                         &prog_quant_vals,
                         false,
-                    )
-                    .expect("single tile should decode")
+                    );
+                    result.expect("single tile should decode");
+                    tiles
                 })
                 .collect();
 
