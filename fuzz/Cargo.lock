@@ -470,6 +470,7 @@ dependencies = [
  "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
+ "ironrdp-w365",
 ]
 
 [[package]]
@@ -610,6 +611,17 @@ dependencies = [
 [[package]]
 name = "ironrdp-usb"
 version = "0.1.0"
+
+[[package]]
+name = "ironrdp-w365"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
 
 [[package]]
 name = "jobserver"

@@ -862,6 +862,32 @@ impl RpcApp {
             // Only produced when the client is built with `.with_desktop_updates()`, which the
             // viewer does not opt into: it always presents full-frame `Image` snapshots instead.
             RdpOutputEvent::DesktopUpdate(_) => {}
+            // Only produced when the virtual desktop control channel is configured, which the viewer does not do.
+            RdpOutputEvent::SwitchToLocalRequested => debug!("Cloud PC requested a switch to the local desktop"),
+            RdpOutputEvent::LocalActionRequested(action) => debug!(?action, "Cloud PC requested a local action"),
+            RdpOutputEvent::SwitchToCloudCompleted { hresult } => {
+                debug!(hresult, "Cloud PC answered the switch to the cloud desktop")
+            }
+            RdpOutputEvent::VirtualDesktopSwitchUnavailable { version } => {
+                debug!(
+                    version,
+                    "Cloud PC selected an unsupported virtual desktop control version"
+                )
+            }
+            // Only produced when the Windows 365 redirection channels are enabled, which the viewer does not do.
+            RdpOutputEvent::BatteryStatusRequested => debug!("Cloud PC requested the battery status"),
+            RdpOutputEvent::PowerRequestsChanged { active } => debug!(active, "Cloud PC power requests changed"),
+            RdpOutputEvent::ScreenCaptureReady => debug!("Cloud PC accepts screen capture uploads"),
+            RdpOutputEvent::ScreenCaptureUploaded { capture_id } => debug!(?capture_id, "Screen capture uploaded"),
+            RdpOutputEvent::ScreenCaptureSaved(result) => debug!(?result, "Cloud PC saved a screen capture"),
+            // Only produced when the interactive Entra channel is enabled, which the viewer does not do; it has no
+            // sign-in flow, so dropping the request reports the sign-in as cancelled.
+            RdpOutputEvent::InteractiveEntraAuthRequested(request) => {
+                debug!(?request, "Declining an interactive Entra sign-in request");
+            }
+            RdpOutputEvent::InteractiveEntraAuthCompleted { hresult } => {
+                debug!(hresult, "Interactive Entra sign-in completed");
+            }
         }
     }
 }

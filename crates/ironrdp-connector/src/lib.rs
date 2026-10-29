@@ -8,7 +8,7 @@ mod connection;
 pub mod connection_activation;
 mod connection_finalization;
 pub mod credssp;
-mod entra;
+pub mod entra;
 mod license_exchange;
 #[cfg(all(feature = "remote-guard", not(feature = "__test")))]
 #[expect(

@@ -1,26 +1,36 @@
 //! Agent-owned boundary between the RDP DVC proxy and `now-client`.
 //!
-//! NOW framing, negotiation, heartbeats, request encoding, and execution lifecycle all belong to
-//! `now-client`. This module deliberately only creates a per-session local endpoint, waits for the
-//! DVC proxy to expose it, and caches a connected client handle.
+//! `now-client` implements NOW framing, capability negotiation, heartbeat enforcement, request
+//! encoding, and the execution lifecycle.
+//! This module owns the per-session endpoint, the no-heartbeat client configuration, and the
+//! background connection and reconnection to the DVC proxy.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::task::{Context, Poll};
 use core::time::Duration;
 use std::fmt;
+use std::sync::{Mutex, PoisonError};
 
 use ironrdp_client::config::DvcProxyInfo;
 use now_client::{NowCapabilities, NowClient, NowClientConfig, NowClientError, NowClientHandle};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::Mutex;
-use tokio::time::{Instant, sleep};
+use now_proto_pdu::NowChannelCapsetMsg;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio::time::{Instant, sleep, timeout_at};
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// The fixed DVC channel exposed by the NOW agent plugin.
 pub const DVC_CHANNEL_NAME: &str = "Devolutions::Now::Agent";
-/// First local DVC endpoint readiness deadline.
+/// How long a request waits for the first negotiated channel.
 pub const INITIAL_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Replacement local DVC endpoint readiness deadline after a previous connection.
+/// How long a request waits for a replacement channel after a previous connection.
 pub const RECONNECT_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Pause between connection attempts while the proxy has not exposed its endpoint.
 const RETRY_DELAY: Duration = Duration::from_millis(100);
+/// Pause after a peer accepted the connection but did not complete negotiation.
+const NEGOTIATION_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 /// A summarized capability snapshot suitable for agent IPC.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,7 +80,7 @@ impl From<NowCapabilities> for Capabilities {
 /// Failures at the local agent/DVC boundary.
 #[derive(Debug)]
 pub enum NowEndpointError {
-    /// The proxy did not expose its local endpoint by the prescribed deadline.
+    /// No negotiated channel was available by the prescribed deadline.
     Unavailable {
         /// The deadline used for this connection attempt.
         timeout: Duration,
@@ -89,17 +99,13 @@ impl fmt::Display for NowEndpointError {
                 last_error: Some(error),
             } => write!(
                 f,
-                "NOW DVC endpoint did not become available within {} seconds: {error}",
+                "NOW channel was not negotiated within {} seconds: {error}",
                 timeout.as_secs()
             ),
             Self::Unavailable {
                 timeout,
                 last_error: None,
-            } => write!(
-                f,
-                "NOW DVC endpoint did not become available within {} seconds",
-                timeout.as_secs()
-            ),
+            } => write!(f, "NOW channel was not negotiated within {} seconds", timeout.as_secs()),
             Self::Client(error) => write!(f, "{error}"),
         }
     }
@@ -114,19 +120,60 @@ impl core::error::Error for NowEndpointError {
     }
 }
 
-struct EndpointState {
-    handle: Option<NowClientHandle>,
-    connected_once: bool,
+/// A negotiated NOW client and a signal that fires once its transport is gone.
+#[derive(Clone)]
+struct Connection {
+    handle: NowClientHandle,
+    transport_closed: mpsc::Sender<()>,
 }
 
-/// Per-RDP-session endpoint and cached NOW client.
+/// Transport wrapper that closes its [`Connection`] signal when it is dropped.
+///
+/// In [`now-client`][now-client], `OwnedWorker::run` owns both split halves of the transport and
+/// returns on every transport, framing (`FrameTooLarge`, `FrameBufferTooLarge`, `PduDecode`,
+/// `PduEncode`), protocol, channel-close, or `EventQueueFull` error, dropping the transport when
+/// `run` exits; per-request validation errors rejected before a write is queued leave the stream
+/// intact.
+///
+/// [now-client]: https://docs.rs/now-client/0.1.0/src/now_client/client.rs.html
+struct Tracked<S> {
+    inner: S,
+    _alive: mpsc::Receiver<()>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Tracked<S> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Tracked<S> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// Per-RDP-session endpoint and negotiated NOW client.
 ///
 /// Construct this before building an RDP [`ironrdp_client::config::Config`], inject
 /// [`Self::dvc_proxy_info`] into its builder, and retain the value for the lifetime of that
-/// session. It intentionally does no I/O until [`Self::handle`] is first called.
+/// session.
+/// Construction does no I/O.
+/// Run [`Self::keep_negotiated`] for the session so negotiation starts as soon as the DVC appears.
 pub struct NowEndpoint {
     pipe_name: String,
-    state: Mutex<EndpointState>,
+    connection: Mutex<Option<Connection>>,
+    /// Serializes connection attempts so that a request and the negotiator never race for the pipe.
+    connecting: AsyncMutex<()>,
+    connected_once: AtomicBool,
 }
 
 impl fmt::Debug for NowEndpoint {
@@ -151,10 +198,9 @@ impl NowEndpoint {
 
         Ok(Self {
             pipe_name,
-            state: Mutex::new(EndpointState {
-                handle: None,
-                connected_once: false,
-            }),
+            connection: Mutex::new(None),
+            connecting: AsyncMutex::new(()),
+            connected_once: AtomicBool::new(false),
         })
     }
 
@@ -171,61 +217,107 @@ impl NowEndpoint {
         &self.pipe_name
     }
 
-    /// Gets the cached handle or waits for the DVC proxy, connects it, and negotiates NOW.
+    /// Returns the negotiated client, connecting first when no live connection exists.
     ///
-    /// The first successful connection has a 30-second readiness deadline. Every later replacement
-    /// has a 10-second deadline.
+    /// The first connection waits up to 30 seconds for a negotiated channel.
+    /// Every later replacement waits up to 10 seconds.
+    /// The wait includes the capability handshake, which is abandoned when the deadline passes.
     pub async fn handle(&self) -> Result<NowClientHandle, NowEndpointError> {
-        let mut state = self.state.lock().await;
-        if let Some(handle) = &state.handle {
-            return Ok(handle.clone());
+        if let Some(connection) = self.live_connection() {
+            return Ok(connection.handle);
         }
 
-        let timeout = if state.connected_once {
+        let timeout = if self.connected_once.load(Ordering::Relaxed) {
             RECONNECT_ENDPOINT_TIMEOUT
         } else {
             INITIAL_ENDPOINT_TIMEOUT
         };
-        let handle = self.connect(timeout).await?;
-        state.connected_once = true;
-        state.handle = Some(handle.clone());
-        Ok(handle)
-    }
-
-    /// Discards a potentially unusable worker. The next operation reconnects with the replacement
-    /// deadline rather than attempting to reuse a closed NOW command queue.
-    pub async fn invalidate(&self) {
-        self.state.lock().await.handle = None;
-    }
-
-    /// Returns a consistent local diagnostic snapshot without initiating a connection.
-    pub async fn diagnostic_snapshot(&self) -> (bool, Option<Capabilities>) {
-        let state = self.state.lock().await;
-        let capabilities = state.handle.as_ref().map(|handle| handle.capabilities().into());
-        (state.handle.is_some(), capabilities)
-    }
-
-    async fn connect(&self, timeout: Duration) -> Result<NowClientHandle, NowEndpointError> {
         let deadline = Instant::now() + timeout;
-        let mut last_error: Option<String>;
+        let mut last_error = None;
 
         loop {
-            match self.connect_once().await {
-                Ok(handle) => return Ok(handle),
-                Err(ConnectAttemptError::Client(error)) => return Err(NowEndpointError::Client(error)),
-                Err(ConnectAttemptError::Io(error)) => last_error = Some(error.to_string()),
+            // The negotiator can hold the connection lock through a stalled handshake,
+            // so the deadline must cover the wait for the lock as well.
+            match timeout_at(deadline, self.attempt()).await {
+                Ok(Ok(connection)) => return Ok(connection.handle),
+                Ok(Err(ConnectAttemptError::Client(error))) => return Err(NowEndpointError::Client(error)),
+                Ok(Err(ConnectAttemptError::Io(error))) => last_error = Some(error.to_string()),
+                Err(_elapsed) => return Err(NowEndpointError::Unavailable { timeout, last_error }),
             }
 
-            if Instant::now() >= deadline {
+            if timeout_at(deadline, sleep(RETRY_DELAY)).await.is_err() {
                 return Err(NowEndpointError::Unavailable { timeout, last_error });
             }
-
-            sleep(RETRY_DELAY).await;
         }
     }
 
+    /// Keeps a negotiated connection available until the returned future is dropped.
+    ///
+    /// The [NOW host][now-host] gives up when no client capability set arrives within seconds of
+    /// the channel opening.
+    /// Waiting for a request before connecting is therefore too late.
+    /// The proxy exposes its endpoint only once the host opens the channel, so this polls for it.
+    /// [`NowClient::connect`] bounds each capability handshake by
+    /// [`NowClientConfig::connect_timeout`] (15 seconds by default), returning
+    /// [`NowClientError::HandshakeTimeout`] and dropping the stream when a peer accepts the pipe
+    /// without answering the capability set.
+    /// After a closure or failed handshake it connects again, which makes the host negotiate
+    /// afresh.
+    ///
+    /// [now-host]:
+    ///     https://github.com/Devolutions/devolutions-gateway/blob/8d2910734ac3/devolutions-session/src/dvc/task.rs
+    #[expect(clippy::infinite_loop, reason = "the negotiator runs until the session drops it")]
+    pub async fn keep_negotiated(&self) {
+        loop {
+            match self.attempt().await {
+                Ok(connection) => {
+                    debug!("NOW channel negotiated");
+                    connection.transport_closed.closed().await;
+                    debug!("NOW channel closed");
+                    sleep(RETRY_DELAY).await;
+                }
+                Err(ConnectAttemptError::Io(_)) => sleep(RETRY_DELAY).await,
+                Err(ConnectAttemptError::Client(error)) => {
+                    warn!(%error, "NOW negotiation failed");
+                    sleep(NEGOTIATION_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
+    /// Returns a consistent local diagnostic snapshot without initiating a connection.
+    pub fn diagnostic_snapshot(&self) -> (bool, Option<Capabilities>) {
+        let connection = self.live_connection();
+        let capabilities = connection
+            .as_ref()
+            .map(|connection| connection.handle.capabilities().into());
+        (connection.is_some(), capabilities)
+    }
+
+    fn live_connection(&self) -> Option<Connection> {
+        self.connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|connection| !connection.transport_closed.is_closed())
+            .cloned()
+    }
+
+    /// Returns the live connection, or makes one attempt to establish it.
+    async fn attempt(&self) -> Result<Connection, ConnectAttemptError> {
+        let _serialized = self.connecting.lock().await;
+        if let Some(connection) = self.live_connection() {
+            return Ok(connection);
+        }
+
+        let connection = self.connect_once().await?;
+        self.connected_once.store(true, Ordering::Relaxed);
+        *self.connection.lock().unwrap_or_else(PoisonError::into_inner) = Some(connection.clone());
+        Ok(connection)
+    }
+
     #[cfg(unix)]
-    async fn connect_once(&self) -> Result<NowClientHandle, ConnectAttemptError> {
+    async fn connect_once(&self) -> Result<Connection, ConnectAttemptError> {
         let stream = tokio::net::UnixStream::connect(&self.pipe_name)
             .await
             .map_err(ConnectAttemptError::Io)?;
@@ -233,7 +325,7 @@ impl NowEndpoint {
     }
 
     #[cfg(windows)]
-    async fn connect_once(&self) -> Result<NowClientHandle, ConnectAttemptError> {
+    async fn connect_once(&self) -> Result<Connection, ConnectAttemptError> {
         let path = format!(r"\\.\pipe\{}", self.pipe_name);
         let stream = tokio::net::windows::named_pipe::ClientOptions::new()
             .open(path)
@@ -242,11 +334,34 @@ impl NowEndpoint {
     }
 }
 
-async fn connect_stream<S>(stream: S) -> Result<NowClientHandle, NowClientError>
+async fn connect_stream<S>(stream: S) -> Result<Connection, NowClientError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    NowClient::connect(stream, NowClientConfig::default()).await
+    let (transport_closed, alive) = mpsc::channel(1);
+    let stream = Tracked {
+        inner: stream,
+        _alive: alive,
+    };
+    // `now-client` closes a connection when no heartbeat arrives within twice the negotiated
+    // interval (`NowCapabilities::heartbeat_interval`), and hosts that restart their heartbeat
+    // timer on every processed event send none while busy, so an active channel would be closed and
+    // its running operations lost.
+    // `NowChannelCapsetMsg::default` leaves the heartbeat interval unset (`None`), and
+    // `NowChannelCapsetMsg::downgrade` negotiates `None` when neither peer requests one.
+    let config = {
+        let default = NowClientConfig::default();
+        let client_capset = NowChannelCapsetMsg::default().with_exec_capset(default.client_capset.exec_capset());
+        NowClientConfig {
+            client_capset,
+            ..default
+        }
+    };
+    let handle = NowClient::connect(stream, config).await?;
+    Ok(Connection {
+        handle,
+        transport_closed,
+    })
 }
 
 enum ConnectAttemptError {
@@ -293,32 +408,128 @@ fn private_runtime_directory() -> std::io::Result<std::path::PathBuf> {
     Ok(directory)
 }
 
-/// Whether an error means the cached client must be replaced before another request.
-pub fn invalidates_handle(error: &NowClientError) -> bool {
-    matches!(
-        error,
-        NowClientError::Io(_)
-            | NowClientError::PduEncode(_)
-            | NowClientError::PduDecode(_)
-            | NowClientError::Protocol(_)
-            | NowClientError::FrameTooLarge { .. }
-            | NowClientError::FrameBufferTooLarge { .. }
-            | NowClientError::WorkerClosed(_)
-            | NowClientError::EventQueueFull { .. }
-    )
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use now_client::{ExecutionEvent, ExecutionStatus, ProcessRequest, RunRequest};
     use now_proto_pdu::ironrdp_core::{Decode as _, IntoOwned as _, ReadCursor, encode_vec};
     use now_proto_pdu::{
-        NowChannelCapsetMsg, NowExecCapsetFlags, NowExecDataMsg, NowExecDataStreamKind, NowExecMessage,
-        NowExecResultMsg, NowExecStartedMsg, NowMessage,
+        NowChannelMessage, NowExecCapsetFlags, NowExecDataMsg, NowExecDataStreamKind, NowExecMessage, NowExecResultMsg,
+        NowExecStartedMsg, NowMessage,
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+
+    #[cfg(unix)]
+    type Peer = tokio::net::UnixStream;
+    #[cfg(windows)]
+    type Peer = tokio::net::windows::named_pipe::NamedPipeServer;
+
+    /// The DVC proxy's side of the endpoint: it hands out one stream per client that connects.
+    #[cfg(unix)]
+    struct Host {
+        listener: tokio::net::UnixListener,
+        path: String,
+    }
+
+    #[cfg(unix)]
+    impl Host {
+        fn bind(endpoint: &NowEndpoint) -> Self {
+            let path = endpoint.pipe_name().to_owned();
+            let listener = tokio::net::UnixListener::bind(&path).expect("test host must bind its endpoint");
+            Self { listener, path }
+        }
+
+        async fn accept(&mut self) -> Peer {
+            self.listener.accept().await.expect("test host must accept a client").0
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Host {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    #[cfg(windows)]
+    struct Host {
+        path: String,
+        next: Peer,
+    }
+
+    #[cfg(windows)]
+    impl Host {
+        fn bind(endpoint: &NowEndpoint) -> Self {
+            let path = format!(r"\\.\pipe\{}", endpoint.pipe_name());
+            let next = tokio::net::windows::named_pipe::ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&path)
+                .expect("test host must create its pipe");
+            Self { path, next }
+        }
+
+        async fn accept(&mut self) -> Peer {
+            self.next.connect().await.expect("test host must accept a client");
+            let replacement = tokio::net::windows::named_pipe::ServerOptions::new()
+                .create(&self.path)
+                .expect("test host must create the next pipe instance");
+            core::mem::replace(&mut self.next, replacement)
+        }
+    }
+
+    async fn bounded<T>(future: impl Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(10), future)
+            .await
+            .expect("test step must complete in time")
+    }
+
+    /// Plays the host's half of the handshake: the client's capability set arrives first.
+    async fn negotiate<S>(peer: &mut S)
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let first = bounded(read_message(peer)).await;
+        let NowMessage::Channel(NowChannelMessage::Capset(capset)) = first else {
+            panic!("the client must open with its capability set, got {first:?}");
+        };
+        assert_eq!(capset.heartbeat_interval(), None);
+        write_message(
+            peer,
+            NowChannelCapsetMsg::default().with_exec_capset(NowExecCapsetFlags::STYLE_RUN),
+        )
+        .await;
+    }
+
+    /// How long the NOW host keeps an opened channel without a client capability set before giving
+    /// up on it.
+    const HOST_HANDSHAKE_DEADLINE: Duration = Duration::from_secs(5);
+
+    /// Plays the host from the moment it opens the channel: one client must connect and negotiate
+    /// in time.
+    async fn accept_and_negotiate(host: &mut Host) -> Peer {
+        tokio::time::timeout(HOST_HANDSHAKE_DEADLINE, async {
+            let mut peer = host.accept().await;
+            negotiate(&mut peer).await;
+            peer
+        })
+        .await
+        .expect("the client must negotiate before the host gives up on the channel")
+    }
+
+    /// Obtains a handle through a request while the host accepts and negotiates one client.
+    async fn request_handle(endpoint: &NowEndpoint, host: &mut Host) -> Peer {
+        let (handle, peer) = bounded(async { tokio::join!(endpoint.handle(), accept_and_negotiate(host)) }).await;
+        handle.expect("a request must obtain a negotiated handle");
+        peer
+    }
+
+    fn spawn_negotiator(endpoint: &Arc<NowEndpoint>) -> tokio::task::JoinHandle<()> {
+        let endpoint = Arc::clone(endpoint);
+        tokio::spawn(async move { endpoint.keep_negotiated().await })
+    }
 
     fn encode(message: impl Into<NowMessage<'static>>) -> Vec<u8> {
         encode_vec(&message.into()).expect("test NOW PDU must encode")
@@ -420,7 +631,8 @@ mod tests {
 
         let handle = connect_stream(client_stream)
             .await
-            .expect("adapter connection must succeed");
+            .expect("adapter connection must succeed")
+            .handle;
         handle
             .run(RunRequest::new("run.exe"))
             .await
@@ -444,5 +656,235 @@ mod tests {
             Err(error) => panic!("Process must complete: {error}"),
         }
         peer.await.expect("test peer task must complete");
+    }
+
+    // oracle: reference Devolutions/devolutions-gateway@8d2910734ac3:devolutions-session/src/dvc/task.rs
+    // (`HANDSHAKE_TIMEOUT`: the host gives up 5 seconds after opening the channel unless a client
+    // capability set arrived).
+    #[tokio::test]
+    async fn negotiation_starts_before_any_request() {
+        let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));
+        let negotiator = spawn_negotiator(&endpoint);
+
+        // The proxy exposes its endpoint only when the host opens the channel, after the
+        // negotiator started.
+        sleep(Duration::from_millis(250)).await;
+        let mut host = Host::bind(&endpoint);
+        let _peer = accept_and_negotiate(&mut host).await;
+        let _handle = bounded(endpoint.handle())
+            .await
+            .expect("the negotiated handle must be available");
+
+        let (connected, capabilities) = endpoint.diagnostic_snapshot();
+        assert!(connected);
+        assert_eq!(capabilities.map(|capabilities| capabilities.run), Some(true));
+        negotiator.abort();
+    }
+
+    // oracle: mutant a negotiator that serves only a session's first channel and ignores reopens
+    #[tokio::test]
+    async fn negotiation_resumes_when_the_channel_reopens() {
+        let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));
+        let mut host = Host::bind(&endpoint);
+        let negotiator = spawn_negotiator(&endpoint);
+
+        let first = accept_and_negotiate(&mut host).await;
+        drop(first);
+
+        let _second = accept_and_negotiate(&mut host).await;
+        bounded(endpoint.handle())
+            .await
+            .expect("the reopened channel must serve requests");
+        assert!(endpoint.diagnostic_snapshot().0);
+        negotiator.abort();
+    }
+
+    // oracle: mutant a negotiator that stops after a failed handshake, leaving the session dead
+    #[tokio::test]
+    async fn negotiation_retries_after_a_failed_handshake() {
+        let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));
+        let mut host = Host::bind(&endpoint);
+        let negotiator = spawn_negotiator(&endpoint);
+
+        drop(bounded(host.accept()).await);
+
+        let _second = accept_and_negotiate(&mut host).await;
+        negotiator.abort();
+    }
+
+    // oracle: mutant a request that gives up while the proxy has not yet exposed its endpoint.
+    #[tokio::test]
+    async fn a_request_waits_for_the_endpoint_to_appear() {
+        let endpoint = NowEndpoint::new().expect("endpoint allocation must succeed");
+
+        let late_host = async {
+            sleep(Duration::from_millis(250)).await;
+            let mut host = Host::bind(&endpoint);
+            let peer = accept_and_negotiate(&mut host).await;
+            (host, peer)
+        };
+        let (handle, _host_and_peer) = bounded(async { tokio::join!(endpoint.handle(), late_host) }).await;
+
+        handle.expect("a request must wait for the endpoint to appear");
+    }
+
+    // oracle: mutant a request that connects while the negotiator's handshake is in flight
+    #[tokio::test]
+    async fn a_request_joins_the_negotiation_in_progress() {
+        let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));
+        let mut host = Host::bind(&endpoint);
+        let negotiator = spawn_negotiator(&endpoint);
+
+        // The negotiator is connected and has sent its capability set, but the host has not
+        // answered it yet.
+        let mut peer = bounded(host.accept()).await;
+        let (handle, ()) = bounded(async { tokio::join!(endpoint.handle(), negotiate(&mut peer)) }).await;
+
+        handle.expect("the request must receive the negotiator's connection");
+        negotiator.abort();
+    }
+
+    // oracle: mutant a failed request that shortens the next request's wait to the reconnect bound
+    #[tokio::test(start_paused = true)]
+    async fn a_request_without_an_endpoint_waits_the_initial_deadline_every_time() {
+        let endpoint = NowEndpoint::new().expect("endpoint allocation must succeed");
+
+        for _ in 0..2 {
+            let started = Instant::now();
+            let outcome = tokio::time::timeout(2 * INITIAL_ENDPOINT_TIMEOUT, endpoint.handle())
+                .await
+                .expect("a request must stop waiting at its own deadline");
+            let waited = started.elapsed();
+
+            let error = outcome
+                .err()
+                .expect("a request without an endpoint must not yield a handle");
+            assert!(
+                matches!(
+                    &error,
+                    NowEndpointError::Unavailable { timeout, last_error: Some(_) } if *timeout == INITIAL_ENDPOINT_TIMEOUT
+                ),
+                "the request must report the endpoint unavailable with its last connection error: {error:?}"
+            );
+            assert!(
+                (INITIAL_ENDPOINT_TIMEOUT..INITIAL_ENDPOINT_TIMEOUT + Duration::from_secs(1)).contains(&waited),
+                "the request waited {waited:?} for a {INITIAL_ENDPOINT_TIMEOUT:?} deadline"
+            );
+        }
+    }
+
+    // oracle: mutant a request whose last retry pause runs past its deadline before answering
+    #[tokio::test(start_paused = true)]
+    async fn a_request_never_outlives_its_deadline() {
+        let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));
+
+        // A negotiator that holds the connection lock for 50 ms moves the request's retries off
+        // the pause grid.
+        let busy = Arc::clone(&endpoint);
+        let negotiator = tokio::spawn(async move {
+            let _serialized = busy.connecting.lock().await;
+            sleep(Duration::from_millis(50)).await;
+        });
+        tokio::task::yield_now().await;
+
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(2 * INITIAL_ENDPOINT_TIMEOUT, endpoint.handle())
+            .await
+            .expect("a request must stop waiting at its own deadline");
+        let waited = started.elapsed();
+        negotiator.await.expect("the lock holder must finish");
+
+        let error = outcome
+            .err()
+            .expect("a request without an endpoint must not yield a handle");
+        assert!(
+            matches!(error, NowEndpointError::Unavailable { timeout, .. } if timeout == INITIAL_ENDPOINT_TIMEOUT),
+            "the request must report the endpoint unavailable at its deadline: {error:?}"
+        );
+        assert!(
+            (INITIAL_ENDPOINT_TIMEOUT..INITIAL_ENDPOINT_TIMEOUT + Duration::from_millis(10)).contains(&waited),
+            "the request waited {waited:?} for a {INITIAL_ENDPOINT_TIMEOUT:?} deadline"
+        );
+    }
+
+    // oracle: mutant a request served a cached handle whose channel has already closed.
+    #[tokio::test]
+    async fn request_replaces_a_connection_whose_channel_closed() {
+        let endpoint = NowEndpoint::new().expect("endpoint allocation must succeed");
+        let mut host = Host::bind(&endpoint);
+
+        let first = request_handle(&endpoint, &mut host).await;
+        let stale = endpoint
+            .live_connection()
+            .expect("the negotiated connection must be cached");
+        drop(first);
+        bounded(stale.transport_closed.closed()).await;
+        assert!(!endpoint.diagnostic_snapshot().0);
+
+        let _second = request_handle(&endpoint, &mut host).await;
+        assert!(endpoint.diagnostic_snapshot().0);
+    }
+
+    // oracle: mutant a request that waits for a stalled handshake beyond its own deadline
+    #[tokio::test]
+    async fn a_request_stops_waiting_at_its_deadline_while_a_handshake_is_stalled() {
+        let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));
+        let mut host = Host::bind(&endpoint);
+
+        // A first connection selects the shorter reconnect deadline.
+        let first = request_handle(&endpoint, &mut host).await;
+        let stale = endpoint
+            .live_connection()
+            .expect("the negotiated connection must be cached");
+        drop(first);
+        bounded(stale.transport_closed.closed()).await;
+
+        // The negotiator reconnects and the host never answers its capability set.
+        let negotiator = spawn_negotiator(&endpoint);
+        let _silent = bounded(host.accept()).await;
+
+        // Only timers are pending from here on, so the clock may jump to the next deadline.
+        tokio::time::pause();
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(2 * RECONNECT_ENDPOINT_TIMEOUT, endpoint.handle())
+            .await
+            .expect("a request must stop waiting at its own deadline");
+        let waited = started.elapsed();
+        negotiator.abort();
+
+        let error = outcome.err().expect("a stalled negotiation must not yield a handle");
+        assert!(
+            matches!(error, NowEndpointError::Unavailable { timeout, .. } if timeout == RECONNECT_ENDPOINT_TIMEOUT),
+            "the request must report the endpoint unavailable at its deadline: {error:?}"
+        );
+        assert!(
+            (RECONNECT_ENDPOINT_TIMEOUT..RECONNECT_ENDPOINT_TIMEOUT + Duration::from_secs(1)).contains(&waited),
+            "the request waited {waited:?} for a {RECONNECT_ENDPOINT_TIMEOUT:?} deadline"
+        );
+    }
+
+    // oracle: reference Devolutions/devolutions-gateway@8d2910734ac3:devolutions-session/src/dvc/task.rs
+    // (the heartbeat sleep is recreated on every pass of the select loop, so a busy host can stay
+    // silent for minutes).
+    #[tokio::test(start_paused = true)]
+    async fn a_peer_that_sends_no_heartbeats_keeps_the_connection_open() {
+        // More than twice the longest heartbeat interval `now-proto-pdu` lets a client request
+        // (24 hours).
+        const SILENCE: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+
+        let (client_stream, mut peer_stream) = tokio::io::duplex(4096);
+        let peer = tokio::spawn(async move {
+            negotiate(&mut peer_stream).await;
+            core::future::pending::<()>().await;
+        });
+
+        let connection = connect_stream(client_stream)
+            .await
+            .expect("adapter connection must succeed");
+        assert_eq!(connection.handle.capabilities().heartbeat_interval(), None);
+        sleep(SILENCE).await;
+
+        assert!(!connection.transport_closed.is_closed());
+        peer.abort();
     }
 }

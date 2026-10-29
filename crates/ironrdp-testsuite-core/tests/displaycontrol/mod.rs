@@ -488,3 +488,70 @@ fn server_start_encodes_the_default_capabilities_when_not_overridden() {
         other => panic!("expected DisplayControlPdu::Caps, got {other:?}"),
     }
 }
+
+#[test]
+fn client_reopened_by_the_server_waits_for_new_caps() {
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::pdu::{ClosePdu, CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu};
+    use ironrdp_svc::SvcProcessor as _;
+
+    // xrdp closes and reopens every channel after a Deactivation-Reactivation
+    // Sequence; the reopened channel is ready only once the server sends caps again.
+    let mut client =
+        ironrdp_dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_caps| Ok(Vec::new())));
+    let create = |channel_id| {
+        encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+            channel_id,
+            ironrdp_displaycontrol::CHANNEL_NAME.to_owned(),
+        )))
+        .expect("Create Request should encode")
+    };
+    // DISPLAYCONTROL_CAPS_PDU ([MS-RDPEDISP] 2.2.2.1) behind its header: Type 5, Length 20,
+    // then MaxNumMonitors, MaxMonitorAreaFactorA, MaxMonitorAreaFactorB.
+    let caps = |channel_id, max_num_monitors: u8| {
+        let mut headered_caps = vec![
+            0x05,
+            0x00,
+            0x00,
+            0x00,
+            0x14,
+            0x00,
+            0x00,
+            0x00,
+            max_num_monitors,
+            0x00,
+            0x00,
+            0x00,
+        ];
+        headered_caps.extend_from_slice(&[0x80, 0x07, 0x00, 0x00, 0x38, 0x04, 0x00, 0x00]);
+        encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+            channel_id,
+            headered_caps,
+        ))))
+        .expect("caps should encode")
+    };
+    let max_num_monitors = |client: &ironrdp_dvc::DrdynvcClient| {
+        client
+            .get_dvc::<DisplayControlClient>()
+            .expect("open")
+            .processor()
+            .capabilities()
+            .map(|caps| caps.max_num_monitors())
+    };
+
+    client.process(&create(1)).expect("Create Request should be processed");
+    client.process(&caps(1, 3)).expect("caps should be processed");
+    assert_eq!(max_num_monitors(&client), Some(3));
+
+    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(1))).expect("Close should encode");
+    client.process(&close).expect("Close should be processed");
+    client.process(&create(2)).expect("Create Request should be processed");
+    assert_eq!(
+        max_num_monitors(&client),
+        None,
+        "ready before the reopened channel's caps"
+    );
+
+    client.process(&caps(2, 2)).expect("caps should be processed");
+    assert_eq!(max_num_monitors(&client), Some(2), "the reopened channel's own caps");
+}

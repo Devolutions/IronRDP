@@ -1,5 +1,5 @@
 use core::future::ready;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
@@ -8,20 +8,21 @@ use ironrdp_svc::SvcMessage;
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
-use crate::worker::{OnWriteDvcMessage, WorkerCtx, run_worker};
+use crate::worker::{OnWriteDvcMessage, WorkerCtx, WriteDvcFuture, run_worker};
 
 const IO_MPSC_CHANNEL_SIZE: usize = 100;
 
 struct WorkerControlCtx {
     to_pipe_tx: mpsc::Sender<Vec<u8>>,
     abort_event: Arc<tokio::sync::Notify>,
+    thread: std::thread::JoinHandle<()>,
 }
 
 /// A proxy DVC pipe client that forwards DVC messages to/from a named pipe server.
 pub struct DvcNamedPipeProxy {
     channel_name: String,
     named_pipe_name: String,
-    dvc_write_callback: Option<OnWriteDvcMessage>,
+    dvc_write_callback: OnWriteDvcMessage,
     worker: Option<WorkerControlCtx>,
 }
 
@@ -50,10 +51,25 @@ impl DvcNamedPipeProxy {
         Self {
             channel_name: channel_name.to_owned(),
             named_pipe_name: named_pipe_name.to_owned(),
-            dvc_write_callback: Some(Box::new(move |channel_id, messages| {
+            dvc_write_callback: Arc::new(Mutex::new(move |channel_id, messages| -> WriteDvcFuture {
                 Box::pin(dvc_write_callback(channel_id, messages))
             })),
             worker: None,
+        }
+    }
+
+    fn stop_worker(&mut self) {
+        if let Some(ctx) = self.worker.take() {
+            debug!(
+                channel_name = %self.channel_name,
+                pipe_name = %self.named_pipe_name,
+                "Stopping DVC named pipe proxy worker"
+            );
+            ctx.abort_event.notify_one();
+            // Runtime teardown waits for filesystem operations before the pipe path is reused.
+            if let Err(error) = ctx.thread.join() {
+                error!(?error, "DVC pipe proxy worker thread panicked");
+            }
         }
     }
 }
@@ -68,10 +84,9 @@ impl DvcProcessor for DvcNamedPipeProxy {
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         debug!(%self.channel_name, %self.named_pipe_name, "Starting DVC named pipe proxy");
 
-        let on_write_dvc = self
-            .dvc_write_callback
-            .take()
-            .expect("DvcProcessor::start called multiple times");
+        // A server that closed the channel can open it again with the same proxy.
+        self.stop_worker();
+        let on_write_dvc = Arc::clone(&self.dvc_write_callback);
 
         let (to_pipe_tx, to_pipe_rx) = mpsc::channel(IO_MPSC_CHANNEL_SIZE);
 
@@ -92,22 +107,27 @@ impl DvcProcessor for DvcNamedPipeProxy {
         #[cfg(target_os = "windows")]
         let worker = run_worker::<crate::platform::windows::WindowsPipe>(ctx);
 
-        if let Err(worker_error) = worker {
+        let thread = worker.map_err(|error| {
             error!(
                 channel_name = %self.channel_name,
                 pipe_name = %self.named_pipe_name,
-                %worker_error,
+                %error,
                 "Failed to start DVC pipe proxy worker thread"
             );
-            return Err(pdu_other_err!("start DVC pipe proxy worker: {worker_error}"));
-        }
+            pdu_other_err!("start DVC pipe proxy worker: {error}")
+        })?;
 
         self.worker = Some(WorkerControlCtx {
             to_pipe_tx,
             abort_event,
+            thread,
         });
 
         Ok(vec![])
+    }
+
+    fn close(&mut self, _channel_id: u32) {
+        self.stop_worker();
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
@@ -133,15 +153,6 @@ impl DvcClientProcessor for DvcNamedPipeProxy {}
 
 impl Drop for DvcNamedPipeProxy {
     fn drop(&mut self) {
-        if let Some(ctx) = &self.worker {
-            debug!(
-                channel_name = %self.channel_name,
-                pipe_name = %self.named_pipe_name,
-                "Dropping DVC named pipe proxy"
-            );
-            // Signal the worker thread to abort.
-            ctx.abort_event.notify_one();
-        }
-        self.worker = None;
+        self.stop_worker();
     }
 }

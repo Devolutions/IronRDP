@@ -258,6 +258,8 @@ impl DrdynvcServer {
 
     /// Creates a new DVC, returns CreateRequest PDU to send to client.
     ///
+    /// Returns an error until the client answers DRDYNVC capability negotiation (see [`Self::is_ready`]).
+    ///
     /// # Panics
     ///
     /// Panics if the number of registered dynamic channels reaches `u32::MAX`.
@@ -270,7 +272,7 @@ impl DrdynvcServer {
 
     /// Creates a runtime-selected DVC using its reserved ID.
     ///
-    /// The caller must wait for capability negotiation before calling this method.
+    /// Returns an error until the client answers DRDYNVC capability negotiation (see [`Self::is_ready`]).
     ///
     /// # Panics
     ///
@@ -288,6 +290,8 @@ impl DrdynvcServer {
     ///
     /// The next channel ID is reserved and passed to `build`, allowing the
     /// processor or one of its dependencies to use the ID during construction.
+    ///
+    /// Returns an error until the client answers DRDYNVC capability negotiation (see [`Self::is_ready`]).
     ///
     /// # Panics
     ///

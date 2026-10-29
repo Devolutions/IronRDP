@@ -49,6 +49,7 @@ impl UpdateFragmenter {
         FASTPATH_HEADER_SIZE + cmp::min(self.data.len(), MAX_FASTPATH_UPDATE_SIZE)
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn next(&mut self, dst: &mut [u8]) -> Option<usize> {
         let (consumed, written) = self.encode_next(dst)?;
         self.position += consumed;
@@ -58,6 +59,9 @@ impl UpdateFragmenter {
 
     fn encode_next(&mut self, dst: &mut [u8]) -> Option<(usize, usize)> {
         match self.data.len() - self.position {
+            0 if self.index == 0 => self
+                .encode_fastpath(Fragmentation::Single, &[], dst)
+                .map(|written| (0, written)),
             0 => None,
 
             1..=MAX_FASTPATH_UPDATE_SIZE => {
