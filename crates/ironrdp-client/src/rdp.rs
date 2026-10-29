@@ -2120,6 +2120,92 @@ fn reliable_udp_multitransport_flags(enabled: bool) -> Option<ironrdp_pdu::gcc::
     )
 }
 
+#[cfg(feature = "dvc-pipe-proxy")]
+struct ReservedDvcPipeProxy {
+    proxy: DvcNamedPipeProxy,
+    active: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+impl Drop for ReservedDvcPipeProxy {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+ironrdp_core::impl_as_any!(ReservedDvcPipeProxy);
+
+#[cfg(feature = "dvc-pipe-proxy")]
+impl ironrdp_dvc::DvcProcessor for ReservedDvcPipeProxy {
+    fn channel_name(&self) -> &str {
+        self.proxy.channel_name()
+    }
+
+    fn max_message_size(&self) -> Option<usize> {
+        self.proxy.max_message_size()
+    }
+
+    fn start(&mut self, channel_id: u32) -> ironrdp_pdu::PduResult<Vec<ironrdp_dvc::DvcMessage>> {
+        self.proxy.start(channel_id)
+    }
+
+    fn process(&mut self, channel_id: u32, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<ironrdp_dvc::DvcMessage>> {
+        self.proxy.process(channel_id, payload)
+    }
+
+    fn close(&mut self, channel_id: u32) {
+        self.proxy.close(channel_id);
+    }
+}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+impl ironrdp_dvc::DvcClientProcessor for ReservedDvcPipeProxy {}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+struct DvcPipeProxyListener {
+    channel_name: String,
+    pipe_name: String,
+    sender: RdpInputSender,
+    active: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "dvc-pipe-proxy")]
+impl ironrdp_dvc::DvcChannelListener for DvcPipeProxyListener {
+    fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
+    fn create(
+        &mut self,
+        _channel_id: ironrdp_dvc::DynamicChannelId,
+    ) -> Option<Box<dyn ironrdp_dvc::DvcClientProcessor>> {
+        if self.active.swap(true, Ordering::AcqRel) {
+            debug!(
+                channel_name = %self.channel_name,
+                pipe_name = %self.pipe_name,
+                "Rejecting overlapping DVC pipe proxy open while the pipe endpoint is already active"
+            );
+            return None;
+        }
+        let sender = self.sender.input_sender.clone();
+        let proxy = DvcNamedPipeProxy::new_async(&self.channel_name, &self.pipe_name, move |channel_id, messages| {
+            let sender = sender.clone();
+            async move {
+                sender
+                    .send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+                    .await
+                    .map_err(|_| pdu_other_err!("send DVC messages to the event loop"))?;
+                Ok(())
+            }
+        });
+        Some(Box::new(ReservedDvcPipeProxy {
+            proxy,
+            active: Arc::clone(&self.active),
+        }))
+    }
+}
+
 /// Build a fully wired [`ironrdp_connector::ClientConnector`] with all feature-gated channels attached.
 ///
 /// This helper is used by all transport paths.
@@ -2236,17 +2322,12 @@ fn build_connector(
         let channel_name = proxy.channel_name.clone();
         let pipe_name = proxy.pipe_name.clone();
         trace!(%channel_name, %pipe_name, "Creating DVC pipe proxy");
-        let sender = input_sender.clone();
-        drdynvc = drdynvc.with_dynamic_channel(DvcNamedPipeProxy::new(
-            &channel_name,
-            &pipe_name,
-            move |channel_id, messages| {
-                sender
-                    .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
-                    .map_err(|_| pdu_other_err!("send DVC messages to the event loop"))?;
-                Ok(())
-            },
-        ));
+        drdynvc = drdynvc.with_listener(DvcPipeProxyListener {
+            channel_name,
+            pipe_name,
+            sender: input_sender.clone(),
+            active: Arc::new(AtomicBool::new(false)),
+        });
     }
 
     // WebAuthn redirection (Windows + webauthn feature).
@@ -7006,6 +7087,204 @@ mod tests {
             expected_name.len()
         );
         assert_eq!(&wire[28..], expected_name);
+    }
+
+    #[cfg(all(windows, feature = "dvc-pipe-proxy"))]
+    fn pipe_proxy_test_connector(
+        channel_name: &str,
+        pipe_name: &str,
+        input: &RdpInputSender,
+    ) -> (ironrdp_connector::ClientConnector, ironrdp_dvc::DrdynvcServer) {
+        use ironrdp_dvc::{DrdynvcClient, DrdynvcServer};
+        use ironrdp_svc::SvcProcessor as _;
+
+        #[cfg(feature = "clipboard")]
+        let cliprdr_factory: CliprdrFactoryRef<'static> = None;
+        #[cfg(not(feature = "clipboard"))]
+        let cliprdr_factory: CliprdrFactoryRef<'static> = core::marker::PhantomData;
+
+        #[cfg(feature = "rdpdr")]
+        let rdpdr_factory: RdpdrFactoryRef<'static> = None;
+        #[cfg(not(feature = "rdpdr"))]
+        let rdpdr_factory: RdpdrFactoryRef<'static> = core::marker::PhantomData;
+
+        let mut config = crate::config::ConfigBuilder::new()
+            .with_destination(crate::config::Destination::from_parts("127.0.0.1", 3389))
+            .with_username("user")
+            .with_password("password")
+            .with_client_build(1)
+            .with_client_dir(r"C:\")
+            .with_platform(ironrdp_pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .build()
+            .expect("test configuration should build");
+        config.dvc_pipe_proxies.push(crate::config::DvcProxyInfo {
+            channel_name: channel_name.to_owned(),
+            pipe_name: pipe_name.to_owned(),
+        });
+        let (output, _output_rx) = crate::output_channel::output_channel(4);
+        let mut connector = build_connector(
+            &config,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            (input, &output),
+            cliprdr_factory,
+            rdpdr_factory,
+            RdpdrDevicePolicy::ALLOW_ALL,
+            false,
+            false,
+            None,
+        )
+        .unwrap();
+        let client = connector.get_static_channel_processor_mut::<DrdynvcClient>().unwrap();
+        let mut server = DrdynvcServer::new();
+        for request in server.start().unwrap() {
+            for response in client.process(&request.encode_unframed_pdu().unwrap()).unwrap() {
+                server.process(&response.encode_unframed_pdu().unwrap()).unwrap();
+            }
+        }
+        (connector, server)
+    }
+
+    // oracle: mutant consuming a pipe proxy listener on its first opening, rejecting every subsequent DVC.
+    #[cfg(all(windows, feature = "dvc-pipe-proxy"))]
+    #[test]
+    fn configured_pipe_proxy_can_be_reopened_on_the_same_connection() {
+        use ironrdp_core::impl_as_any;
+        use ironrdp_dvc::pdu::{CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu};
+        use ironrdp_dvc::{DrdynvcClient, DvcMessage, DvcProcessor, DvcServerProcessor};
+        use ironrdp_pdu::PduResult;
+        use ironrdp_svc::SvcProcessor as _;
+
+        let pipe_name = format!("ironrdp-proxy-reopen-{}", std::process::id());
+        let (input, _input_rx) = RdpInputSender::channel(4);
+        let (mut connector, mut server) = pipe_proxy_test_connector("factory-proxy", &pipe_name, &input);
+        let client = connector.get_static_channel_processor_mut::<DrdynvcClient>().unwrap();
+        for _ in 0..2 {
+            let request = server.create_channel(Peer).unwrap();
+            let wire = request.encode_unframed_pdu().unwrap();
+            let DrdynvcServerPdu::Create(request) = ironrdp_core::decode(&wire).unwrap() else {
+                panic!("expected create request");
+            };
+            let id = request.channel_id();
+            let responses = client.process(&wire).unwrap();
+            assert_eq!(responses.len(), 1);
+            let response = responses[0].encode_unframed_pdu().unwrap();
+            let DrdynvcClientPdu::Create(response_pdu) = ironrdp_core::decode(&response).unwrap() else {
+                panic!("expected create response");
+            };
+            assert_eq!(response_pdu.creation_status(), CreationStatus::OK);
+            server.process(&response).unwrap();
+            assert!(server.is_channel_opened(id));
+
+            let overlapping = server.create_channel(Peer).unwrap();
+            let overlapping_wire = overlapping.encode_unframed_pdu().unwrap();
+            let DrdynvcServerPdu::Create(overlapping_request) = ironrdp_core::decode(&overlapping_wire).unwrap() else {
+                panic!("expected overlapping create request");
+            };
+            let overlapping_id = overlapping_request.channel_id();
+            let overlapping_responses = client.process(&overlapping_wire).unwrap();
+            assert_eq!(overlapping_responses.len(), 1);
+            let overlapping_response = overlapping_responses[0].encode_unframed_pdu().unwrap();
+            let DrdynvcClientPdu::Create(overlapping_response_pdu) =
+                ironrdp_core::decode(&overlapping_response).unwrap()
+            else {
+                panic!("expected overlapping create response");
+            };
+            assert_eq!(overlapping_response_pdu.creation_status(), CreationStatus::NO_LISTENER);
+            server.process(&overlapping_response).unwrap();
+            assert!(!server.is_channel_opened(overlapping_id));
+            assert!(server.is_channel_opened(id));
+
+            let close = server.close_channel(id).unwrap();
+            client.process(&close.encode_unframed_pdu().unwrap()).unwrap();
+        }
+        return;
+
+        struct Peer;
+        impl_as_any!(Peer);
+        impl DvcProcessor for Peer {
+            fn channel_name(&self) -> &str {
+                "factory-proxy"
+            }
+            fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+                Ok(Vec::new())
+            }
+            fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+                Ok(Vec::new())
+            }
+        }
+        impl DvcServerProcessor for Peer {}
+    }
+
+    // oracle: mutant dropping stream bytes when the bounded RDP input queue is full.
+    #[cfg(all(windows, feature = "dvc-pipe-proxy"))]
+    #[tokio::test]
+    async fn configured_pipe_proxy_waits_for_input_capacity_without_losing_bytes() {
+        use ironrdp_core::encode_vec;
+        use ironrdp_dvc::DrdynvcClient;
+        use ironrdp_dvc::pdu::{CreateRequestPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu};
+        use ironrdp_svc::SvcProcessor as _;
+        use tokio::io::AsyncWriteExt as _;
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        let name = format!("ironrdp-proxy-backpressure-{}", std::process::id());
+        let (input, mut input_rx) = RdpInputSender::channel(1);
+        input
+            .try_send(RdpInputEvent::SendDvcMessages {
+                channel_id: 99,
+                messages: Vec::new(),
+            })
+            .unwrap();
+        let (mut connector, _server) = pipe_proxy_test_connector("backpressure-proxy", &name, &input);
+        let client = connector.get_static_channel_processor_mut::<DrdynvcClient>().unwrap();
+        let create = DrdynvcServerPdu::Create(CreateRequestPdu::new(7, "backpressure-proxy".to_owned()));
+        client.process(&encode_vec(&create).unwrap()).unwrap();
+        let mut pipe = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match ClientOptions::new().open(format!(r"\\.\pipe\{name}")) {
+                    Ok(pipe) => break pipe,
+                    Err(error) if error.raw_os_error() == Some(2) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(error) => panic!("open local proxy pipe: {error}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let expected: Vec<u8> = (0..=250).cycle().take(1024 * 1024).collect();
+        let payload = expected.clone();
+        let write = tokio::spawn(async move {
+            pipe.write_all(&payload).await.unwrap();
+            pipe.flush().await.unwrap();
+            pipe
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        input_rx.recv().await.unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut received = Vec::new();
+            while received.len() < expected.len() {
+                let RdpInputEvent::SendDvcMessages { channel_id, messages } = input_rx.recv().await.unwrap() else {
+                    panic!("expected forwarded pipe bytes");
+                };
+                assert_eq!(channel_id, 7);
+                for message in messages {
+                    let pdu = ironrdp_core::decode(&message.encode_unframed_pdu().unwrap()).unwrap();
+                    match pdu {
+                        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(data)) => {
+                            received.extend_from_slice(data.data())
+                        }
+                        DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(data)) => received.extend_from_slice(data.data()),
+                        _ => panic!("expected uncompressed DVC data"),
+                    }
+                }
+            }
+            received
+        })
+        .await
+        .unwrap();
+        assert_eq!(received, expected);
+        let _pipe = write.await.unwrap();
     }
 
     #[cfg(feature = "rdpdr")]

@@ -27,12 +27,69 @@ async fn connects_and_forwards_windows_pipe_data() {
     let name = format!("ironrdp-dvc-pipe-proxy-test-{}", std::process::id());
     let (proxy, callback_rx) = start_proxy(&name, 1);
 
-    let mut client = open_client_pipe(&name, "DVC pipe proxy must create the pipe within two seconds");
+    let mut client = open_client_pipe(&name, "DVC pipe proxy must create the pipe within two seconds").await;
 
     client.write_all(b"test data").await.expect("write to DVC pipe");
-    assert_forwarded_data(callback_rx, b"test data");
+    assert_forwarded_data(&callback_rx, b"test data");
 
     drop(proxy);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn reconnects_after_the_local_pipe_client_disconnects() {
+    let name = format!("ironrdp-dvc-pipe-proxy-reconnect-test-{}", std::process::id());
+    let (proxy, callback_rx) = start_proxy(&name, 1);
+    let mut client = open_client_pipe(&name, "the initial pipe client must connect").await;
+    client
+        .write_all(b"before disconnect")
+        .await
+        .expect("write before disconnect");
+    assert_forwarded_data(&callback_rx, b"before disconnect");
+    drop(client);
+
+    let mut client = open_client_pipe(&name, "the local pipe must accept a replacement client").await;
+    client
+        .write_all(b"after reconnect")
+        .await
+        .expect("write after reconnect");
+    // oracle: mutant blocking retries prevent local pipe reconnection and further DVC forwarding.
+    assert_forwarded_data(&callback_rx, b"after reconnect");
+
+    drop(proxy);
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn dropping_the_proxy_cancels_a_pending_write_callback() {
+    let name = format!("ironrdp-dvc-pipe-proxy-cancel-test-{}", std::process::id());
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::channel(1);
+    let (lifetime_tx, mut lifetime_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let mut proxy = DvcNamedPipeProxy::new_async("test", &name, move |_, _| {
+        let started = started_tx.clone();
+        let lifetime = lifetime_tx.clone();
+        async move {
+            let _lifetime = lifetime;
+            started.send(()).await.unwrap();
+            core::future::pending().await
+        }
+    });
+    proxy.start(7).unwrap();
+    let mut client = open_client_pipe(&name, "the pipe client must connect").await;
+    client.write_all(b"pending callback").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), started_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(proxy);
+
+    // oracle: mutant a callback waiting for transport capacity prevents proxy teardown.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), lifetime_rx.recv())
+            .await
+            .unwrap(),
+        None
+    );
 }
 
 #[cfg(windows)]
@@ -43,7 +100,7 @@ async fn forwards_pipe_data_on_the_started_channel() {
     let name = format!("ironrdp-dvc-pipe-proxy-channel-id-test-{}", std::process::id());
     let (proxy, callback_rx) = start_proxy(&name, CHANNEL_ID);
 
-    let mut client = open_client_pipe(&name, "DVC pipe proxy must create the pipe within two seconds");
+    let mut client = open_client_pipe(&name, "DVC pipe proxy must create the pipe within two seconds").await;
 
     client.write_all(b"test data").await.expect("write to DVC pipe");
     let (channel_id, messages) = callback_rx
@@ -85,7 +142,7 @@ async fn connects_from_a_separate_process() {
         "DVC pipe client process must run its helper test:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    assert_forwarded_data(callback_rx, CROSS_PROCESS_DATA);
+    assert_forwarded_data(&callback_rx, CROSS_PROCESS_DATA);
 
     drop(proxy);
 }
@@ -100,24 +157,30 @@ async fn child_process_helper_opens_and_forwards_windows_pipe_data() {
     let mut client = open_client_pipe(
         &name,
         "DVC pipe proxy must be visible to a separate process within two seconds",
-    );
+    )
+    .await;
 
     client.write_all(CROSS_PROCESS_DATA).await.expect("write to DVC pipe");
 }
 
 #[cfg(windows)]
-fn open_client_pipe(name: &str, unavailable_message: &str) -> NamedPipeClient {
+async fn open_client_pipe(name: &str, unavailable_message: &str) -> NamedPipeClient {
     let pipe_path = format!(r"\\.\pipe\{name}");
 
-    (0..200)
-        .find_map(|_| match ClientOptions::new().open(&pipe_path) {
-            Ok(client) => Some(client),
-            Err(_) => {
-                std::thread::sleep(Duration::from_millis(10));
-                None
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match ClientOptions::new().open(&pipe_path) {
+                Ok(client) => return Ok(client),
+                Err(error) if matches!(error.raw_os_error(), Some(2 | 231)) => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => return Err(error),
             }
-        })
-        .expect(unavailable_message)
+        }
+    })
+    .await
+    .expect(unavailable_message)
+    .expect("open DVC pipe client")
 }
 
 #[cfg(windows)]
@@ -138,7 +201,7 @@ fn start_proxy(name: &str, channel_id: u32) -> (DvcNamedPipeProxy, mpsc::Receive
 }
 
 #[cfg(windows)]
-fn assert_forwarded_data(callback_rx: mpsc::Receiver<ForwardedMessages>, written: &[u8]) {
+fn assert_forwarded_data(callback_rx: &mpsc::Receiver<ForwardedMessages>, written: &[u8]) {
     let mut forwarded = Vec::new();
 
     // The proxy forwards each pipe read on its own, so one write may reach the callback in several parts.
