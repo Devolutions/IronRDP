@@ -50,10 +50,12 @@ pub enum ServerErrorKind {
     /// [`ironrdp_error::Error::with_source`].
     Custom,
     /// Failure the client is told about with this code in a Set Error Info PDU
-    /// (MS-RDPBCGR 2.2.5.1.1).
+    /// ([MS-RDPBCGR 2.2.5.1.1]).
     ///
     /// [`RdpServerDisplay::updates`](crate::RdpServerDisplay::updates) returns it to give the
     /// client the reason the display cannot start.
+    ///
+    /// [MS-RDPBCGR 2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
     ErrorInfo(ErrorInfo),
 }
 

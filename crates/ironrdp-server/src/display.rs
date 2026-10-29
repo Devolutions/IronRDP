@@ -412,8 +412,10 @@ pub trait RdpServerDisplay: Send {
     ///
     /// On an error, the server closes the connection. Return a
     /// [`ServerErrorKind::ErrorInfo`](crate::ServerErrorKind::ErrorInfo) error to tell the client
-    /// why: the server sends its code in a Set Error Info PDU (MS-RDPBCGR 2.2.5.1.1). With other
+    /// why: the server sends its code in a Set Error Info PDU ([MS-RDPBCGR 2.2.5.1.1]). With other
     /// errors, the client gets no reason and typically reports a lost network connection.
+    ///
+    /// [MS-RDPBCGR 2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
     async fn updates(&mut self, ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>>;
 
     /// Request a new size for the display
