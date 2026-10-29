@@ -109,6 +109,9 @@ pub trait DvcProcessor: AsAny + Send {
 
     /// Returns any messages that should be sent immediately
     /// upon the channel being created.
+    ///
+    /// A pre-registered channel the server closes is started again when the server
+    /// opens it anew, so this may follow [`DvcProcessor::close`] on the same processor.
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>>;
 
     fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>>;

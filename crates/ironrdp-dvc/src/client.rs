@@ -216,6 +216,10 @@ impl DrdynvcClient {
     /// Registers a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
+    /// A channel the server closes is kept and started again on its next Create Request
+    /// (xrdp reopens every channel after a Deactivation-Reactivation Sequence), so the
+    /// processor must accept [`DvcProcessor::start`] after [`DvcProcessor::close`].
+    ///
     /// # Note
     ///
     /// If a listener or a pre-registered channel with the same name already exists,
@@ -232,6 +236,9 @@ impl DrdynvcClient {
     /// Attaches a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
+    /// A channel the server closes is kept and started again on its next Create Request,
+    /// as with [`DrdynvcClient::with_dynamic_channel`].
+    ///
     /// # Note
     ///
     /// If a listener or a pre-registered channel with the same name already exists,
@@ -244,7 +251,7 @@ impl DrdynvcClient {
     }
 
     /// Registers a dynamic virtual channel whose processor is recreated by `factory` each time
-    /// the server opens the channel, for channels the server may close and reopen.
+    /// the server opens the channel, for channels that start over from a fresh processor.
     ///
     /// Like [`DrdynvcClient::with_dynamic_channel`], the active processor can be looked up by type
     /// with [`DrdynvcClient::get_dvc`].
@@ -422,7 +429,9 @@ impl DrdynvcClient {
 
     fn remove_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
         self.tunnel_channels.remove(&channel_id);
-        self.dynamic_channels.remove_by_channel_id(channel_id)?;
+        if !self.dynamic_channels.remove_by_channel_id(channel_id) {
+            return None;
+        }
         Some(SvcMessage::from(DrdynvcClientPdu::Close(ClosePdu::new(channel_id))))
     }
 
@@ -732,6 +741,13 @@ struct ListenerEntry {
     listener: DynamicChannelListener,
     /// `Some` only for channels registered via `with_dynamic_channel<T>()`.
     type_id: Option<TypeId>,
+    /// Whether the listener's single processor is kept on close for the server to reopen;
+    /// set only for channels registered via `with_dynamic_channel<T>()`.
+    reopens: bool,
+    /// A pre-registered channel the server closed, kept for it to open again under this
+    /// name (xrdp closes and reopens every channel after a Deactivation-Reactivation
+    /// Sequence). `None` while the listener still holds its processor or the channel is open.
+    closed: Option<DynamicVirtualChannel>,
 }
 
 struct DynamicChannelSet {
@@ -757,6 +773,8 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(listener),
                 type_id: None,
+                reopens: false,
+                closed: None,
             },
         );
     }
@@ -768,6 +786,8 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(OnceListener::new(channel)),
                 type_id: Some(TypeId::of::<T>()),
+                reopens: true,
+                closed: None,
             },
         );
     }
@@ -782,6 +802,8 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(FactoryListener { channel_name, factory }),
                 type_id: Some(TypeId::of::<T>()),
+                reopens: false,
+                closed: None,
             },
         );
     }
@@ -807,13 +829,15 @@ impl DynamicChannelSet {
         channel_id: DynamicChannelId,
     ) -> Option<&mut DynamicVirtualChannel> {
         let entry = self.listeners.get_mut(name)?;
-        let processor = entry.listener.create(channel_id)?;
+        let dvc = match entry.listener.create(channel_id) {
+            Some(processor) => DynamicVirtualChannel::from_boxed(processor),
+            None => entry.closed.take()?,
+        };
 
         if let Some(type_id) = entry.type_id {
             self.type_id_to_channel_id.insert(type_id, channel_id);
         }
 
-        let dvc = DynamicVirtualChannel::from_boxed(processor);
         // `dvc.channel_id` stays `None` here — it is set by `DynamicVirtualChannel::start`
         // on success, so `Drop` only invokes `close` for channels that were actually opened.
         let dvc = match self.active_channels.entry(channel_id) {
@@ -840,7 +864,7 @@ impl DynamicChannelSet {
     fn has_listener_by_type_id(&self, type_id: TypeId) -> bool {
         self.listeners
             .values()
-            .any(|entry| entry.type_id == Some(type_id) && entry.listener.is_available())
+            .any(|entry| entry.type_id == Some(type_id) && (entry.listener.is_available() || entry.closed.is_some()))
     }
 
     fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {
@@ -851,17 +875,31 @@ impl DynamicChannelSet {
         self.active_channels.get_mut(&id)
     }
 
-    fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> Option<DynamicVirtualChannel> {
-        self.active_channels.remove(&id).inspect(|dvc| {
-            let type_id = dvc.processor_type_id();
+    /// Closes and removes a channel, returning whether it was active.
+    fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> bool {
+        let Some(mut dvc) = self.active_channels.remove(&id) else {
+            return false;
+        };
+        let type_id = dvc.processor_type_id();
 
-            // Only matters for pre-registered channels
-            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
-                && entry.get() == &id
-            {
-                entry.remove();
+        // Only matters for pre-registered channels
+        if self.type_id_to_channel_id.get(&type_id) == Some(&id) {
+            self.type_id_to_channel_id.remove(&type_id);
+        }
+
+        // A pre-registered channel gets its only processor back for the next Create Request
+        // under that name. Other listeners decide each open themselves, so theirs is dropped.
+        if let Some(entry) = self.listeners.get_mut(dvc.channel_name())
+            && entry.reopens
+            && entry.closed.is_none()
+        {
+            if let Some(id) = dvc.channel_id.take() {
+                dvc.channel_processor.close(id);
             }
-        })
+            dvc.complete_data = CompleteData::new(dvc.channel_processor.max_message_size());
+            entry.closed = Some(dvc);
+        }
+        true
     }
 
     #[inline]
