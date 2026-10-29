@@ -993,3 +993,114 @@ fn selection_enforces_default_interface_zero_isochronous_bandwidth() {
         }
     );
 }
+
+#[test]
+fn transfer_packets_encode_their_ts_urb_and_decode_its_result() {
+    let TransferRequest::In(input) = bulk_or_interrupt(
+        7,
+        DataTransferRequest {
+            endpoint: EndpointAddress::from_raw(0x81).unwrap(),
+            length: 64,
+            data: Vec::new(),
+        },
+    )
+    .unwrap() else {
+        panic!("bulk IN used TRANSFER_OUT_REQUEST");
+    };
+
+    // TS_URB_HEADER: Size, URB_Function (BULK_OR_INTERRUPT_TRANSFER), RequestId; then the pipe.
+    let ts_urb = input.ts_urb.encode_ts_urb(5).unwrap();
+    assert_eq!(ts_urb.len(), 16);
+    assert_eq!(&ts_urb[..12], [16, 0, 9, 0, 5, 0, 0, 0, 7, 0, 0, 0]);
+
+    // A header-only TS_URB_RESULT, followed by what is left of the request it was written over.
+    let result = input
+        .ts_urb
+        .decode_ts_urb_result(&[8, 0, 9, 0, 0x04, 0, 0, 0xc0, 7, 0, 0, 0])
+        .unwrap();
+    assert_eq!(result.header.usbd_status, 0xc000_0004);
+    assert!(result.payload.is_none());
+
+    let TransferRequest::Out(output) = bulk_or_interrupt(
+        9,
+        DataTransferRequest {
+            endpoint: EndpointAddress::from_raw(0x02).unwrap(),
+            length: 3,
+            data: vec![1, 2, 3],
+        },
+    )
+    .unwrap() else {
+        panic!("bulk OUT used TRANSFER_IN_REQUEST");
+    };
+    let ts_urb = output.ts_urb.encode_ts_urb(6).unwrap();
+    assert_eq!(&ts_urb[..12], [16, 0, 9, 0, 6, 0, 0, 0, 9, 0, 0, 0]);
+    assert!(output.ts_urb.decode_ts_urb_result(&[8, 0, 9, 0]).is_err());
+}
+
+// A failed request completes with a header-only TS_URB_RESULT, whatever result its success carries:
+// Windows does so, and so do both IronRDP backends.
+#[test]
+fn failed_requests_decode_without_their_result_payload() {
+    use ironrdp_rdpeusb::io::{TsUrbInPacket, TsUrbOutPacket};
+    use ironrdp_rdpeusb::pdu::usb_dev::ts_urb::utils::{TsUsbdInterfaceInfo, UrbFunction};
+    use ironrdp_rdpeusb::pdu::usb_dev::ts_urb::{
+        TsUrbGetCurrFrameNum, TsUrbInKind, TsUrbIsochTransfer, TsUrbOutKind, TsUrbSelectConfig, TsUrbSelectInterface,
+    };
+
+    // STALL_PID, then a success status that still lacks the payload.
+    let stalled = [8, 0, 0, 0, 0x04, 0, 0, 0xc0];
+    let succeeded = [8, 0, 0, 0, 0, 0, 0, 0];
+
+    let interface = TsUsbdInterfaceInfo {
+        interface_number: 0,
+        alternate_setting: 0,
+        ts_usbd_pipe_info: Vec::new(),
+    };
+    let isoch = TsUrbIsochTransfer {
+        pipe_handle: 1,
+        transfer_flags: 0,
+        start_frame: 0,
+        error_count: 0,
+        iso_packet: Vec::new(),
+    };
+    let requests = [
+        TsUrbInPacket {
+            kind: TsUrbInKind::SelectConfig(TsUrbSelectConfig {
+                usbd_ifaces: Vec::new(),
+                desc: None,
+            }),
+            func: UrbFunction::URB_FUNCTION_SELECT_CONFIGURATION,
+        },
+        TsUrbInPacket {
+            kind: TsUrbInKind::SelectIface(TsUrbSelectInterface {
+                config_handle: 1,
+                usbd_iface: interface,
+            }),
+            func: UrbFunction::URB_FUNCTION_SELECT_INTERFACE,
+        },
+        TsUrbInPacket {
+            kind: TsUrbInKind::GetCurFrameNum(TsUrbGetCurrFrameNum),
+            func: UrbFunction::URB_FUNCTION_GET_CURRENT_FRAME_NUMBER,
+        },
+        TsUrbInPacket {
+            kind: TsUrbInKind::IsochTransfer(isoch.clone()),
+            func: UrbFunction::URB_FUNCTION_ISOCH_TRANSFER,
+        },
+    ];
+    for request in &requests {
+        let result = request
+            .decode_ts_urb_result(&stalled)
+            .expect("a failed request has no payload");
+        assert_eq!(result.header.usbd_status, 0xc000_0004);
+        assert!(result.payload.is_none());
+        assert!(request.decode_ts_urb_result(&succeeded).is_err());
+    }
+
+    let isoch_out = TsUrbOutPacket {
+        kind: TsUrbOutKind::IsochTransfer(isoch),
+        no_ack: false,
+        func: UrbFunction::URB_FUNCTION_ISOCH_TRANSFER,
+    };
+    assert!(isoch_out.decode_ts_urb_result(&stalled).is_ok());
+    assert!(isoch_out.decode_ts_urb_result(&succeeded).is_err());
+}

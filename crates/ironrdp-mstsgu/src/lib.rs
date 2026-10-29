@@ -16,11 +16,8 @@ mod proto;
 #[doc(hidden)]
 pub mod rpc;
 mod rpc_transport;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "live RPCH transport wiring is intentionally deferred")
-)]
 mod rpch;
+mod rpch_client;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod test_support;
@@ -48,6 +45,8 @@ use self::proto::{
     ChannelPkt, ChannelResp, DataPkt as HttpDataPkt, ExtendedAuthPkt, HandshakeReqPkt, HandshakeRespPkt, HttpCapsTy,
     HttpExtendedAuth, KeepalivePkt, PktHdr, PktTy, TunnelAuthPkt, TunnelAuthRespPkt, TunnelReqPkt, TunnelRespPkt,
 };
+pub use self::rpch::RpchStream;
+pub use self::rpch_client::RpchClient;
 pub use self::udp::{
     AaSynData, AaSynDataResp, ConnectPkt, ConnectPktResp, DataPkt, DiscPkt, GwUdpOffer, MAX_CONNECT_REQ_FRAGMENT_SIZE,
     UdpCorrelationInfo, UdpPacketHeader, UdpPktType, encode_connect_request, fragment_connect_pkt,
@@ -122,6 +121,27 @@ pub struct GwTunnelPolicy {
     pub idle_timeout_minutes: Option<u32>,
     /// Statement of health response supplied by the gateway, if any.
     pub soh_response: Option<Vec<u8>>,
+}
+
+/// Device-redirection flags returned by `TsProxyAuthorizeTunnel` over MS-RPCH.
+///
+/// Unlike the HTTP gateway policy, MS-RPCH returns these values as individual booleans.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GwRpchRedirectionFlags {
+    /// The gateway enabled all device redirections.
+    pub enable_all: bool,
+    /// The gateway disabled all device redirections.
+    pub disable_all: bool,
+    /// The gateway disabled drive redirection.
+    pub drive_disabled: bool,
+    /// The gateway disabled printer redirection.
+    pub printer_disabled: bool,
+    /// The gateway disabled port redirection.
+    pub port_disabled: bool,
+    /// The gateway disabled clipboard redirection.
+    pub clipboard_disabled: bool,
+    /// The gateway disabled Plug and Play device redirection.
+    pub pnp_disabled: bool,
 }
 
 /// Synchronously decides whether to accept a gateway consent message.

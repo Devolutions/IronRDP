@@ -299,7 +299,7 @@ impl GatewayHttpAuth {
         let client_computer_name = client_computer_name();
         let kdc_url = std::env::var("SSPI_KDC_URL").unwrap_or_default();
         let config = NegotiateConfig {
-            protocol_config: Box::new(KerberosConfig::new(&kdc_url, client_computer_name.clone())),
+            protocol_config: Box::new(KerberosConfig::new_with_kdc_url(&kdc_url, client_computer_name.clone())),
             package_list: Some("kerberos".to_owned()),
             client_computer_name,
         };
@@ -421,6 +421,11 @@ impl GatewayHttpAuth {
 
     fn format_authorization(&self, token: &[u8]) -> String {
         format!("{} {}", self.scheme, STANDARD.encode(token))
+    }
+
+    /// Returns whether the last generated token completed the security context.
+    pub(crate) const fn is_complete(&self) -> bool {
+        self.complete
     }
 
     fn initialize(&mut self, input: Option<&[u8]>) -> Result<Vec<u8>, Error> {

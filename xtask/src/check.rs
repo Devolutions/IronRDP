@@ -129,6 +129,27 @@ pub fn dependencies(sh: &Shell) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn capture_files(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("CAPTURE-FILES");
+
+    let captures = cmd!(
+        sh,
+        "git ls-files -z -- ':(glob,icase)**/*.pcap' ':(glob,icase)**/*.pcapng'"
+    )
+    .output()?
+    .stdout;
+
+    if !captures.is_empty() {
+        anyhow::bail!(
+            "packet captures must not be tracked; keep them under the ignored `bench-data` directory instead:\n{}",
+            String::from_utf8_lossy(&captures).replace('\0', "\n").trim_end()
+        );
+    }
+
+    println!("All good!");
+    Ok(())
+}
+
 pub fn test_settings(sh: &Shell, base: &str, head: &str) -> anyhow::Result<()> {
     let _s = Section::new("TEST-SETTINGS");
     let mut base_settings = BTreeSet::new();
@@ -248,7 +269,37 @@ pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
     .run()?;
     cmd!(
         sh,
+        "{CARGO} test -p ironrdp-mstsgu --test tcp_options --features native-tls,test-support --locked --no-run"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-mstsgu --test tcp_options --features rustls,test-support --locked --no-run"
+    )
+    .run()?;
+    cmd!(
+        sh,
         "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,smartcard --locked --no-run"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-rdpeudp-tokio --features ice --locked --no-run"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-rdpeudp-tokio --features ice,rustls-ring --locked --no-run"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-core --features remote-guard --locked --no-run"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-extra --features remote-guard --locked --no-run"
     )
     .run()?;
     println!("All good!");
@@ -270,7 +321,33 @@ pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
     .run()?;
     cmd!(
         sh,
+        "{CARGO} test -p ironrdp-mstsgu --test tcp_options --features native-tls,test-support --locked"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-mstsgu --test tcp_options --features rustls,test-support --locked"
+    )
+    .run()?;
+    cmd!(
+        sh,
         "{CARGO} test -p ironrdp-mstsgu --test http_auth --features native-tls,smartcard --locked"
+    )
+    .run()?;
+    cmd!(sh, "{CARGO} test -p ironrdp-rdpeudp-tokio --features ice --locked").run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-rdpeudp-tokio --features ice,rustls-ring --locked"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-core --features remote-guard --locked -- connector::remote_guard"
+    )
+    .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-testsuite-extra --features remote-guard --locked -- client::remote_guard"
     )
     .run()?;
     println!("All good!");

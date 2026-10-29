@@ -26,14 +26,17 @@ rustls = ["ironrdp/rustls"]
 native-tls = ["ironrdp/native-tls"]
 qoi = ["ironrdp/qoi"]
 qoiz = ["ironrdp/qoiz"]
+# Decode H.264 graphics and MS-RDPEVOR video with the bundled OpenH264 sources.
+openh264 = ["ironrdp/client-openh264"]
 
 [dependencies]
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" } # public
-ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.1" }
-ironrdp = { path = "../ironrdp", version = "0.17", features = ["connector", "cliprdr", "input", "pdu", "client", "client-all", "client-vmconnect"] }
-ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.1" }
+ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.2" }
+ironrdp = { path = "../ironrdp", version = "0.17", features = ["connector", "cliprdr", "input", "pdu", "rdpei", "client", "client-all", "client-vmconnect", "session"] } # public
+ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.3" }
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" }
 ironrdp-rdpfile = { path = "../ironrdp-rdpfile", version = "0.1" }
+ironrdp-rail = { path = "../ironrdp-rail", version = "0.3" }
 
 # Windowing and rendering
 winit = { version = "0.30", features = ["rwh_06"] }
@@ -61,7 +64,9 @@ raw-window-handle = "0.6"
 url = "2"
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.7" }
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9" }
+ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.9" }
+windows = { version = "0.62", features = ["Win32_System_Ole", "Win32_UI_WindowsAndMessaging"] }
 
 [lints]
 workspace = true

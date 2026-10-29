@@ -1,4 +1,6 @@
-use ironrdp_core::{ReadCursor, WriteCursor, encode_vec, impl_as_any};
+mod port;
+
+use ironrdp_core::{DecodeErrorKind, ReadCursor, WriteCursor, encode_vec, impl_as_any};
 use ironrdp_pdu::PduResult;
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{
@@ -21,9 +23,11 @@ use ironrdp_rdpdr::pdu::efs::{
     ServerDriveQueryVolumeInformationRequest, ServerDriveSetInformationRequest, ServerDriveSetSecurityRequest,
     SharedAccess, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
-use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
+use ironrdp_rdpdr::pdu::esc::{ReturnCode, ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::server::{NoopRdpdrServerBackend, RdpdrServer, RdpdrServerBackend};
 use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr, RdpdrBackend};
+
+mod printer;
 
 /// Encodes via a plain `Vec<u8>` buffer for the server-side types in this file, which have
 /// their own inherent `encode`/`size` rather than implementing the crate-wide `Encode` trait
@@ -157,13 +161,26 @@ fn encoded_printer_device_control_request() -> Vec<u8> {
 }
 
 fn encoded_printer_device_control_request_with_input(input: &[u8]) -> Vec<u8> {
-    let mut encoded = encoded_printer_device_io_request(MajorFunction::DeviceControl);
-    encoded.extend_from_slice(&0u32.to_le_bytes()); // OutputBufferLength
-    encoded.extend_from_slice(&u32::try_from(input.len()).unwrap().to_le_bytes());
-    encoded.extend_from_slice(&0u32.to_le_bytes()); // IoControlCode
-    encoded.extend_from_slice(&[0; 20]); // Padding
-    encoded.extend_from_slice(input);
-    encoded
+    encoded_device_control_request(
+        encoded_printer_device_io_request(MajorFunction::DeviceControl),
+        0,
+        0,
+        input,
+    )
+}
+
+fn encoded_device_control_request(
+    mut encoded_header: Vec<u8>,
+    output_buffer_length: u32,
+    io_control_code: u32,
+    input: &[u8],
+) -> Vec<u8> {
+    encoded_header.extend_from_slice(&output_buffer_length.to_le_bytes());
+    encoded_header.extend_from_slice(&u32::try_from(input.len()).unwrap().to_le_bytes());
+    encoded_header.extend_from_slice(&io_control_code.to_le_bytes());
+    encoded_header.extend_from_slice(&[0; 20]); // Padding
+    encoded_header.extend_from_slice(input);
+    encoded_header
 }
 
 fn encoded_printer_create_request(path_length: u32) -> Vec<u8> {
@@ -482,7 +499,7 @@ fn version_and_id_pdu_decode_client_announce_reply_tags_the_reply_not_the_confir
 #[test]
 fn devices_add_printer_appends_printer_entry() {
     let mut devices = Devices::new();
-    devices.add_printer(9, "Lobby Printer".to_owned());
+    assert!(devices.add_printer(9, "Lobby Printer".to_owned()));
 
     assert_eq!(devices.for_device_type(9).unwrap(), DeviceType::Print);
 }
@@ -530,6 +547,219 @@ fn smartcard_device_announce_remains_pre_logon() {
     assert_eq!(responses.len(), 1);
 
     assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Print)]);
+}
+
+fn encoded_smartcard_establish_context_request(output_buffer_length: u32) -> Vec<u8> {
+    let header = encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
+        device_id: 1,
+        file_id: 0,
+        completion_id: 0x200,
+        major_function: MajorFunction::DeviceControl,
+        minor_function: MinorFunction::from(0),
+    }))
+    .unwrap();
+    // EstablishContext_Call { dwScope: SCARD_SCOPE_USER } in an MS-RPCE type serialization stream.
+    let input = [
+        [0x01, 0x10, 0x08, 0x00, 0xCC, 0xCC, 0xCC, 0xCC], // Common type header
+        [0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // Private header, 8-byte object buffer
+        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // dwScope + alignment padding
+    ]
+    .concat();
+    // SCARD_IOCTL_ESTABLISHCONTEXT
+    encoded_device_control_request(header, output_buffer_length, 0x0009_0014, &input)
+}
+
+#[test]
+fn noop_backend_completes_smartcard_calls_with_no_service() {
+    const SCARD_E_NO_SERVICE: u32 = 0x8010_001D;
+
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_smartcard(1);
+
+    let responses = rdpdr
+        .process(&encoded_smartcard_establish_context_request(2048))
+        .unwrap();
+    assert_eq!(responses.len(), 1);
+
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    assert_eq!(&encoded[..4], &[0x72, 0x44, 0x43, 0x49]); // RDPDR + DEVICE_IOCOMPLETION
+    assert_eq!(read_u32(&encoded[8..]), 0x200); // CompletionId
+    assert_eq!(ntstatus_at(&encoded, 12), NtStatus::SUCCESS);
+    // OutputBuffer holds EstablishContext_Return after the 16-byte MS-RPCE headers.
+    assert_eq!(read_u32_as_usize(&encoded[16..]), encoded.len() - 20);
+    assert_eq!(read_u32(&encoded[36..]), SCARD_E_NO_SERVICE);
+    // MS-RDPESC 2.2.3: the context is zero (cbContext 0, NULL pbContext) on failure.
+    assert_eq!(&encoded[40..48], &[0; 8]);
+}
+
+#[test]
+fn smartcard_error_response_rejects_calls_without_return_structure() {
+    let req = DeviceControlRequest {
+        header: DeviceIoRequest {
+            device_id: 1,
+            file_id: 0,
+            completion_id: 0x300,
+            major_function: MajorFunction::DeviceControl,
+            minor_function: MinorFunction::from(0),
+        },
+        output_buffer_length: 2048,
+        input_buffer_length: 0,
+        io_control_code: ScardIoCtlCode::GetStatusChangeW,
+    };
+
+    let response = ScardCall::Unsupported.error_response(req, ReturnCode::NoService);
+
+    let encoded = encode_vec(&RdpdrPdu::DeviceControlResponse(response)).unwrap();
+    assert_eq!(ntstatus_at(&encoded, 12), NtStatus::UNSUCCESSFUL);
+    assert_eq!(read_u32(&encoded[16..]), 0); // OutputBufferLength
+}
+
+// oracle: spec MS-RDPESC §2.2.2.30 defines ScardAccessStartedEvent_Call as a 4-byte Unused field.
+#[test]
+fn smartcard_access_started_event_call_rejects_truncated_unused_field() {
+    for len in 0..4 {
+        let e =
+            ScardCall::decode(ScardIoCtlCode::AccessStartedEvent, &mut ReadCursor::new(&[0; 3][..len])).unwrap_err();
+        assert!(matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }), "{e:?}");
+    }
+}
+
+#[test]
+fn smartcard_error_responses_zero_every_field_but_return_code() {
+    use ironrdp_rdpdr::pdu::esc::{
+        CardProtocol, ConnectCall, ConnectCommon, ControlCall, GetAttribCall, GetReaderIconCall, GetStatusChangeCall,
+        ReadCacheCall, ReadCacheCommon, ReconnectCall, SCardIORequest, ScardContext, ScardHandle, TransmitCall,
+    };
+
+    const SCARD_E_NO_SERVICE: u32 = 0x8010_001D;
+
+    let handle = ScardHandle::new(ScardContext::new(7), 9);
+    let calls = [
+        (
+            ScardIoCtlCode::ConnectW,
+            ScardCall::ConnectCall(ConnectCall {
+                reader: "Reader".to_owned(),
+                common: ConnectCommon {
+                    context: ScardContext::new(7),
+                    share_mode: 2,
+                    preferred_protocols: CardProtocol::SCARD_PROTOCOL_T1,
+                },
+            }),
+        ),
+        (
+            ScardIoCtlCode::Reconnect,
+            ScardCall::ReconnectCall(ReconnectCall {
+                handle,
+                share_mode: 2,
+                preferred_protocols: CardProtocol::SCARD_PROTOCOL_T1,
+                initialization: 0,
+            }),
+        ),
+        (
+            ScardIoCtlCode::Transmit,
+            ScardCall::TransmitCall(TransmitCall {
+                handle,
+                send_pci: SCardIORequest {
+                    protocol: CardProtocol::SCARD_PROTOCOL_T1,
+                    extra_bytes_length: 0,
+                    extra_bytes: Vec::new(),
+                },
+                send_length: 1,
+                send_buffer: vec![0],
+                recv_pci: None,
+                recv_buffer_is_null: false,
+                recv_length: 258,
+            }),
+        ),
+        (
+            ScardIoCtlCode::Control,
+            ScardCall::ControlCall(ControlCall {
+                handle,
+                control_code: 1,
+                in_buffer: Vec::new(),
+                out_buffer_is_null: false,
+                out_buffer_size: 64,
+            }),
+        ),
+        (
+            ScardIoCtlCode::GetAttrib,
+            ScardCall::GetAttribCall(GetAttribCall {
+                handle,
+                attr_id: 1,
+                attr_is_null: false,
+                attr_length: 64,
+            }),
+        ),
+        (
+            ScardIoCtlCode::ReadCacheW,
+            ScardCall::ReadCacheCall(ReadCacheCall {
+                lookup_name: "Cache".to_owned(),
+                common: ReadCacheCommon {
+                    context: ScardContext::new(7),
+                    card_uuid: vec![0; 16],
+                    freshness_counter: 0,
+                    data_is_null: false,
+                    data_len: 64,
+                },
+            }),
+        ),
+        (
+            ScardIoCtlCode::GetStatusChangeW,
+            ScardCall::GetStatusChangeCall(GetStatusChangeCall {
+                context: ScardContext::new(7),
+                timeout: 0,
+                states_ptr_length: 0,
+                states_ptr: 0,
+                states_length: 0,
+                states: Vec::new(),
+            }),
+        ),
+        (
+            ScardIoCtlCode::GetReaderIcon,
+            ScardCall::GetReaderIconCall(GetReaderIconCall {
+                context: ScardContext::new(7),
+                reader_name: "Reader".to_owned(),
+            }),
+        ),
+    ];
+
+    for (io_control_code, call) in calls {
+        let req = DeviceControlRequest {
+            header: DeviceIoRequest {
+                device_id: 1,
+                file_id: 0,
+                completion_id: 0x400,
+                major_function: MajorFunction::DeviceControl,
+                minor_function: MinorFunction::from(0),
+            },
+            output_buffer_length: 2048,
+            input_buffer_length: 0,
+            io_control_code,
+        };
+
+        let response = call.error_response(req, ReturnCode::NoService);
+
+        let encoded = encode_vec(&RdpdrPdu::DeviceControlResponse(response)).unwrap();
+        assert_eq!(ntstatus_at(&encoded, 12), NtStatus::SUCCESS, "{io_control_code:?}");
+        // The return structure starts after the 16-byte MS-RPCE headers.
+        assert_eq!(read_u32(&encoded[36..]), SCARD_E_NO_SERVICE, "{io_control_code:?}");
+        assert!(
+            encoded[40..].iter().all(|&byte| byte == 0),
+            "{io_control_code:?}: nonzero field in {:02x?}",
+            &encoded[40..]
+        );
+    }
+}
+
+#[test]
+fn noop_backend_reports_small_smartcard_output_buffer() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_smartcard(1);
+
+    let responses = rdpdr.process(&encoded_smartcard_establish_context_request(0)).unwrap();
+    assert_eq!(responses.len(), 1);
+
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    assert_eq!(ntstatus_at(&encoded, 12), NtStatus::BUFFER_TOO_SMALL);
+    assert_eq!(read_u32(&encoded[16..]), 0); // OutputBufferLength
 }
 
 #[test]
@@ -641,6 +871,53 @@ fn printer_irp_is_ignored_before_announcement_acknowledgement() {
 }
 
 #[test]
+fn printer_irp_before_the_announcement_response_is_completed() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    negotiate_printer_capability(&mut rdpdr);
+    rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap();
+    assert_eq!(
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Windows can send the first IRP just before the response accepting the printer.
+    let responses = rdpdr
+        .process(&encoded_printer_device_io_request(MajorFunction::Read))
+        .unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::NOT_SUPPORTED
+    );
+
+    // A create would start a print job that a rejection could leave behind, so it fails without
+    // reaching the backend, whose default answer is NOT_SUPPORTED.
+    let responses = rdpdr.process(&encoded_printer_create_request(0)).unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::UNSUCCESSFUL
+    );
+}
+
+#[test]
+fn printer_create_after_the_announcement_response_reaches_the_backend() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
+    acknowledge_printer(&mut rdpdr, NtStatus::SUCCESS);
+
+    let responses = rdpdr.process(&encoded_printer_create_request(0)).unwrap();
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        ntstatus_at(&responses[0].encode_unframed_pdu().unwrap(), 12),
+        NtStatus::NOT_SUPPORTED
+    );
+}
+
+#[test]
 fn printer_irp_is_ignored_after_server_rejection() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
     acknowledge_printer(&mut rdpdr, NtStatus::NOT_SUPPORTED);
@@ -682,11 +959,202 @@ fn printer_write_rejects_oversized_length_before_allocating_payload() {
 }
 
 #[test]
-fn printer_cache_pdu_is_ignored_before_decode() {
+fn printer_cache_pdu_with_an_unknown_event_fails_the_channel() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_printer(42, "PrintMe".to_owned());
-    let pdu = [0x72, 0x44, 0x43, 0x50, 1, 2, 3, 4]; // RDPDR + PAKID_PRN_CACHE_DATA + ignored body
+    let pdu = [0x72, 0x44, 0x43, 0x50, 1, 2, 3, 4]; // RDPDR + PAKID_PRN_CACHE_DATA + unknown EventId
 
-    assert!(rdpdr.process(&pdu).unwrap().is_empty());
+    assert!(rdpdr.process(&pdu).is_err());
+}
+
+fn acknowledged_drive() -> Rdpdr {
+    let mut rdpdr =
+        Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_drives(Some(vec![(42, "share".to_owned())]));
+
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Filesystem)]);
+    assert!(
+        rdpdr
+            .process(
+                &encode_vec(&RdpdrPdu::ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse {
+                    device_id: 42,
+                    result_code: NtStatus::SUCCESS,
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+            .is_empty()
+    );
+
+    rdpdr
+}
+
+fn encoded_drive_device_io_request(major_function: MajorFunction, minor_function: MinorFunction) -> Vec<u8> {
+    encode_vec(&RdpdrPdu::DeviceIoRequest(DeviceIoRequest {
+        device_id: 42,
+        file_id: 1,
+        completion_id: 0x100,
+        major_function,
+        minor_function,
+    }))
+    .unwrap()
+}
+
+/// Encodes a request laid out as FsInformationClass, Length, Padding (24 bytes), Buffer, as the
+/// query volume information, set volume information and set information requests are.
+fn encoded_drive_information_request(major_function: MajorFunction, class: u32, buffer: &[u8]) -> Vec<u8> {
+    let mut encoded = encoded_drive_device_io_request(major_function, MinorFunction::from(0));
+    encoded.extend_from_slice(&class.to_le_bytes());
+    encoded.extend_from_slice(&u32::try_from(buffer.len()).unwrap().to_le_bytes());
+    encoded.extend_from_slice(&[0; 24]); // Padding
+    encoded.extend_from_slice(buffer);
+    encoded
+}
+
+/// Encodes a query directory request for `class` with an initial query on `*`.
+fn encoded_drive_query_directory_request(class: u32) -> Vec<u8> {
+    let path = [b'*', 0, 0, 0];
+    let mut encoded =
+        encoded_drive_device_io_request(MajorFunction::DirectoryControl, MinorFunction::IRP_MN_QUERY_DIRECTORY);
+    encoded.extend_from_slice(&class.to_le_bytes());
+    encoded.push(1); // InitialQuery
+    encoded.extend_from_slice(&u32::try_from(path.len()).unwrap().to_le_bytes());
+    encoded.extend_from_slice(&[0; 23]); // Padding
+    encoded.extend_from_slice(&path);
+    encoded
+}
+
+/// Processes `request` and returns the single encoded completion, after checking that it
+/// answers the request and carries `status`.
+fn single_drive_completion(rdpdr: &mut Rdpdr, request: &[u8], status: NtStatus) -> Vec<u8> {
+    let responses = rdpdr.process(request).unwrap();
+    assert_eq!(responses.len(), 1);
+
+    let encoded = responses[0].encode_unframed_pdu().unwrap();
+    assert_eq!(&encoded[..4], &[0x72, 0x44, 0x43, 0x49]); // RDPDR + DEVICE_IOCOMPLETION
+    assert_eq!(read_u32(&encoded[4..]), 42); // DeviceId
+    assert_eq!(read_u32(&encoded[8..]), 0x100); // CompletionId
+    assert_eq!(ntstatus_at(&encoded, 12), status);
+    encoded
+}
+
+#[test]
+fn drive_set_volume_information_is_completed_as_not_supported() {
+    let mut rdpdr = acknowledged_drive();
+    // FileFsLabelInformation: VolumeLabelLength, VolumeLabel ("LB")
+    let label = [4, 0, 0, 0, b'L', 0, b'B', 0];
+    let request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &label);
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(encoded.len(), 20);
+    assert_eq!(read_u32(&encoded[16..]), 8); // Length echoes the request
+
+    // VolumeLabelLength runs past the buffer
+    let request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &[8, 0, 0, 0, b'L', 0]);
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(read_u32(&encoded[16..]), 6);
+
+    // FileFsObjectIdInformation, outside the one class the request MUST contain
+    let request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 8, &[0; 4]);
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(read_u32(&encoded[16..]), 4);
+}
+
+#[test]
+fn drive_irps_with_supported_classes_still_reach_the_backend() {
+    fn assert_reaches_backend(rdpdr: &mut Rdpdr, request: &[u8]) {
+        let error = rdpdr.process(request).unwrap_err();
+        assert!(
+            error.to_string().contains("noop RDPDR backend"),
+            "expected the backend to reject the request, got: {error}"
+        );
+    }
+
+    let mut rdpdr = acknowledged_drive();
+
+    // FileFsSizeInformation
+    let request = encoded_drive_information_request(MajorFunction::QueryVolumeInformation, 3, &[]);
+    assert_reaches_backend(&mut rdpdr, &request);
+
+    // FileEndOfFileInformation: EndOfFile
+    let request = encoded_drive_information_request(MajorFunction::SetInformation, 20, &[0; 8]);
+    assert_reaches_backend(&mut rdpdr, &request);
+
+    let request = encoded_drive_query_directory_request(3); // FileBothDirectoryInformation
+    assert_reaches_backend(&mut rdpdr, &request);
+}
+
+#[test]
+fn drive_set_information_with_unsupported_class_is_completed_as_not_supported() {
+    let mut rdpdr = acknowledged_drive();
+    // FilePositionInformation: CurrentByteOffset
+    let request = encoded_drive_information_request(MajorFunction::SetInformation, 14, &[0; 8]);
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(encoded.len(), 20);
+    assert_eq!(read_u32(&encoded[16..]), 8); // Length echoes the request
+}
+
+#[test]
+fn drive_query_volume_information_with_unsupported_class_is_completed_as_not_supported() {
+    let mut rdpdr = acknowledged_drive();
+    // FileFsControlInformation
+    let request = encoded_drive_information_request(MajorFunction::QueryVolumeInformation, 6, &[]);
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(encoded.len(), 20);
+    assert_eq!(read_u32(&encoded[16..]), 0); // Length
+}
+
+#[test]
+fn drive_query_directory_with_unsupported_class_is_completed_as_not_supported() {
+    let mut rdpdr = acknowledged_drive();
+    let request = encoded_drive_query_directory_request(37); // FileIdBothDirectoryInformation
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::NOT_SUPPORTED);
+    assert_eq!(encoded.len(), 21);
+    assert_eq!(read_u32(&encoded[16..]), 0); // Length, followed by one byte of padding
+}
+
+#[test]
+fn drive_directory_control_with_unknown_minor_function_is_completed_as_unsuccessful() {
+    let mut rdpdr = acknowledged_drive();
+    let request = encoded_drive_device_io_request(MajorFunction::DirectoryControl, MinorFunction::from(0x99));
+
+    let encoded = single_drive_completion(&mut rdpdr, &request, NtStatus::UNSUCCESSFUL);
+    assert_eq!(encoded.len(), 16); // Header-only DR_DEVICE_IOCOMPLETION
+}
+
+#[test]
+fn malformed_unsupported_drive_irps_are_still_decode_errors() {
+    let mut rdpdr = acknowledged_drive();
+
+    let mut request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &[0; 4]);
+    request.pop();
+    assert!(rdpdr.process(&request).is_err());
+
+    let mut request = encoded_drive_information_request(MajorFunction::SetInformation, 14, &[0; 8]);
+    request.truncate(request.len() - 9);
+    assert!(rdpdr.process(&request).is_err());
+
+    let mut request = encoded_drive_information_request(MajorFunction::QueryVolumeInformation, 6, &[]);
+    request.pop();
+    assert!(rdpdr.process(&request).is_err());
+
+    // Trailing data after the declared buffer
+    let mut request = encoded_drive_information_request(MajorFunction::SetVolumeInformation, 0x02, &[0; 4]);
+    request.push(0);
+    assert!(rdpdr.process(&request).is_err());
+
+    let mut request = encoded_drive_information_request(MajorFunction::SetInformation, 14, &[0; 8]);
+    request.push(0);
+    assert!(rdpdr.process(&request).is_err());
 }
 
 // ─── Server-side decode / encode round-trips ──────────────────────────────
@@ -1526,6 +1994,26 @@ fn decode_io_completion_dispatches_directory_control_by_minor_function() {
         notify_change,
         RdpdrPdu::ClientDriveNotifyChangeDirectoryResponse(_)
     ));
+}
+
+#[test]
+fn empty_query_directory_response_padding_is_optional() {
+    // MS-RDPEFS 2.2.3.4.10: the trailing Padding byte is optional, so it is consumed when present
+    // and a response that ends right after Length is accepted.
+    for wire in [&[0u8, 0, 0, 0][..], &[0, 0, 0, 0, 0][..]] {
+        let mut src = ReadCursor::new(wire);
+        let decoded = RdpdrPdu::decode_io_completion(
+            MajorFunction::DirectoryControl,
+            MinorFunction::IRP_MN_QUERY_DIRECTORY,
+            Some(FileInformationClassLevel::FILE_BASIC_INFORMATION),
+            None,
+            some_device_io_response(),
+            &mut src,
+        )
+        .unwrap();
+        assert!(matches!(decoded, RdpdrPdu::ClientDriveQueryDirectoryResponse(_)));
+        assert!(src.is_empty());
+    }
 }
 
 #[test]

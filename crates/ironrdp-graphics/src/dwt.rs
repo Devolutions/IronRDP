@@ -58,12 +58,13 @@ fn dwt_vertical<const SUBBAND_WIDTH: usize>(buffer: &[i16], dwt: &mut [i16]) {
                         >> 1))
                     >> 1,
             );
+            // Use the ceiling average to match the MS-RDPRFX 3.1.8.2.4 inverse DWT lifting step.
             dwt[l_index] = i32_to_i16_possible_truncation(
                 i32::from(buffer[src_index])
                     + if n == 0 {
                         i32::from(dwt[h_index])
                     } else {
-                        (i32::from(dwt[h_index - total_width]) + i32::from(dwt[h_index])) >> 1
+                        (i32::from(dwt[h_index - total_width]) + i32::from(dwt[h_index]) + 1) >> 1
                     },
             );
         }
@@ -101,7 +102,7 @@ fn dwt_horizontal<const SUBBAND_WIDTH: usize>(mut buffer: &mut [i16], dwt: &[i16
                     + if n == 0 {
                         i32::from(hl[n])
                     } else {
-                        (i32::from(hl[n - 1]) + i32::from(hl[n])) >> 1
+                        (i32::from(hl[n - 1]) + i32::from(hl[n]) + 1) >> 1
                     },
             );
         }
@@ -122,7 +123,7 @@ fn dwt_horizontal<const SUBBAND_WIDTH: usize>(mut buffer: &mut [i16], dwt: &[i16
                     + if n == 0 {
                         i32::from(hh[n])
                     } else {
-                        (i32::from(hh[n - 1]) + i32::from(hh[n])) >> 1
+                        (i32::from(hh[n - 1]) + i32::from(hh[n]) + 1) >> 1
                     },
             );
         }

@@ -3,10 +3,7 @@ name: new-crate
 description: Create and integrate a new Rust crate in the IronRDP workspace. Use whenever adding, scaffolding, or initializing a crate under crates/, including requests that mention cargo new, a new library package, or registering a crate in the architecture.
 ---
 
-# New crate
-
-Run `cargo new --lib --vcs none crates/<crate-name>` from the repository root.
-Do not hand-create the directory or initial `Cargo.toml`.
+Run `cargo new --lib --vcs none crates/<crate-name>` from the repository root so Cargo generates the workspace inheritance entries.
 
 In the generated manifest:
 

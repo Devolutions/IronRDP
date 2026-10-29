@@ -43,6 +43,11 @@ fn check_bulk_decompress_xcrush() {
 }
 
 #[test]
+fn check_bulk_decompress_rdp8() {
+    check!(bulk_decompress_rdp8);
+}
+
+#[test]
 fn check_bulk_round_trip() {
     check!(bulk_round_trip);
 }
@@ -50,6 +55,11 @@ fn check_bulk_round_trip() {
 #[test]
 fn check_pdu_round_trip() {
     check!(pdu_round_trip);
+}
+
+#[test]
+fn check_channel_process() {
+    check!(channel_process);
 }
 
 #[test]
@@ -90,4 +100,65 @@ fn check_egfx_zgfx_decompress() {
 #[test]
 fn check_egfx_surface_state() {
     check!(egfx_surface_state);
+}
+
+// oracle: spec crates/ironrdp-fuzzing/src/oracles/mod.rs §rdpsnd_codec_decode (no panic for any accepted format; seeds built from the FFmpeg vectors in crates/ironrdp-testsuite-core/test_data/audio)
+#[test]
+fn check_rdpsnd_codec_decode() {
+    check!(rdpsnd_codec_decode);
+}
+
+#[test]
+fn rdpear_ndr_oracle_accepts_all_four_surfaces_and_bounded_mutations() {
+    use ironrdp_fuzzing::oracles::rdpear_ndr_round_trip;
+    use ironrdp_rdpear::ndr::{
+        CompareCredentialsResponse, Endianness, KerberosRequest, KerberosResponse, KerberosResponseCall,
+        KeyAgreementRequest, NdrLimits, NdrProfile, NegotiateVersion, NtlmRequest, NtlmResponse, NtlmResponseCall,
+        OutputBuffer,
+    };
+
+    for endian in [Endianness::Little, Endianness::Big] {
+        for profile in [NdrProfile::Published, NdrProfile::WindowsNative] {
+            let inputs = [
+                KerberosRequest::DestroyKeyAgreement(KeyAgreementRequest {
+                    key_agreement_handle: i64::MIN,
+                })
+                .encode_with_profile(endian, NdrLimits::default(), profile)
+                .expect("valid Kerberos request"),
+                KerberosResponse {
+                    status: -123,
+                    call: KerberosResponseCall::HashS4UPreauth(OutputBuffer {
+                        length: Some(3),
+                        value: Some(Some(vec![1, 2, 3])),
+                    }),
+                }
+                .encode_with_profile(endian, NdrLimits::default(), profile)
+                .expect("valid Kerberos response"),
+                NtlmRequest::NegotiateVersion(NegotiateVersion { version: 0x1234_5678 })
+                    .encode_with_profile(endian, NdrLimits::default(), profile)
+                    .expect("valid NTLM request"),
+                NtlmResponse {
+                    status: i32::MIN,
+                    call: NtlmResponseCall::CompareCredentials(CompareCredentialsResponse {
+                        are_nt_owfs_equal: -1,
+                        are_lm_owfs_equal: 1,
+                        are_sha_owfs_equal: 0,
+                    }),
+                }
+                .encode_with_profile(endian, NdrLimits::default(), profile)
+                .expect("valid NTLM response"),
+            ];
+            for input in inputs {
+                rdpear_ndr_round_trip(&input);
+                for length in 0..input.len() {
+                    rdpear_ndr_round_trip(&input[..length]);
+                }
+                for offset in 0..input.len() {
+                    let mut mutated = input.clone();
+                    mutated[offset] ^= 0xff;
+                    rdpear_ndr_round_trip(&mutated);
+                }
+            }
+        }
+    }
 }

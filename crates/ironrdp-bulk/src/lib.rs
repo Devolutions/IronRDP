@@ -11,6 +11,9 @@
 //! | `Rdp6`  | NCRUSH    | 64 KB         | RDP 6.0     |
 //! | `Rdp61` | XCRUSH    | 2 MB          | RDP 6.1     |
 //!
+//! The [`rdp8`] module adds RDP 8.0 decompression, used by the dynamic virtual channel
+//! compressed data PDUs.
+//!
 //! # Usage
 //!
 //! ```rust
@@ -67,6 +70,8 @@ mod bulk;
 mod mppc;
 #[cfg(feature = "alloc")]
 mod ncrush;
+#[cfg(feature = "alloc")]
+pub mod rdp8;
 #[cfg(feature = "alloc")]
 mod xcrush;
 

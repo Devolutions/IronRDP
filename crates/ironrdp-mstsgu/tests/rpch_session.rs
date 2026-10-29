@@ -6,6 +6,7 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 
 #[derive(Debug)]
 enum GwErrorKind {
+    InvalidCertificateValidation,
     Connect,
     GatewayCode(u32),
     HttpStatus(u16),
@@ -34,6 +35,7 @@ impl GwErrorExt for Error {
 impl fmt::Display for GwErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidCertificateValidation => f.write_str("invalid certificate validation configuration"),
             Self::Connect => f.write_str("connection error"),
             Self::GatewayCode(code) => write!(f, "gateway error 0x{code:08x}"),
             Self::HttpStatus(status) => write!(f, "unexpected http status {status}"),
@@ -55,6 +57,29 @@ macro_rules! custom_err {
 #[derive(Clone)]
 struct GwSmartCardCredentials;
 
+struct GwConnectTarget {
+    gw_endpoint: String,
+    gw_user: String,
+    gw_pass: String,
+    smart_card: Option<GwSmartCardCredentials>,
+    server: String,
+}
+
+#[derive(Clone, Copy, Default)]
+#[expect(
+    dead_code,
+    reason = "the integration harness does not inspect authorization policy flags"
+)]
+struct GwRpchRedirectionFlags {
+    enable_all: bool,
+    disable_all: bool,
+    drive_disabled: bool,
+    printer_disabled: bool,
+    port_disabled: bool,
+    clipboard_disabled: bool,
+    pnp_disabled: bool,
+}
+
 #[path = "../src/http_auth.rs"]
 #[expect(
     dead_code,
@@ -71,5 +96,40 @@ mod mock_rpch;
 mod rpc;
 #[path = "../src/rpc_transport.rs"]
 mod rpc_transport;
+mod packet_io {
+    use tokio::io::{AsyncRead, AsyncWrite};
+
+    pub(crate) trait GatewayIo: AsyncRead + AsyncWrite + Unpin {}
+
+    impl<T: AsyncRead + AsyncWrite + Unpin + ?Sized> GatewayIo for T {}
+
+    pub(crate) type GatewayStream = Box<dyn GatewayIo + Send + 'static>;
+
+    pub(crate) async fn open_rpch_gateway_channels(
+        _endpoint: &str,
+        _certificate_validation: ironrdp_tls::CertificateValidation,
+        _certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+    ) -> Result<(GatewayStream, GatewayStream, core::net::SocketAddr), crate::Error> {
+        Err(crate::Error::new(
+            "unexpected network RPCH connection",
+            crate::GwErrorKind::Connect,
+        ))
+    }
+
+    pub(crate) async fn open_rpch_gateway_stream(
+        _endpoint: &str,
+        _certificate_validation: ironrdp_tls::CertificateValidation,
+        _certificate_validation_callback: Option<ironrdp_tls::CertificateValidationCallback>,
+    ) -> Result<(GatewayStream, core::net::SocketAddr), crate::Error> {
+        Err(crate::Error::new(
+            "unexpected network RPCH connection",
+            crate::GwErrorKind::Connect,
+        ))
+    }
+}
 #[path = "../src/rpch.rs"]
+#[expect(
+    dead_code,
+    reason = "the live raw channel is exercised by the rpch_client integration target"
+)]
 mod rpch;

@@ -293,6 +293,15 @@ impl CoreCapability {
             .any(|capability| capability.header.cap_type == CapabilityType::Printer)
     }
 
+    /// Whether the capability set includes [`PORT_CAPS_SET`] (MS-RDPEFS 2.2.2.7.3).
+    ///
+    /// [`PORT_CAPS_SET`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
+    pub fn supports_port(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability.header.cap_type == CapabilityType::Port)
+    }
+
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         dst.write_u16(cast_length!(
@@ -421,8 +430,31 @@ impl Capabilities {
         }
     }
 
+    /// Adds the printer capability set unless it is already present.
     pub fn add_printer(&mut self) {
-        self.push(CapabilityMessage::new_printer());
+        if !self
+            .0
+            .iter()
+            .any(|capability| capability.header.cap_type == CapabilityType::Printer)
+        {
+            self.push(CapabilityMessage::new_printer());
+        }
+    }
+
+    /// Adds the serial and parallel port capability once.
+    ///
+    /// Unlike [`Self::add_smartcard`], this leaves SpecialTypeDeviceCap unchanged although
+    /// serial ports are announced before logon. MS-RDPEFS 2.2.2.7.1 names serial ports as
+    /// special devices, but mstsc does not count them there either, and Windows servers accept
+    /// pre-logon serial announces regardless.
+    pub fn add_port(&mut self) {
+        if !self
+            .0
+            .iter()
+            .any(|capability| capability.header.cap_type == CapabilityType::Port)
+        {
+            self.push(CapabilityMessage::new_port());
+        }
     }
 
     fn add_general(&mut self, special_type_device_cap: u32) {
@@ -523,6 +555,16 @@ impl CapabilityMessage {
         }
     }
 
+    /// Creates a new [`PORT_CAPS_SET`] (MS-RDPEFS 2.2.2.7.3).
+    ///
+    /// [`PORT_CAPS_SET`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
+    pub fn new_port() -> Self {
+        Self {
+            header: CapabilityHeader::new_port(),
+            capability_data: CapabilityData::Port,
+        }
+    }
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
@@ -597,6 +639,14 @@ impl CapabilityHeader {
         }
     }
 
+    fn new_port() -> Self {
+        Self {
+            cap_type: CapabilityType::Port,
+            length: u16::try_from(Self::SIZE).expect("value fits into u16"),
+            version: PORT_CAPABILITY_VERSION_01,
+        }
+    }
+
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::SIZE);
         let cap_type: CapabilityType = src.read_u16().try_into()?;
@@ -664,6 +714,10 @@ pub const DRIVE_CAPABILITY_VERSION_02: u32 = 0x0000_0002;
 /// Windows hosts accept v1 and v2 here; v1 is the lowest-common-denominator
 /// and has no additional body, which is the usual choice for virtual printers.
 pub const PRINTER_CAPABILITY_VERSION_01: u32 = 0x0000_0001;
+/// PORT_CAPABILITY_VERSION_01
+///
+/// The port capability set has no body beyond its header.
+pub const PORT_CAPABILITY_VERSION_01: u32 = 0x0000_0001;
 
 /// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: ASCII encoding for names.
 ///
@@ -677,6 +731,9 @@ pub const RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER: u32 = 0x0000_0004;
 pub const RDPDR_PRINTER_ANNOUNCE_FLAG_TSPRINTER: u32 = 0x0000_0008;
 /// [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE flag: the server should expect XPS output.
 pub const RDPDR_PRINTER_ANNOUNCE_FLAG_XPSFORMAT: u32 = 0x0000_0010;
+
+/// Highest `PRN<n>` port number that fits the 7-character preferred DOS name.
+const MAX_PRINTER_PORT_NUMBER: u32 = 9999;
 
 /// Default server-side printer driver announced for PostScript virtual printers.
 ///
@@ -1095,29 +1152,108 @@ impl Devices {
     /// See [`DeviceAnnounceHeader::new_printer`] for the rationale.
     /// Callers needing a different driver should use
     /// [`DeviceAnnounceHeader::new_printer_with_driver`].
-    pub fn add_printer(&mut self, device_id: u32, print_name: String) {
-        self.add_printer_with_driver(device_id, print_name, DEFAULT_PRINTER_DRIVER_NAME.to_owned());
+    ///
+    /// Returns `false`, without adding the printer, when no `PRN<n>` port name is left; see
+    /// [`Self::add_printer_announce`].
+    pub fn add_printer(&mut self, device_id: u32, print_name: String) -> bool {
+        self.add_printer_with_driver(device_id, print_name, DEFAULT_PRINTER_DRIVER_NAME.to_owned())
     }
 
     /// Announce a virtual printer device with an explicit server-side driver.
-    pub fn add_printer_with_driver(&mut self, device_id: u32, print_name: String, driver_name: String) {
-        self.add_printer_with_driver_and_network(device_id, print_name, driver_name, true);
+    ///
+    /// Returns `false`, without adding the printer, when no `PRN<n>` port name is left.
+    pub fn add_printer_with_driver(&mut self, device_id: u32, print_name: String, driver_name: String) -> bool {
+        self.add_printer_with_driver_and_network(device_id, print_name, driver_name, true)
     }
 
     /// Announce a printer with an explicit driver and network-queue classification.
+    ///
+    /// Returns `false`, without adding the printer, when no `PRN<n>` port name is left.
     pub fn add_printer_with_driver_and_network(
         &mut self,
         device_id: u32,
         print_name: String,
         driver_name: String,
         network: bool,
-    ) {
-        self.push(DeviceAnnounceHeader::new_printer_with_driver_and_network(
+    ) -> bool {
+        let flags = RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER
+            | if network {
+                RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER
+            } else {
+                0
+            };
+        self.add_printer_announce(device_id, flags, &driver_name, &print_name, &[])
+    }
+
+    /// Announce a printer with explicit flags and cached configuration.
+    ///
+    /// The printer gets the lowest `PRN<n>` port number not used by another configured printer.
+    /// Returns `false`, without adding the printer, when `PRN1` to `PRN9999` are all taken.
+    #[must_use]
+    pub fn add_printer_announce(
+        &mut self,
+        device_id: u32,
+        flags: u32,
+        driver_name: &str,
+        print_name: &str,
+        cached_config_data: &[u8],
+    ) -> bool {
+        let Some(port_number) = self.next_printer_port_number() else {
+            return false;
+        };
+        self.push(DeviceAnnounceHeader::new_printer_announce(
             device_id,
-            print_name,
+            port_number,
+            flags,
             driver_name,
-            network,
+            print_name,
+            cached_config_data,
         ));
+        true
+    }
+
+    /// Replaces the announce of an already configured device, keeping its position.
+    ///
+    /// Returns `false` when no device uses the same device ID.
+    pub fn replace_device(&mut self, device: DeviceAnnounceHeader) -> bool {
+        match self
+            .0
+            .iter_mut()
+            .find(|existing| existing.device_id == device.device_id)
+        {
+            Some(existing) => {
+                *existing = device;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Returns the announce of a configured device.
+    pub fn device(&self, device_id: u32) -> Option<&DeviceAnnounceHeader> {
+        self.0.iter().find(|device| device.device_id == device_id)
+    }
+
+    fn next_printer_port_number(&self) -> Option<u32> {
+        // One pass over the devices; index 0 stands for the unused `PRN0`.
+        let mut used = vec![false; usize::try_from(MAX_PRINTER_PORT_NUMBER).ok()? + 1];
+        for port_number in self.0.iter().filter_map(DeviceAnnounceHeader::printer_port_number) {
+            if let Some(slot) = usize::try_from(port_number).ok().and_then(|index| used.get_mut(index)) {
+                *slot = true;
+            }
+        }
+        used.iter()
+            .skip(1)
+            .position(|used| !used)
+            .and_then(|index| u32::try_from(index + 1).ok())
+    }
+
+    /// Announces a serial or parallel port under its client-side DOS name, such as `COM1` or `LPT1`.
+    ///
+    /// `device_type` MUST be [`DeviceType::Serial`] or [`DeviceType::Parallel`].
+    pub fn add_port(&mut self, device_id: u32, device_type: DeviceType, dos_name: String) {
+        debug_assert!(matches!(device_type, DeviceType::Serial | DeviceType::Parallel));
+        self.push(DeviceAnnounceHeader::new_port(device_id, device_type, dos_name));
     }
 
     pub fn remove_device(&mut self, device_id: u32) -> Option<u32> {
@@ -1252,28 +1388,7 @@ impl DeviceAnnounceHeader {
         driver_name: String,
         network: bool,
     ) -> Self {
-        // [MS-RDPEPC 2.2.2.3] RDPDR_PRINTER_ANNOUNCE device_data layout:
-        //   Flags            u32 LE
-        //   CodePage         u32 LE   (reserved; MUST be ignored)
-        //   PnPNameLen       u32 LE   (bytes, includes trailing UTF-16 NUL)
-        //   DriverNameLen    u32 LE   (bytes, includes trailing UTF-16 NUL)
-        //   PrintNameLen     u32 LE   (bytes, includes trailing UTF-16 NUL)
-        //   CachedFieldsLen  u32 LE
-        //   PnPName          UTF-16LE, NUL-terminated
-        //   DriverName       UTF-16LE, NUL-terminated
-        //   PrintName        UTF-16LE, NUL-terminated
-        //   CachedFields     opaque bytes
-        //
-        // FreeRDP leaves PnPName empty for this PostScript path and lets the
-        // server resolve the queue from DriverName + PrintName. Matching that
-        // behavior avoids exercising server-side PnP-name edge cases.
-        //
-        // [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/2057a02f-57d5-47db-9a32-e337ac3f50e9
-
-        let driver_name_bytes = utf16le_with_nul(&driver_name);
-        let print_name_bytes = utf16le_with_nul(&print_name);
-
-        // [MS-RDPEPC 2.2.2.3] Flags. Mark the single configured queue as the
+        // [MS-RDPEPC 2.2.2.1] Flags. Mark the single configured queue as the
         // session default and preserve its network classification. We intentionally leave the others off:
         //  - XPSFORMAT (0x10): advertises *client* XPS-consumption support;
         //    our driver is PostScript so this is irrelevant and could nudge
@@ -1287,9 +1402,59 @@ impl DeviceAnnounceHeader {
             } else {
                 0
             };
+
+        Self::new_printer_announce(device_id, 1, flags, &driver_name, &print_name, &[])
+    }
+
+    /// Construct a printer announce with explicit flags, port number, and cached configuration.
+    ///
+    /// `port_number` selects the `PRN<n>` preferred DOS name; [MS-RDPEPC 2.2.2.1] requires `PRN`
+    /// followed by digits, so each announced printer needs its own number. `flags` is the
+    /// `RDPDR_PRINTER_ANNOUNCE_FLAG_*` combination, and `cached_config_data` is the opaque
+    /// `CachedPrinterConfigData` the server previously sent for this printer.
+    ///
+    /// `DriverName` is always encoded as Unicode, so [`RDPDR_PRINTER_ANNOUNCE_FLAG_ASCII`] is
+    /// cleared from `flags`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `port_number` is 0 or above 9999, or if a name or the cached data exceeds
+    /// `u32::MAX` encoded bytes.
+    pub fn new_printer_announce(
+        device_id: u32,
+        port_number: u32,
+        flags: u32,
+        driver_name: &str,
+        print_name: &str,
+        cached_config_data: &[u8],
+    ) -> Self {
+        // [MS-RDPEPC 2.2.2.1] RDPDR_PRINTER_ANNOUNCE device_data layout:
+        //   Flags            u32 LE
+        //   CodePage         u32 LE   (reserved; MUST be ignored)
+        //   PnPNameLen       u32 LE   (bytes, includes trailing UTF-16 NUL)
+        //   DriverNameLen    u32 LE   (bytes, includes trailing UTF-16 NUL)
+        //   PrintNameLen     u32 LE   (bytes, includes trailing UTF-16 NUL)
+        //   CachedFieldsLen  u32 LE
+        //   PnPName          UTF-16LE, NUL-terminated
+        //   DriverName       UTF-16LE, NUL-terminated
+        //   PrintName        UTF-16LE, NUL-terminated
+        //   CachedFields     opaque bytes
+        //
+        // FreeRDP leaves PnPName empty and lets the server resolve the queue from
+        // DriverName + PrintName. Matching that behavior avoids exercising server-side
+        // PnP-name edge cases.
+        //
+        // [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/2057a02f-57d5-47db-9a32-e337ac3f50e9
+        assert!(
+            (1..=MAX_PRINTER_PORT_NUMBER).contains(&port_number),
+            "printer port number must fit the PRN<n> DOS name"
+        );
+
+        let flags = flags & !RDPDR_PRINTER_ANNOUNCE_FLAG_ASCII;
+        let driver_name_bytes = utf16le_with_nul(driver_name);
+        let print_name_bytes = utf16le_with_nul(print_name);
         let code_page: u32 = 0;
         let pnp_name_len: u32 = 0;
-        let cached_fields_len: u32 = 0;
 
         let mut device_data = Vec::with_capacity(
             4 /* Flags */
@@ -1299,7 +1464,8 @@ impl DeviceAnnounceHeader {
                 + 4 /* PrintNameLen */
                 + 4 /* CachedFieldsLen */
                 + driver_name_bytes.len()
-                + print_name_bytes.len(),
+                + print_name_bytes.len()
+                + cached_config_data.len(),
         );
         device_data.extend_from_slice(&flags.to_le_bytes());
         device_data.extend_from_slice(&code_page.to_le_bytes());
@@ -1314,9 +1480,14 @@ impl DeviceAnnounceHeader {
                 .expect("PrintName length fits in u32")
                 .to_le_bytes(),
         );
-        device_data.extend_from_slice(&cached_fields_len.to_le_bytes());
+        device_data.extend_from_slice(
+            &u32::try_from(cached_config_data.len())
+                .expect("CachedFields length fits in u32")
+                .to_le_bytes(),
+        );
         device_data.extend_from_slice(&driver_name_bytes);
         device_data.extend_from_slice(&print_name_bytes);
+        device_data.extend_from_slice(cached_config_data);
 
         Self {
             device_type: DeviceType::Print,
@@ -1324,11 +1495,34 @@ impl DeviceAnnounceHeader {
             // Per spec: when DeviceDataLength is non-zero PreferredDosName
             // is ignored, but it still needs a value that wouldn't trip
             // the character validator (forbidden: < > " / \ |; colon only
-            // at end). "PRN1" is the conventional choice for the first
-            // redirected printer.
-            preferred_dos_name: PreferredDosName("PRN1".to_owned()),
+            // at end). [MS-RDPEPC 2.2.2.1] requires "PRN" followed by digits.
+            preferred_dos_name: PreferredDosName(format!("PRN{port_number}")),
             device_data,
         }
+    }
+
+    /// Construct a port announce as described by [MS-RDPESP 2.2.2.1].
+    ///
+    /// `dos_name` is the client-side port name, such as `COM1` or `LPT1`. Ports carry no
+    /// device data, so the name is only sent in the 7-character PreferredDosName field and
+    /// longer names are truncated.
+    ///
+    /// [MS-RDPESP 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesp/
+    fn new_port(device_id: u32, device_type: DeviceType, dos_name: String) -> Self {
+        Self {
+            device_type,
+            device_id,
+            preferred_dos_name: PreferredDosName(dos_name),
+            device_data: Vec::new(),
+        }
+    }
+
+    /// Returns the `PRN<n>` port number of a printer announce.
+    pub(crate) fn printer_port_number(&self) -> Option<u32> {
+        if self.device_type != DeviceType::Print {
+            return None;
+        }
+        self.preferred_dos_name.0.strip_prefix("PRN")?.parse().ok()
     }
 
     pub(crate) fn device_type(&self) -> DeviceType {
@@ -1598,6 +1792,8 @@ impl NtStatus {
     pub const DELETE_PENDING: Self = Self(0xC000_0056);
     /// STATUS_MEDIA_WRITE_PROTECTED
     pub const MEDIA_WRITE_PROTECTED: Self = Self(0xC000_00A2);
+    /// STATUS_INSUFFICIENT_RESOURCES
+    pub const INSUFFICIENT_RESOURCES: Self = Self(0xC000_009A);
 }
 
 impl Debug for NtStatus {
@@ -1629,6 +1825,7 @@ impl Debug for NtStatus {
             NtStatus::CANCELLED => write!(f, "STATUS_CANCELLED"),
             NtStatus::DELETE_PENDING => write!(f, "STATUS_DELETE_PENDING"),
             NtStatus::MEDIA_WRITE_PROTECTED => write!(f, "STATUS_MEDIA_WRITE_PROTECTED"),
+            NtStatus::INSUFFICIENT_RESOURCES => write!(f, "STATUS_INSUFFICIENT_RESOURCES"),
             _ => write!(f, "NtStatus({:#010X})", self.0),
         }
     }
@@ -1951,6 +2148,21 @@ impl DeviceControlResponse {
         }
     }
 
+    /// Completes a device-control request with output bytes produced outside this crate,
+    /// such as the buffer a local driver returned. An empty buffer encodes as no output.
+    pub fn with_raw_output(device_io_request: DeviceIoRequest, io_status: NtStatus, output: Vec<u8>) -> Self {
+        let output_buffer: Option<Box<dyn rpce::Encode>> = if output.is_empty() {
+            None
+        } else {
+            Some(Box::new(RawOutputBuffer(output)))
+        };
+
+        Self {
+            device_io_reply: DeviceIoResponse::new(device_io_request, io_status),
+            output_buffer,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         Self::NAME
     }
@@ -2073,6 +2285,49 @@ impl DeviceIoResponse {
     }
 }
 
+/// Outcome of decoding a drive request whose information class field may name a class outside
+/// the values that request "MUST contain".
+enum ClassDecode<T> {
+    Supported(T),
+    /// The class is not supported. The rest of the request, including its declared buffer, has
+    /// been consumed.
+    Unsupported {
+        device_io_request: DeviceIoRequest,
+        /// The request's buffer length field (Length or PathLength).
+        length: u32,
+    },
+}
+
+impl<T> ClassDecode<T> {
+    /// Rejects an unsupported class as an invalid `field`, as the public decoders do.
+    fn supported_or_invalid(self, context: &'static str, field: &'static str) -> DecodeResult<T> {
+        match self {
+            Self::Supported(req) => Ok(req),
+            Self::Unsupported { .. } => Err(invalid_field_err!(context, field, "received invalid level")),
+        }
+    }
+}
+
+/// A well-formed drive request asking for an operation or an information class this crate does
+/// not implement.
+pub(crate) enum UnsupportedDriveIoRequest {
+    /// IRP_MJ_SET_VOLUME_INFORMATION, which this crate never performs.
+    SetVolumeInformation {
+        device_io_request: DeviceIoRequest,
+        /// The request's Length field, which the response MUST echo.
+        length: u32,
+    },
+    SetInformation {
+        device_io_request: DeviceIoRequest,
+        /// The request's Length field, which the response MUST echo.
+        length: u32,
+    },
+    QueryVolumeInformation(DeviceIoRequest),
+    QueryDirectory(DeviceIoRequest),
+    /// IRP_MJ_DIRECTORY_CONTROL with a MinorFunction MS-RDPEFS does not describe.
+    DirectoryControl(DeviceIoRequest),
+}
+
 /// [2.2.3.3] Server Drive I/O Request (DR_DRIVE_CORE_DEVICE_IOREQUEST)
 ///
 /// [2.2.3.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/89bb51af-c54d-40fb-81c1-d1bb353c4536
@@ -2096,37 +2351,102 @@ pub enum ServerDriveIoRequest {
 
 impl ServerDriveIoRequest {
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        match dev_io_req.major_function {
-            MajorFunction::Create => Ok(DeviceCreateRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::Close => Ok(DeviceCloseRequest::decode(dev_io_req).into()),
-            MajorFunction::Read => Ok(DeviceReadRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::Write => Ok(DeviceWriteRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::FlushBuffers => Ok(DeviceFlushBuffersRequest::decode(dev_io_req).into()),
-            MajorFunction::DeviceControl => Ok(DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)?.into()),
+        match Self::decode_or_unsupported(dev_io_req, src)? {
+            Ok(req) => Ok(req),
+            Err(UnsupportedDriveIoRequest::SetVolumeInformation { .. }) => Err(unsupported_value_err!(
+                "ServerDriveIoRequest::decode",
+                "MajorFunction",
+                "unsupported value".to_owned()
+            )),
+            // If MajorFunction is set to IRP_MJ_DIRECTORY_CONTROL and MinorFunction is set to any other value, we've encountered a server bug.
+            Err(UnsupportedDriveIoRequest::DirectoryControl(_)) => Err(invalid_field_err!(
+                "ServerDriveIoRequest::decode",
+                "MinorFunction",
+                "invalid value"
+            )),
+            Err(
+                UnsupportedDriveIoRequest::SetInformation { .. }
+                | UnsupportedDriveIoRequest::QueryVolumeInformation(_)
+                | UnsupportedDriveIoRequest::QueryDirectory(_),
+            ) => Err(invalid_field_err!(
+                "ServerDriveIoRequest::decode",
+                "FsInformationClass",
+                "received invalid level"
+            )),
+        }
+    }
+
+    /// Decodes a request like [`Self::decode`], but returns well-formed requests this crate does
+    /// not implement as [`UnsupportedDriveIoRequest`] instead of an error, so that they can be
+    /// completed with a failure status.
+    pub(crate) fn decode_or_unsupported(
+        dev_io_req: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> DecodeResult<Result<Self, UnsupportedDriveIoRequest>> {
+        let req = match dev_io_req.major_function {
+            MajorFunction::Create => DeviceCreateRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::Close => DeviceCloseRequest::decode(dev_io_req).into(),
+            MajorFunction::Read => DeviceReadRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::Write => DeviceWriteRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::FlushBuffers => DeviceFlushBuffersRequest::decode(dev_io_req).into(),
+            MajorFunction::DeviceControl => DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)?.into(),
             MajorFunction::QueryVolumeInformation => {
-                Ok(ServerDriveQueryVolumeInformationRequest::decode(dev_io_req, src)?.into())
+                match ServerDriveQueryVolumeInformationRequest::decode_class(dev_io_req, src)? {
+                    ClassDecode::Supported(req) => req.into(),
+                    ClassDecode::Unsupported { device_io_request, .. } => {
+                        return Ok(Err(UnsupportedDriveIoRequest::QueryVolumeInformation(
+                            device_io_request,
+                        )));
+                    }
+                }
             }
-            MajorFunction::QueryInformation => Ok(ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::SetInformation => Ok(ServerDriveSetInformationRequest::decode(dev_io_req, src)?.into()),
+            MajorFunction::QueryInformation => ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::SetInformation => match ServerDriveSetInformationRequest::decode_class(dev_io_req, src)? {
+                ClassDecode::Supported(req) => req.into(),
+                ClassDecode::Unsupported {
+                    device_io_request,
+                    length,
+                } => {
+                    return Ok(Err(UnsupportedDriveIoRequest::SetInformation {
+                        device_io_request,
+                        length,
+                    }));
+                }
+            },
             MajorFunction::DirectoryControl => match dev_io_req.minor_function {
                 MinorFunction::IRP_MN_QUERY_DIRECTORY => {
-                    Ok(ServerDriveQueryDirectoryRequest::decode(dev_io_req, src)?.into())
+                    match ServerDriveQueryDirectoryRequest::decode_class(dev_io_req, src)? {
+                        ClassDecode::Supported(req) => req.into(),
+                        ClassDecode::Unsupported { device_io_request, .. } => {
+                            return Ok(Err(UnsupportedDriveIoRequest::QueryDirectory(device_io_request)));
+                        }
+                    }
                 }
                 MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY => {
-                    Ok(ServerDriveNotifyChangeDirectoryRequest::decode(dev_io_req, src)?.into())
+                    ServerDriveNotifyChangeDirectoryRequest::decode(dev_io_req, src)?.into()
                 }
-                // If MajorFunction is set to IRP_MJ_DIRECTORY_CONTROL and MinorFunction is set to any other value, we've encountered a server bug.
-                _ => Err(invalid_field_err!( "ServerDriveIoRequest::decode",
-                    "MinorFunction",
-                    "invalid value", in: src)),
+                _ => {
+                    // The protocol defines no body for other minor functions, so everything after the
+                    // header is ignored. This also discards trailing data the processor would otherwise
+                    // reject: with no declared length there is nothing to tell a body from trailing data.
+                    src.advance(src.len());
+                    return Ok(Err(UnsupportedDriveIoRequest::DirectoryControl(dev_io_req)));
+                }
             },
-            MajorFunction::LockControl => Ok(ServerDriveLockControlRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::QuerySecurity => Ok(ServerDriveQuerySecurityRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::SetSecurity => Ok(ServerDriveSetSecurityRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::SetVolumeInformation => Err(unsupported_value_err!( "ServerDriveIoRequest::decode",
-                "MajorFunction",
-                "unsupported value".to_owned(), in: src)),
-        }
+            MajorFunction::LockControl => ServerDriveLockControlRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::QuerySecurity => ServerDriveQuerySecurityRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::SetSecurity => ServerDriveSetSecurityRequest::decode(dev_io_req, src)?.into(),
+            MajorFunction::SetVolumeInformation => {
+                // Never performed, so the request body only needs to be well-framed.
+                let (_, length, _) = ServerDriveSetVolumeInformationRequest::decode_frame(src)?;
+                return Ok(Err(UnsupportedDriveIoRequest::SetVolumeInformation {
+                    device_io_request: dev_io_req,
+                    length,
+                }));
+            }
+        };
+
+        Ok(Ok(req))
     }
 }
 
@@ -4017,28 +4337,36 @@ impl ServerDriveQueryDirectoryRequest {
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 1 /* InitialQuery */ + 4 /* PathLength */ + 23 /* Padding */;
 
     pub fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        Self::decode_class(device_io_request, src)?
+            .supported_or_invalid("ServerDriveQueryDirectoryRequest::decode", "file_info_class_lvl")
+    }
+
+    fn decode_class(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<ClassDecode<Self>> {
         ensure_fixed_part_size!(in: src);
         let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
-
-        // This field MUST contain one of the following values
-        match file_info_class_lvl {
-            FileInformationClassLevel::FILE_DIRECTORY_INFORMATION
-            | FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION
-            | FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION
-            | FileInformationClassLevel::FILE_NAMES_INFORMATION => {}
-            _ => {
-                return Err(invalid_field_err!( "ServerDriveQueryDirectoryRequest::decode",
-                    "file_info_class_lvl",
-                    "received invalid level", in: src));
-            }
-        }
-
         let initial_query = src.read_u8();
-        let path_length = cast_length!("ServerDriveQueryDirectoryRequest", "path_length", src.read_u32(), in: src)?;
+        let path_length_field = src.read_u32();
+        let path_length = cast_length!("ServerDriveQueryDirectoryRequest", "path_length", path_length_field, in: src)?;
         // Padding (23 bytes): An array of 23 bytes. This field is unused and MUST be ignored.
         read_padding!(src, 23);
 
         ensure_size!(in: src, size: path_length);
+
+        // This field MUST contain one of the following values.
+        if !matches!(
+            file_info_class_lvl,
+            FileInformationClassLevel::FILE_DIRECTORY_INFORMATION
+                | FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION
+                | FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION
+                | FileInformationClassLevel::FILE_NAMES_INFORMATION
+        ) {
+            read_padding!(src, path_length);
+            return Ok(ClassDecode::Unsupported {
+                device_io_request,
+                length: path_length_field,
+            });
+        }
+
         let path = if initial_query == 0 {
             // MS-RDPEFS explicitly ignores the continuation path, including its
             // declared length and contents.
@@ -4048,12 +4376,12 @@ impl ServerDriveQueryDirectoryRequest {
             decode_string(src.read_slice(path_length), CharacterSet::Unicode, true)?
         };
 
-        Ok(Self {
+        Ok(ClassDecode::Supported(Self {
             device_io_request,
             file_info_class_lvl,
             initial_query,
             path,
-        })
+        }))
     }
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -4172,7 +4500,11 @@ impl ClientDriveQueryDirectoryResponse {
         ensure_size!(ctx: Self::NAME, in: src, size: 4);
         let length = cast_length!(Self::NAME, "Length", src.read_u32())?;
         let buffer = if length == 0 {
-            read_padding!(src, 1); // Padding, mirrors the encode-side FreeRDP interop quirk above.
+            // Padding, mirrors the encode-side FreeRDP interop quirk above. The field is optional per
+            // MS-RDPEFS 2.2.3.4.10, so it is only skipped when present.
+            if !src.is_empty() {
+                read_padding!(src, 1);
+            }
             None
         } else {
             ensure_size!(ctx: Self::NAME, in: src, size: length);
@@ -4213,35 +4545,42 @@ impl ServerDriveQueryVolumeInformationRequest {
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        Self::decode_class(dev_io_req, src)?
+            .supported_or_invalid("ServerDriveQueryVolumeInformationRequest::decode", "fs_info_class_lvl")
+    }
+
+    fn decode_class(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<ClassDecode<Self>> {
         ensure_fixed_part_size!(in: src);
         let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
-
-        // This field MUST contain one of the following values.
-        match fs_info_class_lvl {
-            FileSystemInformationClassLevel::FILE_FS_VOLUME_INFORMATION
-            | FileSystemInformationClassLevel::FILE_FS_SIZE_INFORMATION
-            | FileSystemInformationClassLevel::FILE_FS_ATTRIBUTE_INFORMATION
-            | FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION
-            | FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION => {}
-            _ => {
-                return Err(invalid_field_err!( "ServerDriveQueryVolumeInformationRequest::decode",
-                        "fs_info_class_lvl",
-                        "received invalid level", in: src));
-            }
-        }
 
         // We only need to read the buffer up to the FileInformationClass to get the job done, so the rest of the fields in
         // this structure are discarded. See FreeRDP:
         // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464
-        let length = cast_length!("ServerDriveQueryVolumeInformationRequest", "length", src.read_u32(), in: src)?; // Length
+        let length_field = src.read_u32(); // Length
+        let length = cast_length!("ServerDriveQueryVolumeInformationRequest", "length", length_field, in: src)?;
         read_padding!(src, 24); // Padding
         ensure_size!(in: src, size: length);
         read_padding!(src, length); // QueryVolumeBuffer
 
-        Ok(Self {
+        // This field MUST contain one of the following values.
+        if !matches!(
+            fs_info_class_lvl,
+            FileSystemInformationClassLevel::FILE_FS_VOLUME_INFORMATION
+                | FileSystemInformationClassLevel::FILE_FS_SIZE_INFORMATION
+                | FileSystemInformationClassLevel::FILE_FS_ATTRIBUTE_INFORMATION
+                | FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION
+                | FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION
+        ) {
+            return Ok(ClassDecode::Unsupported {
+                device_io_request: dev_io_req,
+                length: length_field,
+            });
+        }
+
+        Ok(ClassDecode::Supported(Self {
             device_io_request: dev_io_req,
             fs_info_class_lvl,
-        })
+        }))
     }
 
     /// A request built by this crate never carries a QueryVolumeBuffer: decode already
@@ -4279,8 +4618,8 @@ impl ServerDriveSetVolumeInformationRequest {
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     pub fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        ensure_fixed_part_size!(in: src);
-        let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
+        let (fs_info_class_lvl, set_volume_buffer_length, buffer) = Self::decode_frame(src)?;
+        // This field MUST contain the following value.
         if fs_info_class_lvl != FileSystemInformationClassLevel::FILE_FS_LABEL_INFORMATION {
             return Err(invalid_field_err!(
                 "ServerDriveSetVolumeInformationRequest::decode",
@@ -4289,15 +4628,6 @@ impl ServerDriveSetVolumeInformationRequest {
             ));
         }
 
-        let set_volume_buffer_length = src.read_u32();
-        read_padding!(src, 24);
-        let length = cast_length!(
-            "ServerDriveSetVolumeInformationRequest",
-            "set_volume_buffer_length",
-            set_volume_buffer_length
-        )?;
-        ensure_size!(in: src, size: length);
-        let buffer = src.read_slice(length);
         if buffer.len() < 4 {
             return Err(invalid_field_err!(
                 "ServerDriveSetVolumeInformationRequest::decode",
@@ -4331,6 +4661,22 @@ impl ServerDriveSetVolumeInformationRequest {
             set_volume_buffer_length,
             volume_label,
         })
+    }
+
+    /// Reads the FsInformationClass, the Length field and the SetVolumeBuffer it declares.
+    fn decode_frame<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<(FileSystemInformationClassLevel, u32, &'a [u8])> {
+        ensure_fixed_part_size!(in: src);
+        let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
+        let set_volume_buffer_length = src.read_u32();
+        read_padding!(src, 24);
+        let length = cast_length!(
+            "ServerDriveSetVolumeInformationRequest",
+            "set_volume_buffer_length",
+            set_volume_buffer_length
+        )?;
+        ensure_size!(in: src, size: length);
+
+        Ok((fs_info_class_lvl, set_volume_buffer_length, src.read_slice(length)))
     }
 }
 
@@ -5034,33 +5380,43 @@ impl ServerDriveSetInformationRequest {
     const FIXED_PART_SIZE: usize = 4 /* FileInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        Self::decode_class(dev_io_req, src)?.supported_or_invalid(
+            "ServerDriveSetInformationRequest::decode",
+            "file_information_class_level",
+        )
+    }
+
+    fn decode_class(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> DecodeResult<ClassDecode<Self>> {
         ensure_fixed_part_size!(in: src);
         let file_information_class_level = FileInformationClassLevel::from(src.read_u32());
-
-        // This field MUST contain one of the following values.
-        match file_information_class_level {
-            FileInformationClassLevel::FILE_BASIC_INFORMATION
-            | FileInformationClassLevel::FILE_END_OF_FILE_INFORMATION
-            | FileInformationClassLevel::FILE_DISPOSITION_INFORMATION
-            | FileInformationClassLevel::FILE_RENAME_INFORMATION
-            | FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {}
-            _ => {
-                return Err(invalid_field_err!( "ServerDriveSetInformationRequest::decode",
-                    "file_information_class_level",
-                    "received invalid level", in: src));
-            }
-        };
-
-        let length = cast_length!("ServerDriveSetInformationRequest", "length", src.read_u32(), in: src)?;
+        let length_field = src.read_u32();
+        let length = cast_length!("ServerDriveSetInformationRequest", "length", length_field, in: src)?;
 
         read_padding!(src, 24); // Padding
 
+        // This field MUST contain one of the following values.
+        if !matches!(
+            file_information_class_level,
+            FileInformationClassLevel::FILE_BASIC_INFORMATION
+                | FileInformationClassLevel::FILE_END_OF_FILE_INFORMATION
+                | FileInformationClassLevel::FILE_DISPOSITION_INFORMATION
+                | FileInformationClassLevel::FILE_RENAME_INFORMATION
+                | FileInformationClassLevel::FILE_ALLOCATION_INFORMATION
+        ) {
+            ensure_size!(in: src, size: length);
+            read_padding!(src, length); // SetBuffer
+            return Ok(ClassDecode::Unsupported {
+                device_io_request: dev_io_req,
+                length: length_field,
+            });
+        }
+
         let set_buffer = FileInformationClass::decode(file_information_class_level, length, src)?;
 
-        Ok(Self {
+        Ok(ClassDecode::Supported(Self {
             device_io_request: dev_io_req,
             set_buffer,
-        })
+        }))
     }
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
@@ -5237,9 +5593,9 @@ impl FileAllocationInformation {
 /// [2.2.3.4.9]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/16b893d5-5d8b-49d1-8dcb-ee21e7612970
 #[derive(Debug, PartialEq, Clone)]
 pub struct ClientDriveSetInformationResponse {
-    device_io_reply: DeviceIoResponse,
+    pub(crate) device_io_reply: DeviceIoResponse,
     /// This field MUST be equal to the Length field in the Server Drive Set Information Request (section 2.2.3.3.9).
-    length: u32,
+    pub(crate) length: u32,
 }
 
 impl ClientDriveSetInformationResponse {

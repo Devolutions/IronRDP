@@ -8,6 +8,8 @@ semantics from `ironrdp-usb` into complete backend-facing RDPEUSB transfer
 requests. It is sans-I/O and does not allocate request IDs or manage pending
 request lifetimes.
 
+A host USB backend for the client, built on nusb, lives in [`ironrdp-rdpeusb-native`](../ironrdp-rdpeusb-native).
+
 [spec]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a1004d0e-99e9-4968-894b-0b924ef2f125
 
 This crate is part of the [IronRDP] project.

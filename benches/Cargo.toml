@@ -9,6 +9,11 @@ edition.workspace = true
 name = "perfenc"
 path = "src/perfenc.rs"
 
+[[bench]]
+name = "rfx-decode"
+path = "src/rfx_decode/main.rs"
+harness = false
+
 [features]
 default = ["qoi", "qoiz"]
 qoi = ["ironrdp/qoi"]
@@ -20,6 +25,7 @@ async-trait = "0.1"
 bytesize = "2.3"
 ironrdp = { path = "../crates/ironrdp", features = [
     "server",
+    "graphics",
     "pdu",
     "__bench",
 ] }
@@ -27,6 +33,10 @@ pico-args = "0.5"
 tokio = { version = "1", features = ["sync", "fs", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing = { version = "0.1", features = ["log"] }
+
+[dev-dependencies]
+criterion = "0.8"
+rfx-decode-fixtures = { path = "rfx-decode-fixtures" }
 
 [lints]
 workspace = true

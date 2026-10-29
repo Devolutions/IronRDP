@@ -225,12 +225,6 @@ const LOGON_EXTENDED_WITH_INVALID_RECONNECT_VERSION_BUFFER: [u8; 38] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-const LOGON_EXTENDED_WITH_INVALID_LOGON_ERROR_TYPE_BUFFER: [u8; 50] = [
-    0x32, 0x00, 0x03, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
-    0x00, 0x00, 0x00, 0xa8, 0x02, 0xe7, 0x25, 0xe2, 0x4c, 0x82, 0xb7, 0x52, 0xa5, 0x53, 0x50, 0x34, 0x98, 0xa1, 0xa8,
-    0x08, 0x00, 0x00, 0x00, 0xf0, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
-];
-
 const DOMAIN_NAME: &str = "NTDEV";
 const USER_NAME: &str = "eltons";
 const SESSION_ID: u32 = 0x02;
@@ -259,7 +253,8 @@ static LOGON_EXTENDED: LazyLock<LogonInfoExtended> = LazyLock::new(|| LogonInfoE
     }),
     errors_info: Some(LogonErrorsInfo {
         error_type: LogonErrorNotificationType::NoPermission,
-        error_data: LogonErrorNotificationData::ErrorCode(LogonErrorNotificationDataErrorCode::FailedOther),
+        // LOGON_MSG_NO_PERMISSION carries the session identifier, here 2.
+        error_data: LogonErrorNotificationData::SessionId(2),
     }),
 });
 static SESSION_PLAIN_NOTIFY: LazyLock<SaveSessionInfoPdu> = LazyLock::new(|| SaveSessionInfoPdu {
@@ -425,12 +420,34 @@ fn from_buffer_parsing_with_invalid_reconnect_version_fails() {
     };
 }
 
+// oracle: spec MS-RDPBCGR 2.2.10.1.1.4.1.1
+/// [MS-RDPBCGR] 2.2.10.1.1.4.1.1 makes any `ErrorNotificationType` that is not a named type an NTSTATUS,
+/// whose `ErrorNotificationData` is a LOGON_FAILED_* code.
 #[test]
-fn from_buffer_parsing_with_invalid_logon_error_type_fails() {
-    match decode::<LogonInfoExtended>(LOGON_EXTENDED_WITH_INVALID_LOGON_ERROR_TYPE_BUFFER.as_ref()) {
-        Err(e) if matches!(e.kind(), DecodeErrorKind::InvalidField { .. }) => (),
-        res => panic!("Expected InvalidLogonErrorType error, got: {res:?}"),
-    };
+fn from_buffer_parses_an_ntstatus_logon_error_type() {
+    // cbFieldData 8, then STATUS_LOGON_FAILURE (0xC000006D) and LOGON_FAILED_OTHER (2).
+    let buffer = [0x08, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0xc0, 0x02, 0x00, 0x00, 0x00];
+    assert_eq!(
+        decode::<LogonErrorsInfo>(&buffer).unwrap(),
+        LogonErrorsInfo {
+            error_type: LogonErrorNotificationType::NtStatus(0xC000_006D),
+            error_data: LogonErrorNotificationData::ErrorCode(LogonErrorNotificationDataErrorCode::FailedOther),
+        }
+    );
+}
+
+#[test]
+fn logon_message_types_carry_a_session_id_even_in_the_failure_code_range() {
+    for value in 0xFFFF_FFF8..=0xFFFF_FFFE {
+        let error_type = LogonErrorNotificationType::from_u32(value);
+        assert_eq!(error_type.as_u32(), value);
+        assert!(error_type.carries_session_id(), "{error_type:?}");
+    }
+    assert!(!LogonErrorNotificationType::AccessDenied.carries_session_id());
+    assert_eq!(
+        LogonErrorNotificationType::from_u32(0xC000_006D),
+        LogonErrorNotificationType::NtStatus(0xC000_006D)
+    );
 }
 
 /// The auto-reconnect random must not reach logs.

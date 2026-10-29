@@ -22,6 +22,38 @@ Otherwise, you can run `npm install` targeting the `dist/` folder directly.
 
 Import the `iron-remote-desktop-rdp.umd.cjs` from `node_modules/` folder.
 
+## Standard RDP Security
+
+`enableStandardRdpSecurity(true)` opts into `PROTOCOL_RDP` with
+`ENCRYPTION_LEVEL_NONE` and disables TLS and CredSSP negotiation. This is
+intended only for trusted RDCleanPath deployments where the WebSocket and the
+proxy-to-server transport already provide the required security.
+
+```ts
+import { ConfigBuilder } from '@devolutions/iron-remote-desktop';
+import { enableStandardRdpSecurity } from '@devolutions/iron-remote-desktop-rdp';
+
+const config = new ConfigBuilder()
+  .withDestination('localhost:3389')
+  .withProxyAddress('wss://example.test/rdp')
+  .withAuthToken('token')
+  .withExtension(enableStandardRdpSecurity(true))
+  .build();
+```
+
+## RDCleanPath errors
+
+When the proxy rejects the connection, the error's `rdcleanpathDetails()` carries the RDCleanPath `errorCode`.
+`RDCleanPathErrorCode` names the standard codes; codes 16384 to 32767 are specific to the proxy in use.
+
+```ts
+import { RDCleanPathErrorCode } from '@devolutions/iron-remote-desktop-rdp';
+
+if (error.rdcleanpathDetails()?.errorCode === RDCleanPathErrorCode.EXPIRED) {
+  // Ask the user to sign in again
+}
+```
+
 ## Virtual Printer
 
 Register `printJobStreamCallbacks` before connecting to enable the browser-side

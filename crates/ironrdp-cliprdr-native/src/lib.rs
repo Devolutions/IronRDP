@@ -12,8 +12,23 @@
 
 #[cfg(windows)]
 mod windows;
+#[cfg(all(windows, feature = "__test"))]
+pub use crate::windows::file_list as windows_file_list;
 #[cfg(windows)]
 pub use crate::windows::{HWND, WinClipboard, WinCliprdrError, WinCliprdrResult};
+
+#[cfg(target_os = "linux")]
+pub mod data_control;
+#[cfg(all(target_os = "linux", feature = "__test"))]
+pub mod linux;
+#[cfg(all(target_os = "linux", not(feature = "__test")))]
+#[expect(
+    unreachable_pub,
+    reason = "the __test feature exposes internals to the shared test suite"
+)]
+pub(crate) mod linux;
+#[cfg(target_os = "linux")]
+pub use crate::linux::{LinuxClipboard, LinuxCliprdrBackend, LinuxCliprdrError};
 
 mod stub;
 use std::sync::OnceLock;

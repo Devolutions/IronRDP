@@ -3,8 +3,6 @@ name: code-compressor
 description: Aggressively review changed code for unnecessary complexity and propose smaller, clearer, behavior-preserving alternatives. Use for code reviews, refactor assessments, or any diff where simplification, deletion, reuse, flatter control flow, or fewer abstractions may improve the implementation.
 ---
 
-# Code compressor
-
 Treat every added branch, state, abstraction, helper, conversion, and dependency as complexity that must earn its place.
 Look for duplicated logic, speculative generality, needless indirection, over-modeled state, tangled control flow, verbose data transformations, and code that existing APIs can replace.
 

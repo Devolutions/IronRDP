@@ -16,6 +16,8 @@ use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, Surfa
 use tracing::{debug, warn};
 
 use self::bitmap::BitmapEncoder;
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+pub(crate) use self::fast_path::MAX_FASTPATH_UPDATE_SIZE;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
 use crate::error::{ServerError, ServerErrorExt as _, ServerResult, ServerResultExt as _};
@@ -24,6 +26,9 @@ use crate::{ColorPointer, DisplayUpdate, Framebuffer, LargePointer, RGBAPointer}
 
 mod bitmap;
 mod fast_path;
+mod pointer_mask;
+#[cfg(feature = "qoiz")]
+pub(crate) mod qoiz;
 pub(crate) mod rfx;
 
 pub(crate) use fast_path::*;
@@ -45,10 +50,10 @@ impl CodecId {
     }
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
-    remotefx: Option<(EntropyBits, u8)>,
+    remotefx: Option<(EntropyBits, u8, RemoteFxCodec)>,
     /// Quantization values for the RemoteFX encoder. Independent of
     /// `remotefx` (entropy coder + codec id, negotiated from the client's
     /// capabilities) because this is server-chosen, not client-negotiated:
@@ -64,7 +69,7 @@ pub(crate) struct UpdateEncoderCodecs {
 }
 
 impl UpdateEncoderCodecs {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn new() -> Self {
         Self {
             remotefx: None,
@@ -78,13 +83,14 @@ impl UpdateEncoderCodecs {
         }
     }
 
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
-    pub(crate) fn set_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
+    /// Selects the RemoteFX codec the client listed, with its entropy coder and codec id.
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
+    pub(crate) fn set_remotefx_codec(&mut self, remotefx: Option<(EntropyBits, u8, RemoteFxCodec)>) {
         self.remotefx = remotefx
     }
 
     /// Set the quantization values the RemoteFX encoder uses once selected.
-    /// Has no effect unless `set_remotefx` also selects RemoteFX; kept
+    /// Has no effect unless `set_remotefx_codec` also selects RemoteFX; kept
     /// separate because quantization is server policy, not part of codec
     /// selection.
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
@@ -93,13 +99,13 @@ impl UpdateEncoderCodecs {
     }
 
     #[cfg(feature = "qoi")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_qoi(&mut self, qoi: Option<u8>) {
         self.qoi = qoi
     }
 
     #[cfg(feature = "qoiz")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_qoiz(&mut self, qoiz: Option<u8>) {
         self.qoiz = qoiz
     }
@@ -107,7 +113,7 @@ impl UpdateEncoderCodecs {
     /// Record the negotiated NsCodec codec id and color-loss level so the
     /// encoder selection path can build an `NsCodecHandler` for this session.
     #[cfg(feature = "nscodec")]
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_nscodec(&mut self, nscodec: Option<(u8, u8)>) {
         self.nscodec = nscodec
     }
@@ -119,7 +125,7 @@ impl Default for UpdateEncoderCodecs {
     }
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
@@ -131,8 +137,12 @@ pub(crate) struct UpdateEncoder {
     /// Client's advertised New Pointer Update cache size (MS-RDPBCGR 2.2.7.1.5
     /// `pointerCacheSize`). Zero means the client did not advertise support for the
     /// New Pointer Update; `RGBAPointer`/`CachedPointer` emission is skipped in that
-    /// case rather than sending a PDU the client did not agree to accept.
+    /// case rather than sending a PDU the client did not agree to accept. It is also the
+    /// number of cache entries a New, Large or Cached Pointer Update can use.
     pointer_cache_size: u16,
+    /// Client's advertised Color Pointer Update cache size (MS-RDPBCGR 2.2.7.1.5
+    /// `colorPointerCacheSize`): the number of cache entries a Color Pointer Update can use.
+    color_pointer_cache_size: u16,
     /// Client's advertised Large Pointer Capability Set flags (MS-RDPBCGR 2.2.7.2.7).
     /// Empty when the client didn't send this capability set at all. Governs both the
     /// pointer size ceiling for `RGBAPointer` (32x32 with no flags, 96x96 with
@@ -150,13 +160,14 @@ impl fmt::Debug for UpdateEncoder {
 }
 
 impl UpdateEncoder {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn new(
         desktop_size: DesktopSize,
         surface_flags: CmdFlags,
         codecs: UpdateEncoderCodecs,
         max_request_size: u32,
         pointer_cache_size: u16,
+        color_pointer_cache_size: u16,
         large_pointer_flags: LargePointerSupportFlags,
     ) -> ServerResult<Self> {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
@@ -166,10 +177,13 @@ impl UpdateEncoder {
                 #[cfg(feature = "qoi")]
                 UpdateEncoderCodecs { qoi: Some(id), .. } => BitmapUpdater::Qoi(QoiHandler::new(id)),
                 UpdateEncoderCodecs {
-                    remotefx: Some((algo, id)),
+                    remotefx: Some((algo, id, codec)),
                     remotefx_quant,
                     ..
-                } => BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, remotefx_quant, id, desktop_size)),
+                } => {
+                    let command = codec.surface_bits_command(surface_flags);
+                    BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, remotefx_quant, id, desktop_size, command))
+                }
                 // NSCodec is the lowest-priority codec because it predates
                 // RemoteFX and produces larger output. It's relevant mainly
                 // for clients (notably macOS Microsoft Remote Desktop /
@@ -194,6 +208,7 @@ impl UpdateEncoder {
             max_request_size: usize::try_from(max_request_size)
                 .map_err(|e| ServerError::custom("max_request_size", e))?,
             pointer_cache_size,
+            color_pointer_cache_size,
             large_pointer_flags,
         })
     }
@@ -216,6 +231,20 @@ impl UpdateEncoder {
         width <= max && height <= max
     }
 
+    /// Whether `cache_index` is a cache entry the client has (MS-RDPBCGR 2.2.9.1.1.4.4: the number
+    /// of cache entries is given by the Pointer Capability Set). mstsc ends the session when a
+    /// pointer update names an entry past its cache, and FreeRDP drops the connection.
+    fn cache_index_ok(update: &str, cache_index: u16, cache_size: u16) -> bool {
+        if cache_index < cache_size {
+            return true;
+        }
+        warn!(
+            cache_index,
+            cache_size, "Dropping {update} update: cache index is not in the client's pointer cache"
+        );
+        false
+    }
+
     /// Whether the client negotiated the dedicated Fast-Path Large Pointer Update
     /// itself. Per MS-RDPBCGR 2.2.7.2.7, only `UP_TO_384X384_PIXELS` unlocks this PDU;
     /// `UP_TO_96X96_PIXELS` alone only raises the Color/New Pointer Update ceiling and
@@ -225,7 +254,30 @@ impl UpdateEncoder {
             .contains(LargePointerSupportFlags::UP_TO_384X384_PIXELS)
     }
 
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    /// Whether a `width`x`height` pointer shape fits the negotiated pointer size ceiling,
+    /// and whether it must be promoted to a Fast-Path Large Pointer Update (`Some(true)`),
+    /// sent as a regular Color/New Pointer Update (`Some(false)`), or dropped (`None`).
+    ///
+    /// Uses [2.2.7.1.5] Pointer Capability Set (`pointerCacheSize`), [2.2.7.2.7] Large Pointer
+    /// Capability Set (`largePointerSupportFlags`), [2.2.9.1.1.4.4] Color Pointer Update, and
+    /// [2.2.9.1.2.1.11] Fast-Path Large Pointer Update.
+    ///
+    /// [2.2.7.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/92fd4b15-c3c1-4435-8f5b-fb0101e0f105
+    /// [2.2.7.2.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4ef45f93-42a2-4989-9308-9e1fd5eedd3e
+    /// [2.2.9.1.1.4.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/09cb545c-6947-4090-a7bd-9a9ab4c2a225
+    /// [2.2.9.1.2.1.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f2bfd2bc-cb5f-416a-8c80-acbf14a6f4fd
+    fn pointer_needs_large_update(&self, width: u16, height: u16) -> Option<bool> {
+        if self.color_or_new_pointer_size_ok(width, height) {
+            Some(false)
+        } else if self.pointer_cache_size != 0 && self.large_pointer_update_supported() && width <= 384 && height <= 384
+        {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn update(&mut self, update: DisplayUpdate) -> EncoderIter<'_> {
         EncoderIter {
             encoder: self,
@@ -243,6 +295,7 @@ impl UpdateEncoder {
 
     fn rgba_pointer(ptr: RGBAPointer) -> ServerResult<UpdateFragmenter> {
         let xor_mask = ptr.data;
+        let and_mask = pointer_mask::and_mask_from_alpha(&xor_mask, ptr.width, ptr.height);
 
         let hot_spot = Point16 {
             x: ptr.hot_x,
@@ -254,7 +307,7 @@ impl UpdateEncoder {
             width: ptr.width,
             height: ptr.height,
             xor_mask: &xor_mask,
-            and_mask: &[],
+            and_mask: &and_mask,
         };
         let ptr = PointerAttribute {
             xor_bpp: 32,
@@ -268,6 +321,7 @@ impl UpdateEncoder {
 
     fn large_pointer(ptr: LargePointer) -> ServerResult<UpdateFragmenter> {
         let xor_mask = ptr.data;
+        let and_mask = pointer_mask::and_mask_from_alpha(&xor_mask, ptr.width, ptr.height);
 
         let hot_spot = Point16 {
             x: ptr.hot_x,
@@ -280,7 +334,7 @@ impl UpdateEncoder {
             width: ptr.width,
             height: ptr.height,
             xor_mask: &xor_mask,
-            and_mask: &[],
+            and_mask: &and_mask,
         };
         Ok(UpdateFragmenter::new(
             UpdateCode::LargePointer,
@@ -288,23 +342,37 @@ impl UpdateEncoder {
         ))
     }
 
-    fn color_pointer(ptr: ColorPointer) -> ServerResult<UpdateFragmenter> {
+    fn color_pointer(ptr: ColorPointer, large: bool) -> ServerResult<UpdateFragmenter> {
         let hot_spot = Point16 {
             x: ptr.hot_x,
             y: ptr.hot_y,
         };
-        let ptr = ColorPointerAttribute {
-            cache_index: ptr.cache_index,
-            hot_spot,
-            width: ptr.width,
-            height: ptr.height,
-            xor_mask: &ptr.xor_mask,
-            and_mask: &ptr.and_mask,
+        let (code, data) = if large {
+            // MS-RDPBCGR 2.2.9.1.1.4.4 defines TS_COLORPOINTERATTRIBUTE's xorMaskData
+            // as 24 bpp, and MS-RDPBCGR 2.2.9.1.2.1.11 carries that bit depth in
+            // TS_FP_LARGEPOINTERATTRIBUTE::xorBpp.
+            let ptr = LargePointerAttribute {
+                xor_bpp: 24,
+                cache_index: ptr.cache_index,
+                hot_spot,
+                width: ptr.width,
+                height: ptr.height,
+                xor_mask: &ptr.xor_mask,
+                and_mask: &ptr.and_mask,
+            };
+            (UpdateCode::LargePointer, encode_vec(&ptr).map_err(ServerError::encode)?)
+        } else {
+            let ptr = ColorPointerAttribute {
+                cache_index: ptr.cache_index,
+                hot_spot,
+                width: ptr.width,
+                height: ptr.height,
+                xor_mask: &ptr.xor_mask,
+                and_mask: &ptr.and_mask,
+            };
+            (UpdateCode::ColorPointer, encode_vec(&ptr).map_err(ServerError::encode)?)
         };
-        Ok(UpdateFragmenter::new(
-            UpdateCode::ColorPointer,
-            encode_vec(&ptr).map_err(ServerError::encode)?,
-        ))
+        Ok(UpdateFragmenter::new(code, data))
     }
 
     fn cached_pointer(cache_index: u16) -> ServerResult<UpdateFragmenter> {
@@ -367,7 +435,7 @@ impl UpdateEncoder {
         // MultifragmentUpdate reassembly buffer.
         let mut tiled = Vec::with_capacity(diffs.len());
         for rect in diffs {
-            if rect.width * rect.height * 4 <= self.max_request_size {
+            if self.tile_bytes(rect.width, rect.height) <= self.max_tile_bytes() {
                 tiled.push(rect);
             } else {
                 let rects = self.split_diff(rect);
@@ -377,19 +445,49 @@ impl UpdateEncoder {
         tiled
     }
 
-    /// Split a rect into tiles that fit within `max_request_size`.
+    /// Uncompressed size a tile may have so that its encoded update fits `max_request_size`.
+    ///
+    /// A tile is sized before it is encoded and cannot be re-encoded smaller afterwards
+    /// (RemoteFX and QOIZ keep state across updates), so room is held back for what encoding
+    /// adds: the update and bitmap headers (tens of bytes; raw and QOI output is otherwise
+    /// no larger than the pixels, and the other codecs compress).
+    fn max_tile_bytes(&self) -> usize {
+        self.max_request_size - self.max_request_size / 64
+    }
+
+    /// The grid, in pixels, a tile's encoding covers. RemoteFX encodes whole 64x64 tiles
+    /// ([2.2.2.3.4.1] TS_RFX_TILE), padding the ones at a rect's right and bottom edges, so a
+    /// one-row strip costs as much as 64 rows. Other tiles keep widths in multiples of 4, which
+    /// the legacy bitmap encoder requires.
+    ///
+    /// [2.2.2.3.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/89e669ed-b6dd-4591-a267-73a72bc6d84e
+    fn tile_grid(&self) -> (usize, usize) {
+        match self.bitmap_updater {
+            Some(BitmapUpdater::RemoteFx(_)) => (64, 64),
+            _ => (4, 1),
+        }
+    }
+
+    /// Uncompressed size of a tile once its encoding is padded to [`Self::tile_grid`].
+    fn tile_bytes(&self, width: usize, height: usize) -> usize {
+        let (grid_width, grid_height) = self.tile_grid();
+        width.next_multiple_of(grid_width) * height.next_multiple_of(grid_height) * 4
+    }
+
+    /// Split a rect into tiles that fit within `max_tile_bytes`, on the codec's tile grid.
     /// Splits by height first, then by width within each horizontal strip.
     fn split_diff(&self, rect: Rect) -> Vec<Rect> {
         let mut rects = Vec::new();
+        let (grid_width, grid_height) = self.tile_grid();
 
-        let max_height = (self.max_request_size / (rect.width * 4)).max(1);
+        let max_height = (self.max_tile_bytes() / self.tile_bytes(rect.width, grid_height)).max(1) * grid_height;
         let mut y = rect.y;
         let y_end = rect.y + rect.height;
         while y < y_end {
             let h = (y_end - y).min(max_height);
             // Width splitting is unlikely in practice (would require
             // max_request_size < ~256 KB), but ensures correctness.
-            let max_width = (self.max_request_size / (h * 4)).max(1);
+            let max_width = (self.max_tile_bytes() / self.tile_bytes(grid_width, h)).max(1) * grid_width;
             let mut x = rect.x;
             let x_end = rect.x + rect.width;
             while x < x_end {
@@ -453,17 +551,29 @@ enum State {
     Ended,
 }
 
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
 pub(crate) struct EncoderIter<'a> {
     encoder: &'a mut UpdateEncoder,
     state: State,
 }
 
 impl EncoderIter<'_> {
-    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) async fn next(&mut self) -> Option<ServerResult<UpdateFragmenter>> {
         loop {
             let state = core::mem::take(&mut self.state);
+            let pointer = matches!(
+                state,
+                State::Start(
+                    DisplayUpdate::PointerPosition(_)
+                        | DisplayUpdate::RGBAPointer(_)
+                        | DisplayUpdate::LargePointer(_)
+                        | DisplayUpdate::ColorPointer(_)
+                        | DisplayUpdate::HidePointer
+                        | DisplayUpdate::DefaultPointer
+                        | DisplayUpdate::CachedPointer(_)
+                )
+            );
             let encoder = &mut self.encoder;
 
             let res = match state {
@@ -488,15 +598,29 @@ impl EncoderIter<'_> {
                             debug!("Dropping RGBAPointer update: client did not advertise New Pointer Update support");
                             continue;
                         }
-                        if !encoder.color_or_new_pointer_size_ok(ptr.width, ptr.height) {
+                        let Some(large) = encoder.pointer_needs_large_update(ptr.width, ptr.height) else {
                             debug!(
                                 "Dropping RGBAPointer update: {}x{} exceeds the client's negotiated pointer size \
                                  ceiling",
                                 ptr.width, ptr.height,
                             );
                             continue;
+                        };
+                        if !UpdateEncoder::cache_index_ok("RGBAPointer", ptr.cache_index, encoder.pointer_cache_size) {
+                            continue;
                         }
-                        UpdateEncoder::rgba_pointer(ptr)
+                        if large {
+                            UpdateEncoder::large_pointer(LargePointer {
+                                cache_index: ptr.cache_index,
+                                width: ptr.width,
+                                height: ptr.height,
+                                hot_x: ptr.hot_x,
+                                hot_y: ptr.hot_y,
+                                data: ptr.data,
+                            })
+                        } else {
+                            UpdateEncoder::rgba_pointer(ptr)
+                        }
                     }
                     DisplayUpdate::LargePointer(ptr) => {
                         if encoder.pointer_cache_size == 0 {
@@ -517,9 +641,30 @@ impl EncoderIter<'_> {
                             );
                             continue;
                         }
+                        if !UpdateEncoder::cache_index_ok("LargePointer", ptr.cache_index, encoder.pointer_cache_size) {
+                            continue;
+                        }
                         UpdateEncoder::large_pointer(ptr)
                     }
-                    DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),
+                    DisplayUpdate::ColorPointer(ptr) => {
+                        let Some(large) = encoder.pointer_needs_large_update(ptr.width, ptr.height) else {
+                            debug!(
+                                width = ptr.width,
+                                height = ptr.height,
+                                "Dropping ColorPointer update exceeding the negotiated pointer size"
+                            );
+                            continue;
+                        };
+                        let cache_size = if large {
+                            encoder.pointer_cache_size
+                        } else {
+                            encoder.color_pointer_cache_size
+                        };
+                        if !UpdateEncoder::cache_index_ok("ColorPointer", ptr.cache_index, cache_size) {
+                            continue;
+                        }
+                        UpdateEncoder::color_pointer(ptr, large)
+                    }
                     DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),
                     DisplayUpdate::DefaultPointer => UpdateEncoder::default_pointer(),
                     DisplayUpdate::CachedPointer(idx) => {
@@ -527,6 +672,11 @@ impl EncoderIter<'_> {
                             debug!(
                                 "Dropping CachedPointer update: client did not advertise New Pointer Update support"
                             );
+                            continue;
+                        }
+                        // The entry was filled by a Color or a New Pointer Update.
+                        let cache_size = encoder.pointer_cache_size.max(encoder.color_pointer_cache_size);
+                        if !UpdateEncoder::cache_index_ok("CachedPointer", idx, cache_size) {
                             continue;
                         }
                         UpdateEncoder::cached_pointer(idx)
@@ -608,7 +758,32 @@ impl EncoderIter<'_> {
                 State::Ended => return None,
             };
 
-            return Some(res);
+            // The tiling allowance is an estimate, not a bound for every codec or
+            // pointer shape. Never send a fragmented update that could overflow the
+            // client's negotiated reassembly buffer, even if encoding expands it.
+            let update = match res {
+                Ok(update) if encoder.max_request_size < update.data.len() => update,
+                res => return Some(res),
+            };
+            // A pointer update is dropped, like one over the negotiated pointer size: the
+            // client keeps its current pointer. Leaving out part of a bitmap would leave the
+            // client's screen wrong, so that ends the update stream instead.
+            if pointer {
+                debug!(
+                    len = update.data.len(),
+                    max_request_size = encoder.max_request_size,
+                    "Dropping pointer update: encoded update exceeds negotiated maximum"
+                );
+                continue;
+            }
+            return Some(Err(ServerError::reason(
+                "fast-path update",
+                format!(
+                    "encoded update of {} bytes exceeds negotiated maximum of {} bytes",
+                    update.data.len(),
+                    encoder.max_request_size
+                ),
+            )));
         }
     }
 }
@@ -709,19 +884,77 @@ impl BitmapUpdateHandler for BitmapHandler {
     }
 }
 
+/// A RemoteFX codec GUID from the client's [2.2.7.2.10.1.1] Bitmap Codec (TS_BITMAPCODEC) list.
+///
+/// [2.2.7.2.10.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/86507fed-a0ee-4242-b802-237534a8f65e
+#[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteFxCodec {
+    /// `CODEC_GUID_REMOTEFX`
+    RemoteFx,
+    /// `CODEC_GUID_IMAGE_REMOTEFX`
+    ImageRemoteFx,
+}
+
+impl RemoteFxCodec {
+    /// The surface command that carries this codec's data.
+    ///
+    /// [3.1.8.3.1] Encode Message Sequencing puts a RemoteFX stream in a Stream Surface Bits
+    /// command; it is sent when the client sets `STREAM_SURFACE_BITS` in its [2.2.7.2.9]
+    /// Surface Commands Capability Set (TS_SURFCMDS_CAPABILITYSET). Windows 10 mstsc shows a
+    /// black session when RemoteFX data comes in a Set Surface Bits command, and reports an
+    /// internal error when ImageRemoteFX data comes in a Stream Surface Bits command, so
+    /// ImageRemoteFX keeps Set Surface Bits. A client that does not set `STREAM_SURFACE_BITS`
+    /// also keeps getting RemoteFX data in Set Surface Bits, as before this command choice.
+    ///
+    /// [3.1.8.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/028ed301-385c-4b17-84ec-0a158a22c1b2
+    /// [2.2.7.2.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/aa953018-c0a8-4761-bb12-86586c2cd56a
+    fn surface_bits_command(self, surface_flags: CmdFlags) -> SurfaceBitsCommand {
+        match self {
+            Self::RemoteFx if surface_flags.contains(CmdFlags::STREAM_SURFACE_BITS) => SurfaceBitsCommand::Stream,
+            Self::RemoteFx | Self::ImageRemoteFx => SurfaceBitsCommand::Set,
+        }
+    }
+}
+
+/// The command that carries bitmap data, one of the [2.2.9.2] Surface Commands.
+///
+/// [2.2.9.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/397d6c54-a897-498d-933b-300fed41ec8c
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SurfaceBitsCommand {
+    /// [2.2.9.2.1] Set Surface Bits Command (TS_SURFCMD_SET_SURF_BITS)
+    ///
+    /// [2.2.9.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/776dbdaf-7619-45fd-9a90-ebfd07802b24
+    Set,
+    /// [2.2.9.2.2] Stream Surface Bits Command (TS_SURFCMD_STREAM_SURF_BITS)
+    ///
+    /// [2.2.9.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b2218638-3cf9-4f2f-be61-b096ec3c8dc5
+    Stream,
+}
+
 #[derive(Debug, Clone)]
 struct RemoteFxHandler {
     remotefx: RfxEncoder,
     codec_id: u8,
     desktop_size: Option<DesktopSize>,
+    command: SurfaceBitsCommand,
+    buffer: Vec<u8>,
 }
 
 impl RemoteFxHandler {
-    fn new(algo: EntropyBits, quant: Quant, codec_id: u8, desktop_size: DesktopSize) -> Self {
+    fn new(
+        algo: EntropyBits,
+        quant: Quant,
+        codec_id: u8,
+        desktop_size: DesktopSize,
+        command: SurfaceBitsCommand,
+    ) -> Self {
         Self {
             remotefx: RfxEncoder::new(algo, quant),
             desktop_size: Some(desktop_size),
             codec_id,
+            command,
+            buffer: Vec::new(),
         }
     }
 
@@ -732,16 +965,19 @@ impl RemoteFxHandler {
 
 impl BitmapUpdateHandler for RemoteFxHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
-        let mut buffer = vec![0; bitmap.data.len()];
+        let tiles_x = usize::from(bitmap.width.get().div_ceil(64));
+        let tiles_y = usize::from(bitmap.height.get().div_ceil(64));
+        let min_len = tiles_x * tiles_y * (64 /* TileWidth */ * 64 /* TileHeight */ * 4/* BytesPerPixel */);
+        if self.buffer.len() < min_len {
+            self.buffer.resize(min_len, 0);
+        }
+        let desktop_size = self.desktop_size.take();
         let len = loop {
-            match self
-                .remotefx
-                .encode(bitmap, buffer.as_mut_slice(), self.desktop_size.take())
-            {
+            match self.remotefx.encode(bitmap, self.buffer.as_mut_slice(), desktop_size) {
                 Err(e) => match e.kind() {
                     ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
-                        buffer.resize(buffer.len() * 2, 0);
-                        debug!("encoder buffer resized to: {}", buffer.len() * 2);
+                        self.buffer.resize(self.buffer.len() * 2, 0);
+                        debug!(len = self.buffer.len(), "Resized RemoteFX encoder buffer");
                     }
                     _ => return Err(ServerError::encode(e)).with_context("RemoteFX encode error"),
                 },
@@ -749,7 +985,7 @@ impl BitmapUpdateHandler for RemoteFxHandler {
             }
         };
 
-        set_surface(bitmap, self.codec_id, &buffer[..len])
+        surface_bits(bitmap, self.codec_id, &self.buffer[..len], self.command)
     }
 }
 
@@ -777,7 +1013,7 @@ impl BitmapUpdateHandler for QoiHandler {
 #[cfg(feature = "qoiz")]
 struct QoizHandler {
     codec_id: u8,
-    zctxt: zstd_safe::CCtx<'static>,
+    compressor: qoiz::Compressor,
 }
 
 #[cfg(feature = "qoiz")]
@@ -790,32 +1026,10 @@ impl fmt::Debug for QoizHandler {
 #[cfg(feature = "qoiz")]
 impl QoizHandler {
     fn new(codec_id: u8) -> ServerResult<Self> {
-        let mut zctxt = zstd_safe::CCtx::default();
-
-        zctxt
-            .set_parameter(zstd_safe::CParameter::CompressionLevel(3))
-            .map_err(|code| {
-                ServerError::reason(
-                    "qoiz init",
-                    format!(
-                        "failed to set zstd compression level: {}",
-                        zstd_safe::get_error_name(code)
-                    ),
-                )
-            })?;
-        zctxt
-            .set_parameter(zstd_safe::CParameter::EnableLongDistanceMatching(true))
-            .map_err(|code| {
-                ServerError::reason(
-                    "qoiz init",
-                    format!(
-                        "failed to set zstd enable long distance matching: {}",
-                        zstd_safe::get_error_name(code)
-                    ),
-                )
-            })?;
-
-        Ok(Self { codec_id, zctxt })
+        Ok(Self {
+            codec_id,
+            compressor: qoiz::Compressor::new()?,
+        })
     }
 }
 
@@ -823,34 +1037,9 @@ impl QoizHandler {
 impl BitmapUpdateHandler for QoizHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         let qoi = qoi_encode(bitmap)?;
-        let mut inb = zstd_safe::InBuffer::around(&qoi);
-        let mut data = vec![0; qoi.len()];
-        let mut outb;
-        let mut pos = 0;
+        let data = self.compressor.compress(&qoi)?;
 
-        loop {
-            outb = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
-            let res = self
-                .zctxt
-                .compress_stream2(
-                    &mut outb,
-                    &mut inb,
-                    zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
-                )
-                .map_err(|code| {
-                    ServerError::reason(
-                        "qoiz compress",
-                        format!("failed to Zstd compress: {}", zstd_safe::get_error_name(code)),
-                    )
-                })?;
-            if res == 0 {
-                break;
-            }
-            pos = outb.pos();
-            data.resize(data.len() + res, 0);
-        }
-
-        set_surface(bitmap, self.codec_id, outb.as_slice())
+        set_surface(bitmap, self.codec_id, &data)
     }
 }
 
@@ -919,6 +1108,15 @@ fn qoi_encode(bitmap: &BitmapUpdate) -> ServerResult<Vec<u8>> {
 }
 
 fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> ServerResult<UpdateFragmenter> {
+    surface_bits(bitmap, codec_id, data, SurfaceBitsCommand::Set)
+}
+
+fn surface_bits(
+    bitmap: &BitmapUpdate,
+    codec_id: u8,
+    data: &[u8],
+    command: SurfaceBitsCommand,
+) -> ServerResult<UpdateFragmenter> {
     let destination = ExclusiveRectangle {
         left: bitmap.x,
         top: bitmap.y,
@@ -937,7 +1135,10 @@ fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> ServerResult
         destination,
         extended_bitmap_data,
     };
-    let cmd = SurfaceCommand::SetSurfaceBits(pdu);
+    let cmd = match command {
+        SurfaceBitsCommand::Set => SurfaceCommand::SetSurfaceBits(pdu),
+        SurfaceBitsCommand::Stream => SurfaceCommand::StreamSurfaceBits(pdu),
+    };
     Ok(UpdateFragmenter::new(
         UpdateCode::SurfaceCommands,
         encode_vec(&cmd).map_err(ServerError::encode)?,

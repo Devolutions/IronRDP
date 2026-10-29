@@ -1,19 +1,19 @@
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
 use alloc::collections::btree_map::BTreeMap;
+use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
 
-use crate::alloc::borrow::ToOwned as _;
-use crate::complete_data::CompleteData;
 use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any};
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::debug;
+use tracing::{debug, trace};
 
+use crate::alloc::borrow::ToOwned as _;
+use crate::complete_data::CompleteData;
 use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
     DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncResponsePdu, SoftSyncTunnelType,
@@ -39,6 +39,26 @@ pub trait DvcChannelListener: Send {
 }
 
 pub type DynamicChannelListener = Box<dyn DvcChannelListener>;
+
+/// Listener creating a new processor for every channel opened with its name.
+struct FactoryListener<F> {
+    channel_name: DynamicChannelName,
+    factory: F,
+}
+
+impl<T, F> DvcChannelListener for FactoryListener<F>
+where
+    T: DvcClientProcessor + 'static,
+    F: FnMut() -> T + Send,
+{
+    fn channel_name(&self) -> &str {
+        &self.channel_name
+    }
+
+    fn create(&mut self, _channel_id: DynamicChannelId) -> Option<Box<dyn DvcClientProcessor>> {
+        Some(Box::new((self.factory)()))
+    }
+}
 
 /// For pre-registered DVC
 struct OnceListener {
@@ -89,9 +109,10 @@ impl Drop for DynamicVirtualChannel {
 
 impl DynamicVirtualChannel {
     fn from_boxed(processor: Box<dyn DvcClientProcessor + Send>) -> Self {
+        let max_message_size = processor.max_message_size();
         Self {
             channel_processor: processor,
-            complete_data: CompleteData::new(),
+            complete_data: CompleteData::new(max_message_size),
             channel_id: None,
         }
     }
@@ -121,17 +142,23 @@ impl DynamicVirtualChannel {
     }
 }
 
+/// Recent client-closed channels remembered to tolerate data already sent by the server.
+const MAX_CLIENT_CLOSED_CHANNELS: usize = 64;
+
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcClient {
     dynamic_channels: DynamicChannelSet,
+    max_transport_message_size: Option<usize>,
     /// Indicates whether the capability request/response handshake has been completed.
     cap_handshake_done: bool,
     available_tunnels: BTreeSet<SoftSyncTunnelType>,
     tunnel_channels: BTreeMap<DynamicChannelId, SoftSyncTunnelType>,
     switched_tunnels: BTreeSet<SoftSyncTunnelType>,
     soft_sync_complete: bool,
+    /// Recent client-closed channels and their tunnels, ordered from oldest to newest close.
+    client_closed: VecDeque<(DynamicChannelId, Option<SoftSyncTunnelType>)>,
 }
 
 impl fmt::Debug for DrdynvcClient {
@@ -155,16 +182,43 @@ impl DrdynvcClient {
     pub fn new() -> Self {
         Self {
             dynamic_channels: DynamicChannelSet::new(),
+            max_transport_message_size: None,
             cap_handshake_done: false,
             available_tunnels: BTreeSet::new(),
             tunnel_channels: BTreeMap::new(),
             switched_tunnels: BTreeSet::new(),
             soft_sync_complete: false,
+            client_closed: VecDeque::new(),
         }
+    }
+
+    /// Bounds inbound static-channel reassembly before any dynamic-channel dispatch.
+    ///
+    /// This limit covers each DRDYNVC carrier message, excluding its SVC header.
+    /// Configure it before constructing the static channel.
+    /// Per-DVC message limits remain independent because a dynamic message can span carriers.
+    #[must_use]
+    pub fn with_max_transport_message_size(mut self, max_message_size: usize) -> Self {
+        self.max_transport_message_size = Some(max_message_size);
+        self
+    }
+
+    /// Checks for a registered listener or active channel, including untyped listeners.
+    pub fn has_channel_name(&self, name: &str) -> bool {
+        self.dynamic_channels.listeners.contains_key(name)
+            || self
+                .dynamic_channels
+                .active_channels
+                .values()
+                .any(|channel| channel.channel_name() == name)
     }
 
     /// Registers a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
+    ///
+    /// A channel the server closes is kept and started again on its next Create Request
+    /// (xrdp reopens every channel after a Deactivation-Reactivation Sequence), so the
+    /// processor must accept [`DvcProcessor::start`] after [`DvcProcessor::close`].
     ///
     /// # Note
     ///
@@ -182,6 +236,9 @@ impl DrdynvcClient {
     /// Attaches a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
+    /// A channel the server closes is kept and started again on its next Create Request,
+    /// as with [`DrdynvcClient::with_dynamic_channel`].
+    ///
     /// # Note
     ///
     /// If a listener or a pre-registered channel with the same name already exists,
@@ -193,12 +250,34 @@ impl DrdynvcClient {
         self.dynamic_channels.register_once(channel);
     }
 
+    /// Registers a dynamic virtual channel whose processor is recreated by `factory` each time
+    /// the server opens the channel, for channels that start over from a fresh processor.
+    ///
+    /// Like [`DrdynvcClient::with_dynamic_channel`], the active processor can be looked up by type
+    /// with [`DrdynvcClient::get_dvc`].
+    ///
+    /// # Note
+    ///
+    /// If a listener or a pre-registered channel with the same name already exists,
+    /// it will be silently overwritten.
+    #[must_use]
+    pub fn with_dynamic_channel_factory<T, F>(mut self, channel_name: impl Into<DynamicChannelName>, factory: F) -> Self
+    where
+        T: DvcClientProcessor + 'static,
+        F: FnMut() -> T + Send + 'static,
+    {
+        self.dynamic_channels.register_factory(channel_name.into(), factory);
+        self
+    }
+
     pub fn attach_established_dynamic_channel<T>(&mut self, channel_id: DynamicChannelId, channel: T) -> PduResult<()>
     where
         T: DvcClientProcessor + 'static,
     {
         self.dynamic_channels
-            .attach_established_channel(channel_id, Box::new(channel))
+            .attach_established_channel(channel_id, Box::new(channel))?;
+        self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
+        Ok(())
     }
 
     /// Bind a listener.
@@ -308,9 +387,51 @@ impl DrdynvcClient {
         SvcMessage::from(caps_response)
     }
 
+    /// Closes a dynamic channel on the client's initiative and returns the Close PDU to send.
+    ///
+    /// Recent closes are remembered to discard data the server sent before receiving the Close PDU.
+    /// The server does not acknowledge a client-initiated close.
     pub fn close_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
+        self.client_close(channel_id).map(|(message, _)| message)
+    }
+
+    /// Closes a dynamic channel like [`Self::close_channel`], returning the Close PDU as a batch with
+    /// the Soft-Sync tunnel the channel was bound to.
+    ///
+    /// Once Soft-Sync moved a channel to a multitransport tunnel, its PDUs travel on that tunnel, so
+    /// the caller sends the batch there when a tunnel is returned, and over DRDYNVC otherwise.
+    pub fn close_channel_batch(
+        &mut self,
+        channel_id: DynamicChannelId,
+    ) -> Option<(DvcMessageBatch, Option<SoftSyncTunnelType>)> {
+        let (message, tunnel) = self.client_close(channel_id)?;
+        Some((DvcMessageBatch::new(channel_id, alloc::vec![message]), tunnel))
+    }
+
+    /// Closes a channel on the client's initiative and returns its Close PDU and previous tunnel.
+    fn client_close(&mut self, channel_id: DynamicChannelId) -> Option<(SvcMessage, Option<SoftSyncTunnelType>)> {
+        let tunnel = self.tunnel_channels.get(&channel_id).copied();
+        let message = self.remove_channel(channel_id)?;
+        self.remember_client_close(channel_id, tunnel);
+        Some((message, tunnel))
+    }
+
+    /// Remember a channel the client closed, so that data the server sent before seeing the close is
+    /// dropped instead of failing the connection.
+    fn remember_client_close(&mut self, channel_id: DynamicChannelId, tunnel: Option<SoftSyncTunnelType>) {
+        self.client_closed.push_back((channel_id, tunnel));
+        // MS-RDPEDYC 3.2.5.2 specifies no server acknowledgement of a client-initiated close.
+        // Bound the history by forgetting the oldest close, regardless of the server's ID order.
+        if MAX_CLIENT_CLOSED_CHANNELS < self.client_closed.len() {
+            self.client_closed.pop_front();
+        }
+    }
+
+    fn remove_channel(&mut self, channel_id: u32) -> Option<SvcMessage> {
         self.tunnel_channels.remove(&channel_id);
-        self.dynamic_channels.remove_by_channel_id(channel_id)?;
+        if !self.dynamic_channels.remove_by_channel_id(channel_id) {
+            return None;
+        }
         Some(SvcMessage::from(DrdynvcClientPdu::Close(ClosePdu::new(channel_id))))
     }
 
@@ -376,6 +497,10 @@ impl DrdynvcClient {
         match pdu {
             DrdynvcServerPdu::Data(data) => {
                 let channel_id = data.channel_id();
+                if self.client_closed.contains(&(channel_id, Some(tunnel_type))) {
+                    trace!(channel_id, "Dropping tunneled DVC data for a channel the client closed");
+                    return Ok(DvcMessageBatch::new(channel_id, Vec::new()));
+                }
                 let selected_tunnel =
                     self.tunnel_channels.get(&channel_id).copied().ok_or_else(|| {
                         pdu_other_err!("received tunneled data for a channel not selected by Soft-Sync")
@@ -444,6 +569,11 @@ impl DrdynvcClient {
                 (CreationStatus::NO_LISTENER, Vec::new())
             };
 
+        if creation_status == CreationStatus::OK {
+            // The server reused the ID of a channel the client closed, so its close is settled.
+            self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
+        }
+
         let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
         debug!("Send DVC Create Response PDU: {create_response:?}");
         responses.push(SvcMessage::from(create_response));
@@ -461,7 +591,8 @@ impl DrdynvcClient {
     /// Closes a dynamic channel at the server's request. The Close response is only sent for a
     /// channel that was open.
     fn process_close(&mut self, channel_id: DynamicChannelId) -> Vec<SvcMessage> {
-        let Some(close_response) = self.close_channel(channel_id) else {
+        self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
+        let Some(close_response) = self.remove_channel(channel_id) else {
             return Vec::new();
         };
         debug!(channel_id, "Send DVC Close Response PDU");
@@ -502,6 +633,10 @@ impl DrdynvcClient {
             for channel_id in list.channel_ids() {
                 if self.dynamic_channels.get_by_channel_id(*channel_id).is_some() {
                     tunnel_channels.insert(*channel_id, list.tunnel_type());
+                } else if self.client_closed.contains(&(*channel_id, None)) {
+                    // Closed by this client while the server was choosing tunnels: the server may
+                    // already send its data on the tunnel, and that data is dropped as well.
+                    self.remember_client_close(*channel_id, Some(list.tunnel_type()));
                 } else {
                     debug!(
                         channel_id,
@@ -540,7 +675,19 @@ impl SvcProcessor for DrdynvcClient {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        self.max_transport_message_size
+    }
+
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        if self
+            .max_transport_message_size
+            .is_some_and(|limit| limit < payload.len())
+        {
+            return Err(pdu_other_err!(
+                "DRDYNVC carrier message exceeds configured maximum size"
+            ));
+        }
         let pdu = decode_dvc_message(payload).map_err(|e| decode_err!(e))?;
         let mut responses = Vec::new();
 
@@ -568,6 +715,13 @@ impl SvcProcessor for DrdynvcClient {
                 responses.extend(self.process_close(close.channel_id()));
             }
             DrdynvcServerPdu::Data(data) => {
+                if self.client_closed.contains(&(data.channel_id(), None)) {
+                    trace!(
+                        channel_id = data.channel_id(),
+                        "Dropping DVC data for a channel the client closed"
+                    );
+                    return Ok(responses);
+                }
                 if self.tunnel_channels.contains_key(&data.channel_id()) {
                     return Err(pdu_other_err!("received TCP data for a channel selected by Soft-Sync"));
                 }
@@ -587,6 +741,13 @@ struct ListenerEntry {
     listener: DynamicChannelListener,
     /// `Some` only for channels registered via `with_dynamic_channel<T>()`.
     type_id: Option<TypeId>,
+    /// Whether the listener's single processor is kept on close for the server to reopen;
+    /// set only for channels registered via `with_dynamic_channel<T>()`.
+    reopens: bool,
+    /// A pre-registered channel the server closed, kept for it to open again under this
+    /// name (xrdp closes and reopens every channel after a Deactivation-Reactivation
+    /// Sequence). `None` while the listener still holds its processor or the channel is open.
+    closed: Option<DynamicVirtualChannel>,
 }
 
 struct DynamicChannelSet {
@@ -612,6 +773,8 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(listener),
                 type_id: None,
+                reopens: false,
+                closed: None,
             },
         );
     }
@@ -623,6 +786,24 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(OnceListener::new(channel)),
                 type_id: Some(TypeId::of::<T>()),
+                reopens: true,
+                closed: None,
+            },
+        );
+    }
+
+    fn register_factory<T, F>(&mut self, channel_name: DynamicChannelName, factory: F)
+    where
+        T: DvcClientProcessor + 'static,
+        F: FnMut() -> T + Send + 'static,
+    {
+        self.listeners.insert(
+            channel_name.clone(),
+            ListenerEntry {
+                listener: Box::new(FactoryListener { channel_name, factory }),
+                type_id: Some(TypeId::of::<T>()),
+                reopens: false,
+                closed: None,
             },
         );
     }
@@ -648,13 +829,15 @@ impl DynamicChannelSet {
         channel_id: DynamicChannelId,
     ) -> Option<&mut DynamicVirtualChannel> {
         let entry = self.listeners.get_mut(name)?;
-        let processor = entry.listener.create(channel_id)?;
+        let dvc = match entry.listener.create(channel_id) {
+            Some(processor) => DynamicVirtualChannel::from_boxed(processor),
+            None => entry.closed.take()?,
+        };
 
         if let Some(type_id) = entry.type_id {
             self.type_id_to_channel_id.insert(type_id, channel_id);
         }
 
-        let dvc = DynamicVirtualChannel::from_boxed(processor);
         // `dvc.channel_id` stays `None` here — it is set by `DynamicVirtualChannel::start`
         // on success, so `Drop` only invokes `close` for channels that were actually opened.
         let dvc = match self.active_channels.entry(channel_id) {
@@ -681,7 +864,7 @@ impl DynamicChannelSet {
     fn has_listener_by_type_id(&self, type_id: TypeId) -> bool {
         self.listeners
             .values()
-            .any(|entry| entry.type_id == Some(type_id) && entry.listener.is_available())
+            .any(|entry| entry.type_id == Some(type_id) && (entry.listener.is_available() || entry.closed.is_some()))
     }
 
     fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {
@@ -692,17 +875,31 @@ impl DynamicChannelSet {
         self.active_channels.get_mut(&id)
     }
 
-    fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> Option<DynamicVirtualChannel> {
-        self.active_channels.remove(&id).inspect(|dvc| {
-            let type_id = dvc.processor_type_id();
+    /// Closes and removes a channel, returning whether it was active.
+    fn remove_by_channel_id(&mut self, id: DynamicChannelId) -> bool {
+        let Some(mut dvc) = self.active_channels.remove(&id) else {
+            return false;
+        };
+        let type_id = dvc.processor_type_id();
 
-            // Only matters for pre-registered channels
-            if let alloc::collections::btree_map::Entry::Occupied(entry) = self.type_id_to_channel_id.entry(type_id)
-                && entry.get() == &id
-            {
-                entry.remove();
+        // Only matters for pre-registered channels
+        if self.type_id_to_channel_id.get(&type_id) == Some(&id) {
+            self.type_id_to_channel_id.remove(&type_id);
+        }
+
+        // A pre-registered channel gets its only processor back for the next Create Request
+        // under that name. Other listeners decide each open themselves, so theirs is dropped.
+        if let Some(entry) = self.listeners.get_mut(dvc.channel_name())
+            && entry.reopens
+            && entry.closed.is_none()
+        {
+            if let Some(id) = dvc.channel_id.take() {
+                dvc.channel_processor.close(id);
             }
-        })
+            dvc.complete_data = CompleteData::new(dvc.channel_processor.max_message_size());
+            entry.closed = Some(dvc);
+        }
+        true
     }
 
     #[inline]
@@ -739,6 +936,25 @@ mod tests {
     }
 
     impl DvcClientProcessor for TestDvc {}
+
+    #[test]
+    fn factory_channel_is_recreated_and_found_by_type() {
+        let mut client = DrdynvcClient::new().with_dynamic_channel_factory("test", || TestDvc);
+        assert!(client.has_registered_dvc::<TestDvc>());
+        for channel_id in [3, 4] {
+            let dvc = client
+                .dynamic_channels
+                .try_create_channel(&"test".to_owned(), channel_id)
+                .expect("factory creates a processor each time");
+            dvc.start(channel_id).unwrap();
+            assert_eq!(
+                client.get_dvc::<TestDvc>().map(|dvc| dvc.channel_id()),
+                Some(channel_id)
+            );
+            client.close_channel(channel_id);
+        }
+        assert!(client.has_registered_dvc::<TestDvc>());
+    }
 
     #[test]
     fn consumed_typed_listener_is_not_registered() {

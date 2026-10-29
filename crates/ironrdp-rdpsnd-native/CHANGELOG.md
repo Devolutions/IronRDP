@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.8.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.7.0...ironrdp-rdpsnd-native-v0.8.0)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- [**breaking**] Decode every server format the backend supports, including AAC through Media Foundation on Windows behind the default `aac` feature, and remove `DecodeStream` ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Play through a jitter buffer with a configurable latency target (`PlaybackConfig`, `DEFAULT_PLAYBACK_LATENCY`) and report buffered plus device latency ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Select playback and capture devices with `DeviceSelector`, and list them with `list_devices` ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Map the server volume to the Windows audio session ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Add MS-RDPEAI microphone capture behind the `capture` feature: `RdpeaiCaptureBackend` captures 16-bit PCM ([#1642](https://github.com/Devolutions/IronRDP/issues/1642)) ([205fe038cc](https://github.com/Devolutions/IronRDP/commit/205fe038cc693598adf803fe181526b789b2ec3d))
+
+- Capture encodes to PCM, G.711 or ADPCM ([#2203](https://github.com/Devolutions/IronRDP/issues/2203)) ([45b67591e9](https://github.com/Devolutions/IronRDP/commit/45b67591e92930a8c2159c3e70a0ed228a8f7483))
+
+- Keep the client's format order, play Wave PDUs from servers older than RDPSND version 8, and apply the server volume to more PCM formats ([#1648](https://github.com/Devolutions/IronRDP/issues/1648)) ([2d9a9bf114](https://github.com/Devolutions/IronRDP/commit/2d9a9bf114dcf41a1ddc7343f564bc2e8d1d06db))
+
+### <!-- 4 -->Bug Fixes
+
+- Stop blocking the real-time playback callback ([#1803](https://github.com/Devolutions/IronRDP/issues/1803)) ([850f654673](https://github.com/Devolutions/IronRDP/commit/850f6546730cff1a6b858864f6fbf9cb7d6264fd))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- Add the optional `ironrdp-rdpeai` 0.2 public dependency, enabled by `capture`
+
+- [**breaking**] Update `ironrdp-rdpsnd` public dependency to 0.11
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-native-v0.6.0...ironrdp-rdpsnd-native-v0.7.0)] - 2026-07-10
 
 ### <!-- 4 -->Bug Fixes

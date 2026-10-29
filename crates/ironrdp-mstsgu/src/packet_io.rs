@@ -35,7 +35,7 @@ pub(crate) trait GatewayIo: AsyncRead + AsyncWrite + Unpin {}
 
 impl<T: AsyncRead + AsyncWrite + Unpin + ?Sized> GatewayIo for T {}
 
-type GatewayStream = Box<dyn GatewayIo + Send>;
+pub(crate) type GatewayStream = Box<dyn GatewayIo + Send + 'static>;
 type RdgBody = BoxBody<Bytes, Infallible>;
 
 const MAX_AUTH_RESPONSE_SIZE: usize = 16 * 1024;
@@ -97,10 +97,10 @@ impl fmt::Debug for ProxyConfig {
     }
 }
 
-struct GatewayEndpoint {
-    host: String,
+pub(crate) struct GatewayEndpoint {
+    pub(crate) host: String,
     port: u16,
-    endpoint: String,
+    pub(crate) endpoint: String,
 }
 
 struct BufferedGatewayStream {
@@ -326,7 +326,43 @@ pub(crate) async fn open_gateway_transport(
     .await
 }
 
-async fn upgrade_gateway_tls(
+pub(crate) async fn open_rpch_gateway_channels(
+    endpoint: &str,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+) -> Result<(GatewayStream, GatewayStream, core::net::SocketAddr), Error> {
+    let (out, client_addr) = open_rpch_gateway_stream(
+        endpoint,
+        certificate_validation,
+        certificate_validation_callback.clone(),
+    )
+    .await?;
+    let (input, _) =
+        open_rpch_gateway_stream(endpoint, certificate_validation, certificate_validation_callback).await?;
+    Ok((out, input, client_addr))
+}
+
+/// Opens one TLS connection to the gateway for an RPCH IN or OUT channel.
+pub(crate) async fn open_rpch_gateway_stream(
+    endpoint: &str,
+    certificate_validation: CertificateValidation,
+    certificate_validation_callback: Option<CertificateValidationCallback>,
+) -> Result<(GatewayStream, core::net::SocketAddr), Error> {
+    let gateway = parse_gateway_endpoint(endpoint)?;
+    let proxy = proxy_from_environment(&gateway)?;
+    let (stream, client_addr) = open_gateway_tcp(&gateway, proxy.as_ref()).await?;
+    let stream = upgrade_gateway_tls(
+        stream,
+        &gateway.host,
+        endpoint,
+        certificate_validation,
+        certificate_validation_callback,
+    )
+    .await?;
+    Ok((stream, client_addr))
+}
+
+pub(crate) async fn upgrade_gateway_tls(
     stream: GatewayStream,
     gw_host: &str,
     gw_endpoint: &str,
@@ -352,7 +388,7 @@ async fn upgrade_gateway_tls(
     Ok(Box::new(stream))
 }
 
-fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
+pub(crate) fn parse_gateway_endpoint(endpoint: &str) -> Result<GatewayEndpoint, Error> {
     if endpoint.contains('@') {
         return Err(Error::new("connect", GwErrorKind::InvalidGwTarget));
     }
@@ -411,16 +447,14 @@ pub(crate) fn gateway_endpoint_summary(endpoint: &str) -> Result<String, Error> 
     parse_gateway_endpoint(endpoint).map(|gateway| gateway.endpoint)
 }
 
-async fn open_gateway_tcp(
+pub(crate) async fn open_gateway_tcp(
     gateway: &GatewayEndpoint,
     proxy: Option<&ProxyConfig>,
 ) -> Result<(GatewayStream, core::net::SocketAddr), Error> {
     match proxy {
         Some(proxy) => open_proxy_tunnel(proxy, gateway).await,
         None => {
-            let stream = TcpStream::connect(&gateway.endpoint)
-                .await
-                .map_err(|e| custom_err!("tcp connect", e))?;
+            let stream = connect_tcp("tcp connect", &gateway.endpoint).await?;
             let client_addr = stream
                 .local_addr()
                 .map_err(|e| custom_err!("get socket local address", e))?;
@@ -429,13 +463,22 @@ async fn open_gateway_tcp(
     }
 }
 
+pub(crate) async fn connect_tcp(
+    context: &'static str,
+    address: impl tokio::net::ToSocketAddrs,
+) -> Result<TcpStream, Error> {
+    let stream = TcpStream::connect(address).await.map_err(|e| custom_err!(context, e))?;
+    stream
+        .set_nodelay(true)
+        .map_err(|e| custom_err!("set TCP_NODELAY", e))?;
+    Ok(stream)
+}
+
 async fn open_proxy_tunnel(
     proxy: &ProxyConfig,
     gateway: &GatewayEndpoint,
 ) -> Result<(GatewayStream, core::net::SocketAddr), Error> {
-    let stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
-        .await
-        .map_err(|e| custom_err!("proxy tcp connect", e))?;
+    let stream = connect_tcp("proxy tcp connect", (proxy.host.as_str(), proxy.port)).await?;
     let client_addr = stream
         .local_addr()
         .map_err(|e| custom_err!("get socket local address", e))?;
@@ -607,7 +650,7 @@ fn validate_http_connect_response(response: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-fn proxy_from_environment(gateway: &GatewayEndpoint) -> Result<Option<ProxyConfig>, Error> {
+pub(crate) fn proxy_from_environment(gateway: &GatewayEndpoint) -> Result<Option<ProxyConfig>, Error> {
     proxy_from_values(
         &gateway.host,
         gateway.port,

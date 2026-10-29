@@ -3,8 +3,6 @@ name: skeptical-reviewer
 description: Perform an evidence-driven, change-averse code review. Use when assessing the correctness, necessity, scope, or design of a proposed change.
 ---
 
-# Skeptical reviewer
-
 Every added concept, dependency, abstraction, API, and structural change needs a clear, concrete benefit.
 Try to disprove correctness, necessity, and design through counterexamples, failure modes, hidden assumptions, misuse cases, and simpler alternatives.
 Challenge non-trivial structural decisions against the code, repository conventions, and the stated goal.

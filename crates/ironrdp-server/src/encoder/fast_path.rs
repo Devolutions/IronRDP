@@ -4,7 +4,8 @@ use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu,
 use ironrdp_pdu::{Encode as _, WriteCursor};
 
 // this is the maximum amount of data (not including headers) we can send in a single TS_FP_UPDATE_PDU
-const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+pub(crate) const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
 
 const FASTPATH_HEADER_SIZE: usize = 6;
 
@@ -17,7 +18,7 @@ const FASTPATH_HEADER_SIZE: usize = 6;
     clippy::partial_pub_fields,
     reason = "public field is not a part of the public API and is used by benchmarks"
 )]
-#[cfg_attr(feature = "__bench", visibility::make(pub))]
+#[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
 pub(crate) struct UpdateFragmenter {
     code: UpdateCode,
     index: usize,
@@ -48,6 +49,7 @@ impl UpdateFragmenter {
         FASTPATH_HEADER_SIZE + cmp::min(self.data.len(), MAX_FASTPATH_UPDATE_SIZE)
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn next(&mut self, dst: &mut [u8]) -> Option<usize> {
         let (consumed, written) = self.encode_next(dst)?;
         self.position += consumed;
@@ -57,6 +59,9 @@ impl UpdateFragmenter {
 
     fn encode_next(&mut self, dst: &mut [u8]) -> Option<(usize, usize)> {
         match self.data.len() - self.position {
+            0 if self.index == 0 => self
+                .encode_fastpath(Fragmentation::Single, &[], dst)
+                .map(|written| (0, written)),
             0 => None,
 
             1..=MAX_FASTPATH_UPDATE_SIZE => {

@@ -483,15 +483,15 @@ impl DecodedImage {
 
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn update_pointer(&mut self, pointer: Arc<DecodedPointer>) -> SessionResult<Option<InclusiveRectangle>> {
-        self.show_pointer = true;
-
         // Remove old pointer from frame buffer
-        let old_rect = if self.pointer.is_some() {
+        // INVARIANT: The background layer is applied while `self.show_pointer` still reflects the previous pointer state.
+        let old_rect = if self.show_pointer {
             self.apply_pointer_layer(PointerLayer::Background)?
         } else {
             None
         };
 
+        self.show_pointer = true;
         self.pointer = Some(pointer);
         self.recalculate_pointer_geometry();
 
@@ -948,24 +948,42 @@ impl DecodedImage {
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
-        rgba32.enumerate().for_each(|(row_idx, row)| {
-            row.chunks_exact(SRC_COLOR_DEPTH)
-                .enumerate()
-                .for_each(|(col_idx, src_pixel)| {
-                    let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
-
-                    self.data[dst_idx + ri] = src_pixel[0];
-                    self.data[dst_idx + gi] = src_pixel[1];
-                    self.data[dst_idx + bi] = src_pixel[2];
-                    self.data[dst_idx + ai] = src_pixel[3];
-                })
-        });
+        // Row by row, with the channel order fixed per loop so the copy can
+        // be vectorized: a plain copy for RGBA images, a swap of R and B for
+        // BGRA images (the usual layouts), and the general reorder for others.
+        for (row_idx, row) in rgba32.enumerate() {
+            let start = ((top + row_idx) * image_width + left) * DST_COLOR_DEPTH;
+            let dst = &mut self.data[start..start + row.len()];
+            match [ri, gi, bi, ai] {
+                [0, 1, 2, 3] => dst.copy_from_slice(row),
+                [2, 1, 0, 3] => {
+                    for (dst, src) in dst
+                        .chunks_exact_mut(DST_COLOR_DEPTH)
+                        .zip(row.chunks_exact(SRC_COLOR_DEPTH))
+                    {
+                        dst.copy_from_slice(&[src[2], src[1], src[0], src[3]]);
+                    }
+                }
+                _ => {
+                    for (dst, src) in dst
+                        .chunks_exact_mut(DST_COLOR_DEPTH)
+                        .zip(row.chunks_exact(SRC_COLOR_DEPTH))
+                    {
+                        dst[ri] = src[0];
+                        dst[gi] = src[1];
+                        dst[bi] = src[2];
+                        dst[ai] = src[3];
+                    }
+                }
+            }
+        }
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
 
         Ok(update_rectangle)
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn apply_rgba32(
         &mut self,
         rgba32: &[u8],

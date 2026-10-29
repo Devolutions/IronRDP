@@ -28,7 +28,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
-use crate::driver::Driver;
+use crate::driver::{DatagramIo, Driver};
 use crate::error::{
     DriverError, DriverErrorExt as _, DriverErrorKind, UdpTransportError, UdpTransportErrorExt as _,
     UdpTransportErrorKind,
@@ -48,7 +48,9 @@ use crate::tunnel::{read_tunnel_pdu, tunnel_data_loop, write_tunnel_pdu};
 /// (request_id + security_cookie).
 #[derive(Clone)]
 pub struct UdpTransportConfig {
-    /// Server address (same IP as the TCP connection, same or different port).
+    /// Resolved peer address for direct UDP connections.
+    ///
+    /// ICE establishment uses the peer address from its nominated candidate pair instead.
     pub server_addr: SocketAddr,
     /// TLS server name for SNI.
     pub server_name: String,
@@ -321,6 +323,9 @@ pub struct UdpTransport {
 
     /// Handle to the write pump task (channel → RDPEMT encode → TLS write).
     write_pump_handle: AbortOnDrop<Result<(), UdpTransportError>>,
+
+    #[cfg(feature = "ice")]
+    pub(crate) ice_agent: Option<crate::ice::IceAgentGuard>,
 }
 
 impl UdpTransport {
@@ -436,6 +441,10 @@ impl UdpTransport {
             Ok(()) => debug!("UDP transport shut down"),
             Err(error) => debug!(%error, "UDP transport shut down with a driver error"),
         }
+        #[cfg(feature = "ice")]
+        if let Some(ice_agent) = self.ice_agent.take() {
+            ice_agent.close().await;
+        }
         result
     }
 
@@ -457,6 +466,8 @@ impl UdpTransport {
             driver_handle: AbortOnDrop::new(tokio::spawn(async { Ok(()) })),
             pump_handle: AbortOnDrop::new(tokio::spawn(async { Ok(()) })),
             write_pump_handle: AbortOnDrop::new(tokio::spawn(async { Ok(()) })),
+            #[cfg(feature = "ice")]
+            ice_agent: None,
         }
     }
 }
@@ -506,7 +517,7 @@ fn driver_exit_during_handshake(
 /// socket binding, RDPEUDP2 handshake, TLS negotiation, or RDPEMT tunnel
 /// rejection.
 pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, UdpTransportError> {
-    // Phase 1: Bind UDP socket and connect to server.
+    // Bind a fresh socket for callers that do not need to gather candidates first.
     // The bind address's family must match server_addr's: an IPv4 socket cannot
     // connect() to an IPv6 destination. Mirrors the TCP listener's family match
     // in ironrdp-server/src/server.rs (RdpServer::run).
@@ -514,20 +525,54 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
         SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
     };
-    debug!(peer = %config.server_addr, "Connecting UDP transport");
-
     let socket = UdpSocket::bind(bind_addr).await.map_err(|error| {
         debug!(%error, %bind_addr, "Failed to bind UDP socket");
         UdpTransportError::socket("connect udp", error)
     })?;
+
+    connect_udp_with_socket(config, socket).await
+}
+
+/// Establishes a UDP transport using a caller-bound socket.
+///
+/// Use this after an optional STUN probe on the same socket to preserve its local port for the RDPEUDP2 attempt.
+/// The caller selects the peer address (including any address received through its own candidate-signaling mechanism); this function does not perform ICE checks or TURN allocation.
+/// The socket's address family must match `config.server_addr`.
+///
+/// # Errors
+///
+/// Returns `UdpTransportError` if connecting the socket, the RDPEUDP2 handshake, TLS negotiation, or RDPEMT tunnel negotiation fails.
+pub async fn connect_udp_with_socket(
+    config: UdpTransportConfig,
+    socket: UdpSocket,
+) -> Result<UdpTransport, UdpTransportError> {
+    let bind_addr = socket
+        .local_addr()
+        .map_err(|error| UdpTransportError::socket("connect udp", error))?;
+    if bind_addr.is_ipv4() != config.server_addr.is_ipv4() {
+        let error = std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "UDP socket address family does not match the peer address",
+        );
+        return Err(UdpTransportError::socket("connect udp", error));
+    }
+
+    debug!(peer = %config.server_addr, "Connecting UDP transport");
     socket.connect(config.server_addr).await.map_err(|error| {
         debug!(%error, peer = %config.server_addr, "Failed to connect UDP socket");
         UdpTransportError::socket("connect udp", error)
     })?;
 
+    connect_udp_with_datagram_io(config, socket).await
+}
+
+pub(crate) async fn connect_udp_with_datagram_io<S: DatagramIo>(
+    config: UdpTransportConfig,
+    socket: S,
+) -> Result<UdpTransport, UdpTransportError> {
     debug!(
         peer = %config.server_addr,
-        local_addr = ?socket.local_addr().ok(),
+        local_addr = ?socket.local_addr(),
         "UDP socket bound, starting RDPEUDP2 handshake"
     );
 
@@ -639,6 +684,8 @@ pub async fn connect_udp(config: UdpTransportConfig) -> Result<UdpTransport, Udp
         driver_handle,
         pump_handle,
         write_pump_handle,
+        #[cfg(feature = "ice")]
+        ice_agent: None,
     })
 }
 
@@ -739,9 +786,46 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
         UdpTransportError::socket("accept udp inner", error)
     })?;
 
+    accept_udp_after_initial_datagram(socket, config, recv_buf[..n].to_vec(), client_addr).await
+}
+
+#[cfg(feature = "ice")]
+pub(crate) async fn accept_udp_with_datagram_io<S: DatagramIo>(
+    socket: S,
+    config: UdpAcceptConfig,
+) -> Result<UdpTransport, UdpTransportError> {
+    let client_addr = socket.peer_addr().ok_or_else(|| {
+        UdpTransportError::socket(
+            "accept udp with datagram I/O",
+            std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "datagram transport has no selected peer",
+            ),
+        )
+    })?;
+    let mut recv_buf = vec![0u8; 9000];
+    let n = socket.recv(&mut recv_buf).await.map_err(|error| {
+        debug!(%error, peer = %client_addr, "Failed to receive the initial datagram");
+        UdpTransportError::socket("accept udp with datagram I/O", error)
+    })?;
+
+    accept_udp_after_initial_datagram(socket, config, recv_buf[..n].to_vec(), client_addr).await
+}
+
+async fn accept_udp_after_initial_datagram<S: DatagramIo>(
+    socket: S,
+    config: UdpAcceptConfig,
+    initial_datagram: Vec<u8>,
+    client_addr: SocketAddr,
+) -> Result<UdpTransport, UdpTransportError> {
     // Phase 2: Decode the V1 SYN datagram and create a server-side connection
-    let syn_datagram: V1Datagram = ironrdp_core::decode(&recv_buf[..n]).map_err(|error| {
-        warn!(%error, peer = %client_addr, len = n, "Failed to decode initial SYN datagram");
+    let syn_datagram: V1Datagram = ironrdp_core::decode(&initial_datagram).map_err(|error| {
+        warn!(
+            %error,
+            peer = %client_addr,
+            len = initial_datagram.len(),
+            "Failed to decode initial SYN datagram"
+        );
         UdpTransportError::handshake(
             "accept UDP",
             DriverError::rdpeudp(
@@ -830,6 +914,8 @@ async fn accept_udp_inner(socket: UdpSocket, config: UdpAcceptConfig) -> Result<
         driver_handle,
         pump_handle,
         write_pump_handle,
+        #[cfg(feature = "ice")]
+        ice_agent: None,
     })
 }
 
@@ -935,6 +1021,28 @@ mod tests {
 
     use super::*;
 
+    // oracle: mutant connect_udp_with_socket allows mismatched socket and peer address families
+    #[tokio::test]
+    async fn connect_with_socket_rejects_a_peer_with_another_address_family() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind IPv4 socket");
+        let peer = "[::1]:3389".parse().expect("valid IPv6 socket address");
+        let config = UdpTransportConfig::new(
+            peer,
+            "localhost".into(),
+            TunnelConfig {
+                request_id: 1,
+                security_cookie: [0; 16],
+            },
+        );
+
+        let error = match connect_udp_with_socket(config, socket).await {
+            Err(error) => error,
+            Ok(_) => panic!("address family mismatch must fail before connecting"),
+        };
+
+        assert!(matches!(error.kind(), UdpTransportErrorKind::Socket(_)));
+    }
+
     /// Dropping the guard stops the task rather than detaching it.
     ///
     /// A bare `JoinHandle` detaches on drop, so every early return between
@@ -1005,6 +1113,8 @@ mod tests {
             })),
             pump_handle: AbortOnDrop::new(tokio::spawn(async { Ok(()) })),
             write_pump_handle: AbortOnDrop::new(tokio::spawn(async { Ok(()) })),
+            #[cfg(feature = "ice")]
+            ice_agent: None,
         };
 
         tokio::time::sleep(Duration::from_millis(20)).await;

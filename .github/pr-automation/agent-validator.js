@@ -17,7 +17,7 @@
 
 const fs = require("node:fs");
 
-const { REVIEWER_ORDER } = require("./routing");
+const { REVIEWER_ORDER, SPECIALIST_FINDING_LIMITS } = require("./routing");
 const { MAXIMUM_GITHUB_INTEGER, linesAreInRange, normalizeText } = require("./validation");
 const { corpusFromDirectory, validateProtocolReferences } = require("./validate-protocol-review");
 const { normalizeCandidateReview } = require("./validate-candidate-review");
@@ -222,10 +222,10 @@ const finalIdentity = (finding) => {
   return title ? title.toLowerCase() : null;
 };
 
-function preservedCandidateFindings(candidate, history) {
+function preservedCandidateFindings(candidate, history, reviewer) {
   if (history.length === 0) return "";
   const dropped = droppedFindings(candidate, history, {
-    identify: candidateIdentity, maximum: CANDIDATE_LIMITS.maxItems,
+    identify: candidateIdentity, maximum: SPECIALIST_FINDING_LIMITS[reviewer],
     // The candidate validator rejects a repeated id, so a repair can only ever keep one of them.
     distinct: true,
   });
@@ -284,7 +284,8 @@ function validateSpecialist(candidate, { metadata, previousCandidate, candidates
   const context = loadValidationContext(metadata);
   const changedPaths = new Set(context.changed_paths);
 
-  const preserved = preservedCandidateFindings(candidate, baselines(previousCandidate, candidates));
+  const preserved = preservedCandidateFindings(
+    candidate, baselines(previousCandidate, candidates), reviewer);
   if (preserved) return reject(preserved);
 
   const result = normalizeCandidateReview(candidate, {

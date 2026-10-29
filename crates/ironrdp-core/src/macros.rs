@@ -534,7 +534,8 @@ macro_rules! write_padding {
 
 /// Moves read cursor, ignoring padding bytes.
 ///
-/// This is similar to `ironrdp_pdu::padding::read`, only exists for consistency with `write_padding!`.
+/// Like `ReadCursor::read_u8` and the other cursor reads, this does not check that `n` bytes remain.
+/// Check the remaining length first with `ensure_size!` or `ensure_fixed_part_size!`.
 #[macro_export]
 macro_rules! read_padding {
     ($src:expr, $n:expr) => {

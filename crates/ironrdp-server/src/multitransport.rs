@@ -16,7 +16,7 @@ use std::sync::Arc;
 use ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu;
 use ironrdp_rdpemt::TunnelConfig;
 use ironrdp_rdpeudp::ConnectionConfig;
-use ironrdp_rdpeudp_tokio::{UdpAcceptConfig, UdpTransport, UdpTransportSender, accept_udp};
+use ironrdp_rdpeudp_tokio::{TunnelMessage, UdpAcceptConfig, UdpTransport, UdpTransportSender, accept_udp};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio_rustls::rustls;
@@ -57,13 +57,19 @@ impl UdpTransportHandle {
     /// A failure is logged here rather than propagated: The RDP session never
     /// fails over an optional sideband transport.
     pub(crate) async fn send(&self, data: Vec<u8>) {
-        if let Err(error) = self.sender.send(data).await {
+        self.send_message(TunnelMessage::from(data)).await;
+    }
+
+    /// Sends one Tunnel Data PDU's content, sub-headers included; failures
+    /// are handled as in [`Self::send`].
+    pub(crate) async fn send_message(&self, message: TunnelMessage) {
+        if let Err(error) = self.sender.send_message(message).await {
             warn!(%error, "Failed to send data over UDP transport");
         }
     }
 
-    pub(crate) async fn recv(&self) -> Option<Vec<u8>> {
-        self.transport.lock().await.recv().await
+    pub(crate) async fn recv(&self) -> Option<TunnelMessage> {
+        self.transport.lock().await.recv_message().await
     }
 }
 

@@ -8,6 +8,7 @@ type Error = ironrdp_error::Error<GwErrorKind>;
 enum GwErrorKind {
     Connect,
     Custom,
+    Decode,
 }
 
 trait GwErrorExt {
@@ -30,6 +31,7 @@ impl fmt::Display for GwErrorKind {
         f.write_str(match self {
             Self::Connect => "connection error",
             Self::Custom => "custom",
+            Self::Decode => "decode",
         })
     }
 }

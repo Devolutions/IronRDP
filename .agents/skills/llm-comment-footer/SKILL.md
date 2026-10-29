@@ -3,8 +3,6 @@ name: llm-comment-footer
 description: Add required LLM attribution to GitHub issue bodies and issue or pull request comments. Use whenever drafting, creating, or replying to this content, including agent-merge review-thread replies and helper-driven GitHub comment replies. Do not use for pull request bodies.
 ---
 
-# LLM comment footer
-
 Include exactly one attribution.
 Append one of these footers to the issue body or comment Markdown after a blank line unless using a helper-managed byline:
 

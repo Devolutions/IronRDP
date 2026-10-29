@@ -31,7 +31,9 @@ jobs:
           git-email: bot@devolutions.net
           github-token: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
 
-      - name: Update fuzz/Cargo.lock
+      # release-plz chooses each version from the crate's own changes, so a crate that exposes a dependency
+      # taking a breaking release would otherwise get a non-breaking one.
+      - name: Fix versions and update fuzz/Cargo.lock
         if: ${{ steps.release-plz.outputs.did-open-pr == 'true' }}
         run: |
           $prRaw = '${{ steps.release-plz.outputs.pr }}'
@@ -46,11 +48,18 @@ jobs:
           Write-Host "Switch to branch $($pr.head_branch)"
           git checkout "$($pr.head_branch)"
 
+          Write-Host "Fetch release tags"
+          git fetch --tags origin
+
+          Write-Host "Give a breaking release to crates whose public dependencies take one"
+          cargo xtask release check-public-deps --fix
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
           Write-Host "Update ./fuzz/Cargo.lock"
           cargo update --manifest-path ./fuzz/Cargo.toml
 
           Write-Host "Update last commit"
-          git add ./fuzz/Cargo.lock
+          git add --update
           git commit --amend --no-edit
 
           Write-Host "Update the release pull request"

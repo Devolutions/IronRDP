@@ -3,7 +3,12 @@ use ironrdp_pdu::gcc;
 use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, RailSupportLevel};
 
 mod autodetect;
+mod debug_redaction;
+mod display_data;
 mod early_capabilities;
+mod entra;
+#[cfg(feature = "remote-guard")]
+mod remote_guard;
 
 fn test_config() -> ironrdp_connector::Config {
     ironrdp_connector::Config {
@@ -13,6 +18,11 @@ fn test_config() -> ironrdp_connector::Config {
         },
         monitor_layout: None,
         desktop_scale_factor: 0,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
         enable_tls: true,
         enable_credssp: false,
         enable_standard_rdp_security: false,
@@ -44,6 +54,7 @@ fn test_config() -> ironrdp_connector::Config {
         pointer_software_rendering: false,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
+        rdp_version: gcc::RdpVersion::V5_PLUS,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
         alternate_shell: String::new(),

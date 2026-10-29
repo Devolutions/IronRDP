@@ -1,20 +1,24 @@
 use ironrdp_cliprdr::pdu::ClipboardFormatId;
 use tracing::error;
 use windows::Win32::Foundation::{GetLastError, GlobalFree, HANDLE, HGLOBAL, WIN32_ERROR};
+use windows::Win32::System::Com::{DVASPECT_CONTENT, FORMATETC};
 use windows::Win32::System::DataExchange::SetClipboardData;
-use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalUnlock};
 
 use crate::windows::WinCliprdrResult;
 
 /// Safe wrapper around windows global memory buffer.
-struct GlobalMemoryBuffer(HGLOBAL);
+pub(crate) struct GlobalMemoryBuffer(HGLOBAL);
 
 impl GlobalMemoryBuffer {
     /// Creates new global memory buffer and copies data into it.
-    fn from_slice(data: &[u8]) -> WinCliprdrResult<Self> {
+    pub(crate) fn from_slice(data: &[u8]) -> WinCliprdrResult<Self> {
+        // A zero-byte allocation can't be locked, so empty data still gets one byte, zeroed so
+        // that no uninitialized memory is handed out.
+        //
         // SAFETY: GlobalAlloc will return null only if there is not enough memory to allocate
         // `windows` crate will catch this error via internal invalid handle check
-        let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, data.len())? };
+        let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, data.len().max(1))? };
 
         // SAFETY: We created the handle and ensured it wasn’t null just above.
         // Note that we don’t check for failure because we own the handle and
@@ -29,7 +33,9 @@ impl GlobalMemoryBuffer {
         unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst.cast::<u8>(), data.len()) };
 
         // SAFETY: We called `GlobalLock` on this handle just above.
-        if let Err(error) = unsafe { GlobalUnlock(handle) } {
+        if let Err(error) = unsafe { GlobalUnlock(handle) }
+            && error.code().is_err()
+        {
             error!(%error, "Failed to unlock memory");
         }
 
@@ -38,6 +44,11 @@ impl GlobalMemoryBuffer {
 
     fn as_raw(&self) -> HGLOBAL {
         self.0
+    }
+
+    /// Releases ownership of the handle, e.g. to a `STGMEDIUM` handed to an OLE caller.
+    pub(crate) fn into_raw(self) -> HGLOBAL {
+        core::mem::ManuallyDrop::new(self).0
     }
 }
 
@@ -69,8 +80,7 @@ pub(crate) unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> Wi
 
     // We successfully transferred ownership of the data to the clipboard, we don't need to
     // call drop on handle
-    #[expect(clippy::mem_forget)]
-    core::mem::forget(global_data);
+    let _ = global_data.into_raw();
 
     Ok(())
 }
@@ -79,4 +89,15 @@ pub(crate) unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> Wi
 pub(crate) fn get_last_winapi_error() -> WIN32_ERROR {
     // SAFETY: `GetLastError` is always safe to call.
     unsafe { GetLastError() }
+}
+
+/// A `FORMATETC` for `format` in `tymed`, for the whole content (`lindex` -1) or one item of it.
+pub(crate) fn format_etc(format: u16, lindex: i32, tymed: i32) -> FORMATETC {
+    FORMATETC {
+        cfFormat: format,
+        ptd: core::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex,
+        tymed: tymed.cast_unsigned(),
+    }
 }

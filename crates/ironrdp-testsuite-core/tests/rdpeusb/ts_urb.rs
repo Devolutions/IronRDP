@@ -76,3 +76,28 @@ fn select_configuration_carries_full_descriptor() {
     let decoded: TsUrbSelectConfig = decode(&encoded).expect("URB with full descriptor should decode");
     assert_eq!(original, decoded);
 }
+
+// Windows submits OUT control requests without a data stage, such as a HID SET_IDLE, as
+// TRANSFER_IN_REQUEST messages whose transfer flags keep the OUT direction.
+#[test]
+fn transfer_in_accepts_out_control_requests_without_data() {
+    use ironrdp_rdpeusb::pdu::usb_dev::ts_urb::{TsUrbIn, TsUrbInKind};
+
+    // TS_URB_HEADER: Size 20, URB_FUNCTION_CLASS_INTERFACE, RequestId 7; TransferFlags 0 (OUT);
+    // RequestTypeReservedBits, Request SET_IDLE, Value 0, Index 1, Padding.
+    let ts_urb = [20, 0, 27, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0x0a, 0, 0, 1, 0, 0, 0];
+    let urb: TsUrbIn = decode(&ts_urb).expect("a data-less OUT class request decodes");
+    let TsUrbInKind::VendorClassReq(request) = urb.kind.clone() else {
+        panic!("expected a vendor or class request");
+    };
+    assert_eq!(request.transfer_flags, 0);
+    assert_eq!(request.request, 0x0a);
+    assert_eq!(request.index, 1);
+
+    // Backends that hand TS_URBs to the operating system encode it back as it was.
+    let urb = TsUrbIn {
+        kind: TsUrbInKind::VendorClassReq(request),
+        header: urb.header,
+    };
+    assert_eq!(encode_vec(&urb).expect("it encodes back"), ts_urb);
+}

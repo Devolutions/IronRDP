@@ -87,7 +87,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  Path: `%APPDATA%\ironrdp-agent\known_certificates` (Windows) or
                                  `~/.config/ironrdp-agent/known_certificates`; override with
                                  `IRONRDP_AGENT_KNOWN_CERTIFICATES`.
-- `connect [--no-prompt] [--no-auto-start|--auto-start] [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--vmconnect VM_ID] [--vmconnect-basic] [--vmconnect-current-user] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
+- `connect [--no-prompt] [--no-auto-start|--auto-start] [--rdp-file F] [--prop KEY:TYPE:VALUE]... [--server H[:PORT]] [-u USER] [-p PASS] [-d DOMAIN] [--remote-guard [negotiate|ntlm|kerberos]] [--vmconnect VM_ID] [--vmconnect-basic] [--vmconnect-current-user] [--sandbox-id ID] [--sandbox-pipe PATH] [--log-directive D]`
                                  Merge an optional .rdp file with CLI overrides into one config and
                                  open a session. The default daemon starts automatically when absent;
                                  `--no-auto-start` requires it to be running. An explicit
@@ -109,6 +109,13 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  (e.g. `ironrdp_connector=trace`) on top of the default `debug`
                                  level; use it to troubleshoot a connection, then read the result
                                  with `query-logs`.
+                                 `--remote-guard` requires experimental RCG support and uses Kerberos for the initial logon without password delegation or NTLM fallback.
+                                 The value mirrors CredSSP package selection: `negotiate` (the default) redirects both Kerberos and outbound NTLMv2 and the remote side picks per connection, while `kerberos` and `ntlm` restrict redirection to one package.
+                                 Property `ironrdp_remote_guard` accepts 0|1|2|3 or the names disabled|negotiate|ntlm|kerberos.
+                                 Requires a remote-guard build, strict TLS validation, and a reachable Kerberos KDC (DNS discovery or kdcproxyurl/kdcproxyname).
+                                 DNS discovery needs a DNS account realm (UPN, or --domain with an unqualified user); for SAM/NetBIOS identities, supply an explicit KDC such as --prop kdcproxyurl:s:tcp://dc.ad.example.test:88.
+                                 Named-pipe RDP, RDCleanPath, VMConnect, and automatic reconnect are unsupported.
+                                 Windows interoperability remains experimental; do not disable certificate checking.
                                  On Windows, `--sandbox-id` resolves NamedPipe RDP settings via
                                  WindowsSandboxServer gRPC (create the VM first with `wsb start`).
                                  Sandbox defaults are the base; explicit file/prop/flags override
@@ -259,25 +266,26 @@ only on explicit request.
 ## NOW remote execution (requires an active, connected RDP session)
 
 The daemon allocates one private `Devolutions::Now::Agent` DVC endpoint for each RDP session. It
-waits lazily for the endpoint only when a NOW request is made: up to 30 seconds for its first
-connection and up to 10 seconds after a worker/transport replacement. `status` and `disconnect`
-remain responsive while it waits.
+negotiates NOW in the background as soon as the remote host opens the channel, and again after
+each closure, because the host abandons a channel whose client stays silent. A NOW request waits
+up to 30 seconds for its first connection and up to 10 seconds after a replacement. `status` and
+`disconnect` remain responsive while it waits.
 
 - `now capabilities`                 Negotiate and print the supported NOW styles.
 - `now run COMMAND [--directory DIR]`
-                                     Submit generic Run and return after local submission. Run is
-                                     intentionally untracked: it has no durable output or result.
+                                     Open a remote file or URI without command-line arguments; return after local submission.
+                                     Run is untracked and has no durable output or result.
 - `now powershell COMMAND [COMMON]`  Execute Windows PowerShell.
 - `now pwsh COMMAND [COMMON]`        Execute PowerShell 7.
 - `now exec process FILE [--parameters ARGS] [COMMON]`
                                      Execute a Windows CreateProcess request.
 - `now exec batch COMMAND [COMMON]`  Execute a Windows batch request.
 
-`COMMON` is `--directory DIR`, `--stdin FILE` (use `-` for the CLI standard input), `--timeout
-SECONDS`, `--detached`, and `--operation-id-file FILE`. The operation-ID file is written after
-local submission and lets later CLI invocations attach, cancel, or send stdin. PowerShell and pwsh
-default to both `-NoProfile` and `-NonInteractive`; use `--profile` and/or `--interactive` only to
-explicitly opt out. Detached commands have no stdin, output, or terminal result.
+`COMMON` is `--directory DIR`, `--stdin FILE` (use `-` for the CLI standard input; under 16 MiB),
+`--timeout SECONDS`, `--detached`, and `--operation-id-file FILE`. The operation-ID file is written
+after local submission and lets later CLI invocations attach, cancel, or send stdin. PowerShell and
+pwsh default to both `-NoProfile` and `-NonInteractive`; use `--profile` and/or `--interactive`
+only to explicitly opt out. Detached commands have no stdin, output, or terminal result.
 
 Tracked commands have one daemon-owned operation at a time. Their stdout and stderr chunks are
 forwarded as raw bytes (not line-buffered) and the CLI returns the remote nonzero exit code
@@ -292,7 +300,9 @@ status`: 8 MiB per operation, 32 terminal operations, and 32 MiB total. Use:
 - `now diagnostics`
 
 Live `now attach` output is bounded. If an attachment cannot keep up, it closes; attach again with
-the last sequence number to resume from retained output.
+the last sequence number to resume from retained output. A session serves at most eight live
+attachments, including the submitting command's own stream, and refuses another until one ends.
+Each `now stdin` call sends at most 1 MiB.
 
 Use `--format human|json|ndjson` with `now` for human-readable output, one JSON result, or JSON
 event lines. JSON output represents raw bytes as byte arrays and is bounded to 8,192 events and

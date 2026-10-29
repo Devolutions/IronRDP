@@ -7,9 +7,9 @@ namespace Devolutions.IronRdp;
 public static class Connection
 {
     public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName,
-        CliprdrBackendFactory? factory, int port = 3389)
+        CliprdrBackendFactory? factory, int port = 3389, CancellationToken cancellationToken = default)
     {
-        var client = await CreateTcpConnection(serverName, port);
+        var client = await CreateTcpConnection(serverName, port, cancellationToken);
         string clientAddr = client.Client.LocalEndPoint.ToString();
         System.Diagnostics.Debug.WriteLine(clientAddr);
 
@@ -19,15 +19,15 @@ public static class Connection
 
         ConnectionHelpers.SetupConnector(connector, config, factory);
 
-        await ConnectBegin(framed, connector);
-        var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector);
-        var result = await ConnectionHelpers.ConnectFinalize(serverName, connector, serverPublicKey, framedSsl);
+        await ConnectBegin(framed, connector, cancellationToken);
+        var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector, cancellationToken);
+        var result = await ConnectionHelpers.ConnectFinalize(serverName, connector, serverPublicKey, framedSsl, cancellationToken);
 
         return (result, framedSsl);
     }
 
     private static async Task<(byte[], Framed<SslStream>)> SecurityUpgrade(Framed<NetworkStream> framed,
-        ClientConnector connector)
+        ClientConnector connector, CancellationToken cancellationToken)
     {
         var (streamRequireUpgrade, _) = framed.GetInner();
         var promise = new TaskCompletionSource<byte[]>();
@@ -39,7 +39,7 @@ public static class Connection
         await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions()
         {
             AllowTlsResume = false
-        });
+        }, cancellationToken);
         var serverPublicKey = await promise.Task;
         Framed<SslStream> framedSsl = new(sslStream);
         connector.MarkSecurityUpgradeAsDone();
@@ -47,12 +47,13 @@ public static class Connection
         return (serverPublicKey, framedSsl);
     }
 
-    private static async Task ConnectBegin(Framed<NetworkStream> framed, ClientConnector connector)
+    private static async Task ConnectBegin(Framed<NetworkStream> framed, ClientConnector connector,
+        CancellationToken cancellationToken)
     {
         var writeBuf = WriteBuf.New();
         while (!connector.ShouldPerformSecurityUpgrade())
         {
-            await SingleSequenceStep(connector, writeBuf, framed);
+            await SingleSequenceStep(connector, writeBuf, framed, cancellationToken);
         }
     }
 
@@ -65,10 +66,10 @@ public static class Connection
         {
             if (state.IsSuspended())
             {
-                var request = state.GetNetworkRequestIfSuspended()!;
-                var protocol = request.GetProtocol();
-                var url = request.GetUrl();
-                var data = request.GetData();
+                var request = state.NetworkRequestIfSuspended!;
+                var protocol = request.Protocol;
+                var url = request.Url;
+                var data = request.Data;
 
                 if (protocol == NetworkRequestProtocol.Tcp)
                 {
@@ -96,7 +97,7 @@ public static class Connection
             {
                 try
                 {
-                    var clientState = state.GetClientStateIfCompleted();
+                    var clientState = state.ClientStateIfCompleted;
                     return clientState;
                 }
                 catch (IronRdpException ex)
@@ -116,7 +117,8 @@ public static class Connection
         }
     }
 
-    public static async Task SingleSequenceStep<S, T>(S sequence, WriteBuf buf, Framed<T> framed)
+    public static async Task SingleSequenceStep<S, T>(S sequence, WriteBuf buf, Framed<T> framed,
+        CancellationToken cancellationToken = default)
         where T : Stream
         where S : ISequence
     {
@@ -127,7 +129,7 @@ public static class Connection
 
         if (pduHint != null)
         {
-            byte[] pdu = await framed.ReadByHint(pduHint);
+            byte[] pdu = await framed.ReadByHint(pduHint, cancellationToken);
             written = sequence.Step(pdu, buf);
         }
         else
@@ -135,13 +137,13 @@ public static class Connection
             written = sequence.StepNoInput(buf);
         }
 
-        if (written.GetWrittenType() == WrittenType.Nothing)
+        if (written.WrittenType == WrittenType.Nothing)
         {
             return;
         }
 
         // Will throw an exception if the size is not set.
-        var size = written.GetSize().Get();
+        var size = written.Size.Get();
 
         var response = new byte[size];
         buf.ReadIntoBuf(response);
@@ -149,7 +151,7 @@ public static class Connection
         await framed.Write(response);
     }
 
-    static async Task<TcpClient> CreateTcpConnection(String servername, int port)
+    static async Task<TcpClient> CreateTcpConnection(String servername, int port, CancellationToken cancellationToken)
     {
         IPAddress ipAddress;
 
@@ -159,7 +161,7 @@ public static class Connection
         }
         catch (FormatException)
         {
-            IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername).WaitAsync(TimeSpan.FromSeconds(10));
+            IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername, cancellationToken).WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             ipAddress = ipHostInfo.AddressList[0];
         }
 
@@ -167,7 +169,7 @@ public static class Connection
 
         TcpClient client = new TcpClient();
 
-        await client.ConnectAsync(ipEndPoint);
+        await client.ConnectAsync(ipEndPoint, cancellationToken);
 
         return client;
     }
@@ -177,7 +179,7 @@ public static class Utils
 {
     public static byte[] VecU8ToByte(VecU8 vecU8)
     {
-        var len = vecU8.GetSize();
+        var len = vecU8.Size;
         var buffer = new byte[len];
         vecU8.Fill(buffer);
         return buffer;

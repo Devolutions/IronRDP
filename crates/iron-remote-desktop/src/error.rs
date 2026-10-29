@@ -8,6 +8,10 @@
 //! match error.kind() {
 //!     IronErrorKind::RDCleanPath => {
 //!         if let Some(details) = error.rdcleanpath_details() {
+//!             // Check for a specific RDCleanPath error code
+//!             if details.error_code() == Some(100) {
+//!                 // Handle expired credential
+//!             }
 //!             // Check for specific HTTP errors
 //!             if details.http_status_code() == Some(403) {
 //!                 // Handle forbidden/VNET deleted case
@@ -55,14 +59,15 @@ pub enum IronErrorKind {
 /// Detailed error information for RDCleanPath errors.
 ///
 /// When an RDCleanPath error occurs, this structure provides granular details
-/// about the underlying cause, including HTTP status codes, Windows Socket errors,
-/// and TLS alert codes.
+/// about the underlying cause, including the RDCleanPath error code, HTTP status codes,
+/// Windows Socket errors, and TLS alert codes.
 #[derive(Clone, Copy, Debug)]
 #[wasm_bindgen]
 pub struct RDCleanPathDetails {
     http_status_code: Option<u16>,
     wsa_error_code: Option<u16>,
     tls_alert_code: Option<u8>,
+    error_code: Option<u16>,
 }
 
 // NOTE: multiple impl blocks required because wasm-bindgen doesn't support
@@ -107,6 +112,19 @@ impl RDCleanPathDetails {
     pub fn tls_alert_code(&self) -> Option<u8> {
         self.tls_alert_code
     }
+
+    /// RDCleanPath error code sent by the proxy.
+    ///
+    /// Common values:
+    /// - 1: General error
+    /// - 100: Credential expired
+    /// - 103: Target unreachable
+    ///
+    /// Codes 16384 to 32767 are implementation-specific: their meaning depends on the proxy.
+    #[wasm_bindgen(getter, js_name = errorCode)]
+    pub fn error_code(&self) -> Option<u16> {
+        self.error_code
+    }
 }
 
 #[expect(
@@ -123,6 +141,13 @@ impl RDCleanPathDetails {
             http_status_code,
             wsa_error_code,
             tls_alert_code,
+            error_code: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_error_code(mut self, error_code: u16) -> Self {
+        self.error_code = Some(error_code);
+        self
     }
 }

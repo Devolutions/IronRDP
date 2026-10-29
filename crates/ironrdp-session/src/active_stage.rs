@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
-use ironrdp_core::{ReadCursor, WriteBuf};
+use ironrdp_core::{MonotonicInstant, ReadCursor, WriteBuf};
 use ironrdp_displaycontrol::client::DisplayControlClient;
+use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout};
 use ironrdp_dvc::pdu::SoftSyncTunnelType;
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessageBatch, DynamicChannelMut, DynamicChannelRef};
 use ironrdp_egfx::client::GraphicsPipelineClient;
+use ironrdp_egfx::compositor::WindowUpdate;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
@@ -16,11 +18,12 @@ use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
 use ironrdp_pdu::rdp::refresh_rectangle::RefreshRectanglePdu;
-use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
+use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
+use ironrdp_pdu::rdp::session_info::{LogonErrorsInfo, ServerAutoReconnect};
 use ironrdp_pdu::rdp::suppress_output::SuppressOutputPdu;
 use ironrdp_pdu::slow_path::{self, GraphicsUpdateType};
 use ironrdp_pdu::window::{
-    WindowingOrdersUpdate, try_decode_fast_path_windowing_orders, try_decode_slow_path_windowing_orders,
+    WindowingOrder, WindowingOrdersUpdate, try_decode_fast_path_windowing_orders, try_decode_slow_path_windowing_orders,
 };
 use ironrdp_pdu::{Action, mcs};
 use ironrdp_rdpei::RdpeiClient;
@@ -115,6 +118,25 @@ fn new_bulk_decompressor(compression_type: Option<CompressionType>) -> Option<Bu
     compression_type.map(|compression_type| BulkCompressor::new(to_bulk_compression_type(compression_type)))
 }
 
+/// Encodes `events` into Fast-Path Input PDUs ([\[MS-RDPBCGR\] 2.2.8.1.2]), one PDU per
+/// [`FastPathInput::MAX_EVENTS`] events, in order.
+///
+/// It reads no session state, so a client can call it while another thread drives
+/// [`ActiveStage::process`]. It does not redraw the client-side software pointer:
+/// [`ActiveStage::process_fastpath_input`] does that on top of these frames.
+///
+/// [\[MS-RDPBCGR\] 2.2.8.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b8e7c588-51cb-455b-bb73-92d480903133
+pub fn encode_fastpath_input(events: &[FastPathInputEvent]) -> SessionResult<Vec<Vec<u8>>> {
+    events
+        .chunks(FastPathInput::MAX_EVENTS)
+        .map(|event_chunk| {
+            // PERF: unnecessary copy
+            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
+            ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)
+        })
+        .collect()
+}
+
 impl ActiveStage {
     pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
         self.fast_path_processor.update_mouse_pos(x, y);
@@ -134,6 +156,9 @@ impl ActiveStage {
 
     /// Encodes outgoing input events and modifies image if necessary (e.g for client-side pointer
     /// rendering).
+    ///
+    /// Without software pointer rendering, the frames are exactly those of
+    /// [`encode_fastpath_input`], which needs neither the stage nor the image.
     pub fn process_fastpath_input(
         &mut self,
         image: &mut DecodedImage,
@@ -147,13 +172,11 @@ impl ActiveStage {
         // Mouse move events are prevalent, so we can preallocate space for
         // response frames + graphics update.
         let mut output = Vec::with_capacity(events.len().div_ceil(FastPathInput::MAX_EVENTS) + 1);
-
-        for event_chunk in events.chunks(FastPathInput::MAX_EVENTS) {
-            // PERF: unnecessary copy
-            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
-            let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
-            output.push(ActiveStageOutput::ResponseFrame(frame));
-        }
+        output.extend(
+            encode_fastpath_input(events)?
+                .into_iter()
+                .map(ActiveStageOutput::ResponseFrame),
+        );
 
         // If pointer rendering is disabled - we can skip the rest
         if !self.enable_server_pointer {
@@ -183,15 +206,28 @@ impl ActiveStage {
     }
 
     /// Process a frame received from the server.
+    ///
+    /// `received_at` is when the transport read the frame, such as `Framed::last_read_at()`
+    /// from `ironrdp-async` or `ironrdp-blocking`. Use one monotonic clock for every frame, and
+    /// keep the read time for buffered frames so bandwidth measurements reflect network arrival.
+    /// With `None`, a Bandwidth Measure Stop is answered with `timeDelta = 1` and
+    /// `byteCount = 0`, which the server reads as 0 kbps ([\[MS-RDPBCGR\] 3.3.5.14]).
+    ///
+    /// [\[MS-RDPBCGR\] 3.3.5.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b716fd9a-5a0b-4970-b5d0-f1be451408b7
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
         action: Action,
         frame: &[u8],
+        received_at: Option<MonotonicInstant>,
     ) -> SessionResult<Vec<ActiveStageOutput>> {
         self.damage_regions.clear();
         let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
+                // Fast-path frames carry no security flags or data signature: IronRDP supports
+                // Enhanced RDP Security, and Standard RDP Security only at ENCRYPTION_LEVEL_NONE.
+                // The continuous bandwidth count therefore includes the entire frame.
+                self.x224_processor.record_bandwidth_bytes(frame.len());
                 let mut output = WriteBuf::new();
                 let processor_updates =
                     self.fast_path_processor
@@ -202,7 +238,9 @@ impl ActiveStage {
                 )
             }
             Action::X224 => {
-                let x224_outputs = self.x224_processor.process(frame, &mut self.bulk_decompressor)?;
+                let x224_outputs = self
+                    .x224_processor
+                    .process(frame, &mut self.bulk_decompressor, received_at)?;
                 let mut stage_outputs = Vec::new();
                 let mut processor_updates = Vec::new();
 
@@ -234,8 +272,12 @@ impl ActiveStage {
                 // Soft-Sync tunnel, see `process_dvc_tunnel`), so the compositor is drained here
                 // rather than in the Action::FastPath arm, which runs on every fast-path frame
                 // (the highest-frequency path in a session).
-                if let Some(region) = self.drain_graphics_pipeline(image)? {
+                let (region, window_updates) = self.drain_graphics_pipeline(image)?;
+                if let Some(region) = region {
                     stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
+                }
+                if !window_updates.is_empty() {
+                    stage_outputs.push(ActiveStageOutput::WindowSurfaceUpdates(window_updates));
                 }
 
                 (stage_outputs, processor_updates)
@@ -279,21 +321,37 @@ impl ActiveStage {
     /// Drains the client-side EGFX compositor: follows a pending `ResetGraphics`, composites
     /// each completed-frame output region into `image` and records its damage.
     ///
-    /// Returns the union of the changed regions, or `None` when nothing was pending.
-    fn drain_graphics_pipeline(&mut self, image: &mut DecodedImage) -> SessionResult<Option<InclusiveRectangle>> {
-        let (output_reset, graphics_updates) = self
+    /// Returns the union of the changed output regions, or `None` when nothing was pending,
+    /// and the RemoteApp window regions, which are not part of `image`.
+    fn drain_graphics_pipeline(
+        &mut self,
+        image: &mut DecodedImage,
+    ) -> SessionResult<(Option<InclusiveRectangle>, Vec<WindowUpdate>)> {
+        let Some(composited) = self
             .get_dvc_mut::<GraphicsPipelineClient>()
-            .map(|mut gfx| {
-                let gfx = gfx.processor_mut();
-                (gfx.take_output_reset(), gfx.drain_output())
-            })
-            .unwrap_or_default();
-        if let Some((width, height)) = output_reset {
-            image.reset_preserving_pointer(width, height)?;
+            .map(|mut gfx| composite_graphics_pipeline(gfx.processor_mut(), image))
+            .transpose()?
+        else {
+            return Ok((None, Vec::new()));
+        };
+        if composited.reset {
             self.graphics_output_needs_full_refresh = true;
         }
-        let (region, damage_regions) =
-            composite_graphics_updates(image, graphics_updates.into_iter().map(|u| (u.region, u.data)))?;
+        self.damage_regions.extend(composited.regions);
+        Ok((composited.region, composited.window_updates))
+    }
+
+    /// Composites RGBA pixels rendered outside the session, such as client-side video, into
+    /// `image` and records their damage like a graphics pipeline update.
+    ///
+    /// Each update is a region with exclusive right and bottom edges and its tightly packed RGBA
+    /// rows. Updates outside the image are dropped. Returns the union of the changed regions.
+    pub fn composite_rgba32(
+        &mut self,
+        image: &mut DecodedImage,
+        updates: impl IntoIterator<Item = (ExclusiveRectangle, Vec<u8>)>,
+    ) -> SessionResult<Option<InclusiveRectangle>> {
+        let (region, damage_regions) = composite_graphics_updates(image, updates)?;
         self.damage_regions.extend(damage_regions);
         Ok(region)
     }
@@ -508,9 +566,10 @@ impl ActiveStage {
     ///
     /// `None` means no Display Control client is configured. `Some(false)` means it is configured
     /// but its dynamic channel is still opening or has not received its capabilities PDU.
-    pub fn display_control_ready(&mut self) -> Option<bool> {
+    pub fn display_control_ready(&self) -> Option<bool> {
         let Some(dvc) = self.get_dvc::<DisplayControlClient>() else {
             return self
+                .x224_processor
                 .get_svc_processor::<DrdynvcClient>()
                 .and_then(|drdynvc| drdynvc.has_registered_dvc::<DisplayControlClient>().then_some(false));
         };
@@ -590,8 +649,12 @@ impl ActiveStage {
             .process_tunnel(tunnel_type, payload)
             .map_err(SessionError::pdu)?;
         let mut stage_outputs = Vec::new();
-        if let Some(region) = self.drain_graphics_pipeline(image)? {
+        let (region, window_updates) = self.drain_graphics_pipeline(image)?;
+        if let Some(region) = region {
             stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
+        }
+        if !window_updates.is_empty() {
+            stage_outputs.push(ActiveStageOutput::WindowSurfaceUpdates(window_updates));
         }
         self.widen_to_full_refresh(image, &mut stage_outputs);
         Ok((batch, stage_outputs))
@@ -660,6 +723,52 @@ impl ActiveStage {
         Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
     }
 
+    /// Returns the capabilities the server sent over the Display Control Virtual Channel, if any.
+    pub fn display_control_capabilities(&self) -> Option<DisplayControlCapabilities> {
+        self.get_dvc::<DisplayControlClient>()?
+            .processor()
+            .capabilities()
+            .cloned()
+    }
+
+    /// Prepares a complete monitor layout request for routing over TCP or a Soft-Sync tunnel.
+    ///
+    /// The layout carries every monitor with its position, orientation, physical size and scale
+    /// factors, and is adapted to the server capabilities with
+    /// [`DisplayControlMonitorLayout::fit_to_capabilities`] before it is encoded.
+    ///
+    /// If the Display Control Virtual Channel is not available, not yet connected, or has not
+    /// received its required server capabilities PDU, this method returns `None`.
+    pub fn prepare_monitor_layout(
+        &mut self,
+        layout: &DisplayControlMonitorLayout,
+    ) -> Option<SessionResult<DvcMessageBatch>> {
+        let Some(dvc) = self.get_dvc::<DisplayControlClient>() else {
+            debug!("Could not encode a monitor layout: Display Control Virtual Channel is not available");
+            return None;
+        };
+        let channel_id = dvc.channel_id();
+        let display_control = dvc.processor();
+        if !display_control.ready() {
+            debug!("Could not encode a monitor layout: Display Control capabilities have not been received");
+            return None;
+        }
+        let messages = match display_control.encode_monitor_layout(channel_id, layout) {
+            Ok(messages) => messages,
+            Err(error) => return Some(Err(SessionError::encode(error))),
+        };
+        Some(DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu))
+    }
+
+    /// Fully encodes a complete monitor layout request for sending over the Display Control Virtual Channel.
+    ///
+    /// See [`Self::prepare_monitor_layout`]. Returns an error when Soft-Sync routes the channel
+    /// through a multitransport tunnel.
+    pub fn encode_monitor_layout(&mut self, layout: &DisplayControlMonitorLayout) -> Option<SessionResult<Vec<u8>>> {
+        let prepared = self.prepare_monitor_layout(layout)?;
+        Some(prepared.and_then(|batch| self.encode_dvc_batch_over_tcp(batch)))
+    }
+
     /// Returns whether the RDPEI channel is available and ready (SC_READY / CS_READY exchanged).
     ///
     /// `None` means no RDPEI client is configured. `Some(false)` means it is registered but not
@@ -678,6 +787,13 @@ impl ActiveStage {
     pub fn rdpei_can_send_touch(&mut self) -> bool {
         self.get_dvc::<RdpeiClient>()
             .is_some_and(|dvc| dvc.processor().ready() && !dvc.processor().is_suspended())
+    }
+
+    /// What the RDPEI channel accepts right now; nothing when it is missing or closed.
+    pub fn rdpei_input_state(&self) -> ironrdp_rdpei::RdpeiInputState {
+        self.get_dvc::<RdpeiClient>()
+            .map(|dvc| dvc.processor().input_state())
+            .unwrap_or_default()
     }
 
     /// Prepares a touch event for routing over TCP or a Soft-Sync tunnel.
@@ -813,11 +929,28 @@ pub enum ActiveStageOutput {
     PointerBitmap(Arc<DecodedPointer>),
     /// Server-reported remote monitor layout ([MS-RDPBCGR] 2.2.12.1).
     MonitorLayout(Vec<Monitor>),
-    /// Validated Windowing Alternate Secondary Drawing Orders.
+    /// Decoded Windowing Alternate Secondary Drawing Orders ([MS-RDPERP] 2.2.1.3).
     ///
-    /// The payload is a complete slow-path Orders graphics update. It remains
-    /// protocol data rather than a RAIL message.
-    WindowingOrders(Vec<u8>),
+    /// The orders come from one slow-path or Fast-Path Orders update, in wire order,
+    /// and are only forwarded when window support was negotiated.
+    ///
+    /// An update that also carries other drawing orders is decoded only up to the first
+    /// of them: their framing depends on drawing-order state this client does not keep,
+    /// and it advertises no drawing-order support that would make a server send them.
+    /// Such an update is logged as a warning.
+    ///
+    /// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp
+    WindowingOrders(Vec<WindowingOrder>),
+    /// RemoteApp window pixels from graphics pipeline surfaces mapped to RAIL windows
+    /// with [2.2.2.20] RDPGFX_MAP_SURFACE_TO_WINDOW_PDU or
+    /// [2.2.2.23] RDPGFX_MAP_SURFACE_TO_SCALED_WINDOW_PDU.
+    ///
+    /// These surfaces are not part of the session image; the consumer paints each
+    /// region into the window it names.
+    ///
+    /// [2.2.2.20]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/2ec1357c-ee65-4d9b-89f3-8fc49348c92a
+    /// [2.2.2.23]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/22fc0ec7-38ce-4d9d-ad6d-93a0e9f3c38c
+    WindowSurfaceUpdates(Vec<WindowUpdate>),
     Terminate(GracefulDisconnectReason),
     /// Server Save Session Info notification ([MS-RDPBCGR] 2.2.10.1).
     ///
@@ -827,6 +960,12 @@ pub enum ActiveStageOutput {
         /// Whether the notification unambiguously reports a completed logon.
         logon_complete: bool,
     },
+    /// The ID of the remote session, reported with a completed logon ([\[MS-RDPBCGR\] 2.2.10.1.1]).
+    ///
+    /// It precedes the [`ActiveStageOutput::SaveSessionInfo`] output of the same notification.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.10.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    SessionId(u32),
     /// Received a Server Deactivate All PDU. The consumer should execute the [Deactivation-Reactivation Sequence].
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
@@ -857,8 +996,18 @@ pub enum ActiveStageOutput {
     ///
     /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
     AutoReconnectCookie(ServerAutoReconnect),
+    /// Logon error or warning notification ([\[MS-RDPBCGR\] 2.2.10.1.1.4.1.1]), received in a
+    /// Save Session Info PDU.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.10.1.1.4.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/845eb789-6edf-453a-8b0e-c976823d1f72
+    LogonErrors(LogonErrorsInfo),
     /// Server rejected the automatic reconnection attempt.
     AutoReconnectFailed,
+    /// The server sent a Server Redirection PDU ([MS-RDPBCGR] 2.2.13).
+    ///
+    /// The consumer should close the connection and reconnect to the target it describes, as for
+    /// `ConnectionOutcome::Redirected` during the connection sequence.
+    ServerRedirection(Box<ServerRedirectionPdu>),
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
@@ -880,12 +1029,15 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
                 Ok(Self::Terminate(desc))
             }
             x224::ProcessorOutput::SaveSessionInfo { logon_complete } => Ok(Self::SaveSessionInfo { logon_complete }),
+            x224::ProcessorOutput::SessionId(session_id) => Ok(Self::SessionId(session_id)),
             x224::ProcessorOutput::DeactivateAll => Ok(Self::DeactivateAll),
             x224::ProcessorOutput::MultitransportRequest(pdu) => Ok(Self::MultitransportRequest(pdu)),
             x224::ProcessorOutput::AutoDetect(request) => Ok(Self::AutoDetect(request)),
             x224::ProcessorOutput::AutoReconnectCookie(cookie) => Ok(Self::AutoReconnectCookie(cookie)),
+            x224::ProcessorOutput::LogonErrors(errors) => Ok(Self::LogonErrors(errors)),
             x224::ProcessorOutput::AutoReconnectFailed => Ok(Self::AutoReconnectFailed),
             x224::ProcessorOutput::MonitorLayout(monitors) => Ok(Self::MonitorLayout(monitors)),
+            x224::ProcessorOutput::ServerRedirection(redirection) => Ok(Self::ServerRedirection(redirection)),
             // GraphicsUpdate and PointerUpdate are consumed in ActiveStage::process()
             // before reaching this conversion.
             x224::ProcessorOutput::GraphicsUpdate(_) | x224::ProcessorOutput::PointerUpdate(_) => Err(
@@ -926,7 +1078,7 @@ fn process_slow_path_graphics(
     image: &mut DecodedImage,
     window_support_level: Option<WindowSupportLevel>,
     data: &[u8],
-) -> SessionResult<(Vec<UpdateKind>, Option<Vec<u8>>)> {
+) -> SessionResult<(Vec<UpdateKind>, Option<Vec<WindowingOrder>>)> {
     let mut src = ReadCursor::new(data);
     let update_type = slow_path::read_graphics_update_type(&mut src).map_err(SessionError::decode)?;
 
@@ -943,7 +1095,7 @@ fn process_slow_path_graphics(
             };
             let orders = try_decode_slow_path_windowing_orders(&mut src).map_err(SessionError::decode)?;
             validate_windowing_orders_support(&orders, window_support_level)?;
-            Ok((Vec::new(), Some(data.to_vec())))
+            Ok((Vec::new(), Some(orders.orders)))
         }
         GraphicsUpdateType::Palette => {
             fast_path_processor.process_palette_update(data);
@@ -961,7 +1113,7 @@ fn process_slow_path_graphics(
 fn process_fast_path_windowing_orders(
     window_support_level: Option<WindowSupportLevel>,
     data: &[u8],
-) -> SessionResult<Option<Vec<u8>>> {
+) -> SessionResult<Option<Vec<WindowingOrder>>> {
     let Some(window_support_level) = window_support_level else {
         return Ok(None);
     };
@@ -969,22 +1121,20 @@ fn process_fast_path_windowing_orders(
     let mut src = ReadCursor::new(data);
     let orders = try_decode_fast_path_windowing_orders(&mut src).map_err(SessionError::decode)?;
     validate_windowing_orders_support(&orders, window_support_level)?;
-
-    let mut normalized = Vec::with_capacity(
-        2 /* updateType */ + 2 /* pad2OctetsA */ + data.len() + 2, /* pad2OctetsB */
-    );
-    normalized.extend_from_slice(&0u16.to_le_bytes());
-    normalized.extend_from_slice(&0u16.to_le_bytes());
-    normalized.extend_from_slice(&data[..2]);
-    normalized.extend_from_slice(&0u16.to_le_bytes());
-    normalized.extend_from_slice(&data[2..]);
-    Ok(Some(normalized))
+    Ok(Some(orders.orders))
 }
 
 fn validate_windowing_orders_support(
-    orders: &WindowingOrdersUpdate<'_>,
+    orders: &WindowingOrdersUpdate,
     window_support_level: WindowSupportLevel,
 ) -> SessionResult<()> {
+    if orders.contains_non_window_orders {
+        warn!(
+            decoded_orders = orders.orders.len(),
+            "Orders update mixes windowing orders with other drawing orders; orders after the first non-windowing order are dropped"
+        );
+    }
+
     if window_support_level == WindowSupportLevel::SupportedEx
         || !orders.orders.iter().any(|order| order.requires_extended_support())
     {
@@ -1005,6 +1155,65 @@ fn process_slow_path_pointer(
     let mut src = ReadCursor::new(data);
     let pointer = slow_path::decode_slow_path_pointer(&mut src).map_err(SessionError::decode)?;
     fast_path_processor.process_pointer_update(image, pointer)
+}
+
+/// What [`composite_graphics_pipeline`] did to the image.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct CompositedGraphics {
+    /// The image was resized and cleared for a `ResetGraphics`. `region` covers
+    /// only what was painted since, and is `None` when nothing was, so the
+    /// caller remembers the reset and repaints the whole image at its next
+    /// paint, as [`ActiveStage`] does with its next graphics update.
+    pub reset: bool,
+    /// The union of the regions changed, or `None` when nothing changed.
+    pub region: Option<InclusiveRectangle>,
+    /// Each region changed.
+    pub regions: Vec<InclusiveRectangle>,
+    /// The RemoteApp window regions, which are not part of the image.
+    pub window_updates: Vec<WindowUpdate>,
+}
+
+/// Composite what `gfx` has decoded since the last call into `image`: follow a
+/// pending `ResetGraphics`, then apply each completed-frame output region.
+/// Also take the RemoteApp window regions, which are not part of `image`.
+///
+/// [`ActiveStage`] does this after each PDU for a [`GraphicsPipelineClient`]
+/// registered on its dynamic channels. Call it directly for one that runs
+/// elsewhere, such as on a thread of its own so that a slow H.264 decode
+/// doesn't hold up the session's other channels. The caller then also:
+///
+/// - registers in its place a [`DvcClientProcessor`] named
+///   [`ironrdp_egfx::CHANNEL_NAME`] that forwards each message to the
+///   pipeline;
+/// - sends the pipeline's replies (capabilities, frame acknowledgements):
+///   wraps them with [`ironrdp_dvc::encode_dvc_messages`] for the channel,
+///   then, if [`ActiveStage::dvc_tunnel_for_channel`] names a Soft-Sync
+///   tunnel, sends each one's [`SvcMessage::encode_unframed_pdu`] through
+///   it, and otherwise encodes them for TCP with
+///   [`ActiveStage::encode_dvc_messages`];
+/// - shares `image` with the session under a lock, since other updates
+///   (bitmaps, the pointer) write to it too;
+/// - paints each of `window_updates` into the window it names, as
+///   [`ActiveStage`] returns them in [`ActiveStageOutput::WindowSurfaceUpdates`];
+/// - tracks the regions itself: they don't reach
+///   [`ActiveStage::take_damage_regions`].
+pub fn composite_graphics_pipeline(
+    gfx: &mut GraphicsPipelineClient,
+    image: &mut DecodedImage,
+) -> SessionResult<CompositedGraphics> {
+    let output_reset = gfx.take_output_reset();
+    if let Some((width, height)) = output_reset {
+        image.reset_preserving_pointer(width, height)?;
+    }
+    let (region, regions) =
+        composite_graphics_updates(image, gfx.drain_output().into_iter().map(|u| (u.region, u.data)))?;
+    Ok(CompositedGraphics {
+        reset: output_reset.is_some(),
+        region,
+        regions,
+        window_updates: gfx.drain_window_updates(),
+    })
 }
 
 /// Apply every compositor delta to `image` and return their union and exact applied regions.
@@ -1067,7 +1276,7 @@ mod tests {
 
     use super::*;
     use ironrdp_core::{Decode as _, encode_vec};
-    use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlPdu};
+    use ironrdp_displaycontrol::pdu::{DisplayControlPdu, MonitorLayoutEntry};
     use ironrdp_dvc::pdu::{
         ClosePdu, CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu,
     };
@@ -1312,6 +1521,7 @@ mod tests {
         update
     }
 
+    // oracle: spec MS-RDPERP §2.2.1.1.2 (orders are only valid after Window List support is negotiated)
     #[test]
     fn slow_path_windowing_orders_require_negotiated_support() {
         let mut processor = fast_path::ProcessorBuilder {
@@ -1331,31 +1541,66 @@ mod tests {
         let (_, orders) =
             process_slow_path_graphics(&mut processor, &mut image, Some(WindowSupportLevel::Supported), &update)
                 .unwrap();
-        assert_eq!(orders.as_deref(), Some(update.as_slice()));
+        assert_eq!(orders, Some(vec![deleted_window_order()]));
     }
 
+    fn deleted_window_order() -> WindowingOrder {
+        WindowingOrder::Window(ironrdp_pdu::window::WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: ironrdp_pdu::window::WindowOrderBody::Deleted,
+        })
+    }
+
+    // oracle: spec MS-RDPERP §2.2.1.3.1.2.4
     #[test]
-    fn fast_path_windowing_orders_are_normalized_for_forwarding() {
+    fn fast_path_windowing_orders_are_decoded_for_forwarding() {
         let order = window_order(0x2100_0000);
         let mut update = Vec::new();
         update.extend_from_slice(&1u16.to_le_bytes());
         update.extend_from_slice(&order);
 
-        let normalized = process_fast_path_windowing_orders(Some(WindowSupportLevel::Supported), &update)
+        let orders = process_fast_path_windowing_orders(Some(WindowSupportLevel::Supported), &update)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            normalized,
-            [
-                0, 0, // updateType
-                0, 0, // pad2OctetsA
-                1, 0, // numberOrders
-                0, 0, // pad2OctetsB
-                0x2e, 11, 0, 0, 0, 0, 0x21, 7, 0, 0, 0,
-            ]
-        );
+        assert_eq!(orders, [deleted_window_order()]);
     }
 
+    // oracle: spec MS-RDPEGDI §2.2.2.2.1.1.2 (controlFlags 0x01 is a primary drawing order, which
+    // MS-RDPERP §2.2.1.3.1.1 windowing order framing does not cover)
+    #[test]
+    fn mixed_orders_updates_forward_the_windowing_prefix_on_both_transports() {
+        let mut fast_path_update = 2u16.to_le_bytes().to_vec(); // numberOrders
+        fast_path_update.extend_from_slice(&window_order(0x2100_0000));
+        fast_path_update.push(0x01); // TS_STANDARD primary drawing order
+        let mut slow_path_update = slow_path_orders_update(&window_order(0x2100_0000));
+        slow_path_update[4] = 2; // numberOrders
+        slow_path_update.push(0x01);
+        let mut processor = fast_path::ProcessorBuilder {
+            io_channel_id: 0,
+            user_channel_id: 0,
+            share_id: 0,
+            enable_server_pointer: false,
+            pointer_software_rendering: false,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, 1, 1);
+
+        let fast_path_orders =
+            process_fast_path_windowing_orders(Some(WindowSupportLevel::Supported), &fast_path_update).unwrap();
+        let (_, slow_path_orders) = process_slow_path_graphics(
+            &mut processor,
+            &mut image,
+            Some(WindowSupportLevel::Supported),
+            &slow_path_update,
+        )
+        .unwrap();
+
+        assert_eq!(fast_path_orders, Some(vec![deleted_window_order()]));
+        assert_eq!(slow_path_orders, Some(vec![deleted_window_order()]));
+    }
+
+    // oracle: spec MS-RDPERP §2.2.1.1.2
     #[test]
     fn extended_windowing_orders_require_extended_support() {
         let update = slow_path_orders_update(&window_order(0x0101_0000));
@@ -1405,6 +1650,28 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_prepared_batch(&pen, 2);
+    }
+
+    #[test]
+    fn monitor_layouts_are_prepared_once_capabilities_are_received() {
+        let mut stage = active_stage_with_ready_dvcs();
+        assert_eq!(
+            stage.display_control_capabilities(),
+            Some(DisplayControlCapabilities::new(1, 3840, 2400).unwrap())
+        );
+
+        let layout = DisplayControlMonitorLayout::new(&[
+            MonitorLayoutEntry::new_primary(1920, 1080).unwrap(),
+            MonitorLayoutEntry::new_secondary(1920, 1080)
+                .unwrap()
+                .with_position(1920, 0)
+                .unwrap(),
+        ])
+        .unwrap();
+        let batch = stage.prepare_monitor_layout(&layout).unwrap().unwrap();
+        assert_prepared_batch(&batch, 1);
+        let expected = stage.encode_dvc_messages(batch.into_messages()).unwrap();
+        assert_eq!(stage.encode_monitor_layout(&layout).unwrap().unwrap(), expected);
     }
 
     #[test]

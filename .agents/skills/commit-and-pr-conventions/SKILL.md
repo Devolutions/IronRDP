@@ -3,8 +3,6 @@ name: commit-and-pr-conventions
 description: Follow the adopted commit and pull-request conventions. Use whenever creating a commit or opening, editing, reviewing, or preparing to squash-merge a PR, including requests to commit, push, or open a PR.
 ---
 
-# Commit and PR conventions
-
 Treat the PR title and initial body as the exact commit message that squash-and-merge will land.
 
 ## Commit message
@@ -38,5 +36,6 @@ Issue: PROJECT-123
 - Do not manually wrap the PR body; GitHub handles display wrapping.
 - Keep permanent history concise: record motivation, material behavior, and side effects.
 - Put experiments, alternatives, extensive validation, and implementation chronology in follow-up comments.
+- Post a follow-up comment with the lines changed, split at least into production code (what ships to users), tests, and other files, with CI, build scripts, and developer tooling counted as other files, so a reviewer sees where the change's weight lies before reading it; how to count and present them is yours, and refresh it when the diff changes materially.
 - Update the title and initial body as the implementation evolves.
 - Before opening, updating, or merging, read `title + blank line + body` as one commit message and correct any mismatch.

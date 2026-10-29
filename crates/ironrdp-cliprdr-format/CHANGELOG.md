@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-format-v0.2.0...ironrdp-cliprdr-format-v0.3.0)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- Add `validate_dib` and `validate_dibv5` to check a `CF_DIB` or `CF_DIBV5` payload and return its length ([#1794](https://github.com/Devolutions/IronRDP/issues/1794)) ([c7766c5a56](https://github.com/Devolutions/IronRDP/commit/c7766c5a56ba668a93737f2ca384fc2b63546376))
+
+- Add `validate_cf_html` to check a `CF_HTML` payload and return its length ([#1794](https://github.com/Devolutions/IronRDP/issues/1794)) ([c7766c5a56](https://github.com/Devolutions/IronRDP/commit/c7766c5a56ba668a93737f2ca384fc2b63546376))
+
+### <!-- 4 -->Bug Fixes
+
+- Reject DIBs with an embedded color profile, a mismatched `biSizeImage`, or truncated pixel data in `dib_to_png` and `dibv5_to_png` ([#1794](https://github.com/Devolutions/IronRDP/issues/1794)) ([c7766c5a56](https://github.com/Devolutions/IronRDP/commit/c7766c5a56ba668a93737f2ca384fc2b63546376))
+
+- Validate the headers, offsets and fragment markers of a `CF_HTML` payload in `cf_html_to_plain_html`, which now rejects payloads missing `Version`, `StartHTML` or `EndHTML` ([#1794](https://github.com/Devolutions/IronRDP/issues/1794)) ([c7766c5a56](https://github.com/Devolutions/IronRDP/commit/c7766c5a56ba668a93737f2ca384fc2b63546376))
+
+- Convert 16-bit and grayscale PNG images correctly in `png_to_cf_dib` and `png_to_cf_dibv5` ([#1877](https://github.com/Devolutions/IronRDP/issues/1877)) ([a59b3b687d](https://github.com/Devolutions/IronRDP/commit/a59b3b687d8ec81cfb79bd6e91e7d3341c866b6b))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
+- [**breaking**] Update `ironrdp-core` public dependency to 0.3
+
+
+
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-format-v0.1.4...ironrdp-cliprdr-format-v0.2.0)] - 2026-05-27
 
 ### <!-- 7 -->Build

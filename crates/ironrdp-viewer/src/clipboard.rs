@@ -1,5 +1,5 @@
-use ironrdp::cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp::client::rdp::RdpInputSender;
+use ironrdp::cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use tracing::error;
 
 /// Shim for sending and receiving CLIPRDR events as `RdpInputEvent`

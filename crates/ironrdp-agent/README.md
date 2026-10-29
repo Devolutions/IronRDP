@@ -53,6 +53,34 @@ Background daemon logs are written to `%LOCALAPPDATA%\ironrdp-agent\daemon.log` 
 The operational log is truncated as it reaches 2 MiB, including while the daemon is running.
 Passwords supplied to `connect` travel through IPC rather than child process arguments; the background daemon does not inherit the standard RDP and RD Gateway password environment variables.
 
+## Experimental Remote Credential Guard
+
+Build with `--features remote-guard`.
+Set `RDP_USERNAME` and `RDP_PASSWORD` in the calling process, then use a dedicated daemon endpoint:
+
+```powershell
+$endpoint = '\\.\pipe\ironrdp-agent-rcg-test'
+ironrdp-agent --endpoint $endpoint connect --auto-start --no-prompt --server rdp.example.test --remote-guard
+ironrdp-agent --endpoint $endpoint status
+ironrdp-agent --endpoint $endpoint daemon stop
+```
+
+`--remote-guard` requires Kerberos for the initial logon, retains the authenticated context for MS-RDPEAR, and never falls back to password delegation or initial NTLM authentication.
+The value mirrors CredSSP package selection: `negotiate` (the default) redirects both Kerberos and outbound NTLMv2 and the remote side picks per connection, while `kerberos` and `ntlm` restrict redirection to one package.
+The equivalent property is `ironrdp_remote_guard:i:0|1|2|3` or `ironrdp_remote_guard:s:disabled|negotiate|ntlm|kerberos`.
+Named flags override file and `--prop` values, but the daemon overlay still wins.
+An unsupported build or invalid policy fails explicitly.
+
+RCG requires strict TLS validation, a Kerberos-capable account, and a reachable KDC discovered through DNS or configured through `kdcproxyurl`/`kdcproxyname`.
+DNS discovery requires a DNS account realm, not a NetBIOS domain; use a UPN or an unqualified username with `--domain AD.EXAMPLE.TEST`.
+To retain a SAM/NetBIOS identity, supply the KDC explicitly, for example `--prop kdcproxyurl:s:tcp://dc.ad.example.test:88`.
+It does not support named-pipe RDP, RDCleanPath, VMConnect, or automatic reconnection.
+Do not use `--skip-certificate-check`; pin a verified certificate if its issuer is not trusted.
+Initial RCG logon and fresh-logon NTLMv2 redirection have been verified under strict TLS; outbound Kerberos service-ticket redirection remains unverified against a live target.
+See the [connector limitations][rcg-build].
+
+[rcg-build]: ../ironrdp-connector/README.md#experimental-remote-credential-guard
+
 ## ActiveX backend
 
 On Windows, an ActiveX host can expose its session through the same local RPC protocol. Start the
@@ -135,6 +163,7 @@ Set `N` to the latest sequence observed; `rail wait --after-sequence N --timeout
 If an accepted local launch fails before it is sent, the event stream reports `execute_failed` with a stable reason and no working-directory or argument data.
 Use `rail --format json` for one deterministic document or `rail --format ndjson` for one event per line.
 The agent advertises no local RAIL shell-integration flags because it does not implement move/size, taskbar, cloak, z-order, or display-power behavior.
+Closing the last application window does not automatically disconnect this headless client; use `disconnect` explicitly.
 
 ## Bounded Unicode input
 
@@ -296,11 +325,12 @@ Two logging concerns are kept separate:
 
 ## NOW remote execution
 
-After an RDP session connects, the daemon injects a per-session `Devolutions::Now::Agent` DVC
-endpoint. The endpoint is local to the daemon and is not shared between RDP sessions. NOW protocol
-framing, negotiation, heartbeats, capability gates, and command PDU handling are owned by the
-`now-client` dependency; `ironrdp-daemon` owns only the endpoint/reconnect boundary and durable operation
-state.
+After an RDP session connects, the daemon injects a per-session `Devolutions::Now::Agent` DVC endpoint.
+The endpoint is local to the daemon and is not shared between RDP sessions.
+The daemon negotiates NOW in the background as soon as the remote host opens the channel, and again after each closure, because the host abandons a channel whose client stays silent.
+It requests no heartbeat, because hosts that stay busy send none and `now-client` would close the healthy channel.
+NOW protocol framing, capability gates, and command PDU handling are owned by the `now-client` dependency.
+`ironrdp-daemon` owns the endpoint, the background negotiation, the reconnect boundary, and durable operation state.
 
 Use the supported commands below after `connect`:
 
@@ -313,26 +343,29 @@ ironrdp-agent now exec process cmd.exe --parameters "/c echo hello"
 ironrdp-agent now exec batch "echo hello"
 ```
 
-`now run` is deliberately untracked and reports only local submission. Process, Batch, PowerShell,
-and pwsh commands are daemon-tracked unless `--detached` is supplied. Tracked raw stdout and stderr
-chunks are streamed without line buffering; a terminal nonzero exit code is returned by the CLI
-(1–255 directly, wider values as 255). `now cancel`, `now stdin`, `now attach`, `now list`, and
-`now status` operate on daemon-owned operation IDs. Initial stdin comes from `--stdin FILE` (or
-`-`); live stdin is bounded to 1 MiB per request. Use `--operation-id-file FILE` to persist an
-operation ID immediately after local submission for a later attach, cancellation, or stdin call.
+`now run` is deliberately untracked and reports only local submission.
+The Windows host opens its target as a file or URI without parsing command-line arguments; use `now exec process --parameters` for those.
+Process, Batch, PowerShell, and pwsh commands are daemon-tracked unless `--detached` is supplied.
+Tracked stdout and stderr chunks stream without line buffering; the CLI returns a terminal nonzero exit code directly for 1–255, or as 255 for wider values.
+`now cancel`, `now stdin`, `now attach`, `now list`, and `now status` operate on daemon-owned operation IDs.
+Initial stdin comes from `--stdin FILE` (or `-`) and must fit in one 16 MiB IPC message; live stdin is bounded to 1 MiB per request.
+Use `--operation-id-file FILE` to persist an operation ID immediately after local submission for a later attach, cancellation, or stdin call.
 
-PowerShell and pwsh use `-NoProfile` and `-NonInteractive` by default. `--profile` and
-`--interactive` are explicit opt-outs. The agent retains at most 8 MiB of output per operation, 32
-terminal records, and 32 MiB across retained records. `now attach --after-sequence N` replays
-bounded output then follows a running operation. Live attachments are bounded and disconnect when
-they cannot keep up; attach again with the last sequence number to resume from retained output. Use
-`now --format human|json|ndjson` for raw human streaming, a JSON result, or JSON event lines; JSON
-represents output bytes as arrays and is bounded to 8,192 events and 2 MiB of output. Use NDJSON
-for unbounded streaming.
+When the host advertises Unicode-console support, `exec process` requests UTF-8 I/O: the host converts between UTF-8 and the process code page, so this is not a binary pipe.
+Batch, PowerShell, and pwsh instead request a Unicode console with raw I/O.
 
-The local DVC endpoint is connected only on a NOW request. Its first readiness deadline is 30
-seconds; a replacement after a worker/transport failure has a 10-second deadline. No Shell command,
-IPC request, capability, or execution mapping is exposed, even when a remote peer supports Shell.
+PowerShell and pwsh use `-NoProfile` and `-NonInteractive` by default.
+`--profile` and `--interactive` are explicit opt-outs.
+The agent retains at most 8 MiB of output per operation, 32 terminal records, and 32 MiB across retained records.
+`now attach --after-sequence N` replays bounded output then follows a running operation.
+Live attachments are bounded and disconnect when they cannot keep up; attach again with the last sequence number to resume from retained output.
+A session serves at most eight live attachments, counting the submitting command's own stream, and refuses another until one ends.
+Use `now --format human|json|ndjson` for raw human streaming, a JSON result, or JSON event lines; JSON represents output bytes as arrays and is bounded to 8,192 events and 2 MiB of output.
+Use NDJSON for unbounded streaming.
+
+When no live NOW client exists, a request waits up to 30 seconds for a negotiated channel before the first successful connection, and up to 10 seconds afterwards.
+The same bound covers a stalled handshake, which is reported as unavailable.
+No Shell command, IPC request, capability, or execution mapping is exposed, even when a remote peer supports Shell.
 
 ## Localhost RDP workflow
 

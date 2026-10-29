@@ -1,26 +1,13 @@
 ---
 name: crate-readme-writer
-description: Write or substantially revise a Rust crate's README.md as a concise, user-facing design document. Use whenever creating a crate README, documenting a planned crate, or defining a crate's purpose, role, or interface before implementation.
+description: Write a Rust crate README as a concise description of its purpose, integration point, and public interface. Use when creating a crate README, documenting a planned crate, or substantially revising an existing crate's introduction.
 ---
 
-# Crate README writer
+Use `docs-writer` for the prose.
+For a new crate, write the README before implementation so the proposed interface can be reviewed while changing it is cheap.
+For an existing crate, verify the manifest and implementation before making behavior claims.
 
-Invoke `docs-writer` and apply its rules throughout.
-
-For a new crate, write the README before implementing behavior.
-Use it as a lightweight specification: changing prose and examples is cheaper than changing code, and a written proposal gives collaborators a concrete design to review.
-For an existing crate, inspect its manifest and implementation first so the README describes current behavior rather than an imagined interface.
-
-- Identify the intended reader, the problem the crate solves, and why it belongs in the repository.
-- Lead with the crate name and a one- or two-sentence description of its purpose.
-- Describe the smallest useful contract: principal capability, expected integration point, and important platform or architectural constraints.
-- Add a minimal usage example only when it clarifies the intended API better than prose.
-- Revise the proposed interface until it is coherent before committing to implementation details.
-- Treat a long or complicated README as design feedback: narrow or split the crate instead of writing an exhaustive specification.
-- Link to existing project or protocol documentation rather than duplicating it.
-- After implementation, verify every claim and example against the code while preserving the README's concise introductory role.
-
-Write `README.md` directly.
-Keep it short enough to expose unclear scope and unnecessary complexity.
-
-This workflow follows [Readme Driven Development](https://tom.preston-werner.com/2010/08/23/readme-driven-development).
+Explain why the crate belongs in the repository, its principal capability, expected integration point, and platform or architectural constraints.
+Use a minimal example only when it clarifies the interface better than prose.
+A long or complicated introduction is a reason to reconsider the crate's scope rather than expand it into an exhaustive specification.
+After implementation, verify claims and examples against the code.

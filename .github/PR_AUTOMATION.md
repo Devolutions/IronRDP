@@ -1,12 +1,14 @@
 # Pull request automation
 
-`.github/workflows/pr-automation.yml` classifies ready, open pull requests and calls `.github/workflows/review-pipeline.yml` for at most two automated reviews.
-Automatic review stops at `ai-reviewed/2` unless a maintainer uses force mode; classification keeps running.
+`.github/workflows/pr-automation.yml` classifies ready, open pull requests and calls `.github/workflows/review-pipeline.yml` for at most three automated reviews.
+Automatic review stops at `ai-reviewed/3` unless a maintainer uses force mode; classification keeps running.
 Manual `workflow_dispatch` requests and forced reviews require a successful GitHub Actions-owned `AI classification` check for the current head with valid machine state.
 They fail visibly before any reviewer starts when that prerequisite is missing, stale, or invalid; automatic CI and classification-complete races instead skip normally.
 The review gate and final writer both read every page of current exact-head `CI` runs and authorize only the latest run ID and attempt.
 The triggering `workflow_run` event is authoritative for its own generation, so a run listing that still lags behind it cannot hide a green run.
 Both readers briefly re-list while the listing is behind instead of treating lag as staleness; a newer run ID or attempt still wins and is never retried.
+The final lifecycle reconciliation receives the same observed CI event and uses bounded listing-lag retries for every other wake-up.
+Workflow and per-pull-request mutation groups use non-canceling `queue: max` concurrency, so stale queued wake-ups revalidate live state instead of canceling active publication.
 Model analysis fails closed when the reviewable pull request diff exceeds the applicable evidence limit.
 The trusted `evidence-diff-attributes` policy represents reproducibly verified generated artifacts with binary-change markers.
 The automation posts guidance on the pull request instead of invoking a model with partial evidence.
@@ -19,10 +21,10 @@ The classifier and all reviewers use `glm5.3`.
 The pipeline performs these stages:
 
 1. Prepare a SHA-bound changed-file manifest, diff, pull request context, and read-only head tree.
-2. Classify risk, scope, legitimacy, overlap with another pull request, protocol relevance, and useful specialist reviewers.
+2. Classify risk, scope, legitimacy, overlap with another pull request, and protocol relevance.
 3. Apply workflow-controlled routing rules and persist the canonical review plan in the `AI classification` check.
 4. Run selected specialists as parallel matrix jobs, at most three at once.
-5. Validate each specialist result, then aggregate the results in the canonical order `protocol`, `skeptical`, `code-compressor`.
+5. Validate each specialist result, then aggregate the results in the canonical order `protocol`, `skeptical`, `intent-drift`, `intent-review`, `test`, `dependency`, `code-compressor`, `rust-style`.
 6. Run the general reviewer as an independent reviewer and verifier.
 7. Validate its candidate dispositions, findings, locations, and provenance.
 8. Report every stage outcome, failure reason, and metric back to the caller.
@@ -40,12 +42,31 @@ A stage that cannot read the resolved list treats every selected reviewer as man
 Workflow routing selects the code-compressor for every eligible review.
 Protocol-related changes always require the protocol specialist.
 Medium- and high-risk changes always require the skeptical specialist.
+Deterministic analysis also selects these optional specialists from the pull request's file list and patches, mirroring the `code-review` skill:
+
+- `intent-drift` runs when a changed path is governed by an intent file on `master` or added by the pull request, following the `intent-files` placement rule.
+- `intent-review` runs when the pull request adds or modifies an `INTENT*.md` or `*.intent*.md` file.
+- `test` runs when a changed, non-removed Rust or C# file holds tests, as described below.
+- `dependency` runs when a `Cargo.toml`, `Cargo.lock`, `package.json`, `package-lock.json`, or `.csproj` file gains lines.
+- `rust-style` runs when a `.rs` file gains lines.
+
+A changed Rust or C# file that is not removed selects `test` when it is on a test path, or when its content at the pull request's merge base, which the patches are relative to, or at the pull request's head contains a test marker.
+A marker in the added lines decides without reading either revision; otherwise the merge base is read first, then the head, each fetched once into the trusted checkout and only scanned as text.
+Markers are matched over the whole text, so attributes may span lines: in Rust, `#[test]`, `#[<path>::test]`, `#[rstest]`, `#[case(`, `proptest!`, `expect![`, and `#[cfg(...)]` whose predicate names `test` other than as `not(test)`; in C#, `[Fact]`, `[Theory]`, `[Test]`, `[TestMethod]`, `[TestCase]`, and `[InlineData`.
+A `#[cfg(` predicate is scanned for at most 4 KiB, and one still open at that bound or at the end of the text counts as a marker, which keeps the scan linear.
+The rule is deliberately coarse: a production-only edit in a file that also holds tests selects `test`, because locating edits inside tests kept missing lexical forms.
+An unresolvable merge base, a head that cannot be fetched, or an unreadable file also selects `test`.
+A renamed file matches the governed-path, intent-file, test-path, and manifest rules under both its old and new paths.
+
+`contract-review` joins with the first `CONTRACT*.md`, as one agent configuration, one prompt, and one path rule.
+Each specialist loads its skill and the skills it invokes as methodology from the trusted workflow checkout, so a test fails when a configured file is missing.
 Model output cannot select parallelism.
-Three simultaneous reviewer requests is a provider allocation, not a reviewer cap: a larger selection runs in further batches.
+Three simultaneous reviewer requests is a provider allocation, not a reviewer cap: a larger selection runs in further batches, in canonical order.
 
 Specialists use one bounded candidate schema.
 Each candidate binds to the expected head SHA, a configured reviewer ID, a changed path, an optional added-line range, a severity, a question flag, and a unique finding ID.
 Protocol candidates also carry structured protocol references.
+The `protocol`, `skeptical`, and `code-compressor` specialists report at most 20 findings and the conditional specialists at most 10, so the maximum-shaped general review stays within the runtime's 1 MiB model message limit.
 Schema line and pull-request numbers stop at the signed 32-bit GitHub API integer maximum, while validators retain safe-integer checks.
 One specialist never receives another specialist's output.
 The validated aggregate of all selected specialists is bounded to 1 MiB, which accommodates every maximum schema-valid specialist result.
@@ -116,6 +137,7 @@ Examples include:
 [protocol]
 [skeptical]
 [code-compressor]
+[rust-style]
 [protocol + skeptical]
 [general]
 ```
@@ -140,7 +162,7 @@ For validator checks, `previousCandidate` is the earliest canonical JSON-parsed 
 Validator-directed corrections may use only necessary bounded read-only evidence lookup, while invalid output remains terminal after its configured repair budget.
 One model turn is one logical model call.
 The action owns retry HTTP attempts for that logical call through the SDK's public completion API and honors valid `Retry-After` delays.
-Pre-header failures, status failures, and interrupted streams share one retry budget and discard partial response state before resending the unchanged history.
+Pre-header failures, status failures, interrupted streams, and structurally malformed streams share one retry budget and discard partial response state before resending the unchanged history.
 Known transient statuses retry, while known terminal statuses stop despite provider retry hints.
 Every request streams under a per-attempt raw-body and idle-progress budget plus one monotonic stage deadline that also covers backoff, tools, validation, and repair.
 The checked-in profiles request high reasoning effort and leave the provider token cap unset.
@@ -196,40 +218,56 @@ A model-suspected breaking change promotes `risk/low` to `risk/medium`.
 Path rules can add `scope/core`, `scope/web`, `scope/ffi`, and `scope/tooling`.
 The classifier controls `scope/cross-cutting`, `kind/technical-debt`, and documentation-only classification.
 
-Automatic review runs for every non-draft pull request that passes the remaining gates.
+Automatic review runs for every open, non-draft pull request that passes the remaining gates.
 Every non-bot author is eligible immediately, including first-time contributors; there is no prior-merge requirement.
 Automatic review requires successful CI for the exact classified head.
-After the first review, a later push starts the second review when CI succeeds for that new head.
-Legitimacy triage and `ai-reviewed/2` block automatic review.
+Each distinct eligible green head advances one canonical count label from `ai-reviewed/1` through `ai-reviewed/3`.
+Mixed count labels block automatic review until repaired; legitimacy triage and `ai-reviewed/3` also block it.
 A suspected overlap with another pull request is advisory: at confidence 0.85 or greater it adds `triage/overlap` and a non-blocking comment, and review proceeds under the usual gates.
 The classifier reports possible shared scope in `overlap`, using candidate titles and truncated bodies.
 An unavailable or invalid exact-head classification or an attempted eligible review adds only `automation-failed`.
 `needs-review` means a human reviewer can act now and is the current next actor.
 `needs-author-action` means the pull request author is the current next actor.
-The two next-actor labels are automation-owned and mutually exclusive.
-Successful reviews with findings select `needs-author-action`, while successful reviews without findings select `needs-review`.
-Successful normal classification can clear stale next-actor and failure labels before it dispatches review.
-Successful review clears `automation-failed`.
-Blocked and duplicate review routes preserve or clear next-actor state through their resolved state without creating a failure label.
-With valid classification and green CI, legitimacy triage or `ai-reviewed/2` hands the pull request to `needs-review` without another model review.
-Prompt label clearing and convergence for draft, queued, and other lifecycle transitions are deferred to the supersession and reconciliation follow-up.
+Lifecycle reconciliation is the only writer of these mutually exclusive actor labels.
+`automation-failed` is orthogonal and may coexist with `needs-author-action` only when independent exact-head CI failure requires author action.
+After a successful review-count transition, its app-owned exact-head check stores a bounded, versioned `findings` or `no-findings` receipt bound to the count and published review marker.
+Reconciliation validates the check app, SHA, external ID, conclusion, receipt schema, and exact receipt keys before using that outcome.
+The newest trusted successful exact-head check is canonical, including explicit forced reviews.
+An existing successful check without a receipt fails closed and preserves actor labels until a compatible outcome is available.
+With green exact-head CI, findings select `needs-author-action` even at `ai-reviewed/3`, while no findings select `needs-review`.
+When no code change is needed after a findings-bearing review, the PR author or a collaborator with live `write`, `maintain`, or `admin` permission may comment `@github-actions review-ready` to request human review.
+The comment must stand alone apart from surrounding whitespace and cannot contain line breaks; resolving inline threads is optional guidance, not a gate.
+This handoff works after `/1`, `/2`, or `/3` without a model call or review-count increment, and never bypasses CI, draft, closure, lease, or automation-failure gates.
+The command can be accepted while CI is pending or failing, but only green current exact-head CI and clear lifecycle gates select `needs-review`; failed CI still selects `needs-author-action`.
+Editing or deleting the source comment after acknowledgement does not revoke it; a new head or newer same-head authoritative review supersedes it.
+The separate app-owned exact-head `AI review-ready` check stores a bounded, versioned receipt binding head SHA, source comment ID, latest published bot review ID, and authoritative review check ID.
+Reconciliation validates the check's server-assigned completion timestamp, app, exact SHA, name, external ID, success, and receipt before prioritizing acknowledgement over findings.
+Duplicate deliveries and further comments for the same review do not create competing checks; a newer findings review can replace the existing head-bound acknowledgement.
+After a third review, a newly classified head with green exact-head CI hands off to `needs-review` without a fourth review only when the latest published bot review matches a trusted `/3` receipt; legacy receipts never authorize this handoff.
+Contributor changes acknowledge findings; automation does not verify their resolution.
+Missing, pending, or nonstandard terminal CI conclusions select neither actor.
+Draft pull requests and active automation leases select neither actor.
+Closed pull requests select neither actor, and reopening derives the actor again from current exact-head state.
 
-Bot-authored pull requests do not run automatic routes or label reconciliation.
+Bot-authored pull requests do not run automatic routes, but lifecycle reconciliation still clears invalid actor labels.
 Force mode can override policy gates for an open pull request at its current head after a trusted, valid classification for that exact head selects its reviewers.
 Force mode never bypasses classification validity, evidence retrieval, output validation, filesystem restrictions, protocol citation validation, or stale-head checks.
+Forced reviews consume the next count when one is available and retain `ai-reviewed/3` after the terminal count.
 
 ## Supersession lease
 
 Automatic classification and review claim their existing canonical check run before provider work.
 The in-progress check contains only a versioned ownership marker with the kind, exact head SHA, workflow run ID, and run attempt.
 Admission reads all matching check history, accepts only the GitHub Actions app, and blocks while the marked owner is active.
+The owner is the workflow run rather than one attempt, so **Re-run failed jobs** publishes the result the earlier attempt computed, while other runs stay blocked until the rerun completes.
 Canonical success is absorbing for an exact head, so later automatic or forced neutral and failure states do not change its check, labels, comments, or review count.
-An automatic writer must still own its latest claim before it mutates the pull request, and completes that claim to success or neutral.
+Classification admission, review admission, result publication, and lifecycle reconciliation serialize through one per-pull-request mutation boundary.
+Automatic review validates the live PR, exact head, CI generation, policy, authoritative classification, and review count before claiming, then validates those facts with active lease ownership after the claim and before provider work or publication.
 
 This is deliberately at-least-once execution.
 If a run crashes after provider work, a later run may repeat the model call after the owner is terminal, canceled, or missing.
-A failed final check or dispatch after earlier publication can require manual repair.
-The automation does not recover artifacts, store receipts or a transaction ledger, or reconcile partial publication and lifecycle state.
+A duplicate automatic review marker without a trusted successful receipt, or a failure after partial publication, stops fail-closed for manual repair.
+The automation does not recover artifacts or store a transaction ledger.
 
 ## Size and fork limits
 
@@ -245,9 +283,8 @@ Size uses the larger bucket from counted changed lines or touched files:
 | `size/XXL` | 1300 or more | 50 or more |
 
 `size/XXL` is informational and does not block classification or review.
-The evidence diff limit is 1 MiB by default.
-Adding `ai-review/allow-oversized` retries classification with the model runtime's maximum 4 MiB evidence limit.
-Evidence above the applicable limit fails closed without sending a partial diff to a model.
+The evidence diff limit is 4 MiB.
+Evidence above that limit fails closed without sending a partial diff to a model.
 
 Fork-origin pull requests share a repository-wide quota of 50 pull requests per UTC day.
 `OWNER` and `MEMBER` pull requests are exempt and do not count toward the quota.
@@ -257,9 +294,11 @@ Same-repository pull requests are also exempt.
 
 SHA-bound GitHub checks carry classification and review state between permission-isolated jobs.
 Workflow artifacts carry evidence and validated results between review-pipeline jobs.
-The final writer serializes its mutations per pull request.
+The final writer serializes its mutations per pull request and then reconciles actor labels from a fresh live snapshot.
+It retries GitHub 5xx responses up to three times with 1, 2, and 4 second delays for reads, updates, deletions, and label additions.
+It never retries creating a comment, review, check run, or dispatch, because GitHub may have applied the first request.
 Workflow-level cancellation retains the established event and label grouping.
-The final writer rechecks the current head, current review policy, and, for successful non-forced review or handoff, the latest exact-head CI generation.
+The final writer rechecks the current head, current review policy, authoritative classification, lease, review count, and, for successful non-forced review or handoff, the latest exact-head CI generation.
 Model-execution jobs have read-only or empty permissions.
 The run summary links the pull request the run resolved.
 
@@ -278,9 +317,15 @@ Detailed failure reasons appear only in the workflow summary.
 Every failed stage is reported, not only the first one.
 A mandatory specialist failure, invalid aggregate, invalid final review, exhausted limit, provider failure, or unavailable evidence applies only `automation-failed`.
 Stale heads stop publication without mutation.
-Failed reviews do not increment the automated review count.
+Failed reviews do not increment the automated review count, and successful reviews transition removal-first to exactly one count label so an interrupted transition undercounts rather than overcounts and may require manual repair.
 Cancelled runs do not publish fallback state.
-This change intentionally provides no immediate lifecycle clearing when classification starts, CI starts, a pull request becomes draft, or another automation event is queued.
+Events are wake-up and identity hints rather than actor-label transitions.
+Classification and review result resolvers provide facts but do not write actor-label deltas.
+An admitted automatic classifier that becomes draft publishes nothing, and a later ready event may retry it.
+An admitted automatic review may publish its validated review, successful check, and review count while draft when its exact-head guards still pass, but it publishes no actor label.
+An admitted automatic review may publish the same validated result on a closed unmerged pull request when its exact-head guards still pass, so reopening can reconcile from the receipt.
+Merged pull requests and changed heads suppress publication.
+If GitHub rejects review creation on a closed unmerged pull request, the lease completes neutral without publishing partial review state.
 
 ## Configuration and upgrades
 

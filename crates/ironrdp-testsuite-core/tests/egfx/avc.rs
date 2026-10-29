@@ -1,5 +1,8 @@
-use ironrdp_core::{Decode as _, ReadCursor};
-use ironrdp_egfx::pdu::{Avc420BitmapStream, Avc420Region, align_to_16, annex_b_to_avc, encode_avc420_bitmap_stream};
+use ironrdp_core::{Decode as _, EncodeErrorKind, ReadCursor, encode_vec};
+use ironrdp_egfx::pdu::{
+    Avc420BitmapStream, Avc420Region, QuantQuality, align_to_16, annex_b_to_avc, encode_avc420_bitmap_stream,
+};
+use rstest::rstest;
 
 #[test]
 fn avc420_region_full_frame() {
@@ -83,4 +86,39 @@ fn encode_avc420_bitmap_stream_round_trips_through_decode() {
     assert_eq!(decoded.rectangles.len(), 1);
     assert_eq!(decoded.quant_qual_vals.len(), 1);
     assert_eq!(decoded.data, &h264_data);
+}
+
+#[test]
+fn quant_quality_encodes_the_largest_qp_the_field_holds() {
+    let quant_quality = QuantQuality {
+        quantization_parameter: 63,
+        progressive: true,
+        quality: 255,
+    };
+
+    let encoded = encode_vec(&quant_quality).expect("encode QuantQuality");
+
+    // Progressive flag in bit 7, reserved bit 6 clear, QP in bits 0 to 5.
+    assert_eq!(encoded, [0b1011_1111, 255]);
+}
+
+#[rstest]
+#[case::first_value_past_the_field(64)]
+#[case::largest_value_of_the_type(255)]
+fn quant_quality_encode_rejects_a_qp_that_does_not_fit_the_field(#[case] quantization_parameter: u8) {
+    let quant_quality = QuantQuality {
+        quantization_parameter,
+        progressive: false,
+        quality: 100,
+    };
+
+    let error = encode_vec(&quant_quality).expect_err("a QP above 63 does not fit the 6-bit field");
+
+    assert!(matches!(
+        error.kind(),
+        EncodeErrorKind::InvalidField {
+            field: "quantization_parameter",
+            ..
+        }
+    ));
 }

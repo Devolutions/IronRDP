@@ -1,4 +1,6 @@
 use core::num::{NonZeroU16, NonZeroUsize};
+use core::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
@@ -6,7 +8,10 @@ use ironrdp_graphics::diff;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 use tracing::{debug, warn};
 
+use crate::autodetect::AutoDetectHandles;
 use crate::error::ServerResult;
+#[cfg(feature = "egfx")]
+use crate::gfx::GfxServerHandle;
 
 #[rustfmt::skip]
 pub use ironrdp_acceptor::DesktopSize;
@@ -24,11 +29,12 @@ pub enum DisplayUpdate {
     PointerPosition(PointerPositionAttribute),
     ColorPointer(ColorPointer),
     RGBAPointer(RGBAPointer),
-    /// A pointer shape wider or taller than the 96x96 ceiling `RGBAPointer` can carry
-    /// (MS-RDPBCGR 2.2.7.2.7), up to 384x384. Only usable when the client's negotiated
-    /// Large Pointer Capability Set includes `LARGE_POINTER_FLAG_384x384`; dropped
-    /// otherwise. See [`RGBAPointer`] for shapes up to 96x96 (32x32 without that
-    /// capability set at all).
+    /// A pointer shape up to 384x384, sent as a Fast-Path Large Pointer Update (MS-RDPBCGR 2.2.9.1.2.1.11).
+    /// Only usable when the client's negotiated Large Pointer Capability Set (MS-RDPBCGR 2.2.7.2.7)
+    /// includes `LARGE_POINTER_FLAG_384x384`; dropped otherwise.
+    /// An [`RGBAPointer`] or [`ColorPointer`] above the client's Color/New Pointer Update ceiling
+    /// (96x96 with `LARGE_POINTER_FLAG_96x96`, 32x32 otherwise) is promoted to one under the same conditions
+    /// and dropped otherwise.
     LargePointer(LargePointer),
     HidePointer,
     DefaultPointer,
@@ -57,9 +63,8 @@ impl core::fmt::Debug for RGBAPointer {
     }
 }
 
-/// Same shape as [`RGBAPointer`] (32bpp XOR mask, no AND mask), for a pointer image
-/// above the 96x96 ceiling `RGBAPointer` can carry, up to 384x384
-/// (MS-RDPBCGR 2.2.9.1.2.1.11, Fast-Path Large Pointer Update).
+/// Same shape as [`RGBAPointer`] (32bpp XOR mask; the encoder derives the AND mask from its alpha channel),
+/// for a pointer image up to 384x384.
 #[derive(Clone)]
 pub struct LargePointer {
     pub cache_index: u16,
@@ -281,12 +286,84 @@ pub trait RdpServerDisplayUpdates {
     async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>>;
 }
 
+/// What a connection publishes to its display backend, handed to
+/// [`RdpServerDisplay::updates`].
+///
+/// The server writes these values while the connection runs; the backend keeps
+/// the handles it needs and reads them. Each connection has its own handles,
+/// starting from the initial values documented on each field, so nothing the
+/// previous connection set or measured carries over. A
+/// Deactivation-Reactivation Sequence keeps the connection, so `updates` is
+/// then called again with a context holding the same handles.
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct DisplayContext {
+    /// `true` while the client has sent `SuppressOutput { desktop_rect: None }`
+    /// (e.g., mstsc minimized), `false` at the start of the connection. Cleared
+    /// on `SuppressOutput { Some(rect) }` or `RefreshRectangle`.
+    ///
+    /// A backend can skip frame emission while it's set, so the client doesn't
+    /// accumulate a backlog of frames it can't present until refocus.
+    ///
+    /// **Caveat:** some clients (notably mstsc) send
+    /// `SuppressOutput { desktop_rect: None }` during their connect
+    /// handshake *before* their display surface is fully initialized; a
+    /// backend that honors the flag blindly will block that first frame
+    /// and leave the client with a half-initialized surface that doesn't
+    /// recover on un-suppress (visible as a frozen desktop on first
+    /// connect). Backends are advised to defer acting on the flag until
+    /// after the first frame has been delivered to the client, and to
+    /// debounce transient flaps (some clients pulse this PDU under wire
+    /// pressure on heavy CPU/IO loads) — e.g., only engage the gate once
+    /// the flag has been steady-`true` for ~1 s.
+    pub display_suppressed: Arc<AtomicBool>,
+
+    /// The connection's auto-detect measurements, for flow control.
+    pub autodetect: AutoDetectHandles,
+
+    /// The connection's EGFX server, when a
+    /// [`GfxServerFactory`](crate::GfxServerFactory) is configured. This is also
+    /// available when the factory uses the `build_gfx_handler` fallback.
+    /// The display calls `send_avc420_frame()` / `send_avc444_frame()` on it
+    /// and then signals the event loop via `ServerEvent::Egfx`.
+    #[cfg(feature = "egfx")]
+    pub gfx_handle: Option<GfxServerHandle>,
+
+    /// Number of entries in the client's pointer cache, from its Pointer Capability Set
+    /// (MS-RDPBCGR 2.2.7.1.5, `pointerCacheSize`).
+    /// The `cache_index` of [`RGBAPointer`], [`LargePointer`], and a [`ColorPointer`] promoted to a Large Pointer
+    /// Update must be less than this.
+    /// `0` when the client does not support the New Pointer Update.
+    ///
+    /// mstsc sends 21, FreeRDP 128. The server drops a pointer update whose `cache_index` is out of
+    /// range, as mstsc ends the session and FreeRDP drops the connection on one.
+    pub pointer_cache_size: u16,
+
+    /// Number of entries in the client's color pointer cache (MS-RDPBCGR 2.2.7.1.5, `colorPointerCacheSize`).
+    /// The `cache_index` of a [`ColorPointer`] sent as a Color Pointer Update must be less than this;
+    /// one promoted to a Large Pointer Update is checked against [`Self::pointer_cache_size`].
+    pub color_pointer_cache_size: u16,
+}
+
+impl core::fmt::Debug for DisplayContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DisplayContext")
+            .field("display_suppressed", &self.display_suppressed)
+            .field("autodetect", &self.autodetect)
+            .field("pointer_cache_size", &self.pointer_cache_size)
+            .field("color_pointer_cache_size", &self.color_pointer_cache_size)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Display for an RDP server
 ///
 /// # Example
 ///
 /// ```
-/// use ironrdp_server::{DesktopSize, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates, ServerResult};
+/// use ironrdp_server::{
+///     DesktopSize, DisplayContext, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates, ServerResult,
+/// };
 ///
 /// pub struct DisplayUpdates {
 ///     receiver: tokio::sync::mpsc::Receiver<DisplayUpdate>,
@@ -310,7 +387,7 @@ pub trait RdpServerDisplayUpdates {
 ///         DesktopSize { width: self.width, height: self.height }
 ///     }
 ///
-///     async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+///     async fn updates(&mut self, _ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
 ///         Ok(Box::new(DisplayUpdates { receiver: todo!() }))
 ///     }
 /// }
@@ -329,7 +406,11 @@ pub trait RdpServerDisplay: Send {
     }
 
     /// Return a display updates receiver
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>>;
+    ///
+    /// Called when a connection's session starts, and again after each
+    /// Deactivation-Reactivation Sequence of that connection. `ctx` carries
+    /// what the connection publishes to the display; see [`DisplayContext`].
+    async fn updates(&mut self, ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>>;
 
     /// Request a new size for the display
     fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
@@ -349,6 +430,24 @@ pub trait RdpServerDisplay: Send {
     /// matching every existing implementation's current behavior.
     async fn monitor_count(&mut self) -> u32 {
         1
+    }
+
+    /// Whether to offer the Display Control Virtual Channel (MS-RDPEDISP) on
+    /// this connection.
+    ///
+    /// Called once per connection, before the dynamic channels are set up.
+    /// Return `false` when the display cannot honor a client layout request,
+    /// for example when it mirrors a fixed-size physical screen: MS-RDPEDISP
+    /// section 1.3 defines no reject message, so a client that sent a layout
+    /// the server cannot apply just waits for a reconfiguration that never
+    /// comes. Defaults to `true`, matching every existing implementation.
+    ///
+    /// A connection binder installs its own display during the capability
+    /// exchange, after this is asked. The display given to
+    /// `with_display_handler` therefore decides for every connection, and a
+    /// display installed by a binder can't withdraw the offer.
+    async fn offers_display_control(&mut self) -> bool {
+        true
     }
 }
 
