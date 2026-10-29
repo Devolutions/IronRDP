@@ -631,6 +631,47 @@ fn static_channel_bounds_compressed_chunk_sequences_by_declared_length() {
     assert_eq!(reply[0].encode_unframed_pdu().expect("encode reply"), b"abcde");
 }
 
+// oracle: property; spec MS-RDPBCGR §2.2.6.1.1 (length is the total uncompressed length of the channel data)
+// oracle: mutant skipping the declared-length bound for PACKET_COMPRESSED fragments
+proptest! {
+    #[test]
+    fn static_channel_compressed_sequences_never_exceed_declared_length(
+        declared in 0u32..=16,
+        fragments in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..=8), 1..=4),
+    ) {
+        let mut channel = StaticVirtualChannel::new(RuntimeChannel::new("chunk", ChannelOptions::empty()));
+        let declared_length = usize::try_from(declared).expect("small declared length");
+        let last_index = fragments.len() - 1;
+        let mut received_length = 0;
+
+        for (index, fragment) in fragments.iter().enumerate() {
+            let mut flags = ChannelControlFlags::PACKET_COMPRESSED;
+            if index == 0 {
+                flags |= ChannelControlFlags::FLAG_FIRST;
+            }
+            if index == last_index {
+                flags |= ChannelControlFlags::FLAG_LAST;
+            }
+
+            received_length += fragment.len();
+            if declared_length < received_length {
+                expect_invalid_length(&mut channel, fragment, declared, flags, EXCEEDS_DECLARED);
+                return Ok(());
+            }
+
+            let reply = channel
+                .process(&channel_chunk(fragment, declared, flags))
+                .expect("fragment within the declared length should be accepted");
+            if index == last_index {
+                prop_assert_eq!(reply.len(), 1);
+                prop_assert_eq!(reply[0].encode_unframed_pdu().expect("encode reply"), fragments.concat());
+            } else {
+                prop_assert!(reply.is_empty());
+            }
+        }
+    }
+}
+
 #[test]
 fn static_channel_chunks_show_protocol_header_only_when_requested() {
     // Windows drops multi-chunk RDPDR PDUs that carry CHANNEL_FLAG_SHOW_PROTOCOL, so chunking

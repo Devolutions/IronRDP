@@ -266,6 +266,7 @@ fn far_over_cap_lengths_and_fragments_reject_and_recover() {
         assert_rejected_and_recovers(&[frame(u32::MAX, flags, &[1])], "length", OVERSIZE);
         assert_rejected_and_recovers(&[frame(4, flags, &[1; 8])], "length", OVERSIZE);
     }
+    // oracle: mutant skipping the cumulative max_message_size check for PACKET_COMPRESSED fragments
     assert_rejected_and_recovers(
         &[
             frame(4, FIRST | COMPRESSED, &[1; 4]),
@@ -278,6 +279,8 @@ fn far_over_cap_lengths_and_fragments_reject_and_recover() {
 
 #[test]
 fn compressed_unfragmented_wire_and_plaintext_lengths_are_independent_within_cap() {
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1 (length is the total uncompressed length of the channel data)
+    // oracle: mutant comparing compressed unfragmented wire bytes against the declared length
     for (declared, payload) in [(4, vec![1, 2]), (2, vec![1, 2, 3, 4]), (0, vec![1]), (4, vec![])] {
         let mut channel = channel(Some(4));
         assert_reply(
@@ -291,6 +294,8 @@ fn compressed_unfragmented_wire_and_plaintext_lengths_are_independent_within_cap
 
 #[test]
 fn compressed_sequence_wire_bytes_are_bounded_by_declared_length() {
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1 (length is the total uncompressed length of the channel data)
+    // oracle: mutant skipping the declared-length bound for PACKET_COMPRESSED fragments
     for (declared, payload) in [(2, vec![1, 2, 3, 4]), (0, vec![1])] {
         assert_rejected_and_recovers(
             &[frame(declared, FIRST | LAST | COMPRESSED, &payload)],
@@ -307,6 +312,11 @@ fn compressed_sequence_wire_bytes_are_bounded_by_declared_length() {
             EXCEEDS_DECLARED,
         );
     }
+}
+
+#[test]
+fn compressed_sequences_within_declared_length_complete_without_exact_match() {
+    // oracle: mutant enforcing the exact terminal length or rejecting within-bound PACKET_COMPRESSED sequences
     for (declared, payload) in [(4, vec![1, 2]), (4, vec![])] {
         let mut single = channel(Some(4));
         assert_reply(
