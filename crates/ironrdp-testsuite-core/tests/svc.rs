@@ -1,15 +1,23 @@
-use ironrdp_core::{ReadCursor, decode, decode_cursor, encode_vec};
+use core::error::Error as _;
+
+use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, decode, decode_cursor, encode_vec};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
-use ironrdp_pdu::mcs;
 use ironrdp_pdu::rdp::headers::ShareControlHeader;
 use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
+use ironrdp_pdu::{PduErrorKind, mcs};
 use ironrdp_session::{ActiveStageBuilder, x224::Processor};
 use ironrdp_svc::{
     CHANNEL_CHUNK_LENGTH, ChannelFlags, MAX_CHANNEL_CHUNK_LENGTH, MAX_STATIC_CHANNELS, StaticChannelKey,
     StaticChannelSet, StaticVirtualChannel, SvcClientProcessor, SvcMessage, SvcProcessor, SvcServerProcessor,
     make_channel_options,
 };
+use proptest::prelude::*;
+
+const UNFRAGMENTED_MISMATCH: &str = "unfragmented channel data does not match its declared length";
+const EXCEEDS_DECLARED: &str = "channel fragment sequence exceeds its declared length";
+const TERMINAL_MISMATCH: &str = "terminal channel fragment does not match its declared length";
+const EXCEEDS_MAX_SIZE: &str = "static channel message exceeds configured maximum size";
 
 #[derive(Debug)]
 struct RuntimeChannel {
@@ -37,8 +45,8 @@ impl SvcProcessor for RuntimeChannel {
         self.options
     }
 
-    fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
-        Ok(Vec::new())
+    fn process(&mut self, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        Ok(vec![SvcMessage::from(payload.to_vec())])
     }
 }
 
@@ -93,6 +101,376 @@ fn channel_chunk(data: &[u8], length: u32, flags: ChannelControlFlags) -> Vec<u8
     let mut chunk = encode_vec(&ChannelPduHeader { length, flags }).expect("channel header should encode");
     chunk.extend_from_slice(data);
     chunk
+}
+
+#[derive(Debug)]
+struct ContextChannel {
+    context: Option<u64>,
+    max_message_size: Option<usize>,
+    delivered: Vec<(u64, Vec<u8>)>,
+}
+
+impl ContextChannel {
+    fn new(context: Option<u64>, max_message_size: Option<usize>) -> Self {
+        Self {
+            context,
+            max_message_size,
+            delivered: Vec::new(),
+        }
+    }
+}
+
+ironrdp_core::impl_as_any!(ContextChannel);
+
+impl SvcProcessor for ContextChannel {
+    fn channel_name(&self) -> ChannelName {
+        ChannelName::from_static(b"ctxtest\0")
+    }
+
+    fn max_message_size(&self) -> Option<usize> {
+        self.max_message_size
+    }
+
+    fn message_context(&self) -> Option<u64> {
+        self.context
+    }
+
+    fn process(&mut self, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        panic!("process_with_context should intercept payload {payload:?}");
+    }
+
+    fn process_with_context(&mut self, context: u64, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        self.delivered.push((context, payload.to_vec()));
+        Ok(vec![SvcMessage::from(context.to_le_bytes().to_vec())])
+    }
+}
+
+fn set_context(channel: &mut StaticVirtualChannel, context: Option<u64>) {
+    channel
+        .channel_processor_downcast_mut::<ContextChannel>()
+        .expect("context channel")
+        .context = context;
+}
+
+fn delivered(channel: &StaticVirtualChannel) -> &[(u64, Vec<u8>)] {
+    &channel
+        .channel_processor_downcast_ref::<ContextChannel>()
+        .expect("context channel")
+        .delivered
+}
+
+fn expect_discarded(channel: &mut StaticVirtualChannel, data: &[u8], length: u32, flags: ChannelControlFlags) {
+    assert!(
+        channel
+            .process(&channel_chunk(data, length, flags))
+            .expect("chunk should succeed without delivery")
+            .is_empty()
+    );
+}
+
+fn expect_delivered(
+    channel: &mut StaticVirtualChannel,
+    data: &[u8],
+    length: u32,
+    flags: ChannelControlFlags,
+    expected_context: u64,
+) {
+    let reply = channel
+        .process(&channel_chunk(data, length, flags))
+        .expect("chunk should complete delivery");
+    assert_eq!(reply.len(), 1);
+    assert_eq!(
+        reply[0].encode_unframed_pdu().expect("encode reply"),
+        expected_context.to_le_bytes()
+    );
+}
+
+fn expect_invalid_length(
+    channel: &mut StaticVirtualChannel,
+    data: &[u8],
+    length: u32,
+    flags: ChannelControlFlags,
+    expected_reason: &str,
+) {
+    let error = channel
+        .process(&channel_chunk(data, length, flags))
+        .expect_err("chunk should fail length validation");
+    let source = error
+        .source()
+        .and_then(|source| source.downcast_ref::<DecodeError>())
+        .expect("structured decode error");
+    // oracle: mutant rejecting with the wrong length validation guard
+    assert!(
+        matches!(
+            source.kind(),
+            DecodeErrorKind::InvalidField {
+                field: "length",
+                reason,
+                ..
+            } if *reason == expected_reason
+        ),
+        "expected length error `{expected_reason}`, got {:?}",
+        source.kind()
+    );
+}
+
+#[test]
+fn static_channel_default_context_forwards_reassembled_message_to_process() {
+    let mut default_channel = StaticVirtualChannel::new(RuntimeChannel::new("default", ChannelOptions::empty()));
+    expect_discarded(&mut default_channel, b"de", 7, ChannelControlFlags::FLAG_FIRST);
+    let default_reply = default_channel
+        .process(&channel_chunk(b"fault", 7, ChannelControlFlags::FLAG_LAST))
+        .expect("default process_with_context should forward to process");
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and dispatched on CHANNEL_FLAG_LAST)
+    // oracle: mutant SvcProcessor::process_with_context or SvcProcessor::message_context default dropping the payload
+    assert_eq!(default_reply.len(), 1);
+    assert_eq!(
+        default_reply[0].encode_unframed_pdu().expect("encode reply"),
+        b"default"
+    );
+}
+
+#[test]
+fn static_channel_delivers_messages_with_their_captured_context() {
+    let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(7), None));
+    expect_delivered(&mut channel, b"plain", 5, ChannelControlFlags::empty(), 7);
+
+    set_context(&mut channel, Some(11));
+    expect_delivered(
+        &mut channel,
+        b"single",
+        6,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+        11,
+    );
+
+    set_context(&mut channel, Some(42));
+    expect_discarded(&mut channel, b"he", 5, ChannelControlFlags::FLAG_FIRST);
+    expect_discarded(&mut channel, b"ll", 5, ChannelControlFlags::empty());
+    expect_delivered(&mut channel, b"o", 5, ChannelControlFlags::FLAG_LAST, 42);
+
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2 ("does not contain the CHANNEL_FLAG_FIRST ... or CHANNEL_FLAG_LAST")
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and dispatched on CHANNEL_FLAG_LAST)
+    let payloads: Vec<&[u8]> = delivered(&channel)
+        .iter()
+        .map(|(_, payload)| payload.as_slice())
+        .collect();
+    assert_eq!(
+        payloads,
+        [b"plain".as_slice(), b"single".as_slice(), b"hello".as_slice()]
+    );
+    // oracle: mutant bypassing process_with_context or capturing message_context on the wrong fragment
+    let contexts: Vec<u64> = delivered(&channel).iter().map(|(context, _)| *context).collect();
+    assert_eq!(contexts, [7, 11, 42]);
+}
+
+// oracle: mutant delivering when message_context is None or retaining discarded bytes before a recipient attaches
+#[test]
+fn static_channel_without_context_discards_messages_and_delivers_after_attach() {
+    let mut channel = StaticVirtualChannel::new(ContextChannel::new(None, Some(4)));
+
+    expect_discarded(&mut channel, b"abcd", 4, ChannelControlFlags::empty());
+    expect_discarded(
+        &mut channel,
+        b"abcd",
+        4,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+    );
+    expect_discarded(&mut channel, b"ab", 4, ChannelControlFlags::FLAG_FIRST);
+    expect_discarded(&mut channel, b"c", 4, ChannelControlFlags::empty());
+    expect_discarded(&mut channel, b"d", 4, ChannelControlFlags::FLAG_LAST);
+    assert!(delivered(&channel).is_empty());
+
+    set_context(&mut channel, Some(9));
+    expect_discarded(&mut channel, b"ok", 3, ChannelControlFlags::FLAG_FIRST);
+    expect_delivered(&mut channel, b"!", 3, ChannelControlFlags::FLAG_LAST, 9);
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and dispatched on CHANNEL_FLAG_LAST)
+    assert_eq!(delivered(&channel), [(9, b"ok!".to_vec())]);
+}
+
+#[test]
+fn static_channel_without_context_validates_declared_lengths_and_size_limit() {
+    let mut channel = StaticVirtualChannel::new(ContextChannel::new(None, Some(4)));
+
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1; spec MS-RDPBCGR §3.1.5.2.2.1
+    // oracle: mutant skipping declared-length validation when message_context is None
+    expect_invalid_length(
+        &mut channel,
+        b"ab",
+        3,
+        ChannelControlFlags::empty(),
+        UNFRAGMENTED_MISMATCH,
+    );
+    expect_discarded(&mut channel, b"ab", 4, ChannelControlFlags::FLAG_FIRST);
+    expect_invalid_length(&mut channel, b"c", 4, ChannelControlFlags::FLAG_LAST, TERMINAL_MISMATCH);
+
+    // oracle: mutant retaining or delivering payload bytes or skipping max_message_size when message_context is None
+    expect_invalid_length(
+        &mut channel,
+        b"12345",
+        5,
+        ChannelControlFlags::empty(),
+        EXCEEDS_MAX_SIZE,
+    );
+    expect_discarded(
+        &mut channel,
+        b"123",
+        2,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::PACKET_COMPRESSED,
+    );
+    expect_invalid_length(
+        &mut channel,
+        b"45",
+        2,
+        ChannelControlFlags::FLAG_LAST | ChannelControlFlags::PACKET_COMPRESSED,
+        EXCEEDS_MAX_SIZE,
+    );
+    assert!(delivered(&channel).is_empty());
+}
+
+// oracle: mutant delivering a partial sequence across a context change or retaining discarded prefix bytes
+#[test]
+fn static_channel_context_change_mid_sequence_discards_partial_message() {
+    let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(1), Some(8)));
+
+    expect_discarded(&mut channel, b"old-", 8, ChannelControlFlags::FLAG_FIRST);
+    set_context(&mut channel, Some(2));
+    expect_discarded(&mut channel, b"mid-", 8, ChannelControlFlags::empty());
+    set_context(&mut channel, Some(1));
+    expect_discarded(&mut channel, b"", 8, ChannelControlFlags::FLAG_LAST);
+
+    set_context(&mut channel, Some(1));
+    expect_discarded(&mut channel, b"head", 8, ChannelControlFlags::FLAG_FIRST);
+    set_context(&mut channel, Some(2));
+    expect_discarded(&mut channel, b"tail", 8, ChannelControlFlags::FLAG_LAST);
+
+    set_context(&mut channel, None);
+    expect_discarded(&mut channel, b"drop", 8, ChannelControlFlags::FLAG_FIRST);
+    set_context(&mut channel, Some(2));
+    expect_discarded(&mut channel, b"keep", 8, ChannelControlFlags::FLAG_LAST);
+    assert!(delivered(&channel).is_empty());
+
+    set_context(&mut channel, Some(3));
+    expect_discarded(&mut channel, b"new-", 7, ChannelControlFlags::FLAG_FIRST);
+    expect_delivered(&mut channel, b"msg", 7, ChannelControlFlags::FLAG_LAST, 3);
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and dispatched on CHANNEL_FLAG_LAST)
+    assert_eq!(delivered(&channel), [(3, b"new-msg".to_vec())]);
+}
+
+#[test]
+fn static_channel_context_change_mid_sequence_validates_lengths_and_size_limit() {
+    let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(2), Some(8)));
+
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1; spec MS-RDPBCGR §3.1.5.2.2.1
+    // oracle: mutant skipping declared-length validation after message_context changes
+    expect_discarded(&mut channel, b"ab", 4, ChannelControlFlags::FLAG_FIRST);
+    set_context(&mut channel, Some(3));
+    expect_invalid_length(&mut channel, b"c", 4, ChannelControlFlags::FLAG_LAST, TERMINAL_MISMATCH);
+
+    expect_discarded(&mut channel, b"ab", 3, ChannelControlFlags::FLAG_FIRST);
+    set_context(&mut channel, None);
+    expect_invalid_length(
+        &mut channel,
+        b"cde",
+        3,
+        ChannelControlFlags::FLAG_LAST,
+        EXCEEDS_DECLARED,
+    );
+
+    // oracle: mutant skipping max_message_size checks after discarding a partial sequence
+    set_context(&mut channel, Some(2));
+    expect_discarded(
+        &mut channel,
+        b"12345",
+        4,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::PACKET_COMPRESSED,
+    );
+    set_context(&mut channel, Some(3));
+    expect_invalid_length(
+        &mut channel,
+        b"6789",
+        4,
+        ChannelControlFlags::FLAG_LAST | ChannelControlFlags::PACKET_COMPRESSED,
+        EXCEEDS_MAX_SIZE,
+    );
+    assert!(delivered(&channel).is_empty());
+}
+
+// oracle: property round-trip; spec MS-RDPBCGR §3.1.5.2.1; spec MS-RDPBCGR §3.1.5.2.2.1
+proptest! {
+    #[test]
+    fn static_channel_chunkify_and_dechunkify_round_trip_with_context(
+        context in any::<u64>(),
+        payload in proptest::collection::vec(any::<u8>(), 0..=4096),
+    ) {
+        let chunks = StaticVirtualChannel::chunkify(vec![SvcMessage::from(payload.clone())])
+            .expect("chunkify should succeed");
+        let (last_chunk, leading_chunks) = chunks.split_last().expect("chunkify always emits at least one chunk");
+        let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(context), None));
+
+        for chunk in leading_chunks {
+            prop_assert!(
+                channel
+                    .process(chunk.filled())
+                    .expect("non-final chunk should buffer")
+                    .is_empty()
+            );
+        }
+
+        let reply = channel
+            .process(last_chunk.filled())
+            .expect("final chunk should complete reassembly");
+        prop_assert_eq!(reply.len(), 1);
+        prop_assert_eq!(
+            reply[0].encode_unframed_pdu().expect("encode reply"),
+            context.to_le_bytes()
+        );
+        prop_assert_eq!(delivered(&channel), &[(context, payload)]);
+    }
+}
+
+// oracle: mutant violating max_message_size or poisoning recovery across arbitrary fragment and context sequences
+proptest! {
+    #[test]
+    fn static_channel_arbitrary_fragments_preserve_cap_and_recover(
+        steps in proptest::collection::vec(
+            (
+                proptest::option::of(0u64..4),
+                0u32..=24,
+                any::<u32>(),
+                proptest::collection::vec(any::<u8>(), 0..=24),
+            ),
+            1..=16,
+        ),
+    ) {
+        const CAP: usize = 16;
+        let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(0), Some(CAP)));
+        let mut sequence_open = false;
+
+        for (context, length, raw_flags, data) in steps {
+            set_context(&mut channel, context);
+            let flags = ChannelControlFlags::from_bits_retain(raw_flags);
+            let first = flags.contains(ChannelControlFlags::FLAG_FIRST);
+            let last = flags.contains(ChannelControlFlags::FLAG_LAST);
+            let ok = channel.process(&channel_chunk(&data, length, flags)).is_ok();
+            sequence_open = ok && (first || sequence_open) && !last;
+        }
+
+        for (_, payload) in delivered(&channel) {
+            prop_assert!(payload.len() <= CAP);
+        }
+
+        set_context(&mut channel, Some(99));
+        if sequence_open {
+            let error = channel
+                .process(&channel_chunk(b"o", 2, ChannelControlFlags::FLAG_FIRST))
+                .expect_err("initial fragment while a sequence is open must fail and reset");
+            prop_assert!(matches!(error.kind(), PduErrorKind::Decode));
+        }
+        expect_discarded(&mut channel, b"o", 2, ChannelControlFlags::FLAG_FIRST);
+        expect_delivered(&mut channel, b"k", 2, ChannelControlFlags::FLAG_LAST, 99);
+        prop_assert_eq!(delivered(&channel).last(), Some(&(99, b"ok".to_vec())));
+    }
 }
 
 #[test]
