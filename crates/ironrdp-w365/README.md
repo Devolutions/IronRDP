@@ -9,7 +9,7 @@
 
 No Microsoft Open Specification documents these channels.
 The PDU layouts and the client behavior follow the Windows App 2.0.1485.0 client.
-`PROTOCOL.md`, next to this README in the repository, describes the layouts and the client behavior.
+`PROTOCOL.md`, next to this README in the repository, describes the layouts and the client behavior, along with the interactive Entra authentication channel that `ironrdp-client` implements.
 
 Each module provides the PDU codecs and a `DvcProcessor`.
 The crate performs no I/O: it reads no battery state, holds no power request, captures no screen, and opens no settings page.

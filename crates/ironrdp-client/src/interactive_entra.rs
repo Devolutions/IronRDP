@@ -14,10 +14,10 @@
 //! Windows App also closes the channel then; a dynamic channel processor cannot close its own channel, so this client
 //! stops answering instead.
 //!
-//! [`PROTOCOL.interactive-entra-auth.md`] describes the exchange in more detail.
+//! The [interactive Entra authentication section of `PROTOCOL.md`][protocol] describes the exchange in more detail.
 //!
 //! [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
-//! [`PROTOCOL.interactive-entra-auth.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md
+//! [protocol]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-w365/PROTOCOL.md#interactive-entra-authentication
 
 use core::fmt;
 use std::sync::Arc;
@@ -586,7 +586,7 @@ mod tests {
         }
     }
 
-    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Request, which reads version, scenario_id, and username_hint
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Interactive Entra authentication, Request, which reads version, scenario_id, and username_hint
     #[test]
     fn request_with_a_known_scenario_is_accepted() {
         let request = br#"{"version":1,"scenario_id":"{75CC6D06-3A48-43A1-BCD0-CB46EB8F9AAE}","username_hint":"user@contoso.com"}"#;
@@ -600,7 +600,7 @@ mod tests {
         );
     }
 
-    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Request, whose username_hint is optional
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Interactive Entra authentication, Request, whose username_hint is optional
     #[test]
     fn username_hint_is_optional() {
         let request = b"{\"version\":1,\"scenario_id\":\"b419e9ce-25cd-44bc-8da5-6ff75edd1e28\"}\0";
@@ -608,7 +608,7 @@ mod tests {
         assert_eq!(parse_request(request).map(|request| request.username_hint), Ok(None));
     }
 
-    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Request, which fails these requests with E_NOTIMPL or E_INVALIDARG
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Interactive Entra authentication, Request, which fails these requests with E_NOTIMPL or E_INVALIDARG
     #[rstest]
     #[case::version_2(br#"{"version":2,"scenario_id":"75cc6d06-3a48-43a1-bcd0-cb46eb8f9aae"}"#.as_slice(), E_NOTIMPL)]
     #[case::unknown_scenario(br#"{"version":1,"scenario_id":"00000000-0000-0000-0000-000000000000"}"#.as_slice(), E_NOTIMPL)]
@@ -618,13 +618,13 @@ mod tests {
         assert_eq!(parse_request(request), Err(hresult));
     }
 
-    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Errors
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Interactive Entra authentication, Errors
     #[test]
     fn error_message_carries_the_hresult() {
         assert_eq!(error_message(E_ACCESSDENIED), br#"{"error_code":-2147024891}"#);
     }
 
-    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Server certificate
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Interactive Entra authentication, Server certificate
     #[test]
     fn device_id_comes_from_the_common_name() {
         let certificates = certificates();
@@ -632,7 +632,7 @@ mod tests {
         assert_eq!(device_id_from_certificate(&certificates.leaf), Ok(DEVICE_ID.to_owned()));
     }
 
-    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Server certificate
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Interactive Entra authentication, Server certificate
     #[test]
     fn certificate_issued_by_a_p2p_root_is_accepted() {
         let certificates = certificates();
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(verify_server_certificate(&certificates.leaf, &roots, &now), Ok(()));
     }
 
-    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Server certificate, which fails with E_ACCESSDENIED
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Interactive Entra authentication, Server certificate, which fails with E_ACCESSDENIED
     #[derive(Clone, Copy)]
     enum Roots {
         None,

@@ -1,9 +1,10 @@
-# Windows 365 redirection wire formats
+# Windows 365 dynamic channel wire formats
 
-No Microsoft Open Specification documents the battery status, power request, screen capture redirection, or virtual desktop control channels.
-This note describes the layouts and rules this crate implements, following the Windows App 2.0.1485.0 client, so the `oracle: reference` markers in `crates/ironrdp-testsuite-core/tests/w365` have one place to point to.
+No Microsoft Open Specification documents the battery status, power request, screen capture redirection, virtual desktop control, or interactive Entra authentication channels.
+This note describes the layouts and rules IronRDP implements for them, following the Windows App 2.0.1485.0 client, so the `oracle: reference` markers in their tests have one place to point to.
+This crate implements the first four channels; `ironrdp-client` implements interactive Entra authentication, which needs TLS and an Entra token.
 
-All fields are little-endian.
+All binary fields are little-endian.
 
 ## Battery status redirection
 
@@ -192,9 +193,56 @@ Each action opens a Windows Settings page:
 
 When its host application does not handle local actions, Windows App opens `ms-settings:devices?launchedFromRemoteSession=1` for action 0 alone and fails other actions with `E_UNEXPECTED`.
 
+## Interactive Entra authentication
+
+`Microsoft::Windows::RDS::InteractiveEntraAuth`, through which a session host asks the client for a fresh Microsoft Entra sign-in during the session.
+`crates/ironrdp-client/src/interactive_entra.rs` implements it.
+
+### Acceptance
+
+Windows App opens the channel only when interactive Entra authentication is enabled for it, which it is not by default.
+`ironrdp-client` leaves the channel off unless the embedder enables it.
+
+### Request
+
+The first message on the channel is plain JSON:
+
+- `version` must be 1; any other value fails with `E_NOTIMPL`.
+- `scenario_id` is a GUID string, required, and must be `75cc6d06-3a48-43a1-bcd0-cb46eb8f9aae` or `b419e9ce-25cd-44bc-8da5-6ff75edd1e28`. Any other GUID fails with `E_NOTIMPL`. The client does not otherwise use the ID.
+- `username_hint` is optional.
+
+A request that is not a JSON object or lacks `scenario_id` fails; `ironrdp-client` reports both as `E_INVALIDARG`.
+
+### TLS
+
+After the request, the client runs a TLS handshake inside the channel as the TLS client.
+Every later message on the channel goes through that TLS layer.
+
+### Server certificate
+
+The common name (OID `2.5.4.3`) of the server's TLS certificate is the session host's Entra device ID.
+
+Windows App requires the certificate to chain to one of the tenant's Entra P2P root certificates, and fails with `E_ACCESSDENIED` when it does not or when the device ID or the roots are missing.
+`ironrdp-client` checks once the token is granted, because the embedder supplies the roots with the token.
+
+### Token and RDS AAD exchange
+
+The client asks for an Entra token for the session host's device, with `username_hint`, when present, as the user name, bound to the session's proof-of-possession key.
+The exchange inside TLS is then the RDS AAD Auth exchange of [MS-RDPBCGR] section 5.4.5.4.1: the server sends `ts_nonce`, the client sends `rdp_assertion`, and the server answers with `authentication_result`.
+
+### Errors
+
+On any failure, the client sends `{"error_code": <HRESULT>}` and closes the channel.
+The message goes through TLS once the handshake has completed and is plain before it.
+Whether the HRESULT is written signed was not determined; `ironrdp-client` writes it as a signed 32-bit integer.
+
 ## Not verified
 
-- No layout has been checked against a live Cloud PC session.
+- No layout has been checked against a live Cloud PC session, and no interactive Entra exchange has been run against a live session host.
 - Whether the server NUL-terminates the save result's file name and path was not determined, so the decoder drops trailing NULs.
 - Windows App shares its screen capture counter across the whole process and its starting value was not determined; each `ScreenCaptureClient` starts at 0.
 - What the server does with the launch URI in the virtual desktop control version request was not determined.
+- Where Windows App obtains the tenant's Entra P2P root certificates was not determined.
+- What the two interactive Entra authentication scenario IDs mean is not documented.
+
+[MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
