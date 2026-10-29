@@ -319,11 +319,12 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     }
 
     /// Identifies the current recipient of a message, or returns `None` to discard incoming data.
-    /// Any change to this value permanently discards the in-flight message without skipping
-    /// fragment validation, even if the original value is later restored.
-    /// Only an unchanged `Some` value across every fragment of a sequence accumulates and delivers
-    /// the message, so each attached recipient must use a distinct value.
+    /// Any change permanently discards the in-flight message, even if the original value returns.
+    /// Discarded fragments still undergo [3.1.5.2.2.1] Reassembly of Chunked Virtual Channel Data validation.
+    /// Only an unchanged `Some` value across all fragments delivers a message, so each recipient needs a unique value.
     /// The default keeps all messages in the same context.
+    ///
+    /// [3.1.5.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a542bf19-1c86-4c80-ab3e-61449653abf6
     fn message_context(&self) -> Option<u64> {
         Some(0)
     }
@@ -341,9 +342,11 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     /// Returns a list of PDUs to be sent back.
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>>;
 
-    /// Processes a complete message in the context captured at its first fragment.
+    /// Processes a complete message in the context captured at its first fragment ([3.1.5.2.2.1]).
     /// Processors with concurrently replaceable recipients must check the context again when delivering.
     /// The default forwards to [`Self::process`].
+    ///
+    /// [3.1.5.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a542bf19-1c86-4c80-ab3e-61449653abf6
     fn process_with_context(&mut self, _context: u64, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         self.process(payload)
     }
@@ -531,8 +534,7 @@ impl ChunkProcessor {
     }
 
     fn discard_partial_message(&mut self) {
-        // UNTESTED: Release capacity when discarding a partial or rejected sequence so it cannot
-        // pin reassembly memory.
+        // UNTESTED: Release capacity when discarding a sequence so it cannot pin reassembly memory.
         // Check retained allocation, not just buffer length, when changing this reset.
         self.chunked_pdu = Vec::new();
         self.message_context = None;

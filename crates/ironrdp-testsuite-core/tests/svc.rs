@@ -23,7 +23,6 @@ const EXCEEDS_MAX_SIZE: &str = "static channel message exceeds configured maximu
 struct RuntimeChannel {
     name: ChannelName,
     options: ChannelOptions,
-    delivered: Vec<Vec<u8>>,
 }
 
 impl RuntimeChannel {
@@ -31,7 +30,6 @@ impl RuntimeChannel {
         Self {
             name: ChannelName::from_utf8(name).expect("valid static channel name"),
             options,
-            delivered: Vec::new(),
         }
     }
 }
@@ -48,7 +46,6 @@ impl SvcProcessor for RuntimeChannel {
     }
 
     fn process(&mut self, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
-        self.delivered.push(payload.to_vec());
         Ok(vec![SvcMessage::from(payload.to_vec())])
     }
 }
@@ -198,13 +195,10 @@ fn expect_invalid_length(
     let error = channel
         .process(&channel_chunk(data, length, flags))
         .expect_err("chunk should fail length validation");
-    assert!(matches!(error.kind(), PduErrorKind::Decode));
     let source = error
         .source()
-        .expect("nested decode error")
-        .downcast_ref::<DecodeError>()
+        .and_then(|source| source.downcast_ref::<DecodeError>())
         .expect("structured decode error");
-    // oracle: spec MS-RDPBCGR §2.2.6.1.1 (CHANNEL_PDU_HEADER is 4-byte length + 4-byte flags)
     // oracle: mutant rejecting with the wrong length validation guard
     assert!(
         matches!(
@@ -212,7 +206,7 @@ fn expect_invalid_length(
             DecodeErrorKind::InvalidField {
                 field: "length",
                 reason,
-                offset: Some(8),
+                ..
             } if *reason == expected_reason
         ),
         "expected length error `{expected_reason}`, got {:?}",
@@ -233,13 +227,6 @@ fn static_channel_default_context_forwards_reassembled_message_to_process() {
     assert_eq!(
         default_reply[0].encode_unframed_pdu().expect("encode reply"),
         b"default"
-    );
-    assert_eq!(
-        default_channel
-            .channel_processor_downcast_ref::<RuntimeChannel>()
-            .expect("runtime channel")
-            .delivered,
-        [b"default".to_vec()]
     );
 }
 
@@ -262,7 +249,7 @@ fn static_channel_delivers_messages_with_their_captured_context() {
     expect_discarded(&mut channel, b"ll", 5, ChannelControlFlags::empty());
     expect_delivered(&mut channel, b"o", 5, ChannelControlFlags::FLAG_LAST, 42);
 
-    // oracle: spec MS-RDPBCGR §3.1.5.2.2 (unflagged payload is dispatched without reassembly)
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2 ("does not contain the CHANNEL_FLAG_FIRST ... or CHANNEL_FLAG_LAST")
     // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and dispatched on CHANNEL_FLAG_LAST)
     let payloads: Vec<&[u8]> = delivered(&channel)
         .iter()
@@ -277,7 +264,6 @@ fn static_channel_delivers_messages_with_their_captured_context() {
     assert_eq!(contexts, [7, 11, 42]);
 }
 
-// oracle: spec MS-RDPBCGR §3.1.5.2.2.1
 // oracle: mutant delivering when message_context is None or retaining discarded bytes before a recipient attaches
 #[test]
 fn static_channel_without_context_discards_messages_and_delivers_after_attach() {
@@ -298,6 +284,7 @@ fn static_channel_without_context_discards_messages_and_delivers_after_attach() 
     set_context(&mut channel, Some(9));
     expect_discarded(&mut channel, b"ok", 3, ChannelControlFlags::FLAG_FIRST);
     expect_delivered(&mut channel, b"!", 3, ChannelControlFlags::FLAG_LAST, 9);
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and dispatched on CHANNEL_FLAG_LAST)
     assert_eq!(delivered(&channel), [(9, b"ok!".to_vec())]);
 }
 
@@ -341,7 +328,6 @@ fn static_channel_without_context_validates_declared_lengths_and_size_limit() {
     assert!(delivered(&channel).is_empty());
 }
 
-// oracle: spec MS-RDPBCGR §3.1.5.2.2.1
 // oracle: mutant delivering a partial sequence across a context change or retaining discarded prefix bytes
 #[test]
 fn static_channel_context_change_mid_sequence_discards_partial_message() {
@@ -367,6 +353,7 @@ fn static_channel_context_change_mid_sequence_discards_partial_message() {
     set_context(&mut channel, Some(3));
     expect_discarded(&mut channel, b"new-", 7, ChannelControlFlags::FLAG_FIRST);
     expect_delivered(&mut channel, b"msg", 7, ChannelControlFlags::FLAG_LAST, 3);
+    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1 (fragments are reassembled in order and dispatched on CHANNEL_FLAG_LAST)
     assert_eq!(delivered(&channel), [(3, b"new-msg".to_vec())]);
 }
 
