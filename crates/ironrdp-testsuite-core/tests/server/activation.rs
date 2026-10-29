@@ -241,14 +241,57 @@ pub(super) async fn play_client_with_capabilities(
         (CLIENT_SIZE.width, CLIENT_SIZE.height)
     );
 
+    confirm_activation(
+        framed,
+        desktop_resize_flag,
+        input,
+        remote_capabilities,
+        (user_channel_id, io_channel_id),
+        CLIENT_SIZE,
+    )
+    .await;
+    demand.pdu.capability_sets
+}
+
+pub(super) async fn reactivate_client_with_capabilities(
+    framed: &mut TokioFramed<DuplexStream>,
+    desktop_size: DesktopSize,
+    remote_capabilities: Vec<CapabilitySet>,
+) -> Vec<CapabilitySet> {
+    let (_, demand) = framed.read_pdu().await.unwrap();
+    let indication = mcs::decode_send_data_indication(&demand).unwrap();
+    let header = indication.decode_user_data::<ShareControlHeader>().unwrap();
+    let ShareControlPdu::ServerDemandActive(demand) = header.share_control_pdu else {
+        panic!("expected Demand Active");
+    };
+    confirm_activation(
+        framed,
+        true,
+        &[],
+        Some(remote_capabilities),
+        (indication.initiator_id, indication.channel_id),
+        desktop_size,
+    )
+    .await;
+    demand.pdu.capability_sets
+}
+
+async fn confirm_activation(
+    framed: &mut TokioFramed<DuplexStream>,
+    desktop_resize_flag: bool,
+    input: &[u8],
+    remote_capabilities: Option<Vec<CapabilitySet>>,
+    (user_channel_id, io_channel_id): (u16, u16),
+    desktop_size: DesktopSize,
+) {
     let mut confirm = decode::<ShareControlHeader>(&CLIENT_DEMAND_ACTIVE_PDU_BUFFER).unwrap();
     let ShareControlPdu::ClientConfirmActive(active) = &mut confirm.share_control_pdu else {
         panic!("expected Confirm Active fixture");
     };
     for capability in &mut active.pdu.capability_sets {
         if let CapabilitySet::Bitmap(bitmap) = capability {
-            bitmap.desktop_width = CLIENT_SIZE.width;
-            bitmap.desktop_height = CLIENT_SIZE.height;
+            bitmap.desktop_width = desktop_size.width;
+            bitmap.desktop_height = desktop_size.height;
             bitmap.desktop_resize_flag = desktop_resize_flag;
         }
     }
@@ -293,5 +336,4 @@ pub(super) async fn play_client_with_capabilities(
     for _ in 0..4 {
         let _response = framed.read_pdu().await.unwrap();
     }
-    demand.pdu.capability_sets
 }

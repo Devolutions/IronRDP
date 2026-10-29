@@ -1,12 +1,15 @@
 use core::time::Duration;
+use std::sync::Arc;
 
 use ironrdp_acceptor::RemoteAppCapabilities;
 use ironrdp_core::{ReadCursor, decode_cursor};
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
+use ironrdp_pdu::mcs;
 use ironrdp_pdu::rdp::capability_sets::{
     CapabilitySet, CmdFlags, MultifragmentUpdate, Rail, RailSupportLevel, SurfaceCommands, WindowList,
     WindowSupportLevel,
 };
+use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu};
 use ironrdp_pdu::window::{
     CachedIconInfo, IconSource, WindowIcon, WindowOrder, WindowOrderBody, WindowState, WindowingOrder,
 };
@@ -17,9 +20,9 @@ use ironrdp_server::{
 };
 use ironrdp_tokio::TokioFramed;
 use tokio::io::DuplexStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
-use super::activation::play_client_with_capabilities;
+use super::activation::{play_client_with_capabilities, reactivate_client_with_capabilities};
 
 fn remote_app() -> RemoteAppCapabilities {
     RemoteAppCapabilities {
@@ -354,6 +357,80 @@ async fn window_orders_wait_for_all_bitmap_fragments() {
     .await;
 }
 
+// oracle: mutant a cancelled batch waiting for the graphics lock must not reach the client.
+#[tokio::test]
+async fn dropping_completion_while_waiting_for_bitmap_skips_orders() {
+    connected(
+        Some(remote_app()),
+        Some(65536),
+        |mut client, events, display, _| async move {
+            display
+                .send(DisplayUpdate::Bitmap(BitmapUpdate {
+                    x: 0,
+                    y: 0,
+                    width: 128.try_into().unwrap(),
+                    height: 64.try_into().unwrap(),
+                    format: PixelFormat::ARgb32,
+                    data: vec![0x55; 128 * 64 * 4].into(),
+                    stride: 512.try_into().unwrap(),
+                }))
+                .unwrap();
+            let (code, first, _) = read_update(&mut client).await;
+            assert_eq!(code, UpdateCode::SurfaceCommands);
+            assert_eq!(first, Fragmentation::First);
+            let (request, completion) = WindowingOrders::new(vec![deleted(7)]);
+            events.send(ServerEvent::WindowingOrders(request)).unwrap();
+            tokio::task::yield_now().await;
+            drop(completion);
+            loop {
+                let (code, fragment, _) = read_update(&mut client).await;
+                assert_eq!(code, UpdateCode::SurfaceCommands);
+                if fragment == Fragmentation::Last {
+                    break;
+                }
+                assert_eq!(fragment, Fragmentation::Next);
+            }
+            display.send(DisplayUpdate::HidePointer).unwrap();
+            assert_eq!(read_update(&mut client).await.0, UpdateCode::HiddenPointer);
+        },
+    )
+    .await;
+}
+
+// oracle: mutant cancellation after FIRST must not leave the client's fragmented update incomplete.
+#[tokio::test]
+async fn dropping_completion_after_first_fragment_preserves_remaining_fragments() {
+    connected(
+        Some(remote_app()),
+        Some(65536),
+        |mut client, events, display, _| async move {
+            let (request, completion) = WindowingOrders::new(vec![deleted(7); 4000]);
+            events.send(ServerEvent::WindowingOrders(request)).unwrap();
+            let (code, first, mut data) = read_update(&mut client).await;
+            assert_eq!(code, UpdateCode::Orders);
+            assert_eq!(first, Fragmentation::First);
+            drop(completion);
+            let (code, next, middle) = read_update(&mut client).await;
+            assert_eq!(code, UpdateCode::Orders);
+            assert_eq!(next, Fragmentation::Next);
+            data.extend(middle);
+            let (code, last, tail) = read_update(&mut client).await;
+            assert_eq!(code, UpdateCode::Orders);
+            assert_eq!(last, Fragmentation::Last);
+            data.extend(tail);
+            let mut cursor = ReadCursor::new(&data);
+            assert_eq!(cursor.read_u16(), 4000);
+            for _ in 0..4000 {
+                assert_eq!(decode_cursor::<WindowingOrder>(&mut cursor).unwrap(), deleted(7));
+            }
+            assert!(cursor.eof());
+            display.send(DisplayUpdate::HidePointer).unwrap();
+            assert_eq!(read_update(&mut client).await.0, UpdateCode::HiddenPointer);
+        },
+    )
+    .await;
+}
+
 // oracle: mutant resize must not cancel a partially written batch or insert Deactivate All between its fragments.
 #[tokio::test]
 async fn resize_waits_for_the_complete_window_update() {
@@ -379,10 +456,58 @@ async fn resize_waits_for_the_complete_window_update() {
                 assert_eq!(fragment, Fragmentation::Next);
             }
             assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
-            assert_eq!(client.read_pdu().await.unwrap().0, ironrdp_pdu::Action::X224);
+            read_deactivate_all(&mut client).await;
         },
     )
     .await;
+}
+
+// oracle: mutant capability reports must not be lost or retain the previous activation's negotiation.
+#[tokio::test]
+async fn reactivation_reports_effective_remote_app_capabilities() {
+    connected_with_reports(
+        Some(remote_app()),
+        Some(remote_app()),
+        None,
+        None,
+        |mut client, events, display, _, mut reports| async move {
+            let size = DesktopSize {
+                width: 800,
+                height: 600,
+            };
+            display.send(DisplayUpdate::Resize(size)).unwrap();
+            read_deactivate_all(&mut client).await;
+            let mut capabilities = remote_app();
+            capabilities.window_list.support_level = WindowSupportLevel::Supported;
+            let offered = reactivate_client_with_capabilities(
+                &mut client,
+                size,
+                vec![
+                    CapabilitySet::Rail(capabilities.rail.clone()),
+                    CapabilitySet::WindowList(capabilities.window_list.clone()),
+                ],
+            )
+            .await;
+            assert!(offered.contains(&CapabilitySet::Rail(remote_app().rail)));
+            assert!(offered.contains(&CapabilitySet::WindowList(remote_app().window_list)));
+            assert_eq!(reports.recv().await.unwrap(), Some(capabilities));
+            let (request, completion) = WindowingOrders::new(vec![deleted(7)]);
+            events.send(ServerEvent::WindowingOrders(request)).unwrap();
+            assert_eq!(read_update(&mut client).await.0, UpdateCode::Orders);
+            assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
+        },
+    )
+    .await;
+}
+
+async fn read_deactivate_all(client: &mut TokioFramed<DuplexStream>) {
+    let (_, bytes) = client.read_pdu().await.unwrap();
+    let indication = mcs::decode_send_data_indication(&bytes).unwrap();
+    let header = indication.decode_user_data::<ShareControlHeader>().unwrap();
+    assert!(matches!(
+        header.share_control_pdu,
+        ShareControlPdu::ServerDeactivateAll(_)
+    ));
 }
 
 fn deleted(window_id: u32) -> WindowingOrder {
@@ -430,20 +555,46 @@ async fn connected_with_server_limit<F, Fut>(
     ) -> Fut,
     Fut: Future<Output = ()>,
 {
+    connected_with_reports(
+        server_capabilities,
+        capabilities,
+        limit,
+        server_limit,
+        |client, events, display, caps, _reports| run(client, events, display, caps),
+    )
+    .await;
+}
+
+async fn connected_with_reports<F, Fut>(
+    server_capabilities: Option<RemoteAppCapabilities>,
+    capabilities: Option<RemoteAppCapabilities>,
+    limit: Option<u32>,
+    server_limit: Option<u32>,
+    run: F,
+) where
+    F: FnOnce(
+        TokioFramed<DuplexStream>,
+        mpsc::UnboundedSender<ServerEvent>,
+        mpsc::UnboundedSender<DisplayUpdate>,
+        Vec<CapabilitySet>,
+        mpsc::UnboundedReceiver<Option<RemoteAppCapabilities>>,
+    ) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = oneshot::channel();
-    let (capabilities_tx, capabilities_rx) = oneshot::channel();
+    let (capabilities_tx, mut capabilities_rx) = mpsc::unbounded_channel();
     let expected_capabilities = capabilities.clone();
     let mut builder = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_no_security()
         .with_no_input()
         .with_display_handler(Display {
-            updates: Some(display_rx),
+            updates: Arc::new(Mutex::new(display_rx)),
             ready: Some(ready_tx),
         })
         .with_remote_app(server_capabilities)
-        .with_connection_handler(Some(Box::new(CapabilitiesHandler(Some(capabilities_tx)))));
+        .with_connection_handler(Some(Box::new(CapabilitiesHandler(capabilities_tx))));
     if let Some(server_limit) = server_limit {
         builder = builder.with_max_request_size(server_limit);
     }
@@ -470,9 +621,9 @@ async fn connected_with_server_limit<F, Fut>(
             });
             let caps = play_client_with_capabilities(&mut client, true, &[], confirmed).await;
             ready_rx.await.unwrap();
-            assert_eq!(capabilities_rx.await.unwrap(), expected_capabilities);
+            assert_eq!(capabilities_rx.recv().await.unwrap(), expected_capabilities);
             let display_keepalive = display_tx.clone();
-            run(client, events, display_tx, caps).await;
+            run(client, events, display_tx, caps, capabilities_rx).await;
             drop(display_keepalive);
         };
         let (_, ()) = tokio::join!(server.run_connection_with(transport, TransportTls::AlreadyDone), client);
@@ -481,17 +632,17 @@ async fn connected_with_server_limit<F, Fut>(
     .unwrap();
 }
 
-struct CapabilitiesHandler(Option<oneshot::Sender<Option<RemoteAppCapabilities>>>);
+struct CapabilitiesHandler(mpsc::UnboundedSender<Option<RemoteAppCapabilities>>);
 
 impl ConnectionHandler for CapabilitiesHandler {
     fn on_remote_app_capabilities(&mut self, capabilities: Option<&RemoteAppCapabilities>) -> ServerResult<()> {
-        self.0.take().unwrap().send(capabilities.cloned()).unwrap();
+        self.0.send(capabilities.cloned()).unwrap();
         Ok(())
     }
 }
 
 struct Display {
-    updates: Option<mpsc::UnboundedReceiver<DisplayUpdate>>,
+    updates: Arc<Mutex<mpsc::UnboundedReceiver<DisplayUpdate>>>,
     ready: Option<oneshot::Sender<()>>,
 }
 
@@ -505,16 +656,18 @@ impl RdpServerDisplay for Display {
     }
 
     async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
-        self.ready.take().unwrap().send(()).unwrap();
-        Ok(Box::new(Updates(self.updates.take().unwrap())))
+        if let Some(ready) = self.ready.take() {
+            ready.send(()).unwrap();
+        }
+        Ok(Box::new(Updates(Arc::clone(&self.updates))))
     }
 }
 
-struct Updates(mpsc::UnboundedReceiver<DisplayUpdate>);
+struct Updates(Arc<Mutex<mpsc::UnboundedReceiver<DisplayUpdate>>>);
 
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for Updates {
     async fn next_update(&mut self) -> ServerResult<Option<DisplayUpdate>> {
-        Ok(self.0.recv().await)
+        Ok(self.0.lock().await.recv().await)
     }
 }
