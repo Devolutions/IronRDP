@@ -306,7 +306,7 @@ pub trait ConnectionHandler: Send {
     /// `None` means the connection did not negotiate RemoteApp.
     /// See MS-RDPERP 2.2.1.1, ["Capability Sets"].
     ///
-    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
+    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/a399c109-e9db-4819-b2e8-89c4eb9001c0
     fn on_remote_app_capabilities(
         &mut self,
         capabilities: Option<&ironrdp_acceptor::RemoteAppCapabilities>,
@@ -774,7 +774,7 @@ pub struct RdpServerOptions {
     /// The embedder supplies the RAIL channel processor and window orders.
     /// See MS-RDPERP 2.2.1.1, ["Capability Sets"].
     ///
-    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
+    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/a399c109-e9db-4819-b2e8-89c4eb9001c0
     pub remote_app: Option<ironrdp_acceptor::RemoteAppCapabilities>,
     /// When `Some(max)`, each connection's acceptor adopts the desktop size the
     /// client requests in its Client Core Data (instead of the size reported by
@@ -1486,7 +1486,7 @@ impl ServerRedirectionHandle {
 /// Whether a window-order batch reached the transport.
 /// See MS-RDPBCGR 2.2.9.1.2.1, ["Fast-Path Update (TS_FP_UPDATE)"].
 ///
-/// ["Fast-Path Update (TS_FP_UPDATE)"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+/// ["Fast-Path Update (TS_FP_UPDATE)"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a1c4caa8-00ed-45bb-a06e-5177473766d3
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowingOrdersStatus {
     /// All update fragments were accepted by the transport, not necessarily processed by the client.
@@ -1501,7 +1501,7 @@ pub enum WindowingOrdersStatus {
 /// Cancellation or failure after writing starts reports an error; retrying could duplicate orders.
 /// Orders follow MS-RDPERP 2.2.1.3, ["Windowing Alternate Secondary Drawing Orders"].
 ///
-/// ["Windowing Alternate Secondary Drawing Orders"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
+/// ["Windowing Alternate Secondary Drawing Orders"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/2061e8f6-5f39-44a8-ab49-6707e04f60cb
 #[derive(Debug)]
 pub struct WindowingOrders {
     orders: Vec<WindowingOrder>,
@@ -4108,7 +4108,6 @@ impl RdpServer {
                             .try_fold(2 /* numberOrders */, |length: usize, order| {
                                 length.checked_add(order.size()).filter(|length| *length <= maximum)
                             })
-                            .filter(|length| *length <= maximum)
                             .ok_or_else(|| ServerError::reason("window orders", "update exceeds the graphics limit"))?;
                         let mut data = vec![0; length];
                         let mut cursor = ironrdp_core::WriteCursor::new(&mut data);
