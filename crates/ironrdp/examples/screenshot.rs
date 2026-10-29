@@ -76,51 +76,23 @@ fn main() -> anyhow::Result<()> {
             println!("{HELP}");
             Ok(())
         }
-        Action::Run {
-            host,
-            port,
-            username,
-            password,
-            output,
-            domain,
-            autologon,
-            tls_enabled,
-            credssp_enabled,
-            compression_enabled,
-            compression_level,
-            no_graphics_timeout_seconds,
-            after_first_graphics_seconds,
-        } => {
+        Action::Run(config) => {
             info!(
-                host,
-                port,
-                username,
-                output = %output.display(),
-                domain,
-                autologon,
-                tls_enabled,
-                credssp_enabled,
-                compression_enabled,
-                compression_level,
-                no_graphics_timeout_seconds,
-                after_first_graphics_seconds,
+                host = config.host,
+                port = config.port,
+                username = config.username,
+                output = %config.output.display(),
+                domain = config.domain,
+                autologon = config.autologon,
+                tls_enabled = config.tls_enabled,
+                credssp_enabled = config.credssp_enabled,
+                compression_enabled = config.compression_enabled,
+                compression_level = config.compression_level,
+                no_graphics_timeout_seconds = config.no_graphics_timeout_seconds,
+                after_first_graphics_seconds = config.after_first_graphics_seconds,
                 "run"
             );
-            run(RunConfig {
-                host,
-                port,
-                username,
-                password,
-                output,
-                domain,
-                autologon,
-                tls_enabled,
-                credssp_enabled,
-                compression_enabled,
-                compression_level,
-                no_graphics_timeout_seconds,
-                after_first_graphics_seconds,
-            })
+            run(config)
         }
     }
 }
@@ -145,21 +117,7 @@ struct RunConfig {
 #[derive(Debug)]
 enum Action {
     ShowHelp,
-    Run {
-        host: String,
-        port: u16,
-        username: String,
-        password: String,
-        output: PathBuf,
-        domain: Option<String>,
-        autologon: bool,
-        tls_enabled: bool,
-        credssp_enabled: bool,
-        compression_enabled: bool,
-        compression_level: u32,
-        no_graphics_timeout_seconds: u64,
-        after_first_graphics_seconds: u64,
-    },
+    Run(RunConfig),
 }
 
 fn parse_args(mut args: pico_args::Arguments) -> anyhow::Result<Action> {
@@ -189,7 +147,7 @@ fn parse_args(mut args: pico_args::Arguments) -> anyhow::Result<Action> {
             anyhow::bail!("no-graphics-timeout-seconds must be greater than zero");
         }
 
-        Action::Run {
+        Action::Run(RunConfig {
             host,
             port,
             username,
@@ -203,7 +161,7 @@ fn parse_args(mut args: pico_args::Arguments) -> anyhow::Result<Action> {
             compression_level,
             no_graphics_timeout_seconds,
             after_first_graphics_seconds,
-        }
+        })
     };
 
     if !args.finish().is_empty() {
@@ -235,7 +193,19 @@ fn setup_logging() -> anyhow::Result<()> {
 }
 
 fn run(config: RunConfig) -> anyhow::Result<()> {
-    let connector_config = build_config(&config)?;
+    let connector_config = build_config(
+        config.username,
+        config.password,
+        config.domain,
+        config.autologon,
+        config.tls_enabled,
+        config.credssp_enabled,
+        if config.compression_enabled {
+            Some(compression_type_from_level(config.compression_level)?)
+        } else {
+            None
+        },
+    );
 
     let (connection_result, framed) = connect(connector_config, config.host, config.port).context("connect")?;
     info!(compression_type = ?connection_result.compression_type, "Negotiated compression");
@@ -246,7 +216,7 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
         connection_result.desktop_size.height,
     );
 
-    let got_graphics = active_stage(
+    active_stage(
         connection_result,
         framed,
         &mut image,
@@ -254,10 +224,6 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
         Duration::from_secs(config.after_first_graphics_seconds),
     )
     .context("active stage")?;
-
-    if !got_graphics {
-        anyhow::bail!("no graphics updates received before capture timeout");
-    }
 
     let img: image::ImageBuffer<image::Rgba<u8>, _> =
         image::ImageBuffer::from_raw(u32::from(image.width()), u32::from(image.height()), image.data())
@@ -268,21 +234,20 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_config(config: &RunConfig) -> anyhow::Result<connector::Config> {
-    let compression_type = if config.compression_enabled {
-        Some(compression_type_from_level(config.compression_level)?)
-    } else {
-        None
-    };
-
-    Ok(connector::Config {
-        credentials: Credentials::UsernamePassword {
-            username: config.username.clone(),
-            password: config.password.clone(),
-        },
-        domain: config.domain.clone(),
-        enable_tls: config.tls_enabled,
-        enable_credssp: config.credssp_enabled,
+fn build_config(
+    username: String,
+    password: String,
+    domain: Option<String>,
+    autologon: bool,
+    tls_enabled: bool,
+    credssp_enabled: bool,
+    compression_type: Option<CompressionType>,
+) -> connector::Config {
+    connector::Config {
+        credentials: Credentials::UsernamePassword { username, password },
+        domain,
+        enable_tls: tls_enabled,
+        enable_credssp: credssp_enabled,
         enable_standard_rdp_security: false,
         keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
@@ -322,7 +287,7 @@ fn build_config(config: &RunConfig) -> anyhow::Result<connector::Config> {
 
         enable_server_pointer: false, // Disable custom pointers (there is no user interaction anyway).
         request_data: None,
-        autologon: config.autologon,
+        autologon,
         enable_audio_playback: false,
         enable_audio_capture: false,
         compression_type,
@@ -344,7 +309,7 @@ fn build_config(config: &RunConfig) -> anyhow::Result<connector::Config> {
         work_dir: String::new(),
         remote_application_mode: false,
         rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::empty(),
-    })
+    }
 }
 
 fn compression_type_from_level(level: u32) -> anyhow::Result<CompressionType> {
@@ -377,10 +342,6 @@ impl DeadlineTcpStream {
 
 impl Read for DeadlineTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
         if let Some(deadline) = self.read_deadline {
             let timeout = deadline.saturating_duration_since(Instant::now());
             if timeout.is_zero() {
@@ -458,23 +419,8 @@ fn connect(
     Ok((connection_result, upgraded_framed))
 }
 
-fn capture_deadline(
-    stage_started_at: Instant,
-    first_graphic_time: Option<Instant>,
-    no_graphics_timeout: Duration,
-    after_first_graphics: Duration,
-) -> anyhow::Result<Instant> {
-    let (started_at, timeout) = first_graphic_time
-        .map(|started_at| (started_at, after_first_graphics))
-        .unwrap_or((stage_started_at, no_graphics_timeout));
-
+fn capture_deadline(started_at: Instant, timeout: Duration) -> anyhow::Result<Instant> {
     started_at.checked_add(timeout).context("capture deadline is too large")
-}
-
-fn remaining_capture_timeout(deadline: Instant, now: Instant) -> Option<Duration> {
-    deadline
-        .checked_duration_since(now)
-        .filter(|timeout| !timeout.is_zero())
 }
 
 fn active_stage(
@@ -483,7 +429,7 @@ fn active_stage(
     image: &mut DecodedImage,
     no_graphics_timeout: Duration,
     after_first_graphics: Duration,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<()> {
     let mut active_stage = ActiveStageBuilder {
         static_channels: connection_result.static_channels,
         user_channel_id: connection_result.user_channel_id,
@@ -495,21 +441,37 @@ fn active_stage(
         pointer_software_rendering: connection_result.pointer_software_rendering,
     }
     .build();
-    let stage_started_at = Instant::now();
-    let mut first_graphic_time = None;
-    let mut deadline = capture_deadline(
-        stage_started_at,
-        first_graphic_time,
+    capture_frames(
+        &mut framed,
         no_graphics_timeout,
         after_first_graphics,
-    )?;
+        |stream, deadline| stream.get_mut().set_read_deadline(deadline),
+        Instant::now,
+        |action, payload, received_at| Ok(active_stage.process(image, action, payload, received_at)?),
+    )
+}
+
+fn capture_frames<S: Read + io::Write>(
+    framed: &mut ironrdp_blocking::Framed<S>,
+    no_graphics_timeout: Duration,
+    after_first_graphics: Duration,
+    mut set_deadline: impl FnMut(&mut S, Instant),
+    mut now: impl FnMut() -> Instant,
+    mut process: impl FnMut(
+        ironrdp_pdu::Action,
+        &[u8],
+        Option<connector::MonotonicInstant>,
+    ) -> anyhow::Result<Vec<ActiveStageOutput>>,
+) -> anyhow::Result<()> {
+    let mut got_graphics = false;
+    let mut deadline = capture_deadline(now(), no_graphics_timeout)?;
 
     'outer: loop {
-        if remaining_capture_timeout(deadline, Instant::now()).is_none() {
+        if deadline <= now() {
             break 'outer;
         }
 
-        framed.get_inner_mut().0.get_mut().set_read_deadline(deadline);
+        set_deadline(framed.get_inner_mut().0, deadline);
 
         let (action, payload) = match framed.read_pdu() {
             Ok((action, payload)) => (action, payload),
@@ -519,26 +481,20 @@ fn active_stage(
             Err(e) => return Err(anyhow::Error::new(e).context("read frame")),
         };
 
-        if remaining_capture_timeout(deadline, Instant::now()).is_none() {
+        if deadline <= now() {
             break 'outer;
         }
 
         trace!(?action, frame_length = payload.len(), "Frame received");
 
-        let outputs = active_stage.process(image, action, &payload, framed.last_read_at())?;
+        let outputs = process(action, &payload, framed.last_read_at())?;
 
         for out in outputs {
             match out {
                 ActiveStageOutput::ResponseFrame(frame) => framed.write_all(&frame).context("write response")?,
-                ActiveStageOutput::GraphicsUpdate(_) if first_graphic_time.is_none() => {
-                    let started_at = Instant::now();
-                    first_graphic_time = Some(started_at);
-                    deadline = capture_deadline(
-                        stage_started_at,
-                        first_graphic_time,
-                        no_graphics_timeout,
-                        after_first_graphics,
-                    )?;
+                ActiveStageOutput::GraphicsUpdate(_) if !got_graphics => {
+                    got_graphics = true;
+                    deadline = capture_deadline(now(), after_first_graphics)?;
                 }
                 ActiveStageOutput::Terminate(_) => break 'outer,
                 _ => {}
@@ -546,7 +502,11 @@ fn active_stage(
         }
     }
 
-    Ok(first_graphic_time.is_some())
+    if !got_graphics {
+        anyhow::bail!("no graphics updates received before capture timeout");
+    }
+
+    Ok(())
 }
 
 fn lookup_addr(hostname: &str, port: u16) -> anyhow::Result<core::net::SocketAddr> {
@@ -613,19 +573,20 @@ fn extract_tls_server_public_key(cert: &[u8]) -> anyhow::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::collections::VecDeque;
     use std::ffi::OsString;
     use std::io::{self, Read as _, Write as _};
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
+    use std::rc::Rc;
     use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use tokio_rustls::rustls::pki_types::pem::PemObject as _;
 
-    use super::{
-        Action, DeadlineTcpStream, capture_deadline, parse_args, remaining_capture_timeout, rustls, tls_upgrade,
-    };
+    use super::{Action, ActiveStageOutput, DeadlineTcpStream, capture_frames, parse_args, rustls, tls_upgrade};
 
     fn parse(args: &[&str]) -> anyhow::Result<Action> {
         parse_args(pico_args::Arguments::from_vec(
@@ -635,8 +596,8 @@ mod tests {
 
     #[test]
     fn screenshot_options_preserve_existing_defaults() -> anyhow::Result<()> {
-        // oracle: Preserve the existing screenshot example defaults and keep TLS and autologon opt-in.
-        let Action::Run {
+        // oracle: reference Devolutions/IronRDP@905c28b3a4e6:crates/ironrdp/examples/screenshot.rs
+        let Action::Run(super::RunConfig {
             port,
             output,
             autologon,
@@ -647,7 +608,7 @@ mod tests {
             no_graphics_timeout_seconds,
             after_first_graphics_seconds,
             ..
-        } = parse(&["--host", "localhost", "-u", "user", "-p", "password"])?
+        }) = parse(&["--host", "localhost", "-u", "user", "-p", "password"])?
         else {
             anyhow::bail!("expected run action");
         };
@@ -659,6 +620,7 @@ mod tests {
         assert!(credssp_enabled);
         assert!(compression_enabled);
         assert_eq!(compression_level, 3);
+        // oracle: regression #2311 (bounded screenshot capture defaults).
         assert_eq!(no_graphics_timeout_seconds, 3);
         assert_eq!(after_first_graphics_seconds, 8);
 
@@ -667,8 +629,8 @@ mod tests {
 
     #[test]
     fn screenshot_options_accept_explicit_security_compression_and_capture_values() -> anyhow::Result<()> {
-        // oracle: The documented command-line options must override their defaults as requested.
-        let Action::Run {
+        // oracle: regression #2311 (explicit screenshot option values must be honored).
+        let Action::Run(super::RunConfig {
             autologon,
             tls_enabled,
             credssp_enabled,
@@ -677,7 +639,7 @@ mod tests {
             no_graphics_timeout_seconds,
             after_first_graphics_seconds,
             ..
-        } = parse(&[
+        }) = parse(&[
             "--host",
             "localhost",
             "-u",
@@ -716,8 +678,8 @@ mod tests {
 
     #[test]
     fn screenshot_options_reject_zero_initial_graphics_timeout() {
-        // oracle: A zero initial timeout cannot provide a graphics wait and is rejected as invalid input.
-        let error = parse(&[
+        // oracle: regression #2311 (the initial graphics wait must be nonzero).
+        parse(&[
             "--host",
             "localhost",
             "-u",
@@ -728,65 +690,109 @@ mod tests {
             "0",
         ])
         .expect_err("zero timeout should be rejected");
-
-        assert!(error.to_string().contains("must be greater than zero"));
     }
 
     #[test]
-    fn capture_timeout_uses_no_graphics_deadline_until_first_update() {
-        // oracle: The initial capture wait ends at its configured deadline when no graphics arrive.
-        let stage_started_at = Instant::now();
-        let deadline = capture_deadline(stage_started_at, None, Duration::from_secs(3), Duration::from_secs(8))
-            .expect("capture deadline should fit");
-
-        assert_eq!(
-            remaining_capture_timeout(deadline, stage_started_at + Duration::from_secs(2)),
-            Some(Duration::from_secs(1))
-        );
-        assert_eq!(remaining_capture_timeout(deadline, deadline), None);
-    }
-
-    #[test]
-    fn capture_timeout_uses_first_graphics_grace_period() {
-        // oracle: The post-first-graphics wait starts at the first update, not at the active-stage start.
-        let stage_started_at = Instant::now();
-        let first_graphic_time = stage_started_at + Duration::from_secs(2);
-        let deadline = capture_deadline(
-            stage_started_at,
-            Some(first_graphic_time),
-            Duration::from_secs(3),
+    fn capture_without_graphics_retries_early_timeouts_then_fails_at_initial_deadline() {
+        // oracle: regression #2311 (no graphics must fail at the initial deadline, not at an early timeout).
+        let start = Instant::now();
+        let (result, deadlines, processed) = run_capture_script(
+            start,
+            vec![
+                (Duration::from_secs(1), Err(io::ErrorKind::TimedOut.into())),
+                (Duration::from_secs(1), Ok(())),
+                (Duration::from_secs(1), Err(io::ErrorKind::TimedOut.into())),
+            ],
+            vec![false],
             Duration::from_secs(8),
-        )
-        .expect("grace-period deadline should fit");
-
-        assert_eq!(
-            remaining_capture_timeout(deadline, stage_started_at + Duration::from_secs(5)),
-            Some(Duration::from_secs(5))
         );
-        assert_eq!(remaining_capture_timeout(deadline, deadline), None);
+
+        assert!(result.is_err());
+        assert_eq!(processed, 1);
+        assert_eq!(deadlines, vec![start + Duration::from_secs(3); 3]);
     }
 
     #[test]
-    fn capture_timeout_rejects_a_frame_completed_after_deadline() {
-        // oracle: A frame read at or after the deadline must not be processed as a capture update.
-        let stage_started_at = Instant::now();
-        let deadline = capture_deadline(stage_started_at, None, Duration::from_secs(3), Duration::from_secs(8))
-            .expect("capture deadline should fit");
-
-        assert_eq!(
-            remaining_capture_timeout(deadline, deadline - Duration::from_millis(1)),
-            Some(Duration::from_millis(1))
+    fn capture_switches_to_first_graphics_grace_without_extending_it_on_later_updates() {
+        // oracle: regression #2311 (only the first graphics update starts the grace period).
+        let start = Instant::now();
+        let (result, deadlines, processed) = run_capture_script(
+            start,
+            vec![
+                (Duration::from_secs(2), Ok(())),
+                (Duration::from_secs(2), Ok(())),
+                (Duration::from_secs(6), Err(io::ErrorKind::TimedOut.into())),
+            ],
+            vec![true, true],
+            Duration::from_secs(8),
         );
-        assert_eq!(remaining_capture_timeout(deadline, deadline), None);
+
+        result.expect("graphics should allow a capture after the grace period");
+        assert_eq!(processed, 2);
         assert_eq!(
-            remaining_capture_timeout(deadline, deadline + Duration::from_millis(1)),
-            None
+            deadlines,
+            vec![
+                start + Duration::from_secs(3),
+                start + Duration::from_secs(10),
+                start + Duration::from_secs(10),
+            ]
+        );
+    }
+
+    #[test]
+    fn capture_with_zero_grace_stops_after_first_graphics() {
+        // oracle: regression #2311 (zero grace captures the first update without another read).
+        let start = Instant::now();
+        let (result, deadlines, processed) = run_capture_script(
+            start,
+            vec![(Duration::from_secs(2), Ok(()))],
+            vec![true],
+            Duration::ZERO,
+        );
+
+        result.expect("the first graphics update should be captured");
+        assert_eq!(processed, 1);
+        assert_eq!(deadlines, vec![start + Duration::from_secs(3)]);
+    }
+
+    #[test]
+    fn capture_rejects_first_frame_completed_at_initial_deadline() {
+        // oracle: regression #2311 discussion_r4417496685 (late first graphics must not start a grace period).
+        let start = Instant::now();
+        let (result, deadlines, processed) = run_capture_script(
+            start,
+            vec![(Duration::from_secs(3), Ok(()))],
+            vec![true],
+            Duration::from_secs(8),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(processed, 0);
+        assert_eq!(deadlines, vec![start + Duration::from_secs(3)]);
+    }
+
+    #[test]
+    fn capture_skips_frame_completed_after_grace_deadline() {
+        // oracle: regression #2311 discussion_r4417496685 (a late frame must not be processed).
+        let start = Instant::now();
+        let (result, deadlines, processed) = run_capture_script(
+            start,
+            vec![(Duration::from_secs(2), Ok(())), (Duration::from_secs(9), Ok(()))],
+            vec![true, true],
+            Duration::from_secs(8),
+        );
+
+        result.expect("the earlier graphics update should still be captured");
+        assert_eq!(processed, 1);
+        assert_eq!(
+            deadlines,
+            vec![start + Duration::from_secs(3), start + Duration::from_secs(10)]
         );
     }
 
     #[test]
     fn deadline_tcp_stream_enforces_one_deadline_across_fragmented_reads() -> anyhow::Result<()> {
-        // oracle: Fragmented reads share one absolute deadline instead of restarting a full timeout.
+        // oracle: regression #2311 discussion_r4417496685 (fragmented reads share an absolute deadline).
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let server_addr = listener.local_addr()?;
         let (ready_sender, ready_receiver) = mpsc::channel();
@@ -859,5 +865,69 @@ mod tests {
         Ok(rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![certificate], private_key)?)
+    }
+
+    struct ScriptedStream {
+        now: Rc<Cell<Instant>>,
+        steps: VecDeque<(Duration, io::Result<()>)>,
+    }
+
+    impl io::Read for ScriptedStream {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let (elapsed, result) = self.steps.pop_front().expect("unexpected extra frame read");
+            self.now.set(self.now.get() + elapsed);
+            result?;
+            buf[..2].copy_from_slice(&[0x00, 0x02]);
+            Ok(2)
+        }
+    }
+
+    impl io::Write for ScriptedStream {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn run_capture_script(
+        start: Instant,
+        steps: Vec<(Duration, io::Result<()>)>,
+        updates: Vec<bool>,
+        grace: Duration,
+    ) -> (anyhow::Result<()>, Vec<Instant>, usize) {
+        let now = Rc::new(Cell::new(start));
+        let mut framed = ironrdp_blocking::Framed::new(ScriptedStream {
+            now: Rc::clone(&now),
+            steps: steps.into(),
+        });
+        let mut deadlines = Vec::new();
+        let mut updates: VecDeque<_> = updates.into();
+        let mut processed = 0;
+        let result = capture_frames(
+            &mut framed,
+            Duration::from_secs(3),
+            grace,
+            |_, deadline| deadlines.push(deadline),
+            || now.get(),
+            |_, _, _| {
+                processed += 1;
+                Ok(if updates.pop_front().expect("unexpected frame processing") {
+                    vec![ActiveStageOutput::GraphicsUpdate(
+                        ironrdp_pdu::geometry::InclusiveRectangle {
+                            left: 0,
+                            top: 0,
+                            right: 0,
+                            bottom: 0,
+                        },
+                    )]
+                } else {
+                    Vec::new()
+                })
+            },
+        );
+        (result, deadlines, processed)
     }
 }
