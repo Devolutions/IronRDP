@@ -31,11 +31,13 @@ impl DisplayControlClient {
         }
     }
 
+    /// Whether the server has sent its capabilities on the open channel, so a monitor layout
+    /// can be fitted to them. Becomes false again when the server closes the channel.
     pub fn ready(&self) -> bool {
         self.capabilities.is_some()
     }
 
-    /// Returns the capabilities received from the server, if any.
+    /// Returns the capabilities received from the server on the open channel, if any.
     pub fn capabilities(&self) -> Option<&DisplayControlCapabilities> {
         self.capabilities.as_ref()
     }
