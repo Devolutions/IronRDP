@@ -2917,7 +2917,7 @@ mod tests {
         );
     }
 
-    // oracle: regression a native application warp must change the next coordinate-less click without echoing a move.
+    // oracle: mutant echoing a server pointer warp as a client move or letting a consumed warp override a later local move.
     #[tokio::test]
     async fn server_pointer_position_updates_clicks_without_overriding_later_local_moves() {
         use ironrdp_client::rdp::RdpOutputEvent;
@@ -2948,6 +2948,7 @@ mod tests {
         let RdpInputEvent::FastPath(events) = receiver.try_recv().expect("click after server warp") else {
             panic!("expected FastPath input");
         };
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1.4.2
         assert_eq!(
             events.as_slice(),
             [FastPathInputEvent::MouseEvent(MousePdu {

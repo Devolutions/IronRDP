@@ -127,20 +127,14 @@ struct Connection {
     transport_closed: mpsc::Sender<()>,
 }
 
-impl Connection {
-    fn is_closed(&self) -> bool {
-        self.transport_closed.is_closed()
-    }
-
-    async fn closed(&self) {
-        self.transport_closed.closed().await;
-    }
-}
-
 /// Transport wrapper that closes its [`Connection`] signal when it is dropped.
 ///
-/// `now-client` drops the transport when its worker stops, and the worker stops on every kind of failure.
-/// The drop is therefore the one place that observes all of them.
+/// In [`now-client`][now-client], `OwnedWorker::run` owns both split halves of the transport and returns on every
+/// transport, framing (`FrameTooLarge`, `FrameBufferTooLarge`, `PduDecode`, `PduEncode`), protocol, channel-close, or
+/// `EventQueueFull` error, dropping the transport when `run` exits; per-request validation errors rejected before a
+/// write is queued leave the stream intact.
+///
+/// [now-client]: https://docs.rs/now-client/0.1.0/src/now_client/client.rs.html
 struct Tracked<S> {
     inner: S,
     _alive: mpsc::Receiver<()>,
@@ -250,6 +244,7 @@ impl NowEndpoint {
             }
 
             // The pause ends no later than the deadline, so the request never answers after it.
+            // `timeout_at` polls `attempt` before its timer, so a synchronous I/O error at the deadline returns `Ok(Err(_))`.
             sleep_until((Instant::now() + RETRY_DELAY).min(deadline)).await;
             if deadline <= Instant::now() {
                 return Err(NowEndpointError::Unavailable { timeout, last_error });
@@ -259,17 +254,19 @@ impl NowEndpoint {
 
     /// Keeps a negotiated connection available until the returned future is dropped.
     ///
-    /// The NOW host gives up when no client capability set arrives within seconds of the channel opening.
+    /// The [NOW host][now-host] gives up when no client capability set arrives within seconds of the channel opening.
     /// Waiting for a request before connecting is therefore too late.
     /// The proxy exposes its endpoint only once the host opens the channel, so this polls for it.
     /// After a closure it connects again, which makes the host negotiate afresh.
+    ///
+    /// [now-host]: https://github.com/Devolutions/devolutions-gateway/blob/8d2910734ac3/devolutions-session/src/dvc/task.rs
     #[expect(clippy::infinite_loop, reason = "the negotiator runs until the session drops it")]
     pub async fn keep_negotiated(&self) {
         loop {
             match self.attempt().await {
                 Ok(connection) => {
                     debug!("NOW channel negotiated");
-                    connection.closed().await;
+                    connection.transport_closed.closed().await;
                     debug!("NOW channel closed");
                     sleep(RETRY_DELAY).await;
                 }
@@ -296,7 +293,7 @@ impl NowEndpoint {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .filter(|connection| !connection.is_closed())
+            .filter(|connection| !connection.transport_closed.is_closed())
             .cloned()
     }
 
@@ -340,28 +337,23 @@ where
         inner: stream,
         _alive: alive,
     };
-    let handle = NowClient::connect(stream, client_config()).await?;
+    // `now-client` closes a connection when no heartbeat arrives within twice the negotiated interval.
+    // Hosts that restart their heartbeat timer on every processed event send none while busy, so an active channel
+    // would be closed and its running operations lost.
+    // A capability set cannot drop its heartbeat interval, so build one around the default execution flags.
+    let config = {
+        let default = NowClientConfig::default();
+        let client_capset = NowChannelCapsetMsg::default().with_exec_capset(default.client_capset.exec_capset());
+        NowClientConfig {
+            client_capset,
+            ..default
+        }
+    };
+    let handle = NowClient::connect(stream, config).await?;
     Ok(Connection {
         handle,
         transport_closed,
     })
-}
-
-/// The default client configuration, without a heartbeat request.
-///
-/// `now-client` closes a connection when no heartbeat arrives within twice the negotiated interval.
-/// Nothing else resets that deadline.
-/// Hosts that restart their heartbeat timer on every processed event send none while busy,
-/// so an active channel would be closed and its running operations lost.
-/// The local transport reports a closed channel by itself, so the heartbeat adds nothing here.
-fn client_config() -> NowClientConfig {
-    let default = NowClientConfig::default();
-    // A capability set cannot drop its heartbeat interval, so build one around the default flags.
-    let client_capset = NowChannelCapsetMsg::default().with_exec_capset(default.client_capset.exec_capset());
-    NowClientConfig {
-        client_capset,
-        ..default
-    }
 }
 
 enum ConnectAttemptError {
@@ -812,7 +804,7 @@ mod tests {
             .live_connection()
             .expect("the negotiated connection must be cached");
         drop(first);
-        bounded(stale.closed()).await;
+        bounded(stale.transport_closed.closed()).await;
         assert!(!endpoint.diagnostic_snapshot().0);
 
         let _second = request_handle(&endpoint, &mut host).await;
@@ -831,7 +823,7 @@ mod tests {
             .live_connection()
             .expect("the negotiated connection must be cached");
         drop(first);
-        bounded(stale.closed()).await;
+        bounded(stale.transport_closed.closed()).await;
 
         // The negotiator reconnects and the host never answers its capability set.
         let negotiator = spawn_negotiator(&endpoint);
@@ -875,7 +867,7 @@ mod tests {
             .expect("adapter connection must succeed");
         sleep(SILENCE).await;
 
-        assert!(!connection.is_closed());
+        assert!(!connection.transport_closed.is_closed());
         peer.abort();
     }
 }

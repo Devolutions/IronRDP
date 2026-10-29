@@ -41,7 +41,10 @@ struct OperationStateStore {
     records: BTreeMap<u64, OperationRecord>,
     terminal_order: VecDeque<u64>,
     total_output: usize,
-    /// Signals live readers that a record gained an event or finished.
+    /// Signals live readers that the active operation gained an event.
+    ///
+    /// INVARIANT: `finish` replaces this sender, dropping the previous one so blocked readers wake, observe the
+    /// terminal record, and release their live-subscriber slots before another operation starts.
     changed: watch::Sender<()>,
 }
 
@@ -105,6 +108,7 @@ impl LiveEvents {
                     return None;
                 }
                 NextEvent::Pending => {
+                    // `finish` replaces `changed`, dropping the previous sender so blocked readers wake and re-check.
                     if self.changed.as_mut()?.changed().await.is_err() {
                         self.changed = None;
                     }
@@ -1009,31 +1013,39 @@ mod tests {
         }
     }
 
-    // oracle: mutant a reader misses a wake-up, ends before the operation finishes, or treats cancelling as finished
-    #[tokio::test(start_paused = true)]
-    async fn waiting_live_reader_receives_each_event_before_the_operation_finishes() {
-        for state in [OperationState::Running, OperationState::Cancelling] {
-            let (manager, id) = running_manager();
-            manager.update_state(id, state);
-            let mut attachment = manager.attach(id, None).expect("attachment is accepted");
-            let (received_tx, mut received_rx) = mpsc::unbounded_channel();
+    async fn assert_waiting_live_reader_receives_events(state: OperationState) {
+        let (manager, id) = running_manager();
+        manager.update_state(id, state);
+        let mut attachment = manager.attach(id, None).expect("attachment is accepted");
+        let (received_tx, mut received_rx) = mpsc::unbounded_channel();
 
-            let read = async {
-                while let Some(event) = attachment.live.recv().await {
-                    received_tx.send(event.sequence).expect("the producer is waiting");
-                }
-            };
-            let produce = async {
-                for sequence in 0..2 {
-                    manager.emit(id, OperationEventKind::Started);
-                    assert_eq!(received_rx.recv().await, Some(sequence));
-                }
-                manager.finish(id, OperationState::Completed, Some(0), None);
-            };
-            tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(read, produce) })
-                .await
-                .expect("the reader ends once the operation finishes");
-        }
+        let read = async {
+            while let Some(event) = attachment.live.recv().await {
+                received_tx.send(event.sequence).expect("the producer is waiting");
+            }
+        };
+        let produce = async {
+            for sequence in 0..2 {
+                manager.emit(id, OperationEventKind::Started);
+                assert_eq!(received_rx.recv().await, Some(sequence));
+            }
+            manager.finish(id, OperationState::Completed, Some(0), None);
+        };
+        tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(read, produce) })
+            .await
+            .expect("the reader ends once the operation finishes");
+    }
+
+    // oracle: mutant a reader on a running operation misses a wake-up or ends before the operation finishes
+    #[tokio::test(start_paused = true)]
+    async fn waiting_live_reader_on_running_operation_receives_each_event_before_finish() {
+        assert_waiting_live_reader_receives_events(OperationState::Running).await;
+    }
+
+    // oracle: mutant a reader on a cancelling operation treats cancelling as terminal and stops waiting for events
+    #[tokio::test(start_paused = true)]
+    async fn waiting_live_reader_on_cancelling_operation_receives_each_event_before_finish() {
+        assert_waiting_live_reader_receives_events(OperationState::Cancelling).await;
     }
 
     // oracle: mutant attaching to a finished operation replays events the client has or leaves the live stream open
