@@ -85,11 +85,16 @@ fn chunks(bytes: &[u8]) -> Vec<(ChannelPduHeader, Vec<u8>)> {
 }
 
 // oracle: spec MS-RDPBCGR 2.2.6.1.1; one chunk carries the total length and FIRST | LAST.
+#[rstest]
+#[case::short(19)]
+#[case::below_boundary(1599)]
+#[case::at_boundary(1600)]
 #[tokio::test]
-async fn writes_to_the_named_joined_channel() {
+async fn writes_to_the_named_joined_channel(#[case] length: u32) {
     let permits = Arc::new(Semaphore::new(1));
-    let (event, processed) = write(b"static channel data".to_vec(), &permits);
-    let (stream, mut peer) = tokio::io::duplex(128);
+    let payload = vec![0x42; usize::try_from(length).unwrap()];
+    let (event, processed) = write(payload.clone(), &permits);
+    let (stream, mut peer) = tokio::io::duplex(8192);
     let mut transport = TokioFramed::new(stream);
     dispatch_static_channel_events(
         &mut server(),
@@ -102,16 +107,14 @@ async fn writes_to_the_named_joined_channel() {
     drop(transport);
     let mut bytes = Vec::new();
     peer.read_to_end(&mut bytes).await.unwrap();
-    assert_eq!(
-        chunks(&bytes),
-        [(
-            ChannelPduHeader {
-                length: 19,
-                flags: ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
-            },
-            b"static channel data".to_vec(),
-        )]
-    );
+    let chunks = chunks(&bytes);
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].0.length, length);
+    let boundary = ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST;
+    assert_eq!(chunks[0].0.flags & boundary, boundary);
+    // oracle: mutant setting SHOW_PROTOCOL when payload length equals the chunk size.
+    assert!(!chunks[0].0.flags.contains(ChannelControlFlags::FLAG_SHOW_PROTOCOL));
+    assert_eq!(chunks[0].1, payload);
     processed.await.unwrap();
     assert_eq!(permits.available_permits(), 1);
 }
@@ -222,10 +225,29 @@ async fn query_reports_the_named_channel_join(
 }
 
 // oracle: spec MS-RDPBCGR 3.1.5.2.1; chunks are at most 1600 bytes, ordered, with FIRST and LAST on the ends.
+#[rstest]
+#[case::above_boundary(
+    1601,
+    &[
+        (ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_SHOW_PROTOCOL, 1600),
+        (ChannelControlFlags::FLAG_LAST | ChannelControlFlags::FLAG_SHOW_PROTOCOL, 1),
+    ],
+)]
+#[case::three_chunks(
+    3201,
+    &[
+        (ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_SHOW_PROTOCOL, 1600),
+        (ChannelControlFlags::FLAG_SHOW_PROTOCOL, 1600),
+        (ChannelControlFlags::FLAG_LAST | ChannelControlFlags::FLAG_SHOW_PROTOCOL, 1),
+    ],
+)]
 #[tokio::test]
-async fn fragmented_pdus_preserve_payload_and_queue_order() {
+async fn fragmented_pdus_preserve_payload_and_queue_order(
+    #[case] length: u32,
+    #[case] expected: &[(ChannelControlFlags, usize)],
+) {
     let permits = Arc::new(Semaphore::new(2));
-    let payload: Vec<u8> = (0..3201u32).map(|i| u8::try_from(i % 251).unwrap()).collect();
+    let payload: Vec<u8> = (0..length).map(|i| u8::try_from(i % 251).unwrap()).collect();
     let (first, first_done) = write(payload.clone(), &permits);
     let (second, second_done) = write(b"next".to_vec(), &permits);
     let (stream, mut peer) = tokio::io::duplex(8192);
@@ -244,24 +266,23 @@ async fn fragmented_pdus_preserve_payload_and_queue_order() {
     let mut bytes = Vec::new();
     peer.read_to_end(&mut bytes).await.unwrap();
     let chunks = chunks(&bytes);
-    let boundary = ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST;
-    let shape: Vec<_> = chunks
+    assert_eq!(chunks.len(), expected.len() + 1);
+    let shape: Vec<_> = chunks[..expected.len()]
         .iter()
         .map(|(header, data)| (header.length, header.flags, data.len()))
         .collect();
-    let show_protocol = ChannelControlFlags::FLAG_SHOW_PROTOCOL;
-    assert_eq!(
-        shape,
-        [
-            (3201, ChannelControlFlags::FLAG_FIRST | show_protocol, 1600),
-            (3201, show_protocol, 1600),
-            (3201, ChannelControlFlags::FLAG_LAST | show_protocol, 1),
-            (4, boundary, 4),
-        ]
-    );
-    let reassembled: Vec<u8> = chunks[..3].iter().flat_map(|(_, data)| data.iter().copied()).collect();
+    let expected_shape: Vec<_> = expected.iter().map(|&(flags, size)| (length, flags, size)).collect();
+    assert_eq!(shape, expected_shape);
+    let reassembled: Vec<u8> = chunks[..expected.len()]
+        .iter()
+        .flat_map(|(_, data)| data.iter().copied())
+        .collect();
     assert_eq!(reassembled, payload);
-    assert_eq!(chunks[3].1, b"next");
+    let (next_header, next_payload) = &chunks[expected.len()];
+    let boundary = ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST;
+    assert_eq!(next_header.length, 4);
+    assert_eq!(next_header.flags & boundary, boundary);
+    assert_eq!(next_payload, b"next");
     assert_eq!(permits.available_permits(), 2);
 }
 

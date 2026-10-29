@@ -1489,8 +1489,16 @@ pub enum ServerEvent {
     Clipboard(ClipboardMessage),
     /// Writes one PDU to a joined static channel, splitting it into chunks as needed.
     ///
+    /// Fragmented PDUs set `SHOW_PROTOCOL` on every chunk per [MS-RDPBCGR] section 3.1.5.2.1,
+    /// "Sending of Virtual Channel PDU", using the [Channel PDU Header].
+    /// Unfragmented PDUs do not set it.
+    /// There is no flag override or Windows RDPDR compatibility exception in this API.
+    /// Do not use it for an endpoint that requires `SHOW_PROTOCOL` to be omitted.
+    ///
     /// Acquire `permit` from a shared, bounded semaphore before allocating `payload`.
     /// Limit each payload's size; the server does not impose a byte budget.
+    /// The entire PDU holds the shared writer lock; large payloads or slow writes stall all other
+    /// session output, including display and heartbeat traffic, until the write finishes or fails.
     /// Await completion before submitting another PDU to bound queued data.
     /// A closed receiver means dispatch failed, the event was discarded, or the channel was not joined.
     /// Failure does not prove that no bytes were sent, so it is not permission to retry.
@@ -1498,6 +1506,9 @@ pub enum ServerEvent {
     /// The event retains its permit until sent or discarded, even if its producer stops waiting.
     /// Dispatch checks `is_current` and receiver cancellation under the writer lock before transmission.
     /// Once transmission begins, producer cancellation does not interrupt the write.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    /// [Channel PDU Header]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f125c65e-6901-43c3-8071-d7d5aaee7ae4
     StaticChannelWithCompletion {
         name: ChannelName,
         payload: Vec<u8>,
@@ -6356,12 +6367,12 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
             return Ok(false);
         }
 
-        // Producer cancellation must not interrupt a partially written RDP frame.
+        // INVARIANT: Producer cancellation does not interrupt a partially written RDP frame.
         let write_start = Instant::now();
         let res = writer.write_all(buf).await;
         let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-        if wait_ms + write_ms >= 50 {
+        if 50 <= wait_ms + write_ms {
             tracing::warn!(
                 bytes = len,
                 lock_wait_ms = wait_ms,
