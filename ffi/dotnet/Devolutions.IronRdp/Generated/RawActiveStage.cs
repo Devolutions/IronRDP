@@ -45,6 +45,18 @@ internal partial struct ActiveStage
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_graceful_shutdown", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError GracefulShutdown(ActiveStage* handle);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_get_rdpei_input_state", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern RdpeiInputState GetRdpeiInputState(ActiveStage* handle);
+
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_encode_rdpei_touch", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVecU8IronRdpError EncodeRdpeiTouch(ActiveStage* handle, TouchFrameBuilder* touches);
+
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_encode_rdpei_pen", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVecU8IronRdpError EncodeRdpeiPen(ActiveStage* handle, PenFrameBuilder* pens);
+
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_encode_rdpei_dismiss_hovering", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVecU8IronRdpError EncodeRdpeiDismissHovering(ActiveStage* handle, byte contactId);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_get_display_control_state", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DisplayControlState GetDisplayControlState(ActiveStage* handle);
 

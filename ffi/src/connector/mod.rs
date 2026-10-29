@@ -11,6 +11,8 @@ pub mod ffi {
     use ironrdp::connector::Sequence as _;
     use ironrdp::displaycontrol::client::DisplayControlClient;
     use ironrdp::dvc::DvcClientProcessor;
+    use ironrdp::rdpei::RdpeiClient;
+    use ironrdp::rdpei::pdu::{CsReadyFlags, RdpInputProtocolVersion};
     use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
     use tracing::info;
 
@@ -119,6 +121,32 @@ pub mod ffi {
                 info!(display_control_capabilities = ?c, "DisplayControl capabilities received");
                 Ok(Vec::new())
             }))
+        }
+
+        /// Attaches the MS-RDPEI dynamic channel so the client can send touch frames.
+        ///
+        /// `max_touch_contacts` is the `maxTouchContacts` advertised in `RDPINPUT_CS_READY_PDU`
+        /// ([MS-RDPEI] 2.2.3.2 "Client Ready PDU") and is the limit to give `TouchFrameBuilder`.
+        /// `show_touch_visuals` asks the server to draw its touch visuals.
+        /// Protocol version 2 is advertised, which covers touch and pen frames; multipen injection is
+        /// not requested, so pen frames use `deviceId` 0.
+        ///
+        /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+        pub fn with_dynamic_channel_rdpei(
+            &mut self,
+            max_touch_contacts: u16,
+            show_touch_visuals: bool,
+        ) -> Result<(), Box<IronRdpError>> {
+            let flags = if show_touch_visuals {
+                CsReadyFlags::SHOW_TOUCH_VISUALS
+            } else {
+                CsReadyFlags::empty()
+            };
+            self.with_dvc(RdpeiClient::new(
+                max_touch_contacts,
+                flags,
+                RdpInputProtocolVersion::V200,
+            ))
         }
 
         pub fn with_dynamic_channel_pipe_proxy(

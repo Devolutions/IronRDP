@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Devolutions.IronRdp.Tests;
 
 internal static class SmokeTests
@@ -489,6 +491,382 @@ internal static class SmokeTests
                 True(clipboard.NextClipboardMessageTimeout(10) == null, "no message before a session");
             });
         }
+
+        // oracle: spec MS-RDPEI §3.2.5.1 (the client sends CS_READY only after SC_READY) and the rustdoc of
+        // ActiveStage::encode_rdpei_touch (a refused encode leaves the frames pending)
+        yield return ("rdpei touch is refused before the channel is ready", () =>
+        {
+            var (stage, _) = ConnectedStage(8, 4, rdpei: true);
+            var state = stage.RdpeiInputState;
+            True(!state.Touch && !state.Suspended, "channel is not ready before SC_READY");
+
+            using var touches = TouchFrameBuilder.New(10);
+            touches.Push(1, TouchPhase.Started, 100, 200);
+            var error = Throws<IronRdpException>(() => stage.EncodeRdpeiTouch(touches));
+            True(error.Message.Contains("not ready"), $"error message: {error.Message}");
+            True(touches.HasPendingFrames, "frames stay pending");
+        });
+
+        // oracle: rustdoc of ActiveStage::encode_rdpei_touch (None when no frame is pending)
+        yield return ("rdpei touch with nothing pending encodes nothing", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            using var touches = TouchFrameBuilder.New(10);
+            True(stage.EncodeRdpeiTouch(touches) is null, "no frame without touches");
+        });
+
+        // oracle: spec MS-RDPBCGR §2.2.6.1 (Virtual Channel PDU), MS-RDPEDYC §2.2.3.1 (DYNVC_DATA),
+        // MS-RDPEI §2.2.2 (variable-length integers), §2.2.3.3 (RDPINPUT_TOUCH_EVENT_PDU),
+        // §2.2.3.3.1 (RDPINPUT_TOUCH_FRAME), §2.2.3.3.1.1 (RDPINPUT_CONTACT_DATA) and §3.1.1.1 (a new
+        // contact in contact is sent with CONTACT_FLAG_DOWN | CONTACT_FLAG_INRANGE | CONTACT_FLAG_INCONTACT)
+        yield return ("rdpei touch encodes a finger down after SC_READY", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            True(stage.RdpeiInputState.Touch, "channel negotiated touch");
+
+            using var touches = TouchFrameBuilder.New(10);
+            touches.Push(7, TouchPhase.Started, 100, 200);
+            var frame = ToArray(stage.EncodeRdpeiTouch(touches)!);
+            True(!touches.HasPendingFrames, "frames were taken");
+
+            // TPKT, X.224 data, MCS Send Data Request from user 1007 to channel 1004, Virtual Channel PDU
+            // header (CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST) and DYNVC_DATA for channel 1.
+            int payloadLength = frame.Length - 24;
+            var transport = new byte[]
+            {
+                0x03, 0x00, (byte)(frame.Length >> 8), (byte)frame.Length, 0x02, 0xf0, 0x80,
+                0x64, 0x00, 0x06, 0x03, 0xec, 0x70, (byte)(payloadLength + 10),
+                (byte)(payloadLength + 2), 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
+                0x30, 0x01,
+            };
+            True(frame.Take(transport.Length).SequenceEqual(transport), $"transport prefix: {Convert.ToHexString(frame)}");
+
+            var payload = new RdpInputReader(frame, transport.Length);
+            Equal(0x0003, payload.U16(), "eventId EVENTID_TOUCH");
+            Equal(payloadLength, (int)payload.U32(), "pduLength");
+            True(payload.FourByteUnsigned() < 1000, "encodeTime is the few milliseconds since the push");
+            Equal(1u, payload.TwoByteUnsigned(), "frameCount");
+            Equal(1u, payload.TwoByteUnsigned(), "contactCount");
+            Equal(0ul, payload.EightByteUnsigned(), "frameOffset of the first frame");
+            Equal(0, (int)payload.U8(), "contactId");
+            Equal(0u, payload.TwoByteUnsigned(), "fieldsPresent");
+            Equal(100, payload.FourByteSigned(), "x");
+            Equal(200, payload.FourByteSigned(), "y");
+            Equal(0x0001u | 0x0008u | 0x0010u, payload.FourByteUnsigned(), "contactFlags DOWN | INRANGE | INCONTACT");
+            True(payload.AtEnd, "nothing follows the contact");
+        });
+
+        // oracle: spec MS-RDPEI §2.2.2.1 (a TWO_BYTE_UNSIGNED_INTEGER holds 0..0x7FFF, so frameCount in
+        // §2.2.3.3 caps one RDPINPUT_TOUCH_EVENT_PDU at 32767 frames) and §3.1.1.1 (an engaged contact
+        // leaves with CONTACT_FLAG_UP, which must therefore reach the server in a later PDU)
+        yield return ("rdpei touch splits more than 32767 pending frames across events", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            using var touches = TouchFrameBuilder.New(10);
+            touches.Push(1, TouchPhase.Started, 10, 10);
+            // A second change to the same contact starts a new frame, so these are 32767 more frames.
+            for (int i = 1; i <= 32767; i++)
+            {
+                touches.Push(1, TouchPhase.Moved, 10 + i % 7, 10);
+            }
+
+            touches.Push(1, TouchPhase.Ended, 16, 10);
+
+            var first = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiTouch(touches)!));
+            Equal(0x0003, first.U16(), "first eventId EVENTID_TOUCH");
+            first.U32();
+            first.FourByteUnsigned();
+            Equal(32767u, first.TwoByteUnsigned(), "first frameCount is the maximum");
+            True(touches.HasPendingFrames, "the remaining frames stay pending");
+
+            var second = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiTouch(touches)!));
+            Equal(0x0003, second.U16(), "second eventId EVENTID_TOUCH");
+            second.U32();
+            second.FourByteUnsigned();
+            Equal(2u, second.TwoByteUnsigned(), "second frameCount carries the remainder");
+            Equal(1u, second.TwoByteUnsigned(), "last move contactCount");
+            second.EightByteUnsigned();
+            Equal(0, (int)second.U8(), "last move contactId");
+            Equal(0u, second.TwoByteUnsigned(), "last move fieldsPresent");
+            Equal(10 + 32767 % 7, second.FourByteSigned(), "last move x");
+            Equal(10, second.FourByteSigned(), "last move y");
+            Equal(0x0002u | 0x0008u | 0x0010u, second.FourByteUnsigned(), "last move contactFlags UPDATE | INRANGE | INCONTACT");
+            Equal(1u, second.TwoByteUnsigned(), "release contactCount");
+            second.EightByteUnsigned();
+            Equal(0, (int)second.U8(), "release contactId");
+            Equal(0u, second.TwoByteUnsigned(), "release fieldsPresent");
+            Equal(10 + 32767 % 7, second.FourByteSigned(), "release x keeps the last engaged position");
+            Equal(10, second.FourByteSigned(), "release y keeps the last engaged position");
+            Equal(0x0004u, second.FourByteUnsigned(), "release contactFlags UP");
+            True(second.AtEnd, "nothing follows the release");
+
+            True(!touches.HasPendingFrames, "every frame left");
+            True(stage.EncodeRdpeiTouch(touches) is null, "nothing left to encode");
+        });
+
+        // oracle: spec MS-RDPEI §2.2.3.3 (encodeTime is the time since the oldest frame in this PDU was
+        // generated) and §2.2.3.3.1 (frameOffset is 0 for the first frame of a transaction, so it does
+        // not carry the idle time between two gestures); the bounds come from Stopwatch readings taken
+        // around the pushes and the encode, so they hold whatever the machine speed
+        yield return ("rdpei touch encodeTime after a split ignores the idle gap between gestures", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            using var touches = TouchFrameBuilder.New(10);
+            long preGapPushes = Stopwatch.GetTimestamp();
+            touches.Push(1, TouchPhase.Started, 10, 10);
+            touches.Push(1, TouchPhase.Ended, 10, 10);
+            Thread.Sleep(800);
+            long postGapFirstPush = Stopwatch.GetTimestamp();
+            touches.Push(2, TouchPhase.Started, 20, 20);
+            for (int i = 1; i <= 32766; i++)
+            {
+                touches.Push(2, TouchPhase.Moved, 20 + i % 7, 20);
+            }
+
+            touches.Push(2, TouchPhase.Ended, 20, 20);
+            long postGapLastPush = Stopwatch.GetTimestamp();
+
+            var first = new RdpInputReader(ToArray(stage.EncodeRdpeiTouch(touches)!));
+            first.U16();
+            first.U32();
+            True(800 <= first.FourByteUnsigned(), "first encodeTime spans the idle gap, since the first gesture's frames are its oldest");
+            Equal(32767u, first.TwoByteUnsigned(), "first frameCount is the maximum");
+
+            long beforeSecond = Stopwatch.GetTimestamp();
+            var second = new RdpInputReader(ToArray(stage.EncodeRdpeiTouch(touches)!));
+            long afterSecond = Stopwatch.GetTimestamp();
+            second.U16();
+            second.U32();
+            uint encodeTime = second.FourByteUnsigned();
+            Equal(3u, second.TwoByteUnsigned(), "second frameCount carries the remainder");
+
+            // The remainder's oldest frame was pushed between postGapFirstPush and postGapLastPush, and
+            // the builder read its clock between beforeSecond and afterSecond.
+            long atLeast = WholeMilliseconds(postGapLastPush, beforeSecond);
+            long atMost = WholeMilliseconds(postGapFirstPush, afterSecond);
+            long sincePreGapPushes = WholeMilliseconds(preGapPushes, afterSecond);
+            True(atLeast <= encodeTime && encodeTime <= atMost, $"second encodeTime {encodeTime} ms is the age of the second gesture's frames, within [{atLeast}, {atMost}]");
+            True(encodeTime < sincePreGapPushes, $"second encodeTime {encodeTime} ms excludes the idle gap before the second gesture ({sincePreGapPushes} ms since the first gesture)");
+        });
+
+        // oracle: spec MS-RDPEI §3.2.5.1 (the client sends CS_READY only after SC_READY) and the rustdoc of
+        // ActiveStage::encode_rdpei_pen (a refused encode leaves the frames pending)
+        yield return ("rdpei pen and dismiss hovering are refused before the channel is ready", () =>
+        {
+            var (stage, _) = ConnectedStage(8, 4, rdpei: true);
+            True(!stage.RdpeiInputState.Pen, "pen is not negotiated before SC_READY");
+
+            using var pens = PenFrameBuilder.New();
+            pens.Push(1, PenPhase.Touching, 100, 200);
+            var error = Throws<IronRdpException>(() => stage.EncodeRdpeiPen(pens));
+            True(error.Message.Contains("not ready"), $"pen error message: {error.Message}");
+            True(pens.HasPendingFrames, "pen frames stay pending");
+
+            error = Throws<IronRdpException>(() => stage.EncodeRdpeiDismissHovering(0));
+            True(error.Message.Contains("not ready"), $"dismiss error message: {error.Message}");
+        });
+
+        // oracle: spec MS-RDPEI §2.2.3.7 (RDPINPUT_PEN_EVENT_PDU), §2.2.3.7.1 (RDPINPUT_PEN_FRAME),
+        // §2.2.3.7.1.1 (RDPINPUT_PEN_CONTACT field order, fieldsPresent and penFlags values) and §3.1.1.1
+        // (hover enters with UPDATE | INRANGE, touching starts with DOWN | INRANGE | INCONTACT, leaving
+        // the range from contact sends UP at the last engaged position)
+        yield return ("rdpei pen encodes hover, down and leave after SC_READY", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            True(stage.RdpeiInputState.Pen, "protocol version 2 negotiates pen");
+
+            using var pens = PenFrameBuilder.New();
+            pens.Push(1, PenPhase.Hovering, 50, 60);
+            pens.PushWithAttributes(1, PenPhase.Touching, 51, 61, new PenAttributes
+            {
+                BarrelPressed = true,
+                HasPressure = true,
+                Pressure = 512,
+                HasRotation = true,
+                Rotation = 90,
+                HasTiltX = true,
+                TiltX = 10,
+                HasTiltY = true,
+                TiltY = -20,
+            });
+            pens.Push(1, PenPhase.OutOfRange, 99, 99);
+
+            var payload = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiPen(pens)!));
+            True(!pens.HasPendingFrames, "frames were taken");
+            Equal(0x0008, payload.U16(), "eventId EVENTID_PEN");
+            payload.U32();
+            True(payload.FourByteUnsigned() < 1000, "encodeTime is the few milliseconds since the first sample");
+            Equal(3u, payload.TwoByteUnsigned(), "frameCount");
+
+            Equal(1u, payload.TwoByteUnsigned(), "hover contactCount");
+            Equal(0ul, payload.EightByteUnsigned(), "hover frameOffset starts the transaction");
+            Equal(0, (int)payload.U8(), "hover deviceId");
+            Equal(0u, payload.TwoByteUnsigned(), "hover fieldsPresent");
+            Equal(50, payload.FourByteSigned(), "hover x");
+            Equal(60, payload.FourByteSigned(), "hover y");
+            Equal(0x0002u | 0x0008u, payload.FourByteUnsigned(), "hover contactFlags UPDATE | INRANGE");
+
+            Equal(1u, payload.TwoByteUnsigned(), "down contactCount");
+            payload.EightByteUnsigned();
+            Equal(0, (int)payload.U8(), "down deviceId");
+            Equal(0x0001u | 0x0002u | 0x0004u | 0x0008u | 0x0010u, payload.TwoByteUnsigned(), "down fieldsPresent PENFLAGS | PRESSURE | ROTATION | TILTX | TILTY");
+            Equal(51, payload.FourByteSigned(), "down x");
+            Equal(61, payload.FourByteSigned(), "down y");
+            Equal(0x0001u | 0x0008u | 0x0010u, payload.FourByteUnsigned(), "down contactFlags DOWN | INRANGE | INCONTACT");
+            Equal(0x0001u, payload.FourByteUnsigned(), "penFlags PEN_FLAG_BARREL_PRESSED");
+            Equal(512u, payload.FourByteUnsigned(), "pressure");
+            Equal(90u, payload.TwoByteUnsigned(), "rotation");
+            Equal(10, (int)payload.TwoByteSigned(), "tiltX");
+            Equal(-20, (int)payload.TwoByteSigned(), "tiltY");
+
+            Equal(1u, payload.TwoByteUnsigned(), "leave contactCount");
+            payload.EightByteUnsigned();
+            Equal(0, (int)payload.U8(), "leave deviceId");
+            Equal(0u, payload.TwoByteUnsigned(), "leave fieldsPresent");
+            Equal(51, payload.FourByteSigned(), "leave x keeps the last engaged position");
+            Equal(61, payload.FourByteSigned(), "leave y keeps the last engaged position");
+            Equal(0x0004u, payload.FourByteUnsigned(), "leave contactFlags UP");
+            True(payload.AtEnd, "nothing follows the last contact");
+        });
+
+        // oracle: spec MS-RDPEI §2.2.3.6 (RDPINPUT_DISMISS_HOVERING_CONTACT_PDU is the 6-byte header
+        // with EVENTID_DISMISS_HOVERING_CONTACT followed by the one-byte contactId)
+        yield return ("rdpei dismiss hovering contact encodes the contact id", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            var payload = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiDismissHovering(5)));
+            Equal(0x0006, payload.U16(), "eventId EVENTID_DISMISS_HOVERING_CONTACT");
+            Equal(7u, payload.U32(), "pduLength");
+            Equal(5, (int)payload.U8(), "contactId");
+            True(payload.AtEnd, "nothing follows the contactId");
+        });
+
+        // oracle: spec MS-RDPEI §2.2.2.1 (frameCount in §2.2.3.7 caps one RDPINPUT_PEN_EVENT_PDU at 32767
+        // frames) and §3.1.1.1 (a pen leaving the range from contact sends UP, which must reach the server)
+        yield return ("rdpei pen splits more than 32767 pending frames across events", () =>
+        {
+            var stage = ReadyRdpeiStage();
+            using var pens = PenFrameBuilder.New();
+            pens.Push(1, PenPhase.Touching, 10, 10);
+            // Every sample is one frame, so these are 32767 more frames.
+            for (int i = 1; i <= 32767; i++)
+            {
+                pens.Push(1, PenPhase.Touching, 10 + i % 7, 10);
+            }
+
+            pens.Push(1, PenPhase.OutOfRange, 0, 0);
+
+            var first = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiPen(pens)!));
+            Equal(0x0008, first.U16(), "first eventId EVENTID_PEN");
+            first.U32();
+            first.FourByteUnsigned();
+            Equal(32767u, first.TwoByteUnsigned(), "first frameCount is the maximum");
+            True(pens.HasPendingFrames, "the remaining frames stay pending");
+
+            var second = new RdpInputReader(Utils.VecU8ToByte(stage.EncodeRdpeiPen(pens)!));
+            Equal(0x0008, second.U16(), "second eventId EVENTID_PEN");
+            second.U32();
+            second.FourByteUnsigned();
+            Equal(2u, second.TwoByteUnsigned(), "second frameCount carries the remainder");
+            Equal(1u, second.TwoByteUnsigned(), "last move contactCount");
+            second.EightByteUnsigned();
+            second.U8();
+            second.TwoByteUnsigned();
+            second.FourByteSigned();
+            second.FourByteSigned();
+            Equal(0x0002u | 0x0008u | 0x0010u, second.FourByteUnsigned(), "last move contactFlags UPDATE | INRANGE | INCONTACT");
+            Equal(1u, second.TwoByteUnsigned(), "leave contactCount");
+            second.EightByteUnsigned();
+            Equal(0, (int)second.U8(), "leave deviceId");
+            Equal(0u, second.TwoByteUnsigned(), "leave fieldsPresent");
+            Equal(10 + 32767 % 7, second.FourByteSigned(), "leave x keeps the last engaged position");
+            Equal(10, second.FourByteSigned(), "leave y keeps the last engaged position");
+            Equal(0x0004u, second.FourByteUnsigned(), "leave contactFlags UP");
+            True(second.AtEnd, "nothing follows the leave");
+
+            True(!pens.HasPendingFrames, "every frame left");
+            True(stage.EncodeRdpeiPen(pens) is null, "nothing left to encode");
+        });
+    }
+
+    // Reads MS-RDPEI §2.2.2 variable-length integers and the little-endian RDPINPUT_HEADER fields.
+    private sealed class RdpInputReader
+    {
+        private readonly byte[] bytes;
+        private int offset;
+
+        internal RdpInputReader(byte[] bytes, int offset)
+        {
+            this.bytes = bytes;
+            this.offset = offset;
+        }
+
+        // Starts at the RDPINPUT_HEADER of the first Virtual Channel PDU in `frame`: TPKT and X.224 data
+        // headers (MS-RDPBCGR §2.2.9.1.1), MCS Send Data Request with a one- or two-byte PER length
+        // (T.125), the Virtual Channel PDU header (§2.2.6.1), then the DYNVC_DATA or DYNVC_DATA_FIRST
+        // header with its cbChId and Len fields (MS-RDPEDYC §2.2.3.1, §2.2.3.2).
+        internal RdpInputReader(byte[] frame)
+        {
+            bytes = frame;
+            offset = 4 + 3 + 1 + 2 + 2 + 1;
+            offset += (bytes[offset] & 0x80) != 0 ? 2 : 1;
+            offset += 8;
+            byte dvcHeader = U8();
+            int command = dvcHeader >> 4;
+            offset += (dvcHeader & 0x03) switch { 0 => 1, 1 => 2, _ => 4 };
+            if (command == 0x02)
+            {
+                offset += ((dvcHeader >> 2) & 0x03) switch { 0 => 1, 1 => 2, _ => 4 };
+            }
+            else if (command != 0x03)
+            {
+                throw new InvalidOperationException($"not a DYNVC data PDU: 0x{dvcHeader:x2}");
+            }
+        }
+
+        internal bool AtEnd => offset == bytes.Length;
+
+        internal byte U8() => bytes[offset++];
+
+        internal ushort U16() => (ushort)(U8() | U8() << 8);
+
+        internal uint U32() => (uint)(U16() | U16() << 16);
+
+        // c (1 bit) selects one more byte; the value is big-endian.
+        internal uint TwoByteUnsigned() => (uint)BigEndian(bytes[offset] >> 7, 0x7f);
+
+        // c (2 bits) counts the extra bytes.
+        internal uint FourByteUnsigned() => (uint)BigEndian(bytes[offset] >> 6, 0x3f);
+
+        // c (1 bit) selects one more byte, s (1 bit) is the sign.
+        internal short TwoByteSigned()
+        {
+            bool negative = (bytes[offset] & 0x40) != 0;
+            int magnitude = (int)BigEndian(bytes[offset] >> 7, 0x3f);
+            return (short)(negative ? -magnitude : magnitude);
+        }
+
+        // c (2 bits) counts the extra bytes, s (1 bit) is the sign.
+        internal int FourByteSigned()
+        {
+            bool negative = (bytes[offset] & 0x20) != 0;
+            uint magnitude = (uint)BigEndian(bytes[offset] >> 6, 0x1f);
+            return negative ? -(int)magnitude : (int)magnitude;
+        }
+
+        // c (3 bits) counts the extra bytes.
+        internal ulong EightByteUnsigned() => BigEndian(bytes[offset] >> 5, 0x1f);
+
+        private ulong BigEndian(int extraBytes, byte firstByteMask)
+        {
+            ulong value = (ulong)(U8() & firstByteMask);
+            for (int i = 0; i < extraBytes; i++)
+            {
+                value = value << 8 | U8();
+            }
+
+            return value;
+        }
     }
 
     // MCS Connect Response with SKIP_CHANNELJOIN_SUPPORTED and no static channels (MS-RDPBCGR §2.2.1.4).
@@ -563,13 +941,49 @@ internal static class SmokeTests
         0x02, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x60, 0x09, 0x00, 0x00,
     };
 
-    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false)
+    // Server PDUs on static channel 1004 (MCS Send Data Indication, Virtual Channel PDU header with
+    // CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST) that open the RDPEI dynamic channel as channel 1.
+    private static readonly byte[][] RdpeiOpeningServerPdus =
+    {
+        // DYNVC_CAPS_VERSION1 (MS-RDPEDYC §2.2.1.1.1).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x1a, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x0c, 0x04, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x50, 0x00, 0x01, 0x00,
+        },
+        // DYNVC_CREATE_REQ for "Microsoft::Windows::RDS::Input" (MS-RDPEDYC §2.2.2.1).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x37, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x29, 0x21, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x10, 0x01, 0x4d, 0x69, 0x63, 0x72, 0x6f, 0x73, 0x6f, 0x66,
+            0x74, 0x3a, 0x3a, 0x57, 0x69, 0x6e, 0x64, 0x6f, 0x77, 0x73, 0x3a, 0x3a, 0x52, 0x44, 0x53, 0x3a,
+            0x3a, 0x49, 0x6e, 0x70, 0x75, 0x74, 0x00,
+        },
+        // DYNVC_DATA carrying RDPINPUT_SC_READY_PDU with RDPINPUT_PROTOCOL_V200 (MS-RDPEI §2.2.3.1).
+        new byte[]
+        {
+            0x03, 0x00, 0x00, 0x22, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x14, 0x0c, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x30, 0x01, 0x01, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x02, 0x00,
+        },
+    };
+
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false)
     {
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
         var serverPdus = HandshakeServerPdus.ToArray();
         if (displayControl)
         {
             connector.WithDynamicChannelDisplayControl();
+        }
+
+        if (rdpei)
+        {
+            connector.WithDynamicChannelRdpei(10, false);
+        }
+
+        if (displayControl || rdpei)
+        {
             serverPdus[1] = McsConnectResponseWithDrdynvc;
         }
 
@@ -619,7 +1033,22 @@ internal static class SmokeTests
         return collected;
     }
 
+    // Connects with the RDPEI channel attached and plays the server side of its opening: the DRDYNVC
+    // capabilities request, the create request for Microsoft::Windows::RDS::Input and SC_READY.
+    private static ActiveStage ReadyRdpeiStage()
+    {
+        var (stage, image) = ConnectedStage(8, 4, rdpei: true);
+        foreach (var frame in RdpeiOpeningServerPdus)
+        {
+            True(ProcessFrame(stage, image, frame).All(o => o.EnumType == ActiveStageOutputType.ResponseFrame), "only response frames while opening");
+        }
+
+        return stage;
+    }
+
     private static byte SurfaceByte(int width, int x, int y) => (byte)(y * width * 4 + x + 1);
+
+    private static long WholeMilliseconds(long from, long to) => (long)Math.Floor(Stopwatch.GetElapsedTime(from, to).TotalMilliseconds);
 
     private static byte[] ToArray(VecU8 vec)
     {

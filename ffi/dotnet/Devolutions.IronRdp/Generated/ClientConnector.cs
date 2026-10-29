@@ -197,6 +197,29 @@ public partial class ClientConnector
     }
 
     /// <exception cref="IronRdpException"></exception>
+    public void WithDynamicChannelRdpei(ushort maxTouchContacts, bool showTouchVisuals)
+    {
+        unsafe
+        {
+            BorrowLease<Raw.ClientConnector>? selfLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                var result = Raw.ClientConnector.WithDynamicChannelRdpei(selfLease!.Ptr, maxTouchContacts, showTouchVisuals);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return;
+            }
+            finally
+            {
+                selfLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
     public void WithDynamicChannelPipeProxy(DvcPipeProxyConfig config)
     {
         unsafe
