@@ -29,7 +29,7 @@ harness = true
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
-ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol"] }
+ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol", "rdpsnd"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent.path = "../ironrdp-agent"

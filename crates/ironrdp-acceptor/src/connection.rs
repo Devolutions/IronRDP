@@ -404,6 +404,17 @@ pub struct AcceptorResult {
     ///
     /// A client redirected by a Server Redirection PDU passes the cookie of that PDU to the target server.
     pub password_cookie: Option<PasswordCookie>,
+    /// Flags the client sent in the `flags` field of its Info Packet, MS-RDPBCGR [2.2.1.11.1.1] Info Packet
+    /// (TS_INFO_PACKET).
+    ///
+    /// Servers read the client's wishes from them, e.g. whether to redirect audio (`INFO_NOAUDIOPLAYBACK`,
+    /// `INFO_REMOTECONSOLEAUDIO`) and whether the client can send its microphone (`INFO_AUDIOCAPTURE`).
+    /// Unknown bits are kept as sent.
+    /// After a reactivation they are still the flags of the connection's Client Info PDU, since the client doesn't
+    /// send it again.
+    ///
+    /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+    pub client_info_flags: ClientInfoFlags,
 }
 
 impl Acceptor {
@@ -942,6 +953,7 @@ impl Acceptor {
                 routing_token: self.routing_token.clone(),
                 client_cluster_data: self.client_cluster_data.clone(),
                 password_cookie: self.password_cookie.clone(),
+                client_info_flags: self.client_info_flags.unwrap_or_else(ClientInfoFlags::empty),
             }),
             previous_state => {
                 self.state = previous_state;

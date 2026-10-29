@@ -228,6 +228,10 @@ pub struct ConnectionInfo {
     pub redirected_session_id: Option<u32>,
     /// See [`ironrdp_acceptor::AcceptorResult::password_cookie`].
     pub password_cookie: Option<rdp::client_info::PasswordCookie>,
+    /// See [`ironrdp_acceptor::AcceptorResult::client_info_flags`].
+    /// The server itself doesn't start the rdpsnd channel when they ask for no audio redirection; the rest, such as
+    /// whether to offer a microphone, is the embedder's to act on.
+    pub client_info_flags: rdp::client_info::ClientInfoFlags,
 }
 
 impl ConnectionInfo {
@@ -245,6 +249,7 @@ impl ConnectionInfo {
             routing_token: None,
             redirected_session_id: None,
             password_cookie: None,
+            client_info_flags: rdp::client_info::ClientInfoFlags::empty(),
         }
     }
 }
@@ -3043,7 +3048,9 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        let result = self.run_connection_inner(stream, tls).await;
+        // Boxed to keep this future, and `run_connection`'s, under `clippy::large_futures`, so a caller awaiting either
+        // doesn't have to.
+        let result = Box::pin(self.run_connection_inner(stream, tls)).await;
         // Given for this connection only; see `set_connection_local_addr`.
         self.connection_local_addr = None;
         result
@@ -5212,6 +5219,7 @@ impl RdpServer {
                         })
                         .map(|cluster| cluster.redirected_session_id),
                     password_cookie: result.password_cookie.clone(),
+                    client_info_flags: result.client_info_flags,
                 });
             });
         }
@@ -5235,12 +5243,23 @@ impl RdpServer {
         conn.client_supports_errinfo = result
             .client_early_capability_flags
             .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
+        // A client can join the rdpsnd channel although it asked for no audio redirection, as some do for device
+        // redirection, so the channel is left joined but never started: no Server Audio Formats PDU goes out, and the
+        // sound handler is never asked to start.
+        let audio_redirection = audio_redirection_wanted(result.client_info_flags);
         if !result.reactivation {
             for (_channel_key, channel, channel_id) in conn.static_channels.iter_by_key_mut() {
                 debug!(?channel, ?channel_id, "Start");
                 let Some(channel_id) = channel_id else {
                     continue;
                 };
+                if !audio_redirection && channel.channel_name() == RdpsndServer::NAME {
+                    debug!(
+                        flags = ?result.client_info_flags,
+                        "Not starting rdpsnd: the client asked for no audio redirection"
+                    );
+                    continue;
+                }
                 let svc_responses = channel.start().map_err_kind("svc start", ServerErrorKind::Pdu)?;
                 let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)
                     .map_err(ServerError::encode)?;
@@ -6016,6 +6035,18 @@ fn encode_autodetect_request(
 /// ([MS-RDPBCGR] 2.2.14.1).
 #[cfg(feature = "egfx")]
 const AUTODETECT_HEADER_SIZE: usize = 1 /* headerLength */ + 1 /* headerTypeId */;
+
+/// Whether a client's Info Packet flags let its audio be redirected to it, per MS-RDPBCGR [2.2.1.11.1.1] Info Packet
+/// (TS_INFO_PACKET): not under INFO_NOAUDIOPLAYBACK, where audio redirection MUST NOT take place, and not under
+/// INFO_REMOTECONSOLEAUDIO, which asks for the audio to be played on the server.
+///
+/// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+#[cfg_attr(feature = "__test", visibility::make(pub))]
+fn audio_redirection_wanted(flags: rdp::client_info::ClientInfoFlags) -> bool {
+    !flags.intersects(
+        rdp::client_info::ClientInfoFlags::NO_AUDIO_PLAYBACK | rdp::client_info::ClientInfoFlags::REMOTE_CONSOLE_AUDIO,
+    )
+}
 
 /// Carries an auto-detect request as an RDP_TUNNEL_SUBHEADER, alone in a
 /// Tunnel Data PDU of its own ([MS-RDPBCGR] 1.3.9, [MS-RDPEMT] 2.2.1.1.1).
