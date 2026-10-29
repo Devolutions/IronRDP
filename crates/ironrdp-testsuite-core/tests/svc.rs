@@ -204,6 +204,8 @@ fn expect_invalid_length(
         .expect("nested decode error")
         .downcast_ref::<DecodeError>()
         .expect("structured decode error");
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1 (CHANNEL_PDU_HEADER is 4-byte length + 4-byte flags)
+    // oracle: mutant rejecting with the wrong length validation guard
     assert!(
         matches!(
             source.kind(),
@@ -219,7 +221,7 @@ fn expect_invalid_length(
 }
 
 #[test]
-fn static_channel_delivers_messages_with_their_captured_context() {
+fn static_channel_default_context_forwards_reassembled_message_to_process() {
     let mut default_channel = StaticVirtualChannel::new(RuntimeChannel::new("default", ChannelOptions::empty()));
     expect_discarded(&mut default_channel, b"de", 7, ChannelControlFlags::FLAG_FIRST);
     let default_reply = default_channel
@@ -239,7 +241,10 @@ fn static_channel_delivers_messages_with_their_captured_context() {
             .delivered,
         [b"default".to_vec()]
     );
+}
 
+#[test]
+fn static_channel_delivers_messages_with_their_captured_context() {
     let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(7), None));
     expect_delivered(&mut channel, b"plain", 5, ChannelControlFlags::empty(), 7);
 
@@ -272,8 +277,10 @@ fn static_channel_delivers_messages_with_their_captured_context() {
     assert_eq!(contexts, [7, 11, 42]);
 }
 
+// oracle: spec MS-RDPBCGR §3.1.5.2.2.1
+// oracle: mutant delivering when message_context is None or retaining discarded bytes before a recipient attaches
 #[test]
-fn static_channel_without_context_validates_and_discards_messages() {
+fn static_channel_without_context_discards_messages_and_delivers_after_attach() {
     let mut channel = StaticVirtualChannel::new(ContextChannel::new(None, Some(4)));
 
     expect_discarded(&mut channel, b"abcd", 4, ChannelControlFlags::empty());
@@ -286,6 +293,17 @@ fn static_channel_without_context_validates_and_discards_messages() {
     expect_discarded(&mut channel, b"ab", 4, ChannelControlFlags::FLAG_FIRST);
     expect_discarded(&mut channel, b"c", 4, ChannelControlFlags::empty());
     expect_discarded(&mut channel, b"d", 4, ChannelControlFlags::FLAG_LAST);
+    assert!(delivered(&channel).is_empty());
+
+    set_context(&mut channel, Some(9));
+    expect_discarded(&mut channel, b"ok", 3, ChannelControlFlags::FLAG_FIRST);
+    expect_delivered(&mut channel, b"!", 3, ChannelControlFlags::FLAG_LAST, 9);
+    assert_eq!(delivered(&channel), [(9, b"ok!".to_vec())]);
+}
+
+#[test]
+fn static_channel_without_context_validates_declared_lengths_and_size_limit() {
+    let mut channel = StaticVirtualChannel::new(ContextChannel::new(None, Some(4)));
 
     // oracle: spec MS-RDPBCGR §2.2.6.1.1; spec MS-RDPBCGR §3.1.5.2.2.1
     // oracle: mutant skipping declared-length validation when message_context is None
@@ -321,22 +339,12 @@ fn static_channel_without_context_validates_and_discards_messages() {
         EXCEEDS_MAX_SIZE,
     );
     assert!(delivered(&channel).is_empty());
-
-    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1; mutant retaining discarded sequence bytes before a recipient attaches
-    expect_discarded(
-        &mut channel,
-        b"xx",
-        2,
-        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
-    );
-    set_context(&mut channel, Some(9));
-    expect_discarded(&mut channel, b"ok", 3, ChannelControlFlags::FLAG_FIRST);
-    expect_delivered(&mut channel, b"!", 3, ChannelControlFlags::FLAG_LAST, 9);
-    assert_eq!(delivered(&channel), [(9, b"ok!".to_vec())]);
 }
 
+// oracle: spec MS-RDPBCGR §3.1.5.2.2.1
+// oracle: mutant delivering a partial sequence across a context change or retaining discarded prefix bytes
 #[test]
-fn static_channel_context_change_mid_sequence_discards_partial_message_and_still_validates() {
+fn static_channel_context_change_mid_sequence_discards_partial_message() {
     let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(1), Some(8)));
 
     expect_discarded(&mut channel, b"old-", 8, ChannelControlFlags::FLAG_FIRST);
@@ -354,10 +362,20 @@ fn static_channel_context_change_mid_sequence_discards_partial_message_and_still
     expect_discarded(&mut channel, b"drop", 8, ChannelControlFlags::FLAG_FIRST);
     set_context(&mut channel, Some(2));
     expect_discarded(&mut channel, b"keep", 8, ChannelControlFlags::FLAG_LAST);
+    assert!(delivered(&channel).is_empty());
+
+    set_context(&mut channel, Some(3));
+    expect_discarded(&mut channel, b"new-", 7, ChannelControlFlags::FLAG_FIRST);
+    expect_delivered(&mut channel, b"msg", 7, ChannelControlFlags::FLAG_LAST, 3);
+    assert_eq!(delivered(&channel), [(3, b"new-msg".to_vec())]);
+}
+
+#[test]
+fn static_channel_context_change_mid_sequence_validates_lengths_and_size_limit() {
+    let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(2), Some(8)));
 
     // oracle: spec MS-RDPBCGR §2.2.6.1.1; spec MS-RDPBCGR §3.1.5.2.2.1
     // oracle: mutant skipping declared-length validation after message_context changes
-    set_context(&mut channel, Some(2));
     expect_discarded(&mut channel, b"ab", 4, ChannelControlFlags::FLAG_FIRST);
     set_context(&mut channel, Some(3));
     expect_invalid_length(&mut channel, b"c", 4, ChannelControlFlags::FLAG_LAST, TERMINAL_MISMATCH);
@@ -372,7 +390,7 @@ fn static_channel_context_change_mid_sequence_discards_partial_message_and_still
         EXCEEDS_DECLARED,
     );
 
-    // oracle: mutant delivering a partial sequence across a context change or skipping max_message_size after discard
+    // oracle: mutant skipping max_message_size checks after discarding a partial sequence
     set_context(&mut channel, Some(2));
     expect_discarded(
         &mut channel,
@@ -389,12 +407,6 @@ fn static_channel_context_change_mid_sequence_discards_partial_message_and_still
         EXCEEDS_MAX_SIZE,
     );
     assert!(delivered(&channel).is_empty());
-
-    // oracle: spec MS-RDPBCGR §3.1.5.2.2.1; mutant retaining discarded prefix bytes or failing to recover
-    set_context(&mut channel, Some(3));
-    expect_discarded(&mut channel, b"new-", 7, ChannelControlFlags::FLAG_FIRST);
-    expect_delivered(&mut channel, b"msg", 7, ChannelControlFlags::FLAG_LAST, 3);
-    assert_eq!(delivered(&channel), [(3, b"new-msg".to_vec())]);
 }
 
 // oracle: property round-trip; spec MS-RDPBCGR §3.1.5.2.1; spec MS-RDPBCGR §3.1.5.2.2.1
@@ -446,26 +458,29 @@ proptest! {
     ) {
         const CAP: usize = 16;
         let mut channel = StaticVirtualChannel::new(ContextChannel::new(Some(0), Some(CAP)));
+        let mut sequence_open = false;
 
         for (context, length, raw_flags, data) in steps {
             set_context(&mut channel, context);
             let flags = ChannelControlFlags::from_bits_retain(raw_flags);
-            let _ = channel.process(&channel_chunk(&data, length, flags));
+            let first = flags.contains(ChannelControlFlags::FLAG_FIRST);
+            let last = flags.contains(ChannelControlFlags::FLAG_LAST);
+            let ok = channel.process(&channel_chunk(&data, length, flags)).is_ok();
+            sequence_open = ok && (first || sequence_open) && !last;
         }
 
         for (_, payload) in delivered(&channel) {
             prop_assert!(payload.len() <= CAP);
         }
 
-        // Sending an initial fragment when a sequence may still be open either starts a new
-        // sequence or clears the stale sequence with an error; after that, a fresh sequence succeeds.
         set_context(&mut channel, Some(99));
-        if channel
-            .process(&channel_chunk(b"o", 2, ChannelControlFlags::FLAG_FIRST))
-            .is_err()
-        {
-            expect_discarded(&mut channel, b"o", 2, ChannelControlFlags::FLAG_FIRST);
+        if sequence_open {
+            let error = channel
+                .process(&channel_chunk(b"o", 2, ChannelControlFlags::FLAG_FIRST))
+                .expect_err("initial fragment while a sequence is open must fail and reset");
+            prop_assert!(matches!(error.kind(), PduErrorKind::Decode));
         }
+        expect_discarded(&mut channel, b"o", 2, ChannelControlFlags::FLAG_FIRST);
         expect_delivered(&mut channel, b"k", 2, ChannelControlFlags::FLAG_LAST, 99);
         prop_assert_eq!(delivered(&channel).last(), Some(&(99, b"ok".to_vec())));
     }

@@ -171,7 +171,12 @@ impl StaticVirtualChannel {
     /// Processes a payload received on the virtual channel. Returns a vector of PDUs to be sent back
     /// to the server. If no PDUs are to be sent, an empty vector is returned.
     pub fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        if let Some((context, payload)) = self.dechunkify(payload).map_err(|e| decode_err!(e))? {
+        let context = self.channel_processor.message_context();
+        if let Some((context, payload)) = self
+            .chunk_processor
+            .dechunkify(context, payload)
+            .map_err(|e| decode_err!(e))?
+        {
             return self.channel_processor.process_with_context(context, &payload);
         }
 
@@ -192,11 +197,6 @@ impl StaticVirtualChannel {
 
     pub fn channel_processor_downcast_mut<T: SvcProcessor + 'static>(&mut self) -> Option<&mut T> {
         self.channel_processor.as_any_mut().downcast_mut()
-    }
-
-    fn dechunkify(&mut self, payload: &[u8]) -> DecodeResult<Option<(u64, Vec<u8>)>> {
-        self.chunk_processor
-            .dechunkify(self.channel_processor.message_context(), payload)
     }
 }
 
@@ -413,7 +413,7 @@ impl ChunkProcessor {
     /// Reassembles a message for the context captured at its first fragment.
     /// Returns `None` until complete, or when discarding an invalidated context.
     ///
-    /// [3.1.5.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    /// [3.1.5.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a542bf19-1c86-4c80-ab3e-61449653abf6
     fn dechunkify(&mut self, context: Option<u64>, payload: &[u8]) -> DecodeResult<Option<(u64, Vec<u8>)>> {
         let mut cursor = ReadCursor::new(payload);
         let header: ironrdp_pdu::rdp::vc::ChannelPduHeader = decode_cursor(&mut cursor)?;
