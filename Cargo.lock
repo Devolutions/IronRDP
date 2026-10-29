@@ -2735,6 +2735,7 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
  "ironrdp-rpc",
+ "ironrdp-session",
  "libc",
  "md-5 0.10.6",
  "png",

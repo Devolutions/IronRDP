@@ -65,5 +65,8 @@ windows = { version = "0.62", features = [
 [target."cfg(unix)".dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+ironrdp-session = { path = "../ironrdp-session" }
+
 [lints]
 workspace = true

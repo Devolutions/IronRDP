@@ -224,25 +224,14 @@ pub(crate) async fn disconnect_session(endpoint: &Endpoint, server: Option<Strin
     Ok(())
 }
 
-/// How the session ended after a logoff request.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum LogoffOutcome {
-    /// The host reported that the user was logged off.
-    LoggedOff,
-    /// The session ended, but the host did not report a logoff, so the user's session may still be
-    /// running on the host.
-    Ended {
-        /// The daemon's description of why the session ended, if any.
-        reason: Option<String>,
-    },
-}
-
 /// Asks the NOW agent inside the remote session to log the user off, then waits up to `timeout`
-/// for the session to end.
+/// for the host to end the session with a logoff reason.
 ///
 /// The NOW logoff message has no response, so the end of the session is the only confirmation,
-/// and only the host's disconnect reason tells a logoff apart from an unrelated disconnect.
-pub(crate) async fn logoff_session(endpoint: &Endpoint, timeout: Duration) -> anyhow::Result<LogoffOutcome> {
+/// and only the host's disconnect reason tells a logoff apart from an unrelated disconnect. A
+/// session that ends without that reason is an error because the user's session may still be
+/// running on the host.
+pub(crate) async fn logoff_session(endpoint: &Endpoint, timeout: Duration) -> anyhow::Result<()> {
     let initial = probe(endpoint)
         .await?
         .with_context(|| format!("daemon is not running at {endpoint}"))?;
@@ -264,24 +253,25 @@ pub(crate) async fn logoff_session(endpoint: &Endpoint, timeout: Duration) -> an
                 timeout.as_secs()
             )
         })?;
-    if status.state == ConnState::Failed {
-        anyhow::bail!(
-            "the session failed after the logoff request, so the host may not have logged off: {}",
-            status.message.as_deref().unwrap_or("no reason reported")
-        );
-    }
-    if status.message.as_deref().is_some_and(reports_logoff) {
-        Ok(LogoffOutcome::LoggedOff)
-    } else {
-        Ok(LogoffOutcome::Ended { reason: status.message })
-    }
+    let reason = status.message.as_deref().unwrap_or("no reason reported");
+    anyhow::ensure!(
+        status.state != ConnState::Failed,
+        "the session failed after the logoff request, so the host may not have logged off: {reason}"
+    );
+    anyhow::ensure!(
+        reports_logoff(reason),
+        "the session ended, but the host did not report a logoff, so the user's session may still be running: {reason}"
+    );
+    Ok(())
 }
 
-/// Returns whether a session-end reason carries one of the Set Error Info codes that report a
-/// logoff ([MS-RDPBCGR] 2.2.5.1.1).
+/// Returns whether a session-end reason carries one of the logoff codes of the [2.2.5.1.1] Set
+/// Error Info PDU Data.
 ///
 /// The daemon reports a graceful termination as the formatted disconnect reason, which embeds the
 /// error description from `ironrdp-pdu`.
+///
+/// [2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
 fn reports_logoff(reason: &str) -> bool {
     [
         ProtocolIndependentCode::LogoffByUser,
@@ -796,58 +786,72 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn disconnect_waits_for_session_without_stopping_the_listener() {
+    fn isolated_endpoint(prefix: &str) -> Endpoint {
         let name = format!(
-            "ir-disconnect-{}-{}",
+            "{prefix}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("clock")
                 .subsec_nanos()
         );
-        let endpoint = transport::default_endpoint_named(&name);
-        let mut listener = Listener::bind(&endpoint).expect("bind isolated test endpoint");
-        let server = async move {
-            let mut disconnected = false;
-            let mut polls_after_disconnect = 0;
-            for _ in 0..5 {
-                let mut stream = listener.accept().await.expect("accept");
-                let request: Request = transport::read_message(&mut stream).await.expect("read request");
-                let response = match request {
-                    Request::Disconnect => {
-                        disconnected = true;
-                        Response::ok()
-                    }
-                    Request::Status => {
-                        let state = if !disconnected {
-                            ConnState::Connected
-                        } else if polls_after_disconnect == 0 {
-                            ConnState::Disconnecting
-                        } else {
-                            ConnState::Disconnected
-                        };
-                        if disconnected {
-                            polls_after_disconnect += 1;
-                        }
-                        Response::Ok(Payload::Status(StatusInfo {
-                            state,
-                            destination: Some("server.example:3389".to_owned()),
-                            width: None,
-                            height: None,
-                            message: None,
-                            credentials_loaded: false,
-                            untrusted_certificate: None,
-                        }))
-                    }
-                    _ => panic!("unexpected request to mock daemon"),
+        transport::default_endpoint_named(&name)
+    }
+
+    /// Serves `requests` connections as a daemon whose session is connected until `trigger`
+    /// arrives, answering `trigger` with `Ok` and each status poll after it with
+    /// `after_trigger(poll)`; returns whether `trigger` arrived.
+    async fn serve_mock_daemon(
+        mut listener: Listener,
+        requests: usize,
+        trigger: Request,
+        after_trigger: impl Fn(usize) -> (ConnState, Option<String>),
+    ) -> bool {
+        let mut triggered = false;
+        let mut polls_after_trigger = 0;
+        for _ in 0..requests {
+            let mut stream = listener.accept().await.expect("accept");
+            let request: Request = transport::read_message(&mut stream).await.expect("read request");
+            let response = if request == trigger {
+                triggered = true;
+                Response::ok()
+            } else if request == Request::Status {
+                let (state, message) = if triggered {
+                    polls_after_trigger += 1;
+                    after_trigger(polls_after_trigger)
+                } else {
+                    (ConnState::Connected, None)
                 };
-                transport::write_message(&mut stream, &response)
-                    .await
-                    .expect("send response");
+                Response::Ok(Payload::Status(StatusInfo {
+                    state,
+                    destination: Some("server.example:3389".to_owned()),
+                    width: None,
+                    height: None,
+                    message,
+                    credentials_loaded: false,
+                    untrusted_certificate: None,
+                }))
+            } else {
+                panic!("unexpected request to mock daemon: {request:?}");
+            };
+            transport::write_message(&mut stream, &response)
+                .await
+                .expect("send response");
+        }
+        triggered
+    }
+
+    #[tokio::test]
+    async fn disconnect_waits_for_session_without_stopping_the_listener() {
+        let endpoint = isolated_endpoint("ir-disconnect");
+        let listener = Listener::bind(&endpoint).expect("bind isolated test endpoint");
+        let server = serve_mock_daemon(listener, 5, Request::Disconnect, |poll| {
+            if poll == 1 {
+                (ConnState::Disconnecting, None)
+            } else {
+                (ConnState::Disconnected, None)
             }
-            disconnected
-        };
+        });
 
         let client = async {
             disconnect_session(&endpoint, None)
@@ -862,124 +866,89 @@ mod tests {
         assert!(disconnected);
     }
 
-    /// Serves `requests` connections, answering `Logoff` with `Ok` and each status poll after it
-    /// with `after_logoff(poll)`; returns whether `Logoff` arrived.
-    async fn serve_logoff(
-        mut listener: Listener,
-        requests: usize,
-        after_logoff: impl Fn(usize) -> (ConnState, Option<String>),
-    ) -> bool {
-        let mut logoff_requested = false;
-        let mut polls_after_logoff = 0;
-        for _ in 0..requests {
-            let mut stream = listener.accept().await.expect("accept");
-            let request: Request = transport::read_message(&mut stream).await.expect("read request");
-            let response = match request {
-                Request::Logoff => {
-                    logoff_requested = true;
-                    Response::ok()
-                }
-                Request::Status => {
-                    let (state, message) = if logoff_requested {
-                        polls_after_logoff += 1;
-                        after_logoff(polls_after_logoff)
-                    } else {
-                        (ConnState::Connected, None)
-                    };
-                    Response::Ok(Payload::Status(StatusInfo {
-                        state,
-                        destination: Some("server.example:3389".to_owned()),
-                        width: None,
-                        height: None,
-                        message,
-                        credentials_loaded: false,
-                        untrusted_certificate: None,
-                    }))
-                }
-                _ => panic!("unexpected request to mock daemon"),
-            };
-            transport::write_message(&mut stream, &response)
-                .await
-                .expect("send response");
-        }
-        logoff_requested
-    }
-
-    fn isolated_endpoint(prefix: &str) -> Endpoint {
-        let name = format!(
-            "{prefix}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .subsec_nanos()
+    /// The status message the daemon records when the host ends the session with `code`.
+    fn host_ended_session_reason(code: ProtocolIndependentCode) -> String {
+        let reason = ironrdp_session::GracefulDisconnectReason::Other(
+            ironrdp_pdu::rdp::server_error_info::ErrorInfo::ProtocolIndependentCode(code).description(),
         );
-        transport::default_endpoint_named(&name)
+        format!("{reason:?}")
     }
 
-    /// The disconnect reason the daemon records when the host ends the session with
-    /// `ERRINFO_LOGOFF_BY_USER`.
-    fn logoff_by_user_reason() -> String {
-        let description = ironrdp_pdu::rdp::server_error_info::ErrorInfo::ProtocolIndependentCode(
-            ProtocolIndependentCode::LogoffByUser,
-        )
-        .description();
-        format!("Other({description:?})")
-    }
-
-    // oracle: reference [MS-RDPBCGR] 2.2.5.1.1 (ERRINFO_LOGOFF_BY_USER reports a user logoff)
+    // oracle: spec MS-RDPBCGR §2.2.5.1.1 (ERRINFO_LOGOFF_BY_USER: the user logged off the session)
     #[tokio::test]
-    async fn logoff_reports_a_logoff_when_the_host_ends_the_session_with_logoff_by_user() {
+    async fn logoff_succeeds_when_the_host_ends_the_session_with_logoff_by_user() {
         let endpoint = isolated_endpoint("ir-logoff");
         let listener = Listener::bind(&endpoint).expect("bind isolated test endpoint");
-        let server = serve_logoff(listener, 4, |poll| {
+        let server = serve_mock_daemon(listener, 4, Request::Logoff, |poll| {
             if poll == 1 {
                 (ConnState::Connected, None)
             } else {
-                (ConnState::Disconnected, Some(logoff_by_user_reason()))
+                (
+                    ConnState::Disconnected,
+                    Some(host_ended_session_reason(ProtocolIndependentCode::LogoffByUser)),
+                )
             }
         });
 
         let client = async {
-            let outcome = logoff_session(&endpoint, Duration::from_secs(10))
+            logoff_session(&endpoint, Duration::from_secs(10))
                 .await
                 .expect("log off active session");
-            assert_eq!(outcome, LogoffOutcome::LoggedOff);
         };
         let ((), logoff_requested) = tokio::join!(client, server);
         assert!(logoff_requested);
     }
 
-    // oracle: reference crates/ironrdp-agent/README.md (a session that ends without a logoff reason may still run on the host)
+    // oracle: spec MS-RDPBCGR §2.2.5.1.1 (ERRINFO_IDLE_TIMEOUT ends the session without a logoff)
     #[tokio::test]
-    async fn logoff_does_not_claim_a_logoff_when_the_session_ends_for_another_reason() {
-        const REASON: &str = r#"Other("transport closed")"#;
-
+    async fn logoff_fails_when_the_host_ends_the_session_without_a_logoff_reason() {
         let endpoint = isolated_endpoint("ir-logoff-other");
         let listener = Listener::bind(&endpoint).expect("bind isolated test endpoint");
-        let server = serve_logoff(listener, 3, |_| (ConnState::Disconnected, Some(REASON.to_owned())));
+        let server = serve_mock_daemon(listener, 3, Request::Logoff, |_| {
+            (
+                ConnState::Disconnected,
+                Some(host_ended_session_reason(ProtocolIndependentCode::IdleTimeout)),
+            )
+        });
 
         let client = async {
-            let outcome = logoff_session(&endpoint, Duration::from_secs(10))
+            logoff_session(&endpoint, Duration::from_secs(10))
                 .await
-                .expect("the session ended");
-            assert_eq!(
-                outcome,
-                LogoffOutcome::Ended {
-                    reason: Some(REASON.to_owned())
-                }
-            );
+                .expect_err("a session that ends without a logoff reason must not count as logged off")
         };
-        let ((), logoff_requested) = tokio::join!(client, server);
+        let (error, logoff_requested) = tokio::join!(client, server);
         assert!(logoff_requested);
+        assert!(error.to_string().contains("did not report a logoff"), "{error}");
     }
 
-    // oracle: reference crates/ironrdp-agent/src/help.rs (`session logoff` waits up to N seconds, then reports a possible sign-out block)
+    // oracle: mutant a logoff_session that accepts a failed session as logged off
+    #[tokio::test]
+    async fn logoff_fails_when_the_session_fails() {
+        let endpoint = isolated_endpoint("ir-logoff-failed");
+        let listener = Listener::bind(&endpoint).expect("bind isolated test endpoint");
+        let server = serve_mock_daemon(listener, 3, Request::Logoff, |_| {
+            (
+                ConnState::Failed,
+                Some(host_ended_session_reason(ProtocolIndependentCode::LogoffByUser)),
+            )
+        });
+
+        let client = async {
+            logoff_session(&endpoint, Duration::from_secs(10))
+                .await
+                .expect_err("a failed session must not count as logged off")
+        };
+        let (error, logoff_requested) = tokio::join!(client, server);
+        assert!(logoff_requested);
+        assert!(error.to_string().contains("session failed"), "{error}");
+    }
+
+    // oracle: mutant a logoff_session that reports success, or waits past its deadline, while the session stays connected
     #[tokio::test]
     async fn logoff_times_out_while_the_session_stays_connected() {
         let endpoint = isolated_endpoint("ir-logoff-timeout");
         let listener = Listener::bind(&endpoint).expect("bind isolated test endpoint");
-        let server = serve_logoff(listener, usize::MAX, |_| (ConnState::Connected, None));
+        let server = serve_mock_daemon(listener, usize::MAX, Request::Logoff, |_| (ConnState::Connected, None));
 
         let client = async {
             logoff_session(&endpoint, Duration::from_millis(1))
@@ -990,9 +959,8 @@ mod tests {
             error = client => error,
             _ = server => unreachable!("the mock daemon outlives the client"),
         };
-        assert_eq!(
-            error.to_string(),
-            "logoff requested but the session is still connected after 0s; an application may be blocking sign-out on the remote desktop"
-        );
+        let message = error.to_string();
+        assert!(message.contains("still connected"), "{message}");
+        assert!(message.contains("blocking sign-out"), "{message}");
     }
 }

@@ -52,7 +52,7 @@ ironrdp-agent session logoff
 RDP has no message that asks the host to log the user off, so `session logoff` (alias `logoff`) asks Devolutions Agent (the NOW agent) running inside the remote session to sign out.
 It fails without touching the session when the host does not run Devolutions Agent.
 The command waits up to `--timeout-secs` (default 60) for the host to end the session.
-It reports a logoff only when the host ends the session with a logoff reason; otherwise it prints the reason it got and warns that the user's session may still be running.
+It succeeds only when the host ends the session with a logoff reason; a session that ends for another reason is an error, because the user's session may still be running.
 An application with unsaved work can hold the sign-out until someone answers it on the remote desktop.
 
 Use `daemon start` to launch it without connecting, or `daemon start --foreground` to keep its logs in your terminal.

@@ -502,8 +502,9 @@ mod tests {
         .await;
     }
 
-    /// Plays the host's half of the handshake, answering with `host_capset`.
-    async fn negotiate_with<S>(peer: &mut S, host_capset: NowChannelCapsetMsg)
+    /// Plays the host's half of the handshake, answering with `host_capset`, and returns the
+    /// client's capability set.
+    async fn negotiate_with<S>(peer: &mut S, host_capset: NowChannelCapsetMsg) -> NowChannelCapsetMsg
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
@@ -512,8 +513,8 @@ mod tests {
             panic!("the client must open with its capability set, got {first:?}");
         };
         assert_eq!(capset.heartbeat_interval(), None);
-        assert_eq!(capset.session_capset(), NowSessionCapsetFlags::LOGOFF);
         write_message(peer, host_capset).await;
+        capset
     }
 
     /// How long the NOW host keeps an opened channel without a client capability set before giving
@@ -901,7 +902,7 @@ mod tests {
         peer.abort();
     }
 
-    // oracle: reference now-libraries/protocols/docs/NOW-spec.md (NOW_SESSION_LOGOFF_MSG, NOW_CAP_SESSION_LOGOFF)
+    // oracle: spec Devolutions/now-libraries@587a1ce09d4f:protocols/docs/NOW-spec.md §NOW_SESSION_LOGOFF_MSG
     #[tokio::test]
     async fn logoff_sends_the_session_logoff_message_to_a_host_that_supports_it() {
         let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));
@@ -910,15 +911,17 @@ mod tests {
 
         let host_side = async {
             let mut peer = host.accept().await;
-            negotiate_with(
+            let client_capset = negotiate_with(
                 &mut peer,
                 NowChannelCapsetMsg::default().with_session_capset(NowSessionCapsetFlags::LOGOFF),
             )
             .await;
-            read_message(&mut peer).await
+            (client_capset, read_message(&mut peer).await)
         };
-        let (result, message) = bounded(async { tokio::join!(operations.session_logoff(), host_side) }).await;
+        let (result, (client_capset, message)) =
+            bounded(async { tokio::join!(operations.session_logoff(), host_side) }).await;
 
+        assert!(client_capset.session_capset().contains(NowSessionCapsetFlags::LOGOFF));
         result.expect("a host advertising logoff must receive the request");
         assert!(
             matches!(message, NowMessage::Session(NowSessionMessage::Logoff(_))),
@@ -926,7 +929,7 @@ mod tests {
         );
     }
 
-    // oracle: reference crates/ironrdp-agent/README.md (logoff fails without touching the session when the host does not support it)
+    // oracle: spec Devolutions/now-libraries@587a1ce09d4f:protocols/docs/NOW-spec.md §NOW_CHANNEL_CAPSET_MSG (the host removes capabilities it does not share)
     #[tokio::test]
     async fn logoff_is_unavailable_when_the_host_does_not_support_it() {
         let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));

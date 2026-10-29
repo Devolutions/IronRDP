@@ -2429,6 +2429,10 @@ async fn consume_output(
             }
             RdpOutputEvent::Terminated(Ok(reason)) => {
                 guard.state = ConnState::Disconnected;
+                // UNTESTED: `ironrdp-agent session logoff` recognizes a logoff by finding the Set Error
+                // Info description from `ironrdp-pdu` in this message, so it must keep embedding the
+                // reason's description. The agent's tests format the reason the same way; update them
+                // if this rendering changes.
                 guard.error = Some(format!("{reason:?}"));
                 let rail_changed = guard.rail.fail_pending_launches();
                 info!(?reason, "Session terminated");
