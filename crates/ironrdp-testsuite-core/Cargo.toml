@@ -65,6 +65,7 @@ ironrdp-rdpecam = { path = "../ironrdp-rdpecam" }
 ironrdp-rdpegt.path = "../ironrdp-rdpegt"
 ironrdp-rdpevor.path = "../ironrdp-rdpevor"
 ironrdp-rdpel.path = "../ironrdp-rdpel"
+ironrdp-rdpemsc.path = "../ironrdp-rdpemsc"
 ironrdp-rdpear.path = "../ironrdp-rdpear"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }

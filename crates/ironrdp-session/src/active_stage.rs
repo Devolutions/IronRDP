@@ -12,6 +12,7 @@ use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::pointer::PointerUpdateData;
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
@@ -284,6 +285,37 @@ impl ActiveStage {
             }
         };
 
+        self.push_processor_updates(processor_updates, &mut stage_outputs)?;
+        self.widen_to_full_refresh(image, &mut stage_outputs);
+
+        Ok(stage_outputs)
+    }
+
+    /// Applies a pointer update that arrived outside the fast-path and slow-path output, such as
+    /// one from the [MS-RDPEMSC] mouse cursor channel.
+    ///
+    /// The update goes through the same pointer cache, server-pointer setting and software
+    /// rendering as [MS-RDPBCGR] pointer updates. Damage regions add to those of the last call
+    /// to [`ActiveStage::process`] or [`ActiveStage::process_dvc_tunnel`].
+    ///
+    /// [MS-RDPEMSC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemsc/
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    pub fn process_pointer_update(
+        &mut self,
+        image: &mut DecodedImage,
+        update: PointerUpdateData<'_>,
+    ) -> SessionResult<Vec<ActiveStageOutput>> {
+        let processor_updates = self.fast_path_processor.process_pointer_update(image, update)?;
+        let mut stage_outputs = Vec::new();
+        self.push_processor_updates(processor_updates, &mut stage_outputs)?;
+        Ok(stage_outputs)
+    }
+
+    fn push_processor_updates(
+        &mut self,
+        processor_updates: Vec<UpdateKind>,
+        stage_outputs: &mut Vec<ActiveStageOutput>,
+    ) -> SessionResult<()> {
         for update in processor_updates {
             match update {
                 UpdateKind::None => {}
@@ -313,9 +345,7 @@ impl ActiveStage {
             }
         }
 
-        self.widen_to_full_refresh(image, &mut stage_outputs);
-
-        Ok(stage_outputs)
+        Ok(())
     }
 
     /// Drains the client-side EGFX compositor: follows a pending `ResetGraphics`, composites
@@ -1285,7 +1315,7 @@ mod tests {
     use ironrdp_pdu::input::MousePdu;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::input::mouse::PointerFlags;
-    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute};
     use ironrdp_rdpei::pdu::{PenEventPdu, RdpInputProtocolVersion, RdpeiPdu, ScReadyPdu, TouchEventPdu};
 
     #[test]
