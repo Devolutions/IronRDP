@@ -2558,8 +2558,9 @@ mod tests {
     }
 
     /// xrdp closes and reopens the channel after a Deactivation-Reactivation Sequence;
-    /// the client it hands back starts over from an empty channel with a zero frame count
-    /// and takes the server's new CapabilitiesConfirm.
+    /// the client it hands back starts over from an empty channel and takes the server's new
+    /// CapabilitiesConfirm. Its frame count restarts at zero because Windows restarts its
+    /// sent-frame count and rejects FrameAcknowledge counts greater than that value.
     // oracle: mutant close keeping the previous channel's surfaces, frame count or cache import flag
     #[test]
     fn reopened_channel_waits_for_confirm() {

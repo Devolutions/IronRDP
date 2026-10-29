@@ -218,7 +218,7 @@ fn closed_pre_registered_channel_stays_registered_for_reopening() {
     assert_eq!(channel.processor().started_with, Some(2));
 }
 
-// oracle: reference xrdp closes and reopens every dynamic channel after a Deactivation-Reactivation Sequence
+// oracle: mutant handing a reopened channel the kept processor of another channel of the same type
 #[test]
 fn closed_channels_of_one_type_reopen_under_their_own_names() {
     // One pipe proxy per channel shares a processor type; a reopen must get its own back.
