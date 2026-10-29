@@ -1495,11 +1495,18 @@ async fn disconnect_session(endpoint: &Endpoint, args: DisconnectArgs, backend: 
 }
 
 async fn logoff_session(endpoint: &Endpoint, args: LogoffArgs) -> anyhow::Result<()> {
-    let reason =
+    use crate::daemon_lifecycle::LogoffOutcome;
+
+    let outcome =
         crate::daemon_lifecycle::logoff_session(endpoint, core::time::Duration::from_secs(args.timeout_secs)).await?;
-    println!("session ended after logoff request; daemon remains running");
-    if let Some(reason) = reason {
-        println!("reason: {reason}");
+    match outcome {
+        LogoffOutcome::LoggedOff => println!("user logged off; daemon remains running"),
+        LogoffOutcome::Ended { reason } => {
+            println!("session ended, but the host did not report a logoff; the user's session may still be running");
+            if let Some(reason) = reason {
+                println!("reason: {reason}");
+            }
+        }
     }
     Ok(())
 }

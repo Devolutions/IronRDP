@@ -55,8 +55,9 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  Log the user off the remote session, ending it on the host instead of
                                  leaving it disconnected. Requires Devolutions Agent (the NOW agent) in
                                  the remote session; RDP itself cannot request a logoff. Waits up to N
-                                 seconds (default 60) for the host to end the session and prints its
-                                 reason; an application with unsaved work can block sign-out.
+                                 seconds (default 60) for the host to end the session, and reports a
+                                 logoff only when the host gives a logoff reason; an application with
+                                 unsaved work can block sign-out.
 - `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
                                  Legacy foreground alias for `daemon start --foreground`. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`

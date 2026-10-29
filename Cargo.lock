@@ -2731,6 +2731,7 @@ dependencies = [
  "ironrdp-daemon",
  "ironrdp-input",
  "ironrdp-mstsgu",
+ "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rdpfile",
  "ironrdp-rpc",
@@ -4307,7 +4308,7 @@ dependencies = [
 [[package]]
 name = "now-client"
 version = "0.1.0"
-source = "git+https://github.com/Devolutions/now-libraries?branch=feat%2Fnow-client-session-commands#587a1ce09d4f48e05cb348baae30aeb6403b96a6"
+source = "git+https://github.com/Devolutions/now-libraries?rev=587a1ce09d4f48e05cb348baae30aeb6403b96a6#587a1ce09d4f48e05cb348baae30aeb6403b96a6"
 dependencies = [
  "now-proto-pdu",
  "thiserror 2.0.21",
@@ -4317,7 +4318,7 @@ dependencies = [
 [[package]]
 name = "now-proto-pdu"
 version = "0.4.4"
-source = "git+https://github.com/Devolutions/now-libraries?branch=feat%2Fnow-client-session-commands#587a1ce09d4f48e05cb348baae30aeb6403b96a6"
+source = "git+https://github.com/Devolutions/now-libraries?rev=587a1ce09d4f48e05cb348baae30aeb6403b96a6#587a1ce09d4f48e05cb348baae30aeb6403b96a6"
 dependencies = [
  "bitflags 2.13.2",
  "ironrdp-core 0.2.1",
