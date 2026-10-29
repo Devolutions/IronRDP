@@ -1,5 +1,5 @@
 use std::fs::{self, create_dir_all};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context as _;
 
@@ -83,8 +83,8 @@ pub(crate) fn build_dynamic_lib(sh: &Shell, release: bool) -> anyhow::Result<()>
 
     let output_lib_path = profile_dir.join(OUTPUT_LIB_NAME);
 
-    let dotnet_native_lib_dir_path: PathBuf = DOTNET_NATIVE_LIB_PATH.parse()?;
-    let dotnet_native_lib_path = root_dir.join(&dotnet_native_lib_dir_path).join(DOTNET_NATIVE_LIB_NAME);
+    let dotnet_native_lib_dir_path = root_dir.join(DOTNET_NATIVE_LIB_PATH);
+    let dotnet_native_lib_path = dotnet_native_lib_dir_path.join(DOTNET_NATIVE_LIB_NAME);
 
     create_dir_all(&dotnet_native_lib_dir_path)
         .with_context(|| format!("failed to create directory {}", dotnet_native_lib_dir_path.display()))?;
