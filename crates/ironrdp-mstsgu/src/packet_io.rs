@@ -454,9 +454,7 @@ pub(crate) async fn open_gateway_tcp(
     match proxy {
         Some(proxy) => open_proxy_tunnel(proxy, gateway).await,
         None => {
-            let stream = TcpStream::connect(&gateway.endpoint)
-                .await
-                .map_err(|e| custom_err!("tcp connect", e))?;
+            let stream = connect_tcp("tcp connect", &gateway.endpoint).await?;
             let client_addr = stream
                 .local_addr()
                 .map_err(|e| custom_err!("get socket local address", e))?;
@@ -465,13 +463,22 @@ pub(crate) async fn open_gateway_tcp(
     }
 }
 
+pub(crate) async fn connect_tcp(
+    context: &'static str,
+    address: impl tokio::net::ToSocketAddrs,
+) -> Result<TcpStream, Error> {
+    let stream = TcpStream::connect(address).await.map_err(|e| custom_err!(context, e))?;
+    stream
+        .set_nodelay(true)
+        .map_err(|e| custom_err!("set TCP_NODELAY", e))?;
+    Ok(stream)
+}
+
 async fn open_proxy_tunnel(
     proxy: &ProxyConfig,
     gateway: &GatewayEndpoint,
 ) -> Result<(GatewayStream, core::net::SocketAddr), Error> {
-    let stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
-        .await
-        .map_err(|e| custom_err!("proxy tcp connect", e))?;
+    let stream = connect_tcp("proxy tcp connect", (proxy.host.as_str(), proxy.port)).await?;
     let client_addr = stream
         .local_addr()
         .map_err(|e| custom_err!("get socket local address", e))?;
