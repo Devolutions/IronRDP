@@ -34,6 +34,7 @@ mod rdpadrv;
 mod rdpdr;
 mod rdpeai;
 mod rdpecam;
+mod rdpeci;
 mod rdpegt;
 mod rdpei;
 mod rdpel;

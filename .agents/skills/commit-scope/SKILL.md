@@ -9,7 +9,7 @@ Choose at most one optional scope for `<type>[optional scope][!]: <description>`
 
 ```text
 meta core error pdu str bulk graphics config input connector session driver
-svc dvc cliprdr rdpdr rdpsnd rdpeai rdpecam rdpegt rdpevor rdpel rdpet rdpewa rail displaycontrol rdpei echo egfx rdpeudp rdpeusb usb rdpemt rdcleanpath
+svc dvc cliprdr rdpdr rdpsnd rdpeai rdpecam rdpegt rdpevor rdpel rdpet rdpewa rail displaycontrol rdpei rdpeci echo egfx rdpeudp rdpeusb usb rdpemt rdcleanpath
 tls mstsgu vmconnect
 
 client viewer agent daemon rpc activex server web ffi replay
