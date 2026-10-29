@@ -952,7 +952,6 @@ impl DecodedImage {
         // be vectorized: a plain copy for RGBA images, a swap of R and B for
         // BGRA images (the usual layouts), and the general reorder for others.
         for (row_idx, row) in rgba32.enumerate() {
-            let row = &row[..row.len() / SRC_COLOR_DEPTH * SRC_COLOR_DEPTH];
             let start = ((top + row_idx) * image_width + left) * DST_COLOR_DEPTH;
             let dst = &mut self.data[start..start + row.len()];
             match [ri, gi, bi, ai] {
@@ -984,6 +983,7 @@ impl DecodedImage {
         Ok(update_rectangle)
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     pub(crate) fn apply_rgba32(
         &mut self,
         rgba32: &[u8],
@@ -1098,58 +1098,6 @@ mod tests {
         image.data()[offset..offset + 4]
             .try_into()
             .expect("pixel has four channels")
-    }
-
-    /// Every pixel format, top-down and flipped: each pixel of the RGBA
-    /// source lands in its place with its channels reordered for the format,
-    /// and nothing outside the rectangle changes.
-    #[test]
-    fn rgba32_lands_in_every_pixel_format() {
-        let formats = [
-            PixelFormat::ARgb32,
-            PixelFormat::XRgb32,
-            PixelFormat::ABgr32,
-            PixelFormat::XBgr32,
-            PixelFormat::BgrA32,
-            PixelFormat::BgrX32,
-            PixelFormat::RgbA32,
-            PixelFormat::RgbX32,
-        ];
-        let rectangle = InclusiveRectangle {
-            left: 1,
-            top: 2,
-            right: 5,
-            bottom: 4,
-        };
-        let (width, height) = (5, 3);
-        let source: Vec<u8> = (0..width * height * 4)
-            .map(|i| u8::try_from(i % 251).unwrap())
-            .collect();
-        for format in formats {
-            for flip in [false, true] {
-                let mut image = DecodedImage::new(format, 7, 6);
-                image.apply_rgba32(&source, &rectangle, flip).unwrap();
-                let [ri, gi, bi, ai] = format.channel_offsets();
-                for y in 0..6 {
-                    for x in 0..7 {
-                        let inside = (1..=5).contains(&x) && (2..=4).contains(&y);
-                        let expected = if inside {
-                            let row = if flip { height - 1 - (y - 2) } else { y - 2 };
-                            let i = (row * width + (x - 1)) * 4;
-                            let mut pixel = [0; 4];
-                            pixel[ri] = source[i];
-                            pixel[gi] = source[i + 1];
-                            pixel[bi] = source[i + 2];
-                            pixel[ai] = source[i + 3];
-                            pixel
-                        } else {
-                            [0; 4]
-                        };
-                        assert_eq!(pixel(&image, x, y), expected, "{format:?} flip {flip} at ({x}, {y})");
-                    }
-                }
-            }
-        }
     }
 
     #[test]
