@@ -99,6 +99,14 @@ pub trait DvcProcessor: AsAny + Send {
     /// The name of the channel, e.g. "Microsoft::Windows::RDS::DisplayControl"
     fn channel_name(&self) -> &str;
 
+    /// Returns the maximum complete, reassembled message size accepted by this channel.
+    ///
+    /// This limit is checked before DVC fragments are retained for reassembly.
+    /// `None` preserves the historical behavior without a message-size limit.
+    fn max_message_size(&self) -> Option<usize> {
+        None
+    }
+
     /// Returns any messages that should be sent immediately
     /// upon the channel being created.
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>>;
@@ -110,6 +118,13 @@ pub trait DvcProcessor: AsAny + Send {
 
 assert_obj_safe!(DvcProcessor);
 
+/// Encodes complete messages as DVC data PDUs, preserving message boundaries.
+///
+/// Empty messages produce a header-only `DATA` PDU ([2.2.3.2] DVC Data PDU (`DYNVC_DATA`)).
+/// Messages of at most 1,590 bytes use `DATA`; larger messages start with `DATA_FIRST` ([2.2.3.1] DVC Data First PDU (`DYNVC_DATA_FIRST`)).
+///
+/// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
+/// [2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/15b59886-db44-47f1-8da3-47c8fcd82803
 pub fn encode_dvc_messages(
     channel_id: u32,
     messages: Vec<DvcMessage>,
@@ -118,12 +133,12 @@ pub fn encode_dvc_messages(
     let mut res = Vec::new();
     for msg in messages {
         let total_length = msg.size();
-        let needs_splitting = total_length >= DrdynvcDataPdu::MAX_DATA_SIZE;
+        let needs_splitting = DrdynvcDataPdu::MAX_DATA_SIZE < total_length;
 
         let msg = encode_vec(msg.as_ref())?;
         let mut off = 0;
 
-        while off < total_length {
+        loop {
             let first = off == 0;
 
             #[expect(clippy::missing_panics_doc, reason = "unreachable panic (checked underflow)")]
@@ -147,6 +162,9 @@ pub fn encode_dvc_messages(
 
             res.push(svc);
             off = end;
+            if off == total_length {
+                break;
+            }
         }
     }
 

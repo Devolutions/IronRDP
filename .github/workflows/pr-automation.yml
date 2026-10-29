@@ -205,6 +205,8 @@ jobs:
               repo: context.repo.repo,
               prNumber: pullRequest.number,
               authorAssociation: pullRequest.author_association,
+              baseSha: pullRequest.base.sha,
+              headSha: pullRequest.head.sha,
               labelerPath: "./.github/labeler.yml",
             });
             core.setOutput("analysis", JSON.stringify(result));
@@ -1067,6 +1069,10 @@ jobs:
             const { writeState } = require("./.github/pr-automation/write-state");
             const { StaleHeadError } = require("./.github/pr-automation/current-head");
             const { reconcileLifecycle } = require("./.github/pr-automation/lifecycle");
+            const { retryTransientRequests } = require("./.github/pr-automation/github-retry");
+            retryTransientRequests(github, {
+              onRetry: (retry) => core.warning(JSON.stringify({ event: "pr-automation.github-retry", ...retry })),
+            });
             const parse = (value) => { try { return JSON.parse(value || ""); } catch { return null; } };
             const readState = (file) => {
               try { return parse(fs.readFileSync(file, "utf8")); } catch { return null; }

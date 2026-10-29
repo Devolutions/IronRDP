@@ -3,15 +3,13 @@ name: commit-scope
 description: Derive and validate the canonical scope for IronRDP Conventional Commit and pull-request titles. Use whenever composing, reviewing, correcting, or checking a commit or PR title, especially when several crates or product surfaces intersect.
 ---
 
-# Commit scope
-
 Choose at most one optional scope for `<type>[optional scope][!]: <description>`.
 
 ## Canonical scopes
 
 ```text
 meta core error pdu str bulk graphics config input connector session driver
-svc dvc cliprdr rdpdr rdpsnd rdpeai displaycontrol rdpei echo egfx rdpeudp rdpeusb rdpemt rdcleanpath
+svc dvc cliprdr rdpdr rdpsnd rdpeai rdpecam rdpegt rdpevor rdpel rdpewa rail displaycontrol rdpei echo egfx rdpeudp rdpeusb usb rdpemt rdcleanpath
 tls mstsgu vmconnect
 
 client viewer agent daemon rpc activex server web ffi replay
@@ -30,10 +28,13 @@ Use these aggregate mappings:
 - `dvc`: DRDYNVC infrastructure, the COM plugin, and the pipe proxy, but not specific dynamic channels.
 - `cliprdr`, `rdpdr`, and `rdpsnd`: each protocol and its format or native support crates.
 - `rdpeai`: MS-RDPEAI audio input protocol and related client capture wiring.
+- `egfx`, `rdpecam`, `rdpeusb`, and `rdpewa`: each protocol and its native backend crates.
+- `rdpeudp`: the UDP protocol and Tokio transport support.
+- `usb`: the shared USB support crate.
 - `server`: `ironrdp-acceptor` and `ironrdp-server`.
 - `web`: WASM bindings, the Rust web helper, and everything under `web-client`.
 - `ffi`: the Rust FFI and generated or manual .NET bindings, but not ActiveX.
-- `replay`: `ironrdp-replay-client`.
+- `replay`: capture/replay support and `ironrdp-replay-client`.
 - `fuzz`: fuzz targets, harnesses, corpora, and fuzzing automation.
 - `release`: changelog, packaging, publishing, and release automation.
 - `pr-automation`: automated PR classification and review infrastructure.

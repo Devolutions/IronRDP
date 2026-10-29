@@ -9,12 +9,13 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::pdu::ffi::WriteBuf;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ConnectionActivationSequence(
         pub Box<ironrdp::connector::connection_activation::ConnectionActivationSequence>,
     );
 
     impl ConnectionActivationSequence {
+        #[diplomat::attr(auto, getter = "state")]
         pub fn get_state(&self) -> Box<ConnectionActivationState> {
             Box::new(ConnectionActivationState {
                 state: self.0.connection_activation_state(),
@@ -36,10 +37,12 @@ pub mod ffi {
             Ok(res)
         }
 
+        #[diplomat::attr(auto, getter = "io_channel_id")]
         pub fn get_io_channel_id(&self) -> u16 {
             self.0.io_channel_id()
         }
 
+        #[diplomat::attr(auto, getter = "user_channel_id")]
         pub fn get_user_channel_id(&self) -> u16 {
             self.0.user_channel_id()
         }
@@ -55,9 +58,11 @@ pub mod ffi {
         CapabilitiesExchange,
         ConnectionFinalization,
         Finalized,
+        Redirected,
     }
 
     impl ConnectionActivationState {
+        #[diplomat::attr(auto, getter = "type")]
         pub fn get_type(&self) -> ConnectionActivationStateType {
             match self.state {
                 ironrdp::connector::connection_activation::ConnectionActivationState::Consumed => {
@@ -72,9 +77,13 @@ pub mod ffi {
                 ironrdp::connector::connection_activation::ConnectionActivationState::Finalized { .. } => {
                     ConnectionActivationStateType::Finalized
                 }
+                ironrdp::connector::connection_activation::ConnectionActivationState::Redirected { .. } => {
+                    ConnectionActivationStateType::Redirected
+                }
             }
         }
 
+        #[diplomat::attr(auto, getter = "connection_finalization")]
         pub fn get_connection_finalization(
             &self,
         ) -> Result<Box<ConnectionActivationStateConnectionFinalization>, Box<IronRdpError>> {
@@ -95,6 +104,23 @@ pub mod ffi {
             }
         }
 
+        #[diplomat::attr(auto, getter = "redirected")]
+        pub fn get_redirected(
+            &self,
+        ) -> Result<Box<crate::connector::result::ffi::ServerRedirection>, Box<IronRdpError>> {
+            match &self.state {
+                ironrdp::connector::connection_activation::ConnectionActivationState::Redirected { redirection } => {
+                    Ok(Box::new(crate::connector::result::ffi::ServerRedirection(
+                        redirection.as_ref().clone(),
+                    )))
+                }
+                _ => Err(IncorrectEnumTypeError::on_variant("Redirected")
+                    .of_enum("ConnectionActivationState")
+                    .into()),
+            }
+        }
+
+        #[diplomat::attr(auto, getter = "finalized")]
         pub fn get_finalized(&self) -> Result<Box<ConnectionActivationStateFinalized>, Box<IronRdpError>> {
             match &self.state {
                 ironrdp::connector::connection_activation::ConnectionActivationState::Finalized {
@@ -128,6 +154,7 @@ pub mod ffi {
     }
 
     impl ConnectionActivationStateConnectionFinalization {
+        #[diplomat::attr(auto, getter = "desktop_size")]
         pub fn get_desktop_size(&self) -> Box<DesktopSize> {
             Box::new(DesktopSize(self.desktop_size))
         }
@@ -144,28 +171,34 @@ pub mod ffi {
     }
 
     impl ConnectionActivationStateFinalized {
+        #[diplomat::attr(auto, getter = "share_id")]
         pub fn get_share_id(&self) -> u32 {
             self.share_id
         }
 
+        #[diplomat::attr(auto, getter = "desktop_size")]
         pub fn get_desktop_size(&self) -> Box<DesktopSize> {
             Box::new(DesktopSize(self.desktop_size))
         }
 
+        #[diplomat::attr(auto, getter = "enable_server_pointer")]
         pub fn get_enable_server_pointer(&self) -> bool {
             self.enable_server_pointer
         }
 
+        #[diplomat::attr(auto, getter = "pointer_software_rendering")]
         pub fn get_pointer_software_rendering(&self) -> bool {
             self.pointer_software_rendering
         }
 
+        #[diplomat::attr(auto, getter = "static_channel_chunk_size")]
         pub fn get_static_channel_chunk_size(&self) -> usize {
             self.static_channel_chunk_size
         }
 
         /// Returns -1 when Window List support was not negotiated, otherwise
         /// the negotiated Window List support level.
+        #[diplomat::attr(auto, getter = "window_support_level")]
         pub fn get_window_support_level(&self) -> i8 {
             match self.window_support_level {
                 None => -1,

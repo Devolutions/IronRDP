@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-mstsgu"
-version = "0.0.1"
+version = "0.1.0"
 readme = "README.md"
 description = "Terminal Services Gateway Server Protocol"
 edition.workspace = true
@@ -50,6 +50,10 @@ name = "rpch_session"
 path = "tests/rpch_session.rs"
 
 [[test]]
+name = "rpch_client"
+path = "tests/rpch_client.rs"
+
+[[test]]
 name = "tunnel_policy"
 path = "tests/tunnel_policy.rs"
 
@@ -93,9 +97,9 @@ futures-util = "0.3"
 http-body-util = { version = "0.1.4", features = ["channel"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 hyper = { version = "1.9", features = ["client", "http1"] }
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["std"] } # public
-ironrdp-error = { path = "../ironrdp-error", version = "0.2" }
-ironrdp-tls = { path = "../ironrdp-tls", version = "0.2.2" } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["std"] } # public
+ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.3.0" } # public
 log = "0.4"
 sspi = { version = "0.23", features = ["network_client"] }
 tokio-tungstenite = { version = "0.29" }
@@ -103,7 +107,7 @@ tokio-util = { version = "0.7" }
 tokio = { version = "1.52", features = ["macros", "rt", "io-util"] }
 tokio-socks = "0.5.3"
 uuid = { version = "1", features = ["v4"] } # public, exposed by RpcSyntaxIdentifier
-picky = { version = "=7.0.0-rc.26", optional = true }
+picky = { version = "=7.0.0-rc.27", optional = true }
 picky-asn1-der = { version = "0.5", optional = true }
 picky-asn1-x509 = { version = "0.15", optional = true }
 

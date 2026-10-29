@@ -128,6 +128,25 @@ fn add_device_accepts_usb_device_zero() {
     assert_eq!(decoded.usb_device, udev_iface);
 }
 
+#[test]
+fn add_device_advertises_isochronous_support_only_when_backed() {
+    let udev_iface = InterfaceId::try_from(4).expect("interface id 4 is valid");
+    let jitter = |isochronous| {
+        let info = DeviceInfo {
+            isochronous,
+            ..simple_device_info()
+        };
+        add_device_from_info(udev_iface, &info)
+            .expect("ADD_DEVICE should be generated")
+            .usb_device_caps
+            .no_ack_isoch_write_jitter_buf_size
+            .outstanding_isoch_data()
+    };
+
+    assert_eq!(jitter(true), Some(0x50));
+    assert_eq!(jitter(false), None);
+}
+
 // `1..=3` are the RDPEUSB default Device Sink / Channel Notification interface
 // IDs; only `0` is the mstsc compatibility exception, so those must stay rejected.
 #[rstest]

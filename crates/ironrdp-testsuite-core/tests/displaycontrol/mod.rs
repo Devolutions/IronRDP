@@ -33,7 +33,7 @@ encode_decode_test! {
             pdu::MonitorLayoutEntry::new_secondary(1024, 768).unwrap()
                 .with_orientation(pdu::MonitorOrientation::Portrait)
                 .with_physical_dimensions(500, 500).unwrap()
-                .with_position(-500, 0).unwrap()
+                .with_position(-1024, 0).unwrap()
                 .with_device_scale_factor(pdu::DeviceScaleFactor::Scale100Percent)
                 .with_desktop_scale_factor(100).unwrap()
         ]
@@ -60,7 +60,7 @@ encode_decode_test! {
 
         // Monitor 2
         0x00, 0x00, 0x00, 0x00,
-        0x0C, 0xFE, 0xFF, 0xFF,
+        0x00, 0xFC, 0xFF, 0xFF,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x04, 0x00, 0x00,
         0x00, 0x03, 0x00, 0x00,
@@ -130,6 +130,204 @@ fn only_non_optional_layout_fields_required_to_be_valid() {
     assert!(decoded.orientation().is_none());
     assert!(decoded.physical_dimensions().is_none());
     assert!(decoded.position().is_none())
+}
+
+fn primary(width: u32, height: u32) -> pdu::MonitorLayoutEntry {
+    pdu::MonitorLayoutEntry::new_primary(width, height).unwrap()
+}
+
+fn secondary(width: u32, height: u32, left: i32, top: i32) -> pdu::MonitorLayoutEntry {
+    pdu::MonitorLayoutEntry::new_secondary(width, height)
+        .unwrap()
+        .with_position(left, top)
+        .unwrap()
+}
+
+#[test]
+fn monitor_layout_rejects_overlapping_monitors() {
+    pdu::DisplayControlMonitorLayout::new(&[primary(1920, 1080), secondary(1920, 1080, 1919, 0)])
+        .expect_err("monitors sharing a column of pixels overlap");
+    pdu::DisplayControlMonitorLayout::new(&[
+        primary(1920, 1080),
+        pdu::MonitorLayoutEntry::new_secondary(800, 600).unwrap(),
+    ])
+    .expect_err("a secondary monitor left at the origin overlaps the primary");
+}
+
+#[test]
+fn monitor_layout_requires_adjacent_monitors() {
+    pdu::DisplayControlMonitorLayout::new(&[primary(1920, 1080), secondary(1920, 1080, 1922, 0)])
+        .expect_err("a monitor separated by a gap is not adjacent");
+
+    // Monitors touching on an edge, or only at a corner, are adjacent per MS-RDPEDISP 3.1.5.2.
+    pdu::DisplayControlMonitorLayout::new(&[
+        primary(1920, 1080),
+        secondary(1920, 1080, -1920, 0),
+        secondary(1080, 1920, 1920, -1920),
+        secondary(1280, 1024, 0, 1080),
+    ])
+    .expect("edge- and corner-adjacent monitors form a valid layout");
+}
+
+#[test]
+fn monitor_layout_desktop_size() {
+    let layout =
+        pdu::DisplayControlMonitorLayout::new(&[primary(1920, 1080), secondary(1080, 1920, 1920, -420)]).unwrap();
+    assert_eq!(layout.desktop_size(), (3000, 1920));
+}
+
+#[test]
+fn monitor_layout_fit_drops_monitors_beyond_the_server_maximum() {
+    let layout = pdu::DisplayControlMonitorLayout::new(&[
+        secondary(1920, 1080, -1920, 0),
+        primary(1920, 1080),
+        secondary(1920, 1080, 1920, 0),
+    ])
+    .unwrap();
+
+    let fitted = layout
+        .fit_to_capabilities(&pdu::DisplayControlCapabilities::new(2, 3840, 2400).unwrap())
+        .unwrap();
+    let monitors = fitted.monitors();
+    assert_eq!(monitors.len(), 2);
+    assert_eq!(monitors[0].position(), Some((-1920, 0)));
+    assert!(monitors[1].is_primary());
+
+    let fitted = layout
+        .fit_to_capabilities(&pdu::DisplayControlCapabilities::new(1, 3840, 2400).unwrap())
+        .unwrap();
+    assert_eq!(fitted.monitors().len(), 1);
+    assert!(fitted.monitors()[0].is_primary());
+
+    layout
+        .fit_to_capabilities(&pdu::DisplayControlCapabilities::new(0, 3840, 2400).unwrap())
+        .expect_err("a server accepting no monitor cannot receive a layout");
+
+    let unchanged = layout
+        .fit_to_capabilities(&pdu::DisplayControlCapabilities::new(16, 3840, 2400).unwrap())
+        .unwrap();
+    assert_eq!(unchanged, layout);
+}
+
+#[test]
+fn monitor_layout_fit_keeps_the_reduced_layout_connected() {
+    // The first secondary monitor listed only touches the second one, which bridges it to the primary.
+    let layout = pdu::DisplayControlMonitorLayout::new(&[
+        primary(1920, 1080),
+        secondary(1920, 1080, 3840, 0),
+        secondary(1920, 1080, 1920, 0),
+    ])
+    .unwrap();
+
+    let fitted = layout
+        .fit_to_capabilities(&pdu::DisplayControlCapabilities::new(2, 3840, 2400).unwrap())
+        .unwrap();
+    let monitors = fitted.monitors();
+    assert_eq!(monitors.len(), 2);
+    assert!(monitors[0].is_primary());
+    assert_eq!(monitors[1].position(), Some((1920, 0)));
+}
+
+#[test]
+fn monitor_layout_fit_scales_a_single_monitor_down_to_the_maximum_area() {
+    let layout = pdu::DisplayControlMonitorLayout::new_single_primary_monitor(7680, 4320, Some(200), None).unwrap();
+    let capabilities = pdu::DisplayControlCapabilities::new(1, 3840, 2400).unwrap();
+
+    let fitted = layout.fit_to_capabilities(&capabilities).unwrap();
+    let [monitor] = fitted.monitors() else {
+        panic!("expected a single monitor");
+    };
+    let (width, height) = monitor.dimensions();
+    assert!(u64::from(width) * u64::from(height) <= capabilities.max_monitor_area());
+    assert_eq!(width % 2, 0);
+    // The 16:9 aspect ratio is preserved, give or take rounding.
+    assert_eq!((width, height), (4046, 2276));
+    assert_eq!(monitor.desktop_scale_factor(), Some(200));
+
+    pdu::DisplayControlMonitorLayout::new_single_primary_monitor(1024, 768, None, None)
+        .unwrap()
+        .fit_to_capabilities(&pdu::DisplayControlCapabilities::new(1, 100, 100).unwrap())
+        .expect_err("the minimum monitor size exceeds a 100x100 maximum area");
+}
+
+#[test]
+fn monitor_layout_fit_rejects_multiple_monitors_beyond_the_maximum_area() {
+    let layout = pdu::DisplayControlMonitorLayout::new(&[primary(3840, 2160), secondary(3840, 2160, 3840, 0)]).unwrap();
+
+    layout
+        .fit_to_capabilities(&pdu::DisplayControlCapabilities::new(2, 1920, 1080).unwrap())
+        .expect_err("shrinking several monitors would move them relative to each other");
+}
+
+#[test]
+fn single_primary_monitor_derives_orientation_and_clamps_scale() {
+    let layout = pdu::DisplayControlMonitorLayout::new_single_primary_monitor(1024, 1024, Some(50), None).unwrap();
+    let monitor = &layout.monitors()[0];
+    assert_eq!(monitor.orientation(), Some(pdu::MonitorOrientation::Landscape));
+    assert_eq!(monitor.desktop_scale_factor(), Some(100));
+    assert_eq!(
+        monitor.device_scale_factor(),
+        Some(pdu::DeviceScaleFactor::Scale100Percent)
+    );
+
+    let layout = pdu::DisplayControlMonitorLayout::new_single_primary_monitor(1080, 1920, Some(150), None).unwrap();
+    let monitor = &layout.monitors()[0];
+    assert_eq!(monitor.orientation(), Some(pdu::MonitorOrientation::Portrait));
+    assert_eq!(monitor.desktop_scale_factor(), Some(150));
+    assert_eq!(
+        monitor.device_scale_factor(),
+        Some(pdu::DeviceScaleFactor::Scale140Percent)
+    );
+
+    let layout = pdu::DisplayControlMonitorLayout::new_single_primary_monitor(1920, 1080, Some(900), None).unwrap();
+    let monitor = &layout.monitors()[0];
+    assert_eq!(monitor.desktop_scale_factor(), Some(500));
+    assert_eq!(
+        monitor.device_scale_factor(),
+        Some(pdu::DeviceScaleFactor::Scale180Percent)
+    );
+}
+
+#[test]
+fn device_scale_factor_values() {
+    assert_eq!(
+        pdu::DeviceScaleFactor::from_value(140),
+        Some(pdu::DeviceScaleFactor::Scale140Percent)
+    );
+    assert_eq!(pdu::DeviceScaleFactor::from_value(125), None);
+    assert_eq!(
+        pdu::DeviceScaleFactor::from_desktop_scale_factor(139),
+        pdu::DeviceScaleFactor::Scale100Percent
+    );
+    assert_eq!(
+        pdu::DeviceScaleFactor::from_desktop_scale_factor(179),
+        pdu::DeviceScaleFactor::Scale140Percent
+    );
+    assert_eq!(
+        pdu::DeviceScaleFactor::from_desktop_scale_factor(180),
+        pdu::DeviceScaleFactor::Scale180Percent
+    );
+    assert_eq!(pdu::MonitorLayoutEntry::adjust_desktop_scale_factor(0), 100);
+    assert_eq!(pdu::MonitorLayoutEntry::adjust_desktop_scale_factor(250), 250);
+    assert_eq!(pdu::MonitorLayoutEntry::adjust_desktop_scale_factor(501), 500);
+}
+
+#[test]
+fn client_encodes_monitor_layouts_only_after_capabilities() {
+    let mut client = DisplayControlClient::new(|_caps| Ok(Vec::new()));
+    let layout = pdu::DisplayControlMonitorLayout::new(&[primary(1920, 1080), secondary(1920, 1080, 1920, 0)]).unwrap();
+
+    client
+        .encode_monitor_layout(1, &layout)
+        .expect_err("the server capabilities bound every layout");
+
+    let caps = ironrdp_core::encode_vec(&pdu::DisplayControlPdu::Caps(
+        pdu::DisplayControlCapabilities::new(2, 3840, 2400).unwrap(),
+    ))
+    .unwrap();
+    client.process(1, &caps).unwrap();
+    assert_eq!(client.capabilities().map(|caps| caps.max_num_monitors()), Some(2));
+    assert!(!client.encode_monitor_layout(1, &layout).unwrap().is_empty());
 }
 
 #[test]

@@ -43,7 +43,7 @@ function trustedReady(run, headSha) {
   if (run?.app?.slug !== "github-actions" || run.name !== NAME ||
       run.head_sha !== headSha || run.external_id !== headSha ||
       run.status !== "completed" || run.conclusion !== "success" ||
-      serverSecond(run.created_at) === null ||
+      serverSecond(run.completed_at) === null ||
       typeof run.output?.summary !== "string" ||
       Buffer.byteLength(run.output.summary, "utf8") > 4096) return null;
   const lines = run.output.summary.split(/\r?\n/).map((line) => line.trim())

@@ -117,6 +117,20 @@ pub struct KnownCertificates {
     entries: Vec<(String, Fingerprint)>,
 }
 
+/// Returns the per-user `ironrdp-agent` configuration directory: `%APPDATA%\ironrdp-agent` on
+/// Windows and `$XDG_CONFIG_HOME/ironrdp-agent` (or `~/.config/ironrdp-agent`) elsewhere.
+pub(crate) fn agent_config_root() -> anyhow::Result<PathBuf> {
+    #[cfg(windows)]
+    let root = PathBuf::from(std::env::var_os("APPDATA").context("APPDATA is not set")?);
+    #[cfg(not(windows))]
+    let root = match std::env::var_os("XDG_CONFIG_HOME").filter(|path| !path.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => {
+            PathBuf::from(std::env::var_os("HOME").context("neither XDG_CONFIG_HOME nor HOME is set")?).join(".config")
+        }
+    };
+    Ok(root.join("ironrdp-agent"))
+}
 impl KnownCertificates {
     /// Returns the store path: `IRONRDP_AGENT_KNOWN_CERTIFICATES` when set, otherwise
     /// `%APPDATA%\ironrdp-agent\known_certificates` on Windows and
@@ -126,16 +140,7 @@ impl KnownCertificates {
             return Ok(PathBuf::from(path));
         }
 
-        #[cfg(windows)]
-        let root = PathBuf::from(std::env::var_os("APPDATA").context("APPDATA is not set")?);
-        #[cfg(not(windows))]
-        let root = match std::env::var_os("XDG_CONFIG_HOME").filter(|path| !path.is_empty()) {
-            Some(path) => PathBuf::from(path),
-            None => PathBuf::from(std::env::var_os("HOME").context("neither XDG_CONFIG_HOME nor HOME is set")?)
-                .join(".config"),
-        };
-
-        Ok(root.join("ironrdp-agent").join("known_certificates"))
+        Ok(agent_config_root()?.join("known_certificates"))
     }
 
     /// Loads the store at `path`. A missing file is an empty store.

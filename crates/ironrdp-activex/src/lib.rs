@@ -20,17 +20,35 @@
 #![cfg_attr(windows, allow(clippy::unnecessary_safety_comment))]
 
 #[cfg(windows)]
+mod automation;
+#[cfg(windows)]
+mod client_shell;
+#[cfg(windows)]
 mod com;
 #[cfg(windows)]
 mod control;
 #[cfg(windows)]
+mod hosting;
+#[cfg(windows)]
 mod mstsc;
+#[cfg(windows)]
+mod pen;
+#[cfg(windows)]
+mod rail_icons;
+#[cfg(windows)]
+mod rail_tray;
+#[cfg(windows)]
+mod rail_windows;
+#[cfg(windows)]
+mod rdp_signature;
 #[cfg(windows)]
 mod registration;
 #[cfg(windows)]
 mod rpc;
 #[cfg(windows)]
 mod touch;
+#[cfg(windows)]
+mod trust;
 
 #[cfg(windows)]
 pub use com::{

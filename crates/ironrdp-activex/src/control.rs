@@ -4,7 +4,7 @@ use core::mem::ManuallyDrop;
 use core::ptr;
 use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -15,11 +15,13 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use ironrdp_cfg::{AudioMode, GatewayCredentialsSource, GatewayUsageMethod};
+use ironrdp_client::camera::{CameraConfig, CameraEncodingQuality};
 use ironrdp_client::config::{
     AudioQualityMode, ClipboardType, ConfigBuilder, Destination, RDCleanPathConfig, Transport, TransportKind,
 };
+use ironrdp_client::egfx_cache::default_cache_path;
 use ironrdp_client::output_channel::output_channel;
-use ironrdp_client::rail::RailInputEvent;
+use ironrdp_client::rail::{RailControlEvent, RailInputEvent};
 use ironrdp_client::rdp::{
     AutoReconnectDecision, CliprdrBackendFactory, DesktopUpdate, LocationInputError, RdpClient, RdpInputEvent,
     RdpInputSender, RdpOutputEvent,
@@ -29,7 +31,10 @@ use ironrdp_cliprdr_format::bitmap::{validate_dib, validate_dibv5};
 use ironrdp_cliprdr_format::html::validate_cf_html;
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_connector::{ConnectorError, ConnectorErrorKind, Credentials};
-use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
+use ironrdp_core::{DecodeError, DecodeErrorKind, encode_vec};
+use ironrdp_displaycontrol::pdu::{
+    DeviceScaleFactor, DisplayControlMonitorLayout, MonitorLayoutEntry, MonitorOrientation,
+};
 use ironrdp_input::{Database as InputDatabase, MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use ironrdp_pdu::gcc::{
     ChannelName, ChannelOptions, ClientMonitorData, ConnectionType, KeyboardType, MONITOR_COUNT_MAX, Monitor,
@@ -37,15 +42,20 @@ use ironrdp_pdu::gcc::{
 };
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::rdp::{
-    capability_sets::{MajorPlatformType, RailSupportLevel},
+    capability_sets::{InputFlags, MajorPlatformType, RailSupportLevel},
     client_info::PerformanceFlags,
 };
-use ironrdp_pdu::window::try_decode_slow_path_windowing_orders;
+use ironrdp_pdu::window::{
+    DesktopOrder, MonitoredDesktop, NotifyIconOrder, ShowState, WindowIcon, WindowOrder, WindowOrderBody, WindowState,
+    WindowingOrder,
+};
 use ironrdp_pdu::{PduError, PduErrorKind, PduResult};
 use ironrdp_propertyset::{PropertySet, Value};
 use ironrdp_rail::pdu::{
-    ActivatePdu, ExecutePdu, ExecuteResult, ExecuteResultPdu, RailPdu, SystemCommand, SystemCommandPdu,
+    ActivatePdu, ClientStatusPdu, ExecutePdu, ExecuteResult, ExecuteResultPdu, LocalMoveSizePdu, RailPdu,
+    Rectangle as RailRectangle, SystemCommand, SystemCommandPdu, WindowMovePdu,
 };
+use ironrdp_rdpei::RdpeiInputState;
 use ironrdp_rdpei::pdu::{
     PenContact, PenContactDataFlags, PenContactFlags, PenEventPdu, PenFlags, PenFrame, TouchContact, TouchContactFlags,
     TouchEventPdu, TouchFrame,
@@ -74,9 +84,10 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateRectRgn,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, EnumDisplayMonitors, GdiFlush, GetMonitorInfoW, HBITMAP, HDC,
-    HGDIOBJ, HMONITOR, InvalidateRect, MONITORINFO, PAINTSTRUCT, PatBlt, SRCCOPY, ScreenToClient, SelectObject,
-    SetWindowRgn, StretchBlt, StretchDIBits,
+    DEVMODEW, DIB_RGB_COLORS, DMDO_90, DMDO_180, DMDO_270, DeleteDC, DeleteObject, ENUM_CURRENT_SETTINGS,
+    ENUM_DISPLAY_SETTINGS_FLAGS, EndPaint, EnumDisplayMonitors, EnumDisplaySettingsExW, GdiFlush, GetMonitorInfoW,
+    HBITMAP, HDC, HGDIOBJ, HMONITOR, InvalidateRect, MONITORINFO, MONITORINFOEXW, PAINTSTRUCT, PatBlt, SRCCOPY,
+    ScreenToClient, SelectObject, SetWindowRgn, StretchBlt, StretchDIBits,
 };
 use windows::Win32::Media::KernelStreaming::KSCATEGORY_VIDEO_CAMERA;
 use windows::Win32::Security::Credentials::{
@@ -108,6 +119,7 @@ use windows::Win32::System::Ole::{
     OLECLOSE, OLEGETMONIKER, OLEMISC, OLEVERB, OLEVERB_PRIMARY, OLEVERBATTRIB_NEVERDIRTIES, OLEWHICHMK, USERCLASSTYPE,
     VIEWSTATUS_OPAQUE, VIEWSTATUS_SOLIDBKGND,
 };
+use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_BINARY, REG_OPTION_NON_VOLATILE, RegCloseKey, RegCreateKeyExW,
     RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
@@ -119,38 +131,52 @@ use windows::Win32::UI::Controls::{
     TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TDCBF_CANCEL_BUTTON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_SIZE_TO_CONTENT,
     WM_MOUSELEAVE,
 };
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, GetKeyState, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT,
-    TrackMouseEvent, VIRTUAL_KEY, VK_CANCEL, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_PAUSE, VK_SHIFT, VK_TAB,
+    EnableWindow, GetAsyncKeyState, GetKeyState, IsWindowEnabled, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE,
+    TRACKMOUSEEVENT, TrackMouseEvent, VK_CANCEL, VK_CONTROL, VK_ESCAPE, VK_LBUTTON, VK_MENU, VK_PAUSE, VK_RBUTTON,
+    VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::Input::Pointer::{
-    GetPointerFrameTouchInfo, GetPointerInfo, POINTER_FLAG_CANCELED, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE,
-    POINTER_FLAG_UP, POINTER_INFO, POINTER_TOUCH_INFO, SkipPointerFrameMessages,
+    GetPointerFrameTouchInfo, GetPointerInfo, GetPointerPenInfo, GetPointerPenInfoHistory, POINTER_FLAG_CANCELED,
+    POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_UP, POINTER_INFO, POINTER_PEN_INFO,
+    POINTER_TOUCH_INFO, SkipPointerFrameMessages,
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     BS_PUSHBUTTON, CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows, GA_ROOT, GA_ROOTOWNER,
     GWL_EXSTYLE, GWL_STYLE, GWLP_HWNDPARENT, GWLP_USERDATA, GetAncestor, GetClassNameW, GetClientRect, GetCursorPos,
-    GetDlgItem, GetForegroundWindow, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, HMENU, HWND_MESSAGE, IsIconic, IsWindow, IsWindowVisible, KillTimer, PT_TOUCH,
-    PostMessageW, RegisterClassW, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SIZE_MINIMIZED, SW_HIDE,
-    SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOZORDER,
-    SendMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TOUCH_MASK_CONTACTAREA,
-    TOUCH_MASK_ORIENTATION, TOUCH_MASK_PRESSURE, UnregisterClassW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP,
-    WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND, WM_DPICHANGED, WM_ENABLE, WM_KEYDOWN, WM_KEYUP,
-    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    GetDlgItem, GetForegroundWindow, GetMessageExtraInfo, GetParent, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId, HMENU, HWND_MESSAGE, HWND_TOP, IsIconic, IsWindow, IsWindowVisible, KillTimer,
+    MINMAXINFO, PT_PEN, PT_TOUCH, PostMessageW, RegisterClassW, SC_MAXIMIZE, SC_MINIMIZE, SC_RESTORE, SIZE_MINIMIZED,
+    SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
+    SetWindowTextW, ShowWindow, TOUCH_MASK_CONTACTAREA, TOUCH_MASK_ORIENTATION, TOUCH_MASK_PRESSURE, UnregisterClassW,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COMMAND,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENABLE, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_KEYDOWN,
+    WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
     WM_MOUSEWHEEL, WM_MOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_POINTERCAPTURECHANGED, WM_POINTERDOWN,
-    WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SHOWWINDOW, WM_SIZE,
-    WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WS_CHILD,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    WM_POINTERENTER, WM_POINTERLEAVE, WM_POINTERUP, WM_POINTERUPDATE, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE,
+    WM_SHOWWINDOW, WM_SIZE, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    WNDCLASSW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{s, w};
 use windows_core::{
-    BOOL as WinBool, BSTR, Error, GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, IUnknownImpl as _, Interface as _,
-    PCWSTR, Ref, Result, implement,
+    AsImpl, BOOL as WinBool, BSTR, Error, GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, IUnknownImpl as _,
+    Interface as _, PCWSTR, Ref, Result, implement,
 };
 
+// The crate keeps one source file per module directory level, so this child module sits beside
+// control.rs instead of in a control/ directory.
+#[path = "advanced_settings_compat.rs"]
+mod advanced_settings_compat;
+
+use self::advanced_settings_compat::{
+    AdvancedSettingsCompat, DISPID_ON_IDLE_TIMEOUT_NOTIFICATION, WorkerOutput, WorkerTimers,
+    connection_timeout_disconnect,
+};
+use crate::automation::{self, Interface as AutomationInterface};
+use crate::client_shell::ClientShell;
 use crate::com;
 use crate::mstsc::{
     Bstr, BstrOut, IMsRdpCameraRedirConfig, IMsRdpCameraRedirConfig_Impl, IMsRdpCameraRedirConfigCollection,
@@ -162,17 +188,40 @@ use crate::mstsc::{
     IMsRdpClientNonScriptable3, IMsRdpClientNonScriptable3_Impl, IMsRdpClientNonScriptable4,
     IMsRdpClientNonScriptable4_Impl, IMsRdpClientNonScriptable5, IMsRdpClientNonScriptable5_Impl,
     IMsRdpClientNonScriptable6, IMsRdpClientNonScriptable6_Impl, IMsRdpClientNonScriptable7,
-    IMsRdpClientNonScriptable7_Impl, IMsRdpClientNonScriptable8, IMsRdpClientNonScriptable8_Impl, IMsRdpClipboard,
-    IMsRdpClipboard_Impl, IMsRdpDeviceCollection, IMsRdpDeviceCollection_Impl, IMsRdpDrive, IMsRdpDrive_Impl,
-    IMsRdpDriveCollection, IMsRdpDriveCollection_Impl, IMsRdpExtendedSettings, IMsRdpExtendedSettings_Impl,
-    IMsRdpPreferredRedirectionInfo, IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl, IMsTscAx_Redist_Impl,
-    IMsTscNonScriptable, IMsTscNonScriptable_Impl, IRemoteDesktopClient, IRemoteDesktopClient_Impl,
-    IRemoteDesktopClientActions, IRemoteDesktopClientActions_Impl, IRemoteDesktopClientSettings,
-    IRemoteDesktopClientSettings_Impl, InterfaceOut,
+    IMsRdpClientNonScriptable7_Impl, IMsRdpClientNonScriptable8, IMsRdpClientNonScriptable8_Impl, IMsRdpClientShell,
+    IMsRdpClipboard, IMsRdpClipboard_Impl, IMsRdpDeviceCollection, IMsRdpDeviceCollection_Impl, IMsRdpDrive,
+    IMsRdpDrive_Impl, IMsRdpDriveCollection, IMsRdpDriveCollection_Impl, IMsRdpExtendedSettings,
+    IMsRdpExtendedSettings_Impl, IMsRdpPreferredRedirectionInfo, IMsRdpPreferredRedirectionInfo_Impl, IMsTscAx_Impl,
+    IMsTscAx_Redist_Impl, IMsTscNonScriptable, IMsTscNonScriptable_Impl, IRemoteDesktopClient,
+    IRemoteDesktopClient_Impl, IRemoteDesktopClientActions, IRemoteDesktopClientActions_Impl,
+    IRemoteDesktopClientSettings, IRemoteDesktopClientSettings_Impl, InterfaceOut,
 };
+use crate::pen::{PenContactTracker, PenSample};
+use crate::rail_icons::RailIconCache;
+use crate::rail_tray::RailTray;
+use crate::rail_windows::{
+    LocalMoveSizeMode, RailWindowShell, RailWindowSurface, apply_min_max_info, apply_window_region,
+    local_move_size_command, local_system_parameters, set_window_cloak,
+};
+use crate::rdp_signature::{SignaturePolicy, prepare_rdp_file};
 use crate::rpc::{self, ActiveXRpc, Command as RpcCommand};
 use crate::touch::{TouchContactTracker, TouchSample};
+use crate::trust::{
+    PublisherChain, RedirectedResource, RedirectionWarningType, TrustSettings, redirection_warning_resources,
+    redirection_warning_text,
+};
+use extended_properties::ExtendedSettings;
+use ironrdp_egfx::compositor::WindowUpdate;
 use ironrdp_rpc as ironrdp_agent;
+
+#[path = "session_events.rs"]
+mod session_events;
+
+use self::session_events::{NetworkStatusTracker, REMOTE_APP_WINDOW_DISPLAYED, SessionNotification};
+#[path = "extended_properties.rs"]
+mod extended_properties;
+#[path = "rdp_properties.rs"]
+mod rdp_properties;
 
 /// The IronRDP-owned class identifier registered by this DLL.
 pub(crate) const CLSID_IRONRDP_ACTIVEX: GUID = GUID::from_u128(0x5d3e_2b4c_6860_462e_8e9d_0c4d_2b09_4c5f);
@@ -183,10 +232,20 @@ const TSC_SHELL_CONTAINER_CLASS: &[u16] = &[
 ];
 const DISPLAY_RESIZE_TIMER_ID: usize = 0x4952_4450;
 const DISPLAY_RESIZE_DEBOUNCE_MILLISECONDS: u32 = 250;
+/// Debounces local monitor topology and DPI changes before sending a multimonitor layout.
+const MONITOR_TOPOLOGY_TIMER_ID: usize = 0x4952_4455;
 const NATIVE_MSTSC_LAYOUT_TIMER_ID: usize = 0x4952_4451;
 const NATIVE_MSTSC_LAYOUT_POLL_MILLISECONDS: u32 = 100;
 const PROJECTED_RAIL_INPUT_RETRY_TIMER_ID: usize = 0x4952_4452;
 const PROJECTED_RAIL_INPUT_RETRY_MILLISECONDS: u32 = 25;
+/// Retries RDPEI events that found the session input queue full.
+const RDPEI_INPUT_RETRY_TIMER_ID: usize = 0x4952_4456;
+const RDPEI_INPUT_RETRY_MILLISECONDS: u32 = 10;
+/// RDPEI events kept while the session input queue is full; beyond this, movement-only events are dropped.
+const MAX_PENDING_RDPEI_EVENTS: usize = 256;
+/// Pending RDPEI events beyond which everything pending is dropped and the trackers start over, which only
+/// a long suspension or a stalled session reaches.
+const MAX_PENDING_RDPEI_TRANSITIONS: usize = 4 * MAX_PENDING_RDPEI_EVENTS;
 const ACTIVEX_DVC_PLUGIN_PATHS_PROPERTY: &str = "IronRdpDvcPluginPaths";
 const ACTIVEX_ENABLE_TLS_PROPERTY: &str = "IronRdpEnableTls";
 const ACTIVEX_AUTOLOGON_PROPERTY: &str = "IronRdpAutoLogon";
@@ -374,13 +433,18 @@ fn rail_window_input_event(window_id: u32, message: u32, wparam: WPARAM) -> Opti
     }
 }
 
-fn is_unsupported_projected_rail_system_command(wparam: WPARAM) -> bool {
-    let command = wparam.0 & 0xfff0;
-    command == SC_MOVE as usize
-        || command == SC_SIZE as usize
-        || command == SC_MINIMIZE as usize
-        || command == SC_MAXIMIZE as usize
-        || command == SC_RESTORE as usize
+/// Returns the server command for a window state change the server must perform.
+///
+/// Minimizing, maximizing and restoring a projected window change the server window's
+/// show state, which the server reports back in a window order, so the local window
+/// waits for that order instead of changing state on its own.
+fn projected_rail_system_command(wparam: WPARAM) -> Option<SystemCommand> {
+    match (wparam.0 & 0xfff0) as u32 {
+        SC_MINIMIZE => Some(SystemCommand::Minimize),
+        SC_MAXIMIZE => Some(SystemCommand::Maximize),
+        SC_RESTORE => Some(SystemCommand::Restore),
+        _ => None,
+    }
 }
 
 pub(crate) const CLSID_MS_RDP_CLIENT: GUID = GUID::from_u128(0x791f_a017_2de3_492e_acc5_53c6_7a2b_94d0);
@@ -430,7 +494,7 @@ const COMPATIBILITY_CLSIDS: &[GUID] = &[
     CLSID_MS_RDP_CLIENT_10,
 ];
 
-const IID_MSTSCLIB_EVENTS: GUID = GUID::from_u128(0x336d_5562_efa8_482e_8cb3_c5c0_fc7a_7db6);
+pub(crate) const IID_MSTSCLIB_EVENTS: GUID = GUID::from_u128(0x336d_5562_efa8_482e_8cb3_c5c0_fc7a_7db6);
 
 const OLEIVERB_SHOW: i32 = -1;
 const OLEIVERB_OPEN: i32 = -2;
@@ -502,8 +566,6 @@ fn translate_control_site_accelerator(
 }
 
 const DISPID_UNKNOWN: i32 = -1;
-const DISP_E_UNKNOWNINTERFACE_HRESULT: HRESULT = HRESULT(0x8002_0001u32 as i32);
-const DISP_E_PARAMNOTFOUND_HRESULT: HRESULT = HRESULT(0x8002_0004u32 as i32);
 const DISPID_SERVER: i32 = 1;
 const DISPID_DOMAIN: i32 = 2;
 const DISPID_USERNAME: i32 = 3;
@@ -525,12 +587,6 @@ const DISPID_COLOR_DEPTH: i32 = 100;
 const DISPID_EXTENDED_DISCONNECT_REASON: i32 = 103;
 const DISPID_FULLSCREEN: i32 = 104;
 const DISPID_CONNECTED_STATUS_TEXT: i32 = 201;
-const DISPID_REMOTE_PROGRAM_MODE: i32 = 200;
-const DISPID_SERVER_START_PROGRAM: i32 = 201;
-const DISPID_REMOTE_APPLICATION_NAME: i32 = 202;
-const DISPID_REMOTE_APPLICATION_PROGRAM: i32 = 203;
-const DISPID_REMOTE_APPLICATION_ARGS: i32 = 204;
-const DISPID_SERVER_START_APP: i32 = 205;
 const DISPID_MODERN_CONNECT: i32 = 701;
 const DISPID_MODERN_DISCONNECT: i32 = 702;
 const DISPID_MODERN_RECONNECT: i32 = 703;
@@ -597,6 +653,8 @@ const SUPPORTED_MODERN_EVENT_NAMES: &[&str] = &[
     "OnDialogDisplaying",
     "OnDialogDismissed",
     "OnRemoteDesktopSizeChanged",
+    "OnNetworkStatusChanged",
+    "OnKeyCombinationPressed",
 ];
 
 const WM_DISPATCH_EVENTS: u32 = WM_APP + 0x52;
@@ -674,6 +732,11 @@ unsafe extern "system" fn find_mstsc_computer_field(window: HWND, context: LPARA
         WinBool(1)
     }
 }
+
+#[path = "input_policy.rs"]
+mod input_policy;
+
+use input_policy::{InputPolicy, RelativeMouse};
 
 pub(crate) fn is_supported_class(clsid: &GUID) -> bool {
     *clsid == CLSID_IRONRDP_ACTIVEX || COMPATIBILITY_CLSIDS.contains(clsid) || RDM_COMPATIBILITY_CLSIDS.contains(clsid)
@@ -1072,8 +1135,25 @@ struct DisplayLayout {
     physical_width: u32,
     physical_height: u32,
     orientation: u32,
+    /// Percent; 0 leaves it unspecified, so each monitor keeps the scale of its own DPI.
     desktop_scale_factor: u32,
+    /// Percent; 0 leaves it unspecified, so it follows the desktop scale factor.
     device_scale_factor: u32,
+}
+
+impl DisplayLayout {
+    /// A desktop size request that leaves physical size, orientation and scale unspecified.
+    fn unscaled(desktop_width: u32, desktop_height: u32) -> Self {
+        Self {
+            desktop_width,
+            desktop_height,
+            physical_width: 0,
+            physical_height: 0,
+            orientation: 0,
+            desktop_scale_factor: 0,
+            device_scale_factor: 0,
+        }
+    }
 }
 
 const MAX_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 32_766;
@@ -1083,11 +1163,31 @@ const MIN_RDP_VIRTUAL_DESKTOP_DIMENSION: i64 = 200;
 struct HostMonitor {
     rect: RECT,
     primary: bool,
+    attributes: MonitorAttributes,
+}
+
+/// The per-monitor display settings carried by a Display Control monitor layout (MS-RDPEDISP 2.2.2.2.1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MonitorAttributes {
+    /// Desktop scale factor in percent, from the monitor's effective DPI.
+    desktop_scale_factor: u32,
+    orientation: MonitorOrientation,
+}
+
+impl Default for MonitorAttributes {
+    fn default() -> Self {
+        Self {
+            desktop_scale_factor: 100,
+            orientation: MonitorOrientation::Landscape,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MonitorTopology {
     monitors: Vec<Monitor>,
+    /// Display settings of each monitor, in the order of `monitors`.
+    attributes: Vec<MonitorAttributes>,
     desktop_width: u16,
     desktop_height: u16,
 }
@@ -1108,6 +1208,7 @@ impl MonitorTopology {
         let primary = primary_monitors[0].rect;
 
         let mut monitors = Vec::with_capacity(host_monitors.len());
+        let attributes = host_monitors.iter().map(|monitor| monitor.attributes).collect();
         for monitor in host_monitors {
             let width = i64::from(monitor.rect.right) - i64::from(monitor.rect.left);
             let height = i64::from(monitor.rect.bottom) - i64::from(monitor.rect.top);
@@ -1195,6 +1296,7 @@ impl MonitorTopology {
 
         Ok(Self {
             monitors,
+            attributes,
             desktop_width: u16::try_from(width).expect("RDP virtual desktop width is within u16 range"),
             desktop_height: u16::try_from(height).expect("RDP virtual desktop height is within u16 range"),
         })
@@ -1203,6 +1305,56 @@ impl MonitorTopology {
     fn client_monitor_data(&self) -> ClientMonitorData {
         ClientMonitorData {
             monitors: self.monitors.clone(),
+        }
+    }
+
+    /// Builds the Display Control monitor layout matching this topology, so the layout sent during
+    /// the session agrees with the GCC Client Monitor Data advertised at connection time.
+    ///
+    /// `desktop_scale_factor` and `device_scale_factor`, when set, override every monitor's own
+    /// scale. Otherwise each monitor uses the scale of its effective DPI, and the device scale
+    /// factor follows the desktop scale factor.
+    fn display_control_layout(
+        &self,
+        desktop_scale_factor: Option<u32>,
+        device_scale_factor: Option<DeviceScaleFactor>,
+    ) -> Result<DisplayControlMonitorLayout> {
+        let entries = self
+            .monitors
+            .iter()
+            .zip(&self.attributes)
+            .map(|(monitor, attributes)| {
+                let width =
+                    u32::try_from(i64::from(monitor.right) - i64::from(monitor.left) + 1).map_err(invalid_layout)?;
+                let height =
+                    u32::try_from(i64::from(monitor.bottom) - i64::from(monitor.top) + 1).map_err(invalid_layout)?;
+                let entry = if monitor.flags.contains(MonitorFlags::PRIMARY) {
+                    MonitorLayoutEntry::new_primary(width, height)
+                } else {
+                    MonitorLayoutEntry::new_secondary(width, height)
+                }
+                .and_then(|entry| entry.with_position(monitor.left, monitor.top))
+                .map_err(invalid_layout)?;
+                let desktop_scale_factor = MonitorLayoutEntry::adjust_desktop_scale_factor(
+                    desktop_scale_factor.unwrap_or(attributes.desktop_scale_factor),
+                );
+                entry
+                    .with_orientation(attributes.orientation)
+                    .with_desktop_scale_factor(desktop_scale_factor)
+                    .map(|entry| {
+                        entry.with_device_scale_factor(
+                            device_scale_factor
+                                .unwrap_or_else(|| DeviceScaleFactor::from_desktop_scale_factor(desktop_scale_factor)),
+                        )
+                    })
+                    .map_err(invalid_layout)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        return DisplayControlMonitorLayout::new(&entries).map_err(invalid_layout);
+
+        fn invalid_layout(error: impl core::fmt::Display) -> Error {
+            tracing::debug!(%error, "Local monitor topology is not a valid Display Control layout");
+            Error::from_hresult(E_INVALIDARG)
         }
     }
 
@@ -1237,6 +1389,10 @@ fn monitors_overlap(left: &Monitor, right: &Monitor) -> bool {
 }
 
 fn local_monitor_topology() -> Result<MonitorTopology> {
+    MonitorTopology::from_host_monitors(local_host_monitors()?)
+}
+
+fn local_host_monitors() -> Result<Vec<HostMonitor>> {
     let mut host_monitors = Vec::new();
     let result = unsafe {
         EnumDisplayMonitors(
@@ -1250,7 +1406,7 @@ fn local_monitor_topology() -> Result<MonitorTopology> {
         return Err(Error::from_hresult(E_FAIL));
     }
 
-    MonitorTopology::from_host_monitors(host_monitors)
+    Ok(host_monitors)
 }
 
 unsafe extern "system" fn collect_local_monitor(
@@ -1260,17 +1416,59 @@ unsafe extern "system" fn collect_local_monitor(
     context: LPARAM,
 ) -> WinBool {
     let host_monitors = unsafe { &mut *(context.0 as *mut Vec<HostMonitor>) };
-    let mut monitor_info = MONITORINFO {
-        cbSize: u32::try_from(size_of::<MONITORINFO>()).expect("MONITORINFO size fits in u32"),
+    let mut monitor_info = MONITORINFOEXW {
+        monitorInfo: MONITORINFO {
+            cbSize: u32::try_from(size_of::<MONITORINFOEXW>()).expect("MONITORINFOEXW size fits in u32"),
+            ..Default::default()
+        },
         ..Default::default()
     };
-    if !unsafe { GetMonitorInfoW(monitor, &mut monitor_info) }.as_bool() {
+    if !unsafe { GetMonitorInfoW(monitor, &mut monitor_info.monitorInfo) }.as_bool() {
         return WinBool(0);
     }
 
+    let mut dpi_x = 0;
+    let mut dpi_y = 0;
+    let desktop_scale_factor =
+        if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }.is_ok() && dpi_x != 0 {
+            dpi_x.saturating_mul(100).saturating_add(DEFAULT_DPI / 2) / DEFAULT_DPI
+        } else {
+            100
+        };
+
+    let mut device_mode = DEVMODEW {
+        dmSize: u16::try_from(size_of::<DEVMODEW>()).expect("DEVMODEW size fits in u16"),
+        ..Default::default()
+    };
+    let orientation = if unsafe {
+        EnumDisplaySettingsExW(
+            PCWSTR(monitor_info.szDevice.as_ptr()),
+            ENUM_CURRENT_SETTINGS,
+            &mut device_mode,
+            ENUM_DISPLAY_SETTINGS_FLAGS(0),
+        )
+    }
+    .as_bool()
+    {
+        // DMDO_* give the device rotation counter-clockwise, which is the rotation of the desktop
+        // clockwise that MS-RDPEDISP orientations describe: DMDO_90 is ORIENTATION_PORTRAIT.
+        match unsafe { device_mode.Anonymous1.Anonymous2.dmDisplayOrientation } {
+            DMDO_90 => MonitorOrientation::Portrait,
+            DMDO_180 => MonitorOrientation::LandscapeFlipped,
+            DMDO_270 => MonitorOrientation::PortraitFlipped,
+            _ => MonitorOrientation::Landscape,
+        }
+    } else {
+        MonitorOrientation::Landscape
+    };
+
     host_monitors.push(HostMonitor {
-        rect: monitor_info.rcMonitor,
-        primary: monitor_info.dwFlags & 0x0000_0001 != 0,
+        rect: monitor_info.monitorInfo.rcMonitor,
+        primary: monitor_info.monitorInfo.dwFlags & 0x0000_0001 != 0,
+        attributes: MonitorAttributes {
+            desktop_scale_factor,
+            orientation,
+        },
     });
     WinBool(1)
 }
@@ -1382,15 +1580,7 @@ fn display_layout_from_renderer_size(width: i32, height: i32) -> Option<DisplayL
     let (Ok(desktop_width), Ok(desktop_height)) = (u32::try_from(width), u32::try_from(height)) else {
         return None;
     };
-    (desktop_width != 0 && desktop_height != 0).then_some(DisplayLayout {
-        desktop_width,
-        desktop_height,
-        physical_width: 0,
-        physical_height: 0,
-        orientation: 0,
-        desktop_scale_factor: 100,
-        device_scale_factor: 100,
-    })
+    (desktop_width != 0 && desktop_height != 0).then_some(DisplayLayout::unscaled(desktop_width, desktop_height))
 }
 
 fn native_shell_presentation_enabled(native_shell_integration: bool, native_shell: bool) -> bool {
@@ -1414,10 +1604,12 @@ struct CompatibilitySettings {
     grab_focus_on_connect: bool,
     enable_credssp: Option<bool>,
     compression: Option<bool>,
+    bitmap_persistence: bool,
     min_input_send_interval_ms: i32,
     keep_alive_interval_seconds: i32,
     load_balance_info: String,
     administrative_session: bool,
+    use_redirection_server_name: bool,
     audio_quality_mode: AudioQualityMode,
     rdp_port: Option<u16>,
     enable_mouse: bool,
@@ -1427,6 +1619,7 @@ struct CompatibilitySettings {
     redirect_drives: bool,
     redirect_dynamic_drives: bool,
     redirect_printers: bool,
+    redirect_ports: bool,
     redirect_smart_cards: bool,
     disable_rdpdr: bool,
     drive_catalog: Rc<RefCell<DriveCatalog>>,
@@ -1439,6 +1632,7 @@ struct CompatibilitySettings {
     keyboard_layout: u32,
     network_connection_type: ConnectionType,
     keyboard_hook_mode: i32,
+    input_policy: InputPolicy,
     zoom_level: i32,
     gateway_hostname: String,
     gateway_username: String,
@@ -1474,8 +1668,10 @@ struct CompatibilitySettings {
     enable_auto_reconnect: bool,
     max_reconnect_attempts: u32,
     use_multimon: bool,
+    advanced_compat: AdvancedSettingsCompat,
     connection_settings_sealed: bool,
     persistence_dirty: Option<Rc<Cell<bool>>>,
+    extended: ExtendedSettings,
 }
 
 impl Default for CompatibilitySettings {
@@ -1497,10 +1693,14 @@ impl Default for CompatibilitySettings {
             grab_focus_on_connect: false,
             enable_credssp: None,
             compression: None,
+            // Off unless the host asks, unlike mstscax.dll, whose `BitmapPersistenceEnabled`
+            // defaults to on.
+            bitmap_persistence: false,
             min_input_send_interval_ms: DEFAULT_MIN_INPUT_SEND_INTERVAL_MS,
             keep_alive_interval_seconds: 0,
             load_balance_info: String::new(),
             administrative_session: false,
+            use_redirection_server_name: false,
             audio_quality_mode: AudioQualityMode::Dynamic,
             rdp_port: None,
             enable_mouse: true,
@@ -1510,6 +1710,7 @@ impl Default for CompatibilitySettings {
             redirect_drives: false,
             redirect_dynamic_drives: false,
             redirect_printers: false,
+            redirect_ports: false,
             redirect_smart_cards: false,
             disable_rdpdr: false,
             drive_catalog: Rc::new(RefCell::new(DriveCatalog::new())),
@@ -1522,6 +1723,7 @@ impl Default for CompatibilitySettings {
             keyboard_layout: 0,
             network_connection_type: ConnectionType::Lan,
             keyboard_hook_mode: 2,
+            input_policy: InputPolicy::default(),
             zoom_level: 100,
             gateway_hostname: String::new(),
             gateway_username: String::new(),
@@ -1556,8 +1758,10 @@ impl Default for CompatibilitySettings {
             enable_auto_reconnect: true,
             max_reconnect_attempts: 20,
             use_multimon: false,
+            advanced_compat: AdvancedSettingsCompat::default(),
             connection_settings_sealed: false,
             persistence_dirty: None,
+            extended: ExtendedSettings::default(),
         }
     }
 }
@@ -1951,6 +2155,17 @@ fn settings_supports_interface<const SLOTS: usize>(iid: &GUID) -> bool {
     }
 }
 
+/// The published dual interface whose dispatch members a settings object serves through its vtable.
+fn settings_automation_interface<const SLOTS: usize>() -> Option<AutomationInterface> {
+    match SLOTS {
+        191 => Some(AutomationInterface::AdvancedSettings),
+        SECURED_SETTINGS_SLOTS => Some(AutomationInterface::SecuredSettings),
+        TRANSPORT_SETTINGS_SLOTS => Some(AutomationInterface::TransportSettings),
+        7 => Some(AutomationInterface::RemoteProgram),
+        _ => None,
+    }
+}
+
 unsafe extern "system" fn settings_add_ref<const SLOTS: usize>(this: *mut c_void) -> u32 {
     let settings = unsafe { &*(this.cast::<CompatibilitySettingsObject<SLOTS>>()) };
     let mut references = settings.references.load(Ordering::Acquire);
@@ -2029,46 +2244,10 @@ unsafe extern "system" fn settings_get_ids_of_names<const SLOTS: usize>(
     _lcid: u32,
     ids: *mut i32,
 ) -> HRESULT {
-    if SLOTS != 7 {
-        return DISP_E_MEMBERNOTFOUND;
+    match settings_automation_interface::<SLOTS>() {
+        Some(interface) => unsafe { automation::get_ids_of_names(interface, iid, names, count, ids) },
+        None => DISP_E_MEMBERNOTFOUND,
     }
-    if names.is_null() || ids.is_null() {
-        return E_POINTER;
-    }
-    if !iid.is_null() && unsafe { *iid } != GUID::zeroed() {
-        return DISP_E_UNKNOWNINTERFACE_HRESULT;
-    }
-
-    if count == 0 {
-        return S_OK;
-    }
-    unsafe {
-        slice::from_raw_parts_mut(ids, count as usize).fill(DISPID_UNKNOWN);
-    }
-    let member_name = match unsafe { (*names).to_string() } {
-        Ok(name) => name,
-        Err(_) => return DISP_E_UNKNOWNNAME,
-    };
-    let Some(member_id) = remote_program_member_dispid(&member_name) else {
-        return DISP_E_UNKNOWNNAME;
-    };
-    unsafe {
-        ids.write(member_id);
-    }
-    for index in 1..count as usize {
-        let parameter_name = match unsafe { (*names.add(index)).to_string() } {
-            Ok(name) => name,
-            Err(_) => return DISP_E_UNKNOWNNAME,
-        };
-        let Some(parameter_id) = remote_program_parameter_dispid(member_id, &parameter_name) else {
-            return DISP_E_UNKNOWNNAME;
-        };
-        unsafe {
-            ids.add(index).write(parameter_id);
-        }
-    }
-
-    S_OK
 }
 
 unsafe extern "system" fn settings_invoke<const SLOTS: usize>(
@@ -2079,254 +2258,25 @@ unsafe extern "system" fn settings_invoke<const SLOTS: usize>(
     flags: DISPATCH_FLAGS,
     params: *const DISPPARAMS,
     result: *mut VARIANT,
-    _exception: *mut EXCEPINFO,
+    exception: *mut EXCEPINFO,
     argument_error: *mut u32,
 ) -> HRESULT {
-    if SLOTS != 7 {
+    let Some(interface) = settings_automation_interface::<SLOTS>() else {
         return DISP_E_MEMBERNOTFOUND;
-    }
-    if params.is_null() {
-        return E_POINTER;
-    }
-    if !iid.is_null() && unsafe { *iid } != GUID::zeroed() {
-        return DISP_E_UNKNOWNINTERFACE_HRESULT;
-    }
-    let params = unsafe { &*params };
-
-    if flags.contains(DISPATCH_PROPERTYGET) {
-        if dispid != DISPID_REMOTE_PROGRAM_MODE {
-            return DISP_E_MEMBERNOTFOUND;
-        }
-        if params.cArgs != 0 || params.cNamedArgs != 0 {
-            return DISP_E_BADPARAMCOUNT;
-        }
-        if result.is_null() {
-            return E_POINTER;
-        }
-        let mut value = VARIANT_FALSE.0;
-        let status = unsafe { remote_program_get_mode(this, &mut value) };
-        if status.is_err() {
-            return status;
-        }
-        return write_out(result, variant_bool_value(value == VARIANT_TRUE.0))
-            .map_or_else(|error| error.code(), |_| S_OK);
-    }
-
-    if flags.contains(DISPATCH_PROPERTYPUT) {
-        let value = match property_put_value(params) {
-            Ok(value) => value,
-            Err(error) => return error.code(),
-        };
-        let argument = BoundDispatchArgument { value, raw_index: 0 };
-        return match dispid {
-            DISPID_REMOTE_PROGRAM_MODE => match dispatch_variant_bool(&argument, argument_error) {
-                Ok(value) => unsafe { remote_program_put_mode(this, value) },
-                Err(error) => error.code(),
-            },
-            DISPID_REMOTE_APPLICATION_NAME | DISPID_REMOTE_APPLICATION_PROGRAM | DISPID_REMOTE_APPLICATION_ARGS => {
-                let value = match dispatch_variant_string(&argument, argument_error) {
-                    Ok(value) => BSTR::from(value),
-                    Err(error) => return error.code(),
-                };
-                match dispid {
-                    DISPID_REMOTE_APPLICATION_NAME => unsafe {
-                        remote_program_put_application_name(this, value.as_ptr())
-                    },
-                    DISPID_REMOTE_APPLICATION_PROGRAM => unsafe {
-                        remote_program_put_application_program(this, value.as_ptr())
-                    },
-                    DISPID_REMOTE_APPLICATION_ARGS => unsafe {
-                        remote_program_put_application_args(this, value.as_ptr())
-                    },
-                    _ => unreachable!(),
-                }
-            }
-            _ => DISP_E_MEMBERNOTFOUND,
-        };
-    }
-
-    if !flags.contains(DISPATCH_METHOD) {
-        return DISP_E_MEMBERNOTFOUND;
-    }
-    let expected_arguments = match dispid {
-        DISPID_SERVER_START_PROGRAM => 6,
-        DISPID_SERVER_START_APP => 3,
-        _ => return DISP_E_MEMBERNOTFOUND,
     };
-    let object = unsafe { &*(this.cast::<CompatibilitySettingsObject<7>>()) };
-    let Some(bridge) = &object.remote_program_bridge else {
-        return E_UNEXPECTED;
-    };
-    let control = match bridge.control() {
-        Ok(control) => control,
-        Err(error) => return error.code(),
-    };
-    let status = control.remote_program_launch_status();
-    if status != S_OK {
-        return status;
+    unsafe {
+        automation::invoke(
+            interface,
+            this,
+            dispid,
+            iid,
+            flags,
+            params,
+            result,
+            exception,
+            argument_error,
+        )
     }
-    let arguments = match bind_dispatch_arguments(params, expected_arguments, argument_error) {
-        Ok(arguments) => arguments,
-        Err(error) => return error.code(),
-    };
-
-    let execute = match dispid {
-        DISPID_SERVER_START_PROGRAM => (|| {
-            remote_program_execute(
-                dispatch_variant_string(&arguments[0], argument_error)?,
-                dispatch_variant_string(&arguments[1], argument_error)?,
-                dispatch_variant_string(&arguments[2], argument_error)?,
-                dispatch_variant_bool(&arguments[3], argument_error)?,
-                dispatch_variant_string(&arguments[4], argument_error)?,
-                dispatch_variant_bool(&arguments[5], argument_error)?,
-            )
-        })(),
-        DISPID_SERVER_START_APP => (|| {
-            remote_program_app_execute(
-                dispatch_variant_string(&arguments[0], argument_error)?,
-                dispatch_variant_string(&arguments[1], argument_error)?,
-                dispatch_variant_bool(&arguments[2], argument_error)?,
-            )
-        })(),
-        _ => return DISP_E_MEMBERNOTFOUND,
-    };
-    match execute {
-        Ok(execute) => control.queue_remote_program_execute(execute),
-        Err(error) => error.code(),
-    }
-}
-
-fn remote_program_member_dispid(name: &str) -> Option<i32> {
-    if name.eq_ignore_ascii_case("RemoteProgramMode") {
-        Some(DISPID_REMOTE_PROGRAM_MODE)
-    } else if name.eq_ignore_ascii_case("ServerStartProgram") {
-        Some(DISPID_SERVER_START_PROGRAM)
-    } else if name.eq_ignore_ascii_case("RemoteApplicationName") {
-        Some(DISPID_REMOTE_APPLICATION_NAME)
-    } else if name.eq_ignore_ascii_case("RemoteApplicationProgram") {
-        Some(DISPID_REMOTE_APPLICATION_PROGRAM)
-    } else if name.eq_ignore_ascii_case("RemoteApplicationArgs") {
-        Some(DISPID_REMOTE_APPLICATION_ARGS)
-    } else if name.eq_ignore_ascii_case("ServerStartApp") {
-        Some(DISPID_SERVER_START_APP)
-    } else {
-        None
-    }
-}
-
-fn remote_program_parameter_dispid(member_id: i32, name: &str) -> Option<i32> {
-    match member_id {
-        DISPID_SERVER_START_PROGRAM => [
-            "bstrExecutablePath",
-            "bstrFilePath",
-            "bstrWorkingDirectory",
-            "vbExpandEnvVarInWorkingDirectoryOnServer",
-            "bstrArguments",
-            "vbExpandEnvVarInArgumentsOnServer",
-        ]
-        .iter()
-        .position(|parameter| name.eq_ignore_ascii_case(parameter))
-        .map(|index| index as i32),
-        DISPID_SERVER_START_APP => [
-            "bstrAppUserModelId",
-            "bstrArguments",
-            "vbExpandEnvVarInArgumentsOnServer",
-        ]
-        .iter()
-        .position(|parameter| name.eq_ignore_ascii_case(parameter))
-        .map(|index| index as i32),
-        _ => None,
-    }
-}
-
-struct BoundDispatchArgument<'a> {
-    value: &'a VARIANT,
-    raw_index: u32,
-}
-
-fn bind_dispatch_arguments(
-    params: &DISPPARAMS,
-    expected: u32,
-    argument_error: *mut u32,
-) -> Result<Vec<BoundDispatchArgument<'_>>> {
-    if params.cArgs != expected || params.cNamedArgs > params.cArgs {
-        return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
-    }
-    if params.rgvarg.is_null() || (params.cNamedArgs != 0 && params.rgdispidNamedArgs.is_null()) {
-        return Err(Error::from_hresult(E_POINTER));
-    }
-
-    let values = unsafe { slice::from_raw_parts(params.rgvarg, params.cArgs as usize) };
-    let named_ids = if params.cNamedArgs == 0 {
-        &[]
-    } else {
-        unsafe { slice::from_raw_parts(params.rgdispidNamedArgs, params.cNamedArgs as usize) }
-    };
-    let mut bound = std::iter::repeat_with(|| None)
-        .take(expected as usize)
-        .collect::<Vec<_>>();
-    for (raw_index, (&named_id, value)) in named_ids.iter().zip(values).enumerate() {
-        let parameter_index = usize::try_from(named_id).ok();
-        let Some(slot) = parameter_index.and_then(|parameter_index| bound.get_mut(parameter_index)) else {
-            if !argument_error.is_null() {
-                unsafe {
-                    argument_error.write(raw_index as u32);
-                }
-            }
-            return Err(Error::from_hresult(DISP_E_PARAMNOTFOUND_HRESULT));
-        };
-        if slot.is_some() {
-            return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
-        }
-        *slot = Some(BoundDispatchArgument {
-            value,
-            raw_index: raw_index as u32,
-        });
-    }
-    for (raw_index, value) in values.iter().enumerate().skip(params.cNamedArgs as usize) {
-        let Some(slot) = bound.iter_mut().rev().find(|slot| slot.is_none()) else {
-            return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
-        };
-        *slot = Some(BoundDispatchArgument {
-            value,
-            raw_index: raw_index as u32,
-        });
-    }
-    bound
-        .into_iter()
-        .map(|argument| argument.ok_or_else(|| Error::from_hresult(DISP_E_BADPARAMCOUNT)))
-        .collect()
-}
-
-fn dispatch_variant_string(argument: &BoundDispatchArgument<'_>, argument_error: *mut u32) -> Result<String> {
-    let value = argument.value;
-    variant_string(value, ptr::null_mut()).inspect_err(|_| {
-        if !argument_error.is_null() {
-            unsafe {
-                argument_error.write(argument.raw_index);
-            }
-        }
-    })
-}
-
-fn dispatch_variant_bool(argument: &BoundDispatchArgument<'_>, argument_error: *mut u32) -> Result<i16> {
-    let value = argument.value;
-    let header = variant_header(value);
-    if header.vt != VT_BOOL {
-        if !argument_error.is_null() {
-            unsafe {
-                argument_error.write(argument.raw_index);
-            }
-        }
-        return Err(Error::from_hresult(DISP_E_TYPEMISMATCH));
-    }
-    normalize_variant_bool(unsafe { header.Anonymous.boolVal }.0).inspect_err(|_| {
-        if !argument_error.is_null() {
-            unsafe {
-                argument_error.write(argument.raw_index);
-            }
-        }
-    })
 }
 
 macro_rules! advanced_settings_stubs {
@@ -2568,23 +2518,15 @@ macro_rules! advanced_get_not_implemented {
 
 advanced_put_not_implemented!(
     (7, advanced_put_plugin_dlls, Bstr),
-    (93, advanced_put_bitmap_persistence, i32),
-    (95, advanced_put_minutes_to_idle_timeout, i32),
-    (118, advanced_put_redirect_ports, i16),
     (150, advanced_put_redirect_devices, i16),
     (161, advanced_put_pcb, Bstr),
     (173, advanced_put_video_playback_mode, u32),
-    (175, advanced_put_enable_super_pan, i16),
     (179, advanced_put_negotiate_security_layer, i16),
 );
 
 advanced_get_not_implemented!(
-    (94, advanced_get_bitmap_persistence, i32),
-    (96, advanced_get_minutes_to_idle_timeout, i32),
-    (119, advanced_get_redirect_ports, i16),
     (151, advanced_get_redirect_devices, i16),
     (174, advanced_get_video_playback_mode, u32),
-    (176, advanced_get_enable_super_pan, i16),
     (180, advanced_get_negotiate_security_layer, i16),
 );
 
@@ -2768,36 +2710,6 @@ unsafe extern "system" fn advanced_get_pcb(_this: *mut c_void, value: BstrOut) -
     E_NOTIMPL
 }
 
-unsafe extern "system" fn advanced_put_hotkey_focus_release_left(_this: *mut c_void, _value: i32) -> HRESULT {
-    trace_host_call("E_NOTIMPL:AdvancedSettings::HotKeyFocusReleaseLeft");
-    E_NOTIMPL
-}
-
-unsafe extern "system" fn advanced_get_hotkey_focus_release_left(_this: *mut c_void, value: *mut i32) -> HRESULT {
-    match write_out(value, 0) {
-        Ok(()) => {
-            trace_host_call("E_NOTIMPL:AdvancedSettings::HotKeyFocusReleaseLeft");
-            E_NOTIMPL
-        }
-        Err(error) => error.code(),
-    }
-}
-
-unsafe extern "system" fn advanced_put_hotkey_focus_release_right(_this: *mut c_void, _value: i32) -> HRESULT {
-    trace_host_call("E_NOTIMPL:AdvancedSettings::HotKeyFocusReleaseRight");
-    E_NOTIMPL
-}
-
-unsafe extern "system" fn advanced_get_hotkey_focus_release_right(_this: *mut c_void, value: *mut i32) -> HRESULT {
-    match write_out(value, 0) {
-        Ok(()) => {
-            trace_host_call("E_NOTIMPL:AdvancedSettings::HotKeyFocusReleaseRight");
-            E_NOTIMPL
-        }
-        Err(error) => error.code(),
-    }
-}
-
 fn dispatch_vtable<const SLOTS: usize>() -> IDispatch_Vtbl {
     IDispatch_Vtbl {
         base__: IUnknown_Vtbl {
@@ -2848,7 +2760,7 @@ unsafe extern "system" fn advanced_get_allow_background_input(this: *mut c_void,
     }
 }
 
-fn normalize_variant_bool(value: i16) -> Result<i16> {
+pub(crate) fn normalize_variant_bool(value: i16) -> Result<i16> {
     match value {
         value if value == VARIANT_FALSE.0 => Ok(VARIANT_FALSE.0),
         value if value == VARIANT_TRUE.0 => Ok(VARIANT_TRUE.0),
@@ -3075,6 +2987,23 @@ unsafe extern "system" fn advanced_get_compress(this: *mut c_void, value: *mut i
     }
 }
 
+// mstscax.dll stores any non-zero value as on and reads back 1 or 0.
+unsafe extern "system" fn advanced_put_bitmap_persistence(this: *mut c_void, value: i32) -> HRESULT {
+    trace_host_call("IMsTscAdvancedSettings::put_BitmapPeristence");
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    object.settings.borrow_mut().bitmap_persistence = value != 0;
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_bitmap_persistence(this: *mut c_void, value: *mut i32) -> HRESULT {
+    trace_host_call("IMsTscAdvancedSettings::get_BitmapPeristence");
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    match write_out(value, i32::from(object.settings.borrow().bitmap_persistence)) {
+        Ok(()) => S_OK,
+        Err(error) => error.code(),
+    }
+}
+
 unsafe extern "system" fn advanced_put_clear_text_password(this: *mut c_void, password: Bstr) -> HRESULT {
     let password = match string_from_bstr(password) {
         Ok(password) => password,
@@ -3248,6 +3177,34 @@ unsafe extern "system" fn advanced_get_redirect_printers(this: *mut c_void, valu
     write_out(
         value,
         if object.settings.borrow().redirect_printers {
+            VARIANT_TRUE.0
+        } else {
+            VARIANT_FALSE.0
+        },
+    )
+    .map_or_else(|error| error.code(), |_| S_OK)
+}
+
+unsafe extern "system" fn advanced_put_redirect_ports(this: *mut c_void, value: i16) -> HRESULT {
+    let value = match normalize_variant_bool(value) {
+        Ok(value) => value == VARIANT_TRUE.0,
+        Err(error) => return error.code(),
+    };
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    let mut settings = object.settings.borrow_mut();
+    if settings.connection_settings_sealed {
+        return E_FAIL;
+    }
+    settings.redirect_ports = value;
+    mark_compatibility_persistence_dirty(&settings);
+    S_OK
+}
+
+unsafe extern "system" fn advanced_get_redirect_ports(this: *mut c_void, value: *mut i16) -> HRESULT {
+    let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
+    write_out(
+        value,
+        if object.settings.borrow().redirect_ports {
             VARIANT_TRUE.0
         } else {
             VARIANT_FALSE.0
@@ -3431,10 +3388,6 @@ fn should_forward_windows_key(
         || matches!(message, WM_KEYUP | WM_SYSKEYUP) && input_database.is_key_pressed(scancode)
 }
 
-fn is_fullscreen_hotkey(virtual_key: VIRTUAL_KEY, control_and_alt_pressed: bool) -> bool {
-    control_and_alt_pressed && matches!(virtual_key, VK_CANCEL | VK_PAUSE)
-}
-
 #[derive(Clone)]
 enum ActiveXTransport {
     Direct,
@@ -3459,6 +3412,7 @@ fn active_x_transport_from_client_transport(
         Transport::RDCleanPath(rdcleanpath) => Ok(ActiveXTransport::RDCleanPath(rdcleanpath.clone())),
         // Named-pipe RDP (e.g. Windows Sandbox) is agent/desktop-client only.
         Transport::NamedPipe { .. } => Err("Windows named-pipe transport is not supported by the ActiveX host"),
+        Transport::GatewayRpch(_) => Err("RPC-over-HTTP gateway transport is not supported by the ActiveX host"),
     }
 }
 
@@ -3648,11 +3602,6 @@ unsafe extern "system" fn advanced_get_redirect_clipboard(this: *mut c_void, val
     }
 }
 
-unsafe extern "system" fn advanced_put_redirect_directx(_this: *mut c_void, value: i16) -> HRESULT {
-    trace_host_call("IMsRdpClientAdvancedSettings7::put_RedirectDirectX");
-    if value == VARIANT_FALSE.0 { S_OK } else { E_NOTIMPL }
-}
-
 unsafe extern "system" fn advanced_get_redirect_directx(_this: *mut c_void, value: *mut i16) -> HRESULT {
     trace_host_call("IMsRdpClientAdvancedSettings7::get_RedirectDirectX");
     match write_out(value, VARIANT_FALSE.0) {
@@ -3662,15 +3611,8 @@ unsafe extern "system" fn advanced_get_redirect_directx(_this: *mut c_void, valu
 }
 
 unsafe extern "system" fn advanced_put_network_connection_type(this: *mut c_void, value: u32) -> HRESULT {
-    let connection_type = match value {
-        1 => ConnectionType::Modem,
-        2 => ConnectionType::BroadbandLow,
-        3 => ConnectionType::Satellite,
-        4 => ConnectionType::BroadbandHigh,
-        5 => ConnectionType::Wan,
-        6 => ConnectionType::Lan,
-        7 => ConnectionType::Autodetect,
-        _ => return E_INVALIDARG,
+    let Some(connection_type) = u8::try_from(value).ok().and_then(ConnectionType::from_specified) else {
+        return E_INVALIDARG;
     };
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
     object.settings.borrow_mut().network_connection_type = connection_type;
@@ -3679,17 +3621,10 @@ unsafe extern "system" fn advanced_put_network_connection_type(this: *mut c_void
 
 unsafe extern "system" fn advanced_get_network_connection_type(this: *mut c_void, value: *mut u32) -> HRESULT {
     let object = unsafe { &*(this.cast::<AdvancedSettingsObject>()) };
-    let connection_type = match object.settings.borrow().network_connection_type {
-        ConnectionType::Modem => 1,
-        ConnectionType::BroadbandLow => 2,
-        ConnectionType::Satellite => 3,
-        ConnectionType::BroadbandHigh => 4,
-        ConnectionType::Wan => 5,
-        ConnectionType::Lan => 6,
-        ConnectionType::Autodetect => 7,
-        ConnectionType::NotUsed => return E_FAIL,
+    let Some(connection_type) = object.settings.borrow().network_connection_type.specified_value() else {
+        return E_FAIL;
     };
-    write_out(value, connection_type).map_or_else(|error| error.code(), |_| S_OK)
+    write_out(value, u32::from(connection_type)).map_or_else(|error| error.code(), |_| S_OK)
 }
 
 unsafe extern "system" fn advanced_put_bandwidth_detection(_this: *mut c_void, _value: i16) -> HRESULT {
@@ -4037,16 +3972,69 @@ fn advanced_vtable() -> &'static CompatibilitySettingsVtable<191> {
         slots[11] = advanced_get_container_handled_fullscreen as *const () as usize;
         slots[12] = advanced_put_disable_rdpdr as *const () as usize;
         slots[13] = advanced_get_disable_rdpdr as *const () as usize;
+        slots[14] = advanced_settings_compat::advanced_put_smooth_scroll as *const () as usize;
+        slots[15] = advanced_settings_compat::advanced_get_smooth_scroll as *const () as usize;
+        slots[16] = input_policy::advanced_put_accelerator_passthrough as *const () as usize;
+        slots[17] = input_policy::advanced_get_accelerator_passthrough as *const () as usize;
+        slots[18] = advanced_settings_compat::advanced_put_shadow_bitmap as *const () as usize;
+        slots[19] = advanced_settings_compat::advanced_get_shadow_bitmap as *const () as usize;
+        slots[20] = advanced_settings_compat::advanced_put_transport_type as *const () as usize;
+        slots[21] = advanced_settings_compat::advanced_get_transport_type as *const () as usize;
+        slots[22] = input_policy::advanced_put_sas_sequence as *const () as usize;
+        slots[23] = input_policy::advanced_get_sas_sequence as *const () as usize;
+        slots[24] = advanced_settings_compat::advanced_put_encryption_enabled as *const () as usize;
+        slots[25] = advanced_settings_compat::advanced_get_encryption_enabled as *const () as usize;
+        slots[26] = advanced_settings_compat::advanced_put_dedicated_terminal as *const () as usize;
+        slots[27] = advanced_settings_compat::advanced_get_dedicated_terminal as *const () as usize;
         slots[28] = advanced_put_rdp_port as *const () as usize;
         slots[29] = advanced_get_rdp_port as *const () as usize;
         slots[30] = advanced_put_enable_mouse as *const () as usize;
         slots[31] = advanced_get_enable_mouse as *const () as usize;
+        slots[32] = input_policy::advanced_put_disable_ctrl_alt_del as *const () as usize;
+        slots[33] = input_policy::advanced_get_disable_ctrl_alt_del as *const () as usize;
         slots[34] = advanced_put_enable_windows_key as *const () as usize;
         slots[35] = advanced_get_enable_windows_key as *const () as usize;
+        slots[36] = input_policy::advanced_put_double_click_detect as *const () as usize;
+        slots[37] = input_policy::advanced_get_double_click_detect as *const () as usize;
+        slots[38] = advanced_settings_compat::advanced_put_maximize_shell as *const () as usize;
+        slots[39] = advanced_settings_compat::advanced_get_maximize_shell as *const () as usize;
+        slots[40] = input_policy::advanced_put_hotkey_full_screen as *const () as usize;
+        slots[41] = input_policy::advanced_get_hotkey_full_screen as *const () as usize;
+        slots[42] = input_policy::advanced_put_hotkey_ctrl_esc as *const () as usize;
+        slots[43] = input_policy::advanced_get_hotkey_ctrl_esc as *const () as usize;
+        slots[44] = input_policy::advanced_put_hotkey_alt_esc as *const () as usize;
+        slots[45] = input_policy::advanced_get_hotkey_alt_esc as *const () as usize;
+        slots[46] = input_policy::advanced_put_hotkey_alt_tab as *const () as usize;
+        slots[47] = input_policy::advanced_get_hotkey_alt_tab as *const () as usize;
+        slots[48] = input_policy::advanced_put_hotkey_alt_shift_tab as *const () as usize;
+        slots[49] = input_policy::advanced_get_hotkey_alt_shift_tab as *const () as usize;
+        slots[50] = input_policy::advanced_put_hotkey_alt_space as *const () as usize;
+        slots[51] = input_policy::advanced_get_hotkey_alt_space as *const () as usize;
+        slots[52] = input_policy::advanced_put_hotkey_ctrl_alt_del as *const () as usize;
+        slots[53] = input_policy::advanced_get_hotkey_ctrl_alt_del as *const () as usize;
+        slots[54] = advanced_settings_compat::advanced_put_order_draw_threshold as *const () as usize;
+        slots[55] = advanced_settings_compat::advanced_get_order_draw_threshold as *const () as usize;
+        slots[60] = advanced_settings_compat::advanced_put_scale_bitmap_caches_by_bpp as *const () as usize;
+        slots[61] = advanced_settings_compat::advanced_get_scale_bitmap_caches_by_bpp as *const () as usize;
+        slots[62] = advanced_settings_compat::advanced_put_num_bitmap_caches as *const () as usize;
+        slots[63] = advanced_settings_compat::advanced_get_num_bitmap_caches as *const () as usize;
+        slots[66] = advanced_settings_compat::advanced_put_persist_cache_directory as *const () as usize;
+        slots[67] = advanced_settings_compat::advanced_put_brush_support_level as *const () as usize;
+        slots[68] = advanced_settings_compat::advanced_get_brush_support_level as *const () as usize;
         slots[69] = advanced_put_min_input_send_interval as *const () as usize;
         slots[70] = advanced_get_min_input_send_interval as *const () as usize;
+        slots[71] = advanced_settings_compat::advanced_put_input_events_at_once as *const () as usize;
+        slots[72] = advanced_settings_compat::advanced_get_input_events_at_once as *const () as usize;
+        slots[73] = advanced_settings_compat::advanced_put_max_event_count as *const () as usize;
+        slots[74] = advanced_settings_compat::advanced_get_max_event_count as *const () as usize;
         slots[75] = advanced_put_keep_alive_interval as *const () as usize;
         slots[76] = advanced_get_keep_alive_interval as *const () as usize;
+        slots[77] = advanced_settings_compat::advanced_put_shutdown_timeout as *const () as usize;
+        slots[78] = advanced_settings_compat::advanced_get_shutdown_timeout as *const () as usize;
+        slots[79] = advanced_settings_compat::advanced_put_overall_connection_timeout as *const () as usize;
+        slots[80] = advanced_settings_compat::advanced_get_overall_connection_timeout as *const () as usize;
+        slots[81] = advanced_settings_compat::advanced_put_single_connection_timeout as *const () as usize;
+        slots[82] = advanced_settings_compat::advanced_get_single_connection_timeout as *const () as usize;
         slots[83] = advanced_put_keyboard_type as *const () as usize;
         slots[84] = advanced_get_keyboard_type as *const () as usize;
         slots[85] = advanced_put_keyboard_subtype as *const () as usize;
@@ -4057,10 +4045,16 @@ fn advanced_vtable() -> &'static CompatibilitySettingsVtable<191> {
         slots[92] = advanced_get_connect_to_server_console as *const () as usize;
         slots[93] = advanced_put_bitmap_persistence as *const () as usize;
         slots[94] = advanced_get_bitmap_persistence as *const () as usize;
-        slots[95] = advanced_put_minutes_to_idle_timeout as *const () as usize;
-        slots[96] = advanced_get_minutes_to_idle_timeout as *const () as usize;
+        slots[95] = advanced_settings_compat::advanced_put_minutes_to_idle_timeout as *const () as usize;
+        slots[96] = advanced_settings_compat::advanced_get_minutes_to_idle_timeout as *const () as usize;
         slots[97] = advanced_put_smart_sizing as *const () as usize;
         slots[98] = advanced_get_smart_sizing as *const () as usize;
+        slots[99] = advanced_settings_compat::advanced_put_rdpdr_local_printing_doc_name as *const () as usize;
+        slots[100] = advanced_settings_compat::advanced_get_rdpdr_local_printing_doc_name as *const () as usize;
+        slots[101] = advanced_settings_compat::advanced_put_rdpdr_clip_clean_temp_dir_string as *const () as usize;
+        slots[102] = advanced_settings_compat::advanced_get_rdpdr_clip_clean_temp_dir_string as *const () as usize;
+        slots[103] = advanced_settings_compat::advanced_put_rdpdr_clip_paste_info_string as *const () as usize;
+        slots[104] = advanced_settings_compat::advanced_get_rdpdr_clip_paste_info_string as *const () as usize;
         slots[105] = advanced_put_clear_text_password as *const () as usize;
         slots[106] = advanced_put_display_connection_bar as *const () as usize;
         slots[107] = advanced_get_display_connection_bar as *const () as usize;
@@ -4080,6 +4074,7 @@ fn advanced_vtable() -> &'static CompatibilitySettingsVtable<191> {
         slots[121] = advanced_get_redirect_smart_cards as *const () as usize;
         slots[126] = advanced_put_performance_flags as *const () as usize;
         slots[127] = advanced_get_performance_flags as *const () as usize;
+        slots[131] = advanced_settings_compat::advanced_get_can_auto_reconnect as *const () as usize;
         slots[132] = advanced_put_enable_auto_reconnect as *const () as usize;
         slots[133] = advanced_get_enable_auto_reconnect as *const () as usize;
         slots[134] = advanced_put_max_reconnect_attempts as *const () as usize;
@@ -4100,12 +4095,16 @@ fn advanced_vtable() -> &'static CompatibilitySettingsVtable<191> {
         slots[149] = advanced_get_public_mode as *const () as usize;
         slots[150] = advanced_put_redirect_devices as *const () as usize;
         slots[151] = advanced_get_redirect_devices as *const () as usize;
+        slots[156] = input_policy::advanced_put_relative_mouse_mode as *const () as usize;
+        slots[157] = input_policy::advanced_get_relative_mouse_mode as *const () as usize;
+        slots[158] = advanced_settings_compat::advanced_get_authentication_service_class as *const () as usize;
+        slots[159] = advanced_settings_compat::advanced_put_authentication_service_class as *const () as usize;
         slots[160] = advanced_get_pcb as *const () as usize;
         slots[161] = advanced_put_pcb as *const () as usize;
-        slots[162] = advanced_put_hotkey_focus_release_left as *const () as usize;
-        slots[163] = advanced_get_hotkey_focus_release_left as *const () as usize;
-        slots[164] = advanced_put_hotkey_focus_release_right as *const () as usize;
-        slots[165] = advanced_get_hotkey_focus_release_right as *const () as usize;
+        slots[162] = input_policy::advanced_put_hotkey_focus_release_left as *const () as usize;
+        slots[163] = input_policy::advanced_get_hotkey_focus_release_left as *const () as usize;
+        slots[164] = input_policy::advanced_put_hotkey_focus_release_right as *const () as usize;
+        slots[165] = input_policy::advanced_get_hotkey_focus_release_right as *const () as usize;
         slots[166] = advanced_put_credssp as *const () as usize;
         slots[167] = advanced_get_credssp as *const () as usize;
         slots[168] = advanced_get_authentication_type as *const () as usize;
@@ -4115,13 +4114,15 @@ fn advanced_vtable() -> &'static CompatibilitySettingsVtable<191> {
         slots[172] = advanced_get_audio_capture_redirection_mode as *const () as usize;
         slots[173] = advanced_put_video_playback_mode as *const () as usize;
         slots[174] = advanced_get_video_playback_mode as *const () as usize;
-        slots[175] = advanced_put_enable_super_pan as *const () as usize;
-        slots[176] = advanced_get_enable_super_pan as *const () as usize;
+        slots[175] = input_policy::advanced_put_enable_super_pan as *const () as usize;
+        slots[176] = input_policy::advanced_get_enable_super_pan as *const () as usize;
+        slots[177] = input_policy::advanced_put_super_pan_acceleration_factor as *const () as usize;
+        slots[178] = input_policy::advanced_get_super_pan_acceleration_factor as *const () as usize;
         slots[179] = advanced_put_negotiate_security_layer as *const () as usize;
         slots[180] = advanced_get_negotiate_security_layer as *const () as usize;
         slots[181] = advanced_put_audio_quality_mode as *const () as usize;
         slots[182] = advanced_get_audio_quality_mode as *const () as usize;
-        slots[183] = advanced_put_redirect_directx as *const () as usize;
+        slots[183] = advanced_settings_compat::advanced_put_redirect_directx as *const () as usize;
         slots[184] = advanced_get_redirect_directx as *const () as usize;
         slots[185] = advanced_put_network_connection_type as *const () as usize;
         slots[186] = advanced_get_network_connection_type as *const () as usize;
@@ -4511,6 +4512,10 @@ enum WorkerEvent {
     LoginComplete {
         generation: u64,
     },
+    RemoteSessionId {
+        generation: u64,
+        session_id: u32,
+    },
     Image {
         generation: u64,
         update: FrameUpdate,
@@ -4518,9 +4523,12 @@ enum WorkerEvent {
     DisplayResizeFallback {
         generation: u64,
     },
+    MonitorLayoutRejected {
+        generation: u64,
+    },
     RailWindowingOrders {
         generation: u64,
-        data: Vec<u8>,
+        orders: Vec<WindowingOrder>,
     },
     RailExecuteResult {
         generation: u64,
@@ -4531,6 +4539,14 @@ enum WorkerEvent {
         executable: String,
         flags: u16,
     },
+    RailControl {
+        generation: u64,
+        control: RailControlEvent,
+    },
+    RailWindowSurfaces {
+        generation: u64,
+        updates: Vec<WindowUpdate>,
+    },
     AutoReconnecting {
         generation: u64,
         disconnect_reason: u32,
@@ -4540,6 +4556,14 @@ enum WorkerEvent {
     },
     AutoReconnected {
         generation: u64,
+    },
+    RdpeiInputState {
+        generation: u64,
+        state: RdpeiInputState,
+    },
+    ServerInputFlags {
+        generation: u64,
+        flags: InputFlags,
     },
     FatalError {
         generation: u64,
@@ -4554,6 +4578,13 @@ enum WorkerEvent {
         channel_name: String,
         data: Vec<u8>,
     },
+    IdleTimeout {
+        generation: u64,
+    },
+    SessionNotification {
+        generation: u64,
+        notification: SessionNotification,
+    },
     Stopped {
         generation: u64,
     },
@@ -4566,16 +4597,24 @@ impl WorkerEvent {
             | Self::Connected { generation }
             | Self::MonitorLayout { generation, .. }
             | Self::LoginComplete { generation }
+            | Self::RemoteSessionId { generation, .. }
             | Self::Image { generation, .. }
             | Self::DisplayResizeFallback { generation }
+            | Self::MonitorLayoutRejected { generation }
             | Self::RailWindowingOrders { generation, .. }
             | Self::RailExecuteResult { generation, .. }
             | Self::RailExecuteFailed { generation, .. }
+            | Self::RailControl { generation, .. }
+            | Self::RailWindowSurfaces { generation, .. }
             | Self::AutoReconnecting { generation, .. }
             | Self::AutoReconnected { generation }
+            | Self::RdpeiInputState { generation, .. }
+            | Self::ServerInputFlags { generation, .. }
             | Self::FatalError { generation, .. }
             | Self::Disconnected { generation, .. }
             | Self::StaticChannelData { generation, .. }
+            | Self::IdleTimeout { generation }
+            | Self::SessionNotification { generation, .. }
             | Self::Stopped { generation } => *generation,
         }
     }
@@ -5333,6 +5372,8 @@ struct ProjectedRailWindowContext {
     frame: Rc<RefCell<Option<Frame>>>,
     presentation_surface: Rc<RefCell<Option<PresentationSurface>>>,
     content: Rc<Cell<ProjectedRailContent>>,
+    geometry: Rc<Cell<ProjectedRailGeometry>>,
+    shell: RailWindowShell,
     close_pending: Cell<bool>,
     close_queued: Cell<bool>,
     release_pending: Cell<bool>,
@@ -5345,7 +5386,9 @@ struct ProjectedRailWindow {
     content: Rc<Cell<ProjectedRailContent>>,
     server_style: WINDOW_STYLE,
     server_extended_style: WINDOW_EX_STYLE,
-    _context: Box<ProjectedRailWindowContext>,
+    /// Whether the last RemoteApp display notification reported this window as visible.
+    displayed: bool,
+    context: Box<ProjectedRailWindowContext>,
 }
 
 struct ProjectedRailWindowOrder {
@@ -5362,119 +5405,23 @@ struct ProjectedRailWindowOrder {
     window_size: Option<(u32, u32)>,
 }
 
-struct WindowOrderReader<'a> {
-    data: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> WindowOrderReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data, offset: 0 }
-    }
-
-    fn read_u8(&mut self) -> Option<u8> {
-        let value = *self.data.get(self.offset)?;
-        self.offset = self.offset.checked_add(1)?;
-        Some(value)
-    }
-
-    fn read_u16(&mut self) -> Option<u16> {
-        let bytes = self.take(2)?;
-        Some(u16::from_le_bytes(bytes.try_into().ok()?))
-    }
-
-    fn read_u32(&mut self) -> Option<u32> {
-        let bytes = self.take(4)?;
-        Some(u32::from_le_bytes(bytes.try_into().ok()?))
-    }
-
-    fn read_i32(&mut self) -> Option<i32> {
-        let bytes = self.take(4)?;
-        Some(i32::from_le_bytes(bytes.try_into().ok()?))
-    }
-
-    fn take(&mut self, length: usize) -> Option<&'a [u8]> {
-        let end = self.offset.checked_add(length)?;
-        let bytes = self.data.get(self.offset..end)?;
-        self.offset = end;
-        Some(bytes)
-    }
-
-    fn skip(&mut self, length: usize) -> Option<()> {
-        self.take(length).map(|_| ())
-    }
-
-    fn read_utf16(&mut self) -> Option<String> {
-        let length = usize::from(self.read_u16()?);
-        let bytes = self.take(length)?;
-        let code_units = bytes
-            .chunks_exact(2)
-            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
-            .collect::<Vec<_>>();
-        String::from_utf16(&code_units).ok()
-    }
-}
-
-fn parse_projected_rail_window_order(encoded: &[u8], flags: u32) -> Option<ProjectedRailWindowOrder> {
-    const WINDOW_TYPE: u32 = 0x0100_0000;
-    const STATE_NEW: u32 = 0x1000_0000;
-    const DELETED: u32 = 0x2000_0000;
-    const ICON: u32 = 0x4000_0000;
-    const CACHED_ICON: u32 = 0x8000_0000;
-
-    if flags & WINDOW_TYPE == 0 || flags & (DELETED | ICON | CACHED_ICON) != 0 {
+fn projected_rail_window_order(order: WindowOrder) -> Option<ProjectedRailWindowOrder> {
+    let WindowOrderBody::State(state) = order.body else {
         return None;
-    }
-
-    let mut reader = WindowOrderReader::new(encoded.get(7..)?);
-    let window_id = reader.read_u32()?;
-    let owner_window_id =
-        (flags & 0x0000_0002 != 0).then(|| reader.read_u32().map(|owner| (owner != 0).then_some(owner)))?;
-    let style = (flags & 0x0000_0008 != 0).then(|| Some((reader.read_u32()?, reader.read_u32()?)))?;
-    let show_state = (flags & 0x0000_0010 != 0).then(|| reader.read_u8())?;
-    let title = (flags & 0x0000_0004 != 0).then(|| reader.read_utf16())?;
-    let client_area_offset = (flags & 0x0000_4000 != 0).then(|| Some((reader.read_i32()?, reader.read_i32()?)))?;
-    let client_area_size = (flags & 0x0001_0000 != 0).then(|| Some((reader.read_u32()?, reader.read_u32()?)))?;
-    if flags & 0x0000_0080 != 0 {
-        reader.skip(8)?;
-    }
-    if flags & 0x0800_0000 != 0 {
-        reader.skip(8)?;
-    }
-    if flags & 0x0002_0000 != 0 {
-        reader.skip(1)?;
-    }
-    if flags & 0x0004_0000 != 0 {
-        reader.skip(4)?;
-    }
-    let window_offset = (flags & 0x0000_0800 != 0).then(|| Some((reader.read_i32()?, reader.read_i32()?)))?;
-    let client_delta = (flags & 0x0000_8000 != 0).then(|| Some((reader.read_i32()?, reader.read_i32()?)))?;
-    let window_size = (flags & 0x0000_0400 != 0).then(|| Some((reader.read_u32()?, reader.read_u32()?)))?;
-
+    };
     Some(ProjectedRailWindowOrder {
-        is_new: flags & STATE_NEW != 0,
-        window_id,
-        owner_window_id,
-        style,
-        show_state,
-        title,
-        client_area_offset,
-        client_area_size,
-        window_offset,
-        client_delta,
-        window_size,
+        is_new: order.is_new,
+        window_id: order.window_id,
+        owner_window_id: state.owner_window_id.map(|owner| (owner != 0).then_some(owner)),
+        style: state.style.map(|style| (style.style, style.extended_style)),
+        show_state: state.show_state.map(ShowState::as_u8),
+        title: state.title,
+        client_area_offset: state.client_offset.map(|point| (point.x, point.y)),
+        client_area_size: state.client_area_size.map(|size| (size.width, size.height)),
+        window_offset: state.window_offset.map(|point| (point.x, point.y)),
+        client_delta: state.client_delta.map(|point| (point.x, point.y)),
+        window_size: state.window_size.map(|size| (size.width, size.height)),
     })
-}
-
-fn resets_projected_rail_windows(fields_present: u32) -> bool {
-    const DESKTOP_TYPE: u32 = 0x0400_0000;
-    const DESKTOP_NON_MONITORED: u32 = 0x0000_0001;
-    const DESKTOP_HOOKED: u32 = 0x0000_0002;
-    const DESKTOP_ARC_BEGAN: u32 = 0x0000_0008;
-
-    fields_present & DESKTOP_TYPE != 0
-        && (fields_present & DESKTOP_NON_MONITORED != 0
-            || fields_present & (DESKTOP_HOOKED | DESKTOP_ARC_BEGAN) == DESKTOP_HOOKED | DESKTOP_ARC_BEGAN)
 }
 
 fn acquire_rail_window_class() -> Result<()> {
@@ -5559,6 +5506,17 @@ fn schedule_projected_rail_input_retry(hwnd: HWND) {
 }
 
 fn release_projected_rail_input(hwnd: HWND, context: &ProjectedRailWindowContext) {
+    if context
+        .shell
+        .local_move_size
+        .get()
+        .is_some_and(LocalMoveSizeMode::is_mouse_driven)
+    {
+        // The button that started the move stays down on the server until the move
+        // ends, so the release waits for the end of the move, which releases everything.
+        context.release_pending.set(true);
+        return;
+    }
     let permit = match context.input_sender.try_reserve() {
         Ok(permit) => permit,
         Err(error) => {
@@ -5606,7 +5564,12 @@ fn queue_projected_rail_close(hwnd: HWND, context: &ProjectedRailWindowContext) 
 }
 
 fn retry_projected_rail_input(hwnd: HWND, context: &ProjectedRailWindowContext) {
-    if context.release_pending.get() {
+    let moving = context
+        .shell
+        .local_move_size
+        .get()
+        .is_some_and(LocalMoveSizeMode::is_mouse_driven);
+    if context.release_pending.get() && !moving {
         let Ok(permit) = context.input_sender.try_reserve() else {
             return;
         };
@@ -5629,7 +5592,8 @@ fn retry_projected_rail_input(hwnd: HWND, context: &ProjectedRailWindowContext) 
         }
     }
 
-    if !context.close_pending.get() && !context.release_pending.get() {
+    if !context.close_pending.get() && (moving || !context.release_pending.get()) {
+        // A release deferred by a mouse-driven move is sent when the move ends.
         unsafe {
             let _ = KillTimer(Some(hwnd), PROJECTED_RAIL_INPUT_RETRY_TIMER_ID);
         }
@@ -5683,6 +5647,41 @@ fn projected_rail_mouse_position(
     })
 }
 
+/// Paints the content area from the graphics pipeline surface mapped to the window.
+///
+/// The surface covers the whole server window, so the server client area is found
+/// relative to the window origin and scaled to the surface's presented size.
+fn paint_projected_rail_window_surface(
+    device_context: HDC,
+    context: &ProjectedRailWindowContext,
+    client_width: i32,
+    client_height: i32,
+) -> Option<bool> {
+    let surface = context.shell.surface.borrow();
+    let surface = surface.as_ref()?.borrow();
+    let geometry = context.geometry.get();
+    let content_rect = context.content.get();
+    let (surface_width, surface_height) = surface.size();
+    let scale = |value: i32, surface_length: u16, window_length: i32| {
+        i32::try_from(i64::from(value) * i64::from(surface_length) / i64::from(window_length.max(1))).ok()
+    };
+    let left = content_rect.x.saturating_sub(geometry.x);
+    let top = content_rect.y.saturating_sub(geometry.y);
+    let source = RECT {
+        left: scale(left, surface_width, geometry.width)?,
+        top: scale(top, surface_height, geometry.height)?,
+        right: scale(left.saturating_add(content_rect.width), surface_width, geometry.width)?,
+        bottom: scale(top.saturating_add(content_rect.height), surface_height, geometry.height)?,
+    };
+    let destination = RECT {
+        left: 0,
+        top: 0,
+        right: client_width,
+        bottom: client_height,
+    };
+    Some(surface.paint(device_context, destination, source))
+}
+
 fn paint_projected_rail_window(hwnd: HWND, context: &ProjectedRailWindowContext) {
     let mut paint = PAINTSTRUCT::default();
     let device_context = unsafe { BeginPaint(hwnd, &mut paint) };
@@ -5691,6 +5690,19 @@ fn paint_projected_rail_window(hwnd: HWND, context: &ProjectedRailWindowContext)
         let client_width = (client_rect.right - client_rect.left).max(0);
         let client_height = (client_rect.bottom - client_rect.top).max(0);
         let content_rect = context.content.get();
+        if let Some(painted) = paint_projected_rail_window_surface(device_context, context, client_width, client_height)
+        {
+            if !painted {
+                tracing::debug!(
+                    window_id = context.window_id,
+                    "Unable to paint projected RAIL window surface"
+                );
+            }
+            unsafe {
+                let _ = EndPaint(hwnd, &paint);
+            }
+            return;
+        }
         let surface = context.presentation_surface.borrow();
         if let Some(surface) = surface.as_ref()
             && content_rect.width > 0
@@ -5738,15 +5750,57 @@ fn handle_projected_rail_window_message(
         retry_projected_rail_input(hwnd, context);
         return true;
     }
-    if message == WM_SYSCOMMAND && is_unsupported_projected_rail_system_command(wparam) {
-        // ActiveX does not implement the server-directed move/size lifecycle.
+    if message == WM_SYSCOMMAND
+        && let Some(command) = projected_rail_system_command(wparam)
+    {
+        queue_projected_rail_lifecycle_input(
+            context,
+            RailInputEvent::SystemCommand(SystemCommandPdu {
+                window_id: context.window_id,
+                command,
+            }),
+        );
         return true;
     }
-    if let Some(event) = rail_window_input_event(context.window_id, message, wparam) {
+    if !(message == WM_ACTIVATE && context.shell.suppress_activation.get())
+        && let Some(event) = rail_window_input_event(context.window_id, message, wparam)
+    {
         queue_projected_rail_lifecycle_input(context, event);
     }
 
     match message {
+        WM_GETMINMAXINFO => {
+            let Some(min_max) = context.shell.min_max.get() else {
+                return false;
+            };
+            // SAFETY: WM_GETMINMAXINFO passes a MINMAXINFO the system owns for this call.
+            if let Some(info) = unsafe { (lparam.0 as *mut MINMAXINFO).as_mut() } {
+                apply_min_max_info(info, &min_max);
+            }
+            true
+        }
+        WM_ENTERSIZEMOVE => {
+            if context.shell.local_move_size.get().is_none() {
+                // A move or resize started from the local frame or System menu.
+                context.shell.local_move_size.set(Some(LocalMoveSizeMode::Local));
+            }
+            false
+        }
+        WM_EXITSIZEMOVE => {
+            finish_projected_rail_move_size(hwnd, context);
+            false
+        }
+        WM_SETTINGCHANGE => {
+            // Settings broadcasts reach top-level windows only, so projected windows
+            // report them; the RAIL channel sends only values that changed.
+            if let Err(error) = context
+                .input_sender
+                .try_send(RdpInputEvent::RailSystemParameters(local_system_parameters()))
+            {
+                tracing::debug!(?error, "Unable to report changed RAIL system parameters");
+            }
+            false
+        }
         WM_PAINT => {
             paint_projected_rail_window(hwnd, context);
             true
@@ -5855,17 +5909,8 @@ fn handle_projected_rail_window_message(
             {
                 apply_projected_rail_input(context, [Operation::MouseMove(position)]);
             }
-            let mut remaining = ((wparam.0 >> 16) as u16) as i16;
-            let mut operations = Vec::new();
-            while remaining != 0 {
-                let rotation_units = remaining.clamp(-256, 255);
-                operations.push(Operation::WheelRotations(WheelRotations {
-                    is_vertical: message == WM_MOUSEWHEEL,
-                    rotation_units,
-                }));
-                remaining -= rotation_units;
-            }
-            apply_projected_rail_input(context, operations);
+            let delta = ((wparam.0 >> 16) as u16) as i16;
+            apply_projected_rail_input(context, wheel_operations(message == WM_MOUSEWHEEL, delta));
             true
         }
         WM_CANCELMODE | WM_ENABLE if wparam.0 == 0 => {
@@ -5877,6 +5922,71 @@ fn handle_projected_rail_window_message(
             true
         }
         _ => false,
+    }
+}
+
+/// Ends a local move or resize ([MS-RDPERP] 3.2.5.2.7.3 Sending Window Move PDU):
+/// reports the window's final rectangle unless a mouse-based move reports it with the
+/// released button, then releases the mouse button that drove a server-initiated move
+/// so the server ends its own move loop.
+///
+/// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp
+fn finish_projected_rail_move_size(hwnd: HWND, context: &ProjectedRailWindowContext) {
+    let Some(mode) = context.shell.local_move_size.take() else {
+        return;
+    };
+    let mut rect = RECT::default();
+    if mode.reports_window_move() && unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok() {
+        let clamp = |value: i32| value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        queue_projected_rail_lifecycle_input(
+            context,
+            RailInputEvent::WindowMove(WindowMovePdu {
+                window_id: context.window_id,
+                rectangle: RailRectangle {
+                    left: clamp(rect.left),
+                    top: clamp(rect.top),
+                    right: clamp(rect.right),
+                    bottom: clamp(rect.bottom),
+                },
+            }),
+        );
+    }
+    if mode.is_mouse_driven() {
+        let permit = match context.input_sender.try_reserve() {
+            Ok(permit) => permit,
+            Err(error) => {
+                // The retry releases every button and key the server saw pressed.
+                context.release_pending.set(true);
+                schedule_projected_rail_input_retry(hwnd);
+                tracing::debug!(
+                    ?error,
+                    window_id = context.window_id,
+                    "Deferring the release that ends a RAIL local move"
+                );
+                return;
+            }
+        };
+        let mut point = POINT::default();
+        let position = (unsafe { GetCursorPos(&mut point) }.is_ok()
+            && unsafe { ScreenToClient(hwnd, &mut point) }.as_bool())
+        .then(|| projected_rail_mouse_position(context, hwnd, point.x, point.y))
+        .flatten();
+        let mut input_database = context.input_database.borrow_mut();
+        let mut fast_path = input_database.apply(position.map(Operation::MouseMove));
+        if context.release_pending.replace(false) {
+            // Focus or capture was lost during the move: release everything it held.
+            fast_path.extend(input_database.release_all());
+        } else {
+            // Either button can drive the move (as the start-side check allows); the input
+            // database only releases the one the server saw pressed.
+            fast_path.extend(input_database.apply([
+                Operation::MouseButtonReleased(MouseButton::Left),
+                Operation::MouseButtonReleased(MouseButton::Right),
+            ]));
+        }
+        if !fast_path.is_empty() {
+            permit.send(RdpInputEvent::FastPath(fast_path));
+        }
     }
 }
 
@@ -5910,6 +6020,13 @@ struct RailWindowManager {
     presentation_surface: Rc<RefCell<Option<PresentationSurface>>>,
     input_sender: Option<RdpInputSender>,
     windows: BTreeMap<u32, ProjectedRailWindow>,
+    /// Whether the last program display notification reported any window as visible.
+    program_displayed: bool,
+    notifications: Vec<SessionNotification>,
+    icons: RailIconCache,
+    tray: Option<RailTray>,
+    /// Graphics pipeline surfaces mapped to RAIL windows, kept for windows created later.
+    surfaces: BTreeMap<u32, Rc<RefCell<RailWindowSurface>>>,
 }
 
 impl RailWindowManager {
@@ -5926,11 +6043,17 @@ impl RailWindowManager {
             presentation_surface,
             input_sender: None,
             windows: BTreeMap::new(),
+            program_displayed: false,
+            notifications: Vec::new(),
+            icons: RailIconCache::default(),
+            tray: None,
+            surfaces: BTreeMap::new(),
         }
     }
 
     fn start(&mut self, input_sender: Option<RdpInputSender>) {
         self.clear();
+        self.discard_notifications();
         self.input_sender = input_sender;
     }
 
@@ -5940,37 +6063,306 @@ impl RailWindowManager {
 
     fn stop(&mut self) {
         self.clear();
+        self.discard_notifications();
         self.input_sender = None;
     }
 
-    fn consume(&mut self, update: &[u8]) {
-        let mut reader = ReadCursor::new(update);
-        if reader.len() < 2 {
-            tracing::debug!("Ignoring truncated RAIL windowing update");
-            return;
-        }
-        reader.advance(2);
-        let Ok(update) = try_decode_slow_path_windowing_orders(&mut reader) else {
-            tracing::debug!("Ignoring malformed RAIL windowing update");
+    /// Takes the RemoteApp display notifications produced since the last call.
+    fn take_notifications(&mut self) -> Vec<SessionNotification> {
+        core::mem::take(&mut self.notifications)
+    }
+
+    /// Drops pending display notifications when the session ends, since mstscax reports none on teardown.
+    fn discard_notifications(&mut self) {
+        self.notifications.clear();
+        self.program_displayed = false;
+    }
+
+    /// Records a projected window's visibility change and the resulting program visibility change.
+    fn update_window_display(&mut self, window_id: u32) {
+        let Some(window) = self.windows.get_mut(&window_id) else {
             return;
         };
-        for order in update.orders {
-            const WINDOW_TYPE: u32 = 0x0100_0000;
-            const DELETED: u32 = 0x2000_0000;
+        let displayed = unsafe { IsWindowVisible(window.hwnd) }.as_bool();
+        if window.displayed == displayed {
+            return;
+        }
+        window.displayed = displayed;
+        self.notifications.push(if displayed {
+            SessionNotification::RemoteWindowDisplayed {
+                displayed: true,
+                window: window.hwnd.0 as usize as u32,
+                attribute: REMOTE_APP_WINDOW_DISPLAYED,
+            }
+        } else {
+            SessionNotification::RemoteWindowDisplayed {
+                displayed: false,
+                window: 0,
+                attribute: 0,
+            }
+        });
+        self.update_program_display();
+    }
 
-            if resets_projected_rail_windows(order.fields_present) {
-                self.clear();
-            } else if order.fields_present & WINDOW_TYPE != 0 && order.fields_present & DELETED != 0 {
-                if let Some(window_id) = order
-                    .encoded
-                    .get(7..11)
-                    .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-                    .map(u32::from_le_bytes)
-                {
-                    self.destroy_window(window_id);
+    fn update_program_display(&mut self) {
+        let displayed = self.windows.values().any(|window| window.displayed);
+        if self.program_displayed != displayed {
+            self.program_displayed = displayed;
+            // IronRDP does not track mstscax's desktop-loaded state, which would set display information 2.
+            self.notifications.push(SessionNotification::RemoteProgramDisplayed {
+                displayed,
+                display_information: 0,
+            });
+        }
+    }
+
+    fn consume(&mut self, orders: Vec<WindowingOrder>) {
+        for order in orders {
+            match order {
+                WindowingOrder::Window(WindowOrder {
+                    window_id,
+                    body: WindowOrderBody::Deleted,
+                    ..
+                }) => self.destroy_window(window_id),
+                WindowingOrder::Window(WindowOrder {
+                    window_id,
+                    body: WindowOrderBody::Icon(icon),
+                    ..
+                }) => self.apply_window_icon(window_id, &icon),
+                WindowingOrder::Window(order) => {
+                    let window_id = order.window_id;
+                    let shape = match &order.body {
+                        WindowOrderBody::State(state) => Some(WindowState {
+                            window_rects: state.window_rects.clone(),
+                            visibility_rects: state.visibility_rects.clone(),
+                            visible_offset: state.visible_offset,
+                            ..WindowState::default()
+                        }),
+                        _ => None,
+                    };
+                    if let Some(order) = projected_rail_window_order(order) {
+                        self.apply_window_order(order);
+                    }
+                    if let Some(shape) = shape {
+                        self.apply_window_shape(window_id, &shape);
+                    }
                 }
-            } else if let Some(order) = parse_projected_rail_window_order(order.encoded, order.fields_present) {
-                self.apply_window_order(order);
+                WindowingOrder::NotifyIcon(order) => self.apply_notify_icon(order),
+                WindowingOrder::Desktop(desktop) => {
+                    // A non-monitored desktop, or the start of an auto-reconnect resend,
+                    // discards every window, icon and notification icon first.
+                    if desktop.resets_windows() {
+                        self.clear();
+                    }
+                    if let DesktopOrder::ActivelyMonitored(desktop) = desktop {
+                        self.apply_desktop(desktop);
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_window_icon(&mut self, window_id: u32, icon: &WindowIcon) {
+        // Resolve even for unknown windows, so inline icons still reach the cache.
+        let Some(handle) = self.icons.resolve(&icon.icon) else {
+            return;
+        };
+        if icon.overlay {
+            // Taskbar overlay icons are not projected.
+            return;
+        }
+        if let Some(window) = self.windows.get(&window_id) {
+            window.context.shell.set_icon(window.hwnd, icon.big, handle);
+        }
+    }
+
+    fn apply_window_shape(&self, window_id: u32, state: &WindowState) {
+        let Some(window) = self.windows.get(&window_id) else {
+            return;
+        };
+        let shell = &window.context.shell;
+        shell.shape.borrow_mut().update(state);
+        let geometry = window.geometry.get();
+        let region = shell
+            .shape
+            .borrow()
+            .region_rectangles(geometry.x, geometry.y, geometry.width, geometry.height);
+        if *shell.applied_region.borrow() != region {
+            apply_window_region(window.hwnd, region.as_deref());
+            shell.applied_region.replace(region);
+        }
+    }
+
+    fn apply_notify_icon(&mut self, order: NotifyIconOrder) {
+        let tray = match &mut self.tray {
+            Some(tray) => tray,
+            None => {
+                let Some(input_sender) = self.input_sender.clone() else {
+                    return;
+                };
+                match RailTray::new(input_sender) {
+                    Ok(tray) => self.tray.insert(tray),
+                    Err(error) => {
+                        tracing::warn!(?error, "Unable to create the RAIL notification window");
+                        return;
+                    }
+                }
+            }
+        };
+        tray.apply(order, &mut self.icons);
+    }
+
+    fn apply_desktop(&self, desktop: MonitoredDesktop) {
+        if let Some(z_order) = &desktop.z_order {
+            // Topmost first: raising the windows bottom-up leaves the first one on top.
+            for window in z_order.iter().rev().filter_map(|window_id| self.windows.get(window_id)) {
+                if let Err(error) = unsafe {
+                    SetWindowPos(
+                        window.hwnd,
+                        Some(HWND_TOP),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    )
+                } {
+                    tracing::debug!(?error, "Unable to order a RAIL window");
+                }
+            }
+        }
+        let Some(window) = desktop
+            .active_window_id
+            .filter(|window_id| *window_id != MonitoredDesktop::NO_ACTIVE_WINDOW)
+            .and_then(|window_id| self.windows.get(&window_id))
+        else {
+            return;
+        };
+        // Only follow the server while a projected window already has the focus, so a
+        // remote application cannot take the foreground from a local one.
+        let foreground = unsafe { GetForegroundWindow() };
+        if foreground == window.hwnd || !self.windows.values().any(|window| window.hwnd == foreground) {
+            return;
+        }
+        // UNTESTED: activation of a window on this thread delivers WM_ACTIVATE before
+        // SetForegroundWindow returns, so the suppression covers the echo. If activation
+        // were deferred, the server would receive a redundant Activate PDU.
+        window.context.shell.suppress_activation.set(true);
+        let _ = unsafe { SetForegroundWindow(window.hwnd) };
+        window.context.shell.suppress_activation.set(false);
+    }
+
+    /// Applies a RAIL server control that targets projected windows.
+    fn apply_control(&self, control: RailControlEvent) {
+        match control {
+            RailControlEvent::Cloak(cloak) => {
+                if let Some(window) = self.windows.get(&cloak.window_id) {
+                    set_window_cloak(window.hwnd, cloak.cloaked);
+                }
+            }
+            RailControlEvent::MinMaxInfo(info) => {
+                if let Some(window) = self.windows.get(&info.window_id) {
+                    window.context.shell.min_max.set(Some(info));
+                }
+            }
+            RailControlEvent::LocalMoveSize(move_size) => self.apply_local_move_size(move_size),
+            _ => {}
+        }
+    }
+
+    /// Starts or ends a server-initiated local move or resize ([MS-RDPERP] 3.2.5.2.7.2
+    /// Processing Move/Size Start PDU and 3.2.5.2.7.4 Processing Move/Size End PDU).
+    ///
+    /// [MS-RDPERP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp
+    fn apply_local_move_size(&self, move_size: LocalMoveSizePdu) {
+        let Some(window) = self.windows.get(&move_size.window_id) else {
+            return;
+        };
+        let shell = &window.context.shell;
+        if !move_size.is_start {
+            if shell.local_move_size.get().is_some() {
+                // Ends a local loop the server no longer drives; WM_EXITSIZEMOVE reports
+                // the rectangle the user left the window at.
+                let _ = unsafe { PostMessageW(Some(window.hwnd), WM_CANCELMODE, WPARAM(0), LPARAM(0)) };
+            } else {
+                // The Move/Size End PDU carries the final top-left corner (MS-RDPERP
+                // 3.2.5.2.7.4); apply it when no local loop decides the position.
+                let flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+                if let Err(error) = unsafe {
+                    SetWindowPos(
+                        window.hwnd,
+                        None,
+                        i32::from(move_size.x),
+                        i32::from(move_size.y),
+                        0,
+                        0,
+                        flags,
+                    )
+                } {
+                    tracing::debug!(
+                        ?error,
+                        window_id = move_size.window_id,
+                        "Unable to apply the RAIL move/size end position"
+                    );
+                }
+            }
+            return;
+        }
+        let (command, mode) = local_move_size_command(move_size.move_size_type);
+        shell.local_move_size.set(Some(mode));
+        if mode.is_mouse_driven() {
+            let button_down = [VK_LBUTTON, VK_RBUTTON]
+                .into_iter()
+                .any(|key| unsafe { GetAsyncKeyState(i32::from(key.0)) } < 0);
+            if !button_down {
+                // The button went up before the move started: end it at once.
+                finish_projected_rail_move_size(window.hwnd, &window.context);
+                return;
+            }
+            // The system's move/size loop takes the capture itself.
+            let _ = unsafe { ReleaseCapture() };
+        }
+        // Posted rather than sent: the modal loop must not run inside this dispatch.
+        if let Err(error) = unsafe { PostMessageW(Some(window.hwnd), WM_SYSCOMMAND, WPARAM(command), LPARAM(0)) } {
+            tracing::debug!(
+                ?error,
+                window_id = move_size.window_id,
+                "Unable to start a RAIL local move"
+            );
+            shell.local_move_size.set(None);
+        }
+    }
+
+    /// Paints graphics pipeline surface pixels into their RAIL windows.
+    fn apply_surface_updates(&mut self, updates: Vec<WindowUpdate>) {
+        let mut touched = BTreeSet::new();
+        for update in updates {
+            let Ok(window_id) = u32::try_from(update.window_id) else {
+                continue;
+            };
+            if !self.surfaces.contains_key(&window_id) && MAX_PROJECTED_RAIL_WINDOWS <= self.surfaces.len() {
+                continue;
+            }
+            let other_pixels = self
+                .surfaces
+                .iter()
+                .filter(|(id, _)| **id != window_id)
+                .map(|(_, surface)| surface.borrow().pixel_count())
+                .sum();
+            let Some(surface) = RailWindowSurface::for_update(self.surfaces.get(&window_id), &update, other_pixels)
+            else {
+                continue;
+            };
+            surface.borrow_mut().apply(&update);
+            self.surfaces.insert(window_id, Rc::clone(&surface));
+            if let Some(window) = self.windows.get(&window_id) {
+                window.context.shell.surface.replace(Some(surface));
+            }
+            touched.insert(window_id);
+        }
+        for window in touched.iter().filter_map(|window_id| self.windows.get(window_id)) {
+            unsafe {
+                let _ = InvalidateRect(Some(window.hwnd), None, false);
             }
         }
     }
@@ -6037,6 +6429,8 @@ impl RailWindowManager {
                 frame: Rc::clone(&self.frame),
                 presentation_surface: Rc::clone(&self.presentation_surface),
                 content: Rc::clone(&content_cell),
+                geometry: Rc::clone(&geometry_cell),
+                shell: RailWindowShell::default(),
                 close_pending: Cell::new(false),
                 close_queued: Cell::new(false),
                 release_pending: Cell::new(false),
@@ -6081,9 +6475,17 @@ impl RailWindowManager {
                     content: content_cell,
                     server_style,
                     server_extended_style,
-                    _context: window_context,
+                    displayed: false,
+                    context: window_context,
                 },
             );
+            if let Some(window) = self.windows.get(&order.window_id) {
+                window
+                    .context
+                    .shell
+                    .surface
+                    .replace(self.surfaces.get(&order.window_id).cloned());
+            }
             self.attach_waiting_children(order.window_id);
         }
 
@@ -6161,6 +6563,7 @@ impl RailWindowManager {
         } {
             tracing::debug!(?error, window_id = order.window_id, "Unable to position RAIL window");
         }
+        self.update_window_display(order.window_id);
     }
 
     fn attach_waiting_children(&self, owner_window_id: u32) {
@@ -6179,9 +6582,18 @@ impl RailWindowManager {
     }
 
     fn destroy_window(&mut self, window_id: u32) {
+        self.surfaces.remove(&window_id);
         let Some(window) = self.windows.remove(&window_id) else {
             return;
         };
+        if window.displayed {
+            self.notifications.push(SessionNotification::RemoteWindowDisplayed {
+                displayed: false,
+                window: 0,
+                attribute: 0,
+            });
+            self.update_program_display();
+        }
         if unsafe { IsWindow(Some(window.hwnd)) }.as_bool()
             && let Err(error) = unsafe { DestroyWindow(window.hwnd) }
         {
@@ -6199,6 +6611,9 @@ impl RailWindowManager {
         for window_id in self.windows.keys().copied().collect::<Vec<_>>() {
             self.destroy_window(window_id);
         }
+        self.tray = None;
+        self.icons.clear();
+        self.surfaces.clear();
     }
 }
 
@@ -6241,10 +6656,10 @@ impl ClipboardMessageProxy for ActiveXClipboardMessageProxy {
 
 // COM can release child objects after their originating control. Keep the server loaded until
 // every externally visible child object has completed its own final Release.
-struct ServerObjectLifetime;
+pub(crate) struct ServerObjectLifetime;
 
 impl ServerObjectLifetime {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         com::add_object();
         Self
     }
@@ -6280,7 +6695,8 @@ impl ModernClientSettings {
         }) {
             return Err(Error::from_hresult(E_ACCESSDENIED));
         }
-        let parsed = ironrdp_rdpfile::parse(contents);
+        let signed = prepare_rdp_file(contents, &SignaturePolicy::from_registry())?;
+        let parsed = ironrdp_rdpfile::parse(&signed.settings);
         if !parsed.errors.is_empty() {
             return Err(Error::new(
                 E_INVALIDARG,
@@ -6290,7 +6706,14 @@ impl ModernClientSettings {
                     .map_or_else(|| "invalid RDP settings".to_owned(), ToString::to_string),
             ));
         }
-        self.bridge.control()?.apply_modern_property_set(parsed.properties)
+        let control = self.bridge.control()?;
+        control.apply_modern_property_set(parsed.properties)?;
+        control.trust.borrow_mut().apply_signature(
+            signed.verification.status.redirection_warning_type(),
+            signed.verification.chain,
+            signed.show_publisher_warning,
+        );
+        Ok(())
     }
 
     fn retrieve_settings(&self) -> Result<String> {
@@ -6336,7 +6759,7 @@ impl ModernClientActions {
     }
 }
 
-fn dispatch_get_ids(
+pub(crate) fn dispatch_get_ids(
     riid: *const GUID,
     names: *const PCWSTR,
     count: u32,
@@ -6362,11 +6785,11 @@ fn dispatch_get_ids(
     Ok(())
 }
 
-fn dispatch_params<'a>(params: *const DISPPARAMS) -> Result<&'a DISPPARAMS> {
+pub(crate) fn dispatch_params<'a>(params: *const DISPPARAMS) -> Result<&'a DISPPARAMS> {
     unsafe { params.as_ref() }.ok_or_else(|| Error::from_hresult(E_POINTER))
 }
 
-fn dispatch_arguments(params: &DISPPARAMS) -> Result<&[VARIANT]> {
+pub(crate) fn dispatch_arguments(params: &DISPPARAMS) -> Result<&[VARIANT]> {
     if params.cArgs == 0 {
         return Ok(&[]);
     }
@@ -7038,6 +7461,8 @@ struct CameraCatalogEntry {
     instance_id: RefCell<Option<String>>,
     parent_instance_id: RefCell<Option<String>>,
     redirected: Cell<bool>,
+    /// Explicitly not redirected, even when the collection redirects by default.
+    excluded: Cell<bool>,
     device_exists: Cell<bool>,
 }
 
@@ -7049,8 +7474,14 @@ impl CameraCatalogEntry {
             instance_id: RefCell::new(None),
             parent_instance_id: RefCell::new(None),
             redirected: Cell::new(false),
+            excluded: Cell::new(false),
             device_exists: Cell::new(false),
         }
+    }
+
+    fn set_redirected(&self, redirected: bool) {
+        self.redirected.set(redirected);
+        self.excluded.set(!redirected);
     }
 
     fn update(&self, device: CameraDeviceInfo) {
@@ -7362,11 +7793,8 @@ impl IMsRdpCameraRedirConfig_Impl for CameraRedirConfig_Impl {
 
     unsafe fn put_Redirected(&self, redirected: i16) -> Result<()> {
         let redirected = normalize_variant_bool(redirected)? == VARIANT_TRUE.0;
-        if redirected {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
         camera_settings_mutable(&self.settings.borrow())?;
-        self.entry.redirected.set(false);
+        self.entry.set_redirected(redirected);
         Ok(())
     }
 
@@ -7433,6 +7861,30 @@ impl CameraRedirConfigCollection {
         let config: IMsRdpCameraRedirConfig = CameraRedirConfig::new(entry, Rc::clone(&self.settings)).into();
         self.configs.borrow_mut().insert(key, config.clone());
         config
+    }
+
+    /// Camera redirection policy for a new connection.
+    fn camera_config(&self) -> CameraConfig {
+        let catalog = self.catalog.borrow();
+        let links = |select: fn(&CameraCatalogEntry) -> bool| {
+            catalog
+                .entries
+                .iter()
+                .filter(|entry| select(entry))
+                .map(|entry| entry.symbolic_link.clone())
+                .collect()
+        };
+        CameraConfig {
+            redirect_all: self.redirect_by_default.get(),
+            include: links(|entry| entry.redirected.get()),
+            exclude: links(|entry| entry.excluded.get()),
+            encode_video: self.encode_video.get(),
+            encoding_quality: match self.encoding_quality.get() {
+                0 => CameraEncodingQuality::Low,
+                1 => CameraEncodingQuality::Medium,
+                _ => CameraEncodingQuality::High,
+            },
+        }
     }
 
     fn write_config(&self, entry: Rc<CameraCatalogEntry>, output: InterfaceOut) -> Result<()> {
@@ -7525,21 +7977,15 @@ impl IMsRdpCameraRedirConfigCollection_Impl for CameraRedirConfigCollection_Impl
             return Err(Error::from_hresult(E_INVALIDARG));
         }
         let redirected = normalize_variant_bool(redirected)? == VARIANT_TRUE.0;
-        if redirected {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
         camera_settings_mutable(&self.settings.borrow())?;
-        self.catalog.borrow_mut().add_config(link);
+        self.catalog.borrow_mut().add_config(link).set_redirected(redirected);
         Ok(())
     }
 
     unsafe fn put_RedirectByDefault(&self, redirect: i16) -> Result<()> {
         let redirect = normalize_variant_bool(redirect)? == VARIANT_TRUE.0;
-        if redirect {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
         camera_settings_mutable(&self.settings.borrow())?;
-        self.redirect_by_default.set(false);
+        self.redirect_by_default.set(redirect);
         Ok(())
     }
 
@@ -8069,7 +8515,11 @@ fn validated_unicode_text_snapshot(data: &[u8]) -> Result<Option<Vec<u8>>> {
     IMsRdpClientNonScriptable7,
     IMsRdpClientNonScriptable8,
     IMsRdpPreferredRedirectionInfo,
-    IMsRdpExtendedSettings
+    IMsRdpExtendedSettings,
+    windows::Win32::System::Ole::IProvideClassInfo2,
+    windows::Win32::System::Ole::IQuickActivate,
+    windows::Win32::System::Ole::IPersistPropertyBag,
+    windows::Win32::System::Ole::IPersistPropertyBag2
 )]
 pub(crate) struct Control {
     class_id: GUID,
@@ -8079,21 +8529,35 @@ pub(crate) struct Control {
     device_collection: IMsRdpDeviceCollection,
     drive_collection: IMsRdpDriveCollection,
     camera_collection: IMsRdpCameraRedirConfigCollection,
+    client_shell: RefCell<Option<IMsRdpClientShell>>,
+    trust: RefCell<TrustSettings>,
     state: Rc<Cell<ConnectionState>>,
     last_disconnect: Cell<DisconnectInfo>,
     clipboard_state: Rc<ClipboardState>,
     clipboard_backend: RefCell<Option<WinClipboard>>,
     connection_generation: Cell<u64>,
     login_complete_fired: Cell<bool>,
+    /// The session ID the server reported with the last completed logon, or zero before one.
+    remote_session_id: Cell<u32>,
     remote_size: Cell<Option<(i32, i32)>>,
     configured_monitor_topology: RefCell<Option<MonitorTopology>>,
     active_monitor_topology: RefCell<Option<MonitorTopology>>,
+    /// The last multimonitor Display Control layout queued for the session, scale overrides included.
+    last_multimon_layout: RefCell<Option<DisplayControlMonitorLayout>>,
     input_sender: Rc<RefCell<Option<RdpInputSender>>>,
     drive_session: Rc<DriveSessionState>,
     location_altitude: Cell<i32>,
     static_channels: RefCell<BTreeMap<String, ActiveXStaticChannelSpec>>,
     input_database: Rc<RefCell<InputDatabase>>,
     touch_tracker: RefCell<TouchContactTracker>,
+    pen_tracker: RefCell<PenContactTracker>,
+    /// What the server's RDPEI channel accepts; touch and pen fall back to mouse emulation otherwise.
+    rdpei_input_state: Cell<RdpeiInputState>,
+    relative_mouse: RefCell<RelativeMouse>,
+    /// RDPEI events built while the session input queue was full, sent before any newer input.
+    pending_rdpei_events: RefCell<VecDeque<RdpInputEvent>>,
+    /// Route chosen for each touch or pen pointer when it appeared, kept until it leaves.
+    pointer_routes: RefCell<HashMap<u32, PointerRoute>>,
     sinks: Rc<RefCell<BTreeMap<u32, EventSink>>>,
     modern_callbacks: RefCell<BTreeMap<&'static str, Vec<IDispatch>>>,
     modern_properties: RefCell<PropertySet>,
@@ -8140,6 +8604,52 @@ pub(crate) struct Control {
     rpc_transport: RefCell<Option<ActiveXTransport>>,
     rpc_kerberos_config: RefCell<Option<ironrdp_connector::credssp::KerberosConfig>>,
     rpc_log_directive: RefCell<Option<String>>,
+}
+
+/// Whether every contact of a touch or pen event keeps its state, so that dropping the event loses only
+/// movement, as defined by [`ironrdp_rdpei::contact::is_steady`].
+fn is_steady_rdpei_event(event: &RdpInputEvent) -> bool {
+    match event {
+        RdpInputEvent::Touch(event) => event
+            .frames
+            .iter()
+            .flat_map(|frame| &frame.contacts)
+            .all(|contact| ironrdp_rdpei::contact::is_steady(contact.contact_flags)),
+        RdpInputEvent::Pen(event) => event
+            .frames
+            .iter()
+            .flat_map(|frame| &frame.contacts)
+            .all(|contact| ironrdp_rdpei::contact::is_steady_pen(contact.contact_flags)),
+        _ => false,
+    }
+}
+
+/// Where the input of one touch or pen pointer goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerRoute {
+    /// RDPEI touch or pen frames.
+    Rdpei,
+    /// Mouse messages that `DefWindowProc` synthesizes.
+    Mouse,
+}
+
+/// Converts a `QueryPerformanceCounter` value to microseconds.
+fn performance_count_us(count: u64) -> u64 {
+    static FREQUENCY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+    // The counter frequency is fixed at boot, and the query cannot fail on Windows XP and later.
+    let frequency = *FREQUENCY.get_or_init(|| {
+        let mut frequency = 0i64;
+        let _ = unsafe { QueryPerformanceFrequency(&mut frequency) };
+        u64::try_from(frequency).unwrap_or(0).max(1)
+    });
+    u64::try_from(u128::from(count) * 1_000_000 / u128::from(frequency)).unwrap_or(u64::MAX)
+}
+
+fn performance_counter_now_us() -> u64 {
+    let mut count = 0i64;
+    let _ = unsafe { QueryPerformanceCounter(&mut count) };
+    performance_count_us(count.unsigned_abs())
 }
 
 fn build_rpc_touch_event(
@@ -8263,6 +8773,7 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
         properties.insert("loadbalanceinfo", compatibility.load_balance_info.clone());
     }
     properties.insert("administrative session", compatibility.administrative_session);
+    properties.insert("use redirection server name", compatibility.use_redirection_server_name);
     properties.insert("mininputsendinterval", compatibility.min_input_send_interval_ms);
     properties.insert(
         "keepaliveinterval",
@@ -8279,8 +8790,10 @@ fn active_x_property_snapshot(settings: &Settings, compatibility: &Compatibility
     properties.insert("redirectclipboard", compatibility.redirect_clipboard);
     properties.insert("redirectwebauthn", compatibility.redirect_webauthn);
     properties.insert("redirectprinters", compatibility.redirect_printers);
+    properties.insert("redirectcomports", compatibility.redirect_ports);
     properties.insert("ironrdp_smartcard", compatibility.redirect_smart_cards);
     properties.insert("compression", compatibility.compression.unwrap_or(true));
+    properties.insert("bitmapcachepersistenable", compatibility.bitmap_persistence);
     properties
 }
 
@@ -8328,11 +8841,14 @@ fn is_boolean_modern_property(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
         "redirectclipboard"
+            | "redirectcomports"
             | "enablecredsspsupport"
             | "compression"
+            | "bitmapcachepersistenable"
             | "administrative session"
+            | "use redirection server name"
             | "remoteapplicationmode"
-    )
+    ) || rdp_properties::is_boolean_extended_rdp_property(name)
 }
 
 fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
@@ -8366,9 +8882,12 @@ fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
             _ => Err(Error::from_hresult(E_INVALIDARG)),
         },
         "redirectclipboard"
+        | "redirectcomports"
         | "enablecredsspsupport"
         | "compression"
+        | "bitmapcachepersistenable"
         | "administrative session"
+        | "use redirection server name"
         | "remoteapplicationmode" => {
             let _ = property_bool(value)?;
             Ok(())
@@ -8381,7 +8900,7 @@ fn validate_modern_rdp_property(name: &str, value: &Value) -> Result<()> {
             100..=500 => Ok(()),
             _ => Err(Error::from_hresult(E_INVALIDARG)),
         },
-        _ => Err(Error::from_hresult(E_NOTIMPL)),
+        _ => rdp_properties::validate_extended_rdp_property(name, value),
     }
 }
 
@@ -8409,6 +8928,18 @@ impl Control {
     #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::new_for_class(CLSID_IRONRDP_ACTIVEX)
+    }
+
+    /// Persisted settings can be replaced only before the control connects or creates its window.
+    pub(crate) fn ensure_persisted_settings_replaceable(&self) -> Result<()> {
+        if self.state.get() != ConnectionState::Disconnected || !self.activex_window.get().0.is_null() {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_persistence_dirty(&self, dirty: bool) {
+        self.persistence_dirty.set(dirty);
     }
 
     pub(crate) fn new_for_class(class_id: GUID) -> Self {
@@ -8448,6 +8979,8 @@ impl Control {
             device_collection,
             drive_collection,
             camera_collection,
+            client_shell: RefCell::new(None),
+            trust: RefCell::new(TrustSettings::default()),
             state,
             last_disconnect: Cell::new(DisconnectInfo::no_info()),
             clipboard_state: Rc::new(ClipboardState {
@@ -8457,15 +8990,22 @@ impl Control {
             clipboard_backend: RefCell::new(None),
             connection_generation: Cell::new(0),
             login_complete_fired: Cell::new(false),
+            remote_session_id: Cell::new(0),
             remote_size: Cell::new(None),
             configured_monitor_topology: RefCell::new(None),
             active_monitor_topology: RefCell::new(None),
+            last_multimon_layout: RefCell::new(None),
             input_sender,
             drive_session,
             location_altitude: Cell::new(0),
             static_channels: RefCell::new(BTreeMap::new()),
             input_database,
             touch_tracker: RefCell::new(TouchContactTracker::new()),
+            pen_tracker: RefCell::new(PenContactTracker::new()),
+            rdpei_input_state: Cell::new(RdpeiInputState::default()),
+            relative_mouse: RefCell::new(RelativeMouse::default()),
+            pending_rdpei_events: RefCell::new(VecDeque::new()),
+            pointer_routes: RefCell::new(HashMap::new()),
             sinks: Rc::new(RefCell::new(BTreeMap::new())),
             modern_callbacks: RefCell::new(BTreeMap::new()),
             modern_properties: RefCell::new(PropertySet::new()),
@@ -8551,14 +9091,23 @@ impl Control {
             "redirectclipboard" => {
                 self.compatibility.borrow_mut().redirect_clipboard = value.as_int().unwrap_or_default() != 0;
             }
+            "redirectcomports" => {
+                self.compatibility.borrow_mut().redirect_ports = value.as_int().unwrap_or_default() != 0;
+            }
             "enablecredsspsupport" => {
                 self.compatibility.borrow_mut().enable_credssp = Some(value.as_int().unwrap_or_default() != 0);
             }
             "compression" => {
                 self.compatibility.borrow_mut().compression = Some(value.as_int().unwrap_or_default() != 0);
             }
+            "bitmapcachepersistenable" => {
+                self.compatibility.borrow_mut().bitmap_persistence = value.as_int().unwrap_or_default() != 0;
+            }
             "administrative session" => {
                 self.compatibility.borrow_mut().administrative_session = value.as_int().unwrap_or_default() != 0;
+            }
+            "use redirection server name" => {
+                self.compatibility.borrow_mut().use_redirection_server_name = value.as_int().unwrap_or_default() != 0;
             }
             "loadbalanceinfo" => {
                 self.compatibility.borrow_mut().load_balance_info = value.as_str().unwrap_or_default().to_owned();
@@ -8582,7 +9131,7 @@ impl Control {
             "remoteapplicationcmdline" => {
                 self.remote_application.borrow_mut().arguments = value.as_str().unwrap_or_default().to_owned();
             }
-            _ => {}
+            _ => rdp_properties::apply_extended_rdp_property(self, name, value),
         }
     }
 
@@ -8626,6 +9175,7 @@ impl Control {
         properties.insert("remoteapplicationprogram", remote_application.program.clone());
         properties.insert("remoteapplicationcmdline", remote_application.arguments.clone());
         drop(remote_application);
+        rdp_properties::extended_rdp_property_snapshot(self, &mut properties);
         let sensitive = properties
             .iter()
             .filter_map(|(name, _)| is_sensitive_modern_property(name).then_some(name.clone()))
@@ -9507,6 +10057,11 @@ impl Control {
                 }
             }
             CONNECTION_BAR_MINIMIZE_BUTTON_ID => {
+                // mstscax asks the container to minimize unless the control owns a full-screen window.
+                // mstsc does not handle the request, so the native shell is still minimized directly.
+                if self.compatibility.borrow().container_handled_fullscreen != 0 || !self.settings.borrow().fullscreen {
+                    self.raise_session_notification(&SessionNotification::RequestContainerMinimize);
+                }
                 if let Some(shell) = self.native_mstsc_shell_window() {
                     unsafe {
                         let _ = ShowWindow(shell, SW_MINIMIZE);
@@ -10143,6 +10698,8 @@ impl Control {
             "NativeMstscCredentialBridge::UnqualifiedUsername"
         });
 
+        // Like mstscax, report an account name the control acquired itself, never one the host supplied.
+        self.raise_session_notification(&SessionNotification::UserNameAcquired(prompted_username.clone()));
         {
             let mut settings = self.settings.borrow_mut();
             settings.server = server;
@@ -10357,7 +10914,58 @@ impl Control {
                 self.fire_modern_event("OnDialogDismissed", Vec::new());
             }
             DISPID_ON_AUTO_RECONNECTED => self.fire_modern_event("OnAutoReconnected", Vec::new()),
+            // The modern facade reports the connection-bar pull-down as the Home key combination.
+            DISPID_ON_CONNECTION_BAR_PULL_DOWN => {
+                self.fire_modern_event("OnKeyCombinationPressed", vec![VariantValue::Integer(0)]);
+            }
             _ => {}
+        }
+    }
+
+    /// Raises a classic event whose arguments are listed from the last `rgvarg` slot to the first.
+    fn fire_event_values(&self, dispid: i32, arguments: Vec<VariantValue>) {
+        if self.events_are_frozen() {
+            return;
+        }
+
+        // Automation arguments are supplied right-to-left.
+        let mut variants = arguments
+            .into_iter()
+            .rev()
+            .map(|argument| unsafe { argument.into_variant() })
+            .collect::<Vec<_>>();
+        let params = DISPPARAMS {
+            rgvarg: variants.as_mut_ptr(),
+            rgdispidNamedArgs: ptr::null_mut(),
+            cArgs: variants.len() as u32,
+            cNamedArgs: 0,
+        };
+        let iid_null = GUID::zeroed();
+        let sinks = self
+            .sinks
+            .borrow()
+            .values()
+            .map(|sink| sink.dispatch.clone())
+            .collect::<Vec<_>>();
+
+        for sink in sinks {
+            let result = unsafe { sink.Invoke(dispid, &iid_null, 0, DISPATCH_METHOD, &params, None, None, None) };
+            if let Err(error) = result {
+                tracing::debug!(?error, event_dispid = dispid, "ActiveX event sink rejected event");
+            }
+        }
+
+        for variant in &mut variants {
+            free_owned_bstr_variant(variant);
+        }
+    }
+
+    /// Raises the classic and modern-facade events that correspond to `notification`.
+    fn raise_session_notification(&self, notification: &SessionNotification) {
+        let (dispid, arguments) = notification.classic_event();
+        self.fire_event_values(dispid, arguments);
+        if let Some((name, arguments)) = notification.modern_event() {
+            self.fire_modern_event(name, arguments);
         }
     }
 
@@ -10539,6 +11147,20 @@ impl Control {
 
     fn confirm_connection_security_warning(&self, warning: ConnectionSecurityWarning) -> Result<bool> {
         let (title, instruction, content) = warning.text();
+        self.confirm_security_prompt(title, instruction, content)
+    }
+
+    fn confirm_redirection_warning(&self, resources: &[RedirectedResource]) -> Result<bool> {
+        let trust = self.trust.borrow();
+        let publisher = trust.publisher_chain.as_ref().and_then(PublisherChain::publisher_name);
+        let (title, instruction, content) =
+            redirection_warning_text(trust.redirection_warning_type, publisher.as_deref(), resources);
+        drop(trust);
+        self.confirm_security_prompt(title, &instruction, &content)
+    }
+
+    /// Shows a Continue/Cancel security prompt; an unavailable prompt is an error so callers fail closed.
+    fn confirm_security_prompt(&self, title: &str, instruction: &str, content: &str) -> Result<bool> {
         let title = HSTRING::from(title);
         let instruction = HSTRING::from(instruction);
         let content = HSTRING::from(content);
@@ -10998,10 +11620,17 @@ impl Control {
                     let topology = self.configured_monitor_topology.borrow().clone();
                     if topology.as_ref().is_some_and(|topology| topology.monitors == monitors) {
                         *self.active_monitor_topology.borrow_mut() = topology;
-                    } else {
+                    } else if !self
+                        .active_monitor_topology
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|topology| topology.monitors == monitors)
+                    {
+                        // The server confirmed neither the requested nor the current topology.
                         self.active_monitor_topology.borrow_mut().take();
                     }
                 }
+                WorkerEvent::RemoteSessionId { session_id, .. } => self.remote_session_id.set(session_id),
                 WorkerEvent::LoginComplete { .. } => {
                     if self.state.get() == ConnectionState::Connected && !self.login_complete_fired.replace(true) {
                         self.fire_event(DISPID_ON_LOGIN_COMPLETE, &[]);
@@ -11021,9 +11650,24 @@ impl Control {
                     self.present_frame(update);
                 }
                 WorkerEvent::DisplayResizeFallback { .. } => self.report_display_resize_fallback(),
-                WorkerEvent::RailWindowingOrders { data, .. } => {
+                WorkerEvent::MonitorLayoutRejected { .. } => self.monitor_layout_rejected(),
+                WorkerEvent::RailWindowingOrders { orders, .. } => {
                     if self.rail_windows.borrow().is_enabled() {
-                        self.rail_windows.borrow_mut().consume(&data);
+                        self.rail_windows.borrow_mut().consume(orders);
+                    }
+                    let notifications = self.rail_windows.borrow_mut().take_notifications();
+                    for notification in &notifications {
+                        self.raise_session_notification(notification);
+                    }
+                }
+                WorkerEvent::RailControl { control, .. } => {
+                    if self.rail_windows.borrow().is_enabled() {
+                        self.rail_windows.borrow().apply_control(control);
+                    }
+                }
+                WorkerEvent::RailWindowSurfaces { updates, .. } => {
+                    if self.rail_windows.borrow().is_enabled() {
+                        self.rail_windows.borrow_mut().apply_surface_updates(updates);
                     }
                 }
                 WorkerEvent::RailExecuteResult { result, .. } => {
@@ -11044,6 +11688,12 @@ impl Control {
                 }
                 WorkerEvent::RailExecuteFailed { executable, flags, .. } => {
                     self.fire_remote_program_result(executable, 6, flags & ExecutePdu::FILE == 0);
+                }
+                // DisableAutoReconnectComponent can change during the session.
+                WorkerEvent::AutoReconnecting { response, .. }
+                    if !extended_properties::auto_reconnect_enabled(self) =>
+                {
+                    let _ = response.send(AutoReconnectDecision::Stop);
                 }
                 WorkerEvent::AutoReconnecting {
                     disconnect_reason,
@@ -11083,6 +11733,8 @@ impl Control {
                         self.fire_event(DISPID_ON_AUTO_RECONNECTED, &[]);
                     }
                 }
+                WorkerEvent::RdpeiInputState { state, .. } => self.set_rdpei_input_state(state),
+                WorkerEvent::ServerInputFlags { flags, .. } => input_policy::set_server_input_flags(self, flags),
                 WorkerEvent::FatalError { disconnect, .. } => {
                     if let Some(rpc) = &self.rpc {
                         rpc.session_failed(disconnect.description.to_owned());
@@ -11125,6 +11777,14 @@ impl Control {
                 WorkerEvent::StaticChannelData { channel_name, data, .. } => {
                     self.fire_channel_received_data(&channel_name, &data)
                 }
+                WorkerEvent::IdleTimeout { .. } => {
+                    if self.state.get() == ConnectionState::Connected {
+                        self.fire_event(DISPID_ON_IDLE_TIMEOUT_NOTIFICATION, &[]);
+                    }
+                }
+                WorkerEvent::SessionNotification { notification, .. } => {
+                    self.raise_session_notification(&notification);
+                }
                 WorkerEvent::Stopped { .. } => {
                     self.clear_connection_health_window();
                     if let Err(error) = self.destroy_connection_bar() {
@@ -11136,6 +11796,7 @@ impl Control {
                     self.release_input();
                     self.stop_clipboard_redirection();
                     self.input_sender.borrow_mut().take();
+                    self.compatibility.borrow_mut().advanced_compat.set_session(None);
                     self.drive_session.drive_hotplug_enabled.set(false);
                     self.drive_session.desired_drive_ids.borrow_mut().clear();
                     self.remote_size.set(None);
@@ -11213,16 +11874,8 @@ impl Control {
                         "width and height must be non-zero",
                     )
                 } else {
-                    self.update_display_layout(DisplayLayout {
-                        desktop_width: u32::from(width),
-                        desktop_height: u32::from(height),
-                        physical_width: 0,
-                        physical_height: 0,
-                        orientation: 0,
-                        desktop_scale_factor: 100,
-                        device_scale_factor: 100,
-                    })
-                    .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
+                    self.update_display_layout(DisplayLayout::unscaled(u32::from(width), u32::from(height)))
+                        .map_or_else(rpc_control_error, |_| ironrdp_agent::ipc::Response::ok())
                 };
                 let _ = response.send(response_value);
             }
@@ -11296,6 +11949,7 @@ impl Control {
             }
         }
         .with_client_build(self.compatibility.borrow().client_build)
+        .with_relative_mouse_input(self.compatibility.borrow().input_policy.relative_mouse_allowed)
         .with_client_dir(self.compatibility.borrow().client_dir.clone())
         .with_client_name(
             self.compatibility
@@ -11374,6 +12028,7 @@ impl Control {
             compatibility.enable_credssp = Some(connector.enable_credssp);
             compatibility.enable_tls = Some(connector.enable_tls);
             compatibility.compression = Some(connector.compression_type.is_some());
+            compatibility.bitmap_persistence = config.channels().egfx_persistent_cache.is_some();
             compatibility.compression_level = connector.compression_type.map(|compression| match compression {
                 ironrdp_pdu::rdp::client_info::CompressionType::K8 => 0,
                 ironrdp_pdu::rdp::client_info::CompressionType::K64 => 1,
@@ -11420,6 +12075,7 @@ impl Control {
                 .unwrap_or_default()
                 .to_owned();
             compatibility.administrative_session = config.administrative_session();
+            compatibility.use_redirection_server_name = config.use_redirection_server_name();
             compatibility.audio_quality_mode = config.audio_quality_mode();
             compatibility.secured_start_program = connector.alternate_shell.clone();
             compatibility.secured_work_dir = connector.work_dir.clone();
@@ -11449,6 +12105,9 @@ impl Control {
                 // Rejected by `active_x_transport_from_client_transport` before settings apply.
                 Transport::NamedPipe { .. } => {
                     unreachable!("NamedPipe must fail RPC connect before compatibility settings")
+                }
+                Transport::GatewayRpch(_) => {
+                    unreachable!("GatewayRpch must fail RPC connect before compatibility settings")
                 }
             }
         }
@@ -11661,13 +12320,17 @@ impl Control {
         let password = password.ok_or_else(|| Error::new(E_INVALIDARG, "set IronRdpPassword before connecting"))?;
 
         let enable_credssp = compatibility.enable_credssp;
+        let relative_mouse_input = compatibility.input_policy.relative_mouse_allowed;
         let compression = compatibility.compression;
+        let bitmap_persistence = compatibility.bitmap_persistence;
         let clipboard = compatibility.redirect_clipboard;
         let redirect_webauthn = compatibility.redirect_webauthn;
         let warn_about_credentials = compatibility.warn_about_sending_credentials;
         let warn_about_clipboard = clipboard && compatibility.warn_about_clipboard_redirection;
         let redirect_dynamic_drives = !compatibility.disable_rdpdr && compatibility.redirect_dynamic_drives;
         let redirect_printers = !compatibility.disable_rdpdr && compatibility.redirect_printers;
+        // Like mstsc's RedirectPorts, this redirects every local serial and parallel port.
+        let redirect_ports = !compatibility.disable_rdpdr && compatibility.redirect_ports;
         let (configured_drives, initial_drive_ids) = if compatibility.disable_rdpdr {
             (Vec::new(), Vec::new())
         } else {
@@ -11680,6 +12343,7 @@ impl Control {
         let rdpdr_factory = if initial_drive_ids.is_empty()
             && !redirect_dynamic_drives
             && !redirect_printers
+            && !redirect_ports
             && !redirect_smart_cards
         {
             None
@@ -11692,6 +12356,9 @@ impl Control {
                 .map_err(|error| Error::new(E_FAIL, format!("invalid redirected-drive configuration: {error}")))?
                 .with_dynamic_drives(redirect_dynamic_drives)
                 .with_default_printer(redirect_printers)
+                .with_port_redirection(ironrdp_rdpdr_native::WindowsPortRedirection::from_enabled(
+                    redirect_ports,
+                ))
                 .with_worker_thread_hooks(ironrdp_rdpdr_native::RdpdrWorkerThreadHooks::new(
                     acquire_activex_printer_worker_guard,
                 ))
@@ -11746,6 +12413,7 @@ impl Control {
         let compression_level = compatibility.compression_level;
         let load_balance_info = compatibility.load_balance_info.clone();
         let administrative_session = compatibility.administrative_session;
+        let use_redirection_server_name = compatibility.use_redirection_server_name;
         let audio_quality_mode = compatibility.audio_quality_mode;
         let client_build = compatibility.client_build;
         let client_dir = compatibility.client_dir.clone();
@@ -11754,16 +12422,31 @@ impl Control {
         let fake_events_interval_minutes = compatibility.fake_events_interval_minutes;
         let min_input_send_interval_ms = compatibility.min_input_send_interval_ms;
         let keep_alive_interval_seconds = compatibility.keep_alive_interval_seconds;
+        let overall_connection_timeout = compatibility.advanced_compat.overall_connection_timeout();
+        let single_connection_timeout = compatibility.advanced_compat.single_connection_timeout();
+        let idle_timeout = compatibility.advanced_compat.idle_timeout();
         let authentication_level = compatibility.authentication_level;
         let authentication_level_set = compatibility.authentication_level_set;
         let public_mode = compatibility.public_mode;
         let use_multimon = compatibility.use_multimon;
-        let auto_reconnect_maximum_attempts = compatibility
-            .enable_auto_reconnect
+        let auto_reconnect_maximum_attempts = (compatibility.enable_auto_reconnect
+            && !compatibility.extended.disable_auto_reconnect)
             .then_some(compatibility.max_reconnect_attempts);
+        let extended = compatibility.extended.clone();
+        // An explicit device scale factor takes effect only alongside a valid desktop scale factor
+        // ([MS-RDPBCGR] 2.2.1.3.2), so it implies the default of 100.
+        let desktop_scale_factor = desktop_scale_factor.or_else(|| extended.device_scale_factor.map(|_| 100));
+        // Client Core Data advertises the device scale factor that Display Control layouts derive.
+        let core_device_scale_factor = extended.device_scale_factor.or_else(|| {
+            desktop_scale_factor.map(|scale| {
+                DeviceScaleFactor::from_desktop_scale_factor(MonitorLayoutEntry::adjust_desktop_scale_factor(scale))
+            })
+        });
         let direct_rpc_properties = active_x_property_snapshot(&settings, &compatibility);
         drop(compatibility);
-        let monitor_topology = use_multimon.then(local_monitor_topology).transpose()?;
+        let monitor_topology = use_multimon
+            .then(|| extended_properties::local_monitor_topology(self))
+            .transpose()?;
         let (desktop_width, desktop_height) = monitor_topology
             .as_ref()
             .map(|topology| (topology.desktop_width, topology.desktop_height))
@@ -11776,7 +12459,39 @@ impl Control {
         if let Some(execute) = &remote_application_execute {
             validate_rail_execute(execute)?;
         }
-        if !self.confirm_connection_security_warnings(warn_about_credentials, warn_about_clipboard)? {
+        let cameras_redirected = {
+            // SAFETY: the control creates its camera collection from `CameraRedirConfigCollection`.
+            let cameras =
+                unsafe { AsImpl::<CameraRedirConfigCollection>::as_impl(&self.camera_collection) }.camera_config();
+            cameras.redirect_all || !cameras.include.is_empty()
+        };
+        let redirected_resources = [
+            (
+                !initial_drive_ids.is_empty() || redirect_dynamic_drives,
+                RedirectedResource::Drives,
+            ),
+            (clipboard, RedirectedResource::Clipboard),
+            (redirect_printers, RedirectedResource::Printers),
+            (redirect_ports, RedirectedResource::Ports),
+            (redirect_smart_cards, RedirectedResource::SmartCards),
+            (redirect_webauthn, RedirectedResource::WebAuthn),
+            (audio_capture_enabled, RedirectedResource::AudioCapture),
+            (cameras_redirected, RedirectedResource::Cameras),
+        ]
+        .into_iter()
+        .filter_map(|(enabled, resource)| enabled.then_some(resource))
+        .collect::<Vec<_>>();
+        let trust = self.trust.borrow();
+        let redirection_warning = redirection_warning_resources(&trust, warn_about_clipboard, &redirected_resources);
+        // The redirection warning lists clipboard redirection itself.
+        let separate_clipboard_warning = warn_about_clipboard && !trust.show_redirection_warning_dialog;
+        drop(trust);
+        if !self.confirm_connection_security_warnings(warn_about_credentials, separate_clipboard_warning)? {
+            return Ok(());
+        }
+        if let Some(resources) = redirection_warning
+            && !self.confirm_redirection_warning(&resources)?
+        {
             return Ok(());
         }
         let certificate_validation =
@@ -11887,6 +12602,7 @@ impl Control {
             .with_performance_flags(performance_flags)
             .with_keyboard_layout(keyboard_layout)
             .with_connection_type(connection_type)
+            .with_relative_mouse_input(relative_mouse_input)
             .with_audio_mode(audio_redirection_mode)
             .with_audio_capture(audio_capture_enabled)
             .with_audio_quality_mode(audio_quality_mode)
@@ -11895,11 +12611,20 @@ impl Control {
                 u64::try_from(min_input_send_interval_ms).map_err(|_| Error::from_hresult(E_INVALIDARG))?,
             ))
             .with_administrative_session(administrative_session)
+            .with_use_redirection_server_name(use_redirection_server_name)
             .with_certificate_validation(certificate_validation)
+            .with_egfx_persistent_cache(if bitmap_persistence { default_cache_path() } else { None })
             // The GDI presenter has no hardware-cursor overlay, so cursor updates must be
             // composited into the decoded framebuffer before it receives image events.
             .with_pointer_software_rendering(true)
-            .with_location_redirection(true)
+            .with_location_redirection(extended.enable_location_redirection)
+            .with_max_touch_contacts(extended.max_touch_contacts)
+            .with_audio_output_device(extended_properties::audio_device_selector(
+                &extended.audio_playback_device,
+            ))
+            .with_audio_input_device(extended_properties::audio_device_selector(
+                &extended.audio_capture_device,
+            ))
             .with_clipboard(if clipboard {
                 ClipboardType::Enable
             } else {
@@ -11908,9 +12633,34 @@ impl Control {
             .with_webauthn(redirect_webauthn)
             .with_webauthn_parent_hwnd(hwnd.0 as isize)
             .with_rdpdr(rdpdr_enabled)
-            .with_smartcard(redirect_smart_cards);
+            .with_smartcard(redirect_smart_cards)
+            // SAFETY: the control creates its camera collection from `CameraRedirConfigCollection`.
+            .with_cameras(
+                unsafe { AsImpl::<CameraRedirConfigCollection>::as_impl(&self.camera_collection) }.camera_config(),
+            );
         let builder = if let Some(topology) = &monitor_topology {
-            builder.with_monitor_layout(topology.client_monitor_data())
+            builder
+                .with_monitor_layout(topology.client_monitor_data())
+                .with_monitor_extended_layout(extended_properties::client_monitor_extended_data(
+                    topology,
+                    desktop_scale_factor,
+                    extended.device_scale_factor,
+                ))
+        } else {
+            builder
+        };
+        let builder = if let Some((width, height)) = extended.physical_desktop_size() {
+            builder.with_desktop_physical_size(width, height)
+        } else {
+            builder
+        };
+        let builder = if let Some(orientation) = extended.desktop_orientation {
+            builder.with_desktop_orientation(orientation)
+        } else {
+            builder
+        };
+        let builder = if let Some(device_scale_factor) = core_device_scale_factor {
+            builder.with_device_scale_factor(device_scale_factor.value())
         } else {
             builder
         };
@@ -11918,7 +12668,10 @@ impl Control {
             builder
                 .with_remote_application_mode(true)
                 .with_rail_support_level(RailSupportLevel::SUPPORTED)
-                .with_rail_client_status_flags(0)
+                .with_rail_client_status_flags(
+                    ClientStatusPdu::ALLOW_LOCAL_MOVE_SIZE | ClientStatusPdu::BIDIRECTIONAL_CLOAK,
+                )
+                .with_rail_system_parameters(local_system_parameters())
         } else {
             builder
         };
@@ -11974,6 +12727,11 @@ impl Control {
         } else {
             builder.with_input_keepalive_interval(Duration::from_secs(u64::from(keep_alive_interval_seconds)))
         };
+        let builder = if let Some(timeout) = single_connection_timeout {
+            builder.with_tcp_connect_attempt_timeout(timeout)
+        } else {
+            builder
+        };
         let using_rdcleanpath = matches!(&transport, ActiveXTransport::RDCleanPath(_));
         let builder = match transport {
             ActiveXTransport::Direct => builder,
@@ -12017,6 +12775,7 @@ impl Control {
             .build()
             .map_err(|error| Error::new(E_INVALIDARG, format!("invalid RDP configuration: {error}")))?;
         *self.configured_monitor_topology.borrow_mut() = monitor_topology;
+        self.last_multimon_layout.borrow_mut().take();
         self.active_monitor_topology.borrow_mut().take();
         if using_rdcleanpath {
             self.clear_rdcleanpath_token();
@@ -12031,6 +12790,7 @@ impl Control {
             client
         };
         let input_sender = client.input_sender();
+        let mut worker_timers = WorkerTimers::new(input_sender.clone(), overall_connection_timeout, idle_timeout);
         if let Some(execute) = remote_application_execute {
             input_sender
                 .try_send_rail_execute(execute)
@@ -12097,7 +12857,38 @@ impl Control {
                                     let client_task = tokio::task::spawn_local(client.run());
                                     let mut connection_failed = false;
                                     let mut terminal_received = false;
-                                    while let Some(output) = output_receiver.recv().await {
+                                    let mut network_status = NetworkStatusTracker::default();
+                                    while let Some(output) = worker_timers.next(&mut output_receiver).await {
+                                        let output = match output {
+                                            WorkerOutput::Rdp(output) => output,
+                                            WorkerOutput::ConnectionTimedOut => {
+                                                // UNTESTED: the host must see a single OnDisconnected(264). The
+                                                // timer has asked the client to close, and `connection_failed`
+                                                // suppresses the user-initiated `Terminated` that follows. Check
+                                                // both when changing how cancellation is reported.
+                                                trace_host_call("RdpWorker::OverallConnectionTimeout");
+                                                connection_failed = true;
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::Disconnected {
+                                                        generation,
+                                                        disconnect: connection_timeout_disconnect(),
+                                                    },
+                                                );
+                                                continue;
+                                            }
+                                            WorkerOutput::IdleTimeout => {
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::IdleTimeout { generation },
+                                                );
+                                                continue;
+                                            }
+                                        };
                                         match output {
                                             RdpOutputEvent::Image { buffer, width, height } => {
                                                 if let Some(update) =
@@ -12138,12 +12929,32 @@ impl Control {
                                                     break;
                                                 }
                                             }
-                                            RdpOutputEvent::WindowingOrders(data) => {
+                                            RdpOutputEvent::WindowingOrders(orders) => {
                                                 if !queue_worker_event(
                                                     &worker_events,
                                                     &worker_event_posted,
                                                     hwnd,
-                                                    WorkerEvent::RailWindowingOrders { generation, data },
+                                                    WorkerEvent::RailWindowingOrders { generation, orders },
+                                                ) {
+                                                    break;
+                                                }
+                                            }
+                                            RdpOutputEvent::RailControl(control) => {
+                                                if !queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::RailControl { generation, control },
+                                                ) {
+                                                    break;
+                                                }
+                                            }
+                                            RdpOutputEvent::WindowSurfaceUpdates(updates) => {
+                                                if !queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::RailWindowSurfaces { generation, updates },
                                                 ) {
                                                     break;
                                                 }
@@ -12193,12 +13004,29 @@ impl Control {
                                                     WorkerEvent::MonitorLayout { generation, monitors },
                                                 );
                                             }
+                                            RdpOutputEvent::MonitorLayoutRejected => {
+                                                trace_host_call("RdpWorker::MonitorLayoutRejected");
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::MonitorLayoutRejected { generation },
+                                                );
+                                            }
                                             RdpOutputEvent::LoginComplete => {
                                                 queue_worker_event(
                                                     &worker_events,
                                                     &worker_event_posted,
                                                     hwnd,
                                                     WorkerEvent::LoginComplete { generation },
+                                                );
+                                            }
+                                            RdpOutputEvent::RemoteSessionId(session_id) => {
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::RemoteSessionId { generation, session_id },
                                                 );
                                             }
                                             RdpOutputEvent::PostLogonDisplayRedraw => {
@@ -12267,6 +13095,48 @@ impl Control {
                                                     &worker_event_posted,
                                                     hwnd,
                                                     WorkerEvent::AutoReconnected { generation },
+                                                );
+                                            }
+                                            RdpOutputEvent::ServerInputFlags(flags) => {
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::ServerInputFlags { generation, flags },
+                                                );
+                                            }
+                                            RdpOutputEvent::RdpeiInputState(state) => {
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::RdpeiInputState { generation, state },
+                                                );
+                                            }
+                                            RdpOutputEvent::LogonError(errors) => {
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::SessionNotification {
+                                                        generation,
+                                                        notification: SessionNotification::logon_error(&errors),
+                                                    },
+                                                );
+                                            }
+                                            RdpOutputEvent::NetworkCharacteristics {
+                                                base_rtt_ms,
+                                                bandwidth_kbps,
+                                                ..
+                                            } => {
+                                                queue_worker_event(
+                                                    &worker_events,
+                                                    &worker_event_posted,
+                                                    hwnd,
+                                                    WorkerEvent::SessionNotification {
+                                                        generation,
+                                                        notification: network_status.update(base_rtt_ms, bandwidth_kbps),
+                                                    },
                                                 );
                                             }
                                             RdpOutputEvent::Terminated(result) => {
@@ -12374,6 +13244,10 @@ impl Control {
             return Err(Error::new(E_FAIL, message));
         }
 
+        self.compatibility
+            .borrow_mut()
+            .advanced_compat
+            .set_session(Some(input_sender.clone()));
         *self.input_sender.borrow_mut() = Some(input_sender);
         if consume_initial_execute {
             self.remote_application.borrow_mut().initial_execute = None;
@@ -12387,11 +13261,16 @@ impl Control {
         );
         self.connection_generation.set(generation);
         self.login_complete_fired.set(false);
+        self.remote_session_id.set(0);
         self.remote_size.set(None);
         self.active_monitor_topology.borrow_mut().take();
         self.clear_frame();
         self.input_database.borrow_mut().release_all();
         *self.touch_tracker.borrow_mut() = TouchContactTracker::new();
+        self.pen_tracker.borrow_mut().reset(false);
+        self.rdpei_input_state.set(RdpeiInputState::default());
+        self.pending_rdpei_events.borrow_mut().clear();
+        self.pointer_routes.borrow_mut().clear();
         self.state.set(ConnectionState::Connecting);
         self.fire_event(DISPID_ON_CONNECTING, &[]);
         if self.state.get() == ConnectionState::Connecting {
@@ -12418,7 +13297,27 @@ impl Control {
         Ok(())
     }
 
+    /// Applies a display layout requested through the mstscax API, preserving every display
+    /// setting the caller specifies.
     fn update_display_layout(&self, layout: DisplayLayout) -> Result<()> {
+        self.update_display_layout_impl(layout, true)
+    }
+
+    /// Returns whether the session mirrors the local monitors rather than the renderer size.
+    fn mirrors_local_monitors(&self) -> bool {
+        self.compatibility.borrow().use_multimon
+            || self
+                .configured_monitor_topology
+                .borrow()
+                .as_ref()
+                .is_some_and(|topology| topology.monitors.len() > 1)
+    }
+
+    /// `explicit` is false for updates IronRDP derives from the renderer size, whose scale and
+    /// orientation fields are defaults rather than caller choices: a multimonitor session then
+    /// keeps each monitor's own DPI and skips an unchanged topology, and a single monitor keeps
+    /// the scale and orientation the resize path derives.
+    fn update_display_layout_impl(&self, layout: DisplayLayout, explicit: bool) -> Result<()> {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_UNEXPECTED));
         }
@@ -12427,9 +13326,6 @@ impl Control {
             .borrow()
             .as_ref()
             .map_or(0, |topology| topology.monitors.len());
-        if configured_monitor_count > 1 {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
         let desktop_width = u16::try_from(layout.desktop_width)
             .map_err(|_| Error::new(E_INVALIDARG, "desktop width must fit in u16"))?;
         let desktop_height = u16::try_from(layout.desktop_height)
@@ -12445,35 +13341,90 @@ impl Control {
                 "physical display dimensions must both be specified",
             ));
         }
-        if layout.orientation != 0 {
-            return Err(Error::from_hresult(E_NOTIMPL));
-        }
-        // IronRDP's active-session resize path carries desktop scaling, but not the separate
-        // device scale and rotation exposed by the mstscax API.
-        if layout.device_scale_factor != 0 && layout.device_scale_factor != 100 {
-            return Err(Error::from_hresult(E_NOTIMPL));
+        let orientation = MonitorOrientation::from_angle(layout.orientation)
+            .ok_or_else(|| Error::new(E_INVALIDARG, "orientation must be 0, 90, 180 or 270 degrees"))?;
+        let device_scale_factor = match layout.device_scale_factor {
+            0 => None,
+            value => Some(
+                DeviceScaleFactor::from_value(value)
+                    .ok_or_else(|| Error::new(E_INVALIDARG, "device scale factor must be 100, 140 or 180"))?,
+            ),
+        };
+        let desktop_scale_factor = (layout.desktop_scale_factor != 0).then_some(layout.desktop_scale_factor);
+
+        // A session connected with several monitors keeps mirroring the local monitors. With
+        // 'use multimon' alone, it does so only once the local topology has several monitors:
+        // a single local monitor keeps honoring the requested size and orientation.
+        let multimon_topology = if 1 < configured_monitor_count {
+            Some(extended_properties::local_monitor_topology(self)?)
+        } else if self.compatibility.borrow().use_multimon {
+            extended_properties::local_monitor_topology(self)
+                .ok()
+                .filter(|topology| 1 < topology.monitors.len())
+        } else {
+            None
+        };
+        if let Some(topology) = multimon_topology {
+            // Like mstsc, a multimonitor session mirrors the local monitors: the update resends the
+            // current local topology, each monitor with its own size, position, orientation and DPI.
+            // Explicit scale factors apply to every monitor and force the update; the requested
+            // desktop size and orientation describe a single monitor and do not apply.
+            let (desktop_scale_factor, device_scale_factor) = if explicit {
+                (desktop_scale_factor, device_scale_factor)
+            } else {
+                (None, None)
+            };
+            return self.send_multimon_display_layout(topology, desktop_scale_factor, device_scale_factor, explicit);
         }
 
-        let scale_factor = if layout.desktop_scale_factor == 0 {
-            100
-        } else {
-            layout.desktop_scale_factor
-        };
+        let scale_factor = MonitorLayoutEntry::adjust_desktop_scale_factor(desktop_scale_factor.unwrap_or(100));
         let physical_size = (layout.physical_width != 0).then_some((layout.physical_width, layout.physical_height));
+        let (adjusted_width, adjusted_height) =
+            MonitorLayoutEntry::adjust_display_size(u32::from(desktop_width), u32::from(desktop_height));
+        // The resize path derives the orientation from the size and the device scale from the
+        // desktop scale. Use it only when that matches what the caller asked for.
+        let derived_orientation = if adjusted_width < adjusted_height {
+            MonitorOrientation::Portrait
+        } else {
+            MonitorOrientation::Landscape
+        };
+        let derived_device_scale_factor = DeviceScaleFactor::from_desktop_scale_factor(scale_factor);
+        let event = if !explicit
+            || orientation == derived_orientation
+                && device_scale_factor
+                    .is_none_or(|device_scale_factor| device_scale_factor == derived_device_scale_factor)
+        {
+            RdpInputEvent::Resize {
+                width: desktop_width,
+                height: desktop_height,
+                scale_factor,
+                physical_size,
+            }
+        } else {
+            // An orientation or device scale the resize path would not derive needs the full layout.
+            let entry = MonitorLayoutEntry::new_primary(adjusted_width, adjusted_height)
+                .map_err(|_| Error::from_hresult(E_INVALIDARG))?
+                .with_orientation(orientation)
+                .with_desktop_scale_factor(scale_factor)
+                .map_err(|_| Error::from_hresult(E_INVALIDARG))?
+                .with_device_scale_factor(device_scale_factor.unwrap_or(derived_device_scale_factor));
+            let entry = match physical_size {
+                Some((physical_width, physical_height)) => entry
+                    .with_physical_dimensions(physical_width, physical_height)
+                    .map_err(|_| Error::new(E_INVALIDARG, "physical display dimensions are out of range"))?,
+                None => entry,
+            };
+            RdpInputEvent::MonitorLayout(
+                DisplayControlMonitorLayout::new(&[entry]).map_err(|_| Error::from_hresult(E_INVALIDARG))?,
+            )
+        };
         let sender = self
             .input_sender
             .borrow()
             .as_ref()
             .cloned()
             .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
-        sender
-            .try_send(RdpInputEvent::Resize {
-                width: desktop_width,
-                height: desktop_height,
-                scale_factor,
-                physical_size,
-            })
-            .map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
+        sender.try_send(event).map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
 
         if configured_monitor_count == 1 {
             self.active_monitor_topology.borrow_mut().take();
@@ -12485,6 +13436,97 @@ impl Control {
         Ok(())
     }
 
+    /// Sends the full Display Control layout of a multimonitor `topology` to the session.
+    ///
+    /// The topology becomes the configured (requested) one, so the server's monitor layout confirms
+    /// it as it confirms the topology advertised in the GCC Client Monitor Data block at connection
+    /// time. The active (confirmed) topology is kept until the server reports a different layout:
+    /// the session may still drop a layout its capabilities cannot accept.
+    /// Unless `force` is set, a layout identical to the last one sent, scale overrides included,
+    /// is not sent again.
+    fn send_multimon_display_layout(
+        &self,
+        topology: MonitorTopology,
+        desktop_scale_factor: Option<u32>,
+        device_scale_factor: Option<DeviceScaleFactor>,
+        force: bool,
+    ) -> Result<()> {
+        if self.state.get() != ConnectionState::Connected {
+            return Err(Error::from_hresult(E_UNEXPECTED));
+        }
+        let layout = topology.display_control_layout(desktop_scale_factor, device_scale_factor)?;
+        if !force && self.last_multimon_layout.borrow().as_ref() == Some(&layout) {
+            return Ok(());
+        }
+        let sender = self
+            .input_sender
+            .borrow()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| Error::from_hresult(E_UNEXPECTED))?;
+        sender
+            .try_send(RdpInputEvent::MonitorLayout(layout.clone()))
+            .map_err(|_| Error::from_hresult(E_UNEXPECTED))?;
+        *self.last_multimon_layout.borrow_mut() = Some(layout);
+
+        {
+            let mut settings = self.settings.borrow_mut();
+            settings.desktop_width = topology.desktop_width;
+            settings.desktop_height = topology.desktop_height;
+        }
+        *self.configured_monitor_topology.borrow_mut() = Some(topology);
+        Ok(())
+    }
+
+    /// Rolls back to the confirmed topology, if any, after the session dropped a requested layout
+    /// its Display Control capabilities cannot accept.
+    ///
+    /// The rejected layout stays the last one sent, so display change notifications do not retry
+    /// it; any different local layout is sent again.
+    fn monitor_layout_rejected(&self) {
+        trace_host_call("Renderer::MonitorLayoutRejected");
+        let confirmed = self.active_monitor_topology.borrow().clone();
+        if let Some(confirmed) = &confirmed {
+            let mut settings = self.settings.borrow_mut();
+            settings.desktop_width = confirmed.desktop_width;
+            settings.desktop_height = confirmed.desktop_height;
+        }
+        *self.configured_monitor_topology.borrow_mut() = confirmed;
+    }
+
+    /// Schedules a multimonitor layout update after a local monitor topology or DPI change.
+    fn schedule_monitor_topology_refresh(&self, window: HWND) {
+        if !self.mirrors_local_monitors() || self.state.get() != ConnectionState::Connected {
+            return;
+        }
+        unsafe {
+            SetTimer(
+                Some(window),
+                MONITOR_TOPOLOGY_TIMER_ID,
+                DISPLAY_RESIZE_DEBOUNCE_MILLISECONDS,
+                None,
+            );
+        }
+    }
+
+    fn apply_monitor_topology_refresh(&self, window: HWND) {
+        unsafe {
+            let _ = KillTimer(Some(window), MONITOR_TOPOLOGY_TIMER_ID);
+        }
+        if self.state.get() != ConnectionState::Connected {
+            return;
+        }
+        match extended_properties::local_monitor_topology(self)
+            .and_then(|topology| self.send_multimon_display_layout(topology, None, None, false))
+        {
+            Ok(()) => trace_host_call("Renderer::MonitorTopologyUpdateRequested"),
+            Err(error) => {
+                trace_host_call("Renderer::MonitorTopologyUpdateRejected");
+                tracing::debug!(?error, "Unable to send the local monitor topology to the session");
+            }
+        }
+    }
+
     fn reconnect(&self, width: u32, height: u32, status: *mut i32) -> Result<()> {
         // Initialize the required out parameter before attempting the update so callers can
         // distinguish an invalid or inactive request from one queued for the RDP session.
@@ -12492,15 +13534,7 @@ impl Control {
         if self.state.get() != ConnectionState::Connected {
             return Err(Error::from_hresult(E_FAIL));
         }
-        self.update_display_layout(DisplayLayout {
-            desktop_width: width,
-            desktop_height: height,
-            physical_width: 0,
-            physical_height: 0,
-            orientation: 0,
-            desktop_scale_factor: 100,
-            device_scale_factor: 100,
-        })?;
+        self.update_display_layout(DisplayLayout::unscaled(width, height))?;
         write_out(status, CONTROL_RECONNECT_STARTED)
     }
 
@@ -12530,12 +13564,13 @@ impl Control {
             return Err(Error::from_hresult(E_UNEXPECTED));
         }
 
-        let backend = WinClipboard::new(ActiveXClipboardMessageProxy { input_sender }).map_err(|error| {
-            Error::new(
-                E_FAIL,
-                format!("unable to initialize Windows clipboard redirection: {error}"),
-            )
-        })?;
+        let backend =
+            WinClipboard::with_file_transfer(ActiveXClipboardMessageProxy { input_sender }, true).map_err(|error| {
+                Error::new(
+                    E_FAIL,
+                    format!("unable to initialize Windows clipboard redirection: {error}"),
+                )
+            })?;
         let factory = backend.backend_factory();
         *self.clipboard_backend.borrow_mut() = Some(backend);
         trace_host_call("ActiveXClipboard::Started");
@@ -12889,7 +13924,7 @@ impl Control {
             return;
         }
 
-        let result = self.update_display_layout(layout);
+        let result = self.update_display_layout_impl(layout, false);
         match result {
             Ok(()) => trace_host_call("Renderer::DisplayResizeRequested"),
             Err(error) => {
@@ -13166,28 +14201,130 @@ impl Control {
         }
     }
 
-    /// Reserves input-queue capacity, then commits tracker transitions and sends.
-    ///
-    /// Capacity is reserved before mutating the tracker so a full queue cannot
-    /// desynchronize local contact state from the server.
-    fn send_touch_event_with<F>(&self, build: F)
-    where
-        F: FnOnce(&mut TouchContactTracker) -> Option<TouchEventPdu>,
-    {
-        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+    /// Commits tracker transitions and sends the resulting touch event.
+    fn send_touch_event_with(&self, build: impl FnOnce(&mut TouchContactTracker) -> Option<TouchEventPdu>) {
+        self.send_tracker_event(&self.touch_tracker, build, RdpInputEvent::Touch);
+    }
+
+    /// Commits pen tracker transitions and sends the resulting pen event.
+    fn send_pen_event_with(&self, build: impl FnOnce(&mut PenContactTracker) -> Option<PenEventPdu>) {
+        self.send_tracker_event(&self.pen_tracker, build, RdpInputEvent::Pen);
+    }
+
+    /// Advances a tracker only while a session is attached, so its state matches what the server saw.
+    fn send_tracker_event<T, P>(
+        &self,
+        tracker: &RefCell<T>,
+        build: impl FnOnce(&mut T) -> Option<P>,
+        wrap: fn(P) -> RdpInputEvent,
+    ) {
+        if self.input_sender.borrow().is_none() {
             return;
-        };
-        let Ok(permit) = sender.try_reserve() else {
-            tracing::warn!("Unable to enqueue ActiveX RDPEI touch event for the RDP session");
-            return;
-        };
-        if let Some(event) = build(&mut self.touch_tracker.borrow_mut()) {
-            permit.send(RdpInputEvent::Touch(event));
         }
+        let event = build(&mut tracker.borrow_mut());
+        self.send_rdpei_event(event.map(wrap));
+    }
+
+    /// Queues an RDPEI event behind any that are still pending, then sends what the input queue accepts.
+    ///
+    /// Events that find the queue full stay pending and a timer retries them, so a lift or release is not
+    /// lost and the server does not keep a contact down.
+    fn send_rdpei_event(&self, event: Option<RdpInputEvent>) {
+        let mut pending = self.pending_rdpei_events.borrow_mut();
+        pending.extend(event);
+        // Only an event in which every contact keeps its state may go: it carries movement, never a down,
+        // lift or cancel, so the server still sees every contact transition.
+        if MAX_PENDING_RDPEI_EVENTS < pending.len()
+            && let Some(index) = pending.iter().position(is_steady_rdpei_event)
+        {
+            tracing::warn!("Dropping a pending ActiveX RDPEI movement event");
+            pending.remove(index);
+        }
+        if MAX_PENDING_RDPEI_TRANSITIONS < pending.len() {
+            // UNTESTED: the server keeps the contacts these transitions would have ended, which it cancels
+            // when the trackers start new ones.
+            // Check that a long suspension with touch input does not leave stuck contacts after a resume.
+            tracing::warn!("Dropping all pending ActiveX RDPEI events");
+            pending.clear();
+            *self.touch_tracker.borrow_mut() = TouchContactTracker::new();
+            self.pen_tracker
+                .borrow_mut()
+                .reset(self.rdpei_input_state.get().multipen);
+            return;
+        }
+        // A suspended server keeps its contacts, so their transitions wait for the resume.
+        if self.rdpei_input_state.get().suspended {
+            return;
+        }
+        let Some(sender) = self.input_sender.borrow().as_ref().cloned() else {
+            pending.clear();
+            return;
+        };
+        while let Some(event) = pending.pop_front() {
+            match sender.try_send(event) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(event)) => {
+                    pending.push_front(event);
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    pending.clear();
+                    break;
+                }
+            }
+        }
+
+        let window = self.activex_window.get();
+        if !pending.is_empty() && !window.is_invalid() {
+            unsafe {
+                SetTimer(
+                    Some(window),
+                    RDPEI_INPUT_RETRY_TIMER_ID,
+                    RDPEI_INPUT_RETRY_MILLISECONDS,
+                    None,
+                );
+            }
+        }
+    }
+
+    fn retry_pending_rdpei_events(&self, window: HWND) {
+        let _ = unsafe { KillTimer(Some(window), RDPEI_INPUT_RETRY_TIMER_ID) };
+        self.send_rdpei_event(None);
     }
 
     fn release_touch_contacts(&self) {
         self.send_touch_event_with(|tracker| tracker.release_all());
+    }
+
+    fn release_pen_contacts(&self) {
+        let now_us = performance_counter_now_us();
+        self.send_pen_event_with(|tracker| tracker.release_all(now_us));
+    }
+
+    fn set_rdpei_input_state(&self, state: RdpeiInputState) {
+        let previous = self.rdpei_input_state.replace(state);
+        if previous == state {
+            return;
+        }
+        tracing::debug!(?state, "ActiveX RDPEI input state changed");
+        // The server dropped the contacts with the channel state, so the trackers and pending events forget
+        // them unsent.
+        // Suspension keeps them: it only pauses transmission.
+        let reset_pen = !state.pen || previous.multipen != state.multipen;
+        if !state.touch {
+            *self.touch_tracker.borrow_mut() = TouchContactTracker::new();
+        }
+        if reset_pen {
+            self.pen_tracker.borrow_mut().reset(state.multipen);
+        }
+        self.pending_rdpei_events.borrow_mut().retain(|event| match event {
+            RdpInputEvent::Touch(_) => state.touch,
+            RdpInputEvent::Pen(_) => !reset_pen,
+            _ => true,
+        });
+        if previous.suspended && !state.suspended {
+            self.send_rdpei_event(None);
+        }
     }
 
     /// Maps client-area coordinates onto the remote desktop (signed RDPEI space).
@@ -13196,10 +14333,29 @@ impl Control {
         Some((i32::from(position.x), i32::from(position.y)))
     }
 
+    /// Whether the mouse message being handled was synthesized from touch or pen input sent over RDPEI.
+    ///
+    /// A physical mouse keeps working while a pen hovers, and input that falls back to mouse emulation is
+    /// still delivered.
     fn suppress_mouse_for_touch(&self) -> bool {
-        self.touch_tracker.borrow().has_active_contacts()
+        // `MI_WP_SIGNATURE` in the message extra info marks mouse input promoted from touch or pen.
+        const MI_WP_SIGNATURE: isize = 0xFF51_5700;
+        const SIGNATURE_MASK: isize = 0xFFFF_FF00;
+
+        let promoted = unsafe { GetMessageExtraInfo() }.0 & SIGNATURE_MASK == MI_WP_SIGNATURE;
+        // A pointer on the mouse route produces promoted messages that have to pass.
+        let routes = self.pointer_routes.borrow();
+        promoted
+            && routes.values().any(|route| *route == PointerRoute::Rdpei)
+            && !routes.values().any(|route| *route == PointerRoute::Mouse)
     }
 
+    /// Sends touch and pen over RDPEI.
+    ///
+    /// Returns false for input the RDPEI channel does not accept, so `DefWindowProc` turns it into mouse
+    /// messages, which is what mstsc does before logon or against servers without RDPEI.
+    /// Each pointer keeps the route it started on until it leaves, because consuming only part of a
+    /// pointer sequence leaves the emulated mouse in an undefined state.
     fn handle_pointer_message(&self, window: HWND, message: u32, wparam: WPARAM, _lparam: LPARAM) -> bool {
         let pointer_id = (wparam.0 & 0xffff) as u32;
 
@@ -13207,11 +14363,40 @@ impl Control {
         if unsafe { GetPointerInfo(pointer_id, &mut info) }.is_err() {
             return false;
         }
-        if info.pointerType != PT_TOUCH {
-            // Pen and other pointer types are not remoted in this cut.
-            return false;
-        }
+        let rdpei = self.rdpei_input_state.get();
+        let accepted = match info.pointerType {
+            PT_TOUCH => rdpei.touch && extended_properties::touch_remoting_enabled(self),
+            PT_PEN => rdpei.pen,
+            _ => return false,
+        };
+        let leaving = (info.pointerFlags & POINTER_FLAG_INRANGE).0 == 0
+            || (info.pointerFlags & POINTER_FLAG_CANCELED).0 != 0
+            || matches!(message, WM_POINTERLEAVE | WM_POINTERCAPTURECHANGED);
+        let route = {
+            let mut routes = self.pointer_routes.borrow_mut();
+            let route = *routes.entry(pointer_id).or_insert(if accepted {
+                PointerRoute::Rdpei
+            } else {
+                PointerRoute::Mouse
+            });
+            if leaving {
+                routes.remove(&pointer_id);
+            }
+            route
+        };
 
+        match (route, accepted) {
+            (PointerRoute::Mouse, _) => false,
+            // The channel stopped accepting this pointer mid-sequence; the server dropped its contact.
+            (PointerRoute::Rdpei, false) => true,
+            (PointerRoute::Rdpei, true) if info.pointerType == PT_TOUCH => {
+                self.handle_touch_pointer(window, message, pointer_id)
+            }
+            (PointerRoute::Rdpei, true) => self.handle_pen_pointer(window, message, pointer_id),
+        }
+    }
+
+    fn handle_touch_pointer(&self, window: HWND, message: u32, pointer_id: u32) -> bool {
         let mut pointer_count = 0u32;
         if unsafe { GetPointerFrameTouchInfo(pointer_id, &mut pointer_count, None) }.is_err() || pointer_count == 0 {
             return true;
@@ -13240,24 +14425,26 @@ impl Control {
                 || message == WM_POINTERCAPTURECHANGED
                 || (message == WM_POINTERLEAVE && (ptr.pointerFlags & POINTER_FLAG_INCONTACT).0 == 0);
             let leaving = (ptr.pointerFlags & POINTER_FLAG_UP).0 != 0 || canceled;
+            // `SkipPointerFrameMessages` below drops the other pointers' messages, so their routes end here.
+            if leaving || (ptr.pointerFlags & POINTER_FLAG_INRANGE).0 == 0 {
+                self.pointer_routes.borrow_mut().remove(&ptr.pointerId);
+            }
 
             let Some((x, y)) = mapped else {
-                // Outside the rendered desktop: still emit terminal transitions, keeping
-                // the last tracked coordinates rather than inventing (0, 0).
-                if leaving {
-                    samples.push(TouchSample {
-                        pointer_id: ptr.pointerId,
-                        x: 0,
-                        y: 0,
-                        preserve_position: true,
-                        in_range: false,
-                        in_contact: false,
-                        canceled,
-                        orientation: None,
-                        pressure: None,
-                        contact_rect: None,
-                    });
-                }
+                // Outside the rendered desktop the contact stays in the frame at its last tracked position,
+                // and terminal transitions are still sent there.
+                samples.push(TouchSample {
+                    pointer_id: ptr.pointerId,
+                    x: 0,
+                    y: 0,
+                    preserve_position: true,
+                    in_range: !leaving && (ptr.pointerFlags & POINTER_FLAG_INRANGE).0 != 0,
+                    in_contact: !leaving && (ptr.pointerFlags & POINTER_FLAG_INCONTACT).0 != 0,
+                    canceled,
+                    orientation: None,
+                    pressure: None,
+                    contact_rect: None,
+                });
                 continue;
             };
 
@@ -13322,6 +14509,98 @@ impl Control {
         self.send_touch_event_with(|tracker| tracker.process_samples(&samples));
 
         let _ = unsafe { SkipPointerFrameMessages(pointer_id) };
+        true
+    }
+
+    /// Sends one pen frame per digitizer sample, including the samples coalesced into a `WM_POINTERUPDATE`.
+    ///
+    /// The pen messages are consumed, so Windows emulates no mouse input for them.
+    /// The server emulates the mouse from the injected pen, as it does for mstsc.
+    fn handle_pen_pointer(&self, window: HWND, message: u32, pointer_id: u32) -> bool {
+        let mut latest = POINTER_PEN_INFO::default();
+        if unsafe { GetPointerPenInfo(pointer_id, &mut latest) }.is_err() {
+            // The pointer is on the RDPEI route, so its messages stay consumed.
+            return true;
+        }
+
+        // History is newest first and only carries coalesced samples for updates.
+        let mut history = Vec::new();
+        if message == WM_POINTERUPDATE && 1 < latest.pointerInfo.historyCount {
+            let mut entry_count = latest.pointerInfo.historyCount;
+            history.resize(entry_count as usize, POINTER_PEN_INFO::default());
+            if unsafe { GetPointerPenInfoHistory(pointer_id, &mut entry_count, Some(history.as_mut_ptr())) }.is_ok() {
+                history.truncate(entry_count as usize);
+            } else {
+                history.clear();
+            }
+        }
+        if history.is_empty() {
+            history.push(latest);
+        }
+
+        let now_us = performance_counter_now_us();
+        let mut samples = Vec::with_capacity(history.len());
+        for pen in history.iter().rev() {
+            let pointer = pen.pointerInfo;
+            let flags = pointer.pointerFlags;
+            let canceled = (flags & POINTER_FLAG_CANCELED).0 != 0 || message == WM_POINTERCAPTURECHANGED;
+            // A pen leaving the window stops hovering over the remote desktop even while the digitizer sees it.
+            let in_range = (flags & POINTER_FLAG_INRANGE).0 != 0 && message != WM_POINTERLEAVE;
+            let in_contact = (flags & POINTER_FLAG_INCONTACT).0 != 0;
+
+            let mut client_point = pointer.ptPixelLocation;
+            let mapped = if unsafe { ScreenToClient(window, &mut client_point) }.as_bool() {
+                self.desktop_position(window, client_point.x, client_point.y)
+            } else {
+                None
+            };
+            let lifted = (flags & POINTER_FLAG_UP).0 != 0;
+            let (x, y, preserve_position) = match mapped {
+                Some((x, y)) => (x, y, false),
+                // Outside the rendered desktop only lifts and terminal transitions are sent, at the last
+                // tracked position.
+                None if lifted || !in_range || canceled => (0, 0, true),
+                None => continue,
+            };
+
+            let (pen_flags, pressure, rotation, tilt_x, tilt_y) = PenSample::win32_values(
+                pen.penFlags,
+                pen.penMask,
+                pen.pressure,
+                pen.rotation,
+                pen.tiltX,
+                pen.tiltY,
+            );
+            let timestamp_us = if pointer.PerformanceCount == 0 {
+                now_us
+            } else {
+                performance_count_us(pointer.PerformanceCount)
+            };
+            samples.push(PenSample {
+                pointer_id: pointer.pointerId,
+                x,
+                y,
+                preserve_position,
+                in_range,
+                in_contact,
+                canceled,
+                pen_flags,
+                pressure,
+                rotation,
+                tilt_x,
+                tilt_y,
+                timestamp_us,
+            });
+        }
+
+        if (latest.pointerInfo.pointerFlags & POINTER_FLAG_DOWN).0 != 0
+            && let Err(error) = unsafe { SetFocus(Some(window)) }
+        {
+            tracing::debug!(?error, "Unable to focus ActiveX rendering window for pen input");
+        }
+
+        // Pen input is read per pointer, so `SkipPointerFrameMessages` would drop other pens of the same frame.
+        self.send_pen_event_with(|tracker| tracker.process_samples(&samples, now_us));
         true
     }
 
@@ -13437,7 +14716,11 @@ impl Control {
     }
 
     fn release_input(&self) {
+        input_policy::release_relative_mouse(self);
         self.release_touch_contacts();
+        self.release_pen_contacts();
+        // Pointers that leave while the window has no focus never report it.
+        self.pointer_routes.borrow_mut().clear();
         let fast_path = self.input_database.borrow_mut().release_all();
         if fast_path.is_empty() {
             return;
@@ -13573,6 +14856,11 @@ impl Control {
                 // Reflow only IronRDP-owned UI from current window DPI, then let the host retain
                 // ownership of the renderer's rectangle.
                 self.renderer_dpi_changed();
+                self.schedule_monitor_topology_refresh(window);
+                false
+            }
+            WM_DISPLAYCHANGE => {
+                self.schedule_monitor_topology_refresh(window);
                 false
             }
             WM_MOVE | WM_SIZE => {
@@ -13589,8 +14877,16 @@ impl Control {
                 self.renderer_geometry_changed();
                 false
             }
+            WM_TIMER if wparam.0 == RDPEI_INPUT_RETRY_TIMER_ID => {
+                self.retry_pending_rdpei_events(window);
+                true
+            }
             WM_TIMER if wparam.0 == DISPLAY_RESIZE_TIMER_ID => {
                 self.apply_pending_display_resize(window);
+                true
+            }
+            WM_TIMER if wparam.0 == MONITOR_TOPOLOGY_TIMER_ID => {
+                self.apply_monitor_topology_refresh(window);
                 true
             }
             WM_TIMER if wparam.0 == NATIVE_MSTSC_LAYOUT_TIMER_ID => {
@@ -13598,14 +14894,10 @@ impl Control {
                 true
             }
             WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
-                let virtual_key = VIRTUAL_KEY(wparam.0 as u16);
-                let control_and_alt_pressed = unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } < 0
-                    && unsafe { GetKeyState(i32::from(VK_MENU.0)) } < 0;
+                // A hotkey's key-up needs no handling: its key-down never reached the session.
                 if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN)
-                    && is_fullscreen_hotkey(virtual_key, control_and_alt_pressed)
+                    && input_policy::handle_hotkey_message(self, window, wparam, lparam)
                 {
-                    trace_host_call("IMsTscAx::FullScreenHotKey");
-                    self.request_fullscreen_toggle();
                     return true;
                 }
                 let lparam = lparam.0 as u32;
@@ -13630,14 +14922,17 @@ impl Control {
                 self.apply_input([operation]);
                 true
             }
-            WM_POINTERUPDATE | WM_POINTERDOWN | WM_POINTERUP | WM_POINTERLEAVE | WM_POINTERCAPTURECHANGED => {
-                self.handle_pointer_message(window, message, wparam, lparam)
-            }
+            WM_POINTERENTER
+            | WM_POINTERUPDATE
+            | WM_POINTERDOWN
+            | WM_POINTERUP
+            | WM_POINTERLEAVE
+            | WM_POINTERCAPTURECHANGED => self.handle_pointer_message(window, message, wparam, lparam),
             WM_MOUSEMOVE => {
                 if i32::from((lparam.0 >> 16) as i16) <= 4 {
                     self.expose_connection_bar();
                 }
-                if !self.compatibility.borrow().enable_mouse || self.suppress_mouse_for_touch() {
+                if !input_policy::local_mouse_input_enabled(self) || self.suppress_mouse_for_touch() {
                     return true;
                 }
                 let x = i32::from(lparam.0 as i32 as i16);
@@ -13648,7 +14943,7 @@ impl Control {
                 true
             }
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
-                if !self.compatibility.borrow().enable_mouse || self.suppress_mouse_for_touch() {
+                if !input_policy::local_mouse_input_enabled(self) || self.suppress_mouse_for_touch() {
                     return true;
                 }
                 if let Err(error) = unsafe { SetFocus(Some(window)) } {
@@ -13683,7 +14978,7 @@ impl Control {
                 true
             }
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
-                if !self.compatibility.borrow().enable_mouse || self.suppress_mouse_for_touch() {
+                if !input_policy::local_mouse_input_enabled(self) || self.suppress_mouse_for_touch() {
                     return true;
                 }
                 let mut point = POINT {
@@ -13696,18 +14991,14 @@ impl Control {
                     self.apply_input([Operation::MouseMove(position)]);
                 }
 
-                let mut remaining = ((wparam.0 >> 16) as u16) as i16;
-                let mut operations = Vec::new();
-                while remaining != 0 {
-                    let rotation_units = remaining.clamp(-256, 255);
-                    operations.push(Operation::WheelRotations(WheelRotations {
-                        is_vertical: message == WM_MOUSEWHEEL,
-                        rotation_units,
-                    }));
-                    remaining -= rotation_units;
-                }
-                self.apply_input(operations);
+                let delta = ((wparam.0 >> 16) as u16) as i16;
+                self.apply_input(wheel_operations(message == WM_MOUSEWHEEL, delta));
                 true
+            }
+            windows::Win32::UI::WindowsAndMessaging::WM_INPUT => {
+                input_policy::handle_raw_input(self, lparam);
+                // DefWindowProc releases the raw input buffer.
+                false
             }
             WM_CANCELMODE | WM_ENABLE if wparam.0 == 0 => {
                 self.release_input();
@@ -13725,12 +15016,17 @@ impl Control {
 impl Drop for Control {
     fn drop(&mut self) {
         trace_host_call("Control::Drop");
+        if let Some(shell) = self.client_shell.get_mut() {
+            // SAFETY: the control only stores client shells created from `ClientShell`.
+            unsafe { AsImpl::<ClientShell>::as_impl(shell) }.detach();
+        }
         self.events.close();
         self.rail_windows.get_mut().stop();
         if let Some(rpc) = &self.rpc {
             rpc.stop();
         }
         let _ = self.stop_connection();
+        self.compatibility.borrow_mut().advanced_compat.set_session(None);
         self.stop_clipboard_redirection();
         if let Err(error) = self.destroy_connection_bar() {
             tracing::error!(?error, "Unable to destroy ActiveX connection bar");
@@ -13769,6 +15065,16 @@ impl IDispatch_Impl for Control_Impl {
         if !riid.is_null() && unsafe { *riid } != GUID::zeroed() {
             return Err(Error::from_hresult(DISP_E_MEMBERNOTFOUND));
         }
+        if count == 0 {
+            return Ok(());
+        }
+        // Names shared with the modern facade keep its DISPIDs; every other published MSTSCLib member, including
+        // its named parameters, resolves through the client member table.
+        let member_name = unsafe { (*names).to_string() }.map_err(|_| Error::from_hresult(DISP_E_UNKNOWNNAME))?;
+        if dispid_for_name(&member_name).is_none() {
+            return unsafe { automation::get_ids_of_names(AutomationInterface::Client, riid, names, count, dispids) }
+                .ok();
+        }
 
         unsafe {
             slice::from_raw_parts_mut(dispids, count as usize).fill(DISPID_UNKNOWN);
@@ -13792,7 +15098,7 @@ impl IDispatch_Impl for Control_Impl {
         flags: DISPATCH_FLAGS,
         params: *const DISPPARAMS,
         result: *mut VARIANT,
-        _exception: *mut EXCEPINFO,
+        exception: *mut EXCEPINFO,
         argument_error: *mut u32,
     ) -> Result<()> {
         trace_host_call(&format!("IDispatch::Invoke({dispid}, {flags:?})"));
@@ -13806,6 +15112,19 @@ impl IDispatch_Impl for Control_Impl {
 
         self.dispatch_pending_events();
         let params = unsafe { &*params };
+
+        // MSTSCLib members run through the same vtable functions as early-bound callers. DISPID 702 is
+        // `IMsRdpClient8::Reconnect` with two arguments and the modern facade's `Disconnect` without arguments.
+        let modern_disconnect = dispid == DISPID_MODERN_DISCONNECT && params.cArgs == 0;
+        if let Some(member) =
+            automation::member(AutomationInterface::Client, dispid, flags).filter(|_| !modern_disconnect)
+        {
+            let client: IMsRdpClient10 = self.to_interface();
+            return unsafe {
+                automation::invoke_member(client.as_raw(), member, params, result, exception, argument_error)
+            }
+            .ok();
+        }
 
         if flags.contains(DISPATCH_PROPERTYGET) {
             if params.cArgs != 0 {
@@ -13869,15 +15188,10 @@ impl IDispatch_Impl for Control_Impl {
                     }
                 }
                 DISPID_MODERN_UPDATE_SESSION_DISPLAY_SETTINGS if arguments.len() == 2 => {
-                    self.update_display_layout(DisplayLayout {
-                        desktop_width: dispatch_variant_u32(&arguments[1])?,
-                        desktop_height: dispatch_variant_u32(&arguments[0])?,
-                        physical_width: 0,
-                        physical_height: 0,
-                        orientation: 0,
-                        desktop_scale_factor: 100,
-                        device_scale_factor: 100,
-                    })
+                    self.update_display_layout(DisplayLayout::unscaled(
+                        dispatch_variant_u32(&arguments[1])?,
+                        dispatch_variant_u32(&arguments[0])?,
+                    ))
                 }
                 DISPID_MODERN_ATTACH_EVENT | DISPID_MODERN_DETACH_EVENT if arguments.len() == 2 => {
                     let event_name = variant_string(&arguments[1], argument_error)?;
@@ -13961,15 +15275,7 @@ impl IRemoteDesktopClient_Impl for Control_Impl {
     }
 
     unsafe fn UpdateSessionDisplaySettings(&self, width: u32, height: u32) -> Result<()> {
-        self.update_display_layout(DisplayLayout {
-            desktop_width: width,
-            desktop_height: height,
-            physical_width: 0,
-            physical_height: 0,
-            orientation: 0,
-            desktop_scale_factor: 100,
-            device_scale_factor: 100,
-        })
+        self.update_display_layout(DisplayLayout::unscaled(width, height))
     }
 
     unsafe fn attachEvent(&self, event_name: Bstr, callback: *mut c_void) -> Result<()> {
@@ -14329,7 +15635,36 @@ impl IMsRdpClient5_Impl for Control_Impl {
     }
 
     unsafe fn get_MsRdpClientShell(&self, shell: InterfaceOut) -> Result<()> {
-        unsupported_out(shell)
+        write_out(shell, ptr::null_mut())?;
+        let object = self
+            .client_shell
+            .borrow_mut()
+            .get_or_insert_with(|| ClientShell::new(self).into())
+            .clone();
+        write_out(shell, object.into_raw())
+    }
+}
+
+impl Control_Impl {
+    /// Applies `.rdp` contents from `IMsRdpClientShell::Launch` and connects in-process.
+    ///
+    /// `mstsc.exe /Web` applies the file, marks its control `LaunchedViaClientShellInterface`, and
+    /// applies `/Public`. The contents go through `IRemoteDesktopClientSettings::ApplySettings`, so the
+    /// signature check and publisher classification run before connecting.
+    pub(crate) fn launch_from_client_shell(&self, contents: &str, public_mode: bool) -> Result<()> {
+        let settings = ModernClientSettings {
+            bridge: ModernClientBridge {
+                _owner: self.to_interface(),
+                control: self,
+            },
+        };
+        settings.apply_settings(contents)?;
+        self.trust.borrow_mut().launched_via_client_shell = true;
+        if public_mode {
+            self.compatibility.borrow_mut().public_mode = true;
+        }
+        self.remember_callback_owner(self);
+        self.start_connection()
     }
 }
 
@@ -14410,15 +15745,7 @@ impl IMsRdpClient9_Impl for Control_Impl {
         let desktop_width = u32::from(settings.desktop_width);
         let desktop_height = u32::from(settings.desktop_height);
         drop(settings);
-        self.update_display_layout(DisplayLayout {
-            desktop_width,
-            desktop_height,
-            physical_width: 0,
-            physical_height: 0,
-            orientation: 0,
-            desktop_scale_factor: 100,
-            device_scale_factor: 100,
-        })
+        self.update_display_layout(DisplayLayout::unscaled(desktop_width, desktop_height))
     }
 
     unsafe fn UpdateSessionDisplaySettings(
@@ -14469,15 +15796,14 @@ impl IMsRdpClient10_Impl for Control_Impl {
 
 impl IMsRdpPreferredRedirectionInfo_Impl for Control_Impl {
     unsafe fn put_UseRedirectionServerName(&self, value: i16) -> Result<()> {
-        if value == VARIANT_FALSE.0 {
-            Ok(())
-        } else {
-            Err(Error::from_hresult(E_NOTIMPL))
-        }
+        // Like the other connection settings, the value applies to the next connection.
+        self.compatibility.borrow_mut().use_redirection_server_name = value != VARIANT_FALSE.0;
+        Ok(())
     }
 
     unsafe fn get_UseRedirectionServerName(&self, value: *mut i16) -> Result<()> {
-        write_out(value, VARIANT_FALSE.0)
+        let enabled = self.compatibility.borrow().use_redirection_server_name;
+        write_out(value, if enabled { VARIANT_TRUE.0 } else { VARIANT_FALSE.0 })
     }
 }
 
@@ -14552,12 +15878,16 @@ impl IMsRdpClientNonScriptable2_Impl for Control_Impl {
 }
 
 impl IMsRdpClientNonScriptable3_Impl for Control_Impl {
-    unsafe fn put_ShowRedirectionWarningDialog(&self, _value: i16) -> Result<()> {
-        unsupported()
+    unsafe fn put_ShowRedirectionWarningDialog(&self, value: i16) -> Result<()> {
+        self.trust.borrow_mut().show_redirection_warning_dialog = value != VARIANT_FALSE.0;
+        Ok(())
     }
 
     unsafe fn get_ShowRedirectionWarningDialog(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(
+            value,
+            variant_bool_i16(self.trust.borrow().show_redirection_warning_dialog),
+        )
     }
 
     unsafe fn put_PromptForCredentials(&self, value: i16) -> Result<()> {
@@ -14702,44 +16032,76 @@ impl IMsRdpClientNonScriptable3_Impl for Control_Impl {
 }
 
 impl IMsRdpClientNonScriptable4_Impl for Control_Impl {
-    unsafe fn put_RedirectionWarningType(&self, _value: i32) -> Result<()> {
-        unsupported()
+    unsafe fn put_RedirectionWarningType(&self, value: i32) -> Result<()> {
+        self.trust.borrow_mut().redirection_warning_type =
+            RedirectionWarningType::from_raw(value).ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
+        Ok(())
     }
 
     unsafe fn get_RedirectionWarningType(&self, value: *mut i32) -> Result<()> {
-        unsupported_out(value)
+        write_out(value, self.trust.borrow().redirection_warning_type as i32)
     }
 
-    unsafe fn put_MarkRdpSettingsSecure(&self, _value: i16) -> Result<()> {
-        unsupported()
+    unsafe fn put_MarkRdpSettingsSecure(&self, value: i16) -> Result<()> {
+        // Windows uses this only to choose gateway error descriptions that IronRDP does not report.
+        unsupported_unless_false(value)
     }
 
     unsafe fn get_MarkRdpSettingsSecure(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(value, VARIANT_FALSE.0)
     }
 
-    unsafe fn put_PublisherCertificateChain(&self, _value: *mut VARIANT) -> Result<()> {
-        unsupported()
+    unsafe fn put_PublisherCertificateChain(&self, value: *mut VARIANT) -> Result<()> {
+        let value = unsafe { value.as_ref() }.ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
+        let header = variant_header(value);
+        let chain = match header.vt {
+            VT_EMPTY => None,
+            VT_BYREF => Some(
+                unsafe { PublisherChain::duplicate_validated(header.Anonymous.byref.cast()) }
+                    .ok_or_else(|| Error::from_hresult(E_INVALIDARG))?,
+            ),
+            _ => return Err(Error::from_hresult(E_INVALIDARG)),
+        };
+        self.trust.borrow_mut().publisher_chain = chain;
+        Ok(())
     }
 
     unsafe fn get_PublisherCertificateChain(&self, value: *mut VARIANT) -> Result<()> {
-        unsupported_out(value)
+        if value.is_null() {
+            return Err(Error::from_hresult(E_INVALIDARG));
+        }
+        let mut output = VARIANT::default();
+        if let Some(chain) = &self.trust.borrow().publisher_chain {
+            // Like mstscax, the caller receives its own chain reference behind a bare VT_BYREF.
+            let header = variant_header_mut(&mut output);
+            header.vt = VT_BYREF;
+            header.Anonymous.byref = chain.duplicate_raw().cast();
+        }
+        write_out(value, output)
     }
 
-    unsafe fn put_WarnAboutPrinterRedirection(&self, _value: i16) -> Result<()> {
-        unsupported()
+    unsafe fn put_WarnAboutPrinterRedirection(&self, value: i16) -> Result<()> {
+        if self.state.get() != ConnectionState::Disconnected {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+        self.trust.borrow_mut().warn_about_printers = value != VARIANT_FALSE.0;
+        Ok(())
     }
 
     unsafe fn get_WarnAboutPrinterRedirection(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(value, variant_bool_i16(self.trust.borrow().warn_about_printers))
     }
 
-    unsafe fn put_AllowCredentialSaving(&self, _value: i16) -> Result<()> {
-        unsupported()
+    unsafe fn put_AllowCredentialSaving(&self, value: i16) -> Result<()> {
+        if self.state.get() != ConnectionState::Disconnected {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+        // IronRDP's credential prompts never persist credentials.
+        unsupported_unless_false(value)
     }
 
     unsafe fn get_AllowCredentialSaving(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(value, VARIANT_FALSE.0)
     }
 
     unsafe fn put_PromptForCredsOnClient(&self, value: i16) -> Result<()> {
@@ -14758,20 +16120,23 @@ impl IMsRdpClientNonScriptable4_Impl for Control_Impl {
         )
     }
 
-    unsafe fn put_LaunchedViaClientShellInterface(&self, _value: i16) -> Result<()> {
-        unsupported()
+    unsafe fn put_LaunchedViaClientShellInterface(&self, value: i16) -> Result<()> {
+        self.trust.borrow_mut().launched_via_client_shell = value != VARIANT_FALSE.0;
+        Ok(())
     }
 
     unsafe fn get_LaunchedViaClientShellInterface(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(value, variant_bool_i16(self.trust.borrow().launched_via_client_shell))
     }
 
-    unsafe fn put_TrustedZoneSite(&self, _value: i16) -> Result<()> {
-        unsupported()
+    unsafe fn put_TrustedZoneSite(&self, value: i16) -> Result<()> {
+        // A trusted-zone site may change per-device choices in the Windows warning. IronRDP's
+        // warning offers no per-device choices, which is the untrusted-site behavior.
+        unsupported_unless_false(value)
     }
 
     unsafe fn get_TrustedZoneSite(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(value, VARIANT_FALSE.0)
     }
 }
 
@@ -14836,11 +16201,9 @@ impl IMsRdpClientNonScriptable5_Impl for Control_Impl {
 
     unsafe fn get_RemoteMonitorLayoutMatchesLocal(&self, value: *mut i16) -> Result<()> {
         let matches_local = self.state.get() == ConnectionState::Connected
-            && self
-                .active_monitor_topology
-                .borrow()
-                .as_ref()
-                .is_some_and(|topology| local_monitor_topology().is_ok_and(|local| local == *topology));
+            && self.active_monitor_topology.borrow().as_ref().is_some_and(|topology| {
+                local_monitor_topology().is_ok_and(|local| local.monitors == topology.monitors)
+            });
         write_out(value, if matches_local { VARIANT_TRUE.0 } else { VARIANT_FALSE.0 })
     }
 
@@ -14850,20 +16213,28 @@ impl IMsRdpClientNonScriptable5_Impl for Control_Impl {
         Ok(())
     }
 
-    unsafe fn put_DisableRemoteAppCapsCheck(&self, _value: i16) -> Result<()> {
-        unsupported()
+    unsafe fn put_DisableRemoteAppCapsCheck(&self, value: i16) -> Result<()> {
+        if self.state.get() != ConnectionState::Disconnected {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+        // IronRDP always requires the server's RemoteApp capabilities before starting RemoteApp.
+        unsupported_unless_false(value)
     }
 
     unsafe fn get_DisableRemoteAppCapsCheck(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(value, VARIANT_FALSE.0)
     }
 
-    unsafe fn put_WarnAboutDirectXRedirection(&self, _value: i16) -> Result<()> {
-        unsupported()
+    unsafe fn put_WarnAboutDirectXRedirection(&self, value: i16) -> Result<()> {
+        if self.state.get() != ConnectionState::Disconnected {
+            return Err(Error::from_hresult(E_FAIL));
+        }
+        // IronRDP has no DirectX redirection to warn about.
+        unsupported_unless_false(value)
     }
 
     unsafe fn get_WarnAboutDirectXRedirection(&self, value: *mut i16) -> Result<()> {
-        unsupported_out(value)
+        write_out(value, VARIANT_FALSE.0)
     }
 
     unsafe fn put_AllowPromptingForCredentials(&self, value: i16) -> Result<()> {
@@ -15240,6 +16611,12 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
             trace_host_call("IMsRdpExtendedSettings::put_RedirectWebAuthn");
             return Ok(());
         }
+        if let Some(result) = input_policy::put_input_extended_property(self, &name, value) {
+            return result;
+        }
+        if let Some(result) = extended_properties::put_property(self, &name, value) {
+            return result;
+        }
 
         Err(Error::from_hresult(E_NOTIMPL))
     }
@@ -15377,6 +16754,12 @@ impl IMsRdpExtendedSettings_Impl for Control_Impl {
         if name.eq_ignore_ascii_case("RedirectWebAuthn") {
             trace_host_call("IMsRdpExtendedSettings::get_RedirectWebAuthn");
             return write_out(value, variant_bool_value(self.compatibility.borrow().redirect_webauthn));
+        }
+        if let Some(result) = input_policy::get_input_extended_property(self, &name, value) {
+            return result;
+        }
+        if let Some(result) = extended_properties::get_property(self, &name, value) {
+            return result;
         }
         write_out(value, VARIANT::default())?;
         Err(Error::from_hresult(E_NOTIMPL))
@@ -15966,6 +17349,9 @@ impl IOleInPlaceActiveObject_Impl for Control_Impl {
             return Err(Error::from_hresult(S_FALSE));
         };
         let message = unsafe { *message };
+        if !input_policy::offers_accelerator_to_container(&self.compatibility.borrow().input_policy, message.message) {
+            return Err(Error::from_hresult(S_FALSE));
+        }
         let result = translate_control_site_accelerator(&control_site, &message, active_key_modifiers());
         if result != S_OK {
             return Err(Error::from_hresult(S_FALSE));
@@ -16403,6 +17789,35 @@ fn unsupported() -> Result<()> {
     Err(Error::from_hresult(E_NOTIMPL))
 }
 
+/// Accepts `VARIANT_FALSE`, the only value IronRDP can honor, and reports any other value as unsupported.
+#[track_caller]
+fn unsupported_unless_false(value: i16) -> Result<()> {
+    if value == VARIANT_FALSE.0 {
+        Ok(())
+    } else {
+        unsupported()
+    }
+}
+
+/// Splits a wheel delta into rotations that each fit the 9-bit signed fast-path wheel field.
+fn wheel_operations(is_vertical: bool, delta: i16) -> Vec<Operation> {
+    let mut remaining = delta;
+    let mut operations = Vec::new();
+    while remaining != 0 {
+        let rotation_units = remaining.clamp(-256, 255);
+        operations.push(Operation::WheelRotations(WheelRotations {
+            is_vertical,
+            rotation_units,
+        }));
+        remaining -= rotation_units;
+    }
+    operations
+}
+
+pub(crate) fn variant_bool_i16(value: bool) -> i16 {
+    if value { VARIANT_TRUE.0 } else { VARIANT_FALSE.0 }
+}
+
 #[track_caller]
 fn unsupported_value<T>() -> Result<T> {
     let caller = std::panic::Location::caller();
@@ -16418,7 +17833,7 @@ fn unsupported_out<T: Default>(out: *mut T) -> Result<()> {
     Err(Error::from_hresult(E_NOTIMPL))
 }
 
-fn write_out<T>(out: *mut T, value: T) -> Result<()> {
+pub(crate) fn write_out<T>(out: *mut T, value: T) -> Result<()> {
     if out.is_null() {
         return Err(Error::from_hresult(E_POINTER));
     }
@@ -16428,7 +17843,7 @@ fn write_out<T>(out: *mut T, value: T) -> Result<()> {
     Ok(())
 }
 
-fn string_from_bstr(value: Bstr) -> Result<String> {
+pub(crate) fn string_from_bstr(value: Bstr) -> Result<String> {
     if value.is_null() {
         return Ok(String::new());
     }
@@ -16490,7 +17905,7 @@ fn channel_data_to_automation_string(data: &[u8]) -> String {
     String::from_utf16_lossy(&code_units)
 }
 
-fn write_bstr(out: BstrOut, value: &str) -> Result<()> {
+pub(crate) fn write_bstr(out: BstrOut, value: &str) -> Result<()> {
     write_out(out, ptr::null())?;
     let value = allocate_bstr(value)?;
     write_out(out, value.into_raw())
@@ -17056,7 +18471,7 @@ fn queue_worker_event(
             queue.push(event);
             true
         }
-        WorkerEvent::AutoReconnecting { .. } => {
+        WorkerEvent::AutoReconnecting { .. } | WorkerEvent::RemoteSessionId { .. } => {
             while queue.len() >= MAX_PENDING_WORKER_EVENTS {
                 if !post_worker_event_dispatch(event_posted, hwnd) {
                     return false;
@@ -17076,7 +18491,9 @@ fn queue_worker_event(
         | WorkerEvent::MonitorLayout { .. }
         | WorkerEvent::LoginComplete { .. }
         | WorkerEvent::DisplayResizeFallback { .. }
-        | WorkerEvent::AutoReconnected { .. } => {
+        | WorkerEvent::MonitorLayoutRejected { .. }
+        | WorkerEvent::AutoReconnected { .. }
+        | WorkerEvent::IdleTimeout { .. } => {
             if queue.iter().any(|pending| {
                 pending.generation() == event.generation()
                     && core::mem::discriminant(pending) == core::mem::discriminant(&event)
@@ -17102,6 +18519,11 @@ fn queue_worker_event(
         WorkerEvent::RailWindowingOrders { .. }
         | WorkerEvent::RailExecuteResult { .. }
         | WorkerEvent::RailExecuteFailed { .. }
+        | WorkerEvent::RdpeiInputState { .. }
+        | WorkerEvent::ServerInputFlags { .. }
+        | WorkerEvent::SessionNotification { .. }
+        | WorkerEvent::RailControl { .. }
+        | WorkerEvent::RailWindowSurfaces { .. }
         | WorkerEvent::CertificateWarning { .. }
         | WorkerEvent::FatalError { .. }
         | WorkerEvent::Disconnected { .. }
@@ -17871,9 +19293,11 @@ unsafe extern "system" fn dispatcher_window_proc(hwnd: HWND, message: u32, _wpar
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum VariantValue {
     String(String),
     Integer(i32),
+    Unsigned(u32),
     Bool(bool),
 }
 
@@ -17907,6 +19331,17 @@ impl VariantValue {
                     }),
                 },
             },
+            Self::Unsigned(value) => VARIANT {
+                Anonymous: VARIANT_0 {
+                    Anonymous: ManuallyDrop::new(VARIANT_0_0 {
+                        vt: VT_UI4,
+                        wReserved1: 0,
+                        wReserved2: 0,
+                        wReserved3: 0,
+                        Anonymous: VARIANT_0_0_0 { ulVal: value },
+                    }),
+                },
+            },
             Self::Bool(value) => VARIANT {
                 Anonymous: VARIANT_0 {
                     Anonymous: ManuallyDrop::new(VARIANT_0_0 {
@@ -17924,11 +19359,11 @@ impl VariantValue {
     }
 }
 
-fn variant_i32(value: i32) -> VARIANT {
+pub(crate) fn variant_i32(value: i32) -> VARIANT {
     unsafe { VariantValue::Integer(value).into_variant() }
 }
 
-fn variant_bool_value(value: bool) -> VARIANT {
+pub(crate) fn variant_bool_value(value: bool) -> VARIANT {
     unsafe { VariantValue::Bool(value).into_variant() }
 }
 
@@ -17936,7 +19371,7 @@ fn variant_bstr(value: String) -> VARIANT {
     unsafe { VariantValue::String(value).into_variant() }
 }
 
-fn variant_bstr_fallible(value: &str) -> Result<VARIANT> {
+pub(crate) fn variant_bstr_fallible(value: &str) -> Result<VARIANT> {
     let value = allocate_bstr(value)?;
     Ok(VARIANT {
         Anonymous: VARIANT_0 {
@@ -17994,7 +19429,7 @@ fn free_owned_bstr_variant(value: &mut VARIANT) {
     header.vt = VT_EMPTY;
 }
 
-fn write_optional_variant(output: *mut VARIANT, mut value: VARIANT) -> Result<()> {
+pub(crate) fn write_optional_variant(output: *mut VARIANT, mut value: VARIANT) -> Result<()> {
     if output.is_null() {
         free_owned_bstr_variant(&mut value);
         return Ok(());
@@ -18034,7 +19469,7 @@ fn variant_i32_byref(value: &mut i32) -> VARIANT {
     }
 }
 
-fn property_put_value(params: &DISPPARAMS) -> Result<&VARIANT> {
+pub(crate) fn property_put_value(params: &DISPPARAMS) -> Result<&VARIANT> {
     if params.cArgs != 1 || params.cNamedArgs != 1 || params.rgvarg.is_null() || params.rgdispidNamedArgs.is_null() {
         return Err(Error::from_hresult(DISP_E_BADPARAMCOUNT));
     }
@@ -18044,15 +19479,15 @@ fn property_put_value(params: &DISPPARAMS) -> Result<&VARIANT> {
     Ok(unsafe { &*params.rgvarg })
 }
 
-fn variant_header(value: &VARIANT) -> &VARIANT_0_0 {
+pub(crate) fn variant_header(value: &VARIANT) -> &VARIANT_0_0 {
     unsafe { &*(&value.Anonymous as *const VARIANT_0 as *const VARIANT_0_0) }
 }
 
-fn variant_header_mut(value: &mut VARIANT) -> &mut VARIANT_0_0 {
+pub(crate) fn variant_header_mut(value: &mut VARIANT) -> &mut VARIANT_0_0 {
     unsafe { &mut *(&mut value.Anonymous as *mut VARIANT_0 as *mut VARIANT_0_0) }
 }
 
-fn variant_string(value: &VARIANT, argument_error: *mut u32) -> Result<String> {
+pub(crate) fn variant_string(value: &VARIANT, argument_error: *mut u32) -> Result<String> {
     let header = variant_header(value);
     if header.vt != VT_BSTR {
         set_argument_error(argument_error);
@@ -18267,6 +19702,7 @@ mod tests {
                     bottom: 1_000,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             },
             HostMonitor {
                 rect: RECT {
@@ -18276,6 +19712,7 @@ mod tests {
                     bottom: 1_000,
                 },
                 primary: false,
+                attributes: MonitorAttributes::default(),
             },
         ])
         .expect("a valid two-monitor topology");
@@ -18314,6 +19751,7 @@ mod tests {
                 bottom: 600,
             },
             primary: false,
+            attributes: MonitorAttributes::default(),
         }])
         .expect_err("a monitor topology needs exactly one primary monitor");
         assert_eq!(invalid_primary.code(), E_INVALIDARG);
@@ -18327,6 +19765,7 @@ mod tests {
                     bottom: 600,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             },
             HostMonitor {
                 rect: RECT {
@@ -18336,6 +19775,7 @@ mod tests {
                     bottom: 600,
                 },
                 primary: false,
+                attributes: MonitorAttributes::default(),
             },
         ])
         .expect_err("overlapping monitor rectangles are invalid");
@@ -18350,6 +19790,7 @@ mod tests {
                     bottom: 600,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             };
             MONITOR_COUNT_MAX + 1
         ])
@@ -18369,6 +19810,7 @@ mod tests {
                     bottom: 1_000,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             },
             HostMonitor {
                 rect: RECT {
@@ -18378,6 +19820,7 @@ mod tests {
                     bottom: 1_000,
                 },
                 primary: false,
+                attributes: MonitorAttributes::default(),
             },
         ])
         .expect("a valid two-monitor topology");
@@ -19286,6 +20729,43 @@ mod tests {
     }
 
     #[test]
+    fn bitmap_persistence_defaults_off_and_reaches_the_client_properties() {
+        // oracle: reference mstscax.dll 10.0.26100.9711 CMstscAdvSettings::put_BitmapPeristence /
+        // get_BitmapPeristence (any non-zero value is on, read back as 1); the default of 0 is
+        // mutant (desktop pixels written to disk without the host asking), unlike mstscax.dll,
+        // whose property table defaults BitmapPersistenceEnabled to 1
+        let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
+        let mut object = CompatibilitySettingsObject {
+            vtable: advanced_vtable(),
+            references: AtomicU32::new(1),
+            settings: Rc::clone(&settings),
+            native_mstsc_credential_bridge: None,
+            remote_program_bridge: None,
+            server_object: false,
+        };
+        let this = (&mut object as *mut AdvancedSettingsObject).cast::<c_void>();
+        let persistence = |this| {
+            let mut value = -1;
+            assert_eq!(unsafe { advanced_get_bitmap_persistence(this, &mut value) }, S_OK);
+            value
+        };
+        let snapshot_value = |settings: &Rc<RefCell<CompatibilitySettings>>| {
+            active_x_property_snapshot(&Settings::default(), &settings.borrow()).get::<i64>("bitmapcachepersistenable")
+        };
+
+        assert_eq!(persistence(this), 0);
+        assert_eq!(snapshot_value(&settings), Some(0));
+
+        assert_eq!(unsafe { advanced_put_bitmap_persistence(this, 5) }, S_OK);
+        assert_eq!(persistence(this), 1);
+        assert_eq!(snapshot_value(&settings), Some(1));
+
+        assert_eq!(unsafe { advanced_put_bitmap_persistence(this, 0) }, S_OK);
+        assert_eq!(persistence(this), 0);
+        assert_eq!(snapshot_value(&settings), Some(0));
+    }
+
+    #[test]
     fn advanced_settings_map_preconnect_transport_and_capability_slots() {
         let persistence_dirty = Rc::new(Cell::new(false));
         let compatibility = CompatibilitySettings {
@@ -19482,6 +20962,19 @@ mod tests {
         assert!(settings.borrow().redirect_printers);
         settings.borrow_mut().connection_settings_sealed = false;
 
+        let mut redirect_ports = VARIANT_TRUE.0;
+        assert_eq!(unsafe { advanced_get_redirect_ports(this, &mut redirect_ports) }, S_OK);
+        assert_eq!(redirect_ports, VARIANT_FALSE.0);
+        assert_eq!(unsafe { advanced_put_redirect_ports(this, VARIANT_TRUE.0) }, S_OK);
+        assert_eq!(unsafe { advanced_get_redirect_ports(this, &mut redirect_ports) }, S_OK);
+        assert_eq!(redirect_ports, VARIANT_TRUE.0);
+        assert_eq!(unsafe { advanced_put_redirect_ports(this, 1) }, E_INVALIDARG);
+        assert_eq!(unsafe { advanced_get_redirect_ports(this, ptr::null_mut()) }, E_POINTER);
+        settings.borrow_mut().connection_settings_sealed = true;
+        assert_eq!(unsafe { advanced_put_redirect_ports(this, VARIANT_FALSE.0) }, E_FAIL);
+        assert!(settings.borrow().redirect_ports);
+        settings.borrow_mut().connection_settings_sealed = false;
+
         assert_eq!(unsafe { advanced_put_redirect_smart_cards(this, VARIANT_TRUE.0) }, S_OK);
         let mut redirect_smart_cards = VARIANT_FALSE.0;
         assert_eq!(
@@ -19628,8 +21121,8 @@ mod tests {
         assert_eq!(unsafe { advanced_get_redirect_directx(this, &mut disabled) }, S_OK);
         assert_eq!(disabled, VARIANT_FALSE.0);
         assert_eq!(
-            unsafe { advanced_put_redirect_directx(this, VARIANT_TRUE.0) },
-            E_NOTIMPL
+            unsafe { advanced_settings_compat::advanced_put_redirect_directx(this, VARIANT_TRUE.0 as usize) },
+            S_FALSE
         );
         let keyboard_layout = BSTR::from("00000409");
         assert_eq!(
@@ -19748,22 +21241,25 @@ mod tests {
         assert_eq!(vtable.slots[160], advanced_get_pcb as *const () as usize);
         assert_eq!(
             vtable.slots[162],
-            advanced_put_hotkey_focus_release_left as *const () as usize
+            input_policy::advanced_put_hotkey_focus_release_left as *const () as usize
         );
         assert_eq!(
             vtable.slots[163],
-            advanced_get_hotkey_focus_release_left as *const () as usize
+            input_policy::advanced_get_hotkey_focus_release_left as *const () as usize
         );
         assert_eq!(
             vtable.slots[164],
-            advanced_put_hotkey_focus_release_right as *const () as usize
+            input_policy::advanced_put_hotkey_focus_release_right as *const () as usize
         );
         assert_eq!(
             vtable.slots[165],
-            advanced_get_hotkey_focus_release_right as *const () as usize
+            input_policy::advanced_get_hotkey_focus_release_right as *const () as usize
         );
         assert_eq!(vtable.slots[144], advanced_put_audio_redirection as *const () as usize);
-        assert_eq!(vtable.slots[183], advanced_put_redirect_directx as *const () as usize);
+        assert_eq!(
+            vtable.slots[183],
+            advanced_settings_compat::advanced_put_redirect_directx as *const () as usize
+        );
         assert_eq!(
             vtable.slots[185],
             advanced_put_network_connection_type as *const () as usize
@@ -19797,24 +21293,23 @@ mod tests {
 
         let mut focus_release_hotkey = i32::MAX;
         assert_eq!(
-            unsafe { advanced_put_hotkey_focus_release_left(this, 0x1234) },
-            E_NOTIMPL
+            unsafe { input_policy::advanced_put_hotkey_focus_release_left(this, 0x1234) },
+            S_OK
         );
         assert_eq!(
-            unsafe { advanced_get_hotkey_focus_release_left(this, &mut focus_release_hotkey) },
-            E_NOTIMPL
+            unsafe { input_policy::advanced_get_hotkey_focus_release_left(this, &mut focus_release_hotkey) },
+            S_OK
         );
-        assert_eq!(focus_release_hotkey, 0);
+        assert_eq!(focus_release_hotkey, 0x1234);
         assert_eq!(
-            unsafe { advanced_put_hotkey_focus_release_right(this, 0x5678) },
-            E_NOTIMPL
+            unsafe { input_policy::advanced_put_hotkey_focus_release_right(this, 0x5678) },
+            S_OK
         );
-        focus_release_hotkey = i32::MAX;
         assert_eq!(
-            unsafe { advanced_get_hotkey_focus_release_right(this, &mut focus_release_hotkey) },
-            E_NOTIMPL
+            unsafe { input_policy::advanced_get_hotkey_focus_release_right(this, &mut focus_release_hotkey) },
+            S_OK
         );
-        assert_eq!(focus_release_hotkey, 0);
+        assert_eq!(focus_release_hotkey, 0x5678);
 
         let load_balance_info = BSTR::from("tsv://example");
         assert_eq!(
@@ -20086,7 +21581,7 @@ try {
     }
 
     #[test]
-    fn renderer_resize_layout_ignores_minimized_bounds_and_uses_standard_scaling() {
+    fn renderer_resize_layout_ignores_minimized_bounds_and_leaves_scaling_unspecified() {
         assert!(display_layout_from_renderer_size(0, 1080).is_none());
         assert!(display_layout_from_renderer_size(1920, 0).is_none());
         assert!(display_layout_from_renderer_size(-1, 1080).is_none());
@@ -20097,8 +21592,8 @@ try {
         assert_eq!(layout.physical_width, 0);
         assert_eq!(layout.physical_height, 0);
         assert_eq!(layout.orientation, 0);
-        assert_eq!(layout.desktop_scale_factor, 100);
-        assert_eq!(layout.device_scale_factor, 100);
+        assert_eq!(layout.desktop_scale_factor, 0);
+        assert_eq!(layout.device_scale_factor, 0);
     }
 
     #[test]
@@ -20307,7 +21802,191 @@ try {
 
         let vtable = advanced_vtable();
         assert_eq!(vtable.slots[2], advanced_settings_stub_2 as *const () as usize);
-        assert_eq!(vtable.slots[82], advanced_settings_stub_82 as *const () as usize);
+        assert_eq!(vtable.slots[89], advanced_settings_stub_89 as *const () as usize);
+        assert_eq!(
+            vtable.slots[82],
+            advanced_settings_compat::advanced_get_single_connection_timeout as *const () as usize
+        );
+        for (slot, deprecated) in [
+            (
+                14,
+                advanced_settings_compat::advanced_put_smooth_scroll as *const () as usize,
+            ),
+            (
+                15,
+                advanced_settings_compat::advanced_get_smooth_scroll as *const () as usize,
+            ),
+            (
+                18,
+                advanced_settings_compat::advanced_put_shadow_bitmap as *const () as usize,
+            ),
+            (
+                19,
+                advanced_settings_compat::advanced_get_shadow_bitmap as *const () as usize,
+            ),
+            (
+                20,
+                advanced_settings_compat::advanced_put_transport_type as *const () as usize,
+            ),
+            (
+                21,
+                advanced_settings_compat::advanced_get_transport_type as *const () as usize,
+            ),
+            (
+                26,
+                advanced_settings_compat::advanced_put_dedicated_terminal as *const () as usize,
+            ),
+            (
+                27,
+                advanced_settings_compat::advanced_get_dedicated_terminal as *const () as usize,
+            ),
+            (
+                54,
+                advanced_settings_compat::advanced_put_order_draw_threshold as *const () as usize,
+            ),
+            (
+                55,
+                advanced_settings_compat::advanced_get_order_draw_threshold as *const () as usize,
+            ),
+            (
+                60,
+                advanced_settings_compat::advanced_put_scale_bitmap_caches_by_bpp as *const () as usize,
+            ),
+            (
+                61,
+                advanced_settings_compat::advanced_get_scale_bitmap_caches_by_bpp as *const () as usize,
+            ),
+            (
+                62,
+                advanced_settings_compat::advanced_put_num_bitmap_caches as *const () as usize,
+            ),
+            (
+                63,
+                advanced_settings_compat::advanced_get_num_bitmap_caches as *const () as usize,
+            ),
+            (
+                66,
+                advanced_settings_compat::advanced_put_persist_cache_directory as *const () as usize,
+            ),
+            (
+                67,
+                advanced_settings_compat::advanced_put_brush_support_level as *const () as usize,
+            ),
+            (
+                68,
+                advanced_settings_compat::advanced_get_brush_support_level as *const () as usize,
+            ),
+            (
+                71,
+                advanced_settings_compat::advanced_put_input_events_at_once as *const () as usize,
+            ),
+            (
+                72,
+                advanced_settings_compat::advanced_get_input_events_at_once as *const () as usize,
+            ),
+            (
+                73,
+                advanced_settings_compat::advanced_put_max_event_count as *const () as usize,
+            ),
+            (
+                74,
+                advanced_settings_compat::advanced_get_max_event_count as *const () as usize,
+            ),
+            (
+                99,
+                advanced_settings_compat::advanced_put_rdpdr_local_printing_doc_name as *const () as usize,
+            ),
+            (
+                100,
+                advanced_settings_compat::advanced_get_rdpdr_local_printing_doc_name as *const () as usize,
+            ),
+            (
+                101,
+                advanced_settings_compat::advanced_put_rdpdr_clip_clean_temp_dir_string as *const () as usize,
+            ),
+            (
+                102,
+                advanced_settings_compat::advanced_get_rdpdr_clip_clean_temp_dir_string as *const () as usize,
+            ),
+            (
+                103,
+                advanced_settings_compat::advanced_put_rdpdr_clip_paste_info_string as *const () as usize,
+            ),
+            (
+                104,
+                advanced_settings_compat::advanced_get_rdpdr_clip_paste_info_string as *const () as usize,
+            ),
+            (
+                183,
+                advanced_settings_compat::advanced_put_redirect_directx as *const () as usize,
+            ),
+        ] {
+            assert_eq!(vtable.slots[slot], deprecated, "slot {slot}");
+        }
+        for (slot, accessor) in [
+            (
+                24,
+                advanced_settings_compat::advanced_put_encryption_enabled as *const () as usize,
+            ),
+            (
+                25,
+                advanced_settings_compat::advanced_get_encryption_enabled as *const () as usize,
+            ),
+            (
+                38,
+                advanced_settings_compat::advanced_put_maximize_shell as *const () as usize,
+            ),
+            (
+                39,
+                advanced_settings_compat::advanced_get_maximize_shell as *const () as usize,
+            ),
+            (
+                77,
+                advanced_settings_compat::advanced_put_shutdown_timeout as *const () as usize,
+            ),
+            (
+                78,
+                advanced_settings_compat::advanced_get_shutdown_timeout as *const () as usize,
+            ),
+            (
+                79,
+                advanced_settings_compat::advanced_put_overall_connection_timeout as *const () as usize,
+            ),
+            (
+                80,
+                advanced_settings_compat::advanced_get_overall_connection_timeout as *const () as usize,
+            ),
+            (
+                81,
+                advanced_settings_compat::advanced_put_single_connection_timeout as *const () as usize,
+            ),
+            (
+                95,
+                advanced_settings_compat::advanced_put_minutes_to_idle_timeout as *const () as usize,
+            ),
+            (
+                96,
+                advanced_settings_compat::advanced_get_minutes_to_idle_timeout as *const () as usize,
+            ),
+            (
+                131,
+                advanced_settings_compat::advanced_get_can_auto_reconnect as *const () as usize,
+            ),
+            (
+                158,
+                advanced_settings_compat::advanced_get_authentication_service_class as *const () as usize,
+            ),
+            (
+                159,
+                advanced_settings_compat::advanced_put_authentication_service_class as *const () as usize,
+            ),
+        ] {
+            assert_eq!(vtable.slots[slot], accessor, "slot {slot}");
+        }
+        // Bitmap cache, icon, and plugin slots stay unsupported.
+        for slot in [2, 3, 7, 8, 9, 56, 57, 58, 59, 64, 65, 122, 123, 124, 125, 154, 155] {
+            assert_eq!(vtable.slots[slot], stub_slots[slot], "slot {slot}");
+        }
         assert_eq!(vtable.slots[0], advanced_put_compress as *const () as usize);
         assert_eq!(
             vtable.slots[69],
@@ -20618,14 +22297,6 @@ try {
                 expected
             );
         }
-    }
-
-    #[test]
-    fn fullscreen_hotkey_requires_control_alt_break() {
-        assert!(is_fullscreen_hotkey(VK_CANCEL, true));
-        assert!(is_fullscreen_hotkey(VK_PAUSE, true));
-        assert!(!is_fullscreen_hotkey(VK_CANCEL, false));
-        assert!(!is_fullscreen_hotkey(VIRTUAL_KEY(0x42), true));
     }
 
     #[test]
@@ -21284,6 +22955,7 @@ try {
                 bottom: 1_080,
             },
             primary: true,
+            attributes: MonitorAttributes::default(),
         }])
         .expect("a valid single-monitor topology");
         *control.configured_monitor_topology.borrow_mut() = Some(topology.clone());
@@ -21297,7 +22969,7 @@ try {
                 physical_height: 190,
                 orientation: 0,
                 desktop_scale_factor: 150,
-                device_scale_factor: 100,
+                device_scale_factor: 0,
             })
             .expect("queue a supported active-session layout");
 
@@ -21316,49 +22988,148 @@ try {
         assert!(control.configured_monitor_topology.borrow().is_none());
     }
 
+    fn two_monitor_topology(secondary_attributes: MonitorAttributes) -> MonitorTopology {
+        MonitorTopology::from_host_monitors(vec![
+            HostMonitor {
+                rect: RECT {
+                    left: 0,
+                    top: 0,
+                    right: 1_920,
+                    bottom: 1_080,
+                },
+                primary: true,
+                attributes: MonitorAttributes::default(),
+            },
+            HostMonitor {
+                rect: RECT {
+                    left: 1_920,
+                    top: -420,
+                    right: 3_000,
+                    bottom: 1_500,
+                },
+                primary: false,
+                attributes: secondary_attributes,
+            },
+        ])
+        .expect("a valid monitor topology")
+    }
+
     #[test]
-    fn active_multimon_layout_rejects_dynamic_display_updates() {
+    fn active_multimon_layout_sends_full_display_control_layouts() {
         let control = Control::new();
         let (sender, mut receiver) = RdpInputSender::channel(16);
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
-        *control.configured_monitor_topology.borrow_mut() = Some(
-            MonitorTopology::from_host_monitors(vec![
-                HostMonitor {
-                    rect: RECT {
-                        left: 0,
-                        top: 0,
-                        right: 1_920,
-                        bottom: 1_080,
-                    },
-                    primary: true,
-                },
-                HostMonitor {
-                    rect: RECT {
-                        left: 1_920,
-                        top: 0,
-                        right: 3_200,
-                        bottom: 1_080,
-                    },
-                    primary: false,
-                },
-            ])
-            .expect("a valid monitor topology"),
+        let connected = two_monitor_topology(MonitorAttributes::default());
+        *control.configured_monitor_topology.borrow_mut() = Some(connected.clone());
+        *control.active_monitor_topology.borrow_mut() = Some(connected.clone());
+
+        // A layout is sent once, then not again on a display or DPI change notification.
+        control
+            .send_multimon_display_layout(connected.clone(), None, None, false)
+            .expect("the local topology is accepted");
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
+        control
+            .send_multimon_display_layout(connected.clone(), None, None, false)
+            .expect("an unchanged topology is accepted");
+        assert!(receiver.try_recv().is_err());
+        assert!(control.active_monitor_topology.borrow().is_some());
+
+        // An explicit scale override is remembered, so a later refresh restores the monitors' DPI.
+        control
+            .send_multimon_display_layout(connected.clone(), Some(200), None, true)
+            .expect("an explicit scale override is accepted");
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
+        control
+            .send_multimon_display_layout(connected, None, None, false)
+            .expect("the local topology is accepted");
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected the local DPI to be restored");
+        };
+        assert_eq!(layout.monitors()[0].desktop_scale_factor(), Some(100));
+
+        // The secondary monitor moved to 150% and was rotated to portrait.
+        let changed = two_monitor_topology(MonitorAttributes {
+            desktop_scale_factor: 150,
+            orientation: MonitorOrientation::Portrait,
+        });
+        control
+            .send_multimon_display_layout(changed.clone(), None, None, false)
+            .expect("a multimonitor session accepts a new local topology");
+
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected a Display Control monitor layout");
+        };
+        let monitors = layout.monitors();
+        assert_eq!(monitors.len(), 2);
+        assert!(monitors[0].is_primary());
+        assert_eq!(monitors[0].position(), Some((0, 0)));
+        assert_eq!(monitors[0].dimensions(), (1920, 1080));
+        assert_eq!(monitors[0].desktop_scale_factor(), Some(100));
+        assert_eq!(monitors[0].orientation(), Some(MonitorOrientation::Landscape));
+        assert!(!monitors[1].is_primary());
+        assert_eq!(monitors[1].position(), Some((1920, -420)));
+        assert_eq!(monitors[1].dimensions(), (1080, 1920));
+        assert_eq!(monitors[1].desktop_scale_factor(), Some(150));
+        assert_eq!(
+            monitors[1].device_scale_factor(),
+            Some(DeviceScaleFactor::Scale140Percent)
+        );
+        assert_eq!(monitors[1].orientation(), Some(MonitorOrientation::Portrait));
+
+        // The confirmed topology stays active until the server reports the requested one.
+        assert_eq!(control.configured_monitor_topology.borrow().as_ref(), Some(&changed));
+        assert_eq!(
+            control
+                .active_monitor_topology
+                .borrow()
+                .as_ref()
+                .map(|topology| topology.monitors.clone()),
+            Some(changed.monitors.clone())
+        );
+        assert_eq!(
+            {
+                let settings = control.settings.borrow();
+                (settings.desktop_width, settings.desktop_height)
+            },
+            (3000, 1920)
         );
 
-        let error = control
-            .update_display_layout(DisplayLayout {
-                desktop_width: 1280,
-                desktop_height: 720,
-                physical_width: 0,
-                physical_height: 0,
-                orientation: 0,
-                desktop_scale_factor: 100,
-                device_scale_factor: 100,
-            })
-            .expect_err("dynamic display updates cannot change a negotiated monitor topology");
-        assert_eq!(error.code(), E_NOTIMPL);
+        // A layout the session drops rolls back to the confirmed topology. The identical layout
+        // is not retried, while any other local layout is sent.
+        control.monitor_layout_rejected();
+        assert_ne!(control.configured_monitor_topology.borrow().as_ref(), Some(&changed));
+        control
+            .send_multimon_display_layout(changed, None, None, false)
+            .expect("an unchanged rejected layout is accepted");
         assert!(receiver.try_recv().is_err());
+        control
+            .send_multimon_display_layout(two_monitor_topology(MonitorAttributes::default()), None, None, false)
+            .expect("another layout is accepted");
+        assert!(matches!(receiver.try_recv(), Ok(RdpInputEvent::MonitorLayout(_))));
+
+        // Without a confirmed topology, a rejection leaves nothing configured.
+        control.active_monitor_topology.borrow_mut().take();
+        control.monitor_layout_rejected();
+        assert!(control.configured_monitor_topology.borrow().is_none());
+    }
+
+    #[test]
+    fn multimon_display_layout_applies_explicit_scale_factors_to_every_monitor() {
+        let topology = two_monitor_topology(MonitorAttributes {
+            desktop_scale_factor: 150,
+            orientation: MonitorOrientation::Landscape,
+        });
+
+        let layout = topology
+            .display_control_layout(Some(200), Some(DeviceScaleFactor::Scale100Percent))
+            .expect("a valid Display Control layout");
+
+        for monitor in layout.monitors() {
+            assert_eq!(monitor.desktop_scale_factor(), Some(200));
+            assert_eq!(monitor.device_scale_factor(), Some(DeviceScaleFactor::Scale100Percent));
+        }
+        assert_eq!(layout.desktop_size(), (3000, 1920));
     }
 
     #[test]
@@ -21375,6 +23146,7 @@ try {
                     bottom: 600,
                 },
                 primary: true,
+                attributes: MonitorAttributes::default(),
             }])
             .expect("a valid monitor topology"),
         );
@@ -21426,6 +23198,7 @@ try {
                         bottom: 600,
                     },
                     primary: true,
+                    attributes: MonitorAttributes::default(),
                 },
                 HostMonitor {
                     rect: RECT {
@@ -21435,6 +23208,7 @@ try {
                         bottom: 600,
                     },
                     primary: false,
+                    attributes: MonitorAttributes::default(),
                 },
             ])
             .expect("a valid monitor topology"),
@@ -21463,21 +23237,6 @@ try {
 
         assert!(control.active_monitor_topology.borrow().is_none());
         assert!(control.configured_monitor_topology.borrow().is_some());
-        assert_eq!(
-            control
-                .update_display_layout(DisplayLayout {
-                    desktop_width: 800,
-                    desktop_height: 600,
-                    physical_width: 0,
-                    physical_height: 0,
-                    orientation: 0,
-                    desktop_scale_factor: 100,
-                    device_scale_factor: 100,
-                })
-                .expect_err("a mismatched multimonitor layout still blocks dynamic display updates")
-                .code(),
-            E_NOTIMPL
-        );
         assert_eq!(
             control.remote_monitor_bounds().expect("read remote frame bounds"),
             (0, 0, 1, 1)
@@ -21530,9 +23289,9 @@ try {
     }
 
     #[test]
-    fn display_layout_rejects_invalid_or_unmapped_scaling() {
+    fn display_layout_rejects_invalid_scaling_and_rotation() {
         let control = Control::new();
-        let (sender, _) = RdpInputSender::channel(16);
+        let (sender, mut receiver) = RdpInputSender::channel(16);
         *control.input_sender.borrow_mut() = Some(sender);
         control.state.set(ConnectionState::Connected);
         let topology = MonitorTopology::from_host_monitors(vec![HostMonitor {
@@ -21543,6 +23302,7 @@ try {
                 bottom: 600,
             },
             primary: true,
+            attributes: MonitorAttributes::default(),
         }])
         .expect("a valid single-monitor topology");
         *control.configured_monitor_topology.borrow_mut() = Some(topology.clone());
@@ -21571,8 +23331,8 @@ try {
                 desktop_scale_factor: 100,
                 device_scale_factor: 125,
             })
-            .expect_err("device scale without an IronRDP mapping is unsupported");
-        assert_eq!(error.code(), E_NOTIMPL);
+            .expect_err("MS-RDPEDISP only defines 100, 140 and 180 percent device scales");
+        assert_eq!(error.code(), E_INVALIDARG);
 
         let error = control
             .update_display_layout(DisplayLayout {
@@ -21580,13 +23340,106 @@ try {
                 desktop_height: 720,
                 physical_width: 0,
                 physical_height: 0,
-                orientation: 90,
+                orientation: 45,
                 desktop_scale_factor: 100,
                 device_scale_factor: 100,
             })
-            .expect_err("rotation without an IronRDP mapping is unsupported");
-        assert_eq!(error.code(), E_NOTIMPL);
+            .expect_err("MS-RDPEDISP only defines right-angle rotations");
+        assert_eq!(error.code(), E_INVALIDARG);
+        assert!(receiver.try_recv().is_err());
         assert!(control.active_monitor_topology.borrow().is_some());
+    }
+
+    #[test]
+    fn display_layout_sends_rotation_and_device_scale_as_a_monitor_layout() {
+        let control = Control::new();
+        let (sender, mut receiver) = RdpInputSender::channel(16);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+
+        control
+            .update_display_layout(DisplayLayout {
+                desktop_width: 1080,
+                desktop_height: 1920,
+                physical_width: 190,
+                physical_height: 340,
+                orientation: 270,
+                desktop_scale_factor: 175,
+                device_scale_factor: 180,
+            })
+            .expect("queue a rotated single-monitor layout");
+
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected a Display Control monitor layout");
+        };
+        let [monitor] = layout.monitors() else {
+            panic!("expected a single monitor");
+        };
+        assert!(monitor.is_primary());
+        assert_eq!(monitor.dimensions(), (1080, 1920));
+        assert_eq!(monitor.physical_dimensions(), Some((190, 340)));
+        assert_eq!(monitor.orientation(), Some(MonitorOrientation::PortraitFlipped));
+        assert_eq!(monitor.desktop_scale_factor(), Some(175));
+        assert_eq!(monitor.device_scale_factor(), Some(DeviceScaleFactor::Scale180Percent));
+    }
+
+    #[test]
+    fn display_layout_preserves_values_the_resize_path_would_derive_differently() {
+        let control = Control::new();
+        let (sender, mut receiver) = RdpInputSender::channel(16);
+        *control.input_sender.borrow_mut() = Some(sender);
+        control.state.set(ConnectionState::Connected);
+
+        control
+            .update_display_layout(DisplayLayout {
+                desktop_width: 1920,
+                desktop_height: 1080,
+                physical_width: 0,
+                physical_height: 0,
+                orientation: 0,
+                desktop_scale_factor: 200,
+                device_scale_factor: 100,
+            })
+            .expect("queue a layout with an explicit device scale");
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected a Display Control monitor layout");
+        };
+        assert_eq!(
+            layout.monitors()[0].device_scale_factor(),
+            Some(DeviceScaleFactor::Scale100Percent)
+        );
+
+        control
+            .update_display_layout(DisplayLayout {
+                desktop_width: 1080,
+                desktop_height: 1920,
+                physical_width: 0,
+                physical_height: 0,
+                orientation: 0,
+                desktop_scale_factor: 100,
+                device_scale_factor: 100,
+            })
+            .expect("queue an unrotated portrait-sized layout");
+        let Ok(RdpInputEvent::MonitorLayout(layout)) = receiver.try_recv() else {
+            panic!("expected a Display Control monitor layout");
+        };
+        assert_eq!(layout.monitors()[0].orientation(), Some(MonitorOrientation::Landscape));
+
+        // Renderer-driven updates keep the resize path and its derived values.
+        control
+            .update_display_layout_impl(
+                display_layout_from_renderer_size(1080, 1920).expect("nonzero renderer size"),
+                false,
+            )
+            .expect("queue a renderer resize");
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(RdpInputEvent::Resize {
+                width: 1080,
+                height: 1920,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -21621,6 +23474,51 @@ try {
         assert_eq!(size_of::<IRemoteDesktopClientSettings_Vtbl>(), 11 * pointer_size);
         assert_eq!(size_of::<IRemoteDesktopClientActions_Vtbl>(), 11 * pointer_size);
         assert_eq!(size_of::<IRemoteDesktopClientTouchPointer_Vtbl>(), 13 * pointer_size);
+    }
+
+    #[test]
+    fn modern_settings_apply_and_retrieve_port_redirection() {
+        let control = Control::new();
+        control
+            .apply_modern_property_set(
+                ironrdp_rdpfile::parse(
+                    "redirectcomports:i:1
+",
+                )
+                .properties,
+            )
+            .expect("apply port redirection");
+        assert!(control.compatibility.borrow().redirect_ports);
+        assert_eq!(
+            control
+                .modern_rdp_property("RedirectComPorts")
+                .expect("retrieve port redirection")
+                .as_int(),
+            Some(1)
+        );
+        assert!(
+            control
+                .modern_property_snapshot()
+                .iter()
+                .any(|(name, value)| { name.as_ref() == "redirectcomports" && value.as_int() == Some(1) })
+        );
+
+        control
+            .set_modern_rdp_property("RedirectComPorts".to_owned(), Value::Int(0))
+            .expect("disable port redirection");
+        assert!(!control.compatibility.borrow().redirect_ports);
+        assert_eq!(
+            control
+                .modern_rdp_property("redirectcomports")
+                .expect("retrieve port redirection")
+                .as_int(),
+            Some(0)
+        );
+        assert!(
+            control
+                .set_modern_rdp_property("redirectcomports".to_owned(), Value::Str("yes".to_owned()))
+                .is_err()
+        );
     }
 
     #[test]
@@ -23496,21 +25394,22 @@ try {
         let preferred = control
             .cast::<IMsRdpPreferredRedirectionInfo>()
             .expect("client supports preferred redirection settings");
-        let error = unsafe { preferred.put_UseRedirectionServerName(VARIANT_TRUE.0) }
-            .expect_err("redirection server names are not implemented");
-        assert_eq!(error.code(), E_NOTIMPL);
-        unsafe {
-            preferred
-                .put_UseRedirectionServerName(VARIANT_FALSE.0)
-                .expect("disabling an unavailable redirection feature is accepted");
-        }
         let mut use_redirection_server_name = VARIANT_TRUE.0;
         unsafe {
             preferred
                 .get_UseRedirectionServerName(&mut use_redirection_server_name)
-                .expect("query disabled redirection state");
+                .expect("query the default redirection setting");
         }
         assert_eq!(use_redirection_server_name, VARIANT_FALSE.0);
+        unsafe {
+            preferred
+                .put_UseRedirectionServerName(VARIANT_TRUE.0)
+                .expect("enable redirection server names");
+            preferred
+                .get_UseRedirectionServerName(&mut use_redirection_server_name)
+                .expect("query the enabled redirection setting");
+        }
+        assert_eq!(use_redirection_server_name, VARIANT_TRUE.0);
 
         let control = control.cast::<IMsTscAx>().expect("client supports IMsTscAx");
         let empty_channels = ptr::null();
@@ -23767,6 +25666,7 @@ try {
         assert!(program.cast::<ITSRemoteProgram3>().is_ok());
         assert!(program2.cast::<ITSRemoteProgram>().is_ok());
 
+        const DISPID_SERVER_START_APP: i32 = 205;
         let unexpected_iid = GUID::from_u128(0x7d9432b4_5d93_4f4e_af15_749c6454872f);
         let mut returned_dispid = 0;
         assert_eq!(
@@ -23780,7 +25680,7 @@ try {
                     &mut returned_dispid,
                 )
             },
-            DISP_E_UNKNOWNINTERFACE_HRESULT
+            windows::Win32::Foundation::DISP_E_UNKNOWNINTERFACE
         );
         assert_eq!(returned_dispid, 0);
 
@@ -23852,7 +25752,7 @@ try {
                     ptr::null_mut(),
                 )
             },
-            DISP_E_UNKNOWNINTERFACE_HRESULT
+            windows::Win32::Foundation::DISP_E_UNKNOWNINTERFACE
         );
         assert_eq!(
             unsafe {
@@ -23876,11 +25776,22 @@ try {
             ..params
         };
         let mut argument_error = u32::MAX;
-        let error = match bind_dispatch_arguments(&invalid_params, 3, &mut argument_error) {
-            Ok(_) => panic!("unknown named arguments must be rejected"),
-            Err(error) => error,
-        };
-        assert_eq!(error.code(), DISP_E_PARAMNOTFOUND_HRESULT);
+        assert_eq!(
+            unsafe {
+                settings_invoke::<7>(
+                    program3.as_raw(),
+                    DISPID_SERVER_START_APP,
+                    &GUID::zeroed(),
+                    0,
+                    DISPATCH_METHOD,
+                    &invalid_params,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    &mut argument_error,
+                )
+            },
+            windows::Win32::Foundation::DISP_E_PARAMNOTFOUND
+        );
         assert_eq!(argument_error, 0);
         for argument in &mut arguments {
             free_owned_bstr_variant(argument);
@@ -23939,41 +25850,37 @@ try {
         );
     }
 
+    // oracle: spec MS-RDPERP §2.2.1.3.1.2.1 (absent fields leave the client's values unchanged)
     #[test]
     fn projected_rail_window_order_retains_incremental_fields() {
-        let flags: u32 = 0x1100_0000
-            | 0x0000_0002
-            | 0x0000_0004
-            | 0x0000_0008
-            | 0x0000_0010
-            | 0x0000_0400
-            | 0x0000_0800
-            | 0x0000_4000
-            | 0x0000_8000
-            | 0x0001_0000;
-        let mut encoded = vec![0x2e, 0, 0];
-        encoded.extend_from_slice(&flags.to_le_bytes());
-        encoded.extend_from_slice(&42u32.to_le_bytes());
-        encoded.extend_from_slice(&7u32.to_le_bytes());
-        encoded.extend_from_slice(&0x00c4_0000u32.to_le_bytes());
-        encoded.extend_from_slice(&0x0000_0100u32.to_le_bytes());
-        encoded.push(5);
-        encoded.extend_from_slice(&8u16.to_le_bytes());
-        encoded.extend("Calc".encode_utf16().flat_map(u16::to_le_bytes));
-        encoded.extend_from_slice(&110i32.to_le_bytes());
-        encoded.extend_from_slice(&120i32.to_le_bytes());
-        encoded.extend_from_slice(&300u32.to_le_bytes());
-        encoded.extend_from_slice(&200u32.to_le_bytes());
-        encoded.extend_from_slice(&100i32.to_le_bytes());
-        encoded.extend_from_slice(&90i32.to_le_bytes());
-        encoded.extend_from_slice(&10i32.to_le_bytes());
-        encoded.extend_from_slice(&30i32.to_le_bytes());
-        encoded.extend_from_slice(&320u32.to_le_bytes());
-        encoded.extend_from_slice(&240u32.to_le_bytes());
-        let order_size = u16::try_from(encoded.len()).expect("test order fits");
-        encoded[1..3].copy_from_slice(&order_size.to_le_bytes());
+        use ironrdp_pdu::window::{WindowPoint, WindowSize, WindowState, WindowStyle};
 
-        let order = parse_projected_rail_window_order(&encoded, flags).expect("parse validated window order");
+        let order = projected_rail_window_order(WindowOrder {
+            window_id: 42,
+            is_new: true,
+            body: WindowOrderBody::State(Box::new(WindowState {
+                owner_window_id: Some(7),
+                style: Some(WindowStyle {
+                    style: 0x00c4_0000,
+                    extended_style: 0x0000_0100,
+                }),
+                show_state: Some(ShowState::Show),
+                title: Some("Calc".to_owned()),
+                client_offset: Some(WindowPoint { x: 110, y: 120 }),
+                client_area_size: Some(WindowSize {
+                    width: 300,
+                    height: 200,
+                }),
+                window_offset: Some(WindowPoint { x: 100, y: 90 }),
+                client_delta: Some(WindowPoint { x: 10, y: 30 }),
+                window_size: Some(WindowSize {
+                    width: 320,
+                    height: 240,
+                }),
+                ..WindowState::default()
+            })),
+        })
+        .expect("window state order is projected");
         assert!(order.is_new);
         assert_eq!(order.window_id, 42);
         assert_eq!(order.owner_window_id, Some(Some(7)));
@@ -24032,13 +25939,6 @@ try {
     }
 
     #[test]
-    fn projected_rail_desktop_synchronization_resets_windows() {
-        assert!(resets_projected_rail_windows(0x0400_0001));
-        assert!(resets_projected_rail_windows(0x0400_000a));
-        assert!(!resets_projected_rail_windows(0x0400_0002));
-    }
-
-    #[test]
     fn projected_rail_close_is_server_directed() {
         assert!(matches!(
             rail_window_input_event(42, WM_CLOSE, WPARAM(0)),
@@ -24051,11 +25951,28 @@ try {
     }
 
     #[test]
-    fn projected_rail_suppresses_unsupported_system_commands() {
-        for command in [SC_MOVE, SC_SIZE, SC_MINIMIZE, SC_MAXIMIZE, SC_RESTORE] {
-            assert!(is_unsupported_projected_rail_system_command(WPARAM(command as usize)));
+    fn projected_rail_window_state_changes_go_to_the_server() {
+        // The low four bits of a WM_SYSCOMMAND value are reserved and ignored.
+        assert_eq!(
+            projected_rail_system_command(WPARAM(SC_MINIMIZE as usize | 0x2)),
+            Some(SystemCommand::Minimize)
+        );
+        assert_eq!(
+            projected_rail_system_command(WPARAM(SC_MAXIMIZE as usize)),
+            Some(SystemCommand::Maximize)
+        );
+        assert_eq!(
+            projected_rail_system_command(WPARAM(SC_RESTORE as usize)),
+            Some(SystemCommand::Restore)
+        );
+        // Moving and sizing run locally and are reported when they end.
+        for command in [
+            windows::Win32::UI::WindowsAndMessaging::SC_MOVE,
+            windows::Win32::UI::WindowsAndMessaging::SC_SIZE,
+            0xf060,
+        ] {
+            assert_eq!(projected_rail_system_command(WPARAM(command as usize)), None);
         }
-        assert!(!is_unsupported_projected_rail_system_command(WPARAM(0xf060)));
     }
 
     #[test]
@@ -24130,19 +26047,13 @@ try {
         input_sender
             .try_send(RdpInputEvent::FastPath(Vec::new().into()))
             .expect("fill input queue");
-        apply_projected_rail_input(
-            &window._context,
-            [Operation::KeyPressed(Scancode::from_u8(false, 0x1e))],
-        );
+        apply_projected_rail_input(&window.context, [Operation::KeyPressed(Scancode::from_u8(false, 0x1e))]);
         assert!(input_database.borrow_mut().release_all().is_empty());
         assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
 
-        apply_projected_rail_input(
-            &window._context,
-            [Operation::KeyPressed(Scancode::from_u8(false, 0x1e))],
-        );
-        release_projected_rail_input(window.hwnd, &window._context);
-        assert!(window._context.release_pending.get());
+        apply_projected_rail_input(&window.context, [Operation::KeyPressed(Scancode::from_u8(false, 0x1e))]);
+        release_projected_rail_input(window.hwnd, &window.context);
+        assert!(window.context.release_pending.get());
         assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
         unsafe {
             let _ = SendMessageW(
@@ -24152,7 +26063,7 @@ try {
                 Some(LPARAM(0)),
             );
         }
-        assert!(!window._context.release_pending.get());
+        assert!(!window.context.release_pending.get());
         assert!(matches!(input_receiver.try_recv(), Ok(RdpInputEvent::FastPath(_))));
         assert!(input_database.borrow_mut().release_all().is_empty());
 
@@ -25163,6 +27074,14 @@ try {
         assert!(!event_posted.load(Ordering::Acquire));
     }
 
+    fn deleted_window_order() -> WindowingOrder {
+        WindowingOrder::Window(WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: WindowOrderBody::Deleted,
+        })
+    }
+
     #[test]
     fn worker_event_queue_waits_for_rail_window_orders() {
         let events = Arc::new(WorkerEventQueue::new());
@@ -25190,7 +27109,7 @@ try {
                 HWND(dispatcher_raw as *mut c_void),
                 WorkerEvent::RailWindowingOrders {
                     generation: 7,
-                    data: vec![1, 2, 3],
+                    orders: vec![deleted_window_order()],
                 },
             );
             completed_sender.send(queued).expect("report queued order");
@@ -25211,8 +27130,8 @@ try {
             take_queued_events(&events).as_slice(),
             [WorkerEvent::RailWindowingOrders {
                 generation: 7,
-                data,
-            }] if data == &[1, 2, 3]
+                orders,
+            }] if orders == &[deleted_window_order()]
         ));
     }
 
@@ -25476,7 +27395,7 @@ try {
     }
 
     #[test]
-    fn camera_collection_exposes_stable_metadata_and_rejects_redirection() {
+    fn camera_collection_exposes_stable_metadata_and_redirection_policy() {
         let settings = Rc::new(RefCell::new(CompatibilitySettings::default()));
         let collection: IMsRdpCameraRedirConfigCollection = CameraRedirConfigCollection::new_with_devices(
             Rc::clone(&settings),
@@ -25545,19 +27464,12 @@ try {
             r"USB\ROOT"
         );
 
-        assert_eq!(
-            unsafe { config.put_Redirected(VARIANT_TRUE.0) }
-                .expect_err("camera redirection has no backend")
-                .code(),
-            E_NOTIMPL
-        );
+        unsafe { config.put_Redirected(VARIANT_TRUE.0) }.expect("redirect camera");
+        let mut redirected = VARIANT_FALSE.0;
+        unsafe { config.get_Redirected(&mut redirected) }.expect("get camera redirection");
+        assert_eq!(redirected, VARIANT_TRUE.0);
         unsafe { config.put_Redirected(VARIANT_FALSE.0) }.expect("explicitly disable camera");
-        assert_eq!(
-            unsafe { collection.put_RedirectByDefault(VARIANT_TRUE.0) }
-                .expect_err("default camera redirection has no backend")
-                .code(),
-            E_NOTIMPL
-        );
+        unsafe { collection.put_RedirectByDefault(VARIANT_TRUE.0) }.expect("redirect cameras by default");
 
         let offline_link = BSTR::from(r"\\?\usb#vid_missing");
         let invalid_link = BSTR::from("\\\\?\\usb#vid_missing\0suffix");
@@ -25567,13 +27479,7 @@ try {
                 .code(),
             E_INVALIDARG
         );
-        assert_eq!(
-            unsafe { collection.AddConfig(offline_link.as_ptr(), VARIANT_TRUE.0) }
-                .expect_err("enabled offline camera has no backend")
-                .code(),
-            E_NOTIMPL
-        );
-        unsafe { collection.AddConfig(offline_link.as_ptr(), VARIANT_FALSE.0) }.expect("add offline camera config");
+        unsafe { collection.AddConfig(offline_link.as_ptr(), VARIANT_TRUE.0) }.expect("add offline camera config");
         unsafe { collection.get_Count(&mut count) }.expect("get updated camera count");
         assert_eq!(count, 2);
 
@@ -25603,12 +27509,24 @@ try {
         unsafe { collection.get_EncodingQuality(&mut quality) }.expect("get encoding quality");
         assert_eq!(quality, 2);
 
+        let policy = unsafe { AsImpl::<CameraRedirConfigCollection>::as_impl(&collection) }.camera_config();
+        assert_eq!(
+            policy,
+            CameraConfig {
+                redirect_all: true,
+                include: vec![r"\\?\usb#vid_missing".to_owned()],
+                exclude: vec![r"\\?\usb#vid_0001".to_owned()],
+                encode_video: true,
+                encoding_quality: CameraEncodingQuality::High,
+            }
+        );
+
         settings.borrow_mut().connection_settings_sealed = true;
         assert_eq!(
             unsafe { config.put_Redirected(VARIANT_TRUE.0) }
-                .expect_err("unsupported camera redirection stays explicit after sealing")
+                .expect_err("camera redirection is sealed with the connection settings")
                 .code(),
-            E_NOTIMPL
+            E_FAIL
         );
         assert_eq!(
             unsafe { collection.put_EncodeVideo(VARIANT_FALSE.0) }
@@ -25738,5 +27656,80 @@ try {
         drop(unsafe { IMsRdpCameraRedirConfigCollection::from_raw(first) });
         drop(unsafe { IMsRdpCameraRedirConfigCollection::from_raw(second) });
         assert_eq!(size_of::<IMsRdpCameraRedirConfig_Vtbl>(), 10 * size_of::<usize>());
+    }
+
+    // oracle: spec MS-RDPEI §3.1.1.1
+    #[test]
+    fn only_movement_events_may_be_dropped_from_the_pending_queue() {
+        let touch = |flags| {
+            RdpInputEvent::Touch(TouchEventPdu::new(
+                0,
+                vec![TouchFrame::new(0, vec![TouchContact::new(0, 0, 0, flags)])],
+            ))
+        };
+        let pen = |flags| {
+            RdpInputEvent::Pen(PenEventPdu::new(
+                0,
+                vec![PenFrame::new(0, vec![PenContact::new(0, 0, 0, flags)])],
+            ))
+        };
+        let moving = TouchContactFlags::UPDATE | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT;
+        assert!(is_steady_rdpei_event(&touch(moving)));
+        assert!(!is_steady_rdpei_event(&touch(
+            TouchContactFlags::DOWN | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT
+        )));
+        assert!(!is_steady_rdpei_event(&touch(TouchContactFlags::UP)));
+        assert!(is_steady_rdpei_event(&pen(
+            PenContactFlags::UPDATE | PenContactFlags::INRANGE
+        )));
+        assert!(!is_steady_rdpei_event(&pen(
+            PenContactFlags::UP | PenContactFlags::INRANGE
+        )));
+        // Only touch and pen events are ever dropped from the queue.
+        assert!(!is_steady_rdpei_event(&RdpInputEvent::Close));
+    }
+
+    // oracle: spec MS-RDPEI §3.1.1.1
+    #[test]
+    fn a_pending_event_with_any_transition_is_kept() {
+        let moving = TouchContactFlags::UPDATE | TouchContactFlags::INRANGE | TouchContactFlags::INCONTACT;
+        let mixed_contacts = RdpInputEvent::Touch(TouchEventPdu::new(
+            0,
+            vec![TouchFrame::new(
+                0,
+                vec![
+                    TouchContact::new(0, 0, 0, moving),
+                    TouchContact::new(1, 0, 0, TouchContactFlags::UP),
+                ],
+            )],
+        ));
+        assert!(!is_steady_rdpei_event(&mixed_contacts));
+        let mixed_frames = RdpInputEvent::Touch(TouchEventPdu::new(
+            0,
+            vec![
+                TouchFrame::new(0, vec![TouchContact::new(0, 0, 0, moving)]),
+                TouchFrame::new(0, vec![TouchContact::new(0, 0, 0, TouchContactFlags::UP)]),
+            ],
+        ));
+        assert!(!is_steady_rdpei_event(&mixed_frames));
+    }
+
+    #[test]
+    fn client_shell_launch_applies_its_public_mode() {
+        let client: IMsRdpClient5 = Control::new().into();
+        let mut raw = ptr::null_mut();
+        unsafe { client.get_MsRdpClientShell(&mut raw) }.expect("client shell");
+        let shell = unsafe { IMsRdpClientShell::from_raw(raw) };
+        let contents = BSTR::from("full address:s:host.example\r\n");
+        unsafe { shell.put_RdpFileContents(contents.as_ptr()) }.expect("store shell records");
+        // SAFETY: the interface was created from `Control`.
+        let control = unsafe { AsImpl::<Control>::as_impl(&client) };
+
+        unsafe { shell.Launch() }.expect("launch without public mode");
+        assert!(!control.compatibility.borrow().public_mode);
+
+        unsafe { shell.put_PublicMode(VARIANT_TRUE.0) }.expect("enable shell public mode");
+        unsafe { shell.Launch() }.expect("launch in public mode");
+        assert!(control.compatibility.borrow().public_mode);
     }
 }

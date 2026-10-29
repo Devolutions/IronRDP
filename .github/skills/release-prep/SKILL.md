@@ -1,76 +1,31 @@
 ---
 name: release-prep
-description: Reviews and finalizes a release-plz "chore(release): prepare for publishing" PR for the IronRDP workspace. Use this skill whenever the user asks to review, fix, prepare, or finalize a release PR; mentions release-plz, version bumps, CHANGELOG cleanup, or "publishing crates"; or references a PR titled "chore(release): prepare for publishing". Invoke proactively any time work involves auditing or editing CHANGELOG.md / Cargo.toml version fields across multiple crates ahead of publishing to crates.io.
+description: Review and correct an IronRDP release-plz release PR before publishing. Use when auditing version bumps, public-dependency propagation, or generated per-crate changelogs in a prepare-for-publishing PR.
 ---
 
-# IronRDP release-plz PR review & finalization
+Apply fixes on the release-plz PR branch.
+Source, README, MSRV, toolchain, and CI changes belong on the repository's default branch first so release-plz can regenerate the release PR.
+Resolve the PR's actual base branch rather than assuming `main` or `master`.
 
-release-plz does most of the mechanical work (computing bumps, generating changelog entries from conventional commits, updating dependency version requirements, refreshing `Cargo.lock`). This skill covers the **human-in-the-loop pass** that release-plz cannot do automatically: verifying bumps against the public-dependency rule, rewriting per-crate changelog entries, and deduplicating commits that collapse into a single net change.
+Use `public-dependency` to identify `# public` edges, then compare each proposed bump with the crate's own changes and the PR's new-release table.
+A breaking change in a public dependency requires a breaking release of its consumer: minor before 1.0, major after 1.0.
+A patch dependency release needs no consumer bump when the existing requirement already accepts it.
+An internal dependency's breaking release needs only a patch consumer release when the consumer's public API is unchanged.
+Correct crate versions, consumer requirements, changelog version headings, and compare URLs together.
 
-All fixes go on the **release-plz PR branch** directly. Do not rewrite history on `main` for cosmetic changelog reasons; if real source/doc changes are needed, land them on `main` first and let release-plz regenerate the PR.
+For each new changelog entry, inspect the originating commit's diff for that crate.
+Describe that crate's user-visible change; use a short dependency-update note when it only adapts to another crate.
+Do not copy an upstream feature or breaking-change description into a mechanically updated consumer.
+Apply `[**breaking**]` according to the consumer's public API and public-dependency rule.
 
-## The public-dependency propagation rule
+Collapse changes that cancel or refine one unreleased behavior: remove full revert pairs, describe a feature as it ships, and fold its unreleased bug fixes and mechanical follow-ups into that entry.
+Preserve relevant PR and commit links when combining entries.
 
-A dependency line in `Cargo.toml` annotated with `# public` means that the dependency's types appear in this crate's *public* API surface.
+Preserve `cliff.toml`'s generated format: section order and `<!-- N -->` prefixes, version headings, blank lines, two-space body indentation, `[**breaking**]`, and link destinations.
+Move a rewritten entry to its correct existing category when necessary.
+The `[#1234](...)` and `[abcdef0123](...)` forms are inline links; preserve them as generated.
 
-- **Breaking change in a `# public` dependency ⇒ breaking change in the depending crate** (minor bump pre-1.0, major bump post-1.0). The downstream changelog must reflect that it is breaking, even if the downstream's own code changes were trivial recompiles.
-- A *patch-level* bump in a `# public` dependency does **not** force any bump in downstream crates: workspace `Cargo.toml` files use `"0.7"`-style major.minor requirements only, so Cargo's resolver picks the new patch up automatically.
-- A dependency *without* the `# public` marker is internal. A breaking change in it is just a patch for the depending crate (assuming the public API is unchanged).
-
-Enumerate public-dep edges with `grep -n '# public' crates/*/Cargo.toml`. The dep's bump kind is visible in the release-plz PR body's "New release" summary.
-
-For each crate in the release, cross-check the proposed bump against (a) its own commits' conventional-commit signals (`feat!`, `BREAKING CHANGE` footer, etc.) and (b) the propagation rule above. When the bump is wrong, fix it on the PR branch: edit `version = "..."` in that crate's `Cargo.toml`, cascade to the version requirement in any consumer crate's `Cargo.toml`, and update the version-header line at the top of the corresponding `CHANGELOG.md` (`## [[X.Y.Z](...)] - YYYY-MM-DD`, including the `vOLD...vNEW` compare URL).
-
-## Changelog quality pass
-
-release-plz pulls each commit's subject + body into the changelog of *every* crate touched by that commit. Many IronRDP commits span multiple crates with very different semantics on each side — e.g. a breaking change in `ironrdp-pdu` that requires a mechanical call-site update in `ironrdp-connector`. The PDU-flavored description does not belong in the connector's changelog.
-
-**For each duplicated entry:**
-
-1. **Default:** rewrite to describe what *this* crate actually changed, inferred from the diff for this crate in the originating commit. Use `git show <sha> -- crates/<this-crate>/` to see only this crate's slice.
-2. **Fallback:** if the change here is genuinely just "recompile against new dep" with nothing more specific to say, replace the entry with a short note such as `Update <dep> dependency`. There *is* a real code change (release-plz wouldn't have inserted an entry otherwise — at minimum the dep version requirement moved), so the changelog should still acknowledge it; just don't parrot the upstream description.
-3. Preserve the conventional-commit category mapping (Features / Bug Fixes / Documentation / etc.) defined in `cliff.toml`, but recategorize if the rewritten entry fits a different bucket better.
-4. If the rewrite changes a non-breaking entry into a breaking one (or vice versa) because of the public-dep rule, add or remove the `[**breaking**]` prefix accordingly, and revert the breaking bump which was wrongly applied (minor bump pre-1.0, major bump post-1.0).
-
-### Deduplication across the release window
-
-Multiple commits in the release window often collapse into a single net change. Spend real effort on this — a clean changelog is one of the highest-leverage outputs of this pass. Common patterns:
-
-- **Revert before release:** both entries should be dropped (or, if the revert was partial, replaced with a single entry describing the final state).
-- **Iteration on an unreleased feature:** initial commit introduces feature X, follow-ups tweak its API or behaviour, all within the same release window. Collapse into a single entry describing X *as it actually ships*.
-- **Bug fix on an unreleased feature:** if the bug only ever existed in the unreleased code, fold the fix into the feature entry.
-- **Mechanical follow-ups** (review feedback, clippy fixes on a feature PR): keep only the feature entry.
-
-When merging entries, preserve every relevant `[#NNNN]`/commit-SHA link so the historical trail stays navigable. The headline text should describe the *final* outcome, not the journey.
-
-### Format fidelity
-
-`CHANGELOG.md` content is generated by git-cliff using the template in `cliff.toml`. When hand-editing, preserve the generated format exactly:
-
-- **Section order** is controlled by `<!-- N -->` prefixes in `commit_parsers` (Security, Features, Improvements, Revert, Bug Fixes, Performance, Documentation, Build, Please Sort). Do not reorder sections, even if the result looks unbalanced.
-- **Section headings** keep the `<!-- N -->` prefix verbatim (e.g. `### <!-- 1 -->Features`). Don't strip it.
-- **Spacing** must match git-cliff's output: one blank line between version headers, sections, and entries; two-space hanging indent for entry bodies. Don't collapse or add blank lines.
-- **Entry shape** is `- {breaking?}{Message} ({commit_link})` followed, when there's a body, by a blank line and the indented body. Keep `[**breaking**]` exactly as rendered.
-- **Links** are reference-style URLs to issues/PRs (`[#1234](...)`) and commits (`[abcdef0123](...)`). When merging or rewriting entries, keep these links intact rather than rewriting them by hand.
-- **Category placement** for rewritten entries should still match the `commit_parsers` mapping in `cliff.toml`. If a rewrite changes the appropriate category, move the entry into the correct existing section rather than inventing a new one.
-
-## Scope of edits
-
-Only these files should be touched on the release-plz PR branch:
-
-- `crates/<crate>/CHANGELOG.md` — content rewrites, drops, breaking-tag fixes, version-header bumps.
-- `crates/<crate>/Cargo.toml` — `version = "..."` corrections and cascading version-requirement updates in consumer crates.
-- `Cargo.lock` — regenerated automatically by `cargo check` after any `Cargo.toml` version edit (see procedure step 6); never edited by hand.
-
-Do **not** touch source code, READMEs, MSRV, `rust-toolchain.toml`, or CI files here. Those belong on `main`.
-
-## Procedure
-
-1. Inspect the PR's changes from the working tree: `git --no-pager diff origin/main -- '**/CHANGELOG.md' '**/Cargo.toml'` for the substantive deltas, and read the PR body for the "New release" bump table (use `gh pr view` only if the body isn't already provided in context).
-2. Read the PR body's "New release" bump table.
-3. Enumerate `# public` dep edges and cross-check every proposed bump against the propagation rule and the originating commits' conventional-commit signals. Note mismatches.
-4. For each crate's `CHANGELOG.md` section in the diff, classify entries as *own change*, *public-dep ripple*, or *internal-dep ripple / unrelated*. Rewrite or replace per the rules above. Then deduplicate across the release window.
-5. Apply any `Cargo.toml` version corrections from step 3, cascading to consumer crates' version requirements and the corresponding changelog version headers.
-6. If you edited any `Cargo.toml` version, run `cargo check --workspace` (without `--locked`, so `Cargo.lock` can be regenerated) and commit the resulting lock delta. Then run `cargo xtask check locks -v`, which verifies no lock file is left uncommitted.
-7. Push the fixups with conventional-commit-shaped messages (typically `chore(release): ...`) so they don't pollute the next release window.
-8. Summarize the changes and any judgement calls — especially dropped entries and escalated bumps — for the human reviewer.
+Limit release-branch edits to `crates/*/CHANGELOG.md`, crate versions and dependent requirements in `Cargo.toml`, and the generated `Cargo.lock`.
+After manifest changes, run `cargo check --workspace` without `--locked` to regenerate the lockfile.
+Commit the resulting release changes before running `cargo xtask check locks -v`, which checks for uncommitted lockfiles.
+Use `commit-and-pr-conventions` for authorized commits and pushes, and report dropped entries and changed bump decisions for review.

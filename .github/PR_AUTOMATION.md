@@ -21,10 +21,10 @@ The classifier and all reviewers use `glm5.3`.
 The pipeline performs these stages:
 
 1. Prepare a SHA-bound changed-file manifest, diff, pull request context, and read-only head tree.
-2. Classify risk, scope, legitimacy, overlap with another pull request, protocol relevance, and useful specialist reviewers.
+2. Classify risk, scope, legitimacy, overlap with another pull request, and protocol relevance.
 3. Apply workflow-controlled routing rules and persist the canonical review plan in the `AI classification` check.
 4. Run selected specialists as parallel matrix jobs, at most three at once.
-5. Validate each specialist result, then aggregate the results in the canonical order `protocol`, `skeptical`, `code-compressor`.
+5. Validate each specialist result, then aggregate the results in the canonical order `protocol`, `skeptical`, `intent-drift`, `intent-review`, `test`, `dependency`, `code-compressor`, `rust-style`.
 6. Run the general reviewer as an independent reviewer and verifier.
 7. Validate its candidate dispositions, findings, locations, and provenance.
 8. Report every stage outcome, failure reason, and metric back to the caller.
@@ -42,12 +42,31 @@ A stage that cannot read the resolved list treats every selected reviewer as man
 Workflow routing selects the code-compressor for every eligible review.
 Protocol-related changes always require the protocol specialist.
 Medium- and high-risk changes always require the skeptical specialist.
+Deterministic analysis also selects these optional specialists from the pull request's file list and patches, mirroring the `code-review` skill:
+
+- `intent-drift` runs when a changed path is governed by an intent file on `master` or added by the pull request, following the `intent-files` placement rule.
+- `intent-review` runs when the pull request adds or modifies an `INTENT*.md` or `*.intent*.md` file.
+- `test` runs when a changed, non-removed Rust or C# file holds tests, as described below.
+- `dependency` runs when a `Cargo.toml`, `Cargo.lock`, `package.json`, `package-lock.json`, or `.csproj` file gains lines.
+- `rust-style` runs when a `.rs` file gains lines.
+
+A changed Rust or C# file that is not removed selects `test` when it is on a test path, or when its content at the pull request's merge base, which the patches are relative to, or at the pull request's head contains a test marker.
+A marker in the added lines decides without reading either revision; otherwise the merge base is read first, then the head, each fetched once into the trusted checkout and only scanned as text.
+Markers are matched over the whole text, so attributes may span lines: in Rust, `#[test]`, `#[<path>::test]`, `#[rstest]`, `#[case(`, `proptest!`, `expect![`, and `#[cfg(...)]` whose predicate names `test` other than as `not(test)`; in C#, `[Fact]`, `[Theory]`, `[Test]`, `[TestMethod]`, `[TestCase]`, and `[InlineData`.
+A `#[cfg(` predicate is scanned for at most 4 KiB, and one still open at that bound or at the end of the text counts as a marker, which keeps the scan linear.
+The rule is deliberately coarse: a production-only edit in a file that also holds tests selects `test`, because locating edits inside tests kept missing lexical forms.
+An unresolvable merge base, a head that cannot be fetched, or an unreadable file also selects `test`.
+A renamed file matches the governed-path, intent-file, test-path, and manifest rules under both its old and new paths.
+
+`contract-review` joins with the first `CONTRACT*.md`, as one agent configuration, one prompt, and one path rule.
+Each specialist loads its skill and the skills it invokes as methodology from the trusted workflow checkout, so a test fails when a configured file is missing.
 Model output cannot select parallelism.
-Three simultaneous reviewer requests is a provider allocation, not a reviewer cap: a larger selection runs in further batches.
+Three simultaneous reviewer requests is a provider allocation, not a reviewer cap: a larger selection runs in further batches, in canonical order.
 
 Specialists use one bounded candidate schema.
 Each candidate binds to the expected head SHA, a configured reviewer ID, a changed path, an optional added-line range, a severity, a question flag, and a unique finding ID.
 Protocol candidates also carry structured protocol references.
+The `protocol`, `skeptical`, and `code-compressor` specialists report at most 20 findings and the conditional specialists at most 10, so the maximum-shaped general review stays within the runtime's 1 MiB model message limit.
 Schema line and pull-request numbers stop at the signed 32-bit GitHub API integer maximum, while validators retain safe-integer checks.
 One specialist never receives another specialist's output.
 The validated aggregate of all selected specialists is bounded to 1 MiB, which accommodates every maximum schema-valid specialist result.
@@ -118,6 +137,7 @@ Examples include:
 [protocol]
 [skeptical]
 [code-compressor]
+[rust-style]
 [protocol + skeptical]
 [general]
 ```
@@ -142,7 +162,7 @@ For validator checks, `previousCandidate` is the earliest canonical JSON-parsed 
 Validator-directed corrections may use only necessary bounded read-only evidence lookup, while invalid output remains terminal after its configured repair budget.
 One model turn is one logical model call.
 The action owns retry HTTP attempts for that logical call through the SDK's public completion API and honors valid `Retry-After` delays.
-Pre-header failures, status failures, and interrupted streams share one retry budget and discard partial response state before resending the unchanged history.
+Pre-header failures, status failures, interrupted streams, and structurally malformed streams share one retry budget and discard partial response state before resending the unchanged history.
 Known transient statuses retry, while known terminal statuses stop despite provider retry hints.
 Every request streams under a per-attempt raw-body and idle-progress budget plus one monotonic stage deadline that also covers backoff, tools, validation, and repair.
 The checked-in profiles request high reasoning effort and leave the provider token cap unset.
@@ -221,7 +241,7 @@ This handoff works after `/1`, `/2`, or `/3` without a model call or review-coun
 The command can be accepted while CI is pending or failing, but only green current exact-head CI and clear lifecycle gates select `needs-review`; failed CI still selects `needs-author-action`.
 Editing or deleting the source comment after acknowledgement does not revoke it; a new head or newer same-head authoritative review supersedes it.
 The separate app-owned exact-head `AI review-ready` check stores a bounded, versioned receipt binding head SHA, source comment ID, latest published bot review ID, and authoritative review check ID.
-Reconciliation validates the check's server-created timestamp, app, exact SHA, name, external ID, success, and receipt before prioritizing acknowledgement over findings.
+Reconciliation validates the check's server-assigned completion timestamp, app, exact SHA, name, external ID, success, and receipt before prioritizing acknowledgement over findings.
 Duplicate deliveries and further comments for the same review do not create competing checks; a newer findings review can replace the existing head-bound acknowledgement.
 After a third review, a newly classified head with green exact-head CI hands off to `needs-review` without a fourth review only when the latest published bot review matches a trusted `/3` receipt; legacy receipts never authorize this handoff.
 Contributor changes acknowledge findings; automation does not verify their resolution.
@@ -239,6 +259,7 @@ Forced reviews consume the next count when one is available and retain `ai-revie
 Automatic classification and review claim their existing canonical check run before provider work.
 The in-progress check contains only a versioned ownership marker with the kind, exact head SHA, workflow run ID, and run attempt.
 Admission reads all matching check history, accepts only the GitHub Actions app, and blocks while the marked owner is active.
+The owner is the workflow run rather than one attempt, so **Re-run failed jobs** publishes the result the earlier attempt computed, while other runs stay blocked until the rerun completes.
 Canonical success is absorbing for an exact head, so later automatic or forced neutral and failure states do not change its check, labels, comments, or review count.
 Classification admission, review admission, result publication, and lifecycle reconciliation serialize through one per-pull-request mutation boundary.
 Automatic review validates the live PR, exact head, CI generation, policy, authoritative classification, and review count before claiming, then validates those facts with active lease ownership after the claim and before provider work or publication.
@@ -274,6 +295,8 @@ Same-repository pull requests are also exempt.
 SHA-bound GitHub checks carry classification and review state between permission-isolated jobs.
 Workflow artifacts carry evidence and validated results between review-pipeline jobs.
 The final writer serializes its mutations per pull request and then reconciles actor labels from a fresh live snapshot.
+It retries GitHub 5xx responses up to three times with 1, 2, and 4 second delays for reads, updates, deletions, and label additions.
+It never retries creating a comment, review, check run, or dispatch, because GitHub may have applied the first request.
 Workflow-level cancellation retains the established event and label grouping.
 The final writer rechecks the current head, current review policy, authoritative classification, lease, review count, and, for successful non-forced review or handoff, the latest exact-head CI generation.
 Model-execution jobs have read-only or empty permissions.

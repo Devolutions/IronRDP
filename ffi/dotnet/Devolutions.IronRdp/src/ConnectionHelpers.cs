@@ -36,7 +36,8 @@ internal static class ConnectionHelpers
         WriteBuf writeBuf,
         Framed<T> framed,
         byte[] serverpubkey,
-        uint? selectedProtocol = null) where T : Stream
+        uint? selectedProtocol = null,
+        CancellationToken cancellationToken = default) where T : Stream
     {
         // Extract hostname from "hostname:port" format if needed
         // CredSSP needs just the hostname for the service principal name (TERMSRV/hostname)
@@ -56,14 +57,18 @@ internal static class ConnectionHelpers
 
         while (true)
         {
-            var generator = credsspSequence.ProcessTsRequest(tsRequest);
-            var clientState = await Connection.ResolveGenerator(generator, tcpClient);
+            ClientState clientState;
+            using (var generator = credsspSequence.ProcessTsRequest(tsRequest))
+            {
+                clientState = await Connection.ResolveGenerator(generator, tcpClient);
+            }
+
             writeBuf.Clear();
             var written = credsspSequence.HandleProcessResult(clientState, writeBuf);
 
-            if (written.GetSize().IsSome())
+            if (written.Size.IsSome())
             {
-                var actualSize = (int)written.GetSize().Get();
+                var actualSize = (int)written.Size.Get();
                 var response = new byte[actualSize];
                 writeBuf.ReadIntoBuf(response);
                 await framed.Write(response);
@@ -75,7 +80,7 @@ internal static class ConnectionHelpers
                 break;
             }
 
-            var pdu = await framed.ReadByHint(pduHint);
+            var pdu = await framed.ReadByHint(pduHint, cancellationToken);
             var decoded = credsspSequence.DecodeServerMessage(pdu);
 
             // Don't remove, DecodeServerMessage is generated, and it can return null
@@ -96,25 +101,34 @@ internal static class ConnectionHelpers
         string serverName,
         ClientConnector connector,
         byte[] serverPubKey,
-        Framed<T> framedSsl) where T : Stream
+        Framed<T> framedSsl,
+        CancellationToken cancellationToken = default) where T : Stream
     {
         var writeBuf = WriteBuf.New();
 
         if (connector.ShouldPerformCredssp())
         {
-            await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey);
+            await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey, cancellationToken: cancellationToken);
         }
 
-        while (!connector.GetDynState().IsTerminal())
+        while (!connector.DynState.IsTerminal())
         {
-            await Connection.SingleSequenceStep(connector, writeBuf, framedSsl);
+            await Connection.SingleSequenceStep(connector, writeBuf, framedSsl, cancellationToken);
         }
 
         ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();
 
-        if (state.GetEnumType() == ClientConnectorStateType.Connected)
+        if (state.EnumType == ClientConnectorStateType.Connected)
         {
             return state.GetConnectedResult();
+        }
+        else if (state.EnumType == ClientConnectorStateType.Redirected)
+        {
+            // The redirecting server waits for the client to close this connection (MS-RDPBCGR 3.2.5.13.1).
+            // The connection sequence owns the framed stream alone: no session reader or writer exists yet.
+            var (stream, _) = framedSsl.GetInner();
+            stream.Dispose();
+            throw new ServerRedirectionException(state.GetRedirectedResult());
         }
         else
         {

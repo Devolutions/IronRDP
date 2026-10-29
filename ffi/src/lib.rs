@@ -10,6 +10,7 @@ pub mod error;
 pub mod graphics;
 pub mod input;
 pub mod log;
+pub mod pcb;
 pub mod pdu;
 pub mod rdcleanpath;
 pub mod session;

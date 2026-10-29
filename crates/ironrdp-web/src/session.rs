@@ -5,6 +5,14 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::rc::Rc;
 
+use crate::canvas::Canvas;
+use crate::clipboard;
+use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
+use crate::error::IronError;
+use crate::image::extract_partial_image;
+use crate::input::InputTransaction;
+use crate::network_client::WasmNetworkClient;
+use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
 use anyhow::Context as _;
 use base64::Engine as _;
 use futures_channel::mpsc;
@@ -18,7 +26,7 @@ use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::pdu::{FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
-use ironrdp::connector::credssp::KerberosConfig;
+use ironrdp::connector::credssp::{KdcResolution, KerberosConfig};
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
@@ -40,15 +48,6 @@ use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
-use crate::canvas::Canvas;
-use crate::clipboard;
-use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
-use crate::error::IronError;
-use crate::image::extract_partial_image;
-use crate::input::InputTransaction;
-use crate::network_client::WasmNetworkClient;
-use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
-
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
 
@@ -67,6 +66,7 @@ struct SessionBuilderInner {
     server_domain: Option<String>,
     password: Option<String>,
     proxy_address: Option<String>,
+    websocket_protocols: Result<Option<js_sys::Array>, &'static str>,
     auth_token: Option<String>,
     pcb: Option<String>,
     vmconnect: Option<String>,
@@ -115,6 +115,7 @@ impl Default for SessionBuilderInner {
             server_domain: None,
             password: None,
             proxy_address: None,
+            websocket_protocols: Ok(None),
             auth_token: None,
             pcb: None,
             vmconnect: None,
@@ -197,6 +198,34 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     /// Required
     fn proxy_address(&self, address: String) -> Self {
         self.0.borrow_mut().proxy_address = Some(address);
+        self.clone()
+    }
+
+    /// Optional
+    fn websocket_protocols(&self, protocols: js_sys::Array) -> Self {
+        // Copy validated values so later changes to the caller's array cannot change the configuration.
+        let protocols = if js_sys::Array::is_array(&protocols) {
+            protocols
+                .iter()
+                .try_fold(js_sys::Array::new(), |copy, protocol| {
+                    if !protocol.is_string() {
+                        return Err("websocket protocols must be strings");
+                    }
+
+                    copy.push(&protocol);
+                    Ok(copy)
+                })
+                .map(|protocols| (protocols.length() != 0).then_some(protocols))
+        } else {
+            Err("websocket protocols must be an array")
+        };
+
+        if let Err(error) = protocols {
+            warn!(%error, "Invalid WebSocket protocols");
+        }
+
+        self.0.borrow_mut().websocket_protocols = protocols;
+
         self.clone()
     }
 
@@ -379,6 +408,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             server_domain,
             password,
             proxy_address,
+            websocket_protocols,
             auth_token,
             pcb,
             vmconnect,
@@ -414,6 +444,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         {
             let inner = self.0.borrow();
 
+            websocket_protocols = inner.websocket_protocols.clone().map_err(anyhow::Error::msg)?;
             username = inner.username.clone().context("username missing")?;
             destination = inner.destination.clone().context("destination missing")?;
             server_domain = inner.server_domain.clone();
@@ -531,7 +562,14 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
         let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
 
-        let ws = WebSocket::open(&proxy_address).context("couldn't open WebSocket")?;
+        let ws = if let Some(protocols) = websocket_protocols {
+            web_sys::WebSocket::new_with_str_sequence(&proxy_address, &protocols)
+                .map_err(|error| anyhow::anyhow!("{error:?}"))
+                .and_then(|socket| WebSocket::try_from(socket).map_err(anyhow::Error::from))
+        } else {
+            WebSocket::open(&proxy_address).map_err(anyhow::Error::from)
+        }
+        .context("couldn't open WebSocket")?;
 
         // NOTE: ideally, when the WebSocket can't be opened, the above call should fail with details on why is that
         // (e.g., the proxy hostname could not be resolved, proxy service is not running), but errors are neved
@@ -770,7 +808,7 @@ impl iron_remote_desktop::Session for Session {
                     let (action, payload) = frame.context("read frame")?;
                     trace!(?action, frame_length = payload.len(), "Frame received");
 
-                    active_stage.process(&mut image, action, &payload)?
+                    active_stage.process(&mut image, action, &payload, framed.last_read_at())?
                 }
                 input_events = input_events.next() => {
                     let event = input_events.context("read next input events")?;
@@ -1092,8 +1130,8 @@ impl iron_remote_desktop::Session for Session {
                             "Received remote monitor layout without multi-monitor support"
                         );
                     }
-                    ActiveStageOutput::WindowingOrders(_) => {
-                        // Windowing orders are not meaningful to the protocol-agnostic web component.
+                    ActiveStageOutput::WindowingOrders(_) | ActiveStageOutput::WindowSurfaceUpdates(_) => {
+                        // RemoteApp windows are not meaningful to the protocol-agnostic web component.
                     }
                     ActiveStageOutput::DeactivateAll => {
                         // Execute the Deactivation-Reactivation Sequence:
@@ -1160,14 +1198,23 @@ impl iron_remote_desktop::Session for Session {
                     ActiveStageOutput::AutoReconnectCookie(_) => {
                         debug!("Server Auto-Reconnect Cookie received (automatic reconnection not implemented)");
                     }
+                    ActiveStageOutput::LogonErrors(errors) => {
+                        debug!(?errors, "Server logon error notification");
+                    }
                     ActiveStageOutput::AutoReconnectFailed => {
                         return Err(anyhow::Error::msg("automatic reconnect rejected by server").into());
+                    }
+                    ActiveStageOutput::ServerRedirection(_) => {
+                        return Err(anyhow::Error::msg("server redirection is not supported by the web client").into());
                     }
                     ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
                         debug!("RDP login complete");
                     }
                     ActiveStageOutput::SaveSessionInfo { logon_complete: false } => {
                         debug!("RDP session info notification");
+                    }
+                    ActiveStageOutput::SessionId(session_id) => {
+                        debug!(session_id, "Remote session ID");
                     }
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
@@ -1689,8 +1736,14 @@ fn build_config(
         pointer_software_rendering: false,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
+        rdp_version: ironrdp::pdu::gcc::RdpVersion::V5_PLUS,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
         hardware_id: None,
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
@@ -1842,7 +1895,7 @@ async fn connect(
     let kerberos_config = url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str())
         .ok()
         .map(|url| KerberosConfig {
-            kdc_proxy_url: Some(url),
+            kdc_resolution: KdcResolution::KdcUrl(Some(url)),
             // HACK: It's supposed to be the computer name of the client, but since it's not easy to retrieve this information in the browser,
             // we set the destination hostname instead because it happens to work.
             hostname: destination.clone(),
@@ -1874,7 +1927,8 @@ async fn connect(
         server_public_key,
         kerberos_config,
     )
-    .await?;
+    .await?
+    .into_connected()?;
 
     let ws = framed.into_inner_no_leftover();
 
@@ -2011,7 +2065,8 @@ where
                     error.http_status_code,
                     error.wsa_last_error,
                     error.tls_alert_code,
-                );
+                )
+                .with_error_code(error.error_code);
                 return Err(
                     IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
                         .with_kind(IronErrorKind::RDCleanPath)
@@ -2321,6 +2376,46 @@ mod tests {
             "unexpected error: {}",
             error.backtrace()
         );
+    }
+
+    #[test]
+    fn rdcleanpath_error_exposes_error_code() {
+        let response = ironrdp_rdcleanpath::RDCleanPathPdu {
+            error: Some(ironrdp_rdcleanpath::RDCleanPathErr {
+                error_code: ironrdp_rdcleanpath::EXPIRED_ERROR_CODE,
+                http_status_code: Some(401),
+                wsa_last_error: None,
+                tls_alert_code: None,
+            }),
+            ..Default::default()
+        }
+        .to_der()
+        .expect("encode RDCleanPath error");
+        let mut framed = rdcleanpath_framed(&response);
+        let mut connector = ClientConnector::new(
+            connector_config(SecurityConfig {
+                enable_credssp: false,
+                enable_standard_rdp_security: false,
+            }),
+            core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
+        );
+        let mut network_client = WasmNetworkClient;
+
+        let error = match connect_rdcleanpath(
+            &mut framed,
+            &mut connector,
+            &mut network_client,
+            rdcleanpath_connect_params(),
+        )
+        .now_or_never()
+        .expect("in-memory RDCleanPath I/O should be ready")
+        {
+            Ok(_) => panic!("RDCleanPath error accepted as a response"),
+            Err(error) => error,
+        };
+
+        let details = error.rdcleanpath_details().expect("RDCleanPath error details");
+        assert_eq!(details.error_code(), Some(ironrdp_rdcleanpath::EXPIRED_ERROR_CODE));
     }
 
     #[test]

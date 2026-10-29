@@ -27,6 +27,7 @@ ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-egfx = { path = "../ironrdp-egfx", features = ["arbitrary"] }
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-rdpel.path = "../ironrdp-rdpel"
+ironrdp-rdpear = { version = "0.1.0", path = "../ironrdp-rdpear" }
 
 [lints]
 workspace = true

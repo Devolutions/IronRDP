@@ -3,8 +3,6 @@ name: docs-compressor
 description: Review documentation changes for concise, human-readable prose without losing technical meaning. Use whenever READMEs, guides, reference docs, rustdoc, explanatory comments, release notes, or other instructional prose is added or edited.
 ---
 
-# Documentation compressor
-
 Invoke `docs-writer`, then use its rules as review criteria without following its generation workflow.
 Challenge every paragraph, heading, example, and aside that does not add information or help the reader act.
 Look for the same meaning expressed with less structure, repetition, or wording while preserving the writer rules.

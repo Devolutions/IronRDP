@@ -23,7 +23,12 @@ Supported specialists include:
 
 - protocol
 - skeptical
+- intent drift
+- intent review
+- test
+- dependency
 - code compressor
+- Rust style
 
 Run selected specialists in a multi-job matrix, with at most three running at once per pipeline.
 

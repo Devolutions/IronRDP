@@ -53,6 +53,34 @@ Background daemon logs are written to `%LOCALAPPDATA%\ironrdp-agent\daemon.log` 
 The operational log is truncated as it reaches 2 MiB, including while the daemon is running.
 Passwords supplied to `connect` travel through IPC rather than child process arguments; the background daemon does not inherit the standard RDP and RD Gateway password environment variables.
 
+## Experimental Remote Credential Guard
+
+Build with `--features remote-guard`.
+Set `RDP_USERNAME` and `RDP_PASSWORD` in the calling process, then use a dedicated daemon endpoint:
+
+```powershell
+$endpoint = '\\.\pipe\ironrdp-agent-rcg-test'
+ironrdp-agent --endpoint $endpoint connect --auto-start --no-prompt --server rdp.example.test --remote-guard
+ironrdp-agent --endpoint $endpoint status
+ironrdp-agent --endpoint $endpoint daemon stop
+```
+
+`--remote-guard` requires Kerberos for the initial logon, retains the authenticated context for MS-RDPEAR, and never falls back to password delegation or initial NTLM authentication.
+The value mirrors CredSSP package selection: `negotiate` (the default) redirects both Kerberos and outbound NTLMv2 and the remote side picks per connection, while `kerberos` and `ntlm` restrict redirection to one package.
+The equivalent property is `ironrdp_remote_guard:i:0|1|2|3` or `ironrdp_remote_guard:s:disabled|negotiate|ntlm|kerberos`.
+Named flags override file and `--prop` values, but the daemon overlay still wins.
+An unsupported build or invalid policy fails explicitly.
+
+RCG requires strict TLS validation, a Kerberos-capable account, and a reachable KDC discovered through DNS or configured through `kdcproxyurl`/`kdcproxyname`.
+DNS discovery requires a DNS account realm, not a NetBIOS domain; use a UPN or an unqualified username with `--domain AD.EXAMPLE.TEST`.
+To retain a SAM/NetBIOS identity, supply the KDC explicitly, for example `--prop kdcproxyurl:s:tcp://dc.ad.example.test:88`.
+It does not support named-pipe RDP, RDCleanPath, VMConnect, or automatic reconnection.
+Do not use `--skip-certificate-check`; pin a verified certificate if its issuer is not trusted.
+Initial RCG logon and fresh-logon NTLMv2 redirection have been verified under strict TLS; outbound Kerberos service-ticket redirection remains unverified against a live target.
+See the [connector limitations][rcg-build].
+
+[rcg-build]: ../ironrdp-connector/README.md#experimental-remote-credential-guard
+
 ## ActiveX backend
 
 On Windows, an ActiveX host can expose its session through the same local RPC protocol. Start the

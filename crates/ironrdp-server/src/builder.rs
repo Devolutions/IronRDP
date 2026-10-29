@@ -1,5 +1,4 @@
 use core::net::SocketAddr;
-use core::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::Arc;
 
 use ironrdp_pdu::codecs::rfx::Quant;
@@ -8,7 +7,7 @@ use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
 
 use super::clipboard::CliprdrServerFactory;
-use super::display::{DesktopSize, RdpServerDisplay};
+use super::display::{DesktopSize, DisplayContext, RdpServerDisplay};
 #[cfg(feature = "egfx")]
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
@@ -57,14 +56,11 @@ pub struct BuilderDone {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "usb")]
     usb_factory: Option<Box<dyn DeviceFactory>>,
-    display_suppressed: Option<Arc<AtomicBool>>,
-    autodetect_rtt: Option<Arc<AtomicU32>>,
-    autodetect_baseline_rtt: Option<Arc<AtomicU32>>,
-    autodetect_bandwidth: Option<Arc<AtomicU32>>,
-    autodetect_bandwidth_generation: Option<Arc<AtomicU32>>,
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
     auto_reconnect_on_request: bool,
+    #[cfg(feature = "egfx")]
+    egfx_core_frame_ack_limit: bool,
     connection_policy: ConnectionPolicy,
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
@@ -175,15 +171,12 @@ impl RdpServerBuilder<WantsDisplay> {
                 gfx_factory: None,
                 #[cfg(feature = "usb")]
                 usb_factory: None,
-                display_suppressed: None,
-                autodetect_rtt: None,
-                autodetect_baseline_rtt: None,
-                autodetect_bandwidth: None,
-                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
                 connection_policy,
                 auto_reconnect_cookie: None,
                 auto_reconnect_on_request: false,
+                #[cfg(feature = "egfx")]
+                egfx_core_frame_ack_limit: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
@@ -214,15 +207,12 @@ impl RdpServerBuilder<WantsDisplay> {
                 gfx_factory: None,
                 #[cfg(feature = "usb")]
                 usb_factory: None,
-                display_suppressed: None,
-                autodetect_rtt: None,
-                autodetect_baseline_rtt: None,
-                autodetect_bandwidth: None,
-                autodetect_bandwidth_generation: None,
                 honor_client_desktop_size: None,
                 connection_policy,
                 auto_reconnect_cookie: None,
                 auto_reconnect_on_request: false,
+                #[cfg(feature = "egfx")]
+                egfx_core_frame_ack_limit: false,
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
@@ -298,26 +288,6 @@ impl RdpServerBuilder<BuilderDone> {
     /// post-disconnect cleanup).
     pub fn with_connection_handler(mut self, handler: Option<Box<dyn ConnectionHandler>>) -> Self {
         self.state.connection_handler = handler;
-        self
-    }
-
-    /// Share the server's "display suppressed" flag with the display
-    /// backend before construction.
-    ///
-    /// The flag is `true` while the connected client has sent
-    /// `SuppressOutput { desktop_rect: None }` (e.g., mstsc minimized).
-    /// Display backends that want to skip frame emission while the
-    /// client is minimized create one `Arc<AtomicBool>` in the
-    /// application, hand a clone to the display, and pass the same
-    /// `Arc` here so the server's per-connection PDU handler writes to
-    /// the same instance the backend reads.
-    ///
-    /// When this is not called, the server allocates its own internal
-    /// flag (still readable via [`RdpServer::display_suppressed_handle`])
-    /// — useful when the backend can call `display_suppressed_handle()`
-    /// after construction to obtain a handle, rather than sharing one in.
-    pub fn with_display_suppressed_handle(mut self, handle: Arc<AtomicBool>) -> Self {
-        self.state.display_suppressed = Some(handle);
         self
     }
 
@@ -402,53 +372,6 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    /// Inject a shared NetworkAutoDetect RTT handle (milliseconds, `u32::MAX`
-    /// until the first measurement). The server writes the latest measured RTT
-    /// to the same instance the backend reads. When not called, the server
-    /// allocates its own (still readable via
-    /// [`RdpServer::autodetect_rtt_handle`]). The value stays `u32::MAX` unless
-    /// auto-detect is enabled via [`RdpServer::enable_autodetect`].
-    pub fn with_autodetect_rtt_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_rtt = Some(handle);
-        self
-    }
-
-    /// Inject a shared session-lifetime baseline RTT handle (milliseconds,
-    /// `u32::MAX` until the first measurement; see
-    /// [`RdpServer::autodetect_baseline_rtt_handle`] for what distinguishes
-    /// this from [`Self::with_autodetect_rtt_handle`]). The server writes the
-    /// latest baseline to the same instance the backend reads. When not
-    /// called, the server allocates its own (still readable via
-    /// [`RdpServer::autodetect_baseline_rtt_handle`]). The value stays
-    /// `u32::MAX` unless auto-detect is enabled via
-    /// [`RdpServer::enable_autodetect`].
-    pub fn with_autodetect_baseline_rtt_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_baseline_rtt = Some(handle);
-        self
-    }
-
-    /// Inject a shared NetworkAutoDetect bandwidth handle (kilobits per
-    /// second, `u32::MAX` until the first measurement completes). The server
-    /// writes the latest measured bandwidth to the same instance the backend
-    /// reads. When not called, the server allocates its own (still readable
-    /// via [`RdpServer::autodetect_bandwidth_handle`]). The value stays
-    /// `u32::MAX` unless auto-detect is enabled via
-    /// [`RdpServer::enable_autodetect`].
-    pub fn with_autodetect_bandwidth_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_bandwidth = Some(handle);
-        self
-    }
-
-    /// Pairs with [`Self::with_autodetect_bandwidth_handle`]: the bandwidth
-    /// figure alone repeats too often to tell a fresh measurement window
-    /// apart from a stale one. When not called, the server allocates its own
-    /// (still readable via
-    /// [`RdpServer::autodetect_bandwidth_generation_handle`]).
-    pub fn with_autodetect_bandwidth_generation_handle(mut self, handle: Arc<AtomicU32>) -> Self {
-        self.state.autodetect_bandwidth_generation = Some(handle);
-        self
-    }
-
     /// Provision the Server Auto-Reconnect Cookie (MS-RDPBCGR 2.2.4.2
     /// `ARC_SC_PRIVATE_PACKET`) handed to the client during logon.
     ///
@@ -477,6 +400,14 @@ impl RdpServerBuilder<BuilderDone> {
     /// useful effect there. See [`RdpServer::set_auto_reconnect_on_request`].
     pub fn with_auto_reconnect_on_request(mut self, on_request: bool) -> Self {
         self.state.auto_reconnect_on_request = on_request;
+        self
+    }
+
+    /// Let the client's core Frame Acknowledge capability cap the EGFX frame
+    /// window. Off by default. See [`RdpServer::set_egfx_core_frame_ack_limit`].
+    #[cfg(feature = "egfx")]
+    pub fn with_egfx_core_frame_ack_limit(mut self, enabled: bool) -> Self {
+        self.state.egfx_core_frame_ack_limit = enabled;
         self
     }
 
@@ -564,17 +495,14 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.connection_handler,
             #[cfg(feature = "egfx")]
             self.state.gfx_factory,
-            self.state.display_suppressed,
             #[cfg(feature = "usb")]
             self.state.usb_factory,
-            self.state.autodetect_rtt,
-            self.state.autodetect_baseline_rtt,
-            self.state.autodetect_bandwidth,
-            self.state.autodetect_bandwidth_generation,
         );
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
         server.set_auto_reconnect_on_request(self.state.auto_reconnect_on_request);
+        #[cfg(feature = "egfx")]
+        server.set_egfx_core_frame_ack_limit(self.state.egfx_core_frame_ack_limit);
         server.set_connection_binder(self.state.connection_binder);
         server
     }
@@ -605,7 +533,7 @@ impl RdpServerDisplay for NoopDisplay {
         DesktopSize { width: 0, height: 0 }
     }
 
-    async fn updates(&mut self) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(NoopDisplayUpdates {}))
     }
 }

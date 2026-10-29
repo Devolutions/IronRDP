@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-graphics"
-version = "0.9.0"
+version = "0.11.0"
 readme = "README.md"
 description = "RDP image processing primitives"
 edition.workspace = true
@@ -16,17 +16,23 @@ categories.workspace = true
 doctest = false
 # test = false
 
+[features]
+# Internal (PRIVATE!) features used to aid testing.
+# Don't rely on these whatsoever. They may disappear at any time.
+__test = ["dep:visibility"]
+
 [dependencies]
 bit_field = "0.10"
 bitflags = "2.11"
 bitvec = "1.0"
-ironrdp-core = { path = "../ironrdp-core", version = "0.2" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["std"] } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11", features = ["std"] } # public
 byteorder = "1.5" # TODO: remove
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
 yuv = { version = "0.8", features = ["rdp"] }
 wide = "0.7" # portable SIMD for the inverse DWT (wasm/x86/ARM); `std::simd` is still nightly-only
+visibility = { version = "0.1", optional = true }
 
 [dev-dependencies]
 bmp = "0.5"

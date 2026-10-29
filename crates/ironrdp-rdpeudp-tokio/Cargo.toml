@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpeudp-tokio"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 description = "Tokio driver wiring RDP-UDP, TLS and the multitransport tunnel into a usable transport"
 edition.workspace = true
@@ -21,15 +21,21 @@ doctest = false
 # `ClientConfig::builder()` is called.
 rustls-aws-lc-rs = ["tokio-rustls/aws_lc_rs"]
 rustls-ring = ["tokio-rustls/ring"]
+# `src/stun.rs` remains un-gated and dependency-free so default builds do not
+# pull in `webrtc-ice`/`stun`. Enabling `ice` pulls `webrtc-util` 0.17 and
+# `webrtc-mdns` 0.17, which transitively depend on `nix` 0.26 and `socket2` 0.5
+# alongside the workspace's newer major versions until upstream `webrtc-rs`
+# updates its dependencies.
+ice = ["dep:webrtc-ice", "dep:webrtc-util"]
 
 [dependencies]
-ironrdp-async = { path = "../ironrdp-async", version = "0.10" } # public
-ironrdp-core = { path = "../ironrdp-core", version = "0.2", features = ["std"] } # public
+ironrdp-async = { path = "../ironrdp-async", version = "0.12" } # public
+ironrdp-core = { path = "../ironrdp-core", version = "0.3", features = ["std"] } # public
 ironrdp-error = { path = "../ironrdp-error", version = "0.2" } # public
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.9", features = ["std"] } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11", features = ["std"] } # public
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", version = "0.1", features = ["std"] } # public
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", version = "0.1", features = ["std"] } # public
-ironrdp-tls = { path = "../ironrdp-tls", version = "0.2.2", default-features = false, features = ["rustls-verifier"] } # public
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.3.0", default-features = false, features = ["rustls-verifier"] } # public
 bytes = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] } # public
 sha2 = "0.10"
@@ -38,8 +44,14 @@ sha2 = "0.10"
 # default must be installed before connecting.
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12"] } # public
 tracing = { version = "0.1", features = ["log"] }
+webrtc-ice = { version = "0.17.2", optional = true }
+webrtc-util = { version = "0.17.1", default-features = false, features = ["conn"], optional = true }
 
 [dev-dependencies]
+proptest.workspace = true
+rcgen = "0.14"
+rstest.workspace = true
+turn = "0.17.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 
 [lints]

@@ -1,16 +1,17 @@
 #![allow(unused_crate_dependencies)]
 
 use ironrdp_mstsgu::rpc::{
-    DEFAULT_FRAGMENT_SIZE, MAX_PENDING_RPC_FRAGMENTS, PFC_FIRST_FRAG, PFC_LAST_FRAG, PFC_SUPPORT_HEADER_SIGN,
-    PTYPE_BIND, PTYPE_BIND_ACK, PTYPE_BIND_NAK, PTYPE_FAULT, PTYPE_REQUEST, PTYPE_RESPONSE, PTYPE_RPC_AUTH_3,
-    RPC_AUTH_LEVEL_PACKET_INTEGRITY, RPC_COMMON_HEADER_SIZE, RPC_DREP_LITTLE_ENDIAN, RPC_SECURITY_TRAILER_SIZE,
-    RPC_VERSION, RPC_VERSION_MINOR, RpcAuthenticatedResponseReassembler, RpcAuthenticationInfo, RpcCommonHeader,
-    RpcFault, RpcFragmentSizes, RpcNtlmAuth, RpcPduError, RpcPduStream, RpcPresentationContext, RpcReassembledResponse,
-    RpcResponse, RpcResponseReassembler, RpcSyntaxIdentifier, RpcSyntaxVersion, decode_rpc_authenticated_fragment,
-    decode_rpc_bind_ack, decode_rpc_bind_ack_with_ntlm_auth, decode_rpc_bind_nak, decode_rpc_fault,
-    decode_rpc_fault_for_context, decode_rpc_response, decode_rpc_response_for_context, decode_rpc_response_fragment,
-    encode_rpc_auth_3, encode_rpc_bind, encode_rpc_bind_with_ntlm_auth, encode_rpc_fault, encode_rpc_request_fragments,
-    encode_rpc_response, encode_rpc_response_fragment, prepare_rpc_authenticated_bind, prepare_rpc_authenticated_pdu,
+    DEFAULT_FRAGMENT_SIZE, MAX_PENDING_RPC_FRAGMENTS, PFC_CONC_MPX, PFC_FIRST_FRAG, PFC_LAST_FRAG,
+    PFC_SUPPORT_HEADER_SIGN, PTYPE_BIND, PTYPE_BIND_ACK, PTYPE_BIND_NAK, PTYPE_FAULT, PTYPE_REQUEST, PTYPE_RESPONSE,
+    PTYPE_RPC_AUTH_3, RPC_AUTH_LEVEL_PACKET_INTEGRITY, RPC_COMMON_HEADER_SIZE, RPC_DREP_LITTLE_ENDIAN,
+    RPC_SECURITY_TRAILER_SIZE, RPC_VERSION, RPC_VERSION_MINOR, RpcAuthenticatedResponseReassembler,
+    RpcAuthenticationInfo, RpcCommonHeader, RpcFault, RpcFragmentSizes, RpcNtlmAuth, RpcPduError, RpcPduStream,
+    RpcPresentationContext, RpcReassembledResponse, RpcResponse, RpcResponseReassembler, RpcSyntaxIdentifier,
+    RpcSyntaxVersion, decode_rpc_authenticated_fragment, decode_rpc_bind_ack, decode_rpc_bind_ack_with_ntlm_auth,
+    decode_rpc_bind_nak, decode_rpc_fault, decode_rpc_fault_for_context, decode_rpc_response,
+    decode_rpc_response_for_context, decode_rpc_response_fragment, encode_rpc_auth_3, encode_rpc_bind,
+    encode_rpc_bind_with_ntlm_auth, encode_rpc_fault, encode_rpc_request_fragments, encode_rpc_response,
+    encode_rpc_response_fragment, prepare_rpc_authenticated_bind, prepare_rpc_authenticated_pdu,
     prepare_rpc_authenticated_request_fragments,
 };
 use uuid::Uuid;
@@ -872,7 +873,7 @@ fn authenticated_bind_sets_header_signing_and_obeys_fragment_maximum() {
     let pdu = prepared.finish(&[0; 4]).expect("reserved verifier length");
     assert_eq!(
         RpcCommonHeader::decode(&pdu).expect("complete bind").pfc_flags(),
-        PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_SUPPORT_HEADER_SIGN
+        PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_CONC_MPX | PFC_SUPPORT_HEADER_SIGN
     );
     let bind_ack = prepare_rpc_authenticated_pdu(
         PTYPE_BIND_ACK,
@@ -1619,7 +1620,7 @@ fn ntlm_association_codecs_match_dce_rpc_wire_layouts() {
                 5,
                 0,
                 PTYPE_BIND,
-                PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_SUPPORT_HEADER_SIGN,
+                PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_CONC_MPX | PFC_SUPPORT_HEADER_SIGN,
                 0x10,
                 0,
                 0,
@@ -1648,7 +1649,7 @@ fn ntlm_association_codecs_match_dce_rpc_wire_layouts() {
                 5,
                 0,
                 PTYPE_RPC_AUTH_3,
-                PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_SUPPORT_HEADER_SIGN,
+                PFC_FIRST_FRAG | PFC_LAST_FRAG | PFC_CONC_MPX | PFC_SUPPORT_HEADER_SIGN,
                 0x10,
                 0,
                 0,

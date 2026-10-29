@@ -8,9 +8,10 @@ const {
 const {
   MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS, inlineReviewCommentBody, reviewBody,
 } = require("./review-render");
-const { REVIEWER_ORDER: REVIEWERS } = require("./routing");
+const {
+  MAXIMUM_CANDIDATES, REVIEWER_ORDER: REVIEWERS, SPECIALIST_FINDING_LIMITS,
+} = require("./routing");
 
-const MAXIMUM_CANDIDATES = 60;
 const MAXIMUM_FINDINGS = 20;
 const MAXIMUM_SUMMARY_LENGTH = 1000;
 const MAXIMUM_DISPOSITION_RATIONALE_LENGTH = 800;
@@ -189,7 +190,7 @@ function aggregateCandidates(specialistAggregate, expectedSha) {
     if (review.status !== "valid" ||
         !exactKeys(review, ["reviewer", "status", "summary", "findings"]) ||
         !normalizeText(review.summary, 1000) ||
-        !isBoundedArray(review.findings, MAXIMUM_FINDINGS)) return null;
+        !isBoundedArray(review.findings, SPECIALIST_FINDING_LIMITS[review.reviewer])) return null;
     for (const [index, candidate] of review.findings.entries()) {
       if (!exactKeys(candidate, candidateKeys) ||
           typeof candidate.question !== "boolean" ||
@@ -227,7 +228,7 @@ function candidateIndexPrompt(specialistAggregate, expectedSha) {
 }
 
 // Every disposition problem is reported together. The stage affords two repairs and a review can
-// carry sixty candidates, so a diagnostic that revealed one missing disposition per attempt could
+// carry over a hundred candidates, so a diagnostic that revealed one missing disposition per attempt could
 // not converge on a review that omitted four.
 function diagnoseDispositions(entries, candidates) {
   if (!isBoundedArray(entries, MAXIMUM_CANDIDATES)) {

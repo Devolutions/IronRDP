@@ -270,8 +270,14 @@ fn build_config(
         pointer_software_rendering: true,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
+        rdp_version: ironrdp::pdu::gcc::RdpVersion::V5_PLUS,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
         hardware_id: None,
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
@@ -341,6 +347,7 @@ fn connect(
         server_public_key,
         None,
     )
+    .and_then(connector::ConnectionOutcome::into_connected)
     .context("finalize connection")?;
 
     Ok((connection_result, upgraded_framed))
@@ -372,7 +379,7 @@ fn active_stage(
 
         trace!(?action, frame_length = payload.len(), "Frame received");
 
-        let outputs = active_stage.process(image, action, &payload)?;
+        let outputs = active_stage.process(image, action, &payload, framed.last_read_at())?;
 
         for out in outputs {
             match out {

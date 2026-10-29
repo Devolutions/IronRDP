@@ -184,9 +184,9 @@ impl From<WrongOSError> for Box<ffi::IronRdpError> {
 pub mod ffi {
     use core::fmt::Write as _;
 
-    use diplomat_runtime::DiplomatWriteable;
+    use diplomat_runtime::DiplomatWrite;
 
-    #[derive(Debug, Clone, Copy, thiserror::Error)]
+    #[derive(Debug, thiserror::Error)]
     pub enum IronRdpErrorKind {
         #[error("Generic error")]
         Generic,
@@ -218,12 +218,13 @@ pub mod ffi {
 
     impl IronRdpError {
         /// Returns the error as a string.
-        pub fn to_display(&self, writeable: &mut DiplomatWriteable) {
+        pub fn to_display(&self, writeable: &mut DiplomatWrite) {
             let _ = write!(writeable, "{}", self.0.repr);
             writeable.flush();
         }
 
         /// Returns the error kind.
+        #[diplomat::attr(auto, getter = "kind")]
         pub fn get_kind(&self) -> IronRdpErrorKind {
             self.0.kind
         }

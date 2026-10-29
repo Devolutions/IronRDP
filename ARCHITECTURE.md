@@ -100,7 +100,7 @@ RDPDR channel implementation.
 
 #### [`crates/ironrdp-rdpsnd`](./crates/ironrdp-rdpsnd)
 
-RDPSND static channel for audio output implemented as described in MS-RDPEA.
+Audio output channels (the static RDPSND channel and the AUDIO_PLAYBACK_DVC dynamic channels), wave codecs and a jitter-buffer policy, implemented as described in MS-RDPEA.
 
 #### [`crates/ironrdp-egfx`](./crates/ironrdp-egfx)
 
@@ -110,10 +110,29 @@ EGFX dynamic channel implemented as described in MS-RDPEGFX.
 
 AUDIO_INPUT dynamic channel for client microphone capture implemented as described in MS-RDPEAI.
 
+#### [`crates/ironrdp-rdpeusb`](./crates/ironrdp-rdpeusb)
+
+URBDRC dynamic channel state machines, PDU codecs, and USB device backend interfaces implemented as described in MS-RDPEUSB.
+The crate performs no USB I/O; host device access belongs to a backend.
+
 #### [`crates/ironrdp-rdpecam`](./crates/ironrdp-rdpecam)
 
 Video capture dynamic channel client and backend boundary implemented as described in MS-RDPECAM.
 The crate performs no camera I/O and advertises only devices explicitly supplied by its caller.
+The Windows Media Foundation capture backend lives in [`crates/ironrdp-rdpecam-native`](./crates/ironrdp-rdpecam-native).
+
+#### [`crates/ironrdp-egfx-native`](./crates/ironrdp-egfx-native)
+
+Native H.264 decoders for the `ironrdp-egfx` decoder trait; on Windows, the Media Foundation decoder transform.
+
+#### [`crates/ironrdp-rdpegt`](./crates/ironrdp-rdpegt)
+
+Geometry tracking dynamic channel client and PDU codecs implemented as described in MS-RDPEGT.
+
+#### [`crates/ironrdp-rdpevor`](./crates/ironrdp-rdpevor)
+
+Video optimized remoting dynamic channel clients implemented as described in MS-RDPEVOR.
+Its presenter decodes H.264 through the `ironrdp-egfx` decoder trait and places pictures with MS-RDPEGT geometry; it performs no I/O and takes time from a caller-supplied clock.
 
 #### [`crates/ironrdp-rdpel`](./crates/ironrdp-rdpel)
 
@@ -125,9 +144,16 @@ The crate forwards only location data supplied by its caller and performs no loc
 RDPEWA dynamic virtual channel for WebAuthn redirection as described in MS-RDPEWA.
 The Windows backend lives in [`crates/ironrdp-rdpewa-native`](./crates/ironrdp-rdpewa-native).
 
+#### [`crates/ironrdp-rdpear`](./crates/ironrdp-rdpear)
+
+Authentication-redirection dynamic channel framing, borrowed DER inner-packet codecs, portable NDR wire profiles, and an encrypted-payload backend boundary as described in MS-RDPEAR.
+The crate performs no authentication or I/O and does not enable Remote Credential Guard by itself.
+
 #### [`crates/ironrdp-connector`](./crates/ironrdp-connector)
 
 State machines to drive an RDP connection sequence.
+The experimental `remote-guard` feature owns the SSPI-to-RDPEAR backend and moves a completed CredSSP context into the authentication DVC without adding authentication dependencies to `ironrdp-rdpear`.
+See the connector README for supported operations and interoperability limits.
 
 #### [`crates/ironrdp-session`](./crates/ironrdp-session)
 
@@ -209,10 +235,17 @@ that adds the winit/softbuffer GUI event loop, the clap CLI, the inquire prompts
 
 #### [`crates/ironrdp-daemon`](./crates/ironrdp-daemon)
 
-Internal reusable persistent RDP-session support. It provides local RPC daemon lifecycle and
+Reusable persistent RDP-session support. It provides local RPC daemon lifecycle and
 server handling, retained framebuffer, input and screenshot handling, session log buffering, NOW
 endpoint management, and durable NOW operations. Its RPC schema and transport dependency is
-[`ironrdp-rpc`](./crates/ironrdp-rpc); it is not published.
+[`ironrdp-rpc`](./crates/ironrdp-rpc).
+
+#### [`crates/ironrdp-rpc`](./crates/ironrdp-rpc)
+
+Shared local RPC protocol and transport: typed request/response schema, binary codecs, framed
+messages, Unix-domain-socket and Windows named-pipe transports. Used by `ironrdp-daemon` and its
+local clients (`ironrdp-agent`, `ironrdp-viewer`, `ironrdp-activex`); both endpoints must use
+compatible protocol versions.
 
 #### [`crates/ironrdp-web`](./crates/ironrdp-web)
 
@@ -270,6 +303,11 @@ Web-based frontend using `Svelte` and `Material` frameworks.
 #### [`crates/ironrdp-cliprdr-native`](./crates/ironrdp-cliprdr-native)
 
 Native CLIPRDR backend implementations.
+
+#### [`crates/ironrdp-rdpeusb-native`](./crates/ironrdp-rdpeusb-native)
+
+nusb backend for the MS-RDPEUSB client, handling device selection, discovery, and USB I/O outside the session loop.
+[`crates/ironrdp-client`](./crates/ironrdp-client) integrates it through its optional `usb` feature.
 
 #### [`crates/ironrdp-cfg`](./crates/ironrdp-cfg)
 

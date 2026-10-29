@@ -20,6 +20,9 @@ pub enum RdpsndNativeErrorKind {
     /// The `cpal` output stream could not be built. Source carries the
     /// underlying `cpal::BuildStreamError`.
     StreamBuild,
+    /// A platform audio decoder failed to start or to decode. Source carries
+    /// the underlying platform error when available.
+    Decoder,
 }
 
 impl core::fmt::Display for RdpsndNativeErrorKind {
@@ -29,6 +32,7 @@ impl core::fmt::Display for RdpsndNativeErrorKind {
             Self::OpusInit => write!(f, "Opus decoder initialisation"),
             Self::AudioDevice => write!(f, "audio output device"),
             Self::StreamBuild => write!(f, "output audio stream build"),
+            Self::Decoder => write!(f, "audio decoder"),
         }
     }
 }

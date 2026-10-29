@@ -1,0 +1,28 @@
+{
+  "id": "test",
+  "model": "glm5.3",
+  "prompt_file": ".github/pr-automation/prompts/test.md",
+  "schema_file": ".github/pr-automation/schemas/candidate-review.json",
+  "methodology_files": [
+    ".agents/skills/test-reviewer/SKILL.md",
+    ".agents/skills/test-writer/SKILL.md",
+    ".agents/skills/test-writer/references/rust.md",
+    ".agents/skills/test-writer/references/csharp.md",
+    ".agents/skills/test-oracle-reviewer/SKILL.md"
+  ],
+  "allowed_roots": [
+    "pr-head"
+  ],
+  "allowed_files": [
+    "pr-automation-context.json",
+    "pr-evidence/changed-files.txt",
+    "pr-evidence/pull-request-context.json",
+    "pr-evidence/pull-request.diff"
+  ],
+  "max_turns": 50,
+  "max_tool_calls": 120,
+  "stream_idle_timeout_ms": 300000,
+  "stage_timeout_ms": 7200000,
+  "max_request_retries": 4,
+  "max_output_repair_attempts": 2
+}

@@ -158,10 +158,14 @@ impl Encode for FastPathInputEvent {
             FastPathInputEvent::MouseEventEx(pdu) => {
                 pdu.encode(dst)?;
             }
+            FastPathInputEvent::MouseEventRel(pdu) => {
+                pdu.encode(dst)?;
+            }
             FastPathInputEvent::QoeEvent(stamp) => {
                 dst.write_u32(*stamp);
             }
-            _ => {}
+            // The flags live in the event header.
+            FastPathInputEvent::SyncEvent(_) => {}
         };
 
         Ok(())

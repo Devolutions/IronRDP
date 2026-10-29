@@ -68,3 +68,33 @@ fn to_buffer_correctly_serializes_fastpath_input_message() {
 
     assert_eq!(buffer, FASTPATH_INPUT_MESSAGE.as_ref());
 }
+
+#[test]
+fn relative_mouse_events_carry_their_body_and_keep_batches_aligned() {
+    use ironrdp_pdu::input::fast_path::SynchronizeFlags;
+    use ironrdp_pdu::input::mouse_rel::{MouseRelPdu, PointerRelFlags};
+
+    // oracle: spec MS-RDPBCGR 2.2.8.1.2.2.7
+    // TS_FP_RELPOINTER_EVENT is the event header
+    // (FASTPATH_INPUT_EVENT_MOUSEREL = 0x5 in bits 5-7) followed by pointerFlags, xDelta and yDelta,
+    // each a little-endian 16-bit field.
+    let relative = FastPathInputEvent::MouseEventRel(MouseRelPdu {
+        flags: PointerRelFlags::MOVE,
+        x_delta: 5,
+        y_delta: -7,
+    });
+    assert_eq!(
+        encode_vec(&relative).unwrap(),
+        [0xA0, 0x00, 0x08, 0x05, 0x00, 0xF9, 0xFF]
+    );
+
+    // A following event must start right after the relative event's body.
+    let batch = FastPathInput::new(vec![
+        relative,
+        FastPathInputEvent::SyncEvent(SynchronizeFlags::SCROLL_LOCK),
+    ])
+    .unwrap();
+    let encoded = encode_vec(&batch).unwrap();
+    let decoded: FastPathInput = decode_cursor(&mut ReadCursor::new(&encoded)).unwrap();
+    assert_eq!(decoded, batch);
+}

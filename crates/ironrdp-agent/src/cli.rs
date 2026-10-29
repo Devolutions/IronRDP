@@ -21,7 +21,6 @@ use clap::{ArgGroup, Args, CommandFactory as _, Parser, Subcommand, ValueEnum};
 use ironrdp_cfg::{PropertySetExt as _, TargetAddr, TargetHost};
 use ironrdp_input::MouseButton;
 use ironrdp_propertyset::{PropertySet, Value};
-
 use ironrdp_rpc::ipc::{
     AgentError, KeyFilter, MAX_CLIPBOARD_HTML_BYTES, MAX_CLIPBOARD_IMAGE_BYTES, MAX_UNICODE_TEXT_CHARS,
     NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind, OperationInfo,
@@ -575,6 +574,13 @@ struct DaemonArgs {
     smartcard: bool,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum RemoteGuardArg {
+    Negotiate,
+    Ntlm,
+    Kerberos,
+}
+
 #[derive(Args, Debug)]
 struct ConnectArgs {
     /// Path to a .rdp file to read the base configuration from.
@@ -599,6 +605,10 @@ struct ConnectArgs {
     /// RDP account domain. Overrides the .rdp file.
     #[arg(short, long)]
     domain: Option<String>,
+    /// Require experimental Remote Credential Guard; restricts credential redirection to one
+    /// package with `kerberos` or `ntlm`, and defaults to `negotiate` (both, target picks).
+    #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "negotiate")]
+    remote_guard: Option<RemoteGuardArg>,
     /// Tracing filter directive applied to this session's log capture (e.g.
     /// `ironrdp_connector=trace`), layered on top of the default `debug` level. Use it to raise
     /// verbosity up-front when troubleshooting a connection.
@@ -1039,6 +1049,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 | Command::DaemonChild { .. }
                 | Command::GwForward(_)
                 | Command::Cert(_)
+                | Command::Connect(_)
         )
     {
         ensure_activex_backend(&endpoint).await?;
@@ -1159,6 +1170,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 && std::io::stdin().is_terminal()
                 && std::io::stderr().is_terminal();
             let request = build_connect_request(args)?;
+            if let Request::Connect { properties, .. } = &request
+                && cli.backend == Backend::ActiveX
+            {
+                anyhow::ensure!(
+                    !properties.remote_guard_mode()?.unwrap_or_default().is_enabled(),
+                    "remote credential guard requires --backend daemon"
+                );
+                ensure_activex_backend(&endpoint).await?;
+            }
             if should_start {
                 crate::daemon_lifecycle::ensure_started(&endpoint, crate::daemon_lifecycle::Settings::default())
                     .await?;
@@ -1494,6 +1514,7 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
                 eprintln!("warning: skipped entry in {}: {error}", path.display());
             }
         }
+        ironrdp_daemon::apply_rdp_launch_companion(path, &mut properties);
     }
 
     // `--prop` overrides win over the .rdp file but lose to the named flags below.
@@ -1514,6 +1535,13 @@ fn build_connect_request(args: ConnectArgs) -> anyhow::Result<Request> {
     }
     if let Some(domain) = args.domain {
         properties.set_domain(domain);
+    }
+    if let Some(mode) = args.remote_guard {
+        properties.set_remote_guard_mode(match mode {
+            RemoteGuardArg::Negotiate => ironrdp_cfg::RemoteGuardMode::Negotiate,
+            RemoteGuardArg::Ntlm => ironrdp_cfg::RemoteGuardMode::Ntlm,
+            RemoteGuardArg::Kerberos => ironrdp_cfg::RemoteGuardMode::Kerberos,
+        });
     }
 
     #[cfg(windows)]
@@ -2688,6 +2716,10 @@ fn property_description(key: &str) -> Option<&'static str> {
         "compression" => "enable bulk data compression (0/1)",
         "audiomode" => "remote audio mode (0 = play on client, 1 = play on server, 2 = disabled)",
         "redirectclipboard" => "enable clipboard redirection (0/1)",
+        "redirectprinters" => {
+            "redirect the local default Windows printer; settings persist per server (0/1, Windows only)"
+        }
+        "redirectcomports" => "redirect every local serial (COM) and parallel (LPT) port (0/1, Windows only)",
         "enablecredsspsupport" => "enable CredSSP/NLA authentication (0/1)",
         "alternate shell" => "program to launch on connect instead of the desktop shell",
         "shell working directory" => "working directory for the alternate shell or RemoteApp program",
@@ -2724,6 +2756,7 @@ fn property_description(key: &str) -> Option<&'static str> {
         "ironrdp_fakeeventsinterval" => "interval in minutes between synthetic keep-alive input events",
         "ironrdp_rdcleanpathtoken" => "RDCleanPath authentication token (secret)",
         "ironrdp_rdcleanpathurl" => "RDCleanPath proxy URL",
+        "ironrdp_gatewayrpch" => "use authenticated RPC over HTTP for the RD gateway instead of HTTP/WebSocket (0/1)",
         "ironrdp_serverpointer" => "render the server-side pointer instead of a client-drawn pointer (0/1)",
         _ => return None,
     };
@@ -2738,17 +2771,13 @@ mod tests {
     use clap::{CommandFactory as _, Parser as _};
     #[cfg(windows)]
     use ironrdp_cfg::PropertySetExt as _;
-    #[cfg(windows)]
     use ironrdp_rpc::ipc::Request;
 
-    use super::Command;
     #[cfg(windows)]
     use super::SandboxCommand;
-    #[cfg(windows)]
-    use super::build_connect_request;
     use super::{
-        Backend, CertCommand, Cli, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind, SessionCommand,
-        build_now_execution, endpoint_from_arg, run, should_auto_start,
+        Backend, CertCommand, Cli, Command, CommonExecutionArgs, MAX_UNICODE_TEXT_CHARS, NowExecutionKind,
+        SessionCommand, build_connect_request, build_now_execution, endpoint_from_arg, run, should_auto_start,
     };
 
     #[test]
@@ -3021,5 +3050,227 @@ mod tests {
 
         assert!(request.no_profile);
         assert!(request.non_interactive);
+    }
+
+    fn remote_guard_cli_parse(extra: &[&str]) -> Result<Cli, clap::Error> {
+        let mut arguments = vec![
+            "ironrdp-agent",
+            "connect",
+            "--server",
+            "remote-guard.invalid",
+            "--username",
+            "remote_guard_user",
+            "--password=",
+            "--domain",
+            "REMOTE_GUARD",
+        ];
+        arguments.extend_from_slice(extra);
+        Cli::try_parse_from(arguments)
+    }
+
+    fn remote_guard_cli_properties(extra: &[&str]) -> ironrdp_propertyset::PropertySet {
+        let cli = remote_guard_cli_parse(extra).unwrap_or_else(|_| panic!("fixed connect arguments must parse"));
+        let Some(Command::Connect(args)) = cli.command else {
+            panic!("expected connect arguments");
+        };
+        let request = build_connect_request(args).unwrap_or_else(|_| panic!("parse-only connect request must build"));
+        let Request::Connect { properties, .. } = request else {
+            panic!("expected connect request");
+        };
+        properties
+    }
+
+    fn remote_guard_assert_cli_mode(
+        properties: &ironrdp_propertyset::PropertySet,
+        mode: ironrdp_cfg::RemoteGuardMode,
+        value: i64,
+    ) {
+        use ironrdp_cfg::PropertySetExt as _;
+
+        assert_eq!(properties.remote_guard_mode(), Ok(Some(mode)));
+        assert_eq!(properties.get::<i64>("ironrdp_remote_guard"), Some(value));
+        assert_eq!(properties.get::<&str>("ironrdp_remote_guard"), None);
+    }
+
+    #[test]
+    fn remote_guard_cli_bare_flag_defaults_to_negotiate() {
+        let properties = remote_guard_cli_properties(&["--remote-guard"]);
+        remote_guard_assert_cli_mode(&properties, ironrdp_cfg::RemoteGuardMode::Negotiate, 1);
+    }
+
+    #[test]
+    fn remote_guard_cli_explicit_modes_use_property_values() {
+        for (spelling, mode, value) in [
+            ("negotiate", ironrdp_cfg::RemoteGuardMode::Negotiate, 1),
+            ("ntlm", ironrdp_cfg::RemoteGuardMode::Ntlm, 2),
+            ("kerberos", ironrdp_cfg::RemoteGuardMode::Kerberos, 3),
+        ] {
+            let properties = remote_guard_cli_properties(&["--remote-guard", spelling]);
+            remote_guard_assert_cli_mode(&properties, mode, value);
+        }
+    }
+
+    #[test]
+    fn remote_guard_cli_omission_preserves_property() {
+        use ironrdp_cfg::PropertySetExt as _;
+
+        let properties = remote_guard_cli_properties(&[]);
+        assert_eq!(properties.remote_guard_mode(), Ok(None));
+        assert_eq!(properties.get::<i64>("ironrdp_remote_guard"), None);
+        assert_eq!(properties.get::<&str>("ironrdp_remote_guard"), None);
+        for (property, mode, value) in [
+            ("ironrdp_remote_guard:i:0", ironrdp_cfg::RemoteGuardMode::Disabled, 0),
+            ("ironrdp_remote_guard:i:1", ironrdp_cfg::RemoteGuardMode::Negotiate, 1),
+            ("ironrdp_remote_guard:i:2", ironrdp_cfg::RemoteGuardMode::Ntlm, 2),
+            ("ironrdp_remote_guard:i:3", ironrdp_cfg::RemoteGuardMode::Kerberos, 3),
+        ] {
+            let properties = remote_guard_cli_properties(&["--prop", property]);
+            remote_guard_assert_cli_mode(&properties, mode, value);
+        }
+        let named = remote_guard_cli_properties(&["--prop", "ironrdp_remote_guard:s:ntlm"]);
+        assert_eq!(named.remote_guard_mode(), Ok(Some(ironrdp_cfg::RemoteGuardMode::Ntlm)));
+    }
+
+    #[test]
+    fn remote_guard_cli_flag_overrides_property() {
+        for (flag, mode, value) in [
+            (&["--remote-guard"][..], ironrdp_cfg::RemoteGuardMode::Negotiate, 1),
+            (
+                &["--remote-guard", "negotiate"][..],
+                ironrdp_cfg::RemoteGuardMode::Negotiate,
+                1,
+            ),
+            (&["--remote-guard", "ntlm"][..], ironrdp_cfg::RemoteGuardMode::Ntlm, 2),
+            (
+                &["--remote-guard", "kerberos"][..],
+                ironrdp_cfg::RemoteGuardMode::Kerberos,
+                3,
+            ),
+        ] {
+            for (property, property_value) in [
+                ("ironrdp_remote_guard:i:0", 0),
+                ("ironrdp_remote_guard:i:1", 1),
+                ("ironrdp_remote_guard:i:2", 2),
+                ("ironrdp_remote_guard:i:3", 3),
+                ("ironrdp_remote_guard:s:kerberos", -1),
+            ] {
+                if property_value == value {
+                    continue;
+                }
+                for property_first in [true, false] {
+                    let mut arguments = Vec::new();
+                    if property_first {
+                        arguments.extend_from_slice(&["--prop", property]);
+                        arguments.extend_from_slice(flag);
+                    } else {
+                        arguments.extend_from_slice(flag);
+                        arguments.extend_from_slice(&["--prop", property]);
+                    }
+                    let properties = remote_guard_cli_properties(&arguments);
+                    remote_guard_assert_cli_mode(&properties, mode, value);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn remote_guard_cli_repeated_properties_are_last_writer_wins() {
+        let cases = [
+            ("ironrdp_remote_guard:i:0", ironrdp_cfg::RemoteGuardMode::Disabled, 0),
+            ("ironrdp_remote_guard:i:1", ironrdp_cfg::RemoteGuardMode::Negotiate, 1),
+            ("ironrdp_remote_guard:i:2", ironrdp_cfg::RemoteGuardMode::Ntlm, 2),
+            ("ironrdp_remote_guard:i:3", ironrdp_cfg::RemoteGuardMode::Kerberos, 3),
+        ];
+        for (first, _, first_value) in cases {
+            for (last, mode, value) in cases {
+                if first_value == value {
+                    continue;
+                }
+                let properties = remote_guard_cli_properties(&["--prop", first, "--prop", last]);
+                remote_guard_assert_cli_mode(&properties, mode, value);
+            }
+        }
+    }
+
+    #[test]
+    fn remote_guard_cli_rejects_invalid_flag_values() {
+        for value in ["disabled", "kerberos-ntlm", "kerberos_ntlm"] {
+            let error = match remote_guard_cli_parse(&["--remote-guard", value]) {
+                Ok(_) => panic!("invalid remote guard spelling must fail"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        }
+    }
+
+    #[test]
+    fn remote_guard_cli_invalid_property_remains_explicit() {
+        use ironrdp_cfg::PropertySetExt as _;
+
+        let properties = remote_guard_cli_properties(&["--prop", "ironrdp_remote_guard:i:4"]);
+        assert_eq!(properties.get::<i64>("ironrdp_remote_guard"), Some(4));
+        assert_eq!(properties.get::<&str>("ironrdp_remote_guard"), None);
+        assert_eq!(properties.remote_guard_mode(), Err(ironrdp_cfg::InvalidRemoteGuardMode));
+
+        let properties = remote_guard_cli_properties(&["--prop", "ironrdp_remote_guard:s:kerberos-ntlm"]);
+        assert_eq!(properties.get::<&str>("ironrdp_remote_guard"), Some("kerberos-ntlm"));
+        assert_eq!(properties.get::<i64>("ironrdp_remote_guard"), None);
+        assert_eq!(properties.remote_guard_mode(), Err(ironrdp_cfg::InvalidRemoteGuardMode));
+    }
+
+    fn remote_guard_cli_dispatch_error(extra: &[&str]) -> anyhow::Error {
+        use core::future::Future as _;
+        use core::task::{Context, Poll, Waker};
+
+        let mut arguments = vec!["--backend", "active-x", "--endpoint", "remote-guard\0invalid"];
+        arguments.extend_from_slice(extra);
+        let cli = remote_guard_cli_parse(&arguments).expect("fixed ActiveX connect arguments must parse");
+        let mut dispatch = std::pin::pin!(run(cli));
+        match dispatch.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(Err(error)) => error,
+            Poll::Ready(Ok(())) => panic!("ActiveX dispatch must not succeed"),
+            Poll::Pending => panic!("ActiveX policy must finish before asynchronous I/O"),
+        }
+    }
+
+    #[test]
+    fn remote_guard_cli_activex_rejects_enabled_before_dispatch() {
+        for arguments in [
+            vec!["--remote-guard"],
+            vec!["--remote-guard", "ntlm"],
+            vec!["--prop", "ironrdp_remote_guard:i:1"],
+            vec!["--prop", "ironrdp_remote_guard:i:2"],
+        ] {
+            let error = remote_guard_cli_dispatch_error(&arguments);
+            assert_eq!(error.to_string(), "remote credential guard requires --backend daemon");
+            assert!(error.downcast_ref::<ironrdp_cfg::InvalidRemoteGuardMode>().is_none());
+        }
+    }
+
+    #[test]
+    fn remote_guard_cli_activex_rejects_invalid_merged_mode() {
+        for property in [
+            "ironrdp_remote_guard:i:-1",
+            "ironrdp_remote_guard:i:4",
+            "ironrdp_remote_guard:s:kerberos-ntlm",
+        ] {
+            let error = remote_guard_cli_dispatch_error(&["--prop", property]);
+            assert_eq!(
+                error.downcast_ref::<ironrdp_cfg::InvalidRemoteGuardMode>(),
+                Some(&ironrdp_cfg::InvalidRemoteGuardMode)
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remote_guard_cli_activex_disabled_keeps_backend_routing() {
+        for arguments in [vec![], vec!["--prop", "ironrdp_remote_guard:i:0"]] {
+            let error = remote_guard_cli_dispatch_error(&arguments);
+            assert_eq!(
+                error.to_string(),
+                "ActiveX RPC endpoint is unavailable at \\\\.\\pipe\\remote-guard\0invalid; start an ActiveX host with IRONRDP_ACTIVEX_RPC=1"
+            );
+        }
     }
 }

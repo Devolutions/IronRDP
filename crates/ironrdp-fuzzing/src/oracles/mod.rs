@@ -51,6 +51,50 @@ pub fn bulk_decompress_xcrush(data: &[u8]) {
     let _ = bulk.decompress(data, flags::PACKET_COMPRESSED | 0x03);
 }
 
+/// RDP 8.0 decompressor used by the dynamic virtual channels, checked against the
+/// graphics pipeline's ZGFX decoder on the same input. `ironrdp-bulk` also accepts
+/// RDP 8.0 Lite segments, so it may decode inputs the graphics decoder rejects. The other
+/// way around, it only rejects match-length prefixes that MS-RDPEGFX reserves. The RDP 8.0
+/// Lite profile, used by DVCs, must decode whatever it accepts exactly like the RDP 8.0 one.
+///
+/// # Panics
+///
+/// Panics (reporting the bug to libFuzzer) when the graphics decoder accepts an input that
+/// `ironrdp-bulk` rejects or decodes to different bytes, or when the Lite profile accepts an
+/// input that the RDP 8.0 profile rejects or decodes to different bytes.
+#[expect(clippy::panic, reason = "panic is the libFuzzer bug-reporting mechanism")]
+pub fn bulk_decompress_rdp8(data: &[u8]) {
+    use ironrdp_bulk::rdp8::{Rdp8Decompressor, Rdp8Error};
+    use ironrdp_graphics::zgfx::Decompressor;
+
+    let mut reference = Vec::new();
+    let reference_result = Decompressor::new().decompress(data, &mut reference);
+
+    let mut output = Vec::new();
+    let result = Rdp8Decompressor::new().decompress(data, &mut output);
+
+    // The RDP 8.0 Lite profile only narrows the limits of the RDP 8.0 one, and both start
+    // from a zeroed history, so whatever Lite accepts must decode identically there.
+    let mut lite_output = Vec::new();
+    if Rdp8Decompressor::new_lite().decompress(data, &mut lite_output).is_ok() {
+        match &result {
+            Ok(_) if lite_output == output => {}
+            Ok(_) => panic!("RDP 8.0 Lite and RDP 8.0 profiles disagree on the output"),
+            Err(e) => panic!("RDP 8.0 profile rejected input the Lite profile accepts: {e}"),
+        }
+    }
+
+    if reference_result.is_ok() {
+        match result {
+            Ok(_) if output == reference => {}
+            Ok(_) => panic!("RDP 8.0 decompressors disagree on the output"),
+            // The graphics decoder also accepts match-length prefixes that MS-RDPEGFX reserves.
+            Err(Rdp8Error::MatchLengthTooLarge) => {}
+            Err(e) => panic!("ironrdp-bulk rejected input the graphics decoder accepts: {e}"),
+        }
+    }
+}
+
 /// Round-trip oracle: compress uncompressed input then decompress the result,
 /// assert byte-equality with the original. `BulkCompressor` holds both halves;
 /// a fresh compressor and decompressor are constructed per call to avoid
@@ -109,7 +153,8 @@ pub fn pdu_decode(data: &[u8]) {
     use ironrdp_pdu::mcs::{ConnectInitial, ConnectResponse, McsMessage};
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::{
-        ClientInfoPdu, capability_sets, headers, multitransport, server_error_info, server_license, vc,
+        ClientInfoPdu, capability_sets, headers, multitransport, server_error_info, server_license, server_redirection,
+        vc,
     };
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
@@ -124,6 +169,8 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<headers::ShareControlHeader>(data);
     let _ = decode::<pcb::PreconnectionBlob>(data);
     let _ = decode::<server_error_info::ServerSetErrorInfoPdu>(data);
+    let _ = decode::<server_redirection::ServerRedirectionPdu>(data);
+    let _ = decode::<server_redirection::StandardSecurityServerRedirection>(data);
 
     let _ = decode::<gcc::ClientGccBlocks>(data);
     let _ = decode::<gcc::ServerGccBlocks>(data);
@@ -131,7 +178,26 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<gcc::ConferenceCreateRequest>(data);
     let _ = decode::<gcc::ConferenceCreateResponse>(data);
 
-    let _ = decode::<server_license::LicensePdu>(data);
+    // The client answers a license request with either reply, both encrypting with the public key from the server's
+    // certificate.
+    if let Ok(server_license::LicensePdu::ServerLicenseRequest(license_request)) =
+        decode::<server_license::LicensePdu>(data)
+    {
+        let _ = server_license::ClientNewLicenseRequest::from_server_license_request(
+            &license_request,
+            &[0; 32],
+            &[0; 48],
+            "user",
+            "machine",
+        );
+        let _ = server_license::ClientLicenseInfo::from_server_license_request(
+            &license_request,
+            &[0; 32],
+            &[0; 48],
+            [0; 4],
+            Vec::new(),
+        );
+    }
 
     // Post-licensing multitransport bootstrapping: the connector try-decodes
     // arbitrary server bytes as a request to distinguish it from Demand Active.
@@ -174,12 +240,21 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ironrdp_cliprdr::pdu::FileContentsResponse<'_>>(data);
 
     let _ = decode::<ironrdp_rdpdr::pdu::RdpdrPdu>(data);
+    let _ = decode::<ironrdp_rdpdr::pdu::epc::PrinterCacheData>(data);
+    let _ = decode::<ironrdp_rdpdr::pdu::epc::PrinterUsingXps>(data);
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
     let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
+    let _ = decode::<ironrdp_rdpear::AuthRedirectionPdu>(data);
+    let _ = decode::<ironrdp_rdpear::RemoteGuardInnerPacket<'_>>(data);
+    let _ = decode::<ironrdp_rdpear::ndr::KerberosRequest>(data);
+    let _ = decode::<ironrdp_rdpear::ndr::KerberosResponse>(data);
+    let _ = decode::<ironrdp_rdpear::ndr::NtlmRequest>(data);
+    let _ = decode::<ironrdp_rdpear::ndr::NtlmResponse>(data);
 
     let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>>(data);
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
+    let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioDatagram<'_>>(data);
 
     let _ = decode::<GfxPdu>(data);
     let _ = decode::<CacheToSurfacePdu>(data);
@@ -266,9 +341,11 @@ pub fn pdu_round_trip(data: &[u8]) {
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
     use ironrdp_pdu::rdp::headers::ShareControlHeader;
-    use ironrdp_pdu::rdp::{self, ClientInfoPdu, multitransport, server_error_info, server_license, vc};
+    use ironrdp_pdu::rdp::{
+        self, ClientInfoPdu, multitransport, server_error_info, server_license, server_redirection, vc,
+    };
     use ironrdp_pdu::x224::X224;
-    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
+    use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands, window};
 
     // Connection-time PDUs
     pdu_round_trip_one!(data, X224<ConnectionRequest>);
@@ -279,6 +356,8 @@ pub fn pdu_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, ClientInfoPdu);
     pdu_round_trip_one!(data, pcb::PreconnectionBlob);
     pdu_round_trip_one!(data, server_error_info::ServerSetErrorInfoPdu);
+    pdu_round_trip_one!(data, server_redirection::ServerRedirectionPdu);
+    pdu_round_trip_one!(data, server_redirection::StandardSecurityServerRedirection);
 
     // Capability sharing
     pdu_round_trip_one!(data, CapabilitySet);
@@ -307,6 +386,7 @@ pub fn pdu_round_trip(data: &[u8]) {
 
     // Surface commands
     pdu_round_trip_one!(data, surface_commands::SurfaceCommand<'_>);
+    pdu_round_trip_one!(data, window::WindowingOrder);
     pdu_round_trip_one!(data, surface_commands::SurfaceBitsPdu<'_>);
     pdu_round_trip_one!(data, surface_commands::FrameMarkerPdu);
     pdu_round_trip_one!(data, surface_commands::ExtendedBitmapDataPdu<'_>);
@@ -336,16 +416,57 @@ pub fn pdu_round_trip(data: &[u8]) {
 
     // RDPDR
     pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::RdpdrPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::epc::PrinterCacheData);
+    pdu_round_trip_one!(data, ironrdp_rdpdr::pdu::epc::PrinterUsingXps);
 
     // Display control
     pdu_round_trip_one!(data, ironrdp_displaycontrol::pdu::DisplayControlPdu);
 
     // Location
     pdu_round_trip_one!(data, ironrdp_rdpel::pdu::LocationPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpear::AuthRedirectionPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpear::RemoteGuardInnerPacket<'_>);
+    rdpear_ndr_round_trip(data);
 
     // RDPSND
     pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>);
     pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ClientAudioOutputPdu);
+}
+
+/// Bounded package-codec oracle; successful decodes must encode and preserve typed data in both byte orders.
+pub fn rdpear_ndr_round_trip(data: &[u8]) {
+    use ironrdp_rdpear::ndr::{
+        Endianness, KerberosRequest, KerberosResponse, NdrLimits, NdrProfile, NtlmRequest, NtlmResponse,
+    };
+
+    let limits = NdrLimits {
+        max_message_size: 65536,
+        max_allocation: 262144,
+        max_elements: 16384,
+    };
+    macro_rules! check {
+        ($ty:ty) => {
+            for profile in [NdrProfile::Published, NdrProfile::WindowsNative] {
+                if let Ok(value) = <$ty>::decode_with_profile(data, limits, profile) {
+                    for endian in [Endianness::Little, Endianness::Big] {
+                        let bytes = value
+                            .encode_with_profile(endian, limits, profile)
+                            .expect("decoded NDR value must encode");
+                        let decoded =
+                            <$ty>::decode_with_profile(&bytes, limits, profile).expect("encoded NDR value must decode");
+                        assert_eq!(
+                            value, decoded,
+                            "NDR round-trip must preserve typed protocol values"
+                        );
+                    }
+                }
+            }
+        };
+    }
+    check!(KerberosRequest);
+    check!(KerberosResponse);
+    check!(NtlmRequest);
+    check!(NtlmResponse);
 }
 
 /// Round-trip oracle for `ironrdp-egfx` PDU types: `decode` → `encode_vec` → re-`decode`.
@@ -574,11 +695,78 @@ pub fn cliprdr_format(input: &[u8]) {
 pub fn channel_process(input: &[u8]) {
     use ironrdp_svc::SvcProcessor as _;
 
+    // A printer with a cache store lets printer cache-data PDUs reach the store; an add event
+    // for its `PRN1` port matches without knowing the printer name.
     let mut rdpdr = ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "Backend".to_owned())
         .with_smartcard(1)
-        .with_drives(None);
+        .with_drives(None)
+        .with_printer_cache_store(std::sync::Arc::new(ironrdp_rdpdr::InMemoryRdpdrPrinterCacheStore::new()))
+        .with_redirected_printer(ironrdp_rdpdr::RdpdrPrinter::new(
+            2,
+            "Printer".to_owned(),
+            "Driver".to_owned(),
+        ));
 
     let _ = rdpdr.process(input);
+    dvc_server_process(input);
+}
+
+fn dvc_server_process(input: &[u8]) {
+    use ironrdp_core::{encode_vec, impl_as_any};
+    use ironrdp_dvc::pdu::{CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
+    use ironrdp_dvc::{DrdynvcServer, DvcMessage, DvcProcessor, DvcServerProcessor};
+    use ironrdp_pdu::PduResult;
+    use ironrdp_svc::SvcProcessor as _;
+
+    let mut server = DrdynvcServer::new().with_dynamic_channel(NoopServerDvc);
+    let _ = server.start();
+    if let Ok(caps) = encode_vec(&DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(
+        CapsVersion::V3,
+    ))) {
+        let _ = server.process(&caps);
+    }
+    if let Ok(open) = encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(0, CreationStatus::OK))) {
+        let _ = server.process(&open);
+    }
+    if server.create_channel(NoopServerDvc).is_ok() {
+        let _ = server.close_channel(1);
+    }
+    if server.create_channel(NoopServerDvc).is_ok()
+        && let Ok(decline) = encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(
+            2,
+            CreationStatus::NO_LISTENER,
+        )))
+    {
+        let _ = server.process(&decline);
+        let _ = server.close_channel(2);
+    }
+    let _ = server.create_channel(NoopServerDvc);
+    let _ = server.process(input);
+    return;
+
+    struct NoopServerDvc;
+
+    impl_as_any!(NoopServerDvc);
+
+    impl DvcProcessor for NoopServerDvc {
+        fn channel_name(&self) -> &str {
+            "fuzz"
+        }
+
+        fn max_message_size(&self) -> Option<usize> {
+            Some(4096)
+        }
+
+        fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl DvcServerProcessor for NoopServerDvc {}
 }
 
 pub fn cliprdr_channel_process(input: &[u8]) {
@@ -1245,7 +1433,7 @@ pub fn message_decoding_invariants(data: &[u8]) {
     use ironrdp_pdu::nego::{ConnectionConfirm, ConnectionRequest};
     use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
     use ironrdp_pdu::rdp::headers::ShareControlHeader;
-    use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, vc};
+    use ironrdp_pdu::rdp::{ClientInfoPdu, server_error_info, server_license, server_redirection, vc};
     use ironrdp_pdu::x224::X224;
     use ironrdp_pdu::{bitmap, codecs, fast_path, gcc, input, pcb, surface_commands};
 
@@ -1258,6 +1446,8 @@ pub fn message_decoding_invariants(data: &[u8]) {
     decode_size_invariant_one!(data, ClientInfoPdu);
     decode_size_invariant_one!(data, pcb::PreconnectionBlob);
     decode_size_invariant_one!(data, server_error_info::ServerSetErrorInfoPdu);
+    decode_size_invariant_one!(data, server_redirection::ServerRedirectionPdu);
+    decode_size_invariant_one!(data, server_redirection::StandardSecurityServerRedirection);
 
     // Capability sharing. `ShareControlHeader` transits through `CapabilitySet`'s
     // encoder via the Active variants, so the same encoder path exercises both.
@@ -1377,6 +1567,57 @@ pub fn egfx_zgfx_decompress(data: &[u8]) {
     let mut decompressor = Decompressor::new();
     let mut output = Vec::new();
     let _ = decompressor.decompress(data, &mut output);
+}
+
+/// Panic and sanitizer oracle for the Alpha codec decoder ([MS-RDPEGFX 2.2.4.3]).
+///
+/// The first four bytes choose the bitmap width and height, so the fuzzer can reach runs that
+/// overrun or undershoot the area as well as the extended run-length encodings.
+///
+/// [MS-RDPEGFX 2.2.4.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/4c14f2a6-a025-476f-aa33-30f1718bd015
+pub fn egfx_alpha_decode(data: &[u8]) {
+    let [w0, w1, h0, h1, stream @ ..] = data else {
+        return;
+    };
+    let width = u16::from_le_bytes([*w0, *w1]);
+    let height = u16::from_le_bytes([*h0, *h1]);
+    let area = usize::from(width) * usize::from(height);
+
+    // oracle: spec MS-RDPEGFX §2.2.4.3 (the segments MUST encode exactly the bitmap area, top-left to
+    // bottom-right)
+    let mut covered = 0usize;
+    let result = ironrdp_graphics::alpha::decode(stream, width, height, |first_pixel, run| {
+        assert_eq!(first_pixel, covered, "runs are contiguous");
+        covered += run.len();
+    });
+    if result.is_ok() {
+        assert_eq!(covered, area, "a decoded stream covers the whole bitmap");
+    }
+}
+
+/// Panic and sanitizer oracle for the RemoteFX message parser and tile decoder
+/// ([MS-RDPRFX 2.2.2]), as the EGFX client runs them on `RDPGFX_CODECID_CAVIDEO` payloads.
+///
+/// [MS-RDPRFX 2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/edd6c368-4f39-420a-bf14-a0e83c654ab7
+pub fn egfx_rfx_decode(data: &[u8]) {
+    use ironrdp_graphics::rfx::{MAX_TILES_PER_MESSAGE, MessageDecoder, TILE_RGBA_LEN, TileDecoder};
+
+    let Ok(message) = MessageDecoder::new().parse(data) else {
+        return;
+    };
+    // oracle: mutant (a parsed message past the documented tile limit)
+    assert!(message.tile_count() <= MAX_TILES_PER_MESSAGE);
+
+    let mut tiles = TileDecoder::new();
+    for frame in &message.frames {
+        let tile_set = &frame.tile_set;
+        for tile in &tile_set.tiles {
+            if let Ok(pixels) = tiles.decode(tile, &tile_set.quants, tile_set.entropy_algorithm) {
+                // oracle: spec MS-RDPRFX §3.1.8.1.1 (a tile is 64x64 pixels)
+                assert_eq!(pixels.len(), TILE_RGBA_LEN);
+            }
+        }
+    }
 }
 
 /// Surface-lifecycle state-machine oracle for the EGFX graphics pipeline client.
@@ -1642,5 +1883,31 @@ pub fn egfx_surface_state(data: &[u8]) {
             expected.total_frames_decoded,
             "total_frames_decoded mismatch"
         );
+    }
+}
+
+/// Wave codec oracle for audio output and input.
+///
+/// The input starts with a `WAVEFORMATEX` (with its extra bytes) selecting the codec and its
+/// parameters, followed by wave data. Decoding hostile wave data, and re-encoding what it decoded
+/// to, must not panic for any format the codecs accept.
+pub fn rdpsnd_codec_decode(data: &[u8]) {
+    use ironrdp_core::{Decode as _, ReadCursor};
+    use ironrdp_rdpsnd::codec::{AudioDecoder, AudioEncoder};
+    use ironrdp_rdpsnd::pdu::AudioFormat;
+
+    let mut cursor = ReadCursor::new(data);
+    let Ok(format) = AudioFormat::decode(&mut cursor) else {
+        return;
+    };
+    let Ok(mut decoder) = AudioDecoder::new(&format) else {
+        return;
+    };
+    let mut pcm = Vec::new();
+    let _ = decoder.decode(cursor.remaining(), &mut pcm);
+
+    if let Ok(mut encoder) = AudioEncoder::new(&format) {
+        let mut encoded = Vec::new();
+        encoder.encode(&pcm, &mut encoded);
     }
 }

@@ -29,7 +29,7 @@ const check = (count = "ai-reviewed/1", outcome = "findings") => ({
 const ready = (commentId = 19, reviewId = 11, checkId = 7) => ({
   id: 8, name: "AI review-ready", app: { slug: "github-actions" },
   head_sha: SHA, external_id: SHA, status: "completed", conclusion: "success",
-  created_at: "2026-05-01T12:00:00Z",
+  completed_at: "2026-05-01T12:00:00Z",
   output: { summary: encodeReady({ headSha: SHA, commentId, reviewId, checkId }) },
 });
 
@@ -318,7 +318,7 @@ test("second authority read prevents head or review changes before check creatio
   assert.deepEqual(secondWrites, []);
 });
 
-test("receipt rejects foreign, malformed, stale, and non-server-created checks", () => {
+test("receipt rejects foreign, malformed, stale, and non-server-completed checks", () => {
   assert.equal(trustedReady(ready(), SHA).review_id, 11);
   for (const run of [
     { ...ready(), app: { slug: "foreign" } },
@@ -326,9 +326,9 @@ test("receipt rejects foreign, malformed, stale, and non-server-created checks",
     { ...ready(), head_sha: OTHER },
     { ...ready(), external_id: OTHER },
     { ...ready(), conclusion: "neutral" },
-    { ...ready(), created_at: undefined },
-    { ...ready(), created_at: "not-a-date" },
-    { ...ready(), created_at: "2026-02-30T11:00:00Z" },
+    { ...ready(), completed_at: undefined },
+    { ...ready(), completed_at: "not-a-date" },
+    { ...ready(), completed_at: "2026-02-30T11:00:00Z" },
     { ...ready(), output: { summary: encodeReady({
       headSha: SHA, commentId: 19, reviewId: 11, checkId: 7,
     }).replace('"review_id":11', '"review_id":11,"extra":1') } },

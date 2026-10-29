@@ -11,14 +11,22 @@ pub mod rfx; // FIXME: maybe this module should not be in this crate
 pub mod x224;
 
 mod active_stage;
+mod autodetect;
 mod palette;
+#[cfg(feature = "qoiz")]
+mod qoiz;
 
 use core::fmt;
 
 #[cfg(feature = "__test")]
 pub use active_stage::composite_graphics_updates;
-pub use active_stage::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
+pub use active_stage::{
+    ActiveStage, ActiveStageBuilder, ActiveStageOutput, CompositedGraphics, GracefulDisconnectReason,
+    composite_graphics_pipeline, encode_fastpath_input,
+};
 pub use fast_path::{BulkDecompressionErrorKind, FastPathBulkDecompressionFailure};
+#[cfg(all(feature = "__test", feature = "qoiz"))]
+pub use qoiz::Decompressor as QoizDecompressor;
 
 pub type SessionResult<T> = Result<T, SessionError>;
 

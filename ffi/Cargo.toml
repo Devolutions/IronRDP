@@ -12,9 +12,9 @@ test = false
 doctest = false
 
 [dependencies]
-diplomat = "0.7"
-diplomat-runtime = "0.7"
-ironrdp = { path = "../crates/ironrdp", features = ["session", "connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol"] }
+diplomat = { git = "https://github.com/Devolutions/diplomat", tag = "0.16.1-devo.2" }
+diplomat-runtime = { git = "https://github.com/Devolutions/diplomat", tag = "0.16.1-devo.2" }
+ironrdp = { path = "../crates/ironrdp", features = ["session", "connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol", "rdpei"] }
 ironrdp-cliprdr-native.path = "../crates/ironrdp-cliprdr-native"
 ironrdp-dvc-pipe-proxy.path = "../crates/ironrdp-dvc-pipe-proxy"
 ironrdp-core = { path = "../crates/ironrdp-core", features = ["alloc"] }
@@ -25,6 +25,9 @@ thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+ironrdp-rdpdr-native.path = "../crates/ironrdp-rdpdr-native"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0"

@@ -1062,3 +1062,37 @@ fn buffer_length_is_correct_for_conference_create_response() {
 
     assert_eq!(expected_buffer_len, len);
 }
+
+/// Decoding any prefix of a Client Core Data block must never panic.
+#[test]
+fn decoding_truncated_client_core_data_does_not_panic() {
+    let buffer = CLIENT_OPTIONAL_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_BUFFER;
+
+    for len in 0..buffer.len() {
+        let truncated = &buffer[..len];
+        let result = std::panic::catch_unwind(|| decode::<ClientCoreData>(truncated));
+        assert!(result.is_ok(), "prefix of length {len} panicked during decoding");
+    }
+}
+
+/// desktopPhysicalHeight and deviceScaleFactor are mandatory when, respectively, desktopPhysicalWidth and
+/// desktopScaleFactor are present: a block ending in between is rejected rather than read out of bounds.
+#[test]
+fn client_core_data_with_unpaired_optional_fields_is_rejected() {
+    let buffer = CLIENT_OPTIONAL_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_BUFFER;
+    let physical_width_end = CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER.len() + 4 /* desktopPhysicalWidth */;
+    let desktop_scale_factor_end = physical_width_end
+        + 4 /* desktopPhysicalHeight */
+        + 2 /* desktopOrientation */
+        + 4 /* desktopScaleFactor */;
+
+    for end in [physical_width_end, desktop_scale_factor_end] {
+        for len in end..end + 4 {
+            let e = decode::<ClientCoreData>(&buffer[..len]).unwrap_err();
+            assert!(
+                matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }),
+                "unexpected error for prefix of length {len}: {e:?}"
+            );
+        }
+    }
+}

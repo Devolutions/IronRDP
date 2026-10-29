@@ -61,7 +61,9 @@ use std::time::Instant;
 
 use ironrdp_core::{Encode, EncodeResult, WriteCursor, decode, impl_as_any};
 use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
-use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
+use ironrdp_graphics::zgfx::{
+    CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed, wrap_uncompressed_recorded,
+};
 use ironrdp_pdu::gcc::Monitor;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::{PduResult, decode_err};
@@ -98,6 +100,10 @@ const MAX_AVC_QP: u8 = 51;
 ///
 /// [2.2.4.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/bc54993f-2e3c-4285-b32b-58a4bf4cb02e
 const MAX_AVC_QUALITY: u8 = 100;
+
+/// Bytes a pixel takes in an uncompressed `WireToSurface1` bitmap. Both surface
+/// pixel formats, `XRGB_8888` and `ARGB_8888`, are 32 bits wide.
+const UNCOMPRESSED_BYTES_PER_PIXEL: usize = 4;
 
 /// Pre-encoded ZGFX-wrapped bytes for DVC transmission.
 ///
@@ -1281,7 +1287,12 @@ impl GraphicsPipelineServer {
     /// When `compression_mode` is `Auto` or `Always`, `drain_output()` will
     /// compress PDUs before ZGFX wrapping, reducing bandwidth at the cost
     /// of CPU. The compressor maintains a sliding history window across
-    /// frames for back-reference efficiency.
+    /// frames for back-reference efficiency. `WireToSurface1` PDUs carrying
+    /// AVC420, AVC444 or AVC444v2 are sent uncompressed in both modes, since
+    /// H.264 is already entropy coded; their bytes still enter the history.
+    /// The trade-off is that a byte-identical repeat of an earlier H.264 PDU,
+    /// such as a periodic keyframe of an unchanged screen, is sent in full where
+    /// ZGFX would have matched it against the history.
     pub fn with_compression(handler: Box<dyn GraphicsPipelineHandler>, compression_mode: CompressionMode) -> Self {
         let mut server = Self::new(handler);
         server.compression_mode = compression_mode;
@@ -1639,16 +1650,20 @@ impl GraphicsPipelineServer {
         rect.left < rect.right && rect.top < rect.bottom && rect.right <= surface.width && rect.bottom <= surface.height
     }
 
-    fn submission_state(&self, surface_id: u16, avc444: bool) -> Result<&Surface, FrameSubmissionError> {
+    /// Readiness, codec support, backpressure and surface lookup, in that order.
+    ///
+    /// `require_codec` runs after the readiness check and before the backpressure
+    /// check, so a sender that needs a codec capability reports it ahead of
+    /// backpressure, and a sender that needs none passes a check that always succeeds.
+    fn surface_for_submission(
+        &self,
+        surface_id: u16,
+        require_codec: impl FnOnce(&Self) -> Result<(), FrameSubmissionError>,
+    ) -> Result<&Surface, FrameSubmissionError> {
         if !self.is_ready() {
             return Err(FrameSubmissionError::NotReady);
         }
-        if avc444 && !self.supports_avc444() {
-            return Err(FrameSubmissionError::Avc444Unsupported);
-        }
-        if !avc444 && !self.supports_avc420() {
-            return Err(FrameSubmissionError::Avc420Unsupported);
-        }
+        require_codec(self)?;
         if self.should_backpressure() {
             return Err(FrameSubmissionError::Backpressured {
                 frames_in_flight: self.frames.in_flight(),
@@ -1660,20 +1675,42 @@ impl GraphicsPipelineServer {
             .ok_or(FrameSubmissionError::UnknownSurface { surface_id })
     }
 
+    fn require_avc(&self, avc444: bool) -> Result<(), FrameSubmissionError> {
+        if avc444 && !self.supports_avc444() {
+            Err(FrameSubmissionError::Avc444Unsupported)
+        } else if !avc444 && !self.supports_avc420() {
+            Err(FrameSubmissionError::Avc420Unsupported)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn submission_state(&self, surface_id: u16, avc444: bool) -> Result<&Surface, FrameSubmissionError> {
+        self.surface_for_submission(surface_id, |server| server.require_avc(avc444))
+    }
+
     /// Inspect AVC420 readiness without queueing a frame.
     pub fn avc420_submission_state(&self, surface_id: u16) -> Result<(), FrameSubmissionError> {
         self.submission_state(surface_id, false).map(|_| ())
     }
 
     fn prepare_submission(&mut self, surface_id: u16, avc444: bool) -> Result<Surface, FrameSubmissionError> {
+        self.prepare_with(surface_id, |server| server.require_avc(avc444))
+    }
+
+    /// Run the shared submission checks with the caller's codec requirement, count a
+    /// backpressure rejection in the QoE record, and return a copy of the surface.
+    fn prepare_with(
+        &mut self,
+        surface_id: u16,
+        require_codec: impl FnOnce(&Self) -> Result<(), FrameSubmissionError>,
+    ) -> Result<Surface, FrameSubmissionError> {
         // Copy the small descriptor so validation and QoE accounting use one lookup.
-        match self.submission_state(surface_id, avc444).cloned() {
-            Err(error @ FrameSubmissionError::Backpressured { .. }) => {
-                self.qoe.record_backpressure();
-                Err(error)
-            }
-            result => result,
+        let result = self.surface_for_submission(surface_id, require_codec).cloned();
+        if matches!(result, Err(FrameSubmissionError::Backpressured { .. })) {
+            self.qoe.record_backpressure();
         }
+        result
     }
 
     /// Queue an H.264 AVC420 frame for transmission with a typed rejection.
@@ -2037,6 +2074,9 @@ impl GraphicsPipelineServer {
     ///
     /// The `bitmap_data` should be in the surface's pixel format (typically XRGB).
     ///
+    /// Always places the bitmap at the surface origin. To send only the part of a
+    /// frame that changed, use [`Self::try_send_uncompressed_region()`].
+    ///
     /// Returns `Some(frame_id)` if queued, `None` if not ready or backpressured.
     pub fn send_uncompressed_frame(
         &mut self,
@@ -2080,6 +2120,75 @@ impl GraphicsPipelineServer {
         self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
 
         Some(frame_id)
+    }
+
+    /// Queue part of a frame as an uncompressed bitmap, with a typed rejection.
+    ///
+    /// Sends `bitmap_data` through `WireToSurface1` with `Codec1Type::Uncompressed`,
+    /// placed at `region` instead of at the surface origin, so a caller that knows
+    /// which part of the screen changed can send only that part. A client that
+    /// decodes no compressed codec otherwise receives the whole frame for every
+    /// update, 8 MB at 1920x1080.
+    ///
+    /// `bitmap_data` holds the rows of `region` in the surface's pixel format, four
+    /// bytes a pixel and no row padding. `region` uses exclusive right and bottom
+    /// bounds, like the wire-format `RDPGFX_RECT16`.
+    ///
+    /// An empty region, a region that doesn't lie inside the surface and a payload
+    /// whose length isn't the region's area are rejected with
+    /// [`FrameSubmissionError::InvalidFrame`], because the client can't place such a
+    /// bitmap. An empty region or a wrong payload length is reported before readiness
+    /// and backpressure, so those never hide it; whether the region lies inside the
+    /// surface can only be known after the surface lookup.
+    ///
+    /// The payload still goes through the ZGFX stage of [`Self::drain_output()`]. With
+    /// the default [`CompressionMode::Never`] it is sent as is. With `Auto` or
+    /// `Always` the compressor runs over the whole payload before the single-segment
+    /// size check, so the CPU cost grows with the area of `region`. Keep compression
+    /// off, or send small regions, where that cost matters.
+    pub fn try_send_uncompressed_region(
+        &mut self,
+        surface_id: u16,
+        bitmap_data: &[u8],
+        region: ExclusiveRectangle,
+        timestamp_ms: u32,
+    ) -> Result<u32, FrameSubmissionError> {
+        // The checks that depend only on the arguments come first, as in the AVC444
+        // sender, so `InvalidFrame` doesn't vary with readiness or backpressure and a
+        // malformed region isn't counted as a backpressure rejection.
+        if region.left >= region.right || region.top >= region.bottom {
+            return Err(FrameSubmissionError::InvalidFrame);
+        }
+        // INVARIANT: the check above established that both extents are positive.
+        let area = usize::from(region.right - region.left) * usize::from(region.bottom - region.top);
+        if area.checked_mul(UNCOMPRESSED_BYTES_PER_PIXEL) != Some(bitmap_data.len()) {
+            return Err(FrameSubmissionError::InvalidFrame);
+        }
+
+        // No codec capability is required: the point of this sender is a client that
+        // decodes no compressed codec.
+        let surface = self.prepare_with(surface_id, |_| Ok(()))?;
+        // Whether the region lies inside the surface needs the surface, so it follows
+        // the lookup.
+        if !Self::rect_fits_surface(&surface, &region) {
+            return Err(FrameSubmissionError::InvalidFrame);
+        }
+
+        let timestamp = Self::make_timestamp(timestamp_ms);
+        let frame_id = self.frames.begin_frame(timestamp);
+
+        self.output_queue
+            .push_back(GfxPdu::StartFrame(StartFramePdu { timestamp, frame_id }));
+        self.output_queue.push_back(GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id,
+            codec_id: Codec1Type::Uncompressed,
+            pixel_format: surface.pixel_format,
+            destination_rectangle: region,
+            bitmap_data: bitmap_data.to_vec(),
+        }));
+        self.output_queue.push_back(GfxPdu::EndFrame(EndFramePdu { frame_id }));
+
+        Ok(frame_id)
     }
 
     /// Queue a RemoteFX Progressive frame for transmission.
@@ -2402,10 +2511,28 @@ impl GraphicsPipelineServer {
                 pdu.encode(&mut cursor).expect("GfxPdu encoding should not fail");
                 total_uncompressed += pdu_size;
 
+                // H.264 bitstreams are already entropy coded, so searching them
+                // for matches costs CPU on the caller's send path and almost never
+                // shrinks them. Send them uncompressed, but still record their
+                // bytes in the history (MS-RDPEGFX 3.1.9.1.2).
+                let is_h264 = matches!(
+                    &pdu,
+                    GfxPdu::WireToSurface1(wire)
+                        if matches!(wire.codec_id, Codec1Type::Avc420 | Codec1Type::Avc444 | Codec1Type::Avc444v2)
+                );
+
                 let wrapped = match mode {
                     CompressionMode::Never => wrap_uncompressed(&pdu_bytes),
-                    _ => compress_and_wrap_egfx(&pdu_bytes, &mut self.zgfx_compressor, mode)
-                        .unwrap_or_else(|_| wrap_uncompressed(&pdu_bytes)),
+                    CompressionMode::Auto | CompressionMode::Always if is_h264 => {
+                        wrap_uncompressed_recorded(&pdu_bytes, &mut self.zgfx_compressor)
+                    }
+                    CompressionMode::Auto | CompressionMode::Always => {
+                        compress_and_wrap_egfx(&pdu_bytes, &mut self.zgfx_compressor, mode)
+                            // None of the compressor's encoders returns an error today. If one ever did, the
+                            // tokens before it would already be in the history, so recording this PDU again
+                            // here would not bring the peer back in step. Both histories would need a reset.
+                            .unwrap_or_else(|_| wrap_uncompressed(&pdu_bytes))
+                    }
                 };
                 total_compressed += wrapped.len();
                 trace!(pdu_name, pdu_size, wrapped = wrapped.len(), mode = ?mode, "ZGFX output");
