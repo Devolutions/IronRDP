@@ -8,7 +8,7 @@ use ironrdp_dvc::pdu::{
     DataCompressedPdu, DataFirstCompressedPdu, DataFirstPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu,
     DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
 };
-use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
+use ironrdp_dvc::{DrdynvcClient, DvcChannelListener, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
 use ironrdp_svc::SvcMessage;
 use ironrdp_svc::SvcProcessor as _;
 
@@ -291,6 +291,50 @@ fn factory_channel_processor_is_dropped_on_close() {
         dropped.load(Ordering::SeqCst),
         "a factory makes a new processor per open"
     );
+}
+
+/// Opens its channel only while available, like a camera listener whose device was withdrawn.
+struct WithdrawableListener(Arc<AtomicBool>);
+
+impl DvcChannelListener for WithdrawableListener {
+    fn channel_name(&self) -> &str {
+        "recorded"
+    }
+
+    fn create(&mut self, _channel_id: u32) -> Option<Box<dyn DvcClientProcessor>> {
+        if !self.is_available() {
+            return None;
+        }
+        Some(Box::new(RecordedDvc::default()))
+    }
+
+    fn is_available(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+#[test]
+fn listener_withdrawn_while_its_channel_is_open_refuses_the_reopen() {
+    let available = Arc::new(AtomicBool::new(true));
+    let mut client = DrdynvcClient::new().with_listener(WithdrawableListener(Arc::clone(&available)));
+    let create = |channel_id| {
+        encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+            channel_id,
+            "recorded".to_owned(),
+        )))
+        .expect("Create Request should encode")
+    };
+    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(1))).expect("Close should encode");
+
+    client.process(&create(1)).expect("Create Request should be processed");
+    available.store(false, Ordering::SeqCst);
+    client.process(&close).expect("Close should be processed");
+
+    let messages = client.process(&create(2)).expect("Create Request should be processed");
+    let DrdynvcClientPdu::Create(response) = decode_client_pdu(&messages[0]) else {
+        panic!("expected a Create Response");
+    };
+    assert_eq!(response.creation_status(), CreationStatus::NO_LISTENER);
 }
 
 #[test]

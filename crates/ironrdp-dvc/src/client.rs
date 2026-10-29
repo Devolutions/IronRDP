@@ -741,6 +741,9 @@ struct ListenerEntry {
     listener: DynamicChannelListener,
     /// `Some` only for channels registered via `with_dynamic_channel<T>()`.
     type_id: Option<TypeId>,
+    /// Whether the listener's single processor is kept on close for the server to reopen;
+    /// set only for channels registered via `with_dynamic_channel<T>()`.
+    reopens: bool,
     /// A pre-registered channel the server closed, kept for it to open again under this
     /// name (xrdp closes and reopens every channel after a Deactivation-Reactivation
     /// Sequence). `None` while the listener still holds its processor or the channel is open.
@@ -770,6 +773,7 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(listener),
                 type_id: None,
+                reopens: false,
                 closed: None,
             },
         );
@@ -782,6 +786,7 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(OnceListener::new(channel)),
                 type_id: Some(TypeId::of::<T>()),
+                reopens: true,
                 closed: None,
             },
         );
@@ -797,6 +802,7 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(FactoryListener { channel_name, factory }),
                 type_id: Some(TypeId::of::<T>()),
+                reopens: false,
                 closed: None,
             },
         );
@@ -881,10 +887,10 @@ impl DynamicChannelSet {
             self.type_id_to_channel_id.remove(&type_id);
         }
 
-        // A listener that handed out its only processor gets it back for the next Create
-        // Request under that name; a factory makes a new one, so its processor is dropped.
+        // A pre-registered channel gets its only processor back for the next Create Request
+        // under that name. Other listeners decide each open themselves, so theirs is dropped.
         if let Some(entry) = self.listeners.get_mut(dvc.channel_name())
-            && !entry.listener.is_available()
+            && entry.reopens
             && entry.closed.is_none()
         {
             if let Some(id) = dvc.channel_id.take() {
