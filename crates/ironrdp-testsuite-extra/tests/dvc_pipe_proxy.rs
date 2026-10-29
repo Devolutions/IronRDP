@@ -230,3 +230,51 @@ fn dvc_data_payload(message: &ironrdp_svc::SvcMessage) -> Vec<u8> {
 
     payload.expect("DVC pipe proxy must forward uncompressed DVC data")
 }
+
+/// A peer that stops reading stalls the worker's write. Closing the channel must
+/// still release the socket, since a reopened channel starts a new worker on it.
+#[cfg(unix)]
+#[tokio::test]
+async fn close_releases_the_pipe_while_a_write_is_stalled() {
+    use core::time::Duration;
+
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
+    use tokio::io::AsyncWriteExt as _;
+    use tokio::net::UnixStream;
+
+    let path = std::env::temp_dir().join(format!("ironrdp-dvc-pipe-proxy-{}.sock", std::process::id()));
+    let path = path.to_str().expect("UTF-8 socket path");
+    let mut proxy = DvcNamedPipeProxy::new("test", path, |_, _| Ok(()));
+    proxy.start(1).expect("start DVC pipe proxy");
+
+    let mut client = {
+        let mut attempts = 0..200;
+        loop {
+            match UnixStream::connect(path).await {
+                Ok(client) => break client,
+                Err(_) if attempts.next().is_some() => tokio::time::sleep(Duration::from_millis(10)).await,
+                Err(error) => panic!("DVC pipe proxy must create the socket within two seconds: {error}"),
+            }
+        }
+    };
+
+    // Far more than the socket buffers, and the client never reads it.
+    for _ in 0..64 {
+        proxy.process(1, &[0; 64 * 1024]).expect("queue data for the pipe");
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    proxy.close(1);
+
+    // The worker's end is closed once the client's writes fail.
+    let released = tokio::time::timeout(Duration::from_secs(2), async {
+        while client.write_all(b"x").await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(released.is_ok(), "the closed channel's worker still holds the socket");
+
+    let _ = std::fs::remove_file(path);
+}
