@@ -83,6 +83,7 @@ fn encoder(codec: Codec, width: u16, height: u16, max_request_size: u32) -> Upda
         codecs,
         max_request_size,
         0,
+        0,
         LargePointerSupportFlags::empty(),
     )
     .unwrap()
@@ -233,6 +234,7 @@ async fn color_pointer_update(max_request_size: u32) -> Option<ironrdp_server::S
         CmdFlags::empty(),
         UpdateEncoderCodecs::new(),
         max_request_size,
+        1,
         1,
         LargePointerSupportFlags::UP_TO_96X96_PIXELS,
     )
