@@ -84,7 +84,7 @@ fn chunks(bytes: &[u8]) -> Vec<(ChannelPduHeader, Vec<u8>)> {
     chunks
 }
 
-// oracle: spec MS-RDPBCGR 2.2.6.1.1; one chunk carries the total length and FIRST | LAST.
+// oracle: spec MS-RDPBCGR §2.2.6.1.1; spec MS-RDPBCGR §3.1.5.2.1; total length and FIRST | LAST.
 #[rstest]
 #[case::short(19)]
 #[case::below_boundary(1599)]
@@ -115,6 +115,7 @@ async fn writes_to_the_named_joined_channel(#[case] length: u32) {
     // oracle: mutant setting SHOW_PROTOCOL when payload length equals the chunk size.
     assert!(!chunks[0].0.flags.contains(ChannelControlFlags::FLAG_SHOW_PROTOCOL));
     assert_eq!(chunks[0].1, payload);
+    // oracle: mutant closing completion on a successful write or leaking its producer permit.
     processed.await.unwrap();
     assert_eq!(permits.available_permits(), 1);
 }
@@ -224,7 +225,7 @@ async fn query_reports_the_named_channel_join(
     assert!(bytes.is_empty(), "a join query wrote to the transport");
 }
 
-// oracle: spec MS-RDPBCGR 3.1.5.2.1; chunks are at most 1600 bytes, ordered, with FIRST and LAST on the ends.
+// oracle: spec MS-RDPBCGR §3.1.5.2.1; chunks are at most 1600 bytes, ordered, with FIRST and LAST on the ends.
 #[rstest]
 #[case::above_boundary(
     1601,
@@ -260,6 +261,7 @@ async fn fragmented_pdus_preserve_payload_and_queue_order(
     )
     .await
     .unwrap();
+    // oracle: mutant closing completion on a successful fragmented or subsequent write.
     first_done.await.unwrap();
     second_done.await.unwrap();
     drop(transport);
@@ -283,6 +285,7 @@ async fn fragmented_pdus_preserve_payload_and_queue_order(
     assert_eq!(next_header.length, 4);
     assert_eq!(next_header.flags & boundary, boundary);
     assert_eq!(next_payload, b"next");
+    // oracle: mutant leaking the permits of successfully written PDUs.
     assert_eq!(permits.available_permits(), 2);
 }
 

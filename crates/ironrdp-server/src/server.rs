@@ -1495,6 +1495,10 @@ pub enum ServerEvent {
     /// There is no flag override or Windows RDPDR compatibility exception in this API.
     /// Do not use it for an endpoint that requires `SHOW_PROTOCOL` to be omitted.
     ///
+    /// Submit only for an active session; `run` and `serve` discard channel events while idle.
+    /// There is no dispatch deadline; undrained events retain their payloads and permits.
+    /// Cancellation does not remove a queued event or release its permit immediately.
+    ///
     /// Acquire `permit` from a shared, bounded semaphore before allocating `payload`.
     /// Limit each payload's size; the server does not impose a byte budget.
     /// The entire PDU holds the shared writer lock; large payloads or slow writes stall all other
@@ -1516,6 +1520,7 @@ pub enum ServerEvent {
         /// INVARIANT: Retained until the transport write completes or the event is discarded.
         permit: tokio::sync::OwnedSemaphorePermit,
         /// A nonblocking predicate indicating whether this producer's data is still current.
+        /// Shared generation state lets an owner invalidate data without owning the completion receiver.
         is_current: Box<dyn Fn() -> bool + Send>,
     },
     /// Reports whether the client joined a static channel.
@@ -6380,7 +6385,7 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
                 "SharedWriter.write_all stalled, possible TCP back-pressure or writer-mutex contention"
             );
         } else {
-            tracing::debug!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
+            tracing::trace!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
         }
         if res.is_ok() {
             self.writes.fetch_add(1, Ordering::Relaxed);

@@ -75,13 +75,17 @@ The completion receiver resolves only after the entire transport write succeeds,
 A closed receiver means failure or discard, but does not prove that no bytes were sent, so it is not permission to retry.
 
 The event queue is unbounded.
+Submit only for an active session: `run` and `serve` discard channel events while waiting for a connection.
+There is no dispatch deadline; if the event loop is not being driven, queued payloads and permits remain held until the events are drained, discarded, or the server is dropped.
 Acquire the event's owned permit from a shared, bounded Tokio semaphore before allocating the payload, cap each payload's size, and await completion before submitting another PDU.
 The event retains its permit until written or discarded, even when the producer drops its completion receiver.
 These limits belong to the producer; the server does not impose a byte budget.
 The entire PDU holds the shared writer lock, so a large payload or slow transport stalls all other session output, including display and heartbeat traffic, until its write finishes or fails.
 
 Dropping the completion receiver or making `is_current` return `false` cancels a write that has not started.
+Shared generation state in `is_current` lets a different owner invalidate data without owning the completion receiver.
 Keep `is_current` nonblocking; it is checked again after acquiring the shared writer lock.
+Cancellation does not remove a queued event or immediately release its permit.
 Once transmission starts, producer cancellation does not interrupt it or release its permit early.
 Unjoined channels and events left over from a previous connection are discarded.
 
