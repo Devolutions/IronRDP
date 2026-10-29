@@ -42,7 +42,7 @@ pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
-use ironrdp_pdu::window::WindowingOrder;
+use ironrdp_pdu::window::{WindowOrderBody, WindowingOrder};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpdr as rdpdr;
@@ -4056,6 +4056,26 @@ impl RdpServer {
                             .remote_app
                             .as_ref()
                             .ok_or_else(|| ServerError::reason("window orders", "RemoteApp was not negotiated"))?;
+                        if !remote_app
+                            .rail
+                            .support_level
+                            .contains(rdp::capability_sets::RailSupportLevel::SHELL_INTEGRATION_SUPPORTED)
+                            && request.orders.iter().any(|order| match order {
+                                WindowingOrder::Window(order) => match &order.body {
+                                    WindowOrderBody::Icon(icon) => icon.overlay,
+                                    WindowOrderBody::State(state) => {
+                                        state.overlay_description.is_some() || state.icon_overlay_null
+                                    }
+                                    WindowOrderBody::Deleted => false,
+                                },
+                                _ => false,
+                            })
+                        {
+                            return Err(ServerError::reason(
+                                "window orders",
+                                "shell integration support was not negotiated",
+                            ));
+                        }
                         if remote_app.window_list.support_level != rdp::capability_sets::WindowSupportLevel::SupportedEx
                             && request.orders.iter().any(WindowingOrder::requires_extended_support)
                         {

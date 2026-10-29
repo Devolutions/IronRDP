@@ -7,7 +7,9 @@ use ironrdp_pdu::rdp::capability_sets::{
     CapabilitySet, CmdFlags, MultifragmentUpdate, Rail, RailSupportLevel, SurfaceCommands, WindowList,
     WindowSupportLevel,
 };
-use ironrdp_pdu::window::{WindowOrder, WindowOrderBody, WindowState, WindowingOrder};
+use ironrdp_pdu::window::{
+    CachedIconInfo, IconSource, WindowIcon, WindowOrder, WindowOrderBody, WindowState, WindowingOrder,
+};
 use ironrdp_server::{
     BitmapUpdate, DesktopSize, DisplayContext, DisplayUpdate, PixelFormat, RdpServer, RdpServerDisplay,
     RdpServerDisplayUpdates, ServerEvent, ServerResult, TransportTls, WindowingOrders, WindowingOrdersStatus,
@@ -186,6 +188,75 @@ async fn basic_window_support_rejects_extended_orders() {
     .await;
 }
 
+// oracle: spec MS-RDPERP §2.2.1.1.1: overlay icons require shell-integration support.
+#[tokio::test]
+async fn overlay_icon_without_shell_integration_is_rejected_before_writing() {
+    connected(Some(remote_app()), None, |mut client, events, display, _| async move {
+        let (request, completion) = WindowingOrders::new(vec![WindowingOrder::Window(WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: WindowOrderBody::Icon(WindowIcon {
+                big: false,
+                overlay: true,
+                icon: IconSource::Cached(CachedIconInfo {
+                    cache_entry: 0,
+                    cache_id: 0,
+                }),
+            }),
+        })]);
+        events.send(ServerEvent::WindowingOrders(request)).unwrap();
+        assert!(completion.await.unwrap().is_err());
+        display.send(DisplayUpdate::HidePointer).unwrap();
+        assert_eq!(read_update(&mut client).await.0, UpdateCode::HiddenPointer);
+    })
+    .await;
+}
+
+// oracle: spec MS-RDPERP §2.2.1.1.1: overlay metadata requires shell-integration support.
+#[rstest::rstest]
+#[case::description(WindowState { overlay_description: Some("Status".into()), ..WindowState::default() })]
+#[case::removed(WindowState { icon_overlay_null: true, ..WindowState::default() })]
+#[tokio::test]
+async fn overlay_metadata_without_shell_integration_is_rejected(#[case] state: WindowState) {
+    connected(Some(remote_app()), None, |mut client, events, display, _| async move {
+        let (request, completion) = WindowingOrders::new(vec![WindowingOrder::Window(WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: WindowOrderBody::State(Box::new(state)),
+        })]);
+        events.send(ServerEvent::WindowingOrders(request)).unwrap();
+        assert!(completion.await.unwrap().is_err());
+        display.send(DisplayUpdate::HidePointer).unwrap();
+        assert_eq!(read_update(&mut client).await.0, UpdateCode::HiddenPointer);
+    })
+    .await;
+}
+
+// oracle: spec MS-RDPERP §2.2.1.1.1: negotiated shell integration permits overlay updates.
+#[tokio::test]
+async fn negotiated_shell_integration_allows_overlay_updates() {
+    let mut capabilities = remote_app();
+    capabilities.rail.support_level |= RailSupportLevel::SHELL_INTEGRATION_SUPPORTED;
+    connected(Some(capabilities), None, |mut client, events, _, _| async move {
+        let order = WindowingOrder::Window(WindowOrder {
+            window_id: 7,
+            is_new: false,
+            body: WindowOrderBody::State(Box::new(WindowState {
+                icon_overlay_null: true,
+                ..WindowState::default()
+            })),
+        });
+        let (request, completion) = WindowingOrders::new(vec![order.clone()]);
+        events.send(ServerEvent::WindowingOrders(request)).unwrap();
+        let (_, _, data) = read_update(&mut client).await;
+        let mut cursor = ReadCursor::new(&data);
+        assert_eq!(cursor.read_u16(), 1);
+        assert_eq!(decode_cursor::<WindowingOrder>(&mut cursor).unwrap(), order);
+        assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
+    })
+    .await;
+}
+
 // oracle: mutant overflowing numberOrders would silently lose orders after the first 65535.
 #[tokio::test]
 async fn overflowing_order_count_is_rejected_before_writing() {
@@ -347,7 +418,10 @@ async fn connected_with_server_limit<F, Fut>(
             updates: Some(display_rx),
             ready: Some(ready_tx),
         })
-        .with_remote_app(capabilities.as_ref().map(|_| remote_app()));
+        .with_remote_app(capabilities.as_ref().map(|client| RemoteAppCapabilities {
+            rail: client.rail.clone(),
+            ..remote_app()
+        }));
     if let Some(server_limit) = server_limit {
         builder = builder.with_max_request_size(server_limit);
     }
