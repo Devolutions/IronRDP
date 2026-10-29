@@ -34,7 +34,7 @@ use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 const HELP: &str = "\
 USAGE:
@@ -46,8 +46,7 @@ USAGE:
                                     [--no-graphics-timeout-seconds <SECONDS>]
                                     [--after-first-graphics-seconds <SECONDS>]
 
-WARNING:
-  This example intentionally skips server certificate verification; use only with trusted servers.
+TLS validates server certificates against the platform certificate store.
 
 OPTIONS:
   --port                         default: 3389
@@ -566,24 +565,7 @@ fn tls_upgrade(
     rustls::StreamOwned<rustls::ClientConnection, DeadlineTcpStream>,
     Vec<u8>,
 )> {
-    // This example intentionally skips server-certificate verification to support self-signed certificates.
-    warn!("TLS server certificates are not verified; use only with trusted servers");
-    let mut config = rustls::client::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(std::sync::Arc::new(danger::NoCertificateVerification))
-        .with_no_client_auth();
-
-    // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
-    config.key_log = std::sync::Arc::new(rustls::KeyLogFile::new());
-
-    // Disable TLS resumption because it’s not supported by some services such as CredSSP.
-    //
-    // > The CredSSP Protocol does not extend the TLS wire protocol. TLS session resumption is not supported.
-    //
-    // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/385a7489-d46b-464c-b224-f7340e308a5c
-    config.resumption = rustls::client::Resumption::disabled();
-
-    let config = std::sync::Arc::new(config);
+    let config = std::sync::Arc::new(tls_client_config(&server_name)?);
 
     let server_name = server_name.try_into()?;
 
@@ -606,6 +588,11 @@ fn tls_upgrade(
     Ok((tls_stream, server_public_key))
 }
 
+fn tls_client_config(server_name: &str) -> anyhow::Result<rustls::ClientConfig> {
+    ironrdp_tls::rustls_client_config(ironrdp_tls::CertificateValidation::Strict, server_name, None)
+        .context("build TLS config")
+}
+
 fn extract_tls_server_public_key(cert: &[u8]) -> anyhow::Result<Vec<u8>> {
     use x509_cert::der::Decode as _;
 
@@ -624,74 +611,21 @@ fn extract_tls_server_public_key(cert: &[u8]) -> anyhow::Result<Vec<u8>> {
     Ok(server_public_key)
 }
 
-mod danger {
-    use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme, pki_types};
-
-    #[derive(Debug)]
-    pub(super) struct NoCertificateVerification;
-
-    impl ServerCertVerifier for NoCertificateVerification {
-        fn verify_server_cert(
-            &self,
-            _: &pki_types::CertificateDer<'_>,
-            _: &[pki_types::CertificateDer<'_>],
-            _: &pki_types::ServerName<'_>,
-            _: &[u8],
-            _: pki_types::UnixTime,
-        ) -> Result<ServerCertVerified, Error> {
-            Ok(ServerCertVerified::assertion())
-        }
-
-        fn verify_tls12_signature(
-            &self,
-            _: &[u8],
-            _: &pki_types::CertificateDer<'_>,
-            _: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, Error> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
-
-        fn verify_tls13_signature(
-            &self,
-            _: &[u8],
-            _: &pki_types::CertificateDer<'_>,
-            _: &DigitallySignedStruct,
-        ) -> Result<HandshakeSignatureValid, Error> {
-            Ok(HandshakeSignatureValid::assertion())
-        }
-
-        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-            vec![
-                SignatureScheme::RSA_PKCS1_SHA1,
-                SignatureScheme::ECDSA_SHA1_Legacy,
-                SignatureScheme::RSA_PKCS1_SHA256,
-                SignatureScheme::ECDSA_NISTP256_SHA256,
-                SignatureScheme::RSA_PKCS1_SHA384,
-                SignatureScheme::ECDSA_NISTP384_SHA384,
-                SignatureScheme::RSA_PKCS1_SHA512,
-                SignatureScheme::ECDSA_NISTP521_SHA512,
-                SignatureScheme::RSA_PSS_SHA256,
-                SignatureScheme::RSA_PSS_SHA384,
-                SignatureScheme::RSA_PSS_SHA512,
-                SignatureScheme::ED25519,
-                SignatureScheme::ED448,
-            ]
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
     use std::io::{self, Read as _, Write as _};
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::{Action, DeadlineTcpStream, capture_deadline, parse_args, remaining_capture_timeout};
+    use tokio_rustls::rustls::pki_types::pem::PemObject as _;
+
+    use super::{
+        Action, DeadlineTcpStream, capture_deadline, parse_args, remaining_capture_timeout, rustls, tls_upgrade,
+    };
 
     fn parse(args: &[&str]) -> anyhow::Result<Action> {
         parse_args(pico_args::Arguments::from_vec(
@@ -887,5 +821,43 @@ mod tests {
         server.join().expect("server thread should finish")?;
 
         Ok(())
+    }
+
+    #[test]
+    fn tls_upgrade_rejects_untrusted_server_certificates() -> anyhow::Result<()> {
+        // oracle: regression #2311
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let server_addr = listener.local_addr()?;
+        let server_config = Arc::new(test_tls_server_config()?);
+        let _client_config = super::tls_client_config("localhost")?;
+        let server = thread::spawn(move || -> io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut connection = rustls::ServerConnection::new(server_config).map_err(io::Error::other)?;
+            let _ = connection.complete_io(&mut stream);
+            Ok(())
+        });
+
+        let result = tls_upgrade(TcpStream::connect(server_addr)?, "localhost".to_owned());
+
+        assert!(
+            result.is_err(),
+            "strict TLS must reject an untrusted server certificate"
+        );
+        server.join().expect("server thread should finish")?;
+
+        Ok(())
+    }
+
+    fn test_tls_server_config() -> anyhow::Result<rustls::ServerConfig> {
+        let certificate = rustls::pki_types::CertificateDer::from_pem_slice(include_bytes!(
+            "../../ironrdp-tls/tests/certs/server-cert.pem"
+        ))?;
+        let private_key = rustls::pki_types::PrivateKeyDer::from_pem_slice(include_bytes!(
+            "../../ironrdp-tls/tests/certs/server-key.pem"
+        ))?;
+
+        Ok(rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate], private_key)?)
     }
 }
