@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Devolutions.IronRdp.Tests;
 
 internal static class SmokeTests
@@ -604,14 +606,17 @@ internal static class SmokeTests
 
         // oracle: spec MS-RDPEI §2.2.3.3 (encodeTime is the time since the oldest frame in this PDU was
         // generated) and §2.2.3.3.1 (frameOffset is 0 for the first frame of a transaction, so it does
-        // not carry the idle time between two gestures)
+        // not carry the idle time between two gestures); the bounds come from Stopwatch readings taken
+        // around the pushes and the encode, so they hold whatever the machine speed
         yield return ("rdpei touch encodeTime after a split ignores the idle gap between gestures", () =>
         {
             var stage = ReadyRdpeiStage();
             using var touches = TouchFrameBuilder.New(10);
+            long preGapPushes = Stopwatch.GetTimestamp();
             touches.Push(1, TouchPhase.Started, 10, 10);
             touches.Push(1, TouchPhase.Ended, 10, 10);
             Thread.Sleep(800);
+            long postGapFirstPush = Stopwatch.GetTimestamp();
             touches.Push(2, TouchPhase.Started, 20, 20);
             for (int i = 1; i <= 32766; i++)
             {
@@ -619,18 +624,29 @@ internal static class SmokeTests
             }
 
             touches.Push(2, TouchPhase.Ended, 20, 20);
+            long postGapLastPush = Stopwatch.GetTimestamp();
 
             var first = new RdpInputReader(ToArray(stage.EncodeRdpeiTouch(touches)!));
             first.U16();
             first.U32();
-            True(800 <= first.FourByteUnsigned(), "first encodeTime spans the idle gap before the first gesture's frames");
+            True(800 <= first.FourByteUnsigned(), "first encodeTime spans the idle gap, since the first gesture's frames are its oldest");
             Equal(32767u, first.TwoByteUnsigned(), "first frameCount is the maximum");
 
+            long beforeSecond = Stopwatch.GetTimestamp();
             var second = new RdpInputReader(ToArray(stage.EncodeRdpeiTouch(touches)!));
+            long afterSecond = Stopwatch.GetTimestamp();
             second.U16();
             second.U32();
-            True(second.FourByteUnsigned() < 400, "second encodeTime is the age of the second gesture's last frames, not the idle gap");
+            uint encodeTime = second.FourByteUnsigned();
             Equal(3u, second.TwoByteUnsigned(), "second frameCount carries the remainder");
+
+            // The remainder's oldest frame was pushed between postGapFirstPush and postGapLastPush, and
+            // the builder read its clock between beforeSecond and afterSecond.
+            long atLeast = WholeMilliseconds(postGapLastPush, beforeSecond);
+            long atMost = WholeMilliseconds(postGapFirstPush, afterSecond);
+            long sincePreGapPushes = WholeMilliseconds(preGapPushes, afterSecond);
+            True(atLeast <= encodeTime && encodeTime <= atMost, $"second encodeTime {encodeTime} ms is the age of the second gesture's frames, within [{atLeast}, {atMost}]");
+            True(encodeTime < sincePreGapPushes, $"second encodeTime {encodeTime} ms excludes the idle gap before the second gesture ({sincePreGapPushes} ms since the first gesture)");
         });
 
         // oracle: spec MS-RDPEI §3.2.5.1 (the client sends CS_READY only after SC_READY) and the rustdoc of
@@ -1031,6 +1047,8 @@ internal static class SmokeTests
     }
 
     private static byte SurfaceByte(int width, int x, int y) => (byte)(y * width * 4 + x + 1);
+
+    private static long WholeMilliseconds(long from, long to) => (long)Math.Floor(Stopwatch.GetElapsedTime(from, to).TotalMilliseconds);
 
     private static byte[] ToArray(VecU8 vec)
     {
