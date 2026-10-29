@@ -16,14 +16,12 @@ use ironrdp_dvc::{DrdynvcClient, DvcChannelListener, DvcClientProcessor};
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_rdpsnd::client::{Clock, DVC_CHANNEL_NAME, LOSSY_DVC_CHANNEL_NAME, RdpsndClientHandler, RdpsndDvcState};
 use ironrdp_rdpsnd::pdu::{AudioFormat, AudioFormatFlags, PitchPdu, QualityMode, VolumePdu};
-use ironrdp_rdpsnd_native::DeviceSelector;
-use ironrdp_rdpsnd_native::RdpeaiCaptureBackend;
 use ironrdp_rdpsnd_native::capture::CaptureConfig;
 use ironrdp_rdpsnd_native::cpal::{PlaybackConfig, RdpsndBackend};
+pub use ironrdp_rdpsnd_native::{AudioDeviceInfo, Direction, list_devices};
+use ironrdp_rdpsnd_native::{DeviceSelector, RdpeaiCaptureBackend};
 
 use crate::rdp::{RdpInputEvent, RdpInputSender};
-
-pub use ironrdp_rdpsnd_native::{AudioDeviceInfo, Direction, list_devices};
 
 /// `.rdp` property naming the audio output device (IronRDP extension).
 pub const OUTPUT_DEVICE_PROPERTY: &str = "ironrdp_audiooutputdevice";
