@@ -4068,6 +4068,7 @@ impl RdpServer {
                             .map_err(|error| ServerError::custom("window order count", error))?;
                         let maximum = usize::try_from(self.opts.max_request_size)
                             .map_err(|error| ServerError::custom("window update limit", error))?
+                            .max(MAX_FASTPATH_UPDATE_SIZE)
                             .min(conn.max_graphics_size.unwrap_or(0).max(MAX_FASTPATH_UPDATE_SIZE));
                         let length = request
                             .orders

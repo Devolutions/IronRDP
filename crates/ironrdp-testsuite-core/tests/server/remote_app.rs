@@ -130,6 +130,26 @@ async fn single_order_can_be_written_without_multifragment_support() {
     .await;
 }
 
+// oracle: spec MS-RDPBCGR §2.2.7.2.6: a single-fragment update needs no reassembly buffer.
+#[rstest::rstest]
+#[case::zero(0)]
+#[case::subfragment(1)]
+#[tokio::test]
+async fn single_order_ignores_subfragment_server_reassembly_limit(#[case] server_limit: u32) {
+    connected_with_server_limit(
+        Some(remote_app()),
+        Some(65536),
+        Some(server_limit),
+        |mut client, events, _, _| async move {
+            let (request, completion) = WindowingOrders::new(vec![deleted(7)]);
+            events.send(ServerEvent::WindowingOrders(request)).unwrap();
+            assert_eq!(completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
+            assert_eq!(read_update(&mut client).await.1, Fragmentation::Single);
+        },
+    )
+    .await;
+}
+
 // oracle: spec MS-RDPERP §3.3.5.1.5: window orders require a negotiated RAIL connection.
 #[tokio::test]
 async fn unnegotiated_orders_report_an_error_without_writing() {
@@ -300,9 +320,26 @@ where
     ) -> Fut,
     Fut: Future<Output = ()>,
 {
+    connected_with_server_limit(capabilities, limit, None, run).await;
+}
+
+async fn connected_with_server_limit<F, Fut>(
+    capabilities: Option<RemoteAppCapabilities>,
+    limit: Option<u32>,
+    server_limit: Option<u32>,
+    run: F,
+) where
+    F: FnOnce(
+        TokioFramed<DuplexStream>,
+        mpsc::UnboundedSender<ServerEvent>,
+        mpsc::UnboundedSender<DisplayUpdate>,
+        Vec<CapabilitySet>,
+    ) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = oneshot::channel();
-    let mut server = RdpServer::builder()
+    let mut builder = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_no_security()
         .with_no_input()
@@ -310,8 +347,11 @@ where
             updates: Some(display_rx),
             ready: Some(ready_tx),
         })
-        .with_remote_app(capabilities.as_ref().map(|_| remote_app()))
-        .build();
+        .with_remote_app(capabilities.as_ref().map(|_| remote_app()));
+    if let Some(server_limit) = server_limit {
+        builder = builder.with_max_request_size(server_limit);
+    }
+    let mut server = builder.build();
     let events = server.event_sender().clone();
     let (client, transport) = tokio::io::duplex(1024);
     tokio::time::timeout(Duration::from_secs(5), async {
