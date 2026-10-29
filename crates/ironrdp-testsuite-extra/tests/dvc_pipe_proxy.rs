@@ -37,6 +37,22 @@ async fn connects_and_forwards_windows_pipe_data() {
 
 #[cfg(windows)]
 #[tokio::test]
+async fn reopens_windows_pipe_on_the_new_channel() {
+    let name = format!("ironrdp-dvc-pipe-proxy-reopen-test-{}", std::process::id());
+    let (mut proxy, callback_rx) = start_proxy(&name, 1);
+    proxy.close(1);
+    proxy.start(2).unwrap();
+    let mut client = open_client_pipe(&name, "the reopened pipe client must connect").await;
+    client.write_all(b"reopened channel").await.unwrap();
+    let (id, messages) = callback_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2296#discussion_r4408520692
+    assert_eq!(id, 2);
+    DvcMessageBatch::try_new(id, messages).expect("reopened callback must encode the new channel ID");
+}
+
+#[cfg(windows)]
+#[tokio::test]
 async fn reconnects_after_the_local_pipe_client_disconnects() {
     let name = format!("ironrdp-dvc-pipe-proxy-reconnect-test-{}", std::process::id());
     let (proxy, callback_rx) = start_proxy(&name, 1);
@@ -231,8 +247,56 @@ fn dvc_data_payload(message: &ironrdp_svc::SvcMessage) -> Vec<u8> {
     payload.expect("DVC pipe proxy must forward uncompressed DVC data")
 }
 
-/// A peer that stops reading stalls the worker's write. Closing the channel must
-/// still release the socket, since a reopened channel starts a new worker on it.
+#[cfg(unix)]
+#[tokio::test]
+async fn reopening_unix_proxy_keeps_replacement_socket_reachable() {
+    use core::time::Duration;
+    use std::sync::mpsc;
+
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
+    use tokio::io::AsyncWriteExt as _;
+    use tokio::net::UnixStream;
+
+    let path = std::env::temp_dir().join(format!("ironrdp-dvc-reopen-{}.sock", std::process::id()));
+    let path = path.to_str().expect("UTF-8 socket path");
+    let (callback_tx, callback_rx) = mpsc::channel();
+    let mut proxy = DvcNamedPipeProxy::new("test", path, move |id, _| {
+        callback_tx.send(id).unwrap();
+        Ok(())
+    });
+
+    for id in 1..=32 {
+        proxy.start(id).unwrap();
+        proxy.close(id);
+    }
+    proxy.start(33).unwrap();
+    let mut client = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match UnixStream::connect(path).await {
+                Ok(client) => break client,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("connect to replacement socket: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("replacement socket must remain reachable");
+    client.write_all(b"replacement").await.unwrap();
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2296#discussion_r4408520692
+    assert_eq!(callback_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 33);
+    drop(proxy);
+    std::fs::remove_file(path).expect("remove test socket");
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn close_releases_the_pipe_while_a_write_is_stalled() {

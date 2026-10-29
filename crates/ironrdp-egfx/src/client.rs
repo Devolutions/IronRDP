@@ -1977,11 +1977,6 @@ impl DvcProcessor for GraphicsPipelineClient {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        // A server that closed the channel can open it again with the same client; it
-        // confirms capabilities anew and starts over from an empty channel.
-        if self.state == ClientState::Closed {
-            self.restart_channel_state();
-        }
         self.state = ClientState::WaitingForConfirm;
         if let Some(decoder) = self.h264_decoder.as_mut()
             && !decoder.wait_until_ready()
@@ -2025,6 +2020,7 @@ impl DvcProcessor for GraphicsPipelineClient {
 
     fn close(&mut self, _channel_id: u32) {
         self.save_persistent_cache();
+        self.restart_channel_state();
         self.state = ClientState::Closed;
         self.handler.on_close();
     }

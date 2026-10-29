@@ -16,9 +16,9 @@ const IO_BUFFER_SIZE: usize = 1024 * 64; // 64K
 const INITIAL_RECONNECT_DELAY: Duration = Duration::from_millis(100);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
+pub(crate) type WriteDvcFuture = Pin<Box<dyn Future<Output = PduResult<()>> + Send>>;
 /// Shared by every worker the proxy starts; the lock stands in for a `Sync` bound on the callback.
-pub(crate) type OnWriteDvcMessage =
-    Arc<Mutex<dyn Fn(u32, Vec<SvcMessage>) -> Pin<Box<dyn Future<Output = PduResult<()>> + Send>> + Send>>;
+pub(crate) type OnWriteDvcMessage = Arc<Mutex<dyn Fn(u32, Vec<SvcMessage>) -> WriteDvcFuture + Send>>;
 
 pub(crate) struct WorkerCtx {
     pub(crate) on_write_dvc: OnWriteDvcMessage,
@@ -29,11 +29,11 @@ pub(crate) struct WorkerCtx {
     pub(crate) channel_id: u32,
 }
 
-pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) -> std::io::Result<()> {
+pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) -> std::io::Result<std::thread::JoinHandle<()>> {
     let thread_name = format!("ironrdp-dvc-pipe-{}", ctx.channel_id);
     let (startup_tx, startup_rx) = mpsc::sync_channel(1);
 
-    std::thread::Builder::new().name(thread_name).spawn(move || {
+    let thread = std::thread::Builder::new().name(thread_name).spawn(move || {
         let channel_name = ctx.channel_name.clone();
         let pipe_name = ctx.pipe_name.clone();
         debug!(%channel_name, %pipe_name, "Starting DVC pipe proxy worker thread");
@@ -70,7 +70,8 @@ pub(crate) fn run_worker<P: OsPipe>(ctx: WorkerCtx) -> std::io::Result<()> {
         Err(std::io::Error::other(
             "dvc pipe proxy worker stopped before startup completed",
         ))
-    })
+    })?;
+    Ok(thread)
 }
 
 enum NextWorkerState {

@@ -1195,6 +1195,29 @@ fn client_close_transitions_to_inactive() {
     assert!(!client.is_active(), "client should not be active after close");
 }
 
+#[test]
+fn client_close_discards_surfaces_and_queued_pixels() {
+    let mut client = client_with_output((4, 4), 1, (4, 4));
+    map_and_settle(&mut client, map_to_output(1));
+    fill_frame(
+        &mut client,
+        1,
+        ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 4,
+        },
+    );
+    assert!(client.get_surface(1).is_some());
+
+    client.close(0);
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2296#discussion_r4408520753
+    assert!(client.get_surface(1).is_none());
+    assert!(client.drain_output().is_empty());
+}
+
 // ============================================================================
 // Tests: RemoteApp window mapping (MS-RDPEGFX 2.2.2.20, 2.2.2.23)
 // ============================================================================

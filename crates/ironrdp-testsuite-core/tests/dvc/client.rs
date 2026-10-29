@@ -9,8 +9,7 @@ use ironrdp_dvc::pdu::{
     DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
 };
 use ironrdp_dvc::{DrdynvcClient, DvcChannelListener, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
-use ironrdp_svc::SvcMessage;
-use ironrdp_svc::SvcProcessor as _;
+use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
 #[derive(Default)]
 struct RecordedDvc {
