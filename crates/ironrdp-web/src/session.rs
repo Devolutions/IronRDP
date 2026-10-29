@@ -101,6 +101,7 @@ struct SessionBuilderInner {
     enable_credssp: bool,
     enable_standard_rdp_security: bool,
     enable_server_pointer: bool,
+    enable_compression: bool,
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
     performance_flags: Option<PerformanceFlags>,
@@ -153,6 +154,7 @@ impl Default for SessionBuilderInner {
             enable_credssp: true,
             enable_standard_rdp_security: false,
             enable_server_pointer: true,
+            enable_compression: false,
             legacy_graphics: false,
             outbound_message_size_limit: None,
             performance_flags: None,
@@ -313,6 +315,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 self.0.borrow_mut().enable_standard_rdp_security = enable_standard_rdp_security;
             };
             |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
+            |enable_compression: bool| { self.0.borrow_mut().enable_compression = enable_compression };
             |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
             |outbound_message_size_limit: f64| {
                 let limit = if outbound_message_size_limit >= 0.0 && outbound_message_size_limit <= f64::from(u32::MAX) {
@@ -567,6 +570,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             config.monitor_layout = Some(ironrdp::pdu::gcc::ClientMonitorData {
                 monitors: layout.monitors,
             });
+        }
+
+        // MPPC 64K, the native client's default when compression is on.
+        // UNTESTED: the extension must reach `config.compression_type`; no test builds a session.
+        if self.0.borrow().enable_compression {
+            config.compression_type = Some(ironrdp::pdu::rdp::client_info::CompressionType::K64);
         }
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
