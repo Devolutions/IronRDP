@@ -67,7 +67,7 @@ const RDPDR_COMPLETION_ID: u32 = 1;
 #[cfg(windows)]
 const RDPDR_READ_LENGTH: u32 = 32 * 1024;
 
-// oracle: runtime handle API queues Quit through the existing server event loop.
+// oracle: reference crates/ironrdp-server/src/server.rs (RdpServer::serve stops on ServerEvent::Quit)
 #[tokio::test]
 async fn server_handle_quit_stops_the_listener() {
     let mut server = server_for_handle_tests();
@@ -80,7 +80,7 @@ async fn server_handle_quit_stops_the_listener() {
         .unwrap();
 }
 
-// oracle: runtime handle API reports the address bound by RdpServer::run.
+// oracle: reference crates/ironrdp-server/src/server.rs (RdpServer::run records the bound address for ServerEvent::GetLocalAddr)
 #[tokio::test]
 async fn server_handle_local_addr_reports_the_bound_listener() {
     let mut server = server_for_handle_tests();
@@ -100,7 +100,7 @@ async fn server_handle_local_addr_reports_the_bound_listener() {
     .expect("address query and shutdown must finish");
 }
 
-// oracle: runtime handle API updates credentials for the next incoming connection.
+// oracle: reference crates/ironrdp-server/src/server.rs (ServerEvent::SetCredentials replaces the credentials for later negotiation)
 #[tokio::test]
 async fn server_handle_updates_credentials_for_subsequent_connections() {
     let (mut server, _display_tx) = hybrid_server();
@@ -143,7 +143,7 @@ async fn server_handle_updates_credentials_for_subsequent_connections() {
         .expect("credential updates and shutdown must finish");
 }
 
-// oracle: ConnectionSource owns its listener; only RdpServer::run records a local address.
+// oracle: reference crates/ironrdp-server/src/server.rs (RdpServer::serve answers ServerEvent::GetLocalAddr with the address run bound)
 #[tokio::test]
 async fn server_handle_local_addr_is_none_for_an_external_source() {
     let mut server = server_for_handle_tests();
@@ -162,7 +162,6 @@ async fn server_handle_local_addr_is_none_for_an_external_source() {
     .expect("external source must still service control requests");
 }
 
-// oracle: runtime handle API reports closed request channels instead of success.
 #[tokio::test]
 async fn server_handle_requests_fail_after_server_is_dropped() {
     let server = server_for_handle_tests();
@@ -182,7 +181,6 @@ async fn server_handle_requests_fail_after_server_is_dropped() {
     assert!(handle.local_addr().await.is_err());
 }
 
-// oracle: runtime handle API reports a dropped address reply instead of fabricating an address.
 #[tokio::test]
 async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
     let server = server_for_handle_tests();

@@ -3514,6 +3514,11 @@ impl RdpServer {
                 // The handler is shared, not taken: the live connection's own
                 // hooks (`on_connection_info`) must still reach it (#1969).
                 let handler = self.connection_handler.clone();
+                // UNTESTED: candidates authenticate against the credentials captured here
+                // at session entry; a `SetCredentials` handled during the session reaches
+                // only connections accepted after it ends. This decides which password can
+                // evict a live session, and `RdpServerHandle::set_credentials` documents it.
+                // When changing it, update that rustdoc and add a takeover test.
                 let ctx = self.negotiation_context();
                 let ev_sender = self.ev_sender.clone();
                 let mut recently_evicted = self.recently_evicted.take();
