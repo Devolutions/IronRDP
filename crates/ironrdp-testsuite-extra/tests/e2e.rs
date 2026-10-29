@@ -1,10 +1,10 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
-use core::net::SocketAddr;
+use core::net::{Ipv4Addr, SocketAddr};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::task::{Context, Poll};
+use core::task::{Context, Poll, Waker};
 use core::time::Duration;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -87,7 +87,7 @@ async fn server_handle_local_addr_reports_the_bound_listener() {
     let handle = server.handle().clone();
     let requests = async {
         let addr = handle.local_addr().await.unwrap().expect("run binds a listener");
-        assert_eq!(addr.ip(), std::net::Ipv4Addr::LOCALHOST);
+        assert_eq!(addr.ip(), Ipv4Addr::LOCALHOST);
         assert_ne!(addr.port(), 0, "the OS must assign an ephemeral port");
         handle.quit("address received").unwrap();
     };
@@ -188,7 +188,7 @@ async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
     let server = server_for_handle_tests();
     let handle = server.handle().clone();
     let mut query = Box::pin(handle.local_addr());
-    let mut context = Context::from_waker(std::task::Waker::noop());
+    let mut context = Context::from_waker(Waker::noop());
     assert!(query.as_mut().poll(&mut context).is_pending());
     drop(server);
 
