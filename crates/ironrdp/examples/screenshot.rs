@@ -18,9 +18,10 @@
 #![allow(clippy::print_stdout)]
 
 use core::time::Duration;
-use std::io::Write as _;
+use std::io::{self, Read, Write as _};
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::Context as _;
 use connector::Credentials;
@@ -235,16 +236,7 @@ fn setup_logging() -> anyhow::Result<()> {
 }
 
 fn run(config: RunConfig) -> anyhow::Result<()> {
-    let connector_config = build_config(
-        config.username,
-        config.password,
-        config.domain,
-        config.compression_enabled,
-        config.compression_level,
-        config.autologon,
-        config.tls_enabled,
-        config.credssp_enabled,
-    )?;
+    let connector_config = build_config(&config)?;
 
     let (connection_result, framed) = connect(connector_config, config.host, config.port).context("connect")?;
     info!(compression_type = ?connection_result.compression_type, "Negotiated compression");
@@ -277,27 +269,21 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_config(
-    username: String,
-    password: String,
-    domain: Option<String>,
-    compression_enabled: bool,
-    compression_level: u32,
-    autologon: bool,
-    tls_enabled: bool,
-    credssp_enabled: bool,
-) -> anyhow::Result<connector::Config> {
-    let compression_type = if compression_enabled {
-        Some(compression_type_from_level(compression_level)?)
+fn build_config(config: &RunConfig) -> anyhow::Result<connector::Config> {
+    let compression_type = if config.compression_enabled {
+        Some(compression_type_from_level(config.compression_level)?)
     } else {
         None
     };
 
     Ok(connector::Config {
-        credentials: Credentials::UsernamePassword { username, password },
-        domain,
-        enable_tls: tls_enabled,
-        enable_credssp: credssp_enabled,
+        credentials: Credentials::UsernamePassword {
+            username: config.username.clone(),
+            password: config.password.clone(),
+        },
+        domain: config.domain.clone(),
+        enable_tls: config.tls_enabled,
+        enable_credssp: config.credssp_enabled,
         enable_standard_rdp_security: false,
         keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
@@ -337,7 +323,7 @@ fn build_config(
 
         enable_server_pointer: false, // Disable custom pointers (there is no user interaction anyway).
         request_data: None,
-        autologon,
+        autologon: config.autologon,
         enable_audio_playback: false,
         enable_audio_capture: false,
         compression_type,
@@ -372,7 +358,54 @@ fn compression_type_from_level(level: u32) -> anyhow::Result<CompressionType> {
     }
 }
 
-type UpgradedFramed = ironrdp_blocking::Framed<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>;
+struct DeadlineTcpStream {
+    stream: TcpStream,
+    read_deadline: Option<Instant>,
+}
+
+impl DeadlineTcpStream {
+    fn new(stream: TcpStream) -> Self {
+        Self {
+            stream,
+            read_deadline: None,
+        }
+    }
+
+    fn set_read_deadline(&mut self, deadline: Instant) {
+        self.read_deadline = Some(deadline);
+    }
+}
+
+impl Read for DeadlineTcpStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        if let Some(deadline) = self.read_deadline {
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            if timeout.is_zero() {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "read deadline elapsed"));
+            }
+
+            self.stream.set_read_timeout(Some(timeout))?;
+        }
+
+        self.stream.read(buf)
+    }
+}
+
+impl io::Write for DeadlineTcpStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.stream.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+type UpgradedFramed = ironrdp_blocking::Framed<rustls::StreamOwned<rustls::ClientConnection, DeadlineTcpStream>>;
 
 fn connect(
     config: connector::Config,
@@ -426,19 +459,22 @@ fn connect(
     Ok((connection_result, upgraded_framed))
 }
 
-fn remaining_capture_timeout(
-    now: std::time::Instant,
-    stage_started_at: std::time::Instant,
-    first_graphic_time: Option<std::time::Instant>,
+fn capture_deadline(
+    stage_started_at: Instant,
+    first_graphic_time: Option<Instant>,
     no_graphics_timeout: Duration,
     after_first_graphics: Duration,
-) -> Option<Duration> {
+) -> anyhow::Result<Instant> {
     let (started_at, timeout) = first_graphic_time
         .map(|started_at| (started_at, after_first_graphics))
         .unwrap_or((stage_started_at, no_graphics_timeout));
 
-    timeout
-        .checked_sub(now.saturating_duration_since(started_at))
+    started_at.checked_add(timeout).context("capture deadline is too large")
+}
+
+fn remaining_capture_timeout(deadline: Instant, now: Instant) -> Option<Duration> {
+    deadline
+        .checked_duration_since(now)
         .filter(|timeout| !timeout.is_zero())
 }
 
@@ -460,34 +496,33 @@ fn active_stage(
         pointer_software_rendering: connection_result.pointer_software_rendering,
     }
     .build();
-    let stage_started_at = std::time::Instant::now();
-    let mut first_graphic_time: Option<std::time::Instant> = None;
+    let stage_started_at = Instant::now();
+    let mut first_graphic_time = None;
+    let mut deadline = capture_deadline(
+        stage_started_at,
+        first_graphic_time,
+        no_graphics_timeout,
+        after_first_graphics,
+    )?;
 
     'outer: loop {
-        let Some(timeout) = remaining_capture_timeout(
-            std::time::Instant::now(),
-            stage_started_at,
-            first_graphic_time,
-            no_graphics_timeout,
-            after_first_graphics,
-        ) else {
+        if remaining_capture_timeout(deadline, Instant::now()).is_none() {
             break 'outer;
-        };
+        }
 
-        framed
-            .get_inner_mut()
-            .0
-            .get_mut()
-            .set_read_timeout(Some(timeout))
-            .context("set TCP read timeout")?;
+        framed.get_inner_mut().0.get_mut().set_read_deadline(deadline);
 
         let (action, payload) = match framed.read_pdu() {
             Ok((action, payload)) => (action, payload),
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
                 continue 'outer;
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read frame")),
         };
+
+        if remaining_capture_timeout(deadline, Instant::now()).is_none() {
+            break 'outer;
+        }
 
         trace!(?action, frame_length = payload.len(), "Frame received");
 
@@ -497,7 +532,14 @@ fn active_stage(
             match out {
                 ActiveStageOutput::ResponseFrame(frame) => framed.write_all(&frame).context("write response")?,
                 ActiveStageOutput::GraphicsUpdate(_) if first_graphic_time.is_none() => {
-                    first_graphic_time = Some(std::time::Instant::now());
+                    let started_at = Instant::now();
+                    first_graphic_time = Some(started_at);
+                    deadline = capture_deadline(
+                        stage_started_at,
+                        first_graphic_time,
+                        no_graphics_timeout,
+                        after_first_graphics,
+                    )?;
                 }
                 ActiveStageOutput::Terminate(_) => break 'outer,
                 _ => {}
@@ -520,7 +562,10 @@ fn lookup_addr(hostname: &str, port: u16) -> anyhow::Result<core::net::SocketAdd
 fn tls_upgrade(
     stream: TcpStream,
     server_name: String,
-) -> anyhow::Result<(rustls::StreamOwned<rustls::ClientConnection, TcpStream>, Vec<u8>)> {
+) -> anyhow::Result<(
+    rustls::StreamOwned<rustls::ClientConnection, DeadlineTcpStream>,
+    Vec<u8>,
+)> {
     // This example intentionally skips server-certificate verification to support self-signed certificates.
     warn!("TLS server certificates are not verified; use only with trusted servers");
     let mut config = rustls::client::ClientConfig::builder()
@@ -544,7 +589,7 @@ fn tls_upgrade(
 
     let client = rustls::ClientConnection::new(config, server_name)?;
 
-    let mut tls_stream = rustls::StreamOwned::new(client, stream);
+    let mut tls_stream = rustls::StreamOwned::new(client, DeadlineTcpStream::new(stream));
 
     // We need to flush in order to ensure the TLS handshake is moving forward. Without flushing,
     // it’s likely the peer certificate is not yet received a this point.
@@ -639,10 +684,14 @@ mod danger {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::io::{self, Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
+    use std::sync::mpsc;
+    use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::{Action, parse_args, remaining_capture_timeout};
+    use super::{Action, DeadlineTcpStream, capture_deadline, parse_args, remaining_capture_timeout};
 
     fn parse(args: &[&str]) -> anyhow::Result<Action> {
         parse_args(pico_args::Arguments::from_vec(
@@ -753,27 +802,14 @@ mod tests {
     fn capture_timeout_uses_no_graphics_deadline_until_first_update() {
         // oracle: The initial capture wait ends at its configured deadline when no graphics arrive.
         let stage_started_at = Instant::now();
+        let deadline = capture_deadline(stage_started_at, None, Duration::from_secs(3), Duration::from_secs(8))
+            .expect("capture deadline should fit");
 
         assert_eq!(
-            remaining_capture_timeout(
-                stage_started_at + Duration::from_secs(2),
-                stage_started_at,
-                None,
-                Duration::from_secs(3),
-                Duration::from_secs(8),
-            ),
+            remaining_capture_timeout(deadline, stage_started_at + Duration::from_secs(2)),
             Some(Duration::from_secs(1))
         );
-        assert_eq!(
-            remaining_capture_timeout(
-                stage_started_at + Duration::from_secs(3),
-                stage_started_at,
-                None,
-                Duration::from_secs(3),
-                Duration::from_secs(8),
-            ),
-            None
-        );
+        assert_eq!(remaining_capture_timeout(deadline, deadline), None);
     }
 
     #[test]
@@ -781,26 +817,75 @@ mod tests {
         // oracle: The post-first-graphics wait starts at the first update, not at the active-stage start.
         let stage_started_at = Instant::now();
         let first_graphic_time = stage_started_at + Duration::from_secs(2);
+        let deadline = capture_deadline(
+            stage_started_at,
+            Some(first_graphic_time),
+            Duration::from_secs(3),
+            Duration::from_secs(8),
+        )
+        .expect("grace-period deadline should fit");
 
         assert_eq!(
-            remaining_capture_timeout(
-                stage_started_at + Duration::from_secs(5),
-                stage_started_at,
-                Some(first_graphic_time),
-                Duration::from_secs(3),
-                Duration::from_secs(8),
-            ),
+            remaining_capture_timeout(deadline, stage_started_at + Duration::from_secs(5)),
             Some(Duration::from_secs(5))
         );
+        assert_eq!(remaining_capture_timeout(deadline, deadline), None);
+    }
+
+    #[test]
+    fn capture_timeout_rejects_a_frame_completed_after_deadline() {
+        // oracle: A frame read at or after the deadline must not be processed as a capture update.
+        let stage_started_at = Instant::now();
+        let deadline = capture_deadline(stage_started_at, None, Duration::from_secs(3), Duration::from_secs(8))
+            .expect("capture deadline should fit");
+
         assert_eq!(
-            remaining_capture_timeout(
-                first_graphic_time + Duration::from_secs(8),
-                stage_started_at,
-                Some(first_graphic_time),
-                Duration::from_secs(3),
-                Duration::from_secs(8),
-            ),
+            remaining_capture_timeout(deadline, deadline - Duration::from_millis(1)),
+            Some(Duration::from_millis(1))
+        );
+        assert_eq!(remaining_capture_timeout(deadline, deadline), None);
+        assert_eq!(
+            remaining_capture_timeout(deadline, deadline + Duration::from_millis(1)),
             None
         );
+    }
+
+    #[test]
+    fn deadline_tcp_stream_enforces_one_deadline_across_fragmented_reads() -> anyhow::Result<()> {
+        // oracle: Fragmented reads share one absolute deadline instead of restarting a full timeout.
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let server_addr = listener.local_addr()?;
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let (start_sender, start_receiver) = mpsc::channel();
+
+        let server = thread::spawn(move || -> io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            ready_sender.send(()).map_err(io::Error::other)?;
+            start_receiver.recv().map_err(io::Error::other)?;
+            stream.write_all(&[1])?;
+            thread::sleep(Duration::from_millis(120));
+            stream.write_all(&[2])?;
+            thread::sleep(Duration::from_millis(120));
+            let _ = stream.write_all(&[3]);
+            Ok(())
+        });
+
+        let mut stream = DeadlineTcpStream::new(TcpStream::connect(server_addr)?);
+        ready_receiver.recv().map_err(io::Error::other)?;
+        stream.set_read_deadline(Instant::now() + Duration::from_millis(200));
+        start_sender.send(()).map_err(io::Error::other)?;
+
+        let mut bytes = [0; 3];
+        let error = stream
+            .read_exact(&mut bytes)
+            .expect_err("fragmented read should time out");
+
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        ));
+        server.join().expect("server thread should finish")?;
+
+        Ok(())
     }
 }
