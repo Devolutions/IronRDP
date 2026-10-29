@@ -467,6 +467,7 @@ dependencies = [
  "ironrdp-rdpear",
  "ironrdp-rdpel",
  "ironrdp-rdpemt",
+ "ironrdp-rdpet",
  "ironrdp-rdpetxt",
  "ironrdp-rdpeudp",
  "ironrdp-rdpeusb",
@@ -565,6 +566,17 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-error",
  "subtle",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpet"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
  "tracing",
 ]
 

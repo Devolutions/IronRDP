@@ -245,6 +245,7 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
     let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
+    let _ = decode::<ironrdp_rdpet::pdu::TelemetryPdu>(data);
     let _ = decode::<ironrdp_rdpetxt::pdu::ServerPdu>(data);
     let _ = decode::<ironrdp_rdpetxt::pdu::ClientPdu>(data);
     let _ = decode::<ironrdp_rdpadrv::pdu::AudioLevelPdu>(data);
@@ -433,6 +434,8 @@ pub fn pdu_round_trip(data: &[u8]) {
     // Location
     pdu_round_trip_one!(data, ironrdp_rdpel::pdu::LocationPdu);
 
+    // Telemetry
+    pdu_round_trip_one!(data, ironrdp_rdpet::pdu::TelemetryPdu);
     // Text input
     pdu_round_trip_one!(data, ironrdp_rdpetxt::pdu::ServerPdu);
     pdu_round_trip_one!(data, ironrdp_rdpetxt::pdu::ClientPdu);
