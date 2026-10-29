@@ -948,6 +948,15 @@ impl DecodedImage {
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
+        // The framebuffer's own layout: a row is one copy rather than four stores a pixel.
+        if [ri, gi, bi, ai] == [0, 1, 2, 3] {
+            for (row_idx, row) in rgba32.enumerate() {
+                let start = ((top + row_idx) * image_width + left) * DST_COLOR_DEPTH;
+                self.data[start..start + row.len()].copy_from_slice(row);
+            }
+            return self.pointer_rendering_end(pointer_rendering_state);
+        }
+
         rgba32.enumerate().for_each(|(row_idx, row)| {
             row.chunks_exact(SRC_COLOR_DEPTH)
                 .enumerate()

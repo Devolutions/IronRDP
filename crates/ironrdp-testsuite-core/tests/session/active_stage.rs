@@ -149,6 +149,64 @@ fn a_delta_touching_the_image_edge_is_accepted() {
     );
 }
 
+/// Each RGBA pixel of a delta lands at its own position in the framebuffer's layout,
+/// and nothing outside the delta changes.
+// oracle: the framebuffer layout's channel offsets, applied a pixel at a time
+#[test]
+fn a_delta_lands_pixel_for_pixel_in_either_layout() {
+    let (width, height) = (9u16, 7u16);
+    let (left, top, right, bottom) = (3u16, 2u16, 8u16, 6u16);
+    let pixels: Vec<u8> = (0..usize::from((right - left) * (bottom - top)) * 4)
+        .map(|i| u8::try_from(i % 251).expect("byte"))
+        .collect();
+
+    for format in [PixelFormat::RgbA32, PixelFormat::BgrA32] {
+        let mut image = DecodedImage::new(format, width, height);
+        let delta = ExclusiveRectangle {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        composite_graphics_updates(&mut image, [(delta, pixels.clone())]).expect("delta is inside the image");
+
+        let [ri, gi, bi, ai] = format.channel_offsets();
+        let mut expected = vec![0u8; usize::from(width) * usize::from(height) * 4];
+        for (i, pixel) in pixels.chunks_exact(4).enumerate() {
+            let row = usize::from(top) + i / usize::from(right - left);
+            let col = usize::from(left) + i % usize::from(right - left);
+            let at = (row * usize::from(width) + col) * 4;
+            expected[at + ri] = pixel[0];
+            expected[at + gi] = pixel[1];
+            expected[at + bi] = pixel[2];
+            expected[at + ai] = pixel[3];
+        }
+        assert_eq!(image.data(), expected.as_slice(), "{format:?}");
+    }
+}
+
+/// A software pointer over a delta is drawn over the new pixels, not under them.
+// oracle: pointer composition order
+#[test]
+fn a_visible_pointer_stays_over_a_delta() {
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    image.move_pointer(1, 1).expect("set pointer position");
+    image
+        .update_pointer(Arc::new(DecodedPointer {
+            width: 1,
+            height: 1,
+            hotspot_x: 0,
+            hotspot_y: 0,
+            bitmap_data: vec![0xFF, 0, 0, 0xFF],
+        }))
+        .expect("show pointer");
+
+    composite_graphics_updates(&mut image, [update(0, 0, 4, 4)]).expect("delta is inside the image");
+    let at = (4 + 1) * 4;
+    assert_eq!(&image.data()[at..at + 3], &[0xFF, 0, 0]);
+    assert_eq!(&image.data()[0..3], &[0xFF, 0xFF, 0xFF]);
+}
+
 #[test]
 fn reset_graphics_preserves_software_pointer_state() {
     let mut image = DecodedImage::new(PixelFormat::RgbA32, 2, 2);
