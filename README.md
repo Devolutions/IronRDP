@@ -160,6 +160,7 @@ They are under _Computer Configuration → Administrative Templates → Windows 
 - [MacRDP], a native RDP server for macOS
 - [ClawTank], an open-source RDP server for macOS with H.264 graphics, virtual displays and an MCP server for agents
 - [`qemu-rdp`][qemu-rdp], an RDP server for QEMU displays
+- [wayshare], a Hyprland desktop sharing server for RDP clients and the macOS Screen Sharing app
 - A growing set of community projects building RDP servers and clients on the crate suite
 
 ## Rust version (MSRV)
@@ -206,6 +207,7 @@ Licensed under either [MIT] or [Apache-2.0] at your option.
 [MacRDP]: https://github.com/clintcan/macrdp
 [ClawTank]: https://github.com/HMAKT99/ClawTank
 [qemu-rdp]: https://gitlab.com/marcandre.lureau/qemu-display
+[wayshare]: https://github.com/wesleygrimes/wayshare
 [Debian stable-backports]: https://packages.debian.org/search?suite=all&arch=any&searchon=names&keywords=rust
 [Fedora stable]: https://packages.fedoraproject.org/pkgs/rust/rust/
 [architecture policy]: ./ARCHITECTURE.md#msrv-policy
