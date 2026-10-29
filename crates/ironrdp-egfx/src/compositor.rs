@@ -385,6 +385,11 @@ impl Compositor {
         );
     }
 
+    /// Whether surface `id` has pixels: it was created and not refused.
+    pub(crate) fn has_surface(&self, id: u16) -> bool {
+        self.surfaces.contains_key(&id)
+    }
+
     /// Handle `DeleteSurface`.
     pub(crate) fn delete_surface(&mut self, id: u16) {
         if let Some(surface) = self.surfaces.remove(&id) {
