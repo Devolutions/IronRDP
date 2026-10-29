@@ -1169,8 +1169,10 @@ impl Daemon {
             Arc::clone(&self.next_rail_generation),
         ));
 
-        // The NOW host abandons a channel whose client stays silent, so negotiation cannot wait for a request.
-        // The negotiator runs under the session's dispatch so its logs reach the session's log buffer.
+        // The NOW host abandons a channel whose client stays silent, so negotiation cannot wait
+        // for a request.
+        // The negotiator runs under the session's dispatch so its logs reach the session's log
+        // buffer.
         tokio::spawn(
             negotiate_until_session_ends(Arc::clone(&now_endpoint), consumer).with_subscriber(negotiator_dispatch),
         );
@@ -2239,7 +2241,8 @@ impl Daemon {
     }
 }
 
-/// Keeps the endpoint negotiated until the session's output consumer ends, which is when the session ends.
+/// Keeps the endpoint negotiated until the session's output consumer ends, which is when the
+/// session ends.
 async fn negotiate_until_session_ends(endpoint: Arc<NowEndpoint>, consumer: tokio::task::JoinHandle<()>) {
     tokio::select! {
         () = endpoint.keep_negotiated() => {}
@@ -2917,7 +2920,7 @@ mod tests {
         );
     }
 
-    // oracle: mutant echoing a server pointer warp as a client move or letting a consumed warp override a later local move.
+    // oracle: mutant echoing a server pointer warp as a move or overriding a later local move
     #[tokio::test]
     async fn server_pointer_position_updates_clicks_without_overriding_later_local_moves() {
         use ironrdp_client::rdp::RdpOutputEvent;
@@ -3049,7 +3052,7 @@ mod tests {
         assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
     }
 
-    // oracle: mutant a negotiator that outlives its session, polling for a channel nothing will open.
+    // oracle: mutant a negotiator that outlives its session and keeps polling for a closed channel
     #[tokio::test]
     async fn the_negotiator_ends_when_the_session_output_ends() {
         let endpoint = Arc::new(NowEndpoint::new().expect("create NOW endpoint"));

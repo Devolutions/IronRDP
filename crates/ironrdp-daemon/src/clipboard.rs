@@ -874,7 +874,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // oracle: mutant retaining locks from a previous clipboard channel or discarding the local offer when rebuilding the backend
+    // oracle: mutant retaining old channel locks or discarding the local offer on backend rebuild
     #[test]
     fn a_new_clipboard_channel_discards_old_locks_but_keeps_the_local_offer() {
         let path = PathBuf::from("current.txt");
@@ -891,11 +891,8 @@ mod tests {
         drop(first);
 
         let mut second = factory.build_cliprdr_backend();
-        // oracle: spec MS-RDPECLIP §3.1.3
         assert!(state.lock().unwrap().local_locked_lists.is_empty());
 
-        // oracle: spec MS-RDPECLIP §3.1.5.1.2
-        // oracle: spec MS-RDPECLIP §3.1.5.3.2
         second.on_lock(LockDataId(7));
         let state = state.lock().unwrap();
         let (files, paths) = &state.local_locked_lists[&7];

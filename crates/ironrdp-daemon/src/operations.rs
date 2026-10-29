@@ -43,8 +43,9 @@ struct OperationStateStore {
     total_output: usize,
     /// Signals live readers that the active operation gained an event.
     ///
-    /// INVARIANT: `finish` replaces this sender, dropping the previous one so blocked readers wake, observe the
-    /// terminal record, and release their live-subscriber slots before another operation starts.
+    /// INVARIANT: `finish` replaces this sender, dropping the previous one so blocked readers
+    /// wake, observe the terminal record, and release their live-subscriber slots before another
+    /// operation starts.
     changed: watch::Sender<()>,
 }
 
@@ -82,8 +83,10 @@ pub struct OperationAttachment {
 
 /// Cursor over the retained events of one operation, starting after an attachment's replay.
 ///
-/// It reads the retained events instead of owning a queue, so a slow reader never makes the producer buffer or drop events.
-/// The stream ends after the terminal event, once the reader falls behind the retained events, or when the operation is gone.
+/// It reads the retained events instead of owning a queue, so a slow reader never makes the
+/// producer buffer or drop events.
+/// The stream ends after the terminal event, once the reader falls behind the retained events, or
+/// when the operation is gone.
 pub struct LiveEvents {
     state: Weak<Mutex<OperationStateStore>>,
     operation_id: u64,
@@ -108,7 +111,8 @@ impl LiveEvents {
                     return None;
                 }
                 NextEvent::Pending => {
-                    // `finish` replaces `changed`, dropping the previous sender so blocked readers wake and re-check.
+                    // `finish` replaces `changed`, dropping the previous sender so blocked readers
+                    // wake and re-check.
                     if self.changed.as_mut()?.changed().await.is_err() {
                         self.changed = None;
                     }
@@ -256,12 +260,18 @@ impl OperationManager {
         let record = state.records.get(&operation_id).ok_or_else(operation_not_found)?;
         let running = matches!(record.info.state, OperationState::Running | OperationState::Cancelling);
         // Every live reader holds one receiver and releases it when dropped.
-        if running && MAX_LIVE_SUBSCRIBERS <= state.changed.receiver_count() {
-            return Err(AgentError {
-                category: AgentErrorCategory::Conflict,
-                message: "maximum live NOW subscribers reached".to_owned(),
-            });
-        }
+        let changed = if running {
+            if state.changed.receiver_count() < MAX_LIVE_SUBSCRIBERS {
+                Some(state.changed.subscribe())
+            } else {
+                return Err(AgentError {
+                    category: AgentErrorCategory::Conflict,
+                    message: "maximum live NOW subscribers reached".to_owned(),
+                });
+            }
+        } else {
+            None
+        };
         let replay = record
             .events
             .iter()
@@ -275,7 +285,7 @@ impl OperationManager {
                 state: Arc::downgrade(&self.state),
                 operation_id,
                 next_sequence: record.info.next_sequence,
-                changed: running.then(|| state.changed.subscribe()),
+                changed,
             },
         })
     }
@@ -988,7 +998,7 @@ mod tests {
         (manager, id)
     }
 
-    // oracle: mutant a lagging reader loses events or the terminal event, or consuming events affects other readers
+    // oracle: mutant a lagging reader loses events or consuming events affects other readers
     #[tokio::test]
     async fn lagging_live_readers_each_receive_every_event_through_the_terminal_event() {
         const BURST: u64 = 64;
@@ -1036,19 +1046,41 @@ mod tests {
             .expect("the reader ends once the operation finishes");
     }
 
-    // oracle: mutant a reader on a running operation misses a wake-up or ends before the operation finishes
+    // oracle: mutant a running operation reader misses a wake-up or ends before finish
     #[tokio::test(start_paused = true)]
     async fn waiting_live_reader_on_running_operation_receives_each_event_before_finish() {
         assert_waiting_live_reader_receives_events(OperationState::Running).await;
     }
 
-    // oracle: mutant a reader on a cancelling operation treats cancelling as terminal and stops waiting for events
+    // oracle: mutant a cancelling operation reader treats cancelling as terminal and stops waiting
     #[tokio::test(start_paused = true)]
     async fn waiting_live_reader_on_cancelling_operation_receives_each_event_before_finish() {
         assert_waiting_live_reader_receives_events(OperationState::Cancelling).await;
     }
 
-    // oracle: mutant attaching to a finished operation replays events the client has or leaves the live stream open
+    // oracle: mutant seeding the live cursor at 0 or past `next_sequence` after a running replay
+    #[tokio::test(start_paused = true)]
+    async fn attaching_to_a_running_operation_replays_after_sequence_then_streams_live_events() {
+        let (manager, id) = running_manager();
+        manager.emit(id, OperationEventKind::Started);
+        manager.emit_output(id, NowStream::Stdout, vec![b'a'], false);
+
+        let mut attachment = manager.attach(id, Some(0)).expect("attachment is accepted");
+        let replayed: Vec<_> = attachment.replay.iter().map(|event| event.sequence).collect();
+        assert_eq!(replayed, [1]);
+
+        manager.emit_output(id, NowStream::Stdout, vec![b'b'], true);
+        manager.emit(id, OperationEventKind::Completed { exit_code: 0 });
+        manager.finish(id, OperationState::Completed, Some(0), None);
+
+        let mut live_sequences = Vec::new();
+        while let Some(event) = attachment.live.recv().await {
+            live_sequences.push(event.sequence);
+        }
+        assert_eq!(live_sequences, [2, 3]);
+    }
+
+    // oracle: mutant attaching to a finished operation replays seen events or stays open
     #[tokio::test(start_paused = true)]
     async fn attaching_to_a_finished_operation_replays_newer_events_and_ends() {
         let (manager, id) = running_manager();
@@ -1066,7 +1098,7 @@ mod tests {
         assert!(next.is_none());
     }
 
-    // oracle: mutant a reader that fell behind trimmed events skips the missing output instead of ending the stream
+    // oracle: mutant a reader behind trimmed events skips missing output instead of ending
     #[tokio::test(start_paused = true)]
     async fn live_reader_behind_trimmed_events_ends_instead_of_skipping_output() {
         let (manager, id) = running_manager();
@@ -1082,7 +1114,7 @@ mod tests {
         assert!(next.is_none());
     }
 
-    // oracle: mutant a live reader keeps the operation state alive and waits forever after its manager is gone
+    // oracle: mutant a live reader keeps state alive and waits forever after its manager drops
     #[tokio::test(start_paused = true)]
     async fn waiting_live_reader_ends_when_its_manager_is_dropped() {
         let (manager, id) = running_manager();
@@ -1101,7 +1133,7 @@ mod tests {
         assert!(next.is_none());
     }
 
-    // oracle: mutant an attach that never refuses, so idle attachments to a quiet operation accumulate without bound
+    // oracle: mutant an attach that never refuses, letting idle attachments accumulate unbounded
     #[test]
     fn live_attachments_are_bounded_and_released_when_dropped() {
         let (manager, id) = running_manager();
@@ -1120,7 +1152,7 @@ mod tests {
         manager.attach(id, None).expect("a released attachment frees its slot");
     }
 
-    // oracle: mutant a replay of a finished operation refused because other attachments are waiting on a running one
+    // oracle: mutant a replay of a finished operation refused when live attachments reach the cap
     #[test]
     fn a_finished_operation_can_be_replayed_while_live_attachments_are_at_their_bound() {
         let (manager, finished_id) = running_manager();

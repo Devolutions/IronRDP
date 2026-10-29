@@ -35,7 +35,8 @@ uuid = { version = "1", features = ["v4"] }
 whoami = "2.1"
 ironrdp-rail = { version = "0.3.0", path = "../ironrdp-rail" }
 sha2 = "0.10"
-now-proto-pdu = { version = "0.4", features = ["std"] }
+# `NowClientConfig::client_capset` takes `now_proto_pdu::NowChannelCapsetMsg`, which `now-client` does not re-export.
+now-proto-pdu = "0.4"
 
 [dev-dependencies]
 ironrdp-connector = { path = "../ironrdp-connector" }
