@@ -304,6 +304,9 @@ pub trait ConnectionHandler: Send {
 
     /// Reports effective RemoteApp capabilities after each activation, including reactivation.
     /// `None` means the connection did not negotiate RemoteApp.
+    /// See MS-RDPERP 2.2.1.1, ["Capability Sets"].
+    ///
+    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
     fn on_remote_app_capabilities(
         &mut self,
         capabilities: Option<&ironrdp_acceptor::RemoteAppCapabilities>,
@@ -769,6 +772,9 @@ pub struct RdpServerOptions {
     pub max_request_size: u32,
     /// RemoteApp capabilities offered to clients that request RAIL.
     /// The embedder supplies the RAIL channel processor and window orders.
+    /// See MS-RDPERP 2.2.1.1, ["Capability Sets"].
+    ///
+    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
     pub remote_app: Option<ironrdp_acceptor::RemoteAppCapabilities>,
     /// When `Some(max)`, each connection's acceptor adopts the desktop size the
     /// client requests in its Client Core Data (instead of the size reported by
@@ -1478,6 +1484,9 @@ impl ServerRedirectionHandle {
 }
 
 /// Whether a window-order batch reached the transport.
+/// See MS-RDPBCGR 2.2.9.1.2.1, ["Fast-Path Update (TS_FP_UPDATE)"].
+///
+/// ["Fast-Path Update (TS_FP_UPDATE)"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowingOrdersStatus {
     /// All update fragments were accepted by the transport, not necessarily processed by the client.
@@ -1490,6 +1499,9 @@ pub enum WindowingOrdersStatus {
 ///
 /// Dropping an unstarted batch reports [`WindowingOrdersStatus::NotStarted`].
 /// Cancellation or failure after writing starts reports an error; retrying could duplicate orders.
+/// Orders follow MS-RDPERP 2.2.1.3, ["Windowing Alternate Secondary Drawing Orders"].
+///
+/// ["Windowing Alternate Secondary Drawing Orders"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
 #[derive(Debug)]
 pub struct WindowingOrders {
     orders: Vec<WindowingOrder>,

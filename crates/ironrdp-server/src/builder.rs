@@ -227,6 +227,9 @@ impl RdpServerBuilder<WantsDisplay> {
 impl RdpServerBuilder<BuilderDone> {
     /// Offers RemoteApp to requesting clients.
     /// The embedder must provide a `rail` static channel and window-order updates.
+    /// See MS-RDPERP 2.2.1.1, ["Capability Sets"].
+    ///
+    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/
     pub fn with_remote_app(mut self, capabilities: Option<ironrdp_acceptor::RemoteAppCapabilities>) -> Self {
         self.state.remote_app = capabilities;
         self

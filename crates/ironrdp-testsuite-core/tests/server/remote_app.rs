@@ -11,8 +11,9 @@ use ironrdp_pdu::window::{
     CachedIconInfo, IconSource, WindowIcon, WindowOrder, WindowOrderBody, WindowState, WindowingOrder,
 };
 use ironrdp_server::{
-    BitmapUpdate, DesktopSize, DisplayContext, DisplayUpdate, PixelFormat, RdpServer, RdpServerDisplay,
-    RdpServerDisplayUpdates, ServerEvent, ServerResult, TransportTls, WindowingOrders, WindowingOrdersStatus,
+    BitmapUpdate, ConnectionHandler, DesktopSize, DisplayContext, DisplayUpdate, PixelFormat, RdpServer,
+    RdpServerDisplay, RdpServerDisplayUpdates, ServerEvent, ServerResult, TransportTls, WindowingOrders,
+    WindowingOrdersStatus,
 };
 use ironrdp_tokio::TokioFramed;
 use tokio::io::DuplexStream;
@@ -122,7 +123,7 @@ async fn oversized_orders_are_rejected_before_writing(#[case] limit: Option<u32>
 
 // oracle: spec MS-RDPBCGR §2.2.7.2.6: the reassembly buffer is not needed for an unfragmented update.
 #[tokio::test]
-async fn single_order_can_be_written_without_multifragment_support() {
+async fn single_order_can_be_written_with_zero_reassembly_limit() {
     connected(Some(remote_app()), Some(0), |mut client, events, _, _| async move {
         let (request, completion) = WindowingOrders::new(vec![deleted(7)]);
         events.send(ServerEvent::WindowingOrders(request)).unwrap();
@@ -139,6 +140,7 @@ async fn single_order_can_be_written_without_multifragment_support() {
 #[tokio::test]
 async fn single_order_ignores_subfragment_server_reassembly_limit(#[case] server_limit: u32) {
     connected_with_server_limit(
+        Some(remote_app()),
         Some(remote_app()),
         Some(65536),
         Some(server_limit),
@@ -162,6 +164,25 @@ async fn unnegotiated_orders_report_an_error_without_writing() {
         display.send(DisplayUpdate::HidePointer).unwrap();
         assert_eq!(read_update(&mut client).await.0, UpdateCode::HiddenPointer);
     })
+    .await;
+}
+
+// oracle: spec MS-RDPERP §3.3.5.1.3: RemoteApp negotiation requires the client's INFO_RAIL request.
+#[tokio::test]
+async fn remote_app_server_reports_none_and_rejects_orders_for_desktop_client() {
+    connected_with_server_limit(
+        Some(remote_app()),
+        None,
+        None,
+        None,
+        |mut client, events, display, _| async move {
+            let (request, completion) = WindowingOrders::new(vec![deleted(7)]);
+            events.send(ServerEvent::WindowingOrders(request)).unwrap();
+            assert!(completion.await.unwrap().is_err());
+            display.send(DisplayUpdate::HidePointer).unwrap();
+            assert_eq!(read_update(&mut client).await.0, UpdateCode::HiddenPointer);
+        },
+    )
     .await;
 }
 
@@ -391,10 +412,11 @@ where
     ) -> Fut,
     Fut: Future<Output = ()>,
 {
-    connected_with_server_limit(capabilities, limit, None, run).await;
+    connected_with_server_limit(capabilities.clone(), capabilities, limit, None, run).await;
 }
 
 async fn connected_with_server_limit<F, Fut>(
+    server_capabilities: Option<RemoteAppCapabilities>,
     capabilities: Option<RemoteAppCapabilities>,
     limit: Option<u32>,
     server_limit: Option<u32>,
@@ -410,6 +432,8 @@ async fn connected_with_server_limit<F, Fut>(
 {
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = oneshot::channel();
+    let (capabilities_tx, capabilities_rx) = oneshot::channel();
+    let expected_capabilities = capabilities.clone();
     let mut builder = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_no_security()
@@ -418,10 +442,8 @@ async fn connected_with_server_limit<F, Fut>(
             updates: Some(display_rx),
             ready: Some(ready_tx),
         })
-        .with_remote_app(capabilities.as_ref().map(|client| RemoteAppCapabilities {
-            rail: client.rail.clone(),
-            ..remote_app()
-        }));
+        .with_remote_app(server_capabilities)
+        .with_connection_handler(Some(Box::new(CapabilitiesHandler(Some(capabilities_tx)))));
     if let Some(server_limit) = server_limit {
         builder = builder.with_max_request_size(server_limit);
     }
@@ -448,6 +470,7 @@ async fn connected_with_server_limit<F, Fut>(
             });
             let caps = play_client_with_capabilities(&mut client, true, &[], confirmed).await;
             ready_rx.await.unwrap();
+            assert_eq!(capabilities_rx.await.unwrap(), expected_capabilities);
             let display_keepalive = display_tx.clone();
             run(client, events, display_tx, caps).await;
             drop(display_keepalive);
@@ -456,6 +479,15 @@ async fn connected_with_server_limit<F, Fut>(
     })
     .await
     .unwrap();
+}
+
+struct CapabilitiesHandler(Option<oneshot::Sender<Option<RemoteAppCapabilities>>>);
+
+impl ConnectionHandler for CapabilitiesHandler {
+    fn on_remote_app_capabilities(&mut self, capabilities: Option<&RemoteAppCapabilities>) -> ServerResult<()> {
+        self.0.take().unwrap().send(capabilities.cloned()).unwrap();
+        Ok(())
+    }
 }
 
 struct Display {
