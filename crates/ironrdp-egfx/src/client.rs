@@ -585,12 +585,20 @@ impl GraphicsPipelineClient {
         }
         let pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(core::slice::from_ref(caps)));
         self.state = ClientState::Resetting;
-        self.surfaces.clear();
-        // The compositor reset below drops their budget charge with everything else.
-        self.avc444_frames.clear();
         // The reset discards the bitmap cache; save it first, and let the confirmation offer it
         // again, so the server can paste from it without uploading the tiles anew.
         self.save_persistent_cache();
+        self.restart_channel_state();
+        // ZGFX history still decodes packets already in flight before confirmation.
+        Some(pdu)
+    }
+
+    /// Forgets everything a new capability exchange starts over: surfaces, caches, codec
+    /// contexts and the frame count.
+    fn restart_channel_state(&mut self) {
+        self.surfaces.clear();
+        // The compositor reset below drops their budget charge with everything else.
+        self.avc444_frames.clear();
         self.cache_import_attempted = false;
         self.offered_cache_keys = None;
         self.compositor.reset_protocol();
@@ -604,8 +612,6 @@ impl GraphicsPipelineClient {
         self.current_frame_id = None;
         // Windows restarts its sent-frame count and rejects ACK counts greater than that value.
         self.total_frames_decoded = 0;
-        // ZGFX history still decodes packets already in flight before confirmation.
-        Some(pdu)
     }
 
     /// Get codec capabilities determined from negotiation
@@ -1972,7 +1978,10 @@ impl DvcProcessor for GraphicsPipelineClient {
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         // A server that closed the channel can open it again with the same client; it
-        // confirms capabilities anew.
+        // confirms capabilities anew and starts over from an empty channel.
+        if self.state == ClientState::Closed {
+            self.restart_channel_state();
+        }
         self.state = ClientState::WaitingForConfirm;
         if let Some(decoder) = self.h264_decoder.as_mut()
             && !decoder.wait_until_ready()
@@ -2553,14 +2562,26 @@ mod tests {
     }
 
     /// xrdp closes and reopens the channel after a Deactivation-Reactivation Sequence;
-    /// the client it hands back must take the server's new CapabilitiesConfirm.
+    /// the client it hands back must take the server's new CapabilitiesConfirm, and its
+    /// first FrameAcknowledge must not exceed the server's restarted frame count.
     #[test]
     fn reopened_channel_waits_for_confirm() {
         let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+            surface_id: 1,
+            width: 100,
+            height: 100,
+            pixel_format: PixelFormat::XRgb,
+        }));
+        client.total_frames_decoded = 7;
+        client.cache_import_attempted = true;
         client.close(1);
 
         client.start(2).unwrap();
         assert_eq!(client.state, ClientState::WaitingForConfirm);
+        assert!(client.surfaces.is_empty());
+        assert_eq!(client.total_frames_decoded, 0);
+        assert!(!client.cache_import_attempted);
 
         let confirm = ironrdp_core::encode_vec(&GfxPdu::CapabilitiesConfirm(
             crate::pdu::CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V8 {

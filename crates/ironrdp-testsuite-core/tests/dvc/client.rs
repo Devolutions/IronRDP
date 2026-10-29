@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ironrdp_core::{Decode as _, ReadCursor, encode_vec, impl_as_any};
 use ironrdp_dvc::ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_dvc::pdu::{
@@ -54,6 +57,56 @@ impl DvcProcessor for FailingDvc {
 }
 
 impl DvcClientProcessor for FailingDvc {}
+
+struct NamedDvc {
+    name: &'static str,
+    started_with: Option<u32>,
+}
+
+impl_as_any!(NamedDvc);
+
+impl DvcProcessor for NamedDvc {
+    fn channel_name(&self) -> &str {
+        self.name
+    }
+
+    fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        self.started_with = Some(channel_id);
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for NamedDvc {}
+
+struct DropFlagDvc(Arc<AtomicBool>);
+
+impl_as_any!(DropFlagDvc);
+
+impl Drop for DropFlagDvc {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+impl DvcProcessor for DropFlagDvc {
+    fn channel_name(&self) -> &str {
+        "counted"
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for DropFlagDvc {}
 
 struct TunnelCreatedDvc;
 
@@ -170,6 +223,74 @@ fn closed_pre_registered_channel_stays_registered_for_reopening() {
     client.process(&create(2)).expect("Create Request should be processed");
     let channel = client.get_dvc::<RecordedDvc>().expect("channel reopened");
     assert_eq!(channel.processor().started_with, Some(2));
+}
+
+#[test]
+fn closed_channels_of_one_type_reopen_under_their_own_names() {
+    // One pipe proxy per channel shares a processor type; a reopen must get its own back.
+    let named = |name| NamedDvc {
+        name,
+        started_with: None,
+    };
+    let mut client = DrdynvcClient::new()
+        .with_dynamic_channel(named("first"))
+        .with_dynamic_channel(named("second"));
+    let create = |channel_id, name: &str| {
+        encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+            channel_id,
+            name.to_owned(),
+        )))
+        .expect("Create Request should encode")
+    };
+    let close =
+        |channel_id| encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(channel_id))).expect("Close should encode");
+
+    client
+        .process(&create(1, "first"))
+        .expect("Create Request should be processed");
+    client.process(&close(1)).expect("Close should be processed");
+    client
+        .process(&create(2, "second"))
+        .expect("Create Request should be processed");
+    client.process(&close(2)).expect("Close should be processed");
+
+    for (channel_id, name) in [(3, "first"), (4, "second")] {
+        let messages = client
+            .process(&create(channel_id, name))
+            .expect("Create Request should be processed");
+        let DrdynvcClientPdu::Create(response) = decode_client_pdu(&messages[0]) else {
+            panic!("expected a Create Response");
+        };
+        assert_eq!(response.creation_status(), CreationStatus::OK, "{name}");
+        let channel = client
+            .get_dvc_by_channel_id::<NamedDvc>(channel_id)
+            .expect("channel reopened");
+        assert_eq!(channel.processor().name, name);
+        assert_eq!(channel.processor().started_with, Some(channel_id));
+    }
+}
+
+#[test]
+fn factory_channel_processor_is_dropped_on_close() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let mut client = DrdynvcClient::new().with_dynamic_channel_factory("counted", {
+        let dropped = Arc::clone(&dropped);
+        move || DropFlagDvc(Arc::clone(&dropped))
+    });
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        1,
+        "counted".to_owned(),
+    )))
+    .expect("Create Request should encode");
+    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(1))).expect("Close should encode");
+
+    client.process(&create).expect("Create Request should be processed");
+    assert!(!dropped.load(Ordering::SeqCst));
+    client.process(&close).expect("Close should be processed");
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "a factory makes a new processor per open"
+    );
 }
 
 #[test]

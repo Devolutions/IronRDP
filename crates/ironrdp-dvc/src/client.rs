@@ -236,6 +236,9 @@ impl DrdynvcClient {
     /// Attaches a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
+    /// A channel the server closes is kept and started again on its next Create Request,
+    /// as with [`DrdynvcClient::with_dynamic_channel`].
+    ///
     /// # Note
     ///
     /// If a listener or a pre-registered channel with the same name already exists,
@@ -248,7 +251,7 @@ impl DrdynvcClient {
     }
 
     /// Registers a dynamic virtual channel whose processor is recreated by `factory` each time
-    /// the server opens the channel, for channels the server may close and reopen.
+    /// the server opens the channel, for channels that start over from a fresh processor.
     ///
     /// Like [`DrdynvcClient::with_dynamic_channel`], the active processor can be looked up by type
     /// with [`DrdynvcClient::get_dvc`].
@@ -738,15 +741,16 @@ struct ListenerEntry {
     listener: DynamicChannelListener,
     /// `Some` only for channels registered via `with_dynamic_channel<T>()`.
     type_id: Option<TypeId>,
+    /// A pre-registered channel the server closed, kept for it to open again under this
+    /// name (xrdp closes and reopens every channel after a Deactivation-Reactivation
+    /// Sequence). `None` while the listener still holds its processor or the channel is open.
+    closed: Option<DynamicVirtualChannel>,
 }
 
 struct DynamicChannelSet {
     listeners: BTreeMap<DynamicChannelName, ListenerEntry>,
     active_channels: BTreeMap<DynamicChannelId, DynamicVirtualChannel>,
     type_id_to_channel_id: BTreeMap<TypeId, DynamicChannelId>,
-    /// Pre-registered channels that were closed, kept for the server to open again
-    /// (xrdp closes and reopens every channel after a Deactivation-Reactivation Sequence).
-    closed_channels: BTreeMap<TypeId, DynamicVirtualChannel>,
 }
 
 impl DynamicChannelSet {
@@ -756,7 +760,6 @@ impl DynamicChannelSet {
             listeners: BTreeMap::new(),
             active_channels: BTreeMap::new(),
             type_id_to_channel_id: BTreeMap::new(),
-            closed_channels: BTreeMap::new(),
         }
     }
 
@@ -767,6 +770,7 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(listener),
                 type_id: None,
+                closed: None,
             },
         );
     }
@@ -778,6 +782,7 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(OnceListener::new(channel)),
                 type_id: Some(TypeId::of::<T>()),
+                closed: None,
             },
         );
     }
@@ -792,6 +797,7 @@ impl DynamicChannelSet {
             ListenerEntry {
                 listener: Box::new(FactoryListener { channel_name, factory }),
                 type_id: Some(TypeId::of::<T>()),
+                closed: None,
             },
         );
     }
@@ -819,7 +825,7 @@ impl DynamicChannelSet {
         let entry = self.listeners.get_mut(name)?;
         let dvc = match entry.listener.create(channel_id) {
             Some(processor) => DynamicVirtualChannel::from_boxed(processor),
-            None => self.closed_channels.remove(&entry.type_id?)?,
+            None => entry.closed.take()?,
         };
 
         if let Some(type_id) = entry.type_id {
@@ -850,10 +856,9 @@ impl DynamicChannelSet {
     }
 
     fn has_listener_by_type_id(&self, type_id: TypeId) -> bool {
-        self.listeners.values().any(|entry| {
-            entry.type_id == Some(type_id)
-                && (entry.listener.is_available() || self.closed_channels.contains_key(&type_id))
-        })
+        self.listeners
+            .values()
+            .any(|entry| entry.type_id == Some(type_id) && (entry.listener.is_available() || entry.closed.is_some()))
     }
 
     fn get_by_channel_id(&self, id: DynamicChannelId) -> Option<&DynamicVirtualChannel> {
@@ -874,11 +879,19 @@ impl DynamicChannelSet {
         // Only matters for pre-registered channels
         if self.type_id_to_channel_id.get(&type_id) == Some(&id) {
             self.type_id_to_channel_id.remove(&type_id);
+        }
+
+        // A listener that handed out its only processor gets it back for the next Create
+        // Request under that name; a factory makes a new one, so its processor is dropped.
+        if let Some(entry) = self.listeners.get_mut(dvc.channel_name())
+            && !entry.listener.is_available()
+            && entry.closed.is_none()
+        {
             if let Some(id) = dvc.channel_id.take() {
                 dvc.channel_processor.close(id);
             }
             dvc.complete_data = CompleteData::new(dvc.channel_processor.max_message_size());
-            self.closed_channels.insert(type_id, dvc);
+            entry.closed = Some(dvc);
         }
         true
     }
@@ -945,32 +958,6 @@ mod tests {
         assert!(channels.has_listener_by_type_id(TypeId::of::<TestDvc>()));
         assert!(channels.try_create_channel(&"test".to_owned(), 1).is_some());
         assert!(!channels.has_listener_by_type_id(TypeId::of::<TestDvc>()));
-    }
-
-    #[test]
-    fn closed_pre_registered_channel_can_be_reopened() {
-        let mut channels = DynamicChannelSet::new();
-        channels.register_once(TestDvc);
-        channels
-            .try_create_channel(&"test".to_owned(), 1)
-            .unwrap()
-            .start(1)
-            .unwrap();
-
-        // xrdp closes and reopens the channel after a Deactivation-Reactivation Sequence.
-        assert!(channels.remove_by_channel_id(1));
-        assert!(channels.get_by_type_id(TypeId::of::<TestDvc>()).is_none());
-        channels
-            .try_create_channel(&"test".to_owned(), 2)
-            .expect("pre-registered channel reopened")
-            .start(2)
-            .unwrap();
-
-        assert!(channels.get_by_channel_id(1).is_none());
-        assert_eq!(
-            channels.get_by_type_id(TypeId::of::<TestDvc>()).unwrap().channel_id,
-            Some(2)
-        );
     }
 
     fn add_active_channel(client: &mut DrdynvcClient, channel_id: DynamicChannelId) {

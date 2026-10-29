@@ -1,5 +1,6 @@
 use core::future::ready;
-use std::sync::Arc;
+use core::pin::Pin;
+use std::sync::{Arc, Mutex};
 
 use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
@@ -32,7 +33,7 @@ impl DvcNamedPipeProxy {
     /// IronRDP active session loop.
     pub fn new<F>(channel_name: &str, named_pipe_name: &str, dvc_write_callback: F) -> Self
     where
-        F: Fn(u32, Vec<SvcMessage>) -> PduResult<()> + Send + Sync + 'static,
+        F: Fn(u32, Vec<SvcMessage>) -> PduResult<()> + Send + 'static,
     {
         Self::new_async(channel_name, named_pipe_name, move |channel_id, messages| {
             ready(dvc_write_callback(channel_id, messages))
@@ -44,15 +45,17 @@ impl DvcNamedPipeProxy {
     /// Callback failure stops the worker; dropping the proxy cancels a pending callback.
     pub fn new_async<F, Fut>(channel_name: &str, named_pipe_name: &str, dvc_write_callback: F) -> Self
     where
-        F: Fn(u32, Vec<SvcMessage>) -> Fut + Send + Sync + 'static,
+        F: Fn(u32, Vec<SvcMessage>) -> Fut + Send + 'static,
         Fut: Future<Output = PduResult<()>> + Send + 'static,
     {
         Self {
             channel_name: channel_name.to_owned(),
             named_pipe_name: named_pipe_name.to_owned(),
-            dvc_write_callback: Arc::new(move |channel_id, messages| {
-                Box::pin(dvc_write_callback(channel_id, messages))
-            }),
+            dvc_write_callback: Arc::new(Mutex::new(
+                move |channel_id, messages| -> Pin<Box<dyn Future<Output = PduResult<()>> + Send>> {
+                    Box::pin(dvc_write_callback(channel_id, messages))
+                },
+            )),
             worker: None,
         }
     }
