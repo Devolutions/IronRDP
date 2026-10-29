@@ -29,11 +29,12 @@ pub enum DisplayUpdate {
     PointerPosition(PointerPositionAttribute),
     ColorPointer(ColorPointer),
     RGBAPointer(RGBAPointer),
-    /// A pointer shape wider or taller than the 96x96 ceiling `RGBAPointer` can carry
-    /// (MS-RDPBCGR 2.2.7.2.7), up to 384x384. Only usable when the client's negotiated
-    /// Large Pointer Capability Set includes `LARGE_POINTER_FLAG_384x384`; dropped
-    /// otherwise. See [`RGBAPointer`] for shapes up to 96x96 (32x32 without that
-    /// capability set at all).
+    /// A pointer shape up to 384x384, sent as a Fast-Path Large Pointer Update (MS-RDPBCGR 2.2.9.1.2.1.11).
+    /// Only usable when the client's negotiated Large Pointer Capability Set (MS-RDPBCGR 2.2.7.2.7)
+    /// includes `LARGE_POINTER_FLAG_384x384`; dropped otherwise.
+    /// An [`RGBAPointer`] or [`ColorPointer`] above the client's Color/New Pointer Update ceiling
+    /// (96x96 with `LARGE_POINTER_FLAG_96x96`, 32x32 otherwise) is promoted to one under the same conditions
+    /// and dropped otherwise.
     LargePointer(LargePointer),
     HidePointer,
     DefaultPointer,
@@ -62,10 +63,8 @@ impl core::fmt::Debug for RGBAPointer {
     }
 }
 
-/// Same shape as [`RGBAPointer`] (32bpp XOR mask; the encoder derives the AND mask from
-/// its alpha channel), for a pointer image
-/// above the 96x96 ceiling `RGBAPointer` can carry, up to 384x384
-/// (MS-RDPBCGR 2.2.9.1.2.1.11, Fast-Path Large Pointer Update).
+/// Same shape as [`RGBAPointer`] (32bpp XOR mask; the encoder derives the AND mask from its alpha channel),
+/// for a pointer image up to 384x384.
 #[derive(Clone)]
 pub struct LargePointer {
     pub cache_index: u16,
@@ -331,16 +330,18 @@ pub struct DisplayContext {
     pub gfx_handle: Option<GfxServerHandle>,
 
     /// Number of entries in the client's pointer cache, from its Pointer Capability Set
-    /// (MS-RDPBCGR 2.2.7.1.5, `pointerCacheSize`): the `cache_index` of [`RGBAPointer`] and
-    /// [`LargePointer`] must be less than this. `0` when the client does not support the New
-    /// Pointer Update.
+    /// (MS-RDPBCGR 2.2.7.1.5, `pointerCacheSize`).
+    /// The `cache_index` of [`RGBAPointer`], [`LargePointer`], and a [`ColorPointer`] promoted to a Large Pointer
+    /// Update must be less than this.
+    /// `0` when the client does not support the New Pointer Update.
     ///
     /// mstsc sends 21, FreeRDP 128. The server drops a pointer update whose `cache_index` is out of
     /// range, as mstsc ends the session and FreeRDP drops the connection on one.
     pub pointer_cache_size: u16,
 
-    /// Number of entries in the client's color pointer cache (MS-RDPBCGR 2.2.7.1.5,
-    /// `colorPointerCacheSize`): the `cache_index` of [`ColorPointer`] must be less than this.
+    /// Number of entries in the client's color pointer cache (MS-RDPBCGR 2.2.7.1.5, `colorPointerCacheSize`).
+    /// The `cache_index` of a [`ColorPointer`] sent as a Color Pointer Update must be less than this;
+    /// one promoted to a Large Pointer Update is checked against [`Self::pointer_cache_size`].
     pub color_pointer_cache_size: u16,
 }
 
