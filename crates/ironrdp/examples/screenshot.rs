@@ -526,7 +526,10 @@ fn tls_upgrade(
     rustls::StreamOwned<rustls::ClientConnection, DeadlineTcpStream>,
     Vec<u8>,
 )> {
-    let config = std::sync::Arc::new(tls_client_config(&server_name)?);
+    let config = std::sync::Arc::new(
+        ironrdp_tls::rustls_client_config(ironrdp_tls::CertificateValidation::Strict, &server_name, None)
+            .context("build TLS config")?,
+    );
 
     let server_name = server_name.try_into()?;
 
@@ -547,11 +550,6 @@ fn tls_upgrade(
     let server_public_key = extract_tls_server_public_key(cert)?;
 
     Ok((tls_stream, server_public_key))
-}
-
-fn tls_client_config(server_name: &str) -> anyhow::Result<rustls::ClientConfig> {
-    ironrdp_tls::rustls_client_config(ironrdp_tls::CertificateValidation::Strict, server_name, None)
-        .context("build TLS config")
 }
 
 fn extract_tls_server_public_key(cert: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -597,7 +595,7 @@ mod tests {
 
     #[test]
     fn screenshot_options_preserve_existing_defaults() -> anyhow::Result<()> {
-        // oracle: reference Devolutions/IronRDP@905c28b3a4e6:crates/ironrdp/examples/screenshot.rs
+        // oracle: mutant changing the screenshot example's preserved defaults.
         let Action::Run(super::RunConfig {
             port,
             output,
