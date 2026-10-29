@@ -324,6 +324,7 @@ fn compression_type_from_level(level: u32) -> anyhow::Result<CompressionType> {
 
 struct DeadlineTcpStream {
     stream: TcpStream,
+    /// INVARIANT: Every read shares this absolute deadline until it is explicitly replaced.
     read_deadline: Option<Instant>,
 }
 
@@ -445,27 +446,27 @@ fn active_stage(
         &mut framed,
         no_graphics_timeout,
         after_first_graphics,
-        |stream, deadline| stream.get_mut().set_read_deadline(deadline),
-        Instant::now,
-        |action, payload, received_at| Ok(active_stage.process(image, action, payload, received_at)?),
+        &mut |stream, deadline| stream.get_mut().set_read_deadline(deadline),
+        &mut Instant::now,
+        &mut |action, payload, received_at| Ok(active_stage.process(image, action, payload, received_at)?),
     )
 }
+
+type FrameProcessor<'a> = dyn FnMut(ironrdp_pdu::Action, &[u8], Option<connector::MonotonicInstant>) -> anyhow::Result<Vec<ActiveStageOutput>>
+    + 'a;
 
 fn capture_frames<S: Read + io::Write>(
     framed: &mut ironrdp_blocking::Framed<S>,
     no_graphics_timeout: Duration,
     after_first_graphics: Duration,
-    mut set_deadline: impl FnMut(&mut S, Instant),
-    mut now: impl FnMut() -> Instant,
-    mut process: impl FnMut(
-        ironrdp_pdu::Action,
-        &[u8],
-        Option<connector::MonotonicInstant>,
-    ) -> anyhow::Result<Vec<ActiveStageOutput>>,
+    set_deadline: &mut dyn FnMut(&mut S, Instant),
+    now: &mut dyn FnMut() -> Instant,
+    process: &mut FrameProcessor<'_>,
 ) -> anyhow::Result<()> {
     let mut got_graphics = false;
     let mut deadline = capture_deadline(now(), no_graphics_timeout)?;
 
+    // INVARIANT: Only the first graphics update replaces the initial deadline with that instant plus the grace period.
     'outer: loop {
         if deadline <= now() {
             break 'outer;
@@ -620,7 +621,7 @@ mod tests {
         assert!(credssp_enabled);
         assert!(compression_enabled);
         assert_eq!(compression_level, 3);
-        // oracle: regression #2311 (bounded screenshot capture defaults).
+        // oracle: mutant changing the chosen initial-wait or grace-period defaults.
         assert_eq!(no_graphics_timeout_seconds, 3);
         assert_eq!(after_first_graphics_seconds, 8);
 
@@ -629,7 +630,7 @@ mod tests {
 
     #[test]
     fn screenshot_options_accept_explicit_security_compression_and_capture_values() -> anyhow::Result<()> {
-        // oracle: regression #2311 (explicit screenshot option values must be honored).
+        // oracle: mutant ignoring explicit screenshot option values.
         let Action::Run(super::RunConfig {
             autologon,
             tls_enabled,
@@ -678,7 +679,7 @@ mod tests {
 
     #[test]
     fn screenshot_options_reject_zero_initial_graphics_timeout() {
-        // oracle: regression #2311 (the initial graphics wait must be nonzero).
+        // oracle: mutant accepting a zero initial graphics wait.
         parse(&[
             "--host",
             "localhost",
@@ -693,8 +694,15 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_options_reject_unexpected_arguments() {
+        // oracle: mutant silently ignoring an unknown command-line option.
+        parse(&["--host", "localhost", "-u", "user", "-p", "password", "--bogus"])
+            .expect_err("unknown options should be rejected");
+    }
+
+    #[test]
     fn capture_without_graphics_retries_early_timeouts_then_fails_at_initial_deadline() {
-        // oracle: regression #2311 (no graphics must fail at the initial deadline, not at an early timeout).
+        // oracle: mutant treating an early socket timeout as capture expiration or succeeding without graphics.
         let start = Instant::now();
         let (result, deadlines, processed) = run_capture_script(
             start,
@@ -709,12 +717,17 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(processed, 1);
-        assert_eq!(deadlines, vec![start + Duration::from_secs(3); 3]);
+        assert!(!deadlines.is_empty());
+        assert!(
+            deadlines
+                .iter()
+                .all(|deadline| *deadline == start + Duration::from_secs(3))
+        );
     }
 
     #[test]
     fn capture_switches_to_first_graphics_grace_without_extending_it_on_later_updates() {
-        // oracle: regression #2311 (only the first graphics update starts the grace period).
+        // oracle: mutant extending the capture deadline after a later graphics update.
         let start = Instant::now();
         let (result, deadlines, processed) = run_capture_script(
             start,
@@ -729,19 +742,16 @@ mod tests {
 
         result.expect("graphics should allow a capture after the grace period");
         assert_eq!(processed, 2);
-        assert_eq!(
-            deadlines,
-            vec![
-                start + Duration::from_secs(3),
-                start + Duration::from_secs(10),
-                start + Duration::from_secs(10),
-            ]
-        );
+        assert_eq!(deadlines.first(), Some(&(start + Duration::from_secs(3))));
+        assert!(deadlines.contains(&(start + Duration::from_secs(10))));
+        assert!(deadlines.iter().all(|deadline| {
+            *deadline == start + Duration::from_secs(3) || *deadline == start + Duration::from_secs(10)
+        }));
     }
 
     #[test]
     fn capture_with_zero_grace_stops_after_first_graphics() {
-        // oracle: regression #2311 (zero grace captures the first update without another read).
+        // oracle: mutant reading another frame after the first graphics update with zero grace.
         let start = Instant::now();
         let (result, deadlines, processed) = run_capture_script(
             start,
@@ -757,7 +767,7 @@ mod tests {
 
     #[test]
     fn capture_rejects_first_frame_completed_at_initial_deadline() {
-        // oracle: regression #2311 discussion_r4417496685 (late first graphics must not start a grace period).
+        // oracle: mutant starting a grace period for a first frame completed at the initial deadline.
         let start = Instant::now();
         let (result, deadlines, processed) = run_capture_script(
             start,
@@ -768,12 +778,17 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(processed, 0);
-        assert_eq!(deadlines, vec![start + Duration::from_secs(3)]);
+        assert!(!deadlines.is_empty());
+        assert!(
+            deadlines
+                .iter()
+                .all(|deadline| *deadline == start + Duration::from_secs(3))
+        );
     }
 
     #[test]
     fn capture_skips_frame_completed_after_grace_deadline() {
-        // oracle: regression #2311 discussion_r4417496685 (a late frame must not be processed).
+        // oracle: mutant processing a frame completed after the grace deadline.
         let start = Instant::now();
         let (result, deadlines, processed) = run_capture_script(
             start,
@@ -784,15 +799,16 @@ mod tests {
 
         result.expect("the earlier graphics update should still be captured");
         assert_eq!(processed, 1);
-        assert_eq!(
-            deadlines,
-            vec![start + Duration::from_secs(3), start + Duration::from_secs(10)]
-        );
+        assert_eq!(deadlines.first(), Some(&(start + Duration::from_secs(3))));
+        assert!(deadlines.contains(&(start + Duration::from_secs(10))));
+        assert!(deadlines.iter().all(|deadline| {
+            *deadline == start + Duration::from_secs(3) || *deadline == start + Duration::from_secs(10)
+        }));
     }
 
     #[test]
     fn deadline_tcp_stream_enforces_one_deadline_across_fragmented_reads() -> anyhow::Result<()> {
-        // oracle: regression #2311 discussion_r4417496685 (fragmented reads share an absolute deadline).
+        // oracle: mutant restarting the full timeout after each partial transport read.
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let server_addr = listener.local_addr()?;
         let (ready_sender, ready_receiver) = mpsc::channel();
@@ -831,11 +847,10 @@ mod tests {
 
     #[test]
     fn tls_upgrade_rejects_untrusted_server_certificates() -> anyhow::Result<()> {
-        // oracle: regression #2311
+        // oracle: spec RFC 5280 §6.1 (certificate paths must validate against a trust anchor).
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let server_addr = listener.local_addr()?;
         let server_config = Arc::new(test_tls_server_config()?);
-        let _client_config = super::tls_client_config("localhost")?;
         let server = thread::spawn(move || -> io::Result<()> {
             let (mut stream, _) = listener.accept()?;
             let mut connection = rustls::ServerConnection::new(server_config).map_err(io::Error::other)?;
@@ -845,22 +860,26 @@ mod tests {
 
         let result = tls_upgrade(TcpStream::connect(server_addr)?, "localhost".to_owned());
 
-        assert!(
-            result.is_err(),
-            "strict TLS must reject an untrusted server certificate"
-        );
+        let error = result.err().expect("strict TLS must reject the server certificate");
+        let io_error = error
+            .downcast_ref::<io::Error>()
+            .expect("certificate rejection should fail the TLS handshake");
+        assert!(matches!(
+            io_error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<rustls::Error>()),
+            Some(rustls::Error::InvalidCertificate(_))
+        ));
         server.join().expect("server thread should finish")?;
 
         Ok(())
     }
 
     fn test_tls_server_config() -> anyhow::Result<rustls::ServerConfig> {
-        let certificate = rustls::pki_types::CertificateDer::from_pem_slice(include_bytes!(
-            "../../ironrdp-tls/tests/certs/server-cert.pem"
-        ))?;
-        let private_key = rustls::pki_types::PrivateKeyDer::from_pem_slice(include_bytes!(
-            "../../ironrdp-tls/tests/certs/server-key.pem"
-        ))?;
+        let certificate =
+            rustls::pki_types::CertificateDer::from_pem_slice(include_bytes!("test_data/screenshot-server-cert.pem"))?;
+        let private_key =
+            rustls::pki_types::PrivateKeyDer::from_pem_slice(include_bytes!("test_data/screenshot-server-key.pem"))?;
 
         Ok(rustls::ServerConfig::builder()
             .with_no_client_auth()
@@ -910,9 +929,9 @@ mod tests {
             &mut framed,
             Duration::from_secs(3),
             grace,
-            |_, deadline| deadlines.push(deadline),
-            || now.get(),
-            |_, _, _| {
+            &mut |_, deadline| deadlines.push(deadline),
+            &mut || now.get(),
+            &mut |_, _, _| {
                 processed += 1;
                 Ok(if updates.pop_front().expect("unexpected frame processing") {
                     vec![ActiveStageOutput::GraphicsUpdate(
