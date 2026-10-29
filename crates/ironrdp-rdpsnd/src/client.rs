@@ -326,7 +326,7 @@ impl AudioOutputClient {
     }
 
     fn training_confirm(pdu: &TrainingPdu) -> PduResult<ClientAudioOutputPdu> {
-        let pack_size: EncodeResult<_> = cast_length!("wPackSize", pdu.data.len());
+        let pack_size: EncodeResult<_> = cast_length!("wPackSize", pdu.pack_size());
         let pack_size = pack_size.map_err(|e| encode_err!(e))?;
         Ok(ClientAudioOutputPdu::TrainingConfirm(pdu::TrainingConfirmPdu {
             timestamp: pdu.timestamp,
