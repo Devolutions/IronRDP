@@ -175,9 +175,13 @@ fn wts2_progressive_tile_first_mixed_25tiles() {
     assert_eq!(diff_count, 9, "expected exactly 9 difference-encoded tiles");
 }
 
-/// The DWT variant comes from each REGION's `RFX_DWT_REDUCE_EXTRAPOLATE` flag (MS-RDPEGFX
-/// 2.2.4.2.1.5). Bit 0 of the CONTEXT flags is `RFX_SUBBAND_DIFFING` (MS-RDPEGFX 2.2.4.2.1.4)
-/// and must not change how a non-difference tile decodes.
+/// The DWT variant comes from each REGION's `RFX_DWT_REDUCE_EXTRAPOLATE` flag ([MS-RDPEGFX
+/// 2.2.4.2.1.5 RFX_PROGRESSIVE_REGION][region]). Bit 0 of the CONTEXT flags is
+/// `RFX_SUBBAND_DIFFING` ([MS-RDPEGFX 2.2.4.2.1.4 RFX_PROGRESSIVE_CONTEXT][context]) and must
+/// not change how a non-difference tile decodes.
+///
+/// [region]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/ffa9dcfc-610c-4cc5-86ba-d9435cfb37aa
+/// [context]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/89c2eaef-6bd1-4cb1-a80e-bfc161ccdbbf
 #[test]
 fn progressive_dwt_variant_comes_from_region_flags() {
     use ironrdp_graphics::progressive::ProgressiveDecoder;

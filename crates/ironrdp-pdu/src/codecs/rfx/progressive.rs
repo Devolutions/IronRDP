@@ -403,7 +403,8 @@ pub const FLAG_DWT_REDUCE_EXTRAPOLATE: u8 = 0x01;
 
 /// RFX_SUBBAND_DIFFING in [2.2.4.2.1.4] RFX_PROGRESSIVE_CONTEXT flags.
 ///
-/// Indicates that sub-band diffing is enabled.
+/// Indicates that sub-band diffing is enabled. A decoder does not need this bit: each tile's
+/// [`TILE_FLAG_DIFFERENCE`] says whether that tile carries coefficient differences.
 ///
 /// [2.2.4.2.1.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/89c2eaef-6bd1-4cb1-a80e-bfc161ccdbbf
 pub const CONTEXT_FLAG_SUBBAND_DIFFING: u8 = 0x01;
