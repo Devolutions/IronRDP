@@ -394,8 +394,19 @@ pub struct ProgressiveContextPdu {
     pub flags: u8,
 }
 
-/// Bit 0 of context flags: use reduce-extrapolate DWT.
+/// RFX_DWT_REDUCE_EXTRAPOLATE in [2.2.4.2.1.5] RFX_PROGRESSIVE_REGION flags.
+///
+/// Indicates that the discrete wavelet transform (DWT) uses the "Reduce-Extrapolate" method.
+///
+/// [2.2.4.2.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/ffa9dcfc-610c-4cc5-86ba-d9435cfb37aa
 pub const FLAG_DWT_REDUCE_EXTRAPOLATE: u8 = 0x01;
+
+/// RFX_SUBBAND_DIFFING in [2.2.4.2.1.4] RFX_PROGRESSIVE_CONTEXT flags.
+///
+/// Indicates that sub-band diffing is enabled.
+///
+/// [2.2.4.2.1.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/89c2eaef-6bd1-4cb1-a80e-bfc161ccdbbf
+pub const CONTEXT_FLAG_SUBBAND_DIFFING: u8 = 0x01;
 
 /// RFX_TILE_DIFFERENCE in TILE_SIMPLE and TILE_FIRST flags.
 ///
@@ -407,9 +418,12 @@ impl ProgressiveContextPdu {
     const NAME: &'static str = "ProgressiveContext";
     const FIXED_PART_SIZE: usize = 1 /* ctxId */ + 2 /* tileSize */ + 1 /* flags */;
 
-    /// Whether the reduce-extrapolate DWT variant is selected.
+    /// Whether bit 0 of the CONTEXT flags is set.
+    ///
+    /// That bit is RFX_SUBBAND_DIFFING, not the DWT variant.
+    #[deprecated(note = "the DWT variant is `ProgressiveRegion::uses_reduce_extrapolate`")]
     pub fn uses_reduce_extrapolate(&self) -> bool {
-        self.flags & FLAG_DWT_REDUCE_EXTRAPOLATE != 0
+        self.flags & CONTEXT_FLAG_SUBBAND_DIFFING != 0
     }
 }
 
@@ -1151,9 +1165,8 @@ mod tests {
         let original = ProgressiveContextPdu {
             context_id: 0,
             tile_size: 0x0040,
-            flags: FLAG_DWT_REDUCE_EXTRAPOLATE,
+            flags: CONTEXT_FLAG_SUBBAND_DIFFING,
         };
-        assert!(original.uses_reduce_extrapolate());
 
         let mut buf = [0u8; ProgressiveContextPdu::FIXED_PART_SIZE];
         original.encode(&mut WriteCursor::new(&mut buf)).unwrap();
@@ -1290,7 +1303,7 @@ mod tests {
             ProgressiveBlock::Context(ProgressiveContextPdu {
                 context_id: 0,
                 tile_size: 0x0040,
-                flags: FLAG_DWT_REDUCE_EXTRAPOLATE,
+                flags: CONTEXT_FLAG_SUBBAND_DIFFING,
             }),
             ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
                 frame_index: 0,
