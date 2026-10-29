@@ -10,6 +10,7 @@ mod max_request_size;
 mod multitransport_finalize;
 mod pointer_cache_index;
 mod pointer_mask;
+mod pointer_updates;
 mod rdpdr;
 mod rdpei;
 mod remotefx_codec_choice;
