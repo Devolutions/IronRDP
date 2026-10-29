@@ -409,6 +409,11 @@ pub trait RdpServerDisplay: Send {
     /// Called when a connection's session starts, and again after each
     /// Deactivation-Reactivation Sequence of that connection. `ctx` carries
     /// what the connection publishes to the display; see [`DisplayContext`].
+    ///
+    /// On an error, the server closes the connection. Return a
+    /// [`ServerErrorKind::ErrorInfo`](crate::ServerErrorKind::ErrorInfo) error to tell the client
+    /// why: the server sends its code in a Set Error Info PDU (MS-RDPBCGR 2.2.5.1.1). With other
+    /// errors, the client gets no reason and typically reports a lost network connection.
     async fn updates(&mut self, ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>>;
 
     /// Request a new size for the display

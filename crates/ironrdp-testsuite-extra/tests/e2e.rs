@@ -625,6 +625,116 @@ async fn a_new_connection_starts_without_the_previous_sessions_events() {
     .await
 }
 
+/// A display that cannot start returns a `ServerErrorKind::ErrorInfo` error, and the client gets that code in a Set
+/// Error Info PDU, so it can tell the user why the session ended instead of reporting a lost connection.
+// oracle: spec MS-RDPBCGR §2.2.5.1.1
+// oracle: regression #2301
+#[tokio::test]
+async fn a_display_that_cannot_start_tells_the_client_why() {
+    let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
+
+    let reason = Box::pin(run_failing_display_probe(Some(error_info))).await;
+
+    let Some(session::GracefulDisconnectReason::Other(description)) = reason else {
+        panic!("the client did not get the reason, it got {reason:?}");
+    };
+    assert_eq!(description, error_info.description());
+}
+
+/// Other display errors close the connection as before, with no Set Error Info PDU.
+#[tokio::test]
+async fn a_display_error_without_error_info_sends_no_reason() {
+    assert!(Box::pin(run_failing_display_probe(None)).await.is_none());
+}
+
+/// Connects a client to a server whose display fails to start with `error_info`, or with a plain error, and returns
+/// the reason the client got for the end of the session.
+async fn run_failing_display_probe(error_info: Option<ErrorInfo>) -> Option<session::GracefulDisconnectReason> {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(FailingDisplay { error_info })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+
+            let server_addr = local_addr_of(&ev).await;
+            let (mut framed, connection_result) = connect_client(server_addr, |client_addr| {
+                connector::ClientConnector::new(default_client_config(), client_addr)
+            })
+            .await;
+            let mut stage = ActiveStageBuilder {
+                static_channels: connection_result.static_channels,
+                user_channel_id: connection_result.user_channel_id,
+                io_channel_id: connection_result.io_channel_id,
+                message_channel_id: connection_result.message_channel_id,
+                share_id: connection_result.share_id,
+                compression_type: connection_result.compression_type,
+                enable_server_pointer: connection_result.enable_server_pointer,
+                pointer_software_rendering: connection_result.pointer_software_rendering,
+            }
+            .build();
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+            // The server closes the connection right after the display fails.
+            let mut reason = None;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while reason.is_none() && Instant::now() < deadline {
+                let Ok(Ok((action, frame))) = tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await
+                else {
+                    break;
+                };
+                for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
+                    if let ActiveStageOutput::Terminate(terminate) = output {
+                        reason = Some(terminate);
+                    }
+                }
+            }
+
+            server_task.abort();
+            reason
+        })
+        .await
+}
+
+struct FailingDisplay {
+    error_info: Option<ErrorInfo>,
+}
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for FailingDisplay {
+    async fn size(&mut self) -> DesktopSize {
+        DesktopSize {
+            width: DESKTOP_WIDTH,
+            height: DESKTOP_HEIGHT,
+        }
+    }
+
+    async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+        Err(match self.error_info {
+            Some(error_info) => server::ServerError::new("display", server::ServerErrorKind::ErrorInfo(error_info)),
+            None => server::ServerError::new("display", server::ServerErrorKind::Reason("capture failed".to_owned())),
+        })
+    }
+}
+
 #[tokio::test]
 async fn display_control_channel_is_created_when_the_display_offers_it() {
     let (echo_started, display_control_started) = run_display_control_probe(true).await;

@@ -4780,7 +4780,14 @@ impl RdpServer {
         } else {
             None
         };
-        let mut display_updates = self.display.lock().await.updates(conn.display_context()).await?;
+        let display_updates = self.display.lock().await.updates(conn.display_context()).await;
+        let mut display_updates = match display_updates {
+            Ok(display_updates) => display_updates,
+            Err(error) => {
+                send_display_error_info(conn, writer, io_channel_id, user_channel_id, &error).await;
+                return Err(error);
+            }
+        };
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
@@ -6169,6 +6176,38 @@ fn encode_share_data_pdu(
         user_data,
     };
     encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
+}
+
+/// Tells the client why the session ends when the display cannot start and `error` is a
+/// [`ServerErrorKind::ErrorInfo`]: sends its code in a Set Error Info PDU (MS-RDPBCGR 2.2.5.1.1).
+/// Without it, the client reports a lost network connection.
+async fn send_display_error_info(
+    conn: &ConnectionState,
+    writer: &mut impl FramedWrite,
+    io_channel_id: u16,
+    user_channel_id: u16,
+    error: &ServerError,
+) {
+    let ServerErrorKind::ErrorInfo(error_info) = *error.kind() else {
+        return;
+    };
+    if !conn.client_supports_errinfo {
+        // MS-RDPBCGR 3.3.5.7.1: the client did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU.
+        debug!("client did not opt into Set Error Info PDUs; disconnecting without the reason");
+        return;
+    }
+    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error_info));
+    // pduSource=0 -- MS-RDPBCGR 2.2.5.1.1 requires it for TS_SET_ERROR_INFO_PDU.
+    match encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id) {
+        Ok(bytes) => {
+            if let Err(error) = writer.write_all(&bytes).await {
+                debug!(%error, "could not send the display error reason; disconnecting anyway");
+            }
+        }
+        Err(error) => {
+            warn!(%error, "could not encode the display error reason; disconnecting anyway");
+        }
+    }
 }
 
 async fn deactivate_all(io_channel_id: u16, user_channel_id: u16, writer: &mut impl FramedWrite) -> ServerResult<()> {
