@@ -424,8 +424,10 @@ fn ready_training_sends_confirm() {
 }
 
 /// The Training Confirm echoes the server's wPackSize ([MS-RDPEA] 2.2.3.2),
-/// the size of the whole Training PDU. The FreeRDP server (GNOME Remote
-/// Desktop) ignores a confirm with any other value and then plays nothing.
+/// the size of the whole Training PDU. GNOME Remote Desktop rejects a confirm
+/// with any other value and then plays nothing.
+// oracle: spec MS-RDPEA §4.1.3 annotated Training PDU (BodySize 0x3fc, wPackSize 0x400) and §2.2.3.2
+// oracle: reference FreeRDP rdpsnd_server_training writes wPackSize bytes of data; GNOME RD TRAINING_PACKSIZE 1024
 #[rstest]
 #[case::windows(1016)] // 8 bytes of header and fields, then 1016 of data
 #[case::freerdp_server(1024)] // 1024 bytes of data after the fields
