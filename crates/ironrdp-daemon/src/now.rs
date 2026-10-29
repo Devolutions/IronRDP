@@ -940,6 +940,7 @@ mod tests {
             bounded(async { tokio::join!(operations.session_logoff(), accept_and_negotiate(&mut host)) }).await;
 
         let error = result.expect_err("a host without logoff support must reject the request");
+        // oracle: mutant a session_logoff that reports another category, which agent and ActiveX callers surface as a different error kind
         assert_eq!(error.category, AgentErrorCategory::Unavailable);
     }
 }

@@ -874,29 +874,36 @@ mod tests {
         format!("{reason:?}")
     }
 
-    // oracle: spec MS-RDPBCGR §2.2.5.1.1 (ERRINFO_LOGOFF_BY_USER: the user logged off the session)
-    #[tokio::test]
-    async fn logoff_succeeds_when_the_host_ends_the_session_with_logoff_by_user() {
-        let endpoint = isolated_endpoint("ir-logoff");
+    async fn assert_logoff_succeeds_when_the_host_ends_the_session_with(code: ProtocolIndependentCode) {
+        let endpoint = isolated_endpoint(&format!("ir-logoff-{code:?}"));
         let listener = Listener::bind(&endpoint).expect("bind isolated test endpoint");
         let server = serve_mock_daemon(listener, 4, Request::Logoff, |poll| {
             if poll == 1 {
                 (ConnState::Connected, None)
             } else {
-                (
-                    ConnState::Disconnected,
-                    Some(host_ended_session_reason(ProtocolIndependentCode::LogoffByUser)),
-                )
+                (ConnState::Disconnected, Some(host_ended_session_reason(code)))
             }
         });
 
         let client = async {
             logoff_session(&endpoint, Duration::from_secs(10))
                 .await
-                .expect("log off active session");
+                .unwrap_or_else(|error| panic!("{code:?} must count as a logoff: {error}"));
         };
         let ((), logoff_requested) = tokio::join!(client, server);
         assert!(logoff_requested);
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.5.1.1 (ERRINFO_LOGOFF_BY_USER: the user logged off the session)
+    #[tokio::test]
+    async fn logoff_succeeds_when_the_host_ends_the_session_with_logoff_by_user() {
+        assert_logoff_succeeds_when_the_host_ends_the_session_with(ProtocolIndependentCode::LogoffByUser).await;
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.5.1.1 (ERRINFO_RPC_INITIATED_LOGOFF: a forced logoff by an administrative tool)
+    #[tokio::test]
+    async fn logoff_succeeds_when_the_host_ends_the_session_with_rpc_initiated_logoff() {
+        assert_logoff_succeeds_when_the_host_ends_the_session_with(ProtocolIndependentCode::RpcInitiatedLogoff).await;
     }
 
     // oracle: spec MS-RDPBCGR §2.2.5.1.1 (ERRINFO_IDLE_TIMEOUT ends the session without a logoff)

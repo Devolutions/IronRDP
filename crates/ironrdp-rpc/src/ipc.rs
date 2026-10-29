@@ -3348,9 +3348,9 @@ mod tests {
         assert_eq!(decode::<Request>(&encoded).expect("decode"), request);
     }
 
-    // oracle: mutant a Logoff encoding that reuses another request's tag
+    // oracle: mutant a Logoff encoding that writes a different tag or does not round-trip
     #[test]
-    fn logoff_has_a_distinct_request_tag() {
+    fn logoff_encodes_as_request_tag_41_and_round_trips() {
         let encoded = encode_vec(&Request::Logoff).expect("encode");
         assert_eq!(encoded, [41]);
         assert_eq!(decode::<Request>(&encoded).expect("decode"), Request::Logoff);
