@@ -1405,6 +1405,19 @@ impl GraphicsPipelineClient {
             .transpose()
             .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
 
+        // Both views describe one picture. Views of two different sizes are two pictures, and
+        // combining them paints the wrong chroma over the main view.
+        if let (Some(main), Some(auxiliary)) = (&main_view, &auxiliary_view)
+            && (main.width(), main.height()) != (auxiliary.width(), auxiliary.height())
+        {
+            return Err(pdu_other_err!("AVC444 views differ in size"));
+        }
+        // A chroma-only update refines the luma already there. With no picture yet, it would
+        // paint chroma over black.
+        if main.is_none() && !self.avc444_frames.contains_key(&surface_id) {
+            return Err(pdu_other_err!("AVC444 chroma without a luma picture"));
+        }
+
         // The combined picture lives as long as the surface, so it is charged to the
         // compositor's budget, and only for a surface the compositor accepted, whose
         // dimensions it has bounded.
