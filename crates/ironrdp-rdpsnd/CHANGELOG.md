@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.11.0...ironrdp-rdpsnd-v0.11.1)] - 2026-10-29
+
+### <!-- 4 -->Bug Fixes
+
+- Echo the server's wPackSize in the Training Confirm ([#2294](https://github.com/Devolutions/IronRDP/issues/2294)) ([f86e3c49f3](https://github.com/Devolutions/IronRDP/commit/f86e3c49f349127b7e7f3c737ca10de49cc20f8d)) 
+
+  GNOME Remote Desktop sends IronRDP no audio, because the client's
+  Training Confirm carries the wrong wPackSize.
+  
+  The Training Confirm must echo the Training PDU's wPackSize, the size of
+  the whole PDU ([MS-RDPEA] 2.2.3.2). The client sent the length of the
+  data after the fields instead, 8 bytes short. The FreeRDP server library
+  hands the value to its TrainingConfirm callback, and GNOME Remote
+  Desktop's rejects it.
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpsnd-v0.10.0...ironrdp-rdpsnd-v0.11.0)] - 2026-10-27
 
 ### <!-- 7 -->Build

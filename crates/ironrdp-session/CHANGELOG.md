@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.13.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.13.0...ironrdp-session-v0.13.1)] - 2026-10-29
+
+### <!-- 1 -->Features
+
+- Expose display control readiness and capabilities ([#2285](https://github.com/Devolutions/IronRDP/issues/2285)) ([851747a1c7](https://github.com/Devolutions/IronRDP/commit/851747a1c72b77cff9002ca3dbfdfda5ae200833)) 
+
+  `ActiveStage.EncodedResize` returns `null` until the Display Control
+  channel has received the server's capabilities, and the .NET binding
+  gave a client no way to tell when that happens, so clients polled or
+  retried blindly.
+  
+  Add `ActiveStage.DisplayControlState` (`Unavailable`, `Pending`,
+  `Ready`) and `ActiveStage.DisplayControlCapabilities` (`MaxNumMonitors`,
+  `MaxMonitorArea`), wrapping
+  `ironrdp_session::ActiveStage::display_control_ready` and
+  `display_control_capabilities`. A client checks the state after each
+  `Process` call and sends its first resize once it becomes `Ready`.
+  
+  `display_control_ready` now takes `&self`, which Diplomat requires for a
+  getter; it never needed `&mut self`.
+
+- Encode fast-path input without the active stage ([#2288](https://github.com/Devolutions/IronRDP/issues/2288)) ([cd6c224335](https://github.com/Devolutions/IronRDP/commit/cd6c224335dd83401308d66d4de4fcac28a080c7)) 
+
+  `ActiveStage.ProcessFastpathInput` was the only way for a .NET client to
+  turn input events into wire bytes, and it takes the stage and the image,
+  so input handlers had to share the lock that the PDU decode loop holds.
+  On a busy screen the UI thread waited on frame decoding for every mouse
+  move.
+  
+  Encoding needs no session state:
+  `ironrdp_session::encode_fastpath_input` chunks the events into
+  Fast-Path Input PDUs, and `ActiveStage::process_fastpath_input` reuses
+  it, so its output is unchanged. The .NET binding exposes it as
+  `FastPathInputEventIterator.Encode()`, which returns the PDUs for one
+  `InputDatabase.Apply` as a `VecU8` ready for `Framed.Write`, without
+  touching an `ActiveStage` or `DecodedImage`. `ProcessFastpathInput`
+  stays for clients with software pointer rendering, which also redraws
+  the pointer in the image.
+  
+  The Avalonia example sends input through `Encode()` unless software
+  pointer rendering is on, and the README states which calls no longer
+  need the stage lock.
+
+### <!-- 5 -->Performance
+
+- Copy RGBA32 updates a row at a time ([#2297](https://github.com/Devolutions/IronRDP/issues/2297)) ([c3a782ff7b](https://github.com/Devolutions/IronRDP/commit/c3a782ff7b6fbd91adee0264ee5ed1a0f8cee554)) 
+
+  A macOS client decoding 1080p AVC444 spent 37% of its busy samples
+  copying RGBA32 updates one pixel at a time.
+
+
+
 ## [[0.13.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.12.0...ironrdp-session-v0.13.0)] - 2026-10-27
 
 ### <!-- 1 -->Features

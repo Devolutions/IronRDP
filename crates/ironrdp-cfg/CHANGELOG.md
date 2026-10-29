@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.4.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cfg-v0.3.0...ironrdp-cfg-v0.4.0)] - 2026-10-29
+
+### <!-- 1 -->Features
+
+- Support AVD gateway orchestration, WAM, and OAuth2 auth ([#2247](https://github.com/Devolutions/IronRDP/issues/2247)) ([c58f568711](https://github.com/Devolutions/IronRDP/commit/c58f568711ea30c719812a42607ac978c7513a45)) 
+
+  Azure Virtual Desktop connections using `gatewaybrokeringtype:i:1`
+  negotiate session placement and gateway routing through an HTTPS
+  orchestration endpoint (`/api/v2/connections` or
+  `/api/arm/v2/connections`) before upgrading to a WebSocket gateway
+  transport and authenticating the target session host with Entra RDS AAD
+  Proof-of-Possession tokens.
+  
+  Add AVD gateway orchestration, `WWW-Authenticate: Claims:...` challenge
+  parsing, Windows Web Account Manager (`WebAuthenticationCoreManager`)
+  silent and interactive token acquisition, and a cross-platform
+  `OAuthAvdTokenProvider` supporting silent refresh-token exchange,
+  loopback PKCE browser login, OAuth2 device-code fallback, persistent
+  per-user refresh-token caching, and refresh-to-PoP host token minting.
+  Decode `redirectedServerCert` and `redirectedAuthBlob` payloads, wire
+  Shortpath UDP peer endpoints (`GatewayConnectionInfo::udp_peer`),
+  preserve `load_balance_info` and `target_certificate` across mid-session
+  AVD redirections, and add companion `<rdp_file>.json` `UserName` lookup
+  and `--prop KEY:TYPE:VALUE` overrides in `ironrdp-daemon`,
+  `ironrdp-agent`, and `ironrdp-viewer`.
+
+- Support Remote Credential Guard over RDPEAR ([#2256](https://github.com/Devolutions/IronRDP/issues/2256)) ([376eb8f566](https://github.com/Devolutions/IronRDP/commit/376eb8f56634e5c92d7137886e62ddeb6bbb280f)) 
+
+  Remote Credential Guard redirects Kerberos and NTLMv2 operations over
+  the `Microsoft::Windows::RDS::AuthRedirection` dynamic virtual channel
+  (MS-RDPEAR) so TGT keys and password hashes remain client-owned instead
+  of delegating credentials through CredSSP `TSTicketCreds`.
+  
+  Add `ironrdp-rdpear` with `no_std`/`alloc` outer envelope framing,
+  strict ASN.1 DER `TSRemoteGuardInnerPacket` codecs, and portable NDR32
+  type-serialization codecs for all 23 MS-RDPEAR Kerberos and NTLM
+  request/response calls under both the published IDL profile and the
+  Windows-native wire profile. Bound inbound static and dynamic channel
+  reassembly before fragment retention via
+  `SvcProcessor::max_message_size`, `DvcProcessor::max_message_size`, and
+  `DrdynvcClient::with_max_transport_message_size`.
+  
+  Wire the opt-in `remote-guard` feature through `ironrdp-connector`, the
+  async/blocking/Tokio drivers, `ironrdp-cfg`, `ironrdp-client`,
+  `ironrdp-daemon`, and `ironrdp-agent` (`--remote-guard` and
+  `ironrdp_remote_guard` with `Disabled`, `Negotiate`, `Ntlm`, and
+  `Kerberos` modes) backed by `sspi` 0.23.1. RCG requires `HYBRID` or
+  `HYBRID_EX` with `REDIRECTED_AUTHENTICATION_MODE_SUPPORTED`, strict TLS
+  validation, and a completed CredSSP context handoff, and omits
+  passwords, smart-card PINs, and auto-reconnect cookies from Client Info.
+
+
+
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cfg-v0.2.0...ironrdp-cfg-v0.3.0)] - 2026-10-27
 
 ### <!-- 1 -->Features

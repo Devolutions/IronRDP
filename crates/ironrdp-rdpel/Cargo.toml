@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpel"
-version = "0.0.2"
+version = "0.0.3"
 readme = "README.md"
 description = "Location dynamic channel client as described in MS-RDPEL"
 edition.workspace = true
@@ -18,9 +18,9 @@ test = false
 
 [dependencies]
 ironrdp-core = { version = "0.3.1", path = "../ironrdp-core", features = ["alloc"] } # public
-ironrdp-dvc = { version = "0.10.0", path = "../ironrdp-dvc" } # public
+ironrdp-dvc = { version = "0.10.1", path = "../ironrdp-dvc" } # public
 ironrdp-pdu = { version = "0.11.0", path = "../ironrdp-pdu", features = ["alloc"] } # public
-ironrdp-svc = { version = "0.10.0", path = "../ironrdp-svc" } # public
+ironrdp-svc = { version = "0.10.1", path = "../ironrdp-svc" } # public
 tracing = { version = "0.1", features = ["log"] }
 
 [lints]

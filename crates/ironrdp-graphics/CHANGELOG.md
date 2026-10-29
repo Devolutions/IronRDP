@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.11.0...ironrdp-graphics-v0.11.1)] - 2026-10-29
+
+### <!-- 4 -->Bug Fixes
+
+- Fix RemoteFX quantization, DWT rounding, and pointer alpha ([#2263](https://github.com/Devolutions/IronRDP/issues/2263)) ([cf15d041c3](https://github.com/Devolutions/IronRDP/commit/cf15d041c3f1f252d794b3e38e787302b170efed)) 
+
+  Round RemoteFX wavelet coefficients during quantization using `(value +
+  (1 << (factor - 1))) >> factor` with widened `i32` intermediates as
+  specified in `[MS-RDPRFX]` 3.1.8.1.5 instead of unrounded arithmetic
+  right-shifting, which floored negative coefficients in `[-(scale / 2),
+  -1]` to `-1` and produced color speckles on smooth gradients and icons.
+  
+  Use ceiling average `(a + b + 1) >> 1` in forward DWT low-pass sub-bands
+  to match the `[MS-RDPRFX]` 3.1.8.2.4 inverse DWT lifting step.
+  
+  Premultiply software pointer RGB channels by normalized alpha instead of
+  squaring each color component.
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.10.0...ironrdp-graphics-v0.11.0)] - 2026-10-27
 
 ### <!-- 4 -->Bug Fixes
