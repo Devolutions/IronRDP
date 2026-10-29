@@ -2,7 +2,7 @@
 name = "ironrdp-w365"
 version = "0.1.0"
 readme = "README.md"
-description = "Windows 365 battery status, power request, and screen capture dynamic channel clients"
+description = "Windows 365 battery status, power request, screen capture, and virtual desktop control dynamic channel clients"
 edition.workspace = true
 rust-version = "1.94"
 license.workspace = true

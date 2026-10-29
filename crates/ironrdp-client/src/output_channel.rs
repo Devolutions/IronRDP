@@ -212,7 +212,7 @@ impl OutputEventSender {
     /// For callbacks that run synchronously inside the session loop, such as dynamic channel handlers, which cannot
     /// `.await` and must not lose a [`DropPolicy::MustDeliver`] event to a full channel.
     /// Clones of this sender share one queue.
-    #[cfg(any(feature = "vdcswitch", feature = "w365"))]
+    #[cfg(feature = "w365")]
     pub(crate) fn defer(&self, event: RdpOutputEvent) {
         self.deferred.lock().expect("not poisoned").push_back(event);
     }

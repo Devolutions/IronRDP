@@ -66,14 +66,14 @@ use ironrdp_session::{
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
-#[cfg(feature = "vdcswitch")]
-use ironrdp_vdcswitch::client::{VdcSwitchClient, VdcSwitchHandler};
 #[cfg(feature = "w365")]
 use ironrdp_w365::battery::{BatteryStatusClient, BatteryStatusHandler};
 #[cfg(feature = "w365")]
 use ironrdp_w365::power_request::{PowerRequestClient, PowerRequestHandler};
 #[cfg(feature = "w365")]
 use ironrdp_w365::screen_capture::{ScreenCaptureClient, ScreenCaptureHandler};
+#[cfg(feature = "w365")]
+use ironrdp_w365::vdcswitch::client::{VdcSwitchClient, VdcSwitchHandler};
 use smallvec::SmallVec;
 #[cfg(feature = "gateway")]
 use tokio::io::ReadBuf;
@@ -276,19 +276,19 @@ pub enum RdpOutputEvent {
     /// The Cloud PC asked the client to switch the user to the local desktop.
     ///
     /// The client sends the Cloud PC no response; performing the switch is up to the embedder.
-    #[cfg(feature = "vdcswitch")]
+    #[cfg(feature = "w365")]
     SwitchToLocalRequested,
     /// The Cloud PC asked the client to perform a local action on the physical device, such as opening the Bluetooth settings.
-    #[cfg(feature = "vdcswitch")]
-    LocalActionRequested(ironrdp_vdcswitch::pdu::LocalAction),
+    #[cfg(feature = "w365")]
+    LocalActionRequested(ironrdp_w365::vdcswitch::pdu::LocalAction),
     /// The Cloud PC answered an [`RdpInputEvent::SwitchToCloud`] request with an HRESULT.
-    #[cfg(feature = "vdcswitch")]
+    #[cfg(feature = "w365")]
     SwitchToCloudCompleted {
         hresult: u32,
     },
     /// The Cloud PC selected an unsupported virtual desktop control version, so switch and local-action requests stop
     /// working until it opens the channel again.
-    #[cfg(feature = "vdcswitch")]
+    #[cfg(feature = "w365")]
     VirtualDesktopSwitchUnavailable {
         version: u32,
     },
@@ -421,12 +421,12 @@ impl RdpOutputEvent {
 /// backpressure: a dropped switch or settings request is a user action that silently does nothing, a dropped power
 /// request leaves the device asleep or awake against the Cloud PC's state, and a dropped save result leaves an upload
 /// unanswered.
-#[cfg(any(feature = "vdcswitch", feature = "w365"))]
+#[cfg(feature = "w365")]
 struct ChannelEvents {
     output_event_sender: crate::output_channel::OutputEventSender,
 }
 
-#[cfg(feature = "vdcswitch")]
+#[cfg(feature = "w365")]
 impl VdcSwitchHandler for ChannelEvents {
     fn switch_to_local_requested(&mut self) -> Option<u32> {
         // Like Windows App handing the switch to its container, the embedder performs it and the Cloud PC gets no response.
@@ -434,7 +434,7 @@ impl VdcSwitchHandler for ChannelEvents {
         None
     }
 
-    fn perform_local_action(&mut self, action: ironrdp_vdcswitch::pdu::LocalAction) {
+    fn perform_local_action(&mut self, action: ironrdp_w365::vdcswitch::pdu::LocalAction) {
         self.output_event_sender
             .defer(RdpOutputEvent::LocalActionRequested(action));
     }
@@ -444,7 +444,7 @@ impl VdcSwitchHandler for ChannelEvents {
             .defer(RdpOutputEvent::SwitchToCloudCompleted { hresult });
     }
 
-    fn version_negotiation_failed(&mut self, version: ironrdp_vdcswitch::pdu::ProtocolVersion) {
+    fn version_negotiation_failed(&mut self, version: ironrdp_w365::vdcswitch::pdu::ProtocolVersion) {
         self.output_event_sender
             .defer(RdpOutputEvent::VirtualDesktopSwitchUnavailable { version: version.0 });
     }
@@ -663,7 +663,7 @@ pub enum RdpInputEvent {
     #[cfg(feature = "location")]
     Location(LocationRequest),
     /// Tells the Cloud PC that the user switched from the local desktop back to it.
-    #[cfg(feature = "vdcswitch")]
+    #[cfg(feature = "w365")]
     SwitchToCloud,
     /// Reports the physical device's battery state over the battery status channel.
     ///
@@ -2355,16 +2355,16 @@ fn build_connector(
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
     }
 
-    #[cfg(any(feature = "vdcswitch", feature = "w365"))]
+    #[cfg(feature = "w365")]
     let channel_events = || {
         Box::new(ChannelEvents {
             output_event_sender: output_event_sender.clone(),
         })
     };
 
-    #[cfg(feature = "vdcswitch")]
+    #[cfg(feature = "w365")]
     if let Some(launch_uri) = &config.channels.virtual_desktop_switch {
-        match ironrdp_vdcswitch::pdu::LaunchUri::new(launch_uri.clone()) {
+        match ironrdp_w365::vdcswitch::pdu::LaunchUri::new(launch_uri.clone()) {
             Ok(launch_uri) => {
                 drdynvc = drdynvc.with_dynamic_channel(VdcSwitchClient::new(launch_uri, channel_events()));
             }
@@ -4842,7 +4842,7 @@ async fn active_session(
                             }
                         }
                     }
-                    #[cfg(feature = "vdcswitch")]
+                    #[cfg(feature = "w365")]
                     RdpInputEvent::SwitchToCloud => {
                         let batch = match active_stage.get_dvc::<VdcSwitchClient>() {
                             None => {

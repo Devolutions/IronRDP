@@ -139,15 +139,10 @@ Its presenter decodes H.264 through the `ironrdp-egfx` decoder trait and places 
 Location dynamic channel client and PDU codecs implemented as described in MS-RDPEL.
 The crate forwards only location data supplied by its caller and performs no location acquisition or I/O.
 
-#### [`crates/ironrdp-vdcswitch`](./crates/ironrdp-vdcswitch)
-
-Windows 365 virtual desktop control dynamic channel client and PDU codecs, following the Windows App client because no Microsoft Open Specification documents the channel.
-The crate passes switch-to-local and local-action requests to a caller-supplied handler and performs no I/O.
-
 #### [`crates/ironrdp-w365`](./crates/ironrdp-w365)
 
-Windows 365 battery status, power request, and screen capture redirection dynamic channel clients and PDU codecs, following the Windows App client because no Microsoft Open Specification documents the channels.
-The crate takes battery readings and screenshots from its caller, reports power-request changes and save results through handlers, and performs no I/O.
+Windows 365 battery status, power request, screen capture redirection, and virtual desktop control dynamic channel clients and PDU codecs, following the Windows App client because no Microsoft Open Specification documents the channels.
+The crate takes battery readings and screenshots from its caller, reports power-request changes, save results, and switch-to-local and local-action requests through handlers, and performs no I/O.
 
 #### [`crates/ironrdp-rdpewa`](./crates/ironrdp-rdpewa)
 

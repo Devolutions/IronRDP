@@ -245,7 +245,7 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
     let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
-    let _ = decode::<ironrdp_vdcswitch::pdu::VdcSwitchPdu>(data);
+    let _ = decode::<ironrdp_w365::vdcswitch::pdu::VdcSwitchPdu>(data);
     let _ = decode::<ironrdp_w365::battery::BatteryPdu>(data);
     let _ = decode::<ironrdp_w365::power_request::PowerRequestPdu>(data);
     let _ = decode::<ironrdp_w365::screen_capture::ScreenCapturePdu>(data);
@@ -433,7 +433,7 @@ pub fn pdu_round_trip(data: &[u8]) {
     rdpear_ndr_round_trip(data);
 
     // Virtual desktop control
-    pdu_round_trip_one!(data, ironrdp_vdcswitch::pdu::VdcSwitchPdu);
+    pdu_round_trip_one!(data, ironrdp_w365::vdcswitch::pdu::VdcSwitchPdu);
 
     // Windows 365 device redirection
     pdu_round_trip_one!(data, ironrdp_w365::battery::BatteryPdu);

@@ -1,18 +1,13 @@
-//! Expected bytes and behavior come from the Windows App 2.0.1485.0 client, which is the only
-//! implementation of this channel, as `crates/ironrdp-vdcswitch/PROTOCOL.md` records it.
-
 use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{DecodeErrorKind, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
-use ironrdp_vdcswitch::client::{VdcSwitchClient, VdcSwitchHandler};
-use ironrdp_vdcswitch::pdu::{LaunchUri, LocalAction, ProtocolVersion, VdcSwitchPdu, VersionRequestPdu};
+use ironrdp_w365::vdcswitch::client::{VdcSwitchClient, VdcSwitchHandler};
+use ironrdp_w365::vdcswitch::pdu::{LaunchUri, LocalAction, ProtocolVersion, VdcSwitchPdu, VersionRequestPdu};
 use proptest::prelude::*;
 use rstest::rstest;
 
-use crate::dvc_messages::encoded;
-
-const CHANNEL_ID: u32 = 7;
+use super::{CHANNEL_ID, dvc_payloads, encoded};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Event {
@@ -62,11 +57,6 @@ fn process(client: &mut VdcSwitchClient, payload: &[u8]) -> Vec<Vec<u8>> {
     encoded(&client.process(CHANNEL_ID, payload).expect("process PDU"))
 }
 
-/// Returns the channel payloads of DRDYNVC messages, checking that each targets the test channel.
-fn dvc_payloads(messages: &[ironrdp_svc::SvcMessage]) -> Vec<Vec<u8>> {
-    crate::dvc_messages::dvc_payloads(messages, CHANNEL_ID)
-}
-
 const VERSION_RESPONSE_V1: [u8; 10] = [
     0x02, 0x00, // VERSION_RESPONSE
     0x0A, 0x00, 0x00, 0x00, // pduLength
@@ -90,7 +80,7 @@ const PERFORM_BLUETOOTH_SETTINGS: [u8; 7] = [
     0x00, // Bluetooth settings
 ];
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Version request (type 1)
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Version request (type 1)
 #[test]
 fn channel_open_sends_version_request_with_null_terminated_launch_uri() {
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -115,7 +105,7 @@ fn channel_open_sends_version_request_with_null_terminated_launch_uri() {
     );
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Switch-to-local request and response (types 3 and 4)
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Switch-to-local request and response (types 3 and 4)
 #[test]
 fn switch_to_local_request_is_answered_with_the_handler_hresult() {
     let (mut client, events) = started_client("uri", Some(0x8000_4005));
@@ -133,7 +123,7 @@ fn switch_to_local_request_is_answered_with_the_handler_hresult() {
     );
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Switch-to-local request and response (types 3 and 4), which sends no response when the host application switches
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Switch-to-local request and response (types 3 and 4), which sends no response when the host application switches
 #[test]
 fn switch_to_local_request_handed_off_by_the_handler_sends_no_response() {
     let (mut client, events) = started_client("uri", None);
@@ -144,7 +134,7 @@ fn switch_to_local_request_handed_off_by_the_handler_sends_no_response() {
     assert!(replies.is_empty());
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Perform local action (type 7)
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Perform local action (type 7)
 #[test]
 fn local_action_reaches_the_handler_once_version_2_is_negotiated() {
     let (mut client, events) = started_client("uri", None);
@@ -160,7 +150,7 @@ fn local_action_reaches_the_handler_once_version_2_is_negotiated() {
     assert!(replies.is_empty());
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Perform local action (type 7), which requires version 2
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Perform local action (type 7), which requires version 2
 #[rstest]
 #[case::before_version_negotiation(None)]
 #[case::under_version_1(Some(VERSION_RESPONSE_V1))]
@@ -175,7 +165,7 @@ fn local_action_is_ignored_without_version_2(#[case] version_response: Option<[u
     assert!(events.lock().unwrap().is_empty());
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Version response (type 2), which closes the channel on an unsupported version
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Version response (type 2), which closes the channel on an unsupported version
 #[test]
 fn unsupported_version_response_is_reported_and_silences_the_channel() {
     let (mut client, events) = started_client("uri", Some(0));
@@ -197,7 +187,7 @@ fn unsupported_version_response_is_reported_and_silences_the_channel() {
     assert!(client.request_switch_to_cloud().is_err());
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Header, which checks only a minimum pduLength of 10
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Header, which checks only a minimum pduLength of 10
 #[test]
 fn version_response_with_trailing_fields_is_accepted() {
     let (mut client, _) = started_client("uri", None);
@@ -213,7 +203,7 @@ fn version_response_with_trailing_fields_is_accepted() {
     assert_eq!(client.negotiated_version(), Some(ProtocolVersion::V2));
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Header, which rejects a pduLength greater than the buffer
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Header, which rejects a pduLength greater than the buffer
 #[test]
 fn pdu_length_past_the_payload_is_rejected() {
     let truncated = [
@@ -230,7 +220,7 @@ fn pdu_length_past_the_payload_is_rejected() {
     ));
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Switch-to-cloud request and response (types 5 and 6)
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Switch-to-cloud request and response (types 5 and 6)
 #[test]
 fn switch_to_cloud_request_is_a_bare_header() {
     let (client, _) = started_client("uri", None);
@@ -246,7 +236,7 @@ fn switch_to_cloud_request_is_a_bare_header() {
     );
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Switch-to-cloud request and response (types 5 and 6), which reads the HRESULT of the response
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Switch-to-cloud request and response (types 5 and 6), which reads the HRESULT of the response
 #[test]
 fn switch_to_cloud_response_reports_its_hresult() {
     let (mut client, events) = started_client("uri", None);
@@ -261,7 +251,7 @@ fn switch_to_cloud_response_reports_its_hresult() {
     assert_eq!(*events.lock().unwrap(), [Event::SwitchToCloudCompleted(0)]);
 }
 
-// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-vdcswitch/PROTOCOL.md §Switch-to-cloud request and response (types 5 and 6), which fails with E_POINTER without a channel
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Virtual desktop control, Switch-to-cloud request and response (types 5 and 6), which fails with E_POINTER without a channel
 #[test]
 fn switch_to_cloud_request_needs_an_open_channel() {
     let (mut client, _) = started_client("uri", None);

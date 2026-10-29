@@ -4,7 +4,7 @@
 //! The layouts follow the Windows App 2.0.1485.0 client, which reads every field little-endian after a common header;
 //! [`PROTOCOL.md`] describes each layout and rule.
 //!
-//! [`PROTOCOL.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-vdcswitch/PROTOCOL.md
+//! [`PROTOCOL.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-w365/PROTOCOL.md#virtual-desktop-control
 
 use alloc::string::String;
 use core::fmt;
@@ -183,9 +183,9 @@ impl VersionRequestPdu {
 /// Virtual desktop control PDU.
 ///
 /// Every PDU starts with a 16-bit type and a 32-bit length that counts the whole PDU, header included.
-/// See [the PDU table in `PROTOCOL.md`][pdus].
+/// See [the virtual desktop control section of `PROTOCOL.md`][pdus].
 ///
-/// [pdus]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-vdcswitch/PROTOCOL.md#pdus
+/// [pdus]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-w365/PROTOCOL.md#virtual-desktop-control
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VdcSwitchPdu {
     /// Client to server: the versions and launch URI the client supports.

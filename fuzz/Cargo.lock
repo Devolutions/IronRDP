@@ -470,7 +470,6 @@ dependencies = [
  "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
- "ironrdp-vdcswitch",
  "ironrdp-w365",
 ]
 
@@ -612,17 +611,6 @@ dependencies = [
 [[package]]
 name = "ironrdp-usb"
 version = "0.1.0"
-
-[[package]]
-name = "ironrdp-vdcswitch"
-version = "0.1.0"
-dependencies = [
- "ironrdp-core",
- "ironrdp-dvc",
- "ironrdp-pdu",
- "ironrdp-svc",
- "tracing",
-]
 
 [[package]]
 name = "ironrdp-w365"

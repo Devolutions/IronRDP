@@ -442,7 +442,7 @@ pub struct ChannelConfig {
     ///
     /// Windows 365 Cloud PCs use the channel in Boot and Switch mode; `None` leaves it unregistered.
     /// The URI's query parameters advertise the local actions the client supports, such as `supportBluetoothSettings=true`.
-    #[cfg(feature = "vdcswitch")]
+    #[cfg(feature = "w365")]
     pub virtual_desktop_switch: Option<String>,
 
     /// Enable the Windows 365 battery status redirection channel.
@@ -528,7 +528,7 @@ impl Default for ChannelConfig {
             webauthn: true,
             #[cfg(feature = "location")]
             location: false,
-            #[cfg(feature = "vdcswitch")]
+            #[cfg(feature = "w365")]
             virtual_desktop_switch: None,
             #[cfg(feature = "w365")]
             battery_status: false,
@@ -1944,7 +1944,7 @@ impl ConfigBuilder {
     }
 
     /// Enable the Windows 365 virtual desktop control channel with the given launch URI, or disable it with `None`.
-    #[cfg(feature = "vdcswitch")]
+    #[cfg(feature = "w365")]
     #[must_use]
     pub fn with_virtual_desktop_switch(mut self, launch_uri: Option<String>) -> Self {
         self.channels.virtual_desktop_switch = launch_uri;

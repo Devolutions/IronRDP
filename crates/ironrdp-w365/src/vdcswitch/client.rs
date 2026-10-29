@@ -10,8 +10,8 @@ use ironrdp_pdu::{PduResult, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, warn};
 
-use crate::CHANNEL_NAME;
-use crate::pdu::{LaunchUri, LocalAction, ProtocolVersion, VdcSwitchPdu, VersionRequestPdu};
+use super::CHANNEL_NAME;
+use super::pdu::{LaunchUri, LocalAction, ProtocolVersion, VdcSwitchPdu, VersionRequestPdu};
 
 /// Host behavior for the requests a Cloud PC sends over the channel.
 ///

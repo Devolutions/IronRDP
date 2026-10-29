@@ -9,6 +9,7 @@ use ironrdp_core::{DecodeResult, ReadCursor, ensure_size, invalid_field_err};
 pub mod battery;
 pub mod power_request;
 pub mod screen_capture;
+pub mod vdcswitch;
 
 /// Protocol version every channel in this crate offers and accepts.
 pub const PROTOCOL_VERSION_1: u32 = 0x0001_0000;
