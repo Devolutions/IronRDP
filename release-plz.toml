@@ -55,6 +55,7 @@ publish_no_verify = true
 # ironrdp-rdpeusb-native builds only against unreleased changes in ironrdp-rdpeusb and ironrdp-usb, and
 # ironrdp-connector (plus its direct and transitive dependents) optionally depends on ironrdp-rdpear.
 # Trusted publishing cannot create a crate, so release-plz would fail on each of them and stop before releasing the rest.
+# ironrdp-vdcswitch and ironrdp-w365 are new client channel crates that have never been published either.
 # Once its dependencies are on crates.io, publish each new crate manually once, then remove its entry;
 # ironrdp-agent and ironrdp-viewer, excluded above, depend on ironrdp-daemon.
 [[package]]
@@ -68,6 +69,12 @@ name = "ironrdp-rdpeusb-native"
 release = false
 [[package]]
 name = "ironrdp-rdpear"
+release = false
+[[package]]
+name = "ironrdp-vdcswitch"
+release = false
+[[package]]
+name = "ironrdp-w365"
 release = false
 [[package]]
 name = "ironrdp-connector"

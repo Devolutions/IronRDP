@@ -66,6 +66,14 @@ use ironrdp_session::{
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
+#[cfg(feature = "vdcswitch")]
+use ironrdp_vdcswitch::client::{VdcSwitchClient, VdcSwitchHandler};
+#[cfg(feature = "w365")]
+use ironrdp_w365::battery::{BatteryStatusClient, BatteryStatusHandler};
+#[cfg(feature = "w365")]
+use ironrdp_w365::power_request::{PowerRequestClient, PowerRequestHandler};
+#[cfg(feature = "w365")]
+use ironrdp_w365::screen_capture::{ScreenCaptureClient, ScreenCaptureHandler};
 use smallvec::SmallVec;
 #[cfg(feature = "gateway")]
 use tokio::io::ReadBuf;
@@ -265,6 +273,62 @@ pub enum RdpOutputEvent {
     ///
     /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
     RdpeiInputState(RdpeiInputState),
+    /// The Cloud PC asked the client to switch the user to the local desktop.
+    ///
+    /// The client sends the Cloud PC no response; performing the switch is up to the embedder.
+    #[cfg(feature = "vdcswitch")]
+    SwitchToLocalRequested,
+    /// The Cloud PC asked the client to perform a local action on the physical device, such as opening the Bluetooth settings.
+    #[cfg(feature = "vdcswitch")]
+    LocalActionRequested(ironrdp_vdcswitch::pdu::LocalAction),
+    /// The Cloud PC answered an [`RdpInputEvent::SwitchToCloud`] request with an HRESULT.
+    #[cfg(feature = "vdcswitch")]
+    SwitchToCloudCompleted {
+        hresult: u32,
+    },
+    /// The Cloud PC selected an unsupported virtual desktop control version, so switch and local-action requests stop
+    /// working until it opens the channel again.
+    #[cfg(feature = "vdcswitch")]
+    VirtualDesktopSwitchUnavailable {
+        version: u32,
+    },
+    /// The battery status channel is ready: answer with an [`RdpInputEvent::BatteryStatus`] carrying the current reading.
+    ///
+    /// Raised on every new channel, including after a reconnect, because readings sent before it are dropped.
+    #[cfg(feature = "w365")]
+    BatteryStatusRequested,
+    /// The Cloud PC started holding power requests (`true`) or released its last one (`false`).
+    ///
+    /// While active, the embedder keeps the physical device and its display awake.
+    /// Closing the channel reports `false`; the embedder also releases its wake requests when the session ends.
+    #[cfg(feature = "w365")]
+    PowerRequestsChanged {
+        active: bool,
+    },
+    /// The Cloud PC accepts screenshot uploads.
+    #[cfg(feature = "w365")]
+    ScreenCaptureReady,
+    /// An [`RdpInputEvent::UploadScreenCapture`] was queued with this capture ID, or rejected with `None`.
+    #[cfg(feature = "w365")]
+    ScreenCaptureUploaded {
+        capture_id: Option<u16>,
+    },
+    /// The Cloud PC reported where it saved an uploaded screenshot, or why it could not.
+    #[cfg(feature = "w365")]
+    ScreenCaptureSaved(ironrdp_w365::screen_capture::SaveResult),
+    /// The session host asked for an interactive Microsoft Entra sign-in over the
+    /// `Microsoft::Windows::RDS::InteractiveEntraAuth` channel.
+    ///
+    /// Acquire an RDS AAD token for the request's resource and answer with
+    /// [`InteractiveEntraAuthRequest::grant`](crate::interactive_entra::InteractiveEntraAuthRequest::grant).
+    /// Dropping the request reports the sign-in as cancelled.
+    #[cfg(feature = "entra-auth")]
+    InteractiveEntraAuthRequested(crate::interactive_entra::InteractiveEntraAuthRequest),
+    /// The session host answered an interactive Entra sign-in with an HRESULT, where 0 is success.
+    #[cfg(feature = "entra-auth")]
+    InteractiveEntraAuthCompleted {
+        hresult: u32,
+    },
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -348,6 +412,68 @@ impl RdpOutputEvent {
             | RdpOutputEvent::PointerBitmap(_) => DropPolicy::LatestOnly,
             _ => DropPolicy::MustDeliver,
         }
+    }
+}
+
+/// Forwards virtual desktop control and Windows 365 channel events to the embedder as output events.
+///
+/// The handlers run synchronously inside the session loop, so they defer each event and the loop delivers it with
+/// backpressure: a dropped switch or settings request is a user action that silently does nothing, a dropped power
+/// request leaves the device asleep or awake against the Cloud PC's state, and a dropped save result leaves an upload
+/// unanswered.
+#[cfg(any(feature = "vdcswitch", feature = "w365"))]
+struct ChannelEvents {
+    output_event_sender: crate::output_channel::OutputEventSender,
+}
+
+#[cfg(feature = "vdcswitch")]
+impl VdcSwitchHandler for ChannelEvents {
+    fn switch_to_local_requested(&mut self) -> Option<u32> {
+        // Like Windows App handing the switch to its container, the embedder performs it and the Cloud PC gets no response.
+        self.output_event_sender.defer(RdpOutputEvent::SwitchToLocalRequested);
+        None
+    }
+
+    fn perform_local_action(&mut self, action: ironrdp_vdcswitch::pdu::LocalAction) {
+        self.output_event_sender
+            .defer(RdpOutputEvent::LocalActionRequested(action));
+    }
+
+    fn switch_to_cloud_completed(&mut self, hresult: u32) {
+        self.output_event_sender
+            .defer(RdpOutputEvent::SwitchToCloudCompleted { hresult });
+    }
+
+    fn version_negotiation_failed(&mut self, version: ironrdp_vdcswitch::pdu::ProtocolVersion) {
+        self.output_event_sender
+            .defer(RdpOutputEvent::VirtualDesktopSwitchUnavailable { version: version.0 });
+    }
+}
+
+#[cfg(feature = "w365")]
+impl BatteryStatusHandler for ChannelEvents {
+    fn battery_status_requested(&mut self) {
+        self.output_event_sender.defer(RdpOutputEvent::BatteryStatusRequested);
+    }
+}
+
+#[cfg(feature = "w365")]
+impl PowerRequestHandler for ChannelEvents {
+    fn power_requests_changed(&mut self, active: bool) {
+        self.output_event_sender
+            .defer(RdpOutputEvent::PowerRequestsChanged { active });
+    }
+}
+
+#[cfg(feature = "w365")]
+impl ScreenCaptureHandler for ChannelEvents {
+    fn uploads_ready(&mut self) {
+        self.output_event_sender.defer(RdpOutputEvent::ScreenCaptureReady);
+    }
+
+    fn save_completed(&mut self, result: ironrdp_w365::screen_capture::SaveResult) {
+        self.output_event_sender
+            .defer(RdpOutputEvent::ScreenCaptureSaved(result));
     }
 }
 
@@ -536,6 +662,21 @@ pub enum RdpInputEvent {
     },
     #[cfg(feature = "location")]
     Location(LocationRequest),
+    /// Tells the Cloud PC that the user switched from the local desktop back to it.
+    #[cfg(feature = "vdcswitch")]
+    SwitchToCloud,
+    /// Reports the physical device's battery state over the battery status channel.
+    ///
+    /// Send one on [`RdpOutputEvent::BatteryStatusRequested`] and then whenever the reading changes; the server paces how
+    /// often it is forwarded.
+    #[cfg(feature = "w365")]
+    BatteryStatus(ironrdp_w365::battery::BatteryInfo),
+    /// Uploads a screenshot for the Cloud PC to save.
+    #[cfg(feature = "w365")]
+    UploadScreenCapture {
+        image_type: ironrdp_w365::screen_capture::ImageType,
+        image: Vec<u8>,
+    },
     /// A redirected camera was attached or removed.
     #[cfg(all(windows, feature = "camera"))]
     Camera(Box<crate::camera::CameraHotplug>),
@@ -664,6 +805,14 @@ impl RdpInputSender {
     /// the input event is guaranteed to fit in the bounded queue.
     pub fn try_reserve(&self) -> Result<mpsc::Permit<'_, RdpInputEvent>, mpsc::error::TrySendError<()>> {
         self.input_sender.try_reserve()
+    }
+
+    /// Queues `event`, waiting for room in the bounded input queue.
+    ///
+    /// Returns `false` once the session has stopped reading input.
+    #[cfg(feature = "entra-auth")]
+    pub(crate) async fn send(&self, event: RdpInputEvent) -> bool {
+        self.input_sender.send(event).await.is_ok()
     }
 
     /// Queues a RemoteApp launch without allowing the ordinary input queue to grow unbounded.
@@ -1468,7 +1617,7 @@ impl RdpClient {
                     (Some(input_keepalive), Some(fake_events)) => Some(input_keepalive.min(fake_events)),
                     (input_keepalive, fake_events) => input_keepalive.or(fake_events),
                 };
-            match active_session(
+            let outcome = active_session(
                 framed,
                 connection_result,
                 udp_tunnel,
@@ -1485,8 +1634,11 @@ impl RdpClient {
                 &mut reconnect_attempt,
                 &self.input_event_sender.session_status,
             )
-            .await
-            {
+            .await;
+            // An iteration that ends the session, by terminating or failing, exits before the session loop delivers
+            // the events dynamic channel handlers raised during it. A closed output channel leaves nobody to tell.
+            let _ = self.output_event_sender.send_deferred(&mut self.close_receiver).await;
+            match outcome {
                 Ok(RdpControlFlow::ReconnectWithNewSize {
                     width,
                     height,
@@ -2149,14 +2301,15 @@ fn build_connector(
         feature = "sound",
         all(windows, feature = "webauthn"),
         all(windows, feature = "camera"),
-        feature = "usb"
+        feature = "usb",
+        feature = "entra-auth"
     )))]
     let _ = input_sender;
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
     let _ = (rdpdr_factory, rdpdr_policy);
-    #[cfg(not(all(windows, feature = "vmconnect")))]
+    #[cfg(not(any(all(windows, feature = "vmconnect"), feature = "entra-auth")))]
     let _ = output_event_sender;
     #[cfg(not(feature = "usb"))]
     let _ = usb_allowed;
@@ -2200,6 +2353,46 @@ fn build_connector(
     #[cfg(feature = "location")]
     if config.channels.location {
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
+    }
+
+    #[cfg(any(feature = "vdcswitch", feature = "w365"))]
+    let channel_events = || {
+        Box::new(ChannelEvents {
+            output_event_sender: output_event_sender.clone(),
+        })
+    };
+
+    #[cfg(feature = "vdcswitch")]
+    if let Some(launch_uri) = &config.channels.virtual_desktop_switch {
+        match ironrdp_vdcswitch::pdu::LaunchUri::new(launch_uri.clone()) {
+            Ok(launch_uri) => {
+                drdynvc = drdynvc.with_dynamic_channel(VdcSwitchClient::new(launch_uri, channel_events()));
+            }
+            Err(error) => warn!(%error, "Not registering the virtual desktop control channel"),
+        }
+    }
+
+    #[cfg(feature = "w365")]
+    {
+        // Windows App refuses the battery channel in RemoteApp sessions.
+        if config.channels.battery_status && !config.connector.remote_application_mode {
+            drdynvc = drdynvc.with_dynamic_channel(BatteryStatusClient::new(channel_events()));
+        }
+        if config.channels.power_request {
+            drdynvc = drdynvc.with_dynamic_channel(PowerRequestClient::new(channel_events()));
+        }
+        if config.channels.screen_capture {
+            drdynvc = drdynvc.with_dynamic_channel(ScreenCaptureClient::new(channel_events()));
+        }
+    }
+
+    #[cfg(feature = "entra-auth")]
+    if config.channels.interactive_entra_auth {
+        drdynvc = drdynvc.with_dynamic_channel(crate::interactive_entra::InteractiveEntraAuthChannel::new(
+            config.destination.name().to_owned(),
+            input_sender.clone(),
+            output_event_sender.clone(),
+        ));
     }
 
     #[cfg(all(windows, feature = "vmconnect"))]
@@ -4649,6 +4842,78 @@ async fn active_session(
                             }
                         }
                     }
+                    #[cfg(feature = "vdcswitch")]
+                    RdpInputEvent::SwitchToCloud => {
+                        let batch = match active_stage.get_dvc::<VdcSwitchClient>() {
+                            None => {
+                                warn!("Virtual desktop control channel is not registered");
+                                None
+                            }
+                            Some(dvc) => dvc
+                                .processor()
+                                .request_switch_to_cloud()
+                                .and_then(|messages| DvcMessageBatch::try_new(dvc.channel_id(), messages))
+                                .inspect_err(|error| warn!(%error, "Unable to request a switch to the cloud desktop"))
+                                .ok(),
+                        };
+                        match batch {
+                            Some(batch) => ActiveSessionIteration::dvc(batch),
+                            None => ActiveSessionIteration::outputs(Vec::new()),
+                        }
+                    }
+                    #[cfg(feature = "w365")]
+                    RdpInputEvent::BatteryStatus(info) => {
+                        let batch = match active_stage.get_dvc_mut::<BatteryStatusClient>() {
+                            None => {
+                                // `RdpOutputEvent::BatteryStatusRequested` asks for a reading again once the channel opens.
+                                trace!("Dropping a battery reading because the battery status channel is not open");
+                                None
+                            }
+                            Some(mut dvc) => {
+                                let channel_id = dvc.channel_id();
+                                dvc.processor_mut()
+                                    .update_battery(info)
+                                    .and_then(|messages| DvcMessageBatch::try_new(channel_id, messages))
+                                    .inspect_err(|error| warn!(%error, "Unable to send a battery update"))
+                                    .ok()
+                            }
+                        };
+                        match batch {
+                            Some(batch) => ActiveSessionIteration::dvc(batch),
+                            None => ActiveSessionIteration::outputs(Vec::new()),
+                        }
+                    }
+                    #[cfg(feature = "w365")]
+                    RdpInputEvent::UploadScreenCapture { image_type, image } => {
+                        let upload = match active_stage.get_dvc_mut::<ScreenCaptureClient>() {
+                            None => {
+                                warn!("Screen capture channel is not open");
+                                None
+                            }
+                            Some(mut dvc) => {
+                                let channel_id = dvc.channel_id();
+                                dvc.processor_mut()
+                                    .upload(image_type, image)
+                                    .and_then(|(capture_id, messages)| {
+                                        DvcMessageBatch::try_new(channel_id, messages).map(|batch| (capture_id, batch))
+                                    })
+                                    .inspect_err(|error| warn!(%error, "Unable to upload a screen capture"))
+                                    .ok()
+                            }
+                        };
+                        let event = RdpOutputEvent::ScreenCaptureUploaded {
+                            capture_id: upload.as_ref().map(|(capture_id, _)| *capture_id),
+                        };
+                        if !send_active_output_event(output_event_sender, event, close_receiver).await? {
+                            return Ok(RdpControlFlow::TerminatedGracefully(
+                                GracefulDisconnectReason::UserInitiated,
+                            ));
+                        }
+                        match upload {
+                            Some((_, batch)) => ActiveSessionIteration::dvc(batch),
+                            None => ActiveSessionIteration::outputs(Vec::new()),
+                        }
+                    }
                     #[cfg(all(windows, feature = "camera"))]
                     RdpInputEvent::Camera(event) => match crate::camera::process_hotplug(&mut active_stage, *event) {
                         Some(batch) => ActiveSessionIteration::dvc(batch),
@@ -5502,6 +5767,17 @@ async fn active_session(
                     GracefulDisconnectReason::UserInitiated,
                 ));
             }
+        }
+
+        // Events dynamic channel handlers raised during this iteration.
+        if !output_event_sender
+            .send_deferred(close_receiver)
+            .await
+            .map_err(|error| ironrdp_session::custom_err!("output_event_sender", error))?
+        {
+            return Ok(RdpControlFlow::TerminatedGracefully(
+                GracefulDisconnectReason::UserInitiated,
+            ));
         }
 
         if resize_queue.in_flight.is_none()
@@ -7281,6 +7557,81 @@ mod tests {
         let (delivered, ()) = tokio::join!(send, close);
 
         assert!(!delivered.expect("cancellation is not an output error"));
+    }
+
+    // oracle: mutant channel handler events dropped or reordered when the output queue is full (this client's choice)
+    #[cfg(feature = "w365")]
+    #[tokio::test]
+    async fn deferred_events_wait_out_a_full_queue_in_order() {
+        let (output_sender, mut output_receiver) = crate::output_channel::output_channel(1);
+        output_sender
+            .try_send(RdpOutputEvent::Connected)
+            .expect("the first output event fills the queue");
+        let (_close_sender, mut close_receiver) = watch::channel(false);
+        let mut handler = ChannelEvents {
+            output_event_sender: output_sender.clone(),
+        };
+        handler.power_requests_changed(true);
+        handler.power_requests_changed(false);
+
+        let send = output_sender.send_deferred(&mut close_receiver);
+        let receive = async {
+            let mut received = Vec::new();
+            for _ in 0..3 {
+                let event = tokio::time::timeout(Duration::from_secs(5), output_receiver.recv())
+                    .await
+                    .expect("a dropped event never arrives");
+                received.push(event.expect("output channel is open"));
+            }
+            received
+        };
+        let (delivered, received) = tokio::join!(send, receive);
+
+        assert!(delivered.expect("output channel is open"));
+        assert!(matches!(
+            received.as_slice(),
+            [
+                RdpOutputEvent::Connected,
+                RdpOutputEvent::PowerRequestsChanged { active: true },
+                RdpOutputEvent::PowerRequestsChanged { active: false },
+            ]
+        ));
+    }
+
+    // oracle: mutant a cancelled flush dropping the event it was waiting to send (this client's choice)
+    #[cfg(feature = "w365")]
+    #[tokio::test]
+    async fn cancelled_deferred_flush_keeps_the_waiting_event() {
+        let (output_sender, mut output_receiver) = crate::output_channel::output_channel(1);
+        output_sender
+            .try_send(RdpOutputEvent::Connected)
+            .expect("the first output event fills the queue");
+        let (close_sender, mut close_receiver) = watch::channel(false);
+        let mut handler = ChannelEvents {
+            output_event_sender: output_sender.clone(),
+        };
+        handler.power_requests_changed(true);
+
+        let send = output_sender.send_deferred(&mut close_receiver);
+        let close = async {
+            tokio::task::yield_now().await;
+            close_sender.send_replace(true);
+        };
+        let (delivered, ()) = tokio::join!(send, close);
+        assert!(!delivered.expect("cancellation is not an output error"));
+
+        let (_close_sender, mut close_receiver) = watch::channel(false);
+        assert!(matches!(output_receiver.recv().await, Some(RdpOutputEvent::Connected)));
+        assert!(
+            output_sender
+                .send_deferred(&mut close_receiver)
+                .await
+                .expect("output channel is open")
+        );
+        assert!(matches!(
+            output_receiver.recv().await,
+            Some(RdpOutputEvent::PowerRequestsChanged { active: true })
+        ));
     }
 
     #[cfg(all(feature = "sound", feature = "rdpdr"))]

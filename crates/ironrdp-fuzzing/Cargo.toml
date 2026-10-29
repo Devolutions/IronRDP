@@ -28,6 +28,8 @@ ironrdp-egfx = { path = "../ironrdp-egfx", features = ["arbitrary"] }
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-rdpel.path = "../ironrdp-rdpel"
 ironrdp-rdpear = { version = "0.1.0", path = "../ironrdp-rdpear" }
+ironrdp-vdcswitch.path = "../ironrdp-vdcswitch"
+ironrdp-w365.path = "../ironrdp-w365"
 
 [lints]
 workspace = true
