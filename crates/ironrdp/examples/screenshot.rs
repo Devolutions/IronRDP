@@ -33,18 +33,35 @@ use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput};
 use ironrdp_pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 const HELP: &str = "\
 USAGE:
-  cargo run --example=screenshot -- --host <HOSTNAME> --port <PORT>
-                                    -u/--username <USERNAME> -p/--password <PASSWORD>
-                                    [-o/--output <OUTPUT_FILE>] [-d/--domain <DOMAIN>]
+  cargo run --example=screenshot -- --host <HOSTNAME> -u/--username <USERNAME> -p/--password <PASSWORD>
+                                    [--port <PORT>] [-o/--output <OUTPUT_FILE>] [-d/--domain <DOMAIN>]
+                                    [--autologon <true|false>] [--tls-enabled <true|false>]
+                                    [--credssp-enabled <true|false>]
                                     [--compression-enabled <true|false>] [--compression-level <0..3>]
+                                    [--no-graphics-timeout-seconds <SECONDS>]
+                                    [--after-first-graphics-seconds <SECONDS>]
+
+WARNING:
+  This example intentionally skips server certificate verification; use only with trusted servers.
+
+OPTIONS:
+  --port                         default: 3389
+  --output                       default: out.png
+  --autologon                    default: false
+  --tls-enabled                  default: false (legacy TLS security protocol)
+  --credssp-enabled              default: true (NLA)
+  --compression-enabled          default: true
+  --compression-level            default: 3
+  --no-graphics-timeout-seconds  wait for first update; default: 3, greater than zero
+  --after-first-graphics-seconds grace period after first update; default: 8, may be zero
 ";
 
 fn main() -> anyhow::Result<()> {
-    let action = match parse_args() {
+    let action = match parse_args(pico_args::Arguments::from_env()) {
         Ok(action) => action,
         Err(e) => {
             println!("{HELP}");
@@ -66,8 +83,13 @@ fn main() -> anyhow::Result<()> {
             password,
             output,
             domain,
+            autologon,
+            tls_enabled,
+            credssp_enabled,
             compression_enabled,
             compression_level,
+            no_graphics_timeout_seconds,
+            after_first_graphics_seconds,
         } => {
             info!(
                 host,
@@ -75,8 +97,13 @@ fn main() -> anyhow::Result<()> {
                 username,
                 output = %output.display(),
                 domain,
+                autologon,
+                tls_enabled,
+                credssp_enabled,
                 compression_enabled,
                 compression_level,
+                no_graphics_timeout_seconds,
+                after_first_graphics_seconds,
                 "run"
             );
             run(RunConfig {
@@ -86,8 +113,13 @@ fn main() -> anyhow::Result<()> {
                 password,
                 output,
                 domain,
+                autologon,
+                tls_enabled,
+                credssp_enabled,
                 compression_enabled,
                 compression_level,
+                no_graphics_timeout_seconds,
+                after_first_graphics_seconds,
             })
         }
     }
@@ -101,8 +133,13 @@ struct RunConfig {
     password: String,
     output: PathBuf,
     domain: Option<String>,
+    autologon: bool,
+    tls_enabled: bool,
+    credssp_enabled: bool,
     compression_enabled: bool,
     compression_level: u32,
+    no_graphics_timeout_seconds: u64,
+    after_first_graphics_seconds: u64,
 }
 
 #[derive(Debug)]
@@ -115,14 +152,17 @@ enum Action {
         password: String,
         output: PathBuf,
         domain: Option<String>,
+        autologon: bool,
+        tls_enabled: bool,
+        credssp_enabled: bool,
         compression_enabled: bool,
         compression_level: u32,
+        no_graphics_timeout_seconds: u64,
+        after_first_graphics_seconds: u64,
     },
 }
 
-fn parse_args() -> anyhow::Result<Action> {
-    let mut args = pico_args::Arguments::from_env();
-
+fn parse_args(mut args: pico_args::Arguments) -> anyhow::Result<Action> {
     let action = if args.contains(["-h", "--help"]) {
         Action::ShowHelp
     } else {
@@ -134,11 +174,19 @@ fn parse_args() -> anyhow::Result<Action> {
             .opt_value_from_str(["-o", "--output"])?
             .unwrap_or_else(|| PathBuf::from("out.png"));
         let domain = args.opt_value_from_str(["-d", "--domain"])?;
+        let autologon = args.opt_value_from_str("--autologon")?.unwrap_or(false);
+        let tls_enabled = args.opt_value_from_str("--tls-enabled")?.unwrap_or(false);
+        let credssp_enabled = args.opt_value_from_str("--credssp-enabled")?.unwrap_or(true);
         let compression_enabled = args.opt_value_from_str("--compression-enabled")?.unwrap_or(true);
         let compression_level = args.opt_value_from_str("--compression-level")?.unwrap_or(3);
+        let no_graphics_timeout_seconds = args.opt_value_from_str("--no-graphics-timeout-seconds")?.unwrap_or(3);
+        let after_first_graphics_seconds = args.opt_value_from_str("--after-first-graphics-seconds")?.unwrap_or(8);
 
         if compression_level > 3 {
             anyhow::bail!("Invalid compression level. Valid values are 0, 1, 2, 3.");
+        }
+        if no_graphics_timeout_seconds == 0 {
+            anyhow::bail!("no-graphics-timeout-seconds must be greater than zero");
         }
 
         Action::Run {
@@ -148,10 +196,19 @@ fn parse_args() -> anyhow::Result<Action> {
             password,
             output,
             domain,
+            autologon,
+            tls_enabled,
+            credssp_enabled,
             compression_enabled,
             compression_level,
+            no_graphics_timeout_seconds,
+            after_first_graphics_seconds,
         }
     };
+
+    if !args.finish().is_empty() {
+        anyhow::bail!("unexpected argument(s)");
+    }
 
     Ok(action)
 }
@@ -184,6 +241,9 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
         config.domain,
         config.compression_enabled,
         config.compression_level,
+        config.autologon,
+        config.tls_enabled,
+        config.credssp_enabled,
     )?;
 
     let (connection_result, framed) = connect(connector_config, config.host, config.port).context("connect")?;
@@ -195,7 +255,18 @@ fn run(config: RunConfig) -> anyhow::Result<()> {
         connection_result.desktop_size.height,
     );
 
-    active_stage(connection_result, framed, &mut image).context("active stage")?;
+    let got_graphics = active_stage(
+        connection_result,
+        framed,
+        &mut image,
+        Duration::from_secs(config.no_graphics_timeout_seconds),
+        Duration::from_secs(config.after_first_graphics_seconds),
+    )
+    .context("active stage")?;
+
+    if !got_graphics {
+        anyhow::bail!("no graphics updates received before capture timeout");
+    }
 
     let img: image::ImageBuffer<image::Rgba<u8>, _> =
         image::ImageBuffer::from_raw(u32::from(image.width()), u32::from(image.height()), image.data())
@@ -212,6 +283,9 @@ fn build_config(
     domain: Option<String>,
     compression_enabled: bool,
     compression_level: u32,
+    autologon: bool,
+    tls_enabled: bool,
+    credssp_enabled: bool,
 ) -> anyhow::Result<connector::Config> {
     let compression_type = if compression_enabled {
         Some(compression_type_from_level(compression_level)?)
@@ -222,8 +296,8 @@ fn build_config(
     Ok(connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
-        enable_tls: false, // This example does not expose any frontend.
-        enable_credssp: true,
+        enable_tls: tls_enabled,
+        enable_credssp: credssp_enabled,
         enable_standard_rdp_security: false,
         keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
@@ -263,7 +337,7 @@ fn build_config(
 
         enable_server_pointer: false, // Disable custom pointers (there is no user interaction anyway).
         request_data: None,
-        autologon: false,
+        autologon,
         enable_audio_playback: false,
         enable_audio_capture: false,
         compression_type,
@@ -311,11 +385,10 @@ fn connect(
 
     let tcp_stream = TcpStream::connect(server_addr).context("TCP connect")?;
 
-    // Sets the read timeout for the TCP stream so we can break out of the
-    // infinite loop during the active stage once there is no more activity.
+    // Bound blocking reads during connection setup.
     tcp_stream
         .set_read_timeout(Some(Duration::from_secs(3)))
-        .expect("set_read_timeout call failed");
+        .context("set TCP read timeout")?;
 
     let client_addr = tcp_stream.local_addr().context("get socket local address")?;
 
@@ -353,11 +426,29 @@ fn connect(
     Ok((connection_result, upgraded_framed))
 }
 
+fn remaining_capture_timeout(
+    now: std::time::Instant,
+    stage_started_at: std::time::Instant,
+    first_graphic_time: Option<std::time::Instant>,
+    no_graphics_timeout: Duration,
+    after_first_graphics: Duration,
+) -> Option<Duration> {
+    let (started_at, timeout) = first_graphic_time
+        .map(|started_at| (started_at, after_first_graphics))
+        .unwrap_or((stage_started_at, no_graphics_timeout));
+
+    timeout
+        .checked_sub(now.saturating_duration_since(started_at))
+        .filter(|timeout| !timeout.is_zero())
+}
+
 fn active_stage(
     connection_result: ConnectionResult,
     mut framed: UpgradedFramed,
     image: &mut DecodedImage,
-) -> anyhow::Result<()> {
+    no_graphics_timeout: Duration,
+    after_first_graphics: Duration,
+) -> anyhow::Result<bool> {
     let mut active_stage = ActiveStageBuilder {
         static_channels: connection_result.static_channels,
         user_channel_id: connection_result.user_channel_id,
@@ -369,11 +460,32 @@ fn active_stage(
         pointer_software_rendering: connection_result.pointer_software_rendering,
     }
     .build();
+    let stage_started_at = std::time::Instant::now();
+    let mut first_graphic_time: Option<std::time::Instant> = None;
 
     'outer: loop {
+        let Some(timeout) = remaining_capture_timeout(
+            std::time::Instant::now(),
+            stage_started_at,
+            first_graphic_time,
+            no_graphics_timeout,
+            after_first_graphics,
+        ) else {
+            break 'outer;
+        };
+
+        framed
+            .get_inner_mut()
+            .0
+            .get_mut()
+            .set_read_timeout(Some(timeout))
+            .context("set TCP read timeout")?;
+
         let (action, payload) = match framed.read_pdu() {
             Ok((action, payload)) => (action, payload),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break 'outer,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                continue 'outer;
+            }
             Err(e) => return Err(anyhow::Error::new(e).context("read frame")),
         };
 
@@ -384,13 +496,16 @@ fn active_stage(
         for out in outputs {
             match out {
                 ActiveStageOutput::ResponseFrame(frame) => framed.write_all(&frame).context("write response")?,
+                ActiveStageOutput::GraphicsUpdate(_) if first_graphic_time.is_none() => {
+                    first_graphic_time = Some(std::time::Instant::now());
+                }
                 ActiveStageOutput::Terminate(_) => break 'outer,
                 _ => {}
             }
         }
     }
 
-    Ok(())
+    Ok(first_graphic_time.is_some())
 }
 
 fn lookup_addr(hostname: &str, port: u16) -> anyhow::Result<core::net::SocketAddr> {
@@ -406,6 +521,8 @@ fn tls_upgrade(
     stream: TcpStream,
     server_name: String,
 ) -> anyhow::Result<(rustls::StreamOwned<rustls::ClientConnection, TcpStream>, Vec<u8>)> {
+    // This example intentionally skips server-certificate verification to support self-signed certificates.
+    warn!("TLS server certificates are not verified; use only with trusted servers");
     let mut config = rustls::client::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(std::sync::Arc::new(danger::NoCertificateVerification))
@@ -516,5 +633,174 @@ mod danger {
                 SignatureScheme::ED448,
             ]
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    use super::{Action, parse_args, remaining_capture_timeout};
+
+    fn parse(args: &[&str]) -> anyhow::Result<Action> {
+        parse_args(pico_args::Arguments::from_vec(
+            args.iter().map(OsString::from).collect(),
+        ))
+    }
+
+    #[test]
+    fn screenshot_options_preserve_existing_defaults() -> anyhow::Result<()> {
+        // oracle: Preserve the existing screenshot example defaults and keep TLS and autologon opt-in.
+        let Action::Run {
+            port,
+            output,
+            autologon,
+            tls_enabled,
+            credssp_enabled,
+            compression_enabled,
+            compression_level,
+            no_graphics_timeout_seconds,
+            after_first_graphics_seconds,
+            ..
+        } = parse(&["--host", "localhost", "-u", "user", "-p", "password"])?
+        else {
+            anyhow::bail!("expected run action");
+        };
+
+        assert_eq!(port, 3389);
+        assert_eq!(output, PathBuf::from("out.png"));
+        assert!(!autologon);
+        assert!(!tls_enabled);
+        assert!(credssp_enabled);
+        assert!(compression_enabled);
+        assert_eq!(compression_level, 3);
+        assert_eq!(no_graphics_timeout_seconds, 3);
+        assert_eq!(after_first_graphics_seconds, 8);
+
+        Ok(())
+    }
+
+    #[test]
+    fn screenshot_options_accept_explicit_security_compression_and_capture_values() -> anyhow::Result<()> {
+        // oracle: The documented command-line options must override their defaults as requested.
+        let Action::Run {
+            autologon,
+            tls_enabled,
+            credssp_enabled,
+            compression_enabled,
+            compression_level,
+            no_graphics_timeout_seconds,
+            after_first_graphics_seconds,
+            ..
+        } = parse(&[
+            "--host",
+            "localhost",
+            "-u",
+            "user",
+            "-p",
+            "password",
+            "--autologon",
+            "true",
+            "--tls-enabled",
+            "true",
+            "--credssp-enabled",
+            "false",
+            "--compression-enabled",
+            "false",
+            "--compression-level",
+            "2",
+            "--no-graphics-timeout-seconds",
+            "5",
+            "--after-first-graphics-seconds",
+            "0",
+        ])?
+        else {
+            anyhow::bail!("expected run action");
+        };
+
+        assert!(autologon);
+        assert!(tls_enabled);
+        assert!(!credssp_enabled);
+        assert!(!compression_enabled);
+        assert_eq!(compression_level, 2);
+        assert_eq!(no_graphics_timeout_seconds, 5);
+        assert_eq!(after_first_graphics_seconds, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn screenshot_options_reject_zero_initial_graphics_timeout() {
+        // oracle: A zero initial timeout cannot provide a graphics wait and is rejected as invalid input.
+        let error = parse(&[
+            "--host",
+            "localhost",
+            "-u",
+            "user",
+            "-p",
+            "password",
+            "--no-graphics-timeout-seconds",
+            "0",
+        ])
+        .expect_err("zero timeout should be rejected");
+
+        assert!(error.to_string().contains("must be greater than zero"));
+    }
+
+    #[test]
+    fn capture_timeout_uses_no_graphics_deadline_until_first_update() {
+        // oracle: The initial capture wait ends at its configured deadline when no graphics arrive.
+        let stage_started_at = Instant::now();
+
+        assert_eq!(
+            remaining_capture_timeout(
+                stage_started_at + Duration::from_secs(2),
+                stage_started_at,
+                None,
+                Duration::from_secs(3),
+                Duration::from_secs(8),
+            ),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            remaining_capture_timeout(
+                stage_started_at + Duration::from_secs(3),
+                stage_started_at,
+                None,
+                Duration::from_secs(3),
+                Duration::from_secs(8),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn capture_timeout_uses_first_graphics_grace_period() {
+        // oracle: The post-first-graphics wait starts at the first update, not at the active-stage start.
+        let stage_started_at = Instant::now();
+        let first_graphic_time = stage_started_at + Duration::from_secs(2);
+
+        assert_eq!(
+            remaining_capture_timeout(
+                stage_started_at + Duration::from_secs(5),
+                stage_started_at,
+                Some(first_graphic_time),
+                Duration::from_secs(3),
+                Duration::from_secs(8),
+            ),
+            Some(Duration::from_secs(5))
+        );
+        assert_eq!(
+            remaining_capture_timeout(
+                first_graphic_time + Duration::from_secs(8),
+                stage_started_at,
+                Some(first_graphic_time),
+                Duration::from_secs(3),
+                Duration::from_secs(8),
+            ),
+            None
+        );
     }
 }
