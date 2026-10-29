@@ -67,6 +67,143 @@ const RDPDR_COMPLETION_ID: u32 = 1;
 #[cfg(windows)]
 const RDPDR_READ_LENGTH: u32 = 32 * 1024;
 
+// oracle: runtime handle API queues Quit through the existing server event loop.
+#[tokio::test]
+async fn server_handle_quit_stops_the_listener() {
+    let mut server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    handle.quit("shutdown requested").unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), server.run())
+        .await
+        .expect("quit must stop the listener")
+        .unwrap();
+}
+
+// oracle: runtime handle API reports the address bound by RdpServer::run.
+#[tokio::test]
+async fn server_handle_local_addr_reports_the_bound_listener() {
+    let mut server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    let requests = async {
+        let addr = handle.local_addr().await.unwrap().expect("run binds a listener");
+        assert_eq!(addr.ip(), std::net::Ipv4Addr::LOCALHOST);
+        assert_ne!(addr.port(), 0, "the OS must assign an ephemeral port");
+        handle.quit("address received").unwrap();
+    };
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let (result, ()) = tokio::join!(server.run(), requests);
+        result.unwrap();
+    })
+    .await
+    .expect("address query and shutdown must finish");
+}
+
+// oracle: runtime handle API updates credentials for the next incoming connection.
+#[tokio::test]
+async fn server_handle_updates_credentials_for_subsequent_connections() {
+    let (mut server, _display_tx) = hybrid_server();
+    let handle = server.handle().clone();
+    handle
+        .set_credentials(server::Credentials {
+            username: "alice".to_owned(),
+            password: "first password".to_owned(),
+            domain: None,
+        })
+        .unwrap();
+
+    let local = tokio::task::LocalSet::new();
+    let test = Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move { server.run().await });
+        let addr = handle.local_addr().await.unwrap().unwrap();
+        let (mut client, _) = connect_client(addr, |client_addr| {
+            connector::ClientConnector::new(
+                connector::Config {
+                    credentials: connector::Credentials::UsernamePassword {
+                        username: "alice".to_owned(),
+                        password: "first password".to_owned(),
+                    },
+                    ..hybrid_client_config()
+                },
+                client_addr,
+            )
+        })
+        .await;
+
+        assert_eq!(handle.local_addr().await.unwrap(), Some(addr));
+        handle.quit("disconnect authenticated client").unwrap();
+        while client.read_pdu().await.is_ok() {}
+        assert_eq!(handle.local_addr().await.unwrap(), Some(addr));
+        handle.quit("stop idle listener").unwrap();
+        server_task.await.unwrap().unwrap();
+    }));
+    tokio::time::timeout(Duration::from_secs(15), test)
+        .await
+        .expect("credential updates and shutdown must finish");
+}
+
+// oracle: ConnectionSource owns its listener; only RdpServer::run records a local address.
+#[tokio::test]
+async fn server_handle_local_addr_is_none_for_an_external_source() {
+    let mut server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    let (mut source, _) = listener_source(false).await;
+    let requests = async {
+        assert_eq!(handle.local_addr().await.unwrap(), None);
+        handle.quit("no internal listener").unwrap();
+    };
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let (result, ()) = tokio::join!(server.serve(&mut source), requests);
+        result.unwrap();
+    })
+    .await
+    .expect("external source must still service control requests");
+}
+
+// oracle: runtime handle API reports closed request channels instead of success.
+#[tokio::test]
+async fn server_handle_requests_fail_after_server_is_dropped() {
+    let server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    drop(server);
+
+    assert!(handle.quit("server dropped").is_err());
+    assert!(
+        handle
+            .set_credentials(server::Credentials {
+                username: "alice".to_owned(),
+                password: "password".to_owned(),
+                domain: None,
+            })
+            .is_err()
+    );
+    assert!(handle.local_addr().await.is_err());
+}
+
+// oracle: runtime handle API reports a dropped address reply instead of fabricating an address.
+#[tokio::test]
+async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
+    let server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    let mut query = Box::pin(handle.local_addr());
+    let mut context = Context::from_waker(std::task::Waker::noop());
+    assert!(query.as_mut().poll(&mut context).is_pending());
+    drop(server);
+
+    assert!(query.await.is_err());
+}
+
+fn server_for_handle_tests() -> RdpServer {
+    RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .build()
+}
+
 #[tokio::test]
 async fn test_client_server() {
     client_server(

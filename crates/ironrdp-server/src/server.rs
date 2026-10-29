@@ -1311,6 +1311,7 @@ pub struct RdpServer {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "usb")]
     usb_factory: Option<Box<dyn DeviceFactory>>,
+    handle: RdpServerHandle,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -1538,6 +1539,52 @@ impl fmt::Debug for ServerEvent {
 
 pub trait ServerEventSender {
     fn set_sender(&mut self, sender: mpsc::UnboundedSender<ServerEvent>);
+}
+
+/// Cloneable handle for controlling an [`RdpServer`] from other tasks.
+///
+/// Requests use the existing [`ServerEvent`] queue and require the server to be driven concurrently.
+/// They are processed between connections and during active sessions, not during connection negotiation.
+/// Requests fail if the server has been dropped.
+#[derive(Debug, Clone)]
+pub struct RdpServerHandle {
+    sender: mpsc::UnboundedSender<ServerEvent>,
+}
+
+impl RdpServerHandle {
+    /// Queues [`ServerEvent::Quit`] to disconnect the active client or stop an idle server.
+    ///
+    /// After an active client disconnects, the listener continues unless its connection handler stops it.
+    /// Success confirms queuing, not completion.
+    pub fn quit(&self, reason: impl Into<String>) -> ServerResult<()> {
+        self.sender
+            .send(ServerEvent::Quit(reason.into()))
+            .map_err(|_| ServerError::channel("send server quit event"))
+    }
+
+    /// Queues credentials for subsequent incoming connections.
+    ///
+    /// Success confirms queuing, not that the credentials have changed.
+    /// Preempting candidates use the credentials captured when the active session began.
+    pub fn set_credentials(&self, credentials: Credentials) -> ServerResult<()> {
+        self.sender
+            .send(ServerEvent::SetCredentials(credentials))
+            .map_err(|_| ServerError::channel("send server credentials event"))
+    }
+
+    /// Queries the listener address through the server event loop.
+    ///
+    /// Returns the address bound by [`RdpServer::run`], or `None` if it has never bound a listener.
+    /// This does not report addresses owned by an external [`ConnectionSource`].
+    /// The query waits for the event loop to reply and fails if the reply is dropped.
+    pub async fn local_addr(&self) -> ServerResult<Option<SocketAddr>> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(ServerEvent::GetLocalAddr(tx))
+            .map_err(|_| ServerError::channel("send server local address request event"))?;
+        rx.await
+            .map_err(|error| ServerError::custom("receive server local address", error))
+    }
 }
 
 impl ServerEvent {
@@ -2286,6 +2333,9 @@ impl RdpServer {
             gfx_factory,
             #[cfg(feature = "usb")]
             usb_factory,
+            handle: RdpServerHandle {
+                sender: ev_sender.clone(),
+            },
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -2689,6 +2739,28 @@ impl RdpServer {
 
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Returns a runtime handle that can be cloned before running the server.
+    ///
+    /// ```no_run
+    /// # async fn example(mut server: ironrdp_server::RdpServer) -> ironrdp_server::ServerResult<()> {
+    /// let handle = server.handle().clone();
+    /// let control = async {
+    ///     let _addr = handle.local_addr().await?;
+    ///     handle.set_credentials(ironrdp_server::Credentials {
+    ///         username: "alice".to_owned(),
+    ///         password: "password".to_owned(),
+    ///         domain: None,
+    ///     })?;
+    ///     handle.quit("shutdown requested")
+    /// };
+    /// tokio::try_join!(server.run(), control)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn handle(&self) -> &RdpServerHandle {
+        &self.handle
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.

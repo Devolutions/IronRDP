@@ -24,6 +24,19 @@ Custom logic for your RDP server can be added by implementing these traits:
  - `RdpServerInputHandler` - callbacks used when the server receives input events from a client
  - `RdpServerDisplay`      - notifies the server of display updates
 
+## Runtime control
+
+Clone `RdpServer::handle()` before running the server to control it from another task.
+The handle queues `ServerEvent::Quit` with `quit`, updates credentials for subsequent connections with `set_credentials`, and asynchronously queries the listener address with `local_addr`.
+Drive the server concurrently with address queries; a query waits for the event loop to reply.
+An externally supplied connection source has no listener address unless `run` previously bound one.
+
+Requests are processed at the same points as raw `ServerEvent` requests, not during connection negotiation.
+`quit` disconnects an active client or stops an idle listener; after a disconnect, the connection handler decides whether to keep listening.
+Successful `quit` and `set_credentials` calls confirm queuing, not completion.
+Preempting candidates retain the credentials captured when the active session began.
+Requests return an error if the server has been dropped.
+
 This crate is part of the [IronRDP] project.
 
 ## Echo RTT probes (feature `echo`)
