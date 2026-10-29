@@ -607,7 +607,7 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             data,
             last,
         } => return ConnectionResponse::Single(now_stdin(shared, operation_id, data, last).await),
-        Request::NowDiagnostics => return ConnectionResponse::Single(now_diagnostics(shared).await),
+        Request::NowDiagnostics => return ConnectionResponse::Single(now_diagnostics(shared)),
     };
     ConnectionResponse::Single(response)
 }
@@ -808,12 +808,12 @@ async fn now_stdin(shared: &Shared, operation_id: u64, data: Vec<u8>, last: bool
         .map_or_else(Response::Err, |_| Response::ok())
 }
 
-async fn now_diagnostics(shared: &Shared) -> Response {
+fn now_diagnostics(shared: &Shared) -> Response {
     let endpoint = match lock(&shared.live).now_endpoint.clone() {
         Some(endpoint) => endpoint,
         None => return unavailable_session(),
     };
-    let (connected, capabilities) = endpoint.diagnostic_snapshot().await;
+    let (connected, capabilities) = endpoint.diagnostic_snapshot();
     Response::Ok(Payload::NowDiagnostics(NowDiagnostics {
         endpoint_allocated: true,
         connected,

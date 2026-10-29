@@ -219,6 +219,11 @@ impl AgentCliprdrBackendFactory {
 
 impl CliprdrBackendFactory for AgentCliprdrBackendFactory {
     fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
+        self.state
+            .lock()
+            .expect("clipboard state poisoned")
+            .local_locked_lists
+            .clear();
         Box::new(AgentCliprdrBackend {
             state: Arc::clone(&self.state),
             proxy: AgentClipboardMessageProxy(self.input_tx.clone()),
@@ -354,10 +359,7 @@ impl AgentCliprdrBackend {
         let (files, paths) = match request.data_id {
             Some(id) => match state.local_locked_lists.get(&id) {
                 Some((files, paths)) => (files, paths),
-                // A present clipDataId names a snapshot this backend either never captured (the
-                // cache was full, see MAX_LOCAL_LOCKED_LISTS) or already reaped (the inactivity
-                // sweep's on_unlock): serving the current offer here would risk mixing content
-                // the lock exists specifically to prevent, so this is an error, not a fallback.
+                // An unknown or released lock must not read a different clipboard generation.
                 None => return FileContentsResponse::new_error(request.stream_id),
             },
             None => {
@@ -768,14 +770,15 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use ironrdp_client::rdp::RdpInputSender;
-    use ironrdp_cliprdr::backend::CliprdrBackend as _;
+    use ironrdp_cliprdr::backend::{CliprdrBackend as _, CliprdrBackendFactory as _};
     use ironrdp_cliprdr::chunked_fetch::{ChunkedFetch, ChunkedFetchProgress};
     use ironrdp_cliprdr::pdu::{
         FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor, LockDataId,
     };
 
     use super::{
-        AgentClipboardMessageProxy, AgentCliprdrBackend, ClipboardContent, ClipboardState, advertised_formats,
+        AgentClipboardMessageProxy, AgentCliprdrBackend, AgentCliprdrBackendFactory, ClipboardContent, ClipboardState,
+        advertised_formats,
     };
 
     #[test]
@@ -869,6 +872,32 @@ mod tests {
         assert_eq!(response.data(), b"CURRENT_CONTENT");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // oracle: mutant retaining old channel locks or discarding the local offer on backend rebuild
+    #[test]
+    fn a_new_clipboard_channel_discards_old_locks_but_keeps_the_local_offer() {
+        let path = PathBuf::from("current.txt");
+        let state = Arc::new(Mutex::new(ClipboardState {
+            local: Some(ClipboardContent::Files(vec![FileDescriptor::new("current.txt")])),
+            local_file_paths: vec![path.clone()],
+            ..ClipboardState::default()
+        }));
+        let (input_tx, _input_rx) = RdpInputSender::channel(1);
+        let factory =
+            AgentCliprdrBackendFactory::new(Arc::clone(&state), input_tx, Arc::new(tokio::sync::Notify::new()));
+        let mut first = factory.build_cliprdr_backend();
+        first.on_lock(LockDataId(42));
+        drop(first);
+
+        let mut second = factory.build_cliprdr_backend();
+        assert!(state.lock().unwrap().local_locked_lists.is_empty());
+
+        second.on_lock(LockDataId(7));
+        let state = state.lock().unwrap();
+        let (files, paths) = &state.local_locked_lists[&7];
+        assert_eq!(files[0].name, "current.txt");
+        assert_eq!(paths, &[path]);
     }
 
     #[test]

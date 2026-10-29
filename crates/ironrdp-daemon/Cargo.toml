@@ -26,7 +26,7 @@ ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # pub
 ironrdp-rpc = { path = "../ironrdp-rpc", version = "0.2" } # public
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.3" }
 anyhow = "1"
-now-client = "0.1.0"
+now-client = "0.1.0" # public
 png = "0.18"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time", "signal"] }
 tracing = "0.1"
@@ -35,11 +35,12 @@ uuid = { version = "1", features = ["v4"] }
 whoami = "2.1"
 ironrdp-rail = { version = "0.3.0", path = "../ironrdp-rail" }
 sha2 = "0.10"
+# `NowClientConfig::client_capset` takes `now_proto_pdu::NowChannelCapsetMsg`, which `now-client` does not re-export.
+now-proto-pdu = "0.4"
 
 [dev-dependencies]
 ironrdp-connector = { path = "../ironrdp-connector" }
 ironrdp-session = { path = "../ironrdp-session" }
-now-proto-pdu = { version = "0.4", features = ["std"] }
 tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(unix)'.dependencies]
