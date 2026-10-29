@@ -24,7 +24,7 @@ Applications using the connector directly remain responsible for token acquisiti
 The connector bounds each JSON message to 64 KiB as a local resource policy, appends a trailing NUL terminator to outbound assertions as required by Windows `termsrv`, accepts optional NUL terminators and fragmented or coalesced JSON objects on input, and does not retain or log submitted assertions.
 After successful authentication, it accepts JSON whitespace before the next X.224 response.
 Live Entra host interoperability has not been verified.
-InteractiveEntraAuth DVC, browser prompts, AVD feed discovery, and cloud broker orchestration are not implemented here.
+Browser prompts, AVD feed discovery, and cloud broker orchestration are not implemented here; `ironrdp-client` runs the RDS AAD exchange of the InteractiveEntraAuth DVC with the public `entra` helpers.
 
 This crate is part of the [IronRDP] project.
 

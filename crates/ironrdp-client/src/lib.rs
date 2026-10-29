@@ -20,6 +20,12 @@ pub mod egfx_cache;
 #[cfg(feature = "entra-auth")]
 pub mod entra;
 pub mod h264;
+#[cfg(feature = "entra-auth")]
+pub mod interactive_entra;
+
+// Only the interactive Entra tests use rstest.
+#[cfg(all(test, not(feature = "entra-auth")))]
+use rstest as _;
 pub mod output_channel;
 pub mod rail;
 pub mod rdp;

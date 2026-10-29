@@ -2871,9 +2871,11 @@ dependencies = [
  "ironrdp-tls",
  "ironrdp-tokio",
  "ironrdp-vmconnect",
+ "ironrdp-w365",
  "picky",
  "rand 0.9.5",
  "reqwest",
+ "rstest",
  "rustls-native-certs",
  "serde",
  "serde_json",
@@ -3114,6 +3116,7 @@ dependencies = [
  "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
+ "ironrdp-w365",
 ]
 
 [[package]]
@@ -3620,6 +3623,7 @@ dependencies = [
  "ironrdp-svc",
  "ironrdp-tokio",
  "ironrdp-usb",
+ "ironrdp-w365",
  "openh264",
  "paste",
  "png",
@@ -3759,6 +3763,17 @@ dependencies = [
  "tracing",
  "windows",
  "windows-registry",
+]
+
+[[package]]
+name = "ironrdp-w365"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.3.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
 ]
 
 [[package]]
@@ -5059,6 +5074,7 @@ dependencies = [
  "sha2 0.11.1",
  "sha3",
  "thiserror 2.0.21",
+ "time",
  "x25519-dalek",
  "zeroize",
 ]

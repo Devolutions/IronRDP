@@ -28,6 +28,12 @@ The high-level client supports direct and RDS Gateway transports for Entra authe
 Entra authentication also rejects certificate-validation override callbacks.
 Certificate validation uses platform trust and the server's DNS name; Entra P2P certificate validation using tenant roots and a device ID is not implemented.
 The embedder owns browser UI and must choose the target host name or device ID that matches the RDP server.
+
+With `entra-auth`, `ConfigBuilder::with_interactive_entra_auth` also enables the undocumented `Microsoft::Windows::RDS::InteractiveEntraAuth` dynamic channel, which Windows App leaves off by default.
+Through it, the session host asks for a fresh Entra sign-in during the session: the client runs TLS inside the channel, reads the host's Entra device ID from its certificate's common name, and raises `RdpOutputEvent::InteractiveEntraAuthRequested`.
+The embedder answers with an `EntraAuthSession` for that device and the tenant's DER-encoded Entra P2P root certificates; the host certificate must be issued by one of those roots before the RDS AAD exchange runs inside the channel.
+The interactive Entra authentication section of `crates/ironrdp-w365/PROTOCOL.md` describes the exchange.
+The channel follows the Windows App 2.0.1485.0 client and has not been verified against a live session host.
 This flow uses Microsoft's documented public-cloud authority and requires a new authorization flow after the access token expires.
 When combined with `gateway`, `gatewaybrokeringtype:i:1` enables Azure Virtual Desktop orchestration over WebSocket, acquiring gateway and session-host PoP tokens through Windows Web Account Manager on Windows, `OAuthAvdTokenProvider` (loopback PKCE, device code, and refresh-token cache) across platforms, or a custom `AvdTokenProvider` set with `ConfigBuilder::with_avd_token_provider`.
 Live Entra host interoperability has not been verified.

@@ -56,6 +56,8 @@ dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
 webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
 vmconnect = ["dep:ironrdp-vmconnect"]
 location = ["dep:ironrdp-rdpel"]
+# Windows 365 battery status, power request, screen capture redirection, and virtual desktop control channels.
+w365 = ["dep:ironrdp-w365"]
 # MS-RDPEVOR video optimized remoting with MS-RDPEGT geometry tracking. The channels are only
 # registered when an H.264 decoder is available: Media Foundation's on Windows by default.
 video = ["dep:ironrdp-rdpevor", "dep:ironrdp-rdpegt"]
@@ -101,6 +103,7 @@ all = [
     "webauthn",
     "vmconnect",
     "location",
+    "w365",
     "camera",
     "video",
     "udp",
@@ -138,6 +141,7 @@ ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.9", optional = true } 
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.11", optional = true }
 ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.2", optional = true }
 ironrdp-rdpel = { path = "../ironrdp-rdpel", version = "0.0.2", optional = true }
+ironrdp-w365 = { path = "../ironrdp-w365", version = "0.1", optional = true } # public
 ironrdp-rdpegt = { path = "../ironrdp-rdpegt", version = "0.2", optional = true }
 ironrdp-rdpevor = { path = "../ironrdp-rdpevor", version = "0.2", optional = true }
 ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.2", optional = true }
@@ -164,7 +168,7 @@ url = "2" # public
 x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["system-proxy"], optional = true } # public
 rustls-native-certs = { version = "0.8", optional = true }
-picky = { version = "=7.0.0-rc.27", optional = true }
+picky = { version = "=7.0.0-rc.27", features = ["time_conversion"], optional = true }
 base64 = { version = "0.22", optional = true }
 rand = { version = "0.9", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
@@ -187,6 +191,9 @@ windows = { version = "0.62", features = [
     "Win32_System_WinRT",
     "Win32_UI_WindowsAndMessaging",
 ], optional = true }
+
+[dev-dependencies]
+rstest.workspace = true
 
 [lints]
 workspace = true
