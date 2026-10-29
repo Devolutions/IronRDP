@@ -247,14 +247,15 @@ async fn fragmented_pdus_preserve_payload_and_queue_order() {
     let boundary = ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST;
     let shape: Vec<_> = chunks
         .iter()
-        .map(|(header, data)| (header.length, header.flags & boundary, data.len()))
+        .map(|(header, data)| (header.length, header.flags, data.len()))
         .collect();
+    let show_protocol = ChannelControlFlags::FLAG_SHOW_PROTOCOL;
     assert_eq!(
         shape,
         [
-            (3201, ChannelControlFlags::FLAG_FIRST, 1600),
-            (3201, ChannelControlFlags::empty(), 1600),
-            (3201, ChannelControlFlags::FLAG_LAST, 1),
+            (3201, ChannelControlFlags::FLAG_FIRST | show_protocol, 1600),
+            (3201, show_protocol, 1600),
+            (3201, ChannelControlFlags::FLAG_LAST | show_protocol, 1),
             (4, boundary, 4),
         ]
     );

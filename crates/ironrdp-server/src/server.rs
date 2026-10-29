@@ -3828,12 +3828,13 @@ impl RdpServer {
                         warn!(channel = ?name.as_str(), "Static channel was not joined, rejecting write");
                         continue;
                     };
-                    let data = server_encode_svc_messages(
-                        vec![ironrdp_svc::SvcMessage::from(payload)],
-                        channel_id,
-                        user_channel_id,
-                    )
-                    .map_err(ServerError::encode)?;
+                    let fragmented = ironrdp_svc::CHANNEL_CHUNK_LENGTH < payload.len();
+                    let mut message = ironrdp_svc::SvcMessage::from(payload);
+                    if fragmented {
+                        message = message.with_flags(ChannelFlags::SHOW_PROTOCOL);
+                    }
+                    let data = server_encode_svc_messages(vec![message], channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
                     let sent = writer
                         .write_all_if(&data, || !completion.is_closed() && is_current())
                         .await
