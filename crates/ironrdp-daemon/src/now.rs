@@ -14,7 +14,7 @@ use std::sync::{Mutex, PoisonError};
 
 use ironrdp_client::config::DvcProxyInfo;
 use now_client::{NowCapabilities, NowClient, NowClientConfig, NowClientError, NowClientHandle};
-use now_proto_pdu::NowChannelCapsetMsg;
+use now_proto_pdu::{NowChannelCapsetMsg, NowSessionCapsetFlags};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tokio::time::{Instant, sleep, timeout_at};
@@ -351,7 +351,9 @@ where
     // `NowChannelCapsetMsg::downgrade` negotiates `None` when neither peer requests one.
     let config = {
         let default = NowClientConfig::default();
-        let client_capset = NowChannelCapsetMsg::default().with_exec_capset(default.client_capset.exec_capset());
+        let client_capset = NowChannelCapsetMsg::default()
+            .with_session_capset(NowSessionCapsetFlags::LOGOFF)
+            .with_exec_capset(default.client_capset.exec_capset());
         NowClientConfig {
             client_capset,
             ..default

@@ -240,6 +240,49 @@ pub(crate) async fn disconnect_session(endpoint: &Endpoint, server: Option<Strin
     }
 }
 
+/// Asks the NOW agent inside the remote session to log the user off, then waits up to `timeout`
+/// for the session to end and returns the daemon's description of why it ended.
+///
+/// The NOW logoff message has no response, so the end of the session is the only confirmation.
+pub(crate) async fn logoff_session(endpoint: &Endpoint, timeout: Duration) -> anyhow::Result<Option<String>> {
+    let initial = probe(endpoint)
+        .await?
+        .with_context(|| format!("daemon is not running at {endpoint}"))?;
+    anyhow::ensure!(
+        initial.state == ConnState::Connected,
+        "logoff requires a connected session (state: {:?})",
+        initial.state
+    );
+    let response = transport::send_request(endpoint, &Request::Logoff)
+        .await
+        .context("logoff requires a current daemon; restart the daemon")?;
+    match response {
+        Response::Ok(Payload::Empty) => {}
+        Response::Ok(_) => anyhow::bail!("unexpected logoff response"),
+        Response::Err(error) => anyhow::bail!("{error}"),
+    }
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let status = probe(endpoint)
+            .await?
+            .context("session endpoint stopped while waiting for logoff")?;
+        if matches!(
+            status.state,
+            ConnState::NoSession | ConnState::Disconnected | ConnState::Failed
+        ) {
+            return Ok(status.message);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "logoff requested but the session is still connected after {}s;                  an application may be blocking sign-out on the remote desktop",
+                timeout.as_secs()
+            );
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 fn endpoint_absent(error: &anyhow::Error) -> bool {
     error.downcast_ref::<io::Error>().is_some_and(|error| {
         error.kind() == io::ErrorKind::NotFound || cfg!(unix) && error.kind() == io::ErrorKind::ConnectionRefused
@@ -775,5 +818,66 @@ mod tests {
         };
         let ((), disconnected) = tokio::join!(client, server);
         assert!(disconnected);
+    }
+
+    #[tokio::test]
+    async fn logoff_waits_for_the_session_to_end_and_reports_why() {
+        let name = format!(
+            "ir-logoff-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .subsec_nanos()
+        );
+        let endpoint = transport::default_endpoint_named(&name);
+        let mut listener = Listener::bind(&endpoint).expect("bind isolated test endpoint");
+        let server = async move {
+            let mut logoff_requested = false;
+            let mut polls_after_logoff = 0;
+            for _ in 0..4 {
+                let mut stream = listener.accept().await.expect("accept");
+                let request: Request = transport::read_message(&mut stream).await.expect("read request");
+                let response = match request {
+                    Request::Logoff => {
+                        logoff_requested = true;
+                        Response::ok()
+                    }
+                    Request::Status => {
+                        let (state, message) = if !logoff_requested || polls_after_logoff == 0 {
+                            (ConnState::Connected, None)
+                        } else {
+                            (ConnState::Disconnected, Some("logged off".to_owned()))
+                        };
+                        if logoff_requested {
+                            polls_after_logoff += 1;
+                        }
+                        Response::Ok(Payload::Status(StatusInfo {
+                            state,
+                            destination: Some("server.example:3389".to_owned()),
+                            width: None,
+                            height: None,
+                            message,
+                            credentials_loaded: false,
+                            untrusted_certificate: None,
+                        }))
+                    }
+                    _ => panic!("unexpected request to mock daemon"),
+                };
+                transport::write_message(&mut stream, &response)
+                    .await
+                    .expect("send response");
+            }
+            logoff_requested
+        };
+
+        let client = async {
+            let reason = logoff_session(&endpoint, Duration::from_secs(10))
+                .await
+                .expect("log off active session");
+            assert_eq!(reason.as_deref(), Some("logged off"));
+        };
+        let ((), logoff_requested) = tokio::join!(client, server);
+        assert!(logoff_requested);
     }
 }

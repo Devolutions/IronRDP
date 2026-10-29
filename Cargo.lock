@@ -2949,11 +2949,11 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-core"
-version = "0.1.5"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2db60a59716a84d09040d29c9e75e81545842510fccb0934c09b28e78b46680"
+checksum = "ef0875b98275068b88652e49ba2e0a1150a1390aad69d26c942c8c59e8ec918e"
 dependencies = [
- "ironrdp-error 0.1.3",
+ "ironrdp-error 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3078,13 +3078,13 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-error"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a9d7794e854eef2f13fdf79c8502bcc567a75a15fd0522885f37739386a4cef"
+version = "0.2.1"
 
 [[package]]
 name = "ironrdp-error"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97c5b444931aeea5d2967c94d493bcc809de63b491ec96389e643c224ba60849"
 
 [[package]]
 name = "ironrdp-futures"
@@ -4307,8 +4307,7 @@ dependencies = [
 [[package]]
 name = "now-client"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8e4f1efbc5536f3e43f40e089abc7562b3e0bc48dfee57444558d45c31dee20"
+source = "git+https://github.com/Devolutions/now-libraries?branch=feat%2Fnow-client-session-commands#587a1ce09d4f48e05cb348baae30aeb6403b96a6"
 dependencies = [
  "now-proto-pdu",
  "thiserror 2.0.21",
@@ -4318,12 +4317,11 @@ dependencies = [
 [[package]]
 name = "now-proto-pdu"
 version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1fbbab671b284dfd3e1a81a84da2cd1f4d77e7da675498e59e55de69c713545"
+source = "git+https://github.com/Devolutions/now-libraries?branch=feat%2Fnow-client-session-commands#587a1ce09d4f48e05cb348baae30aeb6403b96a6"
 dependencies = [
  "bitflags 2.13.2",
- "ironrdp-core 0.1.5",
- "ironrdp-error 0.1.3",
+ "ironrdp-core 0.2.1",
+ "ironrdp-error 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "uuid",
 ]
 

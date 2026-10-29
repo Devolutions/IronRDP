@@ -748,6 +748,7 @@ impl Daemon {
             } => DaemonResponse::Single(self.connect(properties, log_directive)),
             Request::Disconnect => DaemonResponse::Single(self.disconnect()),
             Request::DisconnectMatching { server } => DaemonResponse::Single(self.disconnect_matching(Some(&server))),
+            Request::Logoff => DaemonResponse::Single(self.logoff().await),
             Request::DaemonStop => DaemonResponse::Single(Response::ok()),
             Request::Status => DaemonResponse::Single(self.status()),
             Request::QueryProps { filter } => DaemonResponse::Single(self.query_props(filter.as_ref())),
@@ -2121,6 +2122,20 @@ impl Daemon {
         };
         match operations.capabilities().await {
             Ok(capabilities) => Response::Ok(Payload::NowCapabilities(capabilities)),
+            Err(error) => Response::Err(error),
+        }
+    }
+
+    async fn logoff(&self) -> Response {
+        let operations = match self.operations() {
+            Ok(operations) => operations,
+            Err(response) => return response,
+        };
+        match operations.session_logoff().await {
+            Ok(()) => {
+                info!("Requested a logoff through the NOW agent");
+                Response::ok()
+            }
             Err(error) => Response::Err(error),
         }
     }
