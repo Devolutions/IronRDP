@@ -11,6 +11,7 @@ using System.IO;
 using System.Net.Security;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Markup.Xaml;
 using Avalonia.Interactivity;
@@ -32,6 +33,12 @@ public partial class MainWindow : Window
     byte[]? _frameBuffer;
     readonly object _stageLock = new();
     Framed<Stream>? _framed;
+    // Cancels the connection sequence and the PDU read loop when the session ends or the window closes.
+    CancellationTokenSource? _sessionCts;
+    // Set by the read loop while another PDU is already buffered: Render then copies pixels but leaves
+    // presenting to Present, so a burst of updates draws once.
+    volatile bool _deferPresent;
+    bool _presentPending;
     WinCliprdr? _cliprdr;
     private readonly RendererModel _renderModel;
     private Image? _imageControl;
@@ -49,7 +56,11 @@ public partial class MainWindow : Window
 
         this.DataContext = _renderModel;
 
-        Closing += (sender, e) => { Environment.Exit(1); };
+        Closing += (sender, e) =>
+        {
+            _sessionCts?.Cancel();
+            Environment.Exit(1);
+        };
     }
 
     private void InitializeComponent()
@@ -150,6 +161,7 @@ public partial class MainWindow : Window
             try
             {
                 ConnectionResult res;
+                _sessionCts = new CancellationTokenSource();
 
                 // Determine connection mode: Gateway or Direct
                 if (!string.IsNullOrEmpty(gatewayUrl))
@@ -189,7 +201,7 @@ public partial class MainWindow : Window
                     string destination = $"{server}:{port}";
 
                     var (gatewayRes, gatewayFramed) = await RDCleanPathConnection.ConnectRDCleanPath(
-                        config, gatewayUrl, gatewayToken!, destination, null, factory);
+                        config, gatewayUrl, gatewayToken!, destination, null, factory, _sessionCts.Token);
                     res = gatewayRes;
                     this._framed = new Framed<Stream>(gatewayFramed.GetInner().Item1);
 
@@ -200,7 +212,7 @@ public partial class MainWindow : Window
                     Trace.TraceInformation("=== DIRECT MODE ===");
 
                     // Direct connection (original behavior)
-                    var (directRes, directFramed) = await Connection.Connect(config, server, factory, port);
+                    var (directRes, directFramed) = await Connection.Connect(config, server, factory, port, _sessionCts.Token);
                     res = directRes;
                     this._framed = new Framed<Stream>(directFramed.GetInner().Item1);
 
@@ -302,11 +314,30 @@ public partial class MainWindow : Window
                     }
                 }
 
-                _imageControl.InvalidateVisual();
+                if (_deferPresent)
+                {
+                    _presentPending = true;
+                }
+                else
+                {
+                    _imageControl.InvalidateVisual();
+                }
             }
             catch (Exception e)
             {
                 Trace.TraceError("Error rendering: " + e.Message);
+            }
+        });
+    }
+
+    private void Present()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_presentPending)
+            {
+                _presentPending = false;
+                _imageControl?.InvalidateVisual();
             }
         });
     }
@@ -316,41 +347,64 @@ public partial class MainWindow : Window
     {
         Task.Run(async () =>
         {
+            var token = _sessionCts!.Token;
             try
             {
                 var keepLooping = true;
-                Task<(Action, byte[])>? readPduTask = null;
+                Task<(Action Action, byte[] Payload)>? readPduTask = null;
+                (Action Action, byte[] Payload)? buffered = null;
                 while (keepLooping)
                 {
-                    // Start the next read only once the previous frame's outputs are handled:
-                    // reactivation reads from the same stream.
-                    readPduTask ??= _framed!.ReadPdu();
-
-                    // Wake up periodically to send RDPDR completions (e.g. smartcard calls) that
-                    // finished while the server sent nothing.
-                    if (readPduTask != await Task.WhenAny(readPduTask, Task.Delay(RdpdrDeferredPollInterval)))
+                    (Action Action, byte[] Payload) pdu;
+                    if (buffered is { } next)
                     {
-                        var deferred = WithStageLock(() => _activeStage!.PollRdpdrDeferred());
-                        keepLooping = await HandleActiveStageOutput(deferred);
-                        continue;
+                        pdu = next;
+                    }
+                    else
+                    {
+                        // Start the next read only once the previous frame's outputs are handled:
+                        // reactivation reads from the same stream.
+                        readPduTask ??= _framed!.ReadPdu(token);
+
+                        // Wake up periodically to send RDPDR completions (e.g. smartcard calls) that
+                        // finished while the server sent nothing.
+                        if (readPduTask != await Task.WhenAny(readPduTask, Task.Delay(RdpdrDeferredPollInterval)))
+                        {
+                            var deferred = WithStageLock(() => _activeStage!.PollRdpdrDeferred());
+                            keepLooping = await HandleActiveStageOutput(deferred);
+                            continue;
+                        }
+
+                        pdu = await readPduTask;
+                        readPduTask = null;
                     }
 
-                    var (action, payload) = await readPduTask;
-                    readPduTask = null;
-                    var outputIterator = WithStageLock(() => _activeStage!.Process(_decodedImage!, action, payload));
+                    var outputIterator = WithStageLock(() => _activeStage!.Process(_decodedImage!, pdu.Action, pdu.Payload));
+
+                    // Present only once no further PDU is already buffered, so a burst of updates draws once.
+                    buffered = _framed!.TryReadBufferedPdu(out var nextPdu) ? nextPdu : null;
+                    _deferPresent = buffered is not null;
                     keepLooping = await HandleActiveStageOutput(outputIterator);
+                    if (buffered is null)
+                    {
+                        Present();
+                    }
                 }
 
-                // The session can end while a read is still pending: report its failure, if any.
-                readPduTask?.ContinueWith(
-                    t => Trace.TraceError("Error reading PDU: " + t.Exception!.GetBaseException().Message),
-                    TaskContinuationOptions.OnlyOnFaulted);
-
                 Trace.TraceInformation("ReadPduAndProcessActiveStage loop ended");
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                Trace.TraceInformation("ReadPduAndProcessActiveStage loop cancelled");
             }
             catch (Exception e)
             {
                 Trace.TraceError("Error reading PDU: " + e.Message);
+            }
+            finally
+            {
+                // The session ended: stop a read still pending instead of leaving it to fail on stream close.
+                _sessionCts.Cancel();
             }
         });
     }
@@ -605,7 +659,7 @@ public partial class MainWindow : Window
                     var writeBuf = WriteBuf.New();
                     while (true)
                     {
-                        await Connection.SingleSequenceStep(activationSequence, writeBuf, _framed!);
+                        await Connection.SingleSequenceStep(activationSequence, writeBuf, _framed!, _sessionCts!.Token);
 
                         if (activationSequence.State.Type != ConnectionActivationStateType.Finalized)
                             continue;

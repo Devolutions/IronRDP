@@ -15,6 +15,10 @@ internal static class SmokeTests
         0x06, 0xd0, 0x00, 0x00, 0x56, 0x78, 0x00,
     };
 
+    // Fast-path update PDUs with a one-byte and a two-byte length1/length2 encoding (MS-RDPBCGR §2.2.9.1.2).
+    private static readonly byte[] FastPathShortLength = { 0x00, 0x05, 0x01, 0x02, 0x03 };
+    private static readonly byte[] FastPathLongLength = { 0x00, 0x80, 0x06, 0x01, 0x02, 0x03 };
+
     internal static IEnumerable<(string Name, System.Action Run)> Cases()
     {
         // oracle: ffi/INTENT.md "Copying into caller buffers" (bytes past the image)
@@ -276,6 +280,135 @@ internal static class SmokeTests
             True(second.SequenceEqual(TpktX224ConfirmWithoutNegotiation), "second PDU bytes");
 
             True(framed.Peek().IsEmpty, "nothing left in the buffer");
+        });
+
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1 (TPKT header is four bytes) and §2.2.9.1.2 (fast-path header is at most three)
+        yield return ("pdu find_size sizes a PDU from its header alone", () =>
+        {
+            var pdu = IronRdpPdu.New();
+            Equal(TpktX224ConfirmSelectingTls.Length, (int)pdu.FindSize(TpktX224ConfirmSelectingTls[..4])!.Length, "TPKT length");
+            Equal(FastPathShortLength.Length, (int)pdu.FindSize(FastPathShortLength[..2])!.Length, "one-byte fast-path length");
+            Equal(FastPathLongLength.Length, (int)pdu.FindSize(FastPathLongLength[..3])!.Length, "two-byte fast-path length");
+            True(pdu.FindSize(FastPathLongLength[..2]) is null, "two-byte fast-path length needs its second byte");
+        });
+
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1 and §2.2.9.1.2 for the PDU boundaries; mutant for the ReadCount
+        // assertions, which pin that a buffered PDU never reads the stream
+        yield return ("framed takes buffered PDUs without reading again", () =>
+        {
+            var bytes = TpktX224ConfirmSelectingTls.Concat(FastPathLongLength).Concat(FastPathShortLength).ToArray();
+            var stream = new ChunkedReadStream(bytes);
+            var framed = new Framed<ChunkedReadStream>(stream);
+
+            True(!framed.TryReadBufferedPdu(out _), "nothing buffered before the first read");
+
+            var (_, first) = framed.ReadPdu().GetAwaiter().GetResult();
+            True(first.SequenceEqual(TpktX224ConfirmSelectingTls), "first PDU bytes");
+            Equal(1, stream.ReadCount, "one read buffered everything");
+
+            True(framed.TryReadBufferedPdu(out var second), "second PDU is buffered");
+            True(second.Payload.SequenceEqual(FastPathLongLength), "second PDU bytes");
+            True(framed.TryReadBufferedPdu(out var third), "third PDU is buffered");
+            True(third.Payload.SequenceEqual(FastPathShortLength), "third PDU bytes");
+            True(!framed.TryReadBufferedPdu(out _), "nothing left");
+            Equal(1, stream.ReadCount, "buffered PDUs did not read the stream");
+        });
+
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1 (TPKT length counts the header, so 19 + 6 bytes hold one PDU and part of the next)
+        yield return ("framed leaves a partial PDU buffered", () =>
+        {
+            var bytes = TpktX224ConfirmSelectingTls.Concat(TpktX224ConfirmWithoutNegotiation).ToArray();
+            var stream = new ChunkedReadStream(bytes, TpktX224ConfirmSelectingTls.Length + 6);
+            var framed = new Framed<ChunkedReadStream>(stream);
+
+            framed.ReadPdu().GetAwaiter().GetResult();
+            True(!framed.TryReadBufferedPdu(out _), "a partial PDU is not buffered");
+            Equal(6, framed.Peek().Length, "partial PDU bytes stay buffered");
+
+            var (_, second) = framed.ReadPdu().GetAwaiter().GetResult();
+            True(second.SequenceEqual(TpktX224ConfirmWithoutNegotiation), "second PDU bytes");
+        });
+
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1 and §2.2.9.1.2 for the PDU boundaries; mutant for the read count
+        // (1 + 6 + 20 bytes, then the 3 left), which pins that no read is redundant
+        yield return ("framed sync read splits PDUs across reads", () =>
+        {
+            var bytes = FastPathLongLength.Concat(TpktX224ConfirmSelectingTls).Concat(FastPathShortLength).ToArray();
+            var stream = new ChunkedReadStream(bytes, 1, 6, 20);
+            var framed = new Framed<ChunkedReadStream>(stream);
+
+            var first = framed.ReadPduSync();
+            True(first.Payload.SequenceEqual(FastPathLongLength), "first PDU bytes");
+            var second = framed.ReadPduSync();
+            True(second.Payload.SequenceEqual(TpktX224ConfirmSelectingTls), "second PDU bytes");
+            var third = framed.ReadPduSync();
+            True(third.Payload.SequenceEqual(FastPathShortLength), "third PDU bytes");
+            Equal(4, stream.ReadCount, "reads");
+            True(framed.Peek().IsEmpty, "nothing left in the buffer");
+
+            var error = Throws<IronRdpLibException>(() => framed.ReadPduSync());
+            Equal(IronRdpLibExceptionType.EndOfFile, error.ErrorType, "EOF error type");
+        });
+
+        // oracle: Framed remarks (a stream ending inside a PDU body is EndOfFile, like one ending between PDUs)
+        yield return ("framed reports a stream that ends inside a PDU body as EndOfFile", () =>
+        {
+            var truncated = TpktX224ConfirmSelectingTls[..^3];
+
+            var asyncFramed = new Framed<ChunkedReadStream>(new ChunkedReadStream(truncated));
+            var asyncError = Throws<IronRdpLibException>(() => asyncFramed.ReadPdu().GetAwaiter().GetResult());
+            Equal(IronRdpLibExceptionType.EndOfFile, asyncError.ErrorType, "async EOF error type");
+
+            var syncFramed = new Framed<ChunkedReadStream>(new ChunkedReadStream(truncated));
+            var syncError = Throws<IronRdpLibException>(() => syncFramed.ReadPduSync());
+            Equal(IronRdpLibExceptionType.EndOfFile, syncError.ErrorType, "sync EOF error type");
+
+            var hintFramed = new Framed<ChunkedReadStream>(new ChunkedReadStream(truncated));
+            var hintError = Throws<IronRdpLibException>(() => hintFramed.ReadExact((nuint)TpktX224ConfirmSelectingTls.Length).GetAwaiter().GetResult());
+            Equal(IronRdpLibExceptionType.EndOfFile, hintError.ErrorType, "ReadExact EOF error type");
+        });
+
+        // oracle: Framed remarks (a cancelled read leaves the stream read in flight and the next read finishes it);
+        // mutant for the ReadCount assertions, which pin that the in-flight read is finished rather than reissued
+        yield return ("framed read pdu stops when cancelled and the next read finishes the pending stream read", () =>
+        {
+            var stream = new BlockingReadStream(TpktX224ConfirmSelectingTls[..6]);
+            var framed = new Framed<BlockingReadStream>(stream);
+            using var cancellation = new CancellationTokenSource();
+
+            var read = framed.ReadPdu(cancellation.Token);
+            True(!read.IsCompleted, "read waits for the stream");
+            Equal(2, stream.ReadCount, "the first six bytes and the blocked read");
+
+            cancellation.Cancel();
+            Throws<OperationCanceledException>(() => read.GetAwaiter().GetResult());
+            Equal(6, framed.Peek().Length, "bytes read before the cancellation stay buffered");
+
+            // The abandoned stream read completes only after the next read has started waiting on it.
+            var next = framed.ReadPdu();
+            True(!next.IsCompleted, "next read waits for the pending stream read");
+            Equal(2, stream.ReadCount, "next read does not reissue the stream read");
+            stream.Unblock(TpktX224ConfirmSelectingTls[6..].Concat(TpktX224ConfirmWithoutNegotiation).ToArray());
+            var (_, pdu) = next.GetAwaiter().GetResult();
+            True(pdu.SequenceEqual(TpktX224ConfirmSelectingTls), "next read completes the PDU in order");
+
+            True(framed.TryReadBufferedPdu(out var buffered), "the second PDU arrived in the same stream read");
+            True(buffered.Payload.SequenceEqual(TpktX224ConfirmWithoutNegotiation), "second PDU bytes");
+
+            // Same handoff into the synchronous read.
+            var cancelled = framed.ReadPdu(new CancellationToken(canceled: true));
+            Throws<OperationCanceledException>(() => cancelled.GetAwaiter().GetResult());
+            Equal(3, stream.ReadCount, "the cancelled read left a stream read in flight");
+            var unblock = new Thread(() =>
+            {
+                Thread.Sleep(50);
+                stream.Unblock(FastPathShortLength);
+            });
+            unblock.Start();
+            var sync = framed.ReadPduSync();
+            unblock.Join();
+            True(sync.Payload.SequenceEqual(FastPathShortLength), "sync read finishes the pending stream read");
+            Equal(3, stream.ReadCount, "one stream read per blocked wait");
         });
 
         yield return ("config builder reports the first missing field", () =>
@@ -547,19 +680,82 @@ internal static class SmokeTests
         return builder.Build();
     }
 
-    private sealed class ChunkedReadStream : MemoryStream
+    private sealed class ChunkedReadStream : Stream
     {
+        private readonly byte[] _bytes;
         private readonly Queue<int> _chunkSizes;
+        private int _position;
 
-        public ChunkedReadStream(byte[] buffer, params int[] chunkSizes) : base(buffer)
+        public ChunkedReadStream(byte[] bytes, params int[] chunkSizes)
         {
+            _bytes = bytes;
             _chunkSizes = new Queue<int>(chunkSizes);
         }
 
+        public int ReadCount { get; private set; }
+
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            var maxCount = _chunkSizes.Count > 0 ? Math.Min(buffer.Length, _chunkSizes.Dequeue()) : buffer.Length;
-            return base.ReadAsync(buffer[..maxCount], cancellationToken);
+            return new ValueTask<int>(Read(buffer.Span));
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            return Read(buffer.AsSpan(offset, count));
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            ReadCount++;
+            var count = _chunkSizes.Count > 0 ? Math.Min(buffer.Length, _chunkSizes.Dequeue()) : buffer.Length;
+            count = Math.Min(count, _bytes.Length - _position);
+            _bytes.AsSpan(_position, count).CopyTo(buffer);
+            _position += count;
+            return count;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _bytes.Length;
+        public override long Position { get => _position; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    // Serves the bytes it holds, then blocks until Unblock supplies more.
+    private sealed class BlockingReadStream : MemoryStream
+    {
+        private TaskCompletionSource<byte[]> _more = new();
+
+        public BlockingReadStream(byte[] first)
+        {
+            Write(first);
+            Position = 0;
+        }
+
+        public int ReadCount { get; private set; }
+
+        public void Unblock(byte[] bytes)
+        {
+            _more.SetResult(bytes);
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            ReadCount++;
+            if (Position == Length)
+            {
+                var bytes = await _more.Task.WaitAsync(cancellationToken);
+                _more = new TaskCompletionSource<byte[]>();
+                SetLength(0);
+                Write(bytes);
+                Position = 0;
+            }
+
+            return Read(buffer.Span);
         }
     }
 

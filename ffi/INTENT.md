@@ -37,3 +37,12 @@ It throws `IronRdpException` when the buffer is shorter than the data, and leave
 Like that function, it rejects a row offset that overflows instead of letting it wrap.
 Where Rust code would panic on an out-of-range slice, such as a stride or buffer too short for the rectangle, it throws `IronRdpException` instead.
 It writes nothing when it rejects.
+
+## PDU framing in .NET
+
+`Framed` sizes an active-stage PDU from its first four buffered bytes, because a TPKT header (MS-RDPBCGR 2.2.9.1.1) is four bytes and a fast-path header (MS-RDPBCGR 2.2.9.1.2) at most three.
+The cost of finding a PDU therefore does not grow with the bytes buffered behind it.
+A connection-sequence read (`ReadByHint`) hands the hint everything buffered, because a hint may need more than a fixed header and those PDUs are few and small.
+Every read reports a stream that ends before the PDU is complete, in its header or its body, as `IronRdpLibException` with `EndOfFile`.
+`TryReadBufferedPdu` lets a consumer drain the PDUs already buffered before it flushes rendering, and `ReadPduSync` serves a blocking read loop on a dedicated thread.
+Both are reads under the one-read-at-a-time rule above.
