@@ -2672,7 +2672,6 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
  "rand 0.9.5",
- "rstest",
  "sha2 0.10.9",
  "tracing",
  "windows",

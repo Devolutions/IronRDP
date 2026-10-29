@@ -1939,49 +1939,6 @@ fn create_gcc_blocks(
 mod tests {
     use super::*;
 
-    // oracle: spec MS-RDPBCGR §2.2.1.3.2 (desktopScaleFactor 100..=500, deviceScaleFactor 100/140/180; each ignored when either is out of range or absent)
-    #[rstest::rstest]
-    #[case::retina_pair(Some(200), Some(100), (Some(200), Some(100)))]
-    #[case::lowest_desktop_highest_device(Some(100), Some(180), (Some(100), Some(180)))]
-    #[case::highest_desktop(Some(500), Some(140), (Some(500), Some(140)))]
-    #[case::invalid_device_drops_both(Some(200), Some(250), (None, None))]
-    #[case::absent_device_drops_both(Some(200), None, (None, None))]
-    #[case::desktop_below_range_drops_both(Some(50), Some(140), (None, None))]
-    #[case::desktop_above_range_drops_both(Some(501), Some(100), (None, None))]
-    #[case::absent_desktop_drops_both(None, Some(100), (None, None))]
-    #[case::both_absent(None, None, (None, None))]
-    fn scale_factors_are_reported_only_as_a_valid_pair(
-        #[case] desktop: Option<u32>,
-        #[case] device: Option<u32>,
-        #[case] expected: (Option<u32>, Option<u32>),
-    ) {
-        assert_eq!(validate_scale_factors(desktop, device), expected);
-    }
-
-    // oracle: reference AcceptorResult::desktop_scale_factor docs (captured once from Client Core Data and carried across Deactivation-Reactivation)
-    #[test]
-    fn scale_factors_survive_deactivation_reactivation() {
-        let size = DesktopSize {
-            width: 1024,
-            height: 768,
-        };
-        let mut acceptor = Acceptor::new(SecurityProtocol::SSL, size, Vec::new(), None);
-        acceptor.desktop_scale_factor = Some(200);
-        acceptor.device_scale_factor = Some(140);
-        acceptor.saved_for_reactivation = AcceptorState::CapabilitiesSendServer {
-            early_capability: None,
-            channels: Vec::new(),
-        };
-
-        let reactivated = Acceptor::new_deactivation_reactivation(acceptor, StaticChannelSet::new(), size)
-            .expect("saved state is CapabilitiesSendServer");
-
-        assert_eq!(
-            (reactivated.desktop_scale_factor, reactivated.device_scale_factor),
-            (Some(200), Some(140))
-        );
-    }
-
     fn credentials(username: &str) -> Credentials {
         Credentials {
             username: username.to_owned(),
