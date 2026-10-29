@@ -21,7 +21,7 @@ pub(crate) type OnWriteDvcMessage =
 
 pub(crate) struct WorkerCtx {
     pub(crate) on_write_dvc: OnWriteDvcMessage,
-    pub(crate) to_pipe_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    pub(crate) to_pipe_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
     pub(crate) abort_event: Arc<Notify>,
     pub(crate) pipe_name: String,
     pub(crate) channel_name: String,

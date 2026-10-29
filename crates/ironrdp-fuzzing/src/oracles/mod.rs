@@ -731,6 +731,15 @@ fn dvc_server_process(input: &[u8]) {
     if server.create_channel(NoopServerDvc).is_ok() {
         let _ = server.close_channel(1);
     }
+    if server.create_channel(NoopServerDvc).is_ok()
+        && let Ok(decline) = encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(
+            2,
+            CreationStatus::NO_LISTENER,
+        )))
+    {
+        let _ = server.process(&decline);
+        let _ = server.close_channel(2);
+    }
     let _ = server.create_channel(NoopServerDvc);
     let _ = server.process(input);
     return;

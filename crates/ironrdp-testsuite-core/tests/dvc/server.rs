@@ -39,9 +39,11 @@ fn process_client_pdu(server: &mut DrdynvcServer, pdu: DrdynvcClientPdu) {
     server.process(&encoded).expect("client PDU should be processed");
 }
 
-#[test]
-fn server_decompresses_client_data() {
-    let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc::default());
+fn open_recorded_server(maximum: Option<usize>) -> (DrdynvcServer, u32) {
+    let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc {
+        maximum,
+        ..Default::default()
+    });
     server.start().expect("server should start");
     process_client_pdu(
         &mut server,
@@ -54,6 +56,12 @@ fn server_decompresses_client_data() {
         &mut server,
         DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, CreationStatus::OK)),
     );
+    (server, channel_id)
+}
+
+#[test]
+fn server_decompresses_client_data() {
+    let (mut server, channel_id) = open_recorded_server(None);
 
     // The MS-RDPEDYC 4.3.3 and 4.3.4 data blocks, sent by the client as two messages: the
     // second matches against the history left by the first.
@@ -82,17 +90,7 @@ fn server_decompresses_client_data() {
 // oracle: spec MS-RDPEDYC §2.2.3 and §3.1.5.2.2.
 #[test]
 fn server_receives_empty_messages_around_fragmented_data() {
-    let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc::default());
-    server.start().unwrap();
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
-    );
-    let channel_id = server.get_channel_id_by_type::<RecordedServerDvc>().unwrap();
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, CreationStatus::OK)),
-    );
+    let (mut server, channel_id) = open_recorded_server(None);
     let payloads = [vec![], vec![b'q'; 1591], vec![], vec![b'x'], vec![]];
     let messages = payloads
         .iter()
@@ -111,17 +109,7 @@ fn server_receives_empty_messages_around_fragmented_data() {
 // oracle: mutant ending the RDP connection when already-sent data races a server-initiated DVC close.
 #[test]
 fn server_discards_data_in_flight_when_a_channel_closes() {
-    let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc::default());
-    server.start().unwrap();
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
-    );
-    let channel_id = server.get_channel_id_by_type::<RecordedServerDvc>().unwrap();
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, CreationStatus::OK)),
-    );
+    let (mut server, channel_id) = open_recorded_server(None);
     server.close_channel(channel_id).unwrap();
     let late_data = encode_vec(&DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
         channel_id,
@@ -177,22 +165,40 @@ fn cancelled_creation_can_be_reopened_without_reusing_the_channel_id() {
     assert!(server.is_channel_opened(request.channel_id()));
 }
 
+// oracle: spec MS-RDPEDYC §2.2.4; mutant emitting ClosePdu for Pending or CreationFailed channels.
+#[test]
+fn close_channel_suppresses_pdu_for_pending_and_declined_channels() {
+    let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc::default());
+    let pending_id = server.get_channel_id_by_type::<RecordedServerDvc>().unwrap();
+    assert!(server.close_channel(pending_id).is_none());
+    let cap_responses = server
+        .process(
+            &encode_vec(&DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(
+                CapsVersion::V3,
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(cap_responses.is_empty());
+
+    let request = server.create_channel(RecordedServerDvc::default()).unwrap();
+    let DrdynvcServerPdu::Create(request) = ironrdp_core::decode(&request.encode_unframed_pdu().unwrap()).unwrap()
+    else {
+        panic!("expected a create request");
+    };
+    let declined_id = request.channel_id();
+    assert_ne!(declined_id, pending_id);
+    process_client_pdu(
+        &mut server,
+        DrdynvcClientPdu::Create(CreateResponsePdu::new(declined_id, CreationStatus::NO_LISTENER)),
+    );
+    assert!(server.close_channel(declined_id).is_none());
+}
+
 // oracle: mutant buffering an oversized fragmented message before the backend can reject it.
 #[test]
 fn server_rejects_oversized_fragmented_messages_before_reassembly() {
-    let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc {
-        maximum: Some(8),
-        ..Default::default()
-    });
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
-    );
-    let id = server.get_channel_id_by_type::<RecordedServerDvc>().unwrap();
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::OK)),
-    );
+    let (mut server, id) = open_recorded_server(Some(8));
     let response = server
         .process(
             &encode_vec(&DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(
@@ -214,19 +220,7 @@ fn server_rejects_oversized_fragmented_messages_before_reassembly() {
 // oracle: mutant enforcing the backend message limit only for fragmented data.
 #[test]
 fn server_rejects_oversized_unfragmented_messages() {
-    let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc {
-        maximum: Some(8),
-        ..Default::default()
-    });
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
-    );
-    let id = server.get_channel_id_by_type::<RecordedServerDvc>().unwrap();
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::OK)),
-    );
+    let (mut server, id) = open_recorded_server(Some(8));
     let response = server
         .process(
             &encode_vec(&DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
@@ -238,21 +232,32 @@ fn server_rejects_oversized_unfragmented_messages() {
         .unwrap();
     assert!(!server.is_channel_opened(id));
     assert_eq!(response.len(), 1);
+    assert_eq!(
+        ironrdp_core::decode::<DrdynvcServerPdu>(&response[0].encode_unframed_pdu().unwrap()).unwrap(),
+        DrdynvcServerPdu::Close(ClosePdu::new(id))
+    );
+
+    let (mut server, compressed_id) = open_recorded_server(Some(8));
+    let compressed_response = server
+        .process(
+            &encode_vec(&DrdynvcClientPdu::Data(DrdynvcDataPdu::DataCompressed(
+                DataCompressedPdu::new(compressed_id, vec![0xe0, 0x26, 0x38, 0xc4, 0x3f, 0xf4, 0x74, 0x01]),
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(!server.is_channel_opened(compressed_id));
+    assert_eq!(compressed_response.len(), 1);
+    assert_eq!(
+        ironrdp_core::decode::<DrdynvcServerPdu>(&compressed_response[0].encode_unframed_pdu().unwrap()).unwrap(),
+        DrdynvcServerPdu::Close(ClosePdu::new(compressed_id))
+    );
 }
 
 // oracle: spec MS-RDPEDYC §3.1.5.2.3; mutant retaining fragments that overrun DataFirstPdu::Length.
 #[test]
 fn server_rejects_fragments_exceeding_declared_message_length() {
-    let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc::default());
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
-    );
-    let id = server.get_channel_id_by_type::<RecordedServerDvc>().unwrap();
-    process_client_pdu(
-        &mut server,
-        DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::OK)),
-    );
+    let (mut server, id) = open_recorded_server(None);
     process_client_pdu(
         &mut server,
         DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(id, 4, vec![1, 2]))),
@@ -314,17 +319,7 @@ proptest::proptest! {
     fn encode_dvc_messages_round_trips_through_server_prop(
         lengths in proptest::collection::vec(0..=(DrdynvcDataPdu::MAX_DATA_SIZE * 3 + 8), 1..6usize)
     ) {
-        let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc::default());
-        server.start().unwrap();
-        process_client_pdu(
-            &mut server,
-            DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
-        );
-        let channel_id = server.get_channel_id_by_type::<RecordedServerDvc>().unwrap();
-        process_client_pdu(
-            &mut server,
-            DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, CreationStatus::OK)),
-        );
+        let (mut server, channel_id) = open_recorded_server(None);
         let payloads: Vec<Vec<u8>> = lengths
             .into_iter()
             .enumerate()

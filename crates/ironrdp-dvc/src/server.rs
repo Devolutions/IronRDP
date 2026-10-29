@@ -126,11 +126,11 @@ impl DynamicChannelAllocator {
 
 impl DynamicChannel {
     fn new(processor: Box<dyn DvcServerProcessor>, channel_id: u32, state: ChannelState) -> Self {
-        let max_message_size = processor.max_message_size();
         Self {
             state,
             processor,
-            complete_data: CompleteData::new(max_message_size),
+            // `DrdynvcServer::process_data` enforces `max_message_size` so oversized data closes only this channel.
+            complete_data: CompleteData::new(None),
             channel_id,
         }
     }
@@ -198,6 +198,15 @@ impl DrdynvcServer {
     /// Returns whether the client has answered DRDYNVC capability negotiation.
     pub fn is_ready(&self) -> bool {
         self.ready
+    }
+
+    fn ensure_ready(&self) -> PduResult<()> {
+        if !self.is_ready() {
+            return Err(pdu_other_err!(
+                "cannot create dynamic channel before DRDYNVC capability negotiation completes"
+            ));
+        }
+        Ok(())
     }
 
     /// Registers a dynamic channel with the server.
@@ -270,11 +279,7 @@ impl DrdynvcServer {
         &mut self,
         build: Box<dyn FnOnce(u32) -> Box<dyn DvcServerProcessor> + Send>,
     ) -> PduResult<SvcMessage> {
-        if !self.is_ready() {
-            return Err(pdu_other_err!(
-                "cannot create dynamic channel before DRDYNVC capability negotiation completes"
-            ));
-        }
+        self.ensure_ready()?;
         let channel_id = self.dynamic_channels.reserve_channel();
         self.create_channel_with_id(build(channel_id), channel_id)
     }
@@ -293,11 +298,7 @@ impl DrdynvcServer {
         E: From<PduError>,
         F: FnOnce(u32) -> Result<T, E>,
     {
-        if !self.is_ready() {
-            return Err(E::from(pdu_other_err!(
-                "cannot create dynamic channel before DRDYNVC capability negotiation completes"
-            )));
-        }
+        self.ensure_ready().map_err(E::from)?;
         let channel_id = self.dynamic_channels.reserve_channel();
         let channel = build(channel_id)?;
         self.create_channel_with_id(Box::new(channel), channel_id)
@@ -433,6 +434,14 @@ impl DrdynvcServer {
         self.process_data(data)
     }
 
+    fn close_for_message_limit(&mut self, channel_id: u32, size: usize) -> Vec<SvcMessage> {
+        debug!(
+            channel_id,
+            size, "Closing dynamic channel because its message limit was exceeded"
+        );
+        self.close_channel(channel_id).into_iter().collect()
+    }
+
     fn process_data(&mut self, data: crate::pdu::DrdynvcDataPdu) -> PduResult<Vec<SvcMessage>> {
         let channel_id = data.channel_id();
         // Data already sent by the peer can arrive after a server-initiated close.
@@ -445,26 +454,25 @@ impl DrdynvcServer {
             debug!(?channel_id, ?c.state, "Invalid channel state");
             return Err(pdu_other_err!("invalid channel state"));
         }
-        let declared_size = match &data {
-            crate::pdu::DrdynvcDataPdu::DataFirst(first) => Some(usize::try_from(first.length()).unwrap_or(usize::MAX)),
-            crate::pdu::DrdynvcDataPdu::DataFirstCompressed(first) => {
-                Some(usize::try_from(first.length()).unwrap_or(usize::MAX))
-            }
-            crate::pdu::DrdynvcDataPdu::Data(block) => Some(block.data().len()),
-            crate::pdu::DrdynvcDataPdu::DataCompressed(_) => None,
+        let declared_length = match &data {
+            crate::pdu::DrdynvcDataPdu::DataFirst(first) => Some(first.length()),
+            crate::pdu::DrdynvcDataPdu::DataFirstCompressed(first) => Some(first.length()),
+            crate::pdu::DrdynvcDataPdu::Data(_) | crate::pdu::DrdynvcDataPdu::DataCompressed(_) => None,
         };
-        if let (Some(max_message_size), Some(size)) = (c.processor.max_message_size(), declared_size)
-            && max_message_size < size
-        {
-            debug!(
-                channel_id,
-                ?declared_size,
-                "Closing dynamic channel because its message limit was exceeded"
-            );
-            return Ok(self.close_channel(channel_id).into_iter().collect());
+        if let (Some(max_message_size), Some(length)) = (c.processor.max_message_size(), declared_length) {
+            let size = usize::try_from(length).unwrap_or(usize::MAX);
+            if max_message_size < size {
+                return Ok(self.close_for_message_limit(channel_id, size));
+            }
         }
         let mut resp = Vec::new();
         if let Some(complete) = c.complete_data.process_data(data).map_err(|e| decode_err!(e))? {
+            if c.processor
+                .max_message_size()
+                .is_some_and(|max_message_size| max_message_size < complete.len())
+            {
+                return Ok(self.close_for_message_limit(channel_id, complete.len()));
+            }
             let msg = c.processor.process(channel_id, &complete)?;
             resp.extend(encode_dvc_messages(channel_id, msg, ChannelFlags::SHOW_PROTOCOL).map_err(|e| encode_err!(e))?);
         }

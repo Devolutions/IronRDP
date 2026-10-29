@@ -10,8 +10,10 @@ use tracing::{debug, error};
 
 use crate::worker::{OnWriteDvcMessage, WorkerCtx, run_worker};
 
+const IO_MPSC_CHANNEL_SIZE: usize = 100;
+
 struct WorkerControlCtx {
-    to_pipe_tx: mpsc::UnboundedSender<Vec<u8>>,
+    to_pipe_tx: mpsc::Sender<Vec<u8>>,
     abort_event: Arc<tokio::sync::Notify>,
 }
 
@@ -71,7 +73,7 @@ impl DvcProcessor for DvcNamedPipeProxy {
             .take()
             .expect("DvcProcessor::start called multiple times");
 
-        let (to_pipe_tx, to_pipe_rx) = mpsc::unbounded_channel();
+        let (to_pipe_tx, to_pipe_rx) = mpsc::channel(IO_MPSC_CHANNEL_SIZE);
 
         let abort_event = Arc::new(tokio::sync::Notify::new());
 
@@ -110,8 +112,14 @@ impl DvcProcessor for DvcNamedPipeProxy {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         if let Some(worker) = &self.worker {
-            if worker.to_pipe_tx.send(payload.to_vec()).is_err() {
-                return Err(pdu_other_err!("DVC pipe proxy channel is closed"));
+            match worker.to_pipe_tx.try_send(payload.to_vec()) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    return Err(pdu_other_err!("DVC pipe proxy outbound queue is full"));
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    return Err(pdu_other_err!("DVC pipe proxy channel is closed"));
+                }
             }
         } else {
             debug!("Attempt to process DVC packet on non-initialized DVC pipe proxy.");

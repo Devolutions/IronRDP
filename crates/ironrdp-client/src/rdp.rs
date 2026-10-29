@@ -7089,29 +7089,46 @@ mod tests {
         assert_eq!(&wire[28..], expected_name);
     }
 
-    // oracle: mutant consuming a pipe proxy listener on its first opening, rejecting every subsequent DVC.
-    #[cfg(all(windows, feature = "rdpdr", feature = "dvc-pipe-proxy"))]
-    #[test]
-    fn configured_pipe_proxy_can_be_reopened_on_the_same_connection() {
-        use ironrdp_core::impl_as_any;
-        use ironrdp_dvc::pdu::{CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu};
-        use ironrdp_dvc::{DrdynvcClient, DrdynvcServer, DvcMessage, DvcProcessor, DvcServerProcessor};
-        use ironrdp_pdu::PduResult;
+    #[cfg(all(windows, feature = "dvc-pipe-proxy"))]
+    fn pipe_proxy_test_connector(
+        channel_name: &str,
+        pipe_name: &str,
+        input: &RdpInputSender,
+    ) -> (ironrdp_connector::ClientConnector, ironrdp_dvc::DrdynvcServer) {
+        use ironrdp_dvc::{DrdynvcClient, DrdynvcServer};
         use ironrdp_svc::SvcProcessor as _;
 
-        let mut config = test_config();
+        #[cfg(feature = "clipboard")]
+        let cliprdr_factory: CliprdrFactoryRef<'static> = None;
+        #[cfg(not(feature = "clipboard"))]
+        let cliprdr_factory: CliprdrFactoryRef<'static> = core::marker::PhantomData;
+
+        #[cfg(feature = "rdpdr")]
+        let rdpdr_factory: RdpdrFactoryRef<'static> = None;
+        #[cfg(not(feature = "rdpdr"))]
+        let rdpdr_factory: RdpdrFactoryRef<'static> = core::marker::PhantomData;
+
+        let mut config = crate::config::ConfigBuilder::new()
+            .with_destination(crate::config::Destination::from_parts("127.0.0.1", 3389))
+            .with_username("user")
+            .with_password("password")
+            .with_client_build(1)
+            .with_client_dir(r"C:\")
+            .with_platform(ironrdp_pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .build()
+            .expect("test configuration should build");
         config.dvc_pipe_proxies.push(crate::config::DvcProxyInfo {
-            channel_name: "factory-proxy".to_owned(),
-            pipe_name: format!("ironrdp-proxy-reopen-{}", std::process::id()),
+            channel_name: channel_name.to_owned(),
+            pipe_name: pipe_name.to_owned(),
         });
-        let (input, _input_rx) = RdpInputSender::channel(4);
         let (output, _output_rx) = crate::output_channel::output_channel(4);
         let mut connector = build_connector(
             &config,
             SocketAddr::from(([127, 0, 0, 1], 0)),
-            (&input, &output),
-            no_cliprdr_factory(),
-            None,
+            (input, &output),
+            cliprdr_factory,
+            rdpdr_factory,
             RdpdrDevicePolicy::ALLOW_ALL,
             false,
             false,
@@ -7125,6 +7142,23 @@ mod tests {
                 server.process(&response.encode_unframed_pdu().unwrap()).unwrap();
             }
         }
+        (connector, server)
+    }
+
+    // oracle: mutant consuming a pipe proxy listener on its first opening, rejecting every subsequent DVC.
+    #[cfg(all(windows, feature = "dvc-pipe-proxy"))]
+    #[test]
+    fn configured_pipe_proxy_can_be_reopened_on_the_same_connection() {
+        use ironrdp_core::impl_as_any;
+        use ironrdp_dvc::pdu::{CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu};
+        use ironrdp_dvc::{DrdynvcClient, DvcMessage, DvcProcessor, DvcServerProcessor};
+        use ironrdp_pdu::PduResult;
+        use ironrdp_svc::SvcProcessor as _;
+
+        let pipe_name = format!("ironrdp-proxy-reopen-{}", std::process::id());
+        let (input, _input_rx) = RdpInputSender::channel(4);
+        let (mut connector, mut server) = pipe_proxy_test_connector("factory-proxy", &pipe_name, &input);
+        let client = connector.get_static_channel_processor_mut::<DrdynvcClient>().unwrap();
         for _ in 0..2 {
             let request = server.create_channel(Peer).unwrap();
             let wire = request.encode_unframed_pdu().unwrap();
@@ -7183,21 +7217,17 @@ mod tests {
     }
 
     // oracle: mutant dropping stream bytes when the bounded RDP input queue is full.
-    #[cfg(all(windows, feature = "rdpdr", feature = "dvc-pipe-proxy"))]
+    #[cfg(all(windows, feature = "dvc-pipe-proxy"))]
     #[tokio::test]
     async fn configured_pipe_proxy_waits_for_input_capacity_without_losing_bytes() {
+        use ironrdp_core::encode_vec;
+        use ironrdp_dvc::DrdynvcClient;
         use ironrdp_dvc::pdu::{CreateRequestPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu};
-        use ironrdp_dvc::{DrdynvcClient, DrdynvcServer};
         use ironrdp_svc::SvcProcessor as _;
         use tokio::io::AsyncWriteExt as _;
         use tokio::net::windows::named_pipe::ClientOptions;
 
-        let mut config = test_config();
         let name = format!("ironrdp-proxy-backpressure-{}", std::process::id());
-        config.dvc_pipe_proxies.push(crate::config::DvcProxyInfo {
-            channel_name: "backpressure-proxy".to_owned(),
-            pipe_name: name.clone(),
-        });
         let (input, mut input_rx) = RdpInputSender::channel(1);
         input
             .try_send(RdpInputEvent::SendDvcMessages {
@@ -7205,26 +7235,8 @@ mod tests {
                 messages: Vec::new(),
             })
             .unwrap();
-        let (output, _output_rx) = crate::output_channel::output_channel(1);
-        let mut connector = build_connector(
-            &config,
-            SocketAddr::from(([127, 0, 0, 1], 0)),
-            (&input, &output),
-            no_cliprdr_factory(),
-            None,
-            RdpdrDevicePolicy::ALLOW_ALL,
-            false,
-            false,
-            None,
-        )
-        .unwrap();
+        let (mut connector, _server) = pipe_proxy_test_connector("backpressure-proxy", &name, &input);
         let client = connector.get_static_channel_processor_mut::<DrdynvcClient>().unwrap();
-        let mut server = DrdynvcServer::new();
-        for request in server.start().unwrap() {
-            for response in client.process(&request.encode_unframed_pdu().unwrap()).unwrap() {
-                server.process(&response.encode_unframed_pdu().unwrap()).unwrap();
-            }
-        }
         let create = DrdynvcServerPdu::Create(CreateRequestPdu::new(7, "backpressure-proxy".to_owned()));
         client.process(&encode_vec(&create).unwrap()).unwrap();
         let mut pipe = tokio::time::timeout(Duration::from_secs(2), async {

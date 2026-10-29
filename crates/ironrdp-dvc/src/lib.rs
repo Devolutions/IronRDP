@@ -120,11 +120,11 @@ assert_obj_safe!(DvcProcessor);
 
 /// Encodes complete messages as DVC data PDUs, preserving message boundaries.
 ///
-/// Empty messages produce a header-only `DATA` PDU ([\[MS-RDPEDYC\] 2.2.3.2]).
-/// Messages of at most 1,590 bytes use `DATA`; larger messages start with `DATA_FIRST` ([\[MS-RDPEDYC\] 2.2.3.1]).
+/// Empty messages produce a header-only `DATA` PDU ([2.2.3.2] DVC Data PDU (`DYNVC_DATA`)).
+/// Messages of at most 1,590 bytes use `DATA`; larger messages start with `DATA_FIRST` ([2.2.3.1] DVC Data First PDU (`DYNVC_DATA_FIRST`)).
 ///
-/// [\[MS-RDPEDYC\] 2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
-/// [\[MS-RDPEDYC\] 2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/15b59886-db44-47f1-8da3-47c8fcd82803
+/// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
+/// [2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/15b59886-db44-47f1-8da3-47c8fcd82803
 pub fn encode_dvc_messages(
     channel_id: u32,
     messages: Vec<DvcMessage>,
