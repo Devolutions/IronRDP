@@ -68,6 +68,11 @@ path = "tests/packet_io_rustls.rs"
 required-features = ["rustls", "test-support"]
 
 [[test]]
+name = "tcp_options"
+path = "tests/tcp_options.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "proxy"
 path = "tests/proxy.rs"
 required-features = ["native-tls", "test-support"]
