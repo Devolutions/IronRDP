@@ -29,6 +29,7 @@ use ironrdp_error::ResultExt as _;
 #[cfg(feature = "usb")]
 use ironrdp_pdu::PduError;
 use ironrdp_pdu::codecs::rfx::Quant;
+use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
@@ -1486,6 +1487,31 @@ pub enum ServerEvent {
     /// See [`ServerRedirectionHandle::redirect`].
     Redirect(Box<ServerRedirectionPdu>),
     Clipboard(ClipboardMessage),
+    /// Writes one PDU to a joined static channel, splitting it into chunks as needed.
+    ///
+    /// Acquire `permit` from a shared, bounded semaphore before allocating `payload`.
+    /// Limit each payload's size; the server does not impose a byte budget.
+    /// Await completion before submitting another PDU to bound queued data.
+    /// A closed receiver means dispatch failed, the event was discarded, or the channel was not joined.
+    /// Failure does not prove that no bytes were sent, so it is not permission to retry.
+    /// Completion confirms the transport write, not acceptance by the peer.
+    /// The event retains its permit until sent or discarded, even if its producer stops waiting.
+    /// Dispatch checks `is_current` and receiver cancellation under the writer lock before transmission.
+    /// Once transmission begins, producer cancellation does not interrupt the write.
+    StaticChannelWithCompletion {
+        name: ChannelName,
+        payload: Vec<u8>,
+        completion: oneshot::Sender<()>,
+        /// INVARIANT: Retained until the transport write completes or the event is discarded.
+        permit: tokio::sync::OwnedSemaphorePermit,
+        /// A nonblocking predicate indicating whether this producer's data is still current.
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
+    /// Reports whether the client joined a static channel.
+    ///
+    /// Joins are final once the connection is active.
+    /// A closed receiver means the event was discarded.
+    StaticChannelJoined(ChannelName, oneshot::Sender<bool>),
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
     Rdpeai(RdpeaiServerMessage),
@@ -1519,6 +1545,12 @@ impl fmt::Debug for ServerEvent {
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
+            Self::StaticChannelWithCompletion { name, payload, .. } => f
+                .debug_tuple("StaticChannelWithCompletion")
+                .field(&name.as_str())
+                .field(&payload.len())
+                .finish(),
+            Self::StaticChannelJoined(name, _) => f.debug_tuple("StaticChannelJoined").field(&name.as_str()).finish(),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
@@ -2870,6 +2902,7 @@ impl RdpServer {
     /// [`RdpServer::set_auto_reconnect_on_request`] it is a vouch for one
     /// connection, so a vouch the replaced connection never consumed is dropped
     /// here instead of reaching the connection that replaced it.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     async fn discard_stale_session_events(&mut self) {
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let mut ev_receiver = ev_receiver.lock().await;
@@ -3749,7 +3782,7 @@ impl RdpServer {
         &mut self,
         conn: &mut ConnectionState,
         events: &mut Vec<ServerEvent>,
-        writer: &mut impl FramedWrite,
+        writer: &mut SharedWriter<'_, impl FramedWrite>,
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
@@ -3780,6 +3813,48 @@ impl RdpServer {
         for event in events.drain(..) {
             trace!(?event, "Dispatching");
             match event {
+                ServerEvent::StaticChannelWithCompletion {
+                    name,
+                    payload,
+                    completion,
+                    permit: _permit,
+                    is_current,
+                } => {
+                    if completion.is_closed() || !is_current() {
+                        trace!(channel = ?name.as_str(), "Discarding canceled static channel write");
+                        continue;
+                    }
+                    let Some(channel_id) = conn.static_channels.get_channel_id_by_channel_name(&name) else {
+                        warn!(channel = ?name.as_str(), "Static channel was not joined, rejecting write");
+                        continue;
+                    };
+                    let data = server_encode_svc_messages(
+                        vec![ironrdp_svc::SvcMessage::from(payload)],
+                        channel_id,
+                        user_channel_id,
+                    )
+                    .map_err(ServerError::encode)?;
+                    let sent = writer
+                        .write_all_if(&data, || !completion.is_closed() && is_current())
+                        .await
+                        .map_err(|error| ServerError::io("write static channel data", error))?;
+                    if !sent {
+                        trace!(
+                            channel_id,
+                            "Discarding canceled static channel write after waiting for the writer"
+                        );
+                        continue;
+                    }
+                    if completion.send(()).is_err() {
+                        trace!(channel_id, "Static channel producer stopped waiting for dispatch");
+                    }
+                }
+                ServerEvent::StaticChannelJoined(name, reply) => {
+                    let joined = conn.static_channels.get_channel_id_by_channel_name(&name).is_some();
+                    if reply.send(joined).is_err() {
+                        trace!(channel = ?name.as_str(), "Static channel query stopped waiting for its answer");
+                    }
+                }
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
                     return Ok(RunState::Disconnect);
@@ -6224,6 +6299,7 @@ async fn send_access_denied(acceptor: &Acceptor, writer: &mut impl FramedWrite) 
     Ok(())
 }
 
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 struct SharedWriter<'w, W: FramedWrite> {
     writer: Rc<Mutex<&'w mut W>>,
     /// Count of successful `write_all` calls across all clones. The heartbeat
@@ -6252,47 +6328,12 @@ where
         Self: 'write;
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
-        Box::pin(async move {
-            // D1: time both the lock acquisition and the actual write.
-            // Three concurrent tasks (dispatch_pdu, dispatch_display,
-            // dispatch_events) share this Rc<Mutex<W>>. When the kernel TCP
-            // send buffer fills (slow client), write_all blocks while still
-            // holding the mutex — starving the other two tasks. Logging
-            // both phases tells us whether a stall is "waiting in line for
-            // the writer" (lock-wait) or "TLS write held up by TCP back-
-            // pressure" (write-time).
-            let len = buf.len();
-            let wait_start = Instant::now();
-            let mut writer = self.writer.lock().await;
-            let wait_ms = u64::try_from(wait_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-            let write_start = Instant::now();
-            let res = writer.write_all(buf).await;
-            let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-            // Threshold: 50ms total budget for one write_all. Anything above
-            // is operationally interesting on a healthy LAN. Logged at WARN
-            // when stalled, DEBUG when fast (so wire-time samples are still
-            // visible during routine debugging).
-            if wait_ms + write_ms >= 50 {
-                tracing::warn!(
-                    bytes = len,
-                    lock_wait_ms = wait_ms,
-                    write_ms,
-                    "SharedWriter.write_all stalled, possible TCP back-pressure or writer-mutex contention"
-                );
-            } else {
-                tracing::debug!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
-            }
-            if res.is_ok() {
-                self.writes.fetch_add(1, Ordering::Relaxed);
-            }
-            res
-        })
+        Box::pin(async move { self.write_all_if(buf, || true).await.map(|_| ()) })
     }
 }
 
 impl<'a, W: FramedWrite> SharedWriter<'a, W> {
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     fn new(writer: &'a mut W) -> Self {
         Self {
             writer: Rc::new(Mutex::new(writer)),
@@ -6303,6 +6344,54 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
     fn write_counter(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.writes)
     }
+
+    async fn write_all_if(&mut self, buf: &[u8], can_write: impl FnOnce() -> bool) -> std::io::Result<bool> {
+        // Measure lock contention separately from transport back-pressure.
+        let len = buf.len();
+        let wait_start = Instant::now();
+        let mut writer = self.writer.lock().await;
+        let wait_ms = u64::try_from(wait_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if !can_write() {
+            return Ok(false);
+        }
+
+        // Producer cancellation must not interrupt a partially written RDP frame.
+        let write_start = Instant::now();
+        let res = writer.write_all(buf).await;
+        let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        if wait_ms + write_ms >= 50 {
+            tracing::warn!(
+                bytes = len,
+                lock_wait_ms = wait_ms,
+                write_ms,
+                "SharedWriter.write_all stalled, possible TCP back-pressure or writer-mutex contention"
+            );
+        } else {
+            tracing::debug!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
+        }
+        if res.is_ok() {
+            self.writes.fetch_add(1, Ordering::Relaxed);
+        }
+        res.map(|()| true)
+    }
+}
+
+#[cfg(feature = "__test")]
+pub async fn dispatch_static_channel_events(
+    server: &mut RdpServer,
+    channels: StaticChannelSet,
+    events: &mut Vec<ServerEvent>,
+    writer: &mut SharedWriter<'_, impl FramedWrite>,
+) -> ServerResult<()> {
+    let mut conn = ConnectionState {
+        static_channels: channels,
+        ..ConnectionState::default()
+    };
+    server
+        .dispatch_server_events(&mut conn, events, writer, 1003, 1002, None, None)
+        .await
+        .map(|_| ())
 }
 
 #[async_trait::async_trait(?Send)]
@@ -7146,7 +7235,15 @@ mod cliprdr_error_tests {
 
         let mut writer = CapturingWriter::default();
         let state = server
-            .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                1002,
+                None,
+                None,
+            )
             .await
             .expect("a refused clipboard message must not surface as a session error");
 

@@ -65,4 +65,21 @@ local
 
 `send_request` queues a probe via the server event loop. If no client has opened the ECHO channel yet, the request is dropped.
 
+## Static-channel writes
+
+Register a per-connection processor through `StaticChannelFactory`, then send `ServerEvent::StaticChannelJoined` through `RdpServer::event_sender()` to check whether the active client joined its channel.
+Send a complete, unframed channel PDU with `ServerEvent::StaticChannelWithCompletion`; the server adds headers and sends its chunks in order.
+The completion receiver resolves only after the entire transport write succeeds, not when the peer processes the PDU.
+A closed receiver means failure or discard, but does not prove that no bytes were sent, so it is not permission to retry.
+
+The event queue is unbounded.
+Acquire the event's owned permit from a shared, bounded Tokio semaphore before allocating the payload, cap each payload's size, and await completion before submitting another PDU.
+The event retains its permit until written or discarded, even when the producer drops its completion receiver.
+These limits belong to the producer; the server does not impose a byte budget.
+
+Dropping the completion receiver or making `is_current` return `false` cancels a write that has not started.
+Keep `is_current` nonblocking; it is checked again after acquiring the shared writer lock.
+Once transmission starts, producer cancellation does not interrupt it or release its permit early.
+Unjoined channels and events left over from a previous connection are discarded.
+
 [IronRDP]: https://github.com/Devolutions/IronRDP
