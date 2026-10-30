@@ -4049,7 +4049,7 @@ impl RdpServer {
                     writer
                         .queue_with_completion(
                             data,
-                            WriteCompletion {
+                            WriteCompletion::StaticChannel {
                                 channel_id,
                                 completion,
                                 _permit: permit,
@@ -4134,16 +4134,16 @@ impl RdpServer {
                     if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
                         continue;
                     }
-                    request.started = true;
+                    // All fragments go in one queued PDU, so they stay contiguous on the wire.
                     let mut fragments = UpdateFragmenter::new(UpdateCode::Orders, data);
                     let mut buffer = vec![0; fragments.size_hint()];
+                    let mut update = Vec::new();
                     while let Some(written) = fragments.next(&mut buffer) {
-                        writer
-                            .write_all(&buffer[..written])
-                            .await
-                            .map_err(|error| ServerError::io("write window orders", error))?;
+                        update.extend_from_slice(&buffer[..written]);
                     }
-                    request.complete(Ok(WindowingOrdersStatus::Written));
+                    writer
+                        .queue_with_completion(update, WriteCompletion::WindowingOrders(request))
+                        .map_err(|error| ServerError::io("write window orders", error))?;
                 }
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
@@ -6766,13 +6766,51 @@ struct QueuedPdu {
     completion: Option<WriteCompletion>,
 }
 
-/// The producer side of a [`ServerEvent::StaticChannelWithCompletion`] write.
-struct WriteCompletion {
-    channel_id: u16,
-    completion: oneshot::Sender<()>,
-    /// INVARIANT: Retained until the transport write completes or the PDU is discarded.
-    _permit: tokio::sync::OwnedSemaphorePermit,
-    is_current: Box<dyn Fn() -> bool + Send>,
+/// The producer side of a queued write that completes after the transport write.
+enum WriteCompletion {
+    /// A [`ServerEvent::StaticChannelWithCompletion`] write.
+    StaticChannel {
+        channel_id: u16,
+        completion: oneshot::Sender<()>,
+        /// INVARIANT: Retained until the transport write completes or the PDU is discarded.
+        _permit: tokio::sync::OwnedSemaphorePermit,
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
+    /// A [`ServerEvent::WindowingOrders`] batch. Dropping it reports
+    /// [`WindowingOrdersStatus::NotStarted`] before the write starts, and an
+    /// error after.
+    WindowingOrders(WindowingOrders),
+}
+
+impl WriteCompletion {
+    /// The producer no longer wants the PDU.
+    fn is_canceled(&self) -> bool {
+        match self {
+            Self::StaticChannel {
+                completion, is_current, ..
+            } => completion.is_closed() || !is_current(),
+            Self::WindowingOrders(request) => request.completion.as_ref().is_none_or(oneshot::Sender::is_closed),
+        }
+    }
+
+    fn start(&mut self) {
+        if let Self::WindowingOrders(request) = self {
+            request.started = true;
+        }
+    }
+
+    fn written(self) {
+        match self {
+            Self::StaticChannel {
+                channel_id, completion, ..
+            } => {
+                if completion.send(()).is_err() {
+                    trace!(channel_id, "Static channel producer stopped waiting for dispatch");
+                }
+            }
+            Self::WindowingOrders(mut request) => request.complete(Ok(WindowingOrdersStatus::Written)),
+        }
+    }
 }
 
 impl OutboundQueue {
@@ -6841,7 +6879,7 @@ impl OutboundQueue {
             let Some(QueuedPdu {
                 bytes,
                 reply,
-                completion,
+                mut completion,
             }) = next
             else {
                 if self.finishing.get() {
@@ -6851,20 +6889,15 @@ impl OutboundQueue {
                 continue;
             };
             let len = bytes.len();
-            // A static channel write is checked when its turn to be written
-            // comes, after the PDUs queued before it.
-            let canceled = completion
-                .as_ref()
-                .is_some_and(|c| c.completion.is_closed() || !(c.is_current)());
-            let res = if canceled {
-                if let Some(c) = &completion {
-                    trace!(
-                        channel_id = c.channel_id,
-                        "Discarding canceled static channel write after waiting for the writer"
-                    );
-                }
+            // A write with a completion is checked when its turn to be
+            // written comes, after the PDUs queued before it.
+            let res = if completion.as_ref().is_some_and(WriteCompletion::is_canceled) {
+                trace!(bytes = len, "Discarding canceled write after waiting for the writer");
                 Ok(())
             } else {
+                if let Some(c) = &mut completion {
+                    c.start();
+                }
                 // INVARIANT: Producer cancellation does not interrupt a partially written RDP frame.
                 let write_start = Instant::now();
                 let res = writer.write_all(&bytes).await;
@@ -6887,12 +6920,8 @@ impl OutboundQueue {
                 }
                 if res.is_ok()
                     && let Some(c) = completion
-                    && c.completion.send(()).is_err()
                 {
-                    trace!(
-                        channel_id = c.channel_id,
-                        "Static channel producer stopped waiting for dispatch"
-                    );
+                    c.written();
                 }
                 res
             };
@@ -6958,9 +6987,9 @@ impl QueuedWriter {
         res
     }
 
-    /// Queues a static channel PDU that [`OutboundQueue::write_queued`]
-    /// writes only if its producer still wants it, and completes after the
-    /// write. On error the completion is closed and the permit released.
+    /// Queues a PDU that [`OutboundQueue::write_queued`] writes only if its
+    /// producer still wants it, and completes after the write. On error the
+    /// completion is dropped.
     fn queue_with_completion(&mut self, bytes: Vec<u8>, completion: WriteCompletion) -> std::io::Result<()> {
         self.queue_pdu(bytes, Some(completion))
     }
