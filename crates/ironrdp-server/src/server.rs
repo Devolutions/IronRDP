@@ -1501,8 +1501,9 @@ pub enum ServerEvent {
     ///
     /// Acquire `permit` from a shared, bounded semaphore before allocating `payload`.
     /// Limit each payload's size; the server does not impose a byte budget.
-    /// The entire PDU holds the shared writer lock; large payloads or slow writes stall all other
-    /// session output, including display and heartbeat traffic, until the write finishes or fails.
+    /// Dispatch holds server state while the entire PDU holds the shared writer lock.
+    /// Large payloads or slow writes stall other session output, inbound PDU handling (including
+    /// frame acknowledgments), and auto-reconnect cookie updates until the write finishes or fails.
     /// Await completion before submitting another PDU to bound queued data.
     /// A closed receiver means dispatch failed, the event was discarded, or the channel was not joined.
     /// Failure does not prove that no bytes were sent, so it is not permission to retry.
@@ -1521,6 +1522,7 @@ pub enum ServerEvent {
         permit: tokio::sync::OwnedSemaphorePermit,
         /// A nonblocking predicate indicating whether this producer's data is still current.
         /// Shared generation state lets an owner invalidate data without owning the completion receiver.
+        /// It runs with server-state and writer locks held; waiting on work needing either can deadlock.
         is_current: Box<dyn Fn() -> bool + Send>,
     },
     /// Reports whether the client joined a static channel.

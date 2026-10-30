@@ -225,7 +225,7 @@ async fn query_reports_the_named_channel_join(
     assert!(bytes.is_empty(), "a join query wrote to the transport");
 }
 
-// oracle: spec MS-RDPBCGR §3.1.5.2.1; chunks are at most 1600 bytes, ordered, with FIRST and LAST on the ends.
+// oracle: spec MS-RDPBCGR §2.2.6.1.1; spec MS-RDPBCGR §3.1.5.2.1; total length, chunk size, flags, and order.
 #[rstest]
 #[case::above_boundary(
     1601,

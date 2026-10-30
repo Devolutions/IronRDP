@@ -80,11 +80,11 @@ There is no dispatch deadline; if the event loop is not being driven, queued pay
 Acquire the event's owned permit from a shared, bounded Tokio semaphore before allocating the payload, cap each payload's size, and await completion before submitting another PDU.
 The event retains its permit until written or discarded, even when the producer drops its completion receiver.
 These limits belong to the producer; the server does not impose a byte budget.
-The entire PDU holds the shared writer lock, so a large payload or slow transport stalls all other session output, including display and heartbeat traffic, until its write finishes or fails.
+The entire PDU holds the shared writer lock while dispatch also holds server state, so a large payload or slow transport stalls other session output, inbound PDU handling (including frame acknowledgments), and auto-reconnect cookie updates until its write finishes or fails.
 
 Dropping the completion receiver or making `is_current` return `false` cancels a write that has not started.
 Shared generation state in `is_current` lets a different owner invalidate data without owning the completion receiver.
-Keep `is_current` nonblocking; it is checked again after acquiring the shared writer lock.
+Keep `is_current` nonblocking; it is checked again with the server-state and shared-writer locks held, so waiting on work that needs either lock can deadlock the session.
 Cancellation does not remove a queued event or immediately release its permit.
 Once transmission starts, producer cancellation does not interrupt it or release its permit early.
 Unjoined channels and events left over from a previous connection are discarded.
