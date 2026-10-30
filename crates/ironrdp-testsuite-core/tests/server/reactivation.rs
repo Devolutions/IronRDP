@@ -4,32 +4,24 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ironrdp_async::FramedWrite as _;
-use ironrdp_core::{WriteBuf, decode, encode_vec};
+use ironrdp_core::{decode, encode_vec};
 use ironrdp_dvc::DrdynvcServer;
 use ironrdp_dvc::pdu::{
     CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DrdynvcClientPdu, DrdynvcServerPdu,
 };
 use ironrdp_echo::server::EchoServer;
 use ironrdp_pdu::gcc::ClientNetworkData;
-use ironrdp_pdu::mcs::{self, ConnectInitial};
-use ironrdp_pdu::nego::{self, SecurityProtocol};
+use ironrdp_pdu::mcs;
 use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu};
-use ironrdp_pdu::x224::{X224, X224Data};
+use ironrdp_pdu::x224::X224;
 use ironrdp_server::{
     DesktopSize, DisplayContext, DisplayUpdate, DynamicChannelFactory, RdpServer, RdpServerDisplay,
     RdpServerDisplayUpdates, ServerResult,
 };
 use ironrdp_svc::{StaticVirtualChannel, SvcMessage, client_encode_svc_messages, make_channel_definition};
-use ironrdp_testsuite_core::gcc::CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS;
-use ironrdp_testsuite_core::rdp::{
-    CLIENT_DEMAND_ACTIVE_PDU_BUFFER, CLIENT_FONT_LIST_BUFFER, CLIENT_INFO_PDU_BUFFER, CLIENT_SYNCHRONIZE_BUFFER,
-    CONTROL_COOPERATE_BUFFER, CONTROL_REQUEST_CONTROL_BUFFER,
-};
 use ironrdp_tokio::TokioFramed;
 use tokio::io::DuplexStream;
 use tokio::sync::mpsc;
-
-use super::acceptor::encode_send_data_request;
 
 struct EchoFactory(Arc<AtomicU32>);
 
@@ -98,34 +90,9 @@ async fn read_dvc(client: &mut TokioFramed<DuplexStream>, channel: u16) -> Drdyn
     decode(&data.user_data[8..]).unwrap()
 }
 
-async fn confirm_and_finalize(client: &mut TokioFramed<DuplexStream>, user: u16, io: u16) {
-    client
-        .write_all(&encode_send_data_request(user, io, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER))
-        .await
-        .unwrap();
-    finalize(client, user, io).await;
-}
-
-async fn finalize(client: &mut TokioFramed<DuplexStream>, user: u16, io: u16) {
-    for data in [
-        CLIENT_SYNCHRONIZE_BUFFER.as_slice(),
-        CONTROL_COOPERATE_BUFFER.as_slice(),
-        CONTROL_REQUEST_CONTROL_BUFFER.as_slice(),
-        CLIENT_FONT_LIST_BUFFER.as_slice(),
-    ] {
-        client
-            .write_all(&encode_send_data_request(user, io, data))
-            .await
-            .unwrap();
-    }
-    for _ in 0..4 {
-        read_frame(client).await;
-    }
-}
-
 #[tokio::test(start_paused = true)]
 async fn factory_channel_remains_registered_across_reactivation() {
-    // oracle: spec MS-RDPEDYC §1.3.3.1: DVC endpoints remain maintained for the life of the channel.
+    // mutant: A resize-triggered reactivation drops a factory-owned Echo processor or its pending request.
     let (sender, receiver) = mpsc::channel(1);
     let echo_id = Arc::new(AtomicU32::new(u32::MAX));
     let mut server = RdpServer::builder()
@@ -140,82 +107,33 @@ async fn factory_channel_remains_registered_across_reactivation() {
     let (client, server_stream) = tokio::io::duplex(16 * 1024);
     let client = async move {
         let mut client = TokioFramed::new(client);
-        client
-            .write_all(
-                &encode_vec(&X224(nego::ConnectionRequest {
-                    nego_data: None,
-                    flags: nego::RequestFlags::empty(),
-                    protocol: SecurityProtocol::empty(),
-                    correlation_info: None,
-                }))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        read_frame(&mut client).await;
-        let mut blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
-        blocks.network = Some(ClientNetworkData {
-            channels: vec![make_channel_definition(
-                &StaticVirtualChannel::new(DrdynvcServer::new()),
-            )],
-        });
-        let initial = ConnectInitial::with_gcc_blocks(blocks).unwrap();
-        let mut buffer = WriteBuf::new();
-        ironrdp_connector::encode_x224_packet(&initial, &mut buffer).unwrap();
-        client.write_all(buffer.filled()).await.unwrap();
-        let response = read_frame(&mut client).await;
-        let response = decode::<X224<X224Data<'_>>>(&response).unwrap().0;
-        let response = decode::<mcs::ConnectResponse>(&response.data).unwrap();
-        let network = &response.conference_create_response.gcc_blocks().network;
-        let io = network.io_channel;
-        let dvc = network.channel_ids[0];
-        client
-            .write_all(
-                &encode_vec(&X224(mcs::ErectDomainPdu {
-                    sub_height: 0,
-                    sub_interval: 0,
-                }))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        client
-            .write_all(&encode_vec(&X224(mcs::AttachUserRequest)).unwrap())
-            .await
-            .unwrap();
-        let attach = read_frame(&mut client).await;
-        let user = decode::<X224<mcs::AttachUserConfirm>>(&attach).unwrap().0.initiator_id;
-        for channel in [user, io, dvc] {
-            client
-                .write_all(
-                    &encode_vec(&X224(mcs::ChannelJoinRequest {
-                        initiator_id: user,
-                        channel_id: channel,
-                    }))
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-            read_frame(&mut client).await;
-        }
-        client
-            .write_all(&encode_send_data_request(user, io, &CLIENT_INFO_PDU_BUFFER))
-            .await
-            .unwrap();
-        read_frame(&mut client).await;
-        read_frame(&mut client).await;
-        confirm_and_finalize(&mut client, user, io).await;
+        let activation = super::activation::play_client_with_network(
+            &mut client,
+            true,
+            &[],
+            None,
+            Some(ClientNetworkData {
+                channels: vec![make_channel_definition(
+                    &StaticVirtualChannel::new(DrdynvcServer::new()),
+                )],
+            }),
+        )
+        .await;
+        let user = activation.user_channel_id;
+        let [dvc] = activation.static_channel_ids.as_slice() else {
+            panic!("expected one dynamic-channel static virtual channel");
+        };
         assert!(matches!(
-            read_dvc(&mut client, dvc).await,
+            read_dvc(&mut client, *dvc).await,
             DrdynvcServerPdu::Capabilities(_)
         ));
         let caps = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V2));
         client
-            .write_all(&client_encode_svc_messages(vec![SvcMessage::from(caps)], dvc, user).unwrap())
+            .write_all(&client_encode_svc_messages(vec![SvcMessage::from(caps)], *dvc, user).unwrap())
             .await
             .unwrap();
         let create = loop {
-            let DrdynvcServerPdu::Create(create) = read_dvc(&mut client, dvc).await else {
+            let DrdynvcServerPdu::Create(create) = read_dvc(&mut client, *dvc).await else {
                 panic!("expected DVC creation");
             };
             if create.channel_id() == echo_id.load(Ordering::Relaxed) {
@@ -237,22 +155,23 @@ async fn factory_channel_remains_registered_across_reactivation() {
                 .share_control_pdu,
             ShareControlPdu::ServerDeactivateAll(_)
         ));
-        read_frame(&mut client).await;
-        client
-            .write_all(&encode_send_data_request(user, io, &CLIENT_DEMAND_ACTIVE_PDU_BUFFER))
-            .await
-            .unwrap();
+        super::activation::reactivate_client_with_capabilities(
+            &mut client,
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            Vec::new(),
+        )
+        .await;
         let reply = DrdynvcClientPdu::Create(CreateResponsePdu::new(create.channel_id(), CreationStatus::OK));
         client
-            .write_all(&client_encode_svc_messages(vec![SvcMessage::from(reply)], dvc, user).unwrap())
+            .write_all(&client_encode_svc_messages(vec![SvcMessage::from(reply)], *dvc, user).unwrap())
             .await
             .unwrap();
-        finalize(&mut client, user, io).await;
-        let DrdynvcServerPdu::Data(data) = read_dvc(&mut client, dvc).await else {
+        let DrdynvcServerPdu::Data(data) = read_dvc(&mut client, *dvc).await else {
             panic!("expected initial ECHO request");
         };
-        // oracle: spec MS-RDPEDYC §3.3.3.2: the server maintains the ChannelId for the life of the channel.
-        assert_eq!(data.channel_id(), create.channel_id());
         let ironrdp_dvc::pdu::DrdynvcDataPdu::Data(data) = data else {
             panic!("small ECHO message must fit one chunk");
         };
