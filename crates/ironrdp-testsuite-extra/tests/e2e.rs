@@ -3169,7 +3169,7 @@ where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
 {
     let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
-    connect_client_on(tcp_stream, make_connector, wrap).await
+    Box::pin(connect_client_on(tcp_stream, make_connector, wrap)).await
 }
 
 /// Connects like [`connect_client_with`], on a TCP connection the caller made.
