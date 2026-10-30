@@ -5,11 +5,13 @@
 use core::fmt;
 use std::sync::Arc;
 
-use ironrdp_dvc::DrdynvcClient;
+use ironrdp_dvc::pdu::SoftSyncTunnelType;
+use ironrdp_dvc::{DrdynvcClient, DvcMessageBatch};
 use ironrdp_pdu::pdu_other_err;
-use ironrdp_rdpepnp::client::{IoUplink, PnpBackend, PnpInfoClient};
+use ironrdp_rdpepnp::client::{IoUplink, PnpBackend, PnpInfoClient, UplinkAction, UplinkRequest};
 use ironrdp_rdpepnp::pdu::info::DeviceDescription;
-use tracing::warn;
+use ironrdp_session::{ActiveStage, SessionError, SessionErrorExt as _, SessionResult};
+use tracing::{trace, warn};
 
 use crate::rdp::{RdpInputEvent, RdpInputSender};
 
@@ -46,11 +48,32 @@ pub(crate) fn attach(drdynvc: DrdynvcClient, config: &PnpConfig, sender: &RdpInp
     let sender = sender.clone();
     // Replies completed outside the session loop share the bounded input queue, so a full queue
     // drops the reply and leaves the server's request pending; the failure is logged.
-    let uplink: IoUplink = Arc::new(move |messages| {
+    let uplink: IoUplink = Arc::new(move |request| {
         sender
-            .try_send(RdpInputEvent::SendPnpMessages(messages))
+            .try_send(RdpInputEvent::Pnp(request))
             .map_err(|_| pdu_other_err!("send PnP device replies to the event loop"))
     });
     let listener = info.file_redirector_listener((config.backend)(), uplink);
     drdynvc.with_dynamic_channel(info).with_listener(listener)
+}
+
+/// Turns a request of a `FileRedirectorChannel` instance into the DRDYNVC messages to send, if it still applies.
+pub(crate) fn process_uplink_request(
+    active_stage: &mut ActiveStage,
+    request: UplinkRequest,
+) -> SessionResult<Option<(DvcMessageBatch, Option<SoftSyncTunnelType>)>> {
+    let channel_id = request.channel_id();
+    match request.into_action() {
+        Some(UplinkAction::Send(messages)) => Ok(Some((
+            DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu)?,
+            None,
+        ))),
+        Some(UplinkAction::Close) => Ok(active_stage
+            .get_svc_processor_mut::<DrdynvcClient>()
+            .and_then(|drdynvc| drdynvc.close_channel_batch(channel_id))),
+        None => {
+            trace!(channel_id, "Dropping a request of a closed PnP I/O channel instance");
+            Ok(None)
+        }
+    }
 }

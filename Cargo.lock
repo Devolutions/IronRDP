@@ -3388,7 +3388,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpepnp"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",

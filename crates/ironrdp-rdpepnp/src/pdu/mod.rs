@@ -115,9 +115,10 @@ fn write_utf16(dst: &mut WriteCursor<'_>, value: &str) {
     }
 }
 
-fn read_utf16_units(field: &'static str, bytes: &[u8]) -> DecodeResult<Vec<u16>> {
+/// Reads UTF-16LE code units; `at` is the stream offset of `bytes`, reported in errors.
+fn read_utf16_units(field: &'static str, bytes: &[u8], at: usize) -> DecodeResult<Vec<u16>> {
     if !bytes.len().is_multiple_of(2) {
-        return Err(invalid_field_err!(field, "UTF-16 field has an odd byte length"));
+        return Err(invalid_field_err!(field, "UTF-16 field has an odd byte length", at: at));
     }
     Ok(bytes
         .chunks_exact(2)
@@ -125,6 +126,7 @@ fn read_utf16_units(field: &'static str, bytes: &[u8]) -> DecodeResult<Vec<u16>>
         .collect())
 }
 
-fn string_from_utf16(field: &'static str, units: &[u16]) -> DecodeResult<String> {
-    String::from_utf16(units).map_err(|_| invalid_field_err!(field, "invalid UTF-16 string"))
+/// Decodes a UTF-16 string; `at` is the stream offset of `units`, reported in errors.
+fn string_from_utf16(field: &'static str, units: &[u16], at: usize) -> DecodeResult<String> {
+    String::from_utf16(units).map_err(|_| invalid_field_err!(field, "invalid UTF-16 string", at: at))
 }

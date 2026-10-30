@@ -653,9 +653,9 @@ pub enum RdpInputEvent {
         channel_id: u32,
         messages: Vec<SvcMessage>,
     },
-    /// Sends PnP I/O replies completed off the session loop, unless their channel instance closed.
+    /// Sends PnP I/O replies completed off the session loop, or closes a PnP I/O channel that violated the protocol.
     #[cfg(feature = "pnp")]
-    SendPnpMessages(ironrdp_rdpepnp::client::UplinkMessages),
+    Pnp(ironrdp_rdpepnp::client::UplinkRequest),
     SendStaticChannelData {
         channel_name: ChannelName,
         data: Vec<u8>,
@@ -4958,16 +4958,11 @@ async fn active_session(
                         )
                     }
                     #[cfg(feature = "pnp")]
-                    RdpInputEvent::SendPnpMessages(messages) => {
-                        let channel_id = messages.channel_id();
-                        match messages.take_if_open() {
-                            Some(messages) => ActiveSessionIteration::dvc(
-                                DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu)?,
-                            ),
-                            None => {
-                                trace!(channel_id, "Dropping PnP replies of a closed channel instance");
-                                ActiveSessionIteration::outputs(Vec::new())
-                            }
+                    RdpInputEvent::Pnp(request) => {
+                        match crate::pnp::process_uplink_request(&mut active_stage, request)? {
+                            Some((batch, None)) => ActiveSessionIteration::dvc(batch),
+                            Some((batch, Some(tunnel))) => ActiveSessionIteration::tunnel(tunnel, (batch, Vec::new())),
+                            None => ActiveSessionIteration::outputs(Vec::new()),
                         }
                     }
                     RdpInputEvent::SendStaticChannelData { channel_name, data } => {
@@ -6592,6 +6587,7 @@ mod tests {
         assert!(disable_all.disables_all());
     }
 
+    // oracle: spec MS-TSGU §2.2.5.3.7 (HTTP_TUNNEL_REDIR_DISABLE_PNP, HTTP_TUNNEL_REDIR_DISABLE_ALL)
     #[cfg(all(feature = "gateway", any(feature = "usb", feature = "pnp")))]
     #[test]
     fn gateway_redirection_policy_governs_pnp_and_usb() {
@@ -6601,6 +6597,7 @@ mod tests {
         assert!(GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_ALL)).disables_pnp());
     }
 
+    // oracle: spec MS-TSGU §2.2.9.2.1.5 (pnpRedirectionDisabled, disableAllRedirection)
     #[cfg(all(feature = "gateway", any(feature = "usb", feature = "pnp")))]
     #[test]
     fn rpch_gateway_policy_governs_pnp_and_usb() {

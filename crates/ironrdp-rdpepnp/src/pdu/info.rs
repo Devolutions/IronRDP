@@ -104,10 +104,11 @@ impl Encode for PnpInfoPdu {
 impl<'de> Decode<'de> for PnpInfoPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: HEADER_SIZE);
-        let size = usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!("Size", "size overflows usize"))?;
+        let size =
+            usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!("Size", "size overflows usize", in: src))?;
         let packet_id = src.read_u32();
         let Some(payload_size) = size.checked_sub(HEADER_SIZE) else {
-            return Err(invalid_field_err!("Size", "size is smaller than the header"));
+            return Err(invalid_field_err!("Size", "size is smaller than the header", in: src));
         };
         ensure_size!(in: src, size: payload_size);
         let mut payload = ReadCursor::new(src.read_slice(payload_size));
@@ -117,7 +118,11 @@ impl<'de> Decode<'de> for PnpInfoPdu {
             IRPDR_ID_REDIRECT_DEVICES => Ok(Self::RedirectDevices(DeviceAdditionPdu::decode(&mut payload)?)),
             IRPDR_ID_SERVER_LOGON => Ok(Self::ServerLogon),
             IRPDR_ID_UNREDIRECT_DEVICE => Ok(Self::UnredirectDevice(DeviceRemovalPdu::decode(&mut payload)?)),
-            _ => Err(unsupported_value_err!("PacketId", alloc::format!("{packet_id:#010x}"))),
+            _ => Err(unsupported_value_err!(
+                "PacketId",
+                alloc::format!("{packet_id:#010x}"),
+                in: src
+            )),
         }
     }
 }
@@ -381,8 +386,8 @@ impl<'de> Decode<'de> for DeviceDescription {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
         let client_device_id = src.read_u32();
-        let data_size =
-            usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!("DataSize", "size overflows usize"))?;
+        let data_size = usize::try_from(src.read_u32())
+            .map_err(|_| invalid_field_err!("DataSize", "size overflows usize", in: src))?;
         ensure_size!(in: src, size: data_size);
         let mut data = ReadCursor::new(src.read_slice(data_size));
 
@@ -390,31 +395,34 @@ impl<'de> Decode<'de> for DeviceDescription {
         if !interfaces.len().is_multiple_of(Guid::FIXED_PART_SIZE) {
             return Err(invalid_field_err!(
                 "cbInterfaceLength",
-                "interface array length is not a multiple of the GUID size"
+                "interface array length is not a multiple of the GUID size",
+                in: data
             ));
         }
         let interface_guids = interfaces
             .chunks_exact(Guid::FIXED_PART_SIZE)
             .map(|guid| Guid::decode(&mut ReadCursor::new(guid)))
             .collect::<DecodeResult<Vec<_>>>()?;
-        let hardware_ids = read_multi_sz("HardwareId", read_length_prefixed(&mut data, "cbHardwareIdLength")?)?;
-        let compatibility_ids = read_multi_sz("CompatibilityID", read_length_prefixed(&mut data, "cbCompatIdLength")?)?;
+        let hardware_ids = read_multi_sz(&mut data, "cbHardwareIdLength", "HardwareId")?;
+        let compatibility_ids = read_multi_sz(&mut data, "cbCompatIdLength", "CompatibilityID")?;
+        let at = data.pos();
         let description_units = read_utf16_units(
             "DeviceDescription",
             read_length_prefixed(&mut data, "cbDeviceDescriptionLength")?,
+            at,
         )?;
-        let description = string_from_utf16("DeviceDescription", &description_units)?;
+        let description = string_from_utf16("DeviceDescription", &description_units, at)?;
 
         ensure_size!(in: data, size: 4 /* CustomFlagLength */ + 4 /* CustomFlag */);
         if data.read_u32() != 4 {
-            return Err(invalid_field_err!("CustomFlagLength", "must be 4"));
+            return Err(invalid_field_err!("CustomFlagLength", "must be 4", in: data));
         }
         let custom_flag = data.read_u32();
 
         // ContainerId and DeviceCaps are optional trailing fields, present when DataSize covers them.
         let container_id = if 4 /* cbContainerId */ + Guid::FIXED_PART_SIZE <= data.len() {
             if data.read_u32() != 16 {
-                return Err(invalid_field_err!("cbContainerId", "must be 16"));
+                return Err(invalid_field_err!("cbContainerId", "must be 16", in: data));
             }
             Some(Guid::decode(&mut data)?)
         } else {
@@ -422,7 +430,7 @@ impl<'de> Decode<'de> for DeviceDescription {
         };
         let device_caps = if container_id.is_some() && 4 /* cbDeviceCaps */ + 4 /* DeviceCaps */ <= data.len() {
             if data.read_u32() != 4 {
-                return Err(invalid_field_err!("cbDeviceCaps", "must be 4"));
+                return Err(invalid_field_err!("cbDeviceCaps", "must be 4", in: data));
             }
             Some(data.read_u32())
         } else {
@@ -444,7 +452,8 @@ impl<'de> Decode<'de> for DeviceDescription {
 
 fn read_length_prefixed<'de>(src: &mut ReadCursor<'de>, field: &'static str) -> DecodeResult<&'de [u8]> {
     ensure_size!(in: src, size: 4);
-    let length = usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!(field, "length overflows usize"))?;
+    let length =
+        usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!(field, "length overflows usize", in: src))?;
     ensure_size!(in: src, size: length);
     Ok(src.read_slice(length))
 }
@@ -472,22 +481,27 @@ fn write_multi_sz(dst: &mut WriteCursor<'_>, entries: &[String]) {
     dst.write_u16(0);
 }
 
-/// Splits a multisz string, accepting an empty field or a lone NUL as an empty list.
-fn read_multi_sz(field: &'static str, bytes: &[u8]) -> DecodeResult<Vec<String>> {
-    let units = read_utf16_units(field, bytes)?;
+/// Reads a length-prefixed multisz string, accepting an empty field or a lone NUL as an empty list.
+fn read_multi_sz(
+    src: &mut ReadCursor<'_>,
+    length_field: &'static str,
+    field: &'static str,
+) -> DecodeResult<Vec<String>> {
+    let at = src.pos();
+    let units = read_utf16_units(field, read_length_prefixed(src, length_field)?, at)?;
     if units.is_empty() || units == [0] {
         return Ok(Vec::new());
     }
     let Some(strings) = units.strip_suffix(&[0, 0]) else {
-        return Err(invalid_field_err!(field, "multisz string is not double-NUL terminated"));
+        return Err(invalid_field_err!(field, "multisz string is not double-NUL terminated", at: at));
     };
     strings
         .split(|&unit| unit == 0)
         .map(|entry| {
             if entry.is_empty() {
-                Err(invalid_field_err!(field, "multisz string has an empty entry"))
+                Err(invalid_field_err!(field, "multisz string has an empty entry", at: at))
             } else {
-                string_from_utf16(field, entry)
+                string_from_utf16(field, entry, at)
             }
         })
         .collect()

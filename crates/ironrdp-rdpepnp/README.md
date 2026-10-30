@@ -10,11 +10,13 @@ CreateFile requests for devices the client has not announced are refused with `E
 
 Read, Write, and IOControl requests are answered asynchronously.
 Each request hands the backend a completion that sends exactly one reply from any thread, through the caller-supplied `IoUplink` callback, or in the return value of the processing call when the backend completes before it returns.
-The uplink receives `UplinkMessages`; call `UplinkMessages::take_if_open` on the thread that runs the DRDYNVC channel right before writing them, so a reply queued before its channel closed never reaches another channel that reuses the ID.
+The uplink receives `UplinkRequest`s; resolve each with `UplinkRequest::into_action` on the thread that runs the DRDYNVC channel right before acting on it, so a request queued before its channel closed never reaches another channel that reuses the ID.
 A completion dropped without a result replies with `E_ABORT`, and replies larger than the request allows become `ERROR_INSUFFICIENT_BUFFER`.
 The client advertises I/O version 6, so backends can send custom events when the server also supports them.
 
+`PnpBackend::create_file` runs on the session loop and must not block on device I/O.
+
 The specification answers a protocol violation on a `FileRedirectorChannel` instance, such as a duplicate request ID or an unknown function ID, by terminating that channel.
-Dynamic channel processors cannot close their channel, so the instance is disabled instead: its file is closed, its pending replies are discarded, and later messages are ignored.
+A processor error would end the whole session, so the instance closes its file, discards its pending replies, ignores later messages, and sends an `UplinkAction::Close` through the uplink for the session loop to close the channel.
 
 [MS-RDPEPNP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepnp/

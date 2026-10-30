@@ -33,8 +33,6 @@ pub const RESPONSE_PACKET: u8 = 0x00;
 /// `CUSTOM_EVENT_PACKET` packet type of a client custom event.
 pub const CUSTOM_EVENT_PACKET: u8 = 0x01;
 
-/// Capabilities version without custom event redirection.
-pub const VERSION_WITHOUT_CUSTOM_EVENTS: u16 = 0x0004;
 /// Capabilities version with custom event redirection.
 pub const VERSION_WITH_CUSTOM_EVENTS: u16 = 0x0006;
 
@@ -49,11 +47,13 @@ const REQUEST_ID_MASK: u32 = 0x00FF_FFFF;
 pub struct RequestId(u32);
 
 impl RequestId {
-    pub const MAX: u32 = REQUEST_ID_MASK;
-
     /// Returns `None` when `value` does not fit in 24 bits.
     pub const fn new(value: u32) -> Option<Self> {
-        if value <= Self::MAX { Some(Self(value)) } else { None }
+        if value <= REQUEST_ID_MASK {
+            Some(Self(value))
+        } else {
+            None
+        }
     }
 
     pub const fn get(self) -> u32 {
@@ -265,7 +265,8 @@ impl<'de> Decode<'de> for ServerIoPdu {
             }
             _ => Err(unsupported_value_err!(
                 "FunctionId",
-                alloc::format!("{function_id:#010x}")
+                alloc::format!("{function_id:#010x}"),
+                in: src
             )),
         }
     }
@@ -628,7 +629,8 @@ fn read_client_header(src: &mut ReadCursor<'_>, expected_packet_type: u8) -> Dec
     if packet_type != expected_packet_type {
         return Err(unsupported_value_err!(
             "PacketType",
-            alloc::format!("{packet_type:#04x}")
+            alloc::format!("{packet_type:#04x}"),
+            in: src
         ));
     }
     Ok(RequestId::from_low_bits(header))
@@ -648,7 +650,7 @@ fn read_offset(src: &mut ReadCursor<'_>) -> u64 {
 }
 
 fn read_length(src: &mut ReadCursor<'_>, field: &'static str) -> DecodeResult<usize> {
-    usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!(field, "length overflows usize"))
+    usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!(field, "length overflows usize", in: src))
 }
 
 /// Reads a length-prefixed data field followed by its optional `UnusedByte`.

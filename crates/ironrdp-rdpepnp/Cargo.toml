@@ -1,9 +1,8 @@
 [package]
 name = "ironrdp-rdpepnp"
-version = "0.0.0"
+version = "0.1.0"
 readme = "README.md"
 description = "Plug and Play device redirection dynamic channel client as described in MS-RDPEPNP"
-publish = false
 edition.workspace = true
 rust-version = "1.94"
 license.workspace = true

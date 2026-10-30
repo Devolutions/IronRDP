@@ -164,7 +164,7 @@ ironrdp-w365 = { path = "../ironrdp-w365", version = "0.1", optional = true } # 
 ironrdp-rdpegt = { path = "../ironrdp-rdpegt", version = "0.2", optional = true }
 ironrdp-rdpevor = { path = "../ironrdp-rdpevor", version = "0.2", optional = true }
 ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.2", optional = true }
-ironrdp-rdpepnp = { path = "../ironrdp-rdpepnp", version = "0.0", optional = true } # public
+ironrdp-rdpepnp = { path = "../ironrdp-rdpepnp", version = "0.1", optional = true } # public
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.8", optional = true } # public

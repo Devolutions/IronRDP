@@ -254,7 +254,10 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ironrdp_rdpeci::pdu::CoreInputPdu>(data);
     let _ = decode::<ironrdp_rdpepnp::pdu::info::PnpInfoPdu>(data);
     let _ = decode::<ironrdp_rdpepnp::pdu::io::ServerIoPdu>(data);
+    let _ = decode::<ironrdp_rdpepnp::pdu::io::CapabilitiesReply>(data);
+    let _ = decode::<ironrdp_rdpepnp::pdu::io::CreateFileReply>(data);
     let _ = decode::<ironrdp_rdpepnp::pdu::io::ReadReply>(data);
+    let _ = decode::<ironrdp_rdpepnp::pdu::io::WriteReply>(data);
     let _ = decode::<ironrdp_rdpepnp::pdu::io::IoControlReply>(data);
     let _ = decode::<ironrdp_rdpepnp::pdu::io::CustomEvent>(data);
     let _ = decode::<ironrdp_w365::vdcswitch::pdu::VdcSwitchPdu>(data);
@@ -457,7 +460,10 @@ pub fn pdu_round_trip(data: &[u8]) {
     // Plug and Play device redirection
     pdu_round_trip_one!(data, ironrdp_rdpepnp::pdu::info::PnpInfoPdu);
     pdu_round_trip_one!(data, ironrdp_rdpepnp::pdu::io::ServerIoPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpepnp::pdu::io::CapabilitiesReply);
+    pdu_round_trip_one!(data, ironrdp_rdpepnp::pdu::io::CreateFileReply);
     pdu_round_trip_one!(data, ironrdp_rdpepnp::pdu::io::ReadReply);
+    pdu_round_trip_one!(data, ironrdp_rdpepnp::pdu::io::WriteReply);
     pdu_round_trip_one!(data, ironrdp_rdpepnp::pdu::io::IoControlReply);
     pdu_round_trip_one!(data, ironrdp_rdpepnp::pdu::io::CustomEvent);
     pdu_round_trip_one!(data, ironrdp_rdpear::AuthRedirectionPdu);

@@ -1,11 +1,12 @@
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
-use ironrdp_core::{decode, encode_vec};
+use ironrdp_core::{Encode as _, decode, encode_vec};
 use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu};
 use ironrdp_dvc::{DvcChannelListener as _, DvcClientProcessor, DvcMessage, DvcProcessor as _};
 use ironrdp_rdpepnp::client::{
-    CustomEventSender, IoControlCompletion, IoUplink, PnpBackend, PnpFile, PnpInfoClient, ReadCompletion,
-    UplinkMessages, WriteCompletion,
+    CustomEventSender, IoControlCompletion, IoUplink, PnpBackend, PnpFile, PnpInfoClient, ReadCompletion, UplinkAction,
+    UplinkRequest, WriteCompletion,
 };
 use ironrdp_rdpepnp::pdu::info::{DeviceAdditionPdu, DeviceDescription, PnpInfoPdu, VersionPdu};
 use ironrdp_rdpepnp::pdu::io::{
@@ -14,6 +15,7 @@ use ironrdp_rdpepnp::pdu::io::{
 };
 use ironrdp_rdpepnp::pdu::{Guid, HResult};
 use ironrdp_svc::SvcMessage;
+use proptest::prelude::*;
 use rstest::rstest;
 
 const PNPDR_CHANNEL_ID: u32 = 3;
@@ -203,6 +205,7 @@ struct Observed {
     events: Option<CustomEventSender>,
     parked_reads: Vec<ReadCompletion>,
     parked_writes: Vec<WriteCompletion>,
+    completing_threads: Vec<JoinHandle<()>>,
     closed: bool,
 }
 
@@ -224,14 +227,17 @@ impl PnpBackend for TestBackend {
     }
 }
 
-/// Completes 8-byte reads at once with [`READ_DATA`] and parks other reads and every write.
-/// IOControl requests complete at once with [`READ_DATA`].
+/// Completes 8-byte reads at once with [`READ_DATA`], completes 4-byte reads on another thread, and
+/// parks other reads and every write. IOControl requests complete at once with [`READ_DATA`].
 struct TestFile(SharedObserved);
 
 impl PnpFile for TestFile {
     fn read(&mut self, request: ReadRequest, completion: ReadCompletion) {
         if request.bytes_to_read == 8 {
             completion.complete(HResult::S_OK, READ_DATA.to_vec());
+        } else if request.bytes_to_read == 4 {
+            let thread = std::thread::spawn(move || completion.complete(HResult::S_OK, READ_DATA[..4].to_vec()));
+            self.0.lock().unwrap().completing_threads.push(thread);
         } else {
             self.0.lock().unwrap().parked_reads.push(completion);
         }
@@ -262,7 +268,7 @@ impl Drop for TestFile {
 struct IoChannel {
     processor: Box<dyn DvcClientProcessor>,
     observed: SharedObserved,
-    uplinked: Arc<Mutex<Vec<UplinkMessages>>>,
+    uplinked: Arc<Mutex<Vec<UplinkRequest>>>,
 }
 
 impl IoChannel {
@@ -272,9 +278,9 @@ impl IoChannel {
         let uplinked = Arc::new(Mutex::new(Vec::new()));
         let uplink: IoUplink = {
             let uplinked = Arc::clone(&uplinked);
-            Arc::new(move |messages: UplinkMessages| {
-                assert_eq!(messages.channel_id(), IO_CHANNEL_ID);
-                uplinked.lock().unwrap().push(messages);
+            Arc::new(move |request: UplinkRequest| {
+                assert_eq!(request.channel_id(), IO_CHANNEL_ID);
+                uplinked.lock().unwrap().push(request);
                 Ok(())
             })
         };
@@ -301,15 +307,26 @@ impl IoChannel {
         encode_messages(&messages)
     }
 
-    /// Takes the uplinked replies as the session loop would write them now.
-    fn take_uplinked(&self) -> Vec<Vec<u8>> {
+    /// Takes the uplinked requests as the session loop would act on them now: the payloads it writes,
+    /// and whether it closes the channel.
+    fn take_uplinked_actions(&self) -> (Vec<Vec<u8>>, bool) {
         let queued = core::mem::take(&mut *self.uplinked.lock().unwrap());
-        let messages: Vec<SvcMessage> = queued
-            .into_iter()
-            .filter_map(UplinkMessages::take_if_open)
-            .flatten()
-            .collect();
-        svc_payloads(&messages, IO_CHANNEL_ID)
+        let mut messages = Vec::new();
+        let mut close = false;
+        for action in queued.into_iter().filter_map(UplinkRequest::into_action) {
+            match action {
+                UplinkAction::Send(sent) => messages.extend(sent),
+                UplinkAction::Close => close = true,
+            }
+        }
+        (svc_payloads(&messages, IO_CHANNEL_ID), close)
+    }
+
+    /// Takes the uplinked replies, asserting that the channel is not closed.
+    fn take_uplinked(&self) -> Vec<Vec<u8>> {
+        let (payloads, close) = self.take_uplinked_actions();
+        assert!(!close, "unexpected channel close");
+        payloads
     }
 }
 
@@ -368,6 +385,61 @@ fn container_id_and_device_caps_extend_the_description() {
     assert_eq!(encoded[4..8], (0x56u32 + 28).to_le_bytes()); // DataSize
     assert!(encoded.ends_with(&tail));
     assert_eq!(decode::<DeviceDescription>(&encoded).unwrap(), device);
+}
+
+fn arb_guid() -> impl Strategy<Value = Guid> {
+    (any::<u32>(), any::<u16>(), any::<u16>(), any::<[u8; 8]>())
+        .prop_map(|(data1, data2, data3, data4)| Guid::new(data1, data2, data3, data4))
+}
+
+fn arb_device_description() -> impl Strategy<Value = DeviceDescription> {
+    let ids = || prop::collection::vec(r"[A-Za-z0-9\\&_]{1,12}", 0..4);
+    (
+        any::<u32>(),
+        prop::collection::vec(arb_guid(), 0..4),
+        ids(),
+        ids(),
+        r"\PC{0,16}",
+        any::<u32>(),
+        prop::option::of(arb_guid()),
+        prop::option::of(any::<u32>()),
+    )
+        .prop_map(
+            |(
+                client_device_id,
+                interface_guids,
+                hardware_ids,
+                compatibility_ids,
+                description,
+                custom_flag,
+                container_id,
+                device_caps,
+            )| {
+                DeviceDescription {
+                    client_device_id,
+                    interface_guids,
+                    hardware_ids,
+                    compatibility_ids,
+                    description,
+                    custom_flag,
+                    // DeviceCaps follows ContainerId.
+                    device_caps: container_id.and(device_caps),
+                    container_id,
+                }
+            },
+        )
+}
+
+// oracle: spec MS-RDPEPNP §2.2.1.3.1.1 (DataSize counts the fields after itself)
+proptest! {
+    #[test]
+    fn device_descriptions_encode_to_their_size_and_round_trip(device in arb_device_description()) {
+        let encoded = encode_vec(&device).unwrap();
+        prop_assert_eq!(encoded.len(), device.size());
+        let data_size = u32::from_le_bytes(encoded[4..8].try_into().unwrap());
+        prop_assert_eq!(usize::try_from(data_size).unwrap(), encoded.len() - 8);
+        prop_assert_eq!(decode::<DeviceDescription>(&encoded).unwrap(), device);
+    }
 }
 
 // oracle: spec MS-RDPEPNP §2.2.1.3.1.1 (DeviceCaps follows ContainerId)
@@ -469,6 +541,15 @@ fn device_added_and_removed_while_ready_is_announced_at_once() {
     request_id: request_id(0x00ff_ffff),
     id_to_cancel: request_id(0),
 }))]
+// Hand-derived from the field diagram of section 2.2.2.3.9: UnusedBits, then the 24-bit idToCancel.
+#[case::io_cancel_nonzero(&[
+    0x01, 0x00, 0x00, 0x00, // RequestId, UnusedBits
+    0x06, 0x00, 0x00, 0x00, // FunctionId: SPECIFIC_IOCANCEL_REQUEST
+    0x00, 0x01, 0x02, 0x03, // UnusedBits, idToCancel
+], ServerIoPdu::SpecificIoCancel(IoCancelRequest {
+    request_id: request_id(1),
+    id_to_cancel: request_id(0x0003_0201),
+}))]
 fn server_requests_decode_as_in_spec_samples(#[case] bytes: &[u8], #[case] expected: ServerIoPdu) {
     assert_eq!(decode::<ServerIoPdu>(bytes).unwrap(), expected);
 }
@@ -532,7 +613,7 @@ fn create_file_for_an_unannounced_device_fails() {
     let replies = channel.process(&CREATE_FILE_REQUEST);
 
     let reply: CreateFileReply = decode(&replies[0]).unwrap();
-    assert!(!reply.result.is_success());
+    assert_eq!(reply.result, HResult::FILE_NOT_FOUND);
     assert!(channel.observed.lock().unwrap().created.is_empty());
 }
 
@@ -651,7 +732,7 @@ fn duplicate_request_id_disables_the_channel() {
     assert!(channel.observed.lock().unwrap().closed);
     let completion = channel.observed.lock().unwrap().parked_reads.pop().unwrap();
     completion.complete(HResult::S_OK, Vec::new());
-    assert!(channel.take_uplinked().is_empty());
+    assert_eq!(channel.take_uplinked_actions(), (Vec::new(), true));
     assert!(channel.process(&READ_REQUEST).is_empty());
 }
 
@@ -668,7 +749,44 @@ fn unknown_function_id_disables_the_channel() {
     assert!(channel.process(&unknown).is_empty());
 
     assert!(channel.observed.lock().unwrap().closed);
+    assert_eq!(channel.take_uplinked_actions(), (Vec::new(), true));
     assert!(channel.process(&READ_REQUEST).is_empty());
+}
+
+// oracle: spec MS-RDPEDYC §3.2.5.2 (after a close, the server can reuse the channel ID)
+#[test]
+fn close_queued_before_the_server_closes_the_channel_is_dropped() {
+    let info = ready_info_client(vec![sample_device()]);
+    let mut channel = IoChannel::open_file(&info);
+    channel.process(&read_request(5, 16));
+    channel.process(&read_request(5, 16));
+
+    channel.processor.close(IO_CHANNEL_ID);
+
+    assert_eq!(channel.take_uplinked_actions(), (Vec::new(), false));
+}
+
+// oracle: spec MS-RDPEPNP §3.2.5.2.2.3, §3.2.5.2.2.4 (one Read Reply per Read Request)
+#[test]
+fn reply_completed_on_another_thread_is_sent_exactly_once() {
+    let info = ready_info_client(vec![sample_device()]);
+    let mut channel = IoChannel::open_file(&info);
+
+    // The thread races the processing call, so the reply is returned by it or uplinked.
+    for id in 0..200 {
+        let inline = channel.process(&read_request(id, 4));
+        let thread = channel.observed.lock().unwrap().completing_threads.pop().unwrap();
+        thread.join().unwrap();
+        let uplinked = channel.take_uplinked();
+
+        let replies: Vec<ReadReply> = inline
+            .iter()
+            .chain(&uplinked)
+            .map(|reply| decode(reply).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].request_id, request_id(id));
+    }
 }
 
 // oracle: spec MS-RDPEPNP §3.1.1 (closing the channel invalidates its requests), §3.2.5.2.2.2

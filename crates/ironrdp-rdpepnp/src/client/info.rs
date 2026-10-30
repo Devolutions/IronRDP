@@ -46,7 +46,6 @@ enum State {
 pub struct PnpInfoClient {
     state: State,
     channel_id: Option<u32>,
-    server_version: Option<VersionPdu>,
     devices: BTreeMap<u32, DeviceDescription>,
     announced: AnnouncedDevices,
 }
@@ -59,7 +58,6 @@ impl PnpInfoClient {
         let mut client = Self {
             state: State::WaitingServerVersion,
             channel_id: None,
-            server_version: None,
             devices: BTreeMap::new(),
             announced: AnnouncedDevices::default(),
         };
@@ -80,15 +78,6 @@ impl PnpInfoClient {
     /// Returns whether the server accepts device addition and removal messages.
     pub fn is_ready(&self) -> bool {
         self.state == State::Ready
-    }
-
-    /// Returns the Server Version message of the active channel.
-    pub fn server_version(&self) -> Option<VersionPdu> {
-        self.server_version
-    }
-
-    pub fn devices(&self) -> impl Iterator<Item = &DeviceDescription> {
-        self.devices.values()
     }
 
     /// Adds a device, returning the Client Device Addition message when the channel is ready.
@@ -150,7 +139,6 @@ impl DvcProcessor for PnpInfoClient {
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         self.state = State::WaitingServerVersion;
         self.channel_id = Some(channel_id);
-        self.server_version = None;
         self.announced.lock().clear();
         Ok(Vec::new())
     }
@@ -167,7 +155,6 @@ impl DvcProcessor for PnpInfoClient {
         match (self.state, pdu) {
             (State::WaitingServerVersion, PnpInfoPdu::Version(server_version)) => {
                 debug!(?server_version, "Received the PNPDR server version");
-                self.server_version = Some(server_version);
                 self.state = State::WaitingServerLogon;
                 Ok(vec![Box::new(PnpInfoPdu::Version(VersionPdu {
                     major_version: CLIENT_MAJOR_VERSION,
