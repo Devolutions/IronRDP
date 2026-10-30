@@ -30,6 +30,7 @@ mod pdu;
 mod propertyset;
 mod qoiz;
 mod rdcleanpath;
+mod rdpadrv;
 mod rdpdr;
 mod rdpeai;
 mod rdpecam;

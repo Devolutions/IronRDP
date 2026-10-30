@@ -888,6 +888,8 @@ impl RpcApp {
             RdpOutputEvent::InteractiveEntraAuthCompleted { hresult } => {
                 debug!(hresult, "Interactive Entra sign-in completed");
             }
+            // Only produced when the MultiPoint persistence channels are configured, which the viewer does not do.
+            RdpOutputEvent::MultipointSettingsChanged => debug!("MultiPoint session settings changed"),
         }
     }
 }
