@@ -1,15 +1,26 @@
 name: Release crates
 
 on:
-  workflow_dispatch:
+  # Publishing follows every push, so a merged release PR is released right away.
   push:
     branches:
       - master
+  # The release PR is prepared once a day: regenerating it on every push to master
+  # closes it and discards the review edits it carries.
+  schedule:
+    - cron: '17 4 * * *' # 4:17 AM UTC every day
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Commit to prepare the release PR from (defaults to the head of the selected branch)
+        required: false
+        type: string
 
 jobs:
   # Create a PR with the new versions and changelog, preparing the next release.
   open-pr:
     name: Open release PR
+    if: ${{ github.event_name != 'push' }}
     environment: cratesio-publish
     runs-on: ubuntu-latest
     concurrency:
@@ -17,13 +28,38 @@ jobs:
       cancel-in-progress: false
 
     steps:
+      # The scheduled run leaves an open release PR alone, so it stays pinned to the commit
+      # it was prepared from until it is merged or closed; a manual run prepares a new one.
+      - name: Check for an open release PR
+        id: open-release-pr
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
+        run: |
+          $pr = gh pr list --repo '${{ github.repository }}' --state open --search 'head:release-plz/' --json number --jq '.[0].number'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($pr) {
+            Write-Host "Release PR #$pr is open; leave it pinned"
+            echo "skip=true" >> $Env:GITHUB_OUTPUT
+          }
+        shell: pwsh
+
       - name: Checkout repository
+        if: ${{ steps.open-release-pr.outputs.skip != 'true' }}
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 512
+
+      # release-plz bases the release PR on the checked-out branch, so a pinned commit
+      # must not leave HEAD detached.
+      - name: Check out the pinned commit as the base branch
+        if: ${{ steps.open-release-pr.outputs.skip != 'true' }}
+        run: git checkout -B '${{ github.ref_name }}'
 
       - name: Run release-plz
         id: release-plz
+        if: ${{ steps.open-release-pr.outputs.skip != 'true' }}
         uses: Devolutions/actions-public/release-plz@v1
         with:
           command: release-pr
@@ -69,6 +105,7 @@ jobs:
   # Release unpublished packages.
   release:
     name: Release crates
+    if: ${{ github.event_name != 'schedule' }}
     environment: cratesio-publish
     runs-on: ubuntu-latest
     permissions:
