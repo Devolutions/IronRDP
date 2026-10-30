@@ -14,8 +14,9 @@ use crate::pdu::{CAPVERSION_1, CapabilitySet, CapsAdvertisePdu, MouseCursorPdu, 
 
 /// Largest number of pointer updates kept until [`MouseCursorClient::take_updates`] collects them.
 ///
-/// Room for a shape in each of the 32 pointer cache slots the client advertises, plus a position
-/// and a visible-pointer update.
+/// After compaction, a conforming server needs at most 34 entries: a shape for each of the 32
+/// pointer cache slots the client advertises, a position and a visible-pointer update.
+/// 64 leaves headroom above that while capping what a server can make the client hold.
 pub const MAX_PENDING_UPDATES: usize = 64;
 
 /// Client processor for `Microsoft::Windows::RDS::MouseCursor`.
@@ -99,8 +100,7 @@ impl MouseCursorClient {
         }
         // Compaction drops nothing when every pending update is kept, for instance when each is
         // the last shape for a different cache slot.
-        // Dropping the oldest then leaves room to push `update` without breaking the INVARIANT on
-        // `pending`.
+        // Per the invariant on `pending`, dropping the oldest then leaves room to push `update`.
         if self.pending.len() == MAX_PENDING_UPDATES {
             warn!("Dropping the oldest pending pointer update");
             self.pending.remove(0);

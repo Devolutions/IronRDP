@@ -474,9 +474,9 @@ pub struct ChannelConfig {
 
     /// Enable the MS-RDPEMSC mouse cursor dynamic virtual channel.
     ///
-    /// On by default.
+    /// Off by default until the channel has been run against a real Windows or AVD server.
     /// Servers that open the channel send pointer updates on it instead of the fast path, so
-    /// turning it off keeps them on the fast path.
+    /// leaving it off keeps them on the fast path.
     pub mouse_cursor: bool,
 
     /// Maximum number of simultaneous touch contacts advertised in the RDPEI `CS_READY` PDU.
@@ -545,7 +545,7 @@ impl Default for ChannelConfig {
             screen_capture: false,
             #[cfg(feature = "entra-auth")]
             interactive_entra_auth: false,
-            mouse_cursor: true,
+            mouse_cursor: false,
             max_touch_contacts: crate::rdp::RDPEI_MAX_TOUCH_CONTACTS,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use ironrdp_core::{decode, encode_vec};
 use ironrdp_dvc::{DvcMessage, DvcProcessor as _};
 use ironrdp_graphics::image_processing::PixelFormat;
@@ -131,6 +129,21 @@ fn client_is_ready_after_the_server_confirms() {
 
     assert!(replies.is_empty());
     assert!(client.is_ready());
+}
+
+// oracle: spec MS-RDPEMSC §3.2.5.2
+// oracle: spec MS-RDPEMSC §3.3.5.2
+#[test]
+fn client_is_not_ready_after_a_confirmation_of_other_capabilities() {
+    let mut client = started_client();
+    let mut confirm = CAPS_CONFIRM;
+    confirm[8] = 0x02; // version = 2, which the client did not advertise
+
+    let replies = client.process(CHANNEL_ID, &confirm).expect("process the confirmation");
+
+    assert!(replies.is_empty());
+    assert!(!client.is_ready());
+    assert!(client.take_updates().is_empty());
 }
 
 // oracle: spec MS-RDPEMSC §4.2.1
@@ -466,12 +479,18 @@ fn active_stage_caches_and_reuses_a_channel_pointer() {
             PointerUpdate::Cached { cache_index: 0 }.as_pointer_update_data(),
         )
         .expect("apply the cached pointer");
-    assert!(
-        cached_outputs
-            .iter()
-            .any(|output| matches!(output, ActiveStageOutput::PointerBitmap(cached) if Arc::ptr_eq(cached, pointer))),
-        "the cached pointer must be the image stored in its slot, got {cached_outputs:?}"
+    let Some(cached) = cached_outputs.iter().find_map(|output| match output {
+        ActiveStageOutput::PointerBitmap(cached) => Some(cached),
+        _ => None,
+    }) else {
+        panic!("expected a pointer bitmap, got {cached_outputs:?}");
+    };
+    // The cached pointer is the image stored in its slot.
+    assert_eq!(
+        (cached.width, cached.height, cached.hotspot_x, cached.hotspot_y),
+        (pointer.width, pointer.height, pointer.hotspot_x, pointer.hotspot_y)
     );
+    assert_eq!(cached.bitmap_data, pointer.bitmap_data);
 }
 
 // oracle: spec MS-RDPEMSC §4.2.1
@@ -564,6 +583,9 @@ fn queued_update() -> impl Strategy<Value = PointerUpdate> {
     ]
 }
 
+// `proptest!` rejects non-ASCII text in its body, so the per-assertion markers sit here:
+// oracle: mutant growing past the bound (the length assertion)
+// oracle: spec MS-RDPEMSC §3.3.5.3 (the state equivalence assertion)
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -575,9 +597,7 @@ proptest! {
         feed(&mut client, updates.iter().cloned());
 
         let queued = client.take_updates();
-        // oracle: mutant growing past the bound
         prop_assert!(queued.len() <= MAX_PENDING_UPDATES);
-        // oracle: spec MS-RDPEMSC section 3.3.5.3
         prop_assert_eq!(PointerModel::apply(&queued), PointerModel::apply(&updates));
     }
 }
