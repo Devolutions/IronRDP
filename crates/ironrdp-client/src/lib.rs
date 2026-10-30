@@ -32,7 +32,7 @@ pub mod output_channel;
 pub mod rail;
 pub mod rdp;
 #[cfg(feature = "telemetry")]
-mod telemetry;
+pub mod telemetry;
 #[cfg(feature = "text-input")]
 mod text_input;
 #[cfg(feature = "video")]

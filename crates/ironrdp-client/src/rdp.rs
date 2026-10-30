@@ -5232,7 +5232,6 @@ async fn active_session(
 
         #[cfg(feature = "telemetry")]
         {
-            connection_telemetry.observe(&active_stage);
             // The report waits for an iteration without another dynamic channel batch.
             if iteration
                 .dvc_batch
@@ -5244,6 +5243,7 @@ async fn active_session(
                 // A tunneled request's reply route does not apply to the telemetry report.
                 iteration.reply_tunnel = None;
             }
+            connection_telemetry.observe(crate::telemetry::Observation::of(&active_stage), Instant::now());
         }
 
         #[cfg(feature = "video")]
