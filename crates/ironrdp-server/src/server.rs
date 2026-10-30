@@ -1982,6 +1982,10 @@ where
 /// exceeding it is not an error, it just degrades to an abrupt drop.
 const EVICTION_GRACE: Duration = Duration::from_millis(750);
 
+/// How long the server waits to close the connection after it sent the client a
+/// Set Error Info PDU for an error.
+const ERROR_INFO_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// How long a candidate gets to complete negotiation and authentication before
 /// it is abandoned.
 ///
@@ -3799,32 +3803,18 @@ impl RdpServer {
                 // against the preempting client — see the variant's docs).
                 ServerEvent::EvictedByOtherConnection => {
                     debug!("evicting this connection -- another client took the session over");
-                    if !conn.client_supports_errinfo {
-                        // MS-RDPBCGR 3.3.5.7.1: the client did not set
-                        // RNS_UD_CS_SUPPORT_ERRINFO_PDU, so it MUST NOT be
-                        // sent a Set Error Info PDU. Such a client cannot be
-                        // told why it is going away; it just goes.
-                        debug!("client did not opt into Set Error Info PDUs; dropping it without the eviction reason");
-                        return Ok(RunState::Disconnect);
-                    }
-                    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
-                        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
-                    ));
                     // Best-effort: if the evicted peer's socket is already
                     // half-dead the write fails, which is fine — it is leaving
                     // either way, and the caller falls back to cancelling it.
-                    // pduSource=0, not user_channel_id -- MS-RDPBCGR 2.2.5.1.1
-                    // requires it for TS_SET_ERROR_INFO_PDU specifically.
-                    match encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id) {
-                        Ok(bytes) => {
-                            if let Err(error) = writer.write_all(&bytes).await {
-                                debug!(%error, "could not send the eviction reason; disconnecting anyway");
-                            }
-                        }
-                        Err(error) => {
-                            warn!(%error, "could not encode the eviction reason; disconnecting anyway");
-                        }
-                    }
+                    send_error_info(
+                        conn,
+                        writer,
+                        io_channel_id,
+                        user_channel_id,
+                        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
+                        "eviction reason",
+                    )
+                    .await;
                     return Ok(RunState::Disconnect);
                 }
                 ServerEvent::Disconnect(error) => {
@@ -4789,7 +4779,24 @@ impl RdpServer {
         } else {
             None
         };
-        let mut display_updates = self.display.lock().await.updates(conn.display_context()).await?;
+        let display_updates = self.display.lock().await.updates(conn.display_context()).await;
+        let mut display_updates = match display_updates {
+            Ok(display_updates) => display_updates,
+            Err(error) => {
+                if let ServerErrorKind::ErrorInfo(error_info) = *error.kind() {
+                    send_error_info(
+                        conn,
+                        writer,
+                        io_channel_id,
+                        user_channel_id,
+                        error_info,
+                        "display error reason",
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        };
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
@@ -5908,7 +5915,7 @@ impl RdpServer {
 
             let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
-            match self
+            let state = self
                 .client_accepted(
                     &mut conn,
                     &mut reader,
@@ -5917,8 +5924,27 @@ impl RdpServer {
                     Rc::clone(&udp_transport),
                     pending_udp_accept.take(),
                 )
-                .await?
-            {
+                .await;
+            let state = match state {
+                Ok(state) => state,
+                Err(error) => {
+                    if matches!(error.kind(), ServerErrorKind::ErrorInfo(_)) {
+                        // The client was sent a Set Error Info PDU. Close the
+                        // session as on a normal disconnect, so the client gets
+                        // the PDU and then the end of the stream.
+                        let (mut inner, _) = unsplit_tokio_framed(reader, writer).into_inner();
+                        match tokio::time::timeout(ERROR_INFO_CLOSE_TIMEOUT, inner.shutdown()).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(shutdown_error)) => {
+                                debug!(%shutdown_error, "Shutdown after the error reason failed")
+                            }
+                            Err(_) => debug!("Shutdown after the error reason timed out"),
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            match state {
                 RunState::Continue => {
                     unreachable!();
                 }
@@ -6180,6 +6206,41 @@ fn encode_share_data_pdu(
         user_data,
     };
     encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
+}
+
+/// Tells the client why the session ends: sends `error_info` in a Set Error Info PDU ([MS-RDPBCGR 2.2.5.1.1]),
+/// best-effort. A client that did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU is not sent the PDU ([MS-RDPBCGR 3.3.5.7.1]).
+/// `reason` names the reason in the logs.
+///
+/// [MS-RDPBCGR 2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
+/// [MS-RDPBCGR 3.3.5.7.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/e895ef8f-829a-4166-ad29-7d64d200c136
+async fn send_error_info(
+    conn: &ConnectionState,
+    writer: &mut impl FramedWrite,
+    io_channel_id: u16,
+    user_channel_id: u16,
+    error_info: ErrorInfo,
+    reason: &str,
+) {
+    if !conn.client_supports_errinfo {
+        debug!(
+            reason,
+            "Client did not opt into Set Error Info PDUs; disconnecting without the reason"
+        );
+        return;
+    }
+    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error_info));
+    // pduSource=0 -- MS-RDPBCGR 2.2.5.1.1 requires it for TS_SET_ERROR_INFO_PDU.
+    match encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id) {
+        Ok(bytes) => {
+            if let Err(error) = writer.write_all(&bytes).await {
+                debug!(%error, reason, "Could not send the reason; disconnecting anyway");
+            }
+        }
+        Err(error) => {
+            warn!(%error, reason, "Could not encode the reason; disconnecting anyway");
+        }
+    }
 }
 
 async fn deactivate_all(io_channel_id: u16, user_channel_id: u16, writer: &mut impl FramedWrite) -> ServerResult<()> {
@@ -7307,6 +7368,30 @@ mod tests {
     use ironrdp_svc::{SvcMessage, SvcServerProcessor};
 
     use super::*;
+
+    /// A client that did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU is not sent a
+    /// Set Error Info PDU; a client that set it is.
+    // oracle: spec MS-RDPBCGR §3.3.5.7.1
+    #[tokio::test]
+    async fn the_error_reason_goes_only_to_a_client_that_supports_it() {
+        let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
+        let mut conn = ConnectionState::default();
+
+        let mut writer = cliprdr_error_tests::CapturingWriter::default();
+        send_error_info(&conn, &mut writer, 1003, 1007, error_info, "test").await;
+        assert!(writer.0.is_empty(), "sent to a client that does not support it");
+
+        conn.client_supports_errinfo = true;
+        send_error_info(&conn, &mut writer, 1003, 1007, error_info, "test").await;
+        let expected = encode_share_data_pdu(
+            rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error_info)),
+            0,
+            1003,
+            1007,
+        )
+        .expect("encode");
+        assert_eq!(writer.0, expected);
+    }
 
     /// A channel backend that owns a resource, released on drop the way
     /// `RdpsndServer` stops its handler.
