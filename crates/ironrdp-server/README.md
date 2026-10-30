@@ -34,6 +34,25 @@ See [`RdpServerHandle`] for request timing, lifecycle behavior, and error semant
 
 This crate is part of the [IronRDP] project.
 
+## RemoteApp window orders
+
+Opt in with `RdpServerBuilder::with_remote_app(Some(capabilities))` and attach a `rail` static-channel processor with `with_static_channel_factory`.
+The server offers Remote Programs and Window List capabilities only to clients requesting RAIL.
+`ConnectionHandler::on_remote_app_capabilities` reports the effective client capabilities after each activation, including reactivation.
+Desktop sessions are unchanged when RemoteApp is disabled.
+
+Create a `WindowingOrders` batch, send it through `ServerEvent::WindowingOrders`, and await the returned completion receiver.
+`Written` means the transport accepted every fragment, not that the client processed the orders.
+`NotStarted` means the batch was discarded before writing and can be retried on the same connection.
+An error after writing starts must not be retried because some orders may already have reached the client.
+Dropping the completion receiver cancels a batch only if writing has not started.
+
+Window orders and display updates share graphics serialization, so fragmented updates stay contiguous and resize waits for an in-progress batch.
+Batches exceeding the negotiated reassembly limit are rejected before writing; without the client's Multifragment Update capability, only single-fragment batches are accepted.
+Split larger batches at order boundaries before submitting them.
+Fields requiring extended Window List support are rejected when the client negotiated only basic support.
+The embedder remains responsible for RAIL channel messages and for respecting the reported icon-cache limits.
+
 ## Echo RTT probes (feature `echo`)
 
 Enable the `echo` feature to use the ECHO dynamic virtual channel (`MS-RDPEECO`) and measure round-trip time.

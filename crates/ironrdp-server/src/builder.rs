@@ -41,6 +41,7 @@ pub struct BuilderDone {
     security: RdpServerSecurity,
     codecs: BitmapCodecs,
     max_request_size: u32,
+    remote_app: Option<ironrdp_acceptor::RemoteAppCapabilities>,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
@@ -167,6 +168,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 connection_binder: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
+                remote_app: None,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
                 #[cfg(feature = "usb")]
@@ -192,6 +194,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 security: self.state.security,
                 handler: self.state.handler,
                 display: Box::new(NoopDisplay),
+                remote_app: None,
                 static_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
@@ -222,6 +225,16 @@ impl RdpServerBuilder<WantsDisplay> {
 }
 
 impl RdpServerBuilder<BuilderDone> {
+    /// Offers RemoteApp to requesting clients.
+    /// The embedder must provide a `rail` static channel and window-order updates.
+    /// See MS-RDPERP 2.2.1.1, ["Capability Sets"].
+    ///
+    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/a399c109-e9db-4819-b2e8-89c4eb9001c0
+    pub fn with_remote_app(mut self, capabilities: Option<ironrdp_acceptor::RemoteAppCapabilities>) -> Self {
+        self.state.remote_app = capabilities;
+        self
+    }
+
     /// Add a factory that attaches a fresh static-channel processor per connection.
     pub fn with_static_channel_factory(mut self, factory: Box<dyn StaticChannelFactory>) -> Self {
         self.state.static_channel_factories.push(factory);
@@ -478,6 +491,7 @@ impl RdpServerBuilder<BuilderDone> {
                 security: self.state.security,
                 codecs: self.state.codecs,
                 max_request_size: self.state.max_request_size,
+                remote_app: self.state.remote_app,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
                 connection_policy: self.state.connection_policy,
                 remotefx_quant: self.state.remotefx_quant,

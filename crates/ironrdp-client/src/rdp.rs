@@ -329,6 +329,12 @@ pub enum RdpOutputEvent {
     InteractiveEntraAuthCompleted {
         hresult: u32,
     },
+    /// A Windows MultiPoint session changed a volume level or its drive letter mappings, and the
+    /// [`ChannelConfig::multipoint`](crate::config::ChannelConfig::multipoint) settings hold the new values.
+    ///
+    /// Save the settings so that the next connection restores them.
+    #[cfg(feature = "multipoint")]
+    MultipointSettingsChanged,
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -2405,7 +2411,7 @@ fn build_connector(
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
     let _ = (rdpdr_factory, rdpdr_policy);
-    #[cfg(not(any(all(windows, feature = "vmconnect"), feature = "entra-auth")))]
+    #[cfg(not(any(all(windows, feature = "vmconnect"), feature = "entra-auth", feature = "multipoint")))]
     let _ = output_event_sender;
     #[cfg(not(feature = "usb"))]
     let _ = usb_allowed;
@@ -2454,6 +2460,14 @@ fn build_connector(
     #[cfg(feature = "text-input")]
     if config.channels.text_input {
         drdynvc = crate::text_input::attach(drdynvc);
+    }
+
+    #[cfg(feature = "multipoint")]
+    if let Some(settings) = &config.channels.multipoint {
+        let (audio_level, drive_letter) = settings.processors(output_event_sender);
+        drdynvc = drdynvc
+            .with_dynamic_channel(audio_level)
+            .with_dynamic_channel(drive_letter);
     }
 
     #[cfg(feature = "w365")]

@@ -22,6 +22,8 @@ pub mod entra;
 pub mod h264;
 #[cfg(feature = "entra-auth")]
 pub mod interactive_entra;
+#[cfg(feature = "multipoint")]
+pub mod multipoint;
 
 // Only the interactive Entra tests use rstest.
 #[cfg(all(test, not(feature = "entra-auth")))]

@@ -4,6 +4,7 @@ mod config;
 mod egfx_cache;
 mod entra;
 mod input;
+mod multipoint;
 mod output_channel;
 mod rail;
 mod remote_guard;

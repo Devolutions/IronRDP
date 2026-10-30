@@ -139,6 +139,11 @@ Its presenter decodes H.264 through the `ironrdp-egfx` decoder trait and places 
 Location dynamic channel client and PDU codecs implemented as described in MS-RDPEL.
 The crate forwards only location data supplied by its caller and performs no location acquisition or I/O.
 
+#### [`crates/ironrdp-rdpadrv`](./crates/ironrdp-rdpadrv)
+
+Audio level and drive letter persistence dynamic channel clients, servers, and PDU codecs implemented as described in MS-RDPADRV.
+The crate reports the values a session wants persisted through handlers and performs no storage or I/O.
+
 #### [`crates/ironrdp-rdpetxt`](./crates/ironrdp-rdpetxt)
 
 Text input dynamic channel client, server, and PDU codecs implemented as described in MS-RDPETXT.

@@ -59,6 +59,7 @@ ironrdp-str.path = "../ironrdp-str"
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
+ironrdp-rdpadrv.path = "../ironrdp-rdpadrv"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpeai.path = "../ironrdp-rdpeai"
 ironrdp-rdpecam = { path = "../ironrdp-rdpecam" }
