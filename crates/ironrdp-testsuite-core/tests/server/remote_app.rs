@@ -170,6 +170,30 @@ async fn unnegotiated_orders_report_an_error_without_writing() {
     .await;
 }
 
+// oracle: spec MS-RDPERP §3.3.5.1.4: RemoteApp negotiation also requires server support.
+#[tokio::test]
+async fn disabled_server_rejects_orders_from_rail_requesting_client() {
+    connected_with_server_limit(
+        None,
+        Some(remote_app()),
+        None,
+        None,
+        |mut client, events, display, caps| async move {
+            assert!(
+                !caps
+                    .iter()
+                    .any(|cap| matches!(cap, CapabilitySet::Rail(_) | CapabilitySet::WindowList(_)))
+            );
+            let (request, completion) = WindowingOrders::new(vec![deleted(7)]);
+            events.send(ServerEvent::WindowingOrders(request)).unwrap();
+            assert!(completion.await.unwrap().is_err());
+            display.send(DisplayUpdate::HidePointer).unwrap();
+            assert_eq!(read_update(&mut client).await.0, UpdateCode::HiddenPointer);
+        },
+    )
+    .await;
+}
+
 // oracle: spec MS-RDPERP §3.3.5.1.3: RemoteApp negotiation requires the client's INFO_RAIL request.
 #[tokio::test]
 async fn remote_app_server_reports_none_and_rejects_orders_for_desktop_client() {
@@ -584,7 +608,7 @@ async fn connected_with_reports<F, Fut>(
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = oneshot::channel();
     let (capabilities_tx, mut capabilities_rx) = mpsc::unbounded_channel();
-    let expected_capabilities = capabilities.clone();
+    let expected_capabilities = server_capabilities.as_ref().and(capabilities.clone());
     let mut builder = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_no_security()

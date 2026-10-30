@@ -4109,6 +4109,7 @@ impl RdpServer {
                                 length.checked_add(order.size()).filter(|length| *length <= maximum)
                             })
                             .ok_or_else(|| ServerError::reason("window orders", "update exceeds the graphics limit"))?;
+                        // INVARIANT: The buffer holds numberOrders plus each order's encoded size.
                         let mut data = vec![0; length];
                         let mut cursor = ironrdp_core::WriteCursor::new(&mut data);
                         cursor.write_u16(count);
