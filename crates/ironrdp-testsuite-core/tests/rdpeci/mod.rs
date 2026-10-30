@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use ironrdp_core::{decode, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu};
@@ -8,7 +6,6 @@ use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags, Synchroni
 use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_rdpeci::client::CoreInputClient;
 use ironrdp_rdpeci::pdu::{CoreInputPdu, InitRequestPdu, InitResponsePdu, InputPdu, ProtocolVersion};
-use ironrdp_rdpeci::server::{CoreInputHandler, CoreInputServer};
 
 const CHANNEL_ID: u32 = 7;
 
@@ -78,15 +75,6 @@ fn ready_client() -> CoreInputClient {
         .process(CHANNEL_ID, &INIT_RESPONSE_CAPTURE[..16])
         .expect("process init response");
     client
-}
-
-#[derive(Clone, Default)]
-struct RecordingHandler(Arc<Mutex<Vec<FastPathInputEvent>>>);
-
-impl CoreInputHandler for RecordingHandler {
-    fn input(&mut self, events: Vec<FastPathInputEvent>) {
-        self.0.lock().unwrap().extend(events);
-    }
 }
 
 #[test]
@@ -262,45 +250,4 @@ fn client_requires_a_new_exchange_after_reopening() {
     assert!(!client.ready());
     client.start(CHANNEL_ID).expect("restart core input channel");
     assert!(!client.ready());
-}
-
-// oracle: spec MS-RDPECI §3.2.3
-// oracle: spec MS-RDPECI §3.2.5.3
-#[test]
-fn server_answers_init_request_then_delivers_input() {
-    let handler = RecordingHandler::default();
-    let mut server = CoreInputServer::new(Box::new(handler.clone()));
-    assert!(server.start(CHANNEL_ID).expect("start core input channel").is_empty());
-
-    // Input before the version exchange is outside the running phase of section 1.3.
-    server.process(CHANNEL_ID, &INPUT).expect("ignore early input");
-    assert!(handler.0.lock().unwrap().is_empty());
-
-    let responses = server.process(CHANNEL_ID, &INIT_REQUEST).expect("process init request");
-    let encoded = responses
-        .iter()
-        .map(|message| encode_vec(message.as_ref()).expect("encode DVC message"))
-        .collect::<Vec<_>>();
-    assert_eq!(encoded, [INIT_RESPONSE_CAPTURE[..16].to_vec()]);
-
-    server.process(CHANNEL_ID, &INPUT).expect("process input");
-    assert_eq!(*handler.0.lock().unwrap(), spec_input_events());
-}
-
-// oracle: spec MS-RDPECI §3.2.5.1
-// The server answers only a valid request, and §2.2.3.1 defines version 1.0 as the only protocol version.
-#[test]
-fn server_does_not_answer_a_request_without_version_1_0() {
-    let mut server = CoreInputServer::new(Box::new(RecordingHandler::default()));
-    server.start(CHANNEL_ID).expect("start core input channel");
-    let mut request = INIT_REQUEST;
-    request[5] = 0x02; // protocolVersionMin: 0x0200
-    request[7] = 0x02; // protocolVersionMax: 0x0200
-
-    assert!(
-        server
-            .process(CHANNEL_ID, &request)
-            .expect("process init request")
-            .is_empty()
-    );
 }

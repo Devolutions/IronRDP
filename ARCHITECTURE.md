@@ -161,7 +161,7 @@ The client tracks the focused remote edit control and inserts text committed by 
 
 #### [`crates/ironrdp-rdpeci`](./crates/ironrdp-rdpeci)
 
-Core input dynamic channel client and server processors and PDU codecs implemented as described in MS-RDPECI.
+Core input dynamic channel client processor and PDU codecs implemented as described in MS-RDPECI.
 Input events reuse the fast-path input event type from `ironrdp-pdu`, whose wire format the channel shares.
 
 #### [`crates/ironrdp-w365`](./crates/ironrdp-w365)

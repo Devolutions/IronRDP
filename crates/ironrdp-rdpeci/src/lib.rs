@@ -11,4 +11,3 @@ pub const CHANNEL_NAME: &str = "Microsoft::Windows::RDS::CoreInput";
 
 pub mod client;
 pub mod pdu;
-pub mod server;
