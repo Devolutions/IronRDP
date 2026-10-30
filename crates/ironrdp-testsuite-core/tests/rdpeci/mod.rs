@@ -285,8 +285,8 @@ fn server_answers_init_request_then_delivers_input() {
     assert_eq!(*handler.0.lock().unwrap(), spec_input_events());
 }
 
-// oracle: spec MS-RDPECI §2.2.3.2
-// Version 1.0 is the only version a server can select, so a client range without it gets no response.
+// oracle: spec MS-RDPECI §3.2.5.1
+// The server answers only a valid request, and §2.2.3.1 defines version 1.0 as the only protocol version.
 #[test]
 fn server_does_not_answer_a_request_without_version_1_0() {
     let mut server = CoreInputServer::new(Box::new(RecordingHandler::default()));

@@ -204,6 +204,7 @@ fn connector_omits_core_input_when_disabled() {
     assert!(!connector_registers_core_input(false));
 }
 
+// oracle: spec MS-RDPECI §1.3
 // oracle: spec MS-RDPBCGR §2.2.8.1.2
 #[test]
 fn input_uses_fast_path_without_the_core_input_channel() {

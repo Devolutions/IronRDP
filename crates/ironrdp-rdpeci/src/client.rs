@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use ironrdp_core::{decode, impl_as_any};
+use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use ironrdp_pdu::{PduResult, encode_err, pdu_other_err};
@@ -12,7 +12,7 @@ use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, warn};
 
 use crate::CHANNEL_NAME;
-use crate::pdu::{CoreInputPdu, InitRequestPdu, InputPdu, ProtocolVersion};
+use crate::pdu::{CoreInputPdu, InitRequestPdu, InputPdu, ProtocolVersion, decode_received};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -24,8 +24,11 @@ enum State {
 
 /// Client processor for `Microsoft::Windows::RDS::CoreInput`.
 ///
-/// The processor sends the init request when the channel opens and becomes ready once the server selects version 1.0.
+/// The processor sends the init request when the channel opens and becomes ready once the server selects version 1.0,
+/// per [MS-RDPECI] section 3.3.3 "Initialization".
 /// Until then, and when the channel is absent, the caller keeps sending input as fast-path input.
+///
+/// [MS-RDPECI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeci/
 #[derive(Debug)]
 pub struct CoreInputClient {
     state: State,
@@ -82,7 +85,7 @@ impl DvcProcessor for CoreInputClient {
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         self.state = State::WaitingInitResponse;
         debug!(channel_id, "Core input channel started");
-        // MS-RDPECI 3.3.3: the client sends the init request as soon as the channel opens.
+        // [MS-RDPECI] section 3.3.3: the client sends the init request as soon as the channel opens.
         Ok(vec![Box::new(CoreInputPdu::InitRequest(InitRequestPdu {
             protocol_version_min: ProtocolVersion::V1_0,
             protocol_version_max: ProtocolVersion::V1_0,
@@ -90,13 +93,8 @@ impl DvcProcessor for CoreInputClient {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        // MS-RDPECI 3.1.5.1: unexpected messages SHOULD be ignored.
-        let pdu: CoreInputPdu = match decode(payload) {
-            Ok(pdu) => pdu,
-            Err(error) => {
-                warn!(%error, "Ignoring malformed core input PDU");
-                return Ok(Vec::new());
-            }
+        let Some(pdu) = decode_received(payload) else {
+            return Ok(Vec::new());
         };
         match pdu {
             CoreInputPdu::InitResponse(response) if self.state == State::WaitingInitResponse => {

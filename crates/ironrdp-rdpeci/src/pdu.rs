@@ -5,10 +5,11 @@
 use alloc::vec::Vec;
 
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
+    Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, decode, ensure_size, invalid_field_err,
 };
 use ironrdp_dvc::DvcEncode;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
+use tracing::warn;
 
 const SIGNATURE: u8 = 0x03;
 
@@ -226,3 +227,14 @@ impl<'de> Decode<'de> for CoreInputPdu {
 }
 
 impl DvcEncode for CoreInputPdu {}
+
+/// Decodes a received core input message, returning `None` for a malformed one.
+///
+/// Malformed messages are logged and ignored, per [MS-RDPECI] section 3.1.5.1 "Processing a Core Input Message".
+///
+/// [MS-RDPECI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeci/
+pub(crate) fn decode_received(payload: &[u8]) -> Option<CoreInputPdu> {
+    decode(payload)
+        .inspect_err(|error| warn!(%error, "Ignoring malformed core input PDU"))
+        .ok()
+}

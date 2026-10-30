@@ -4296,6 +4296,7 @@ fn process_input(
         .get_dvc::<CoreInputClient>()
         .filter(|dvc| dvc.processor().ready())
         .and_then(|dvc| {
+            // UNTESTED: the fallback assumes a server that selected core input still accepts fast-path input.
             dvc.processor()
                 .encode_input(dvc.channel_id(), events)
                 .and_then(|messages| DvcMessageBatch::try_new(dvc.channel_id(), messages))

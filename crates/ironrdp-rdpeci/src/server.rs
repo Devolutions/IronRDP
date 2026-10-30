@@ -4,14 +4,14 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use ironrdp_core::{decode, impl_as_any};
+use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_pdu::PduResult;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
 use tracing::{debug, warn};
 
 use crate::CHANNEL_NAME;
-use crate::pdu::{CoreInputPdu, InitResponsePdu, ProtocolVersion};
+use crate::pdu::{CoreInputPdu, InitResponsePdu, ProtocolVersion, decode_received};
 
 /// Receives the input events a client sends on the core input channel.
 pub trait CoreInputHandler: Send {
@@ -21,8 +21,11 @@ pub trait CoreInputHandler: Send {
 
 /// Server processor for `Microsoft::Windows::RDS::CoreInput`.
 ///
-/// The processor answers an init request whose version range includes 1.0 and then passes input events to its handler.
+/// The processor answers an init request whose version range includes 1.0 and then passes input events to its handler,
+/// per [MS-RDPECI] section 3.2.5 "Message Processing Events and Sequencing Rules".
 /// Input received before that exchange is ignored.
+///
+/// [MS-RDPECI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeci/
 pub struct CoreInputServer {
     handler: Box<dyn CoreInputHandler>,
     ready: bool,
@@ -52,18 +55,13 @@ impl DvcProcessor for CoreInputServer {
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         self.ready = false;
         debug!(channel_id, "Core input channel started");
-        // MS-RDPECI 3.3.3: the client opens the exchange.
+        // [MS-RDPECI] section 3.3.3: the client opens the exchange.
         Ok(Vec::new())
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        // MS-RDPECI 3.1.5.1: unexpected messages SHOULD be ignored.
-        let pdu: CoreInputPdu = match decode(payload) {
-            Ok(pdu) => pdu,
-            Err(error) => {
-                warn!(%error, "Ignoring malformed core input PDU");
-                return Ok(Vec::new());
-            }
+        let Some(pdu) = decode_received(payload) else {
+            return Ok(Vec::new());
         };
         match pdu {
             CoreInputPdu::InitRequest(request) => {
