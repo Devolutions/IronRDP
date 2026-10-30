@@ -201,9 +201,9 @@ pub enum PostConnectionAction {
 /// Per-connection metadata captured during connection setup, made available to
 /// [`ConnectionHandler::on_connection_info`] once the connection is established.
 ///
-/// These are GCC Client Core Data fields (MS-RDPBCGR 2.2.1.3.2) and the Client
-/// Monitor Data block (2.2.1.3.6) that the acceptor captures but has no use for
-/// itself; embedders that want to act on them (for example, selecting a
+/// These are Client Info, GCC Client Core Data, Extended Info, and Client
+/// Monitor Data fields that the acceptor captures but has no use for itself;
+/// embedders that want to act on them (for example, selecting a
 /// server-side keyboard layout matching the client, or presenting as many
 /// outputs as the client has monitors) can do so here without reaching into the
 /// acceptor's internals.
@@ -214,12 +214,18 @@ pub struct ConnectionInfo {
     pub keyboard_layout: u32,
     /// See [`ironrdp_acceptor::AcceptorResult::keyboard_type`].
     pub keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_subtype`].
+    pub keyboard_subtype: u32,
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_functional_keys_count`].
+    pub keyboard_functional_keys_count: u32,
     /// See [`ironrdp_acceptor::AcceptorResult::ime_file_name`].
     pub ime_file_name: String,
     /// See [`ironrdp_acceptor::AcceptorResult::desktop_scale_factor`].
     pub desktop_scale_factor: Option<u32>,
     /// See [`ironrdp_acceptor::AcceptorResult::device_scale_factor`].
     pub device_scale_factor: Option<u32>,
+    /// See [`ironrdp_acceptor::AcceptorResult::performance_flags`].
+    pub performance_flags: rdp::client_info::PerformanceFlags,
     /// The client came back with an auto-reconnect cookie the server
     /// verified, in place of its credentials.
     pub auto_reconnect: bool,
@@ -259,9 +265,12 @@ impl ConnectionInfo {
         Self {
             keyboard_layout,
             keyboard_type,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 0,
             ime_file_name,
             desktop_scale_factor: None,
             device_scale_factor: None,
+            performance_flags: rdp::client_info::PerformanceFlags::empty(),
             auto_reconnect: false,
             client_monitors: Vec::new(),
             routing_token: None,
@@ -276,9 +285,8 @@ impl ConnectionInfo {
 /// Hooks for connection lifecycle events.
 ///
 /// Implement this trait to add pre-accept filtering (rate limiting,
-/// IP allowlists), post-disconnect logic (cleanup, session validity
-/// checks, metrics), and to observe per-connection metadata once a
-/// connection is established.
+/// IP allowlists), observe client settings before capability exchange,
+/// inspect established connection metadata, and run post-disconnect logic.
 ///
 /// All methods have default implementations that accept all connections
 /// and continue unconditionally.
@@ -301,6 +309,47 @@ pub trait ConnectionHandler: Send {
     fn on_accept(&mut self, peer: SocketAddr) -> bool {
         let _ = peer;
         true
+    }
+
+    /// Observes Client Info before capability exchange.
+    ///
+    /// These flags do not authenticate the client.
+    /// Return an error to stop connection setup.
+    fn on_client_info(&mut self, flags: rdp::client_info::ClientInfoFlags) -> ServerResult<()> {
+        let _ = flags;
+        Ok(())
+    }
+
+    /// Observes Client Info, Client Core Data, and Extended Info settings before capability exchange.
+    ///
+    /// `desktop_size` is the server's initial capability-exchange size, not the size later requested in Client Confirm Active.
+    /// Return an error to stop connection setup.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards Client Info and GCC/Extended Client Info settings together"
+    )]
+    fn on_client_session_config(
+        &mut self,
+        flags: rdp::client_info::ClientInfoFlags,
+        performance_flags: rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> ServerResult<()> {
+        let _ = (
+            flags,
+            performance_flags,
+            keyboard_layout,
+            keyboard_type,
+            keyboard_subtype,
+            keyboard_functional_keys_count,
+            ime_file_name,
+            desktop_size,
+        );
+        Ok(())
     }
 
     /// Called once per connection, after credential and auto-reconnect
@@ -5599,9 +5648,12 @@ impl RdpServer {
                 h.on_connection_info(&ConnectionInfo {
                     keyboard_layout: result.keyboard_layout,
                     keyboard_type: result.keyboard_type,
+                    keyboard_subtype: result.keyboard_subtype,
+                    keyboard_functional_keys_count: result.keyboard_functional_keys_count,
                     ime_file_name: result.ime_file_name.clone(),
                     desktop_scale_factor: result.desktop_scale_factor,
                     device_scale_factor: result.device_scale_factor,
+                    performance_flags: result.performance_flags,
                     auto_reconnect: is_auto_reconnect,
                     client_monitors: result.client_monitors,
                     routing_token: result.routing_token.clone(),
@@ -6787,6 +6839,43 @@ pub async fn dispatch_static_channel_events(
 
 #[async_trait::async_trait(?Send)]
 impl ConnectionSetupHandler for RdpServer {
+    async fn handle_client_info(&mut self, flags: rdp::client_info::ClientInfoFlags) -> Result<(), ConnectorError> {
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_client_info(flags)
+        }) {
+            result.map_err(|error| ConnectorError::custom("client info handler failed", error))?;
+        }
+        Ok(())
+    }
+
+    async fn handle_client_session_config(
+        &mut self,
+        flags: rdp::client_info::ClientInfoFlags,
+        performance_flags: rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> Result<(), ConnectorError> {
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_client_session_config(
+                flags,
+                performance_flags,
+                keyboard_layout,
+                keyboard_type,
+                keyboard_subtype,
+                keyboard_functional_keys_count,
+                ime_file_name,
+                desktop_size,
+            )
+        }) {
+            result.map_err(|error| ConnectorError::custom("client session config handler failed", error))?;
+        }
+        Ok(())
+    }
+
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> Result<(), ConnectorError> {
         self.prepare_authenticated_connection(credentials).await
     }

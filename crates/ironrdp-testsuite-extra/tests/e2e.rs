@@ -18,7 +18,7 @@ use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
 use ironrdp::pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::pdu::rdp::capability_sets::{InputFlags, MajorPlatformType};
-use ironrdp::pdu::rdp::client_info::CompressionType as PduCompressionType;
+use ironrdp::pdu::rdp::client_info::{ClientInfoFlags, CompressionType as PduCompressionType, PerformanceFlags};
 use ironrdp::pdu::rdp::headers::CompressionFlags;
 use ironrdp::pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
 use ironrdp::pdu::rdp::session_info::ServerAutoReconnect;
@@ -28,8 +28,8 @@ use ironrdp::rdpsnd::pdu::AudioFormat;
 use ironrdp::rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServer, RdpsndServerHandler};
 use ironrdp::server::{
     self, Acceptor, DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer,
-    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory,
-    TlsIdentityCtx,
+    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerErrorExt as _, ServerEvent, ServerResult,
+    StaticChannelFactory, TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
@@ -3404,6 +3404,219 @@ impl server::ConnectionHandler for ScaleRecorder {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClientSessionConfig {
+    flags: ClientInfoFlags,
+    performance_flags: PerformanceFlags,
+    keyboard_layout: u32,
+    keyboard_type: gcc::KeyboardType,
+    keyboard_subtype: u32,
+    keyboard_functional_keys_count: u32,
+    ime_file_name: String,
+    desktop_size: Option<(u16, u16)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionSetupEvent {
+    ClientInfo(ClientInfoFlags),
+    ClientSessionConfig(ClientSessionConfig),
+    ConnectionInfo(ClientSessionConfig),
+}
+
+struct SessionConfigRecorder(Arc<StdMutex<Vec<SessionSetupEvent>>>);
+
+impl server::ConnectionHandler for SessionConfigRecorder {
+    fn on_client_info(&mut self, flags: ClientInfoFlags) -> ServerResult<()> {
+        self.0.lock().unwrap().push(SessionSetupEvent::ClientInfo(flags));
+        Ok(())
+    }
+
+    fn on_client_session_config(
+        &mut self,
+        flags: ClientInfoFlags,
+        performance_flags: PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> ServerResult<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(SessionSetupEvent::ClientSessionConfig(ClientSessionConfig {
+                flags,
+                performance_flags,
+                keyboard_layout,
+                keyboard_type,
+                keyboard_subtype,
+                keyboard_functional_keys_count,
+                ime_file_name: ime_file_name.to_owned(),
+                desktop_size: Some((desktop_size.width, desktop_size.height)),
+            }));
+        Ok(())
+    }
+
+    fn on_connection_info(&mut self, info: &server::ConnectionInfo) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(SessionSetupEvent::ConnectionInfo(ClientSessionConfig {
+                flags: info.client_info_flags,
+                performance_flags: info.performance_flags,
+                keyboard_layout: info.keyboard_layout,
+                keyboard_type: info.keyboard_type,
+                keyboard_subtype: info.keyboard_subtype,
+                keyboard_functional_keys_count: info.keyboard_functional_keys_count,
+                ime_file_name: info.ime_file_name.clone(),
+                desktop_size: None,
+            }));
+    }
+}
+
+/// A real client sends configuration before capability exchange, then the server reports it in connection metadata.
+async fn client_session_config_reported() -> Vec<SessionSetupEvent> {
+    let seen = Arc::new(StdMutex::new(Vec::new()));
+    let (mut server, _display_tx) = handler_server(
+        Box::new(SessionConfigRecorder(Arc::clone(&seen))),
+        server::ConnectionPolicy::Queue,
+    );
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+
+            let server_addr = local_addr_of(&ev).await;
+            let (client, _) = connect_client(server_addr, |client_addr| {
+                let mut config = default_client_config();
+                config.desktop_size = DesktopSize {
+                    width: 1280,
+                    height: 720,
+                };
+                config.enable_audio_playback = false;
+                config.keyboard_layout = 0x0409;
+                config.keyboard_type = gcc::KeyboardType::JAPANESE;
+                config.keyboard_subtype = 0x1234_5678;
+                config.keyboard_functional_keys_count = 13;
+                config.ime_file_name = "test-ime.dll".to_owned();
+                config.performance_flags = PerformanceFlags::DISABLE_WALLPAPER | PerformanceFlags::DISABLE_THEMING;
+                connector::ClientConnector::new(config, client_addr)
+            })
+            .await;
+
+            assert!(
+                poll_until(|| seen.lock().unwrap().len() == 3).await,
+                "client session callbacks did not complete"
+            );
+            drop(client);
+            server_task.abort();
+            seen.lock().unwrap().clone()
+        })
+        .await
+}
+
+#[tokio::test]
+async fn server_forwards_client_session_configuration_before_connection_info() {
+    let events = Box::pin(client_session_config_reported()).await;
+    // oracle: mutant omitted or reordered setup callbacks before connection info
+    assert_eq!(events.len(), 3);
+
+    let SessionSetupEvent::ClientInfo(flags) = &events[0] else {
+        panic!("Client Info callback must run first");
+    };
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1.1 (Client Info PDU flags)
+    assert!(flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
+
+    // oracle: spec MS-RDPBCGR §§ 2.2.1.3.2 and 2.2.1.11.1.1.1 (Client Core Data and Extended Info fields)
+    let expected = ClientSessionConfig {
+        flags: *flags,
+        performance_flags: PerformanceFlags::DISABLE_WALLPAPER | PerformanceFlags::DISABLE_THEMING,
+        keyboard_layout: 0x0409,
+        keyboard_type: gcc::KeyboardType::JAPANESE,
+        keyboard_subtype: 0x1234_5678,
+        keyboard_functional_keys_count: 13,
+        ime_file_name: "test-ime.dll".to_owned(),
+        desktop_size: Some((DESKTOP_WIDTH, DESKTOP_HEIGHT)),
+    };
+    assert_eq!(events[1], SessionSetupEvent::ClientSessionConfig(expected.clone()));
+
+    let expected_connection_info = ClientSessionConfig {
+        desktop_size: None,
+        ..expected
+    };
+    assert_eq!(events[2], SessionSetupEvent::ConnectionInfo(expected_connection_info));
+}
+
+struct RejectSetupCallbacks;
+
+impl server::ConnectionHandler for RejectSetupCallbacks {
+    fn on_client_info(&mut self, _flags: ClientInfoFlags) -> ServerResult<()> {
+        Err(server::ServerError::reason("test client info", "rejected"))
+    }
+
+    fn on_client_session_config(
+        &mut self,
+        _flags: ClientInfoFlags,
+        _performance_flags: PerformanceFlags,
+        _keyboard_layout: u32,
+        _keyboard_type: gcc::KeyboardType,
+        _keyboard_subtype: u32,
+        _keyboard_functional_keys_count: u32,
+        _ime_file_name: &str,
+        _desktop_size: DesktopSize,
+    ) -> ServerResult<()> {
+        Err(server::ServerError::reason("test session config", "rejected"))
+    }
+}
+
+fn server_with_setup_handler(handler: Box<dyn server::ConnectionHandler>) -> RdpServer {
+    RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .with_connection_handler(Some(handler))
+        .build()
+}
+
+// oracle: mutant early Client Info callback errors must not be discarded
+#[tokio::test]
+async fn client_info_handler_errors_reach_connection_setup() {
+    let mut server = server_with_setup_handler(Box::new(RejectSetupCallbacks));
+    let error = ironrdp_acceptor::ConnectionSetupHandler::handle_client_info(&mut server, ClientInfoFlags::empty())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("client info handler failed"));
+}
+
+// oracle: mutant session configuration callback errors must not be discarded
+#[tokio::test]
+async fn client_session_config_handler_errors_reach_connection_setup() {
+    let mut server = server_with_setup_handler(Box::new(RejectSetupCallbacks));
+    let error = ironrdp_acceptor::ConnectionSetupHandler::handle_client_session_config(
+        &mut server,
+        ClientInfoFlags::empty(),
+        PerformanceFlags::empty(),
+        0,
+        gcc::KeyboardType::IBM_ENHANCED,
+        0,
+        0,
+        "",
+        DesktopSize {
+            width: DESKTOP_WIDTH,
+            height: DESKTOP_HEIGHT,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("client session config handler failed"));
+}
+
 /// Connect a real client announcing `desktop_scale_factor` (and
 /// `device_scale_factor`, when given) and report the `(desktop, device)` scale
 /// factors `on_connection_info` received.
@@ -3463,6 +3676,15 @@ fn connection_info_scale_factors_can_be_set_downstream() {
     assert_eq!((info.desktop_scale_factor, info.device_scale_factor), (None, None));
     info.desktop_scale_factor = Some(200);
     info.device_scale_factor = Some(100);
+}
+
+// oracle: mutant new ConnectionInfo fields retain neutral defaults
+#[test]
+fn connection_info_new_defaults_client_session_fields() {
+    let info = server::ConnectionInfo::new(0, gcc::KeyboardType::IBM_ENHANCED, String::new());
+    assert_eq!(info.keyboard_subtype, 0);
+    assert_eq!(info.keyboard_functional_keys_count, 0);
+    assert_eq!(info.performance_flags, PerformanceFlags::empty());
 }
 
 // oracle: spec MS-RDPBCGR §2.2.1.3.2 (values outside 100..=500 / 100|140|180 MUST be ignored)
