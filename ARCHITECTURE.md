@@ -141,7 +141,7 @@ The crate forwards only location data supplied by its caller and performs no loc
 
 #### [`crates/ironrdp-rdpet`](./crates/ironrdp-rdpet)
 
-Telemetry dynamic channel client, server, and PDU codec implemented as described in MS-RDPET.
+Telemetry dynamic channel client and PDU codec implemented as described in MS-RDPET.
 The crate sends only the connection milestones measured by its caller and reads no clock.
 
 #### [`crates/ironrdp-rdpadrv`](./crates/ironrdp-rdpadrv)

@@ -4,11 +4,10 @@
 
 extern crate alloc;
 
-/// Dynamic virtual channel name from [MS-RDPET] section 2.1.
+/// Dynamic virtual channel name from [MS-RDPET 2.1].
 ///
-/// [MS-RDPET]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/
+/// [MS-RDPET 2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/245d4ee3-df26-40a3-85b7-c6ffacfef386
 pub const CHANNEL_NAME: &str = "Microsoft::Windows::RDS::Telemetry";
 
 pub mod client;
 pub mod pdu;
-pub mod server;

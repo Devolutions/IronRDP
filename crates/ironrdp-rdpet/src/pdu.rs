@@ -1,6 +1,6 @@
 //! Telemetry virtual channel extension PDUs [MS-RDPET][1] implementation.
 //!
-//! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/
+//! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/f2fd580b-75bf-42aa-9952-ae8d9ac8f658
 
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, ensure_fixed_part_size, invalid_field_err,
@@ -11,7 +11,7 @@ use ironrdp_dvc::DvcEncode;
 ///
 /// Connection milestones, each in milliseconds since the client initiated the connection.
 ///
-/// [2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/
+/// [2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/47ee7bca-f270-40ac-bde2-8ceed6093624
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TelemetryPdu {
     /// When a credentials prompt was shown, or zero if none was.
@@ -36,8 +36,16 @@ impl TelemetryPdu {
         + 4 /* GraphicsChannelOpenedMillis */
         + 4 /* FirstGraphicsReceivedMillis */;
 
-    /// The PDU length the Length field must hold.
-    const LENGTH: u8 = 0x12;
+    /// The Length field value: the PDU's total size.
+    #[expect(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        reason = "asserted to fit the one-byte field"
+    )]
+    const LENGTH: u8 = {
+        assert!(Self::FIXED_PART_SIZE <= u8::MAX as usize);
+        Self::FIXED_PART_SIZE as u8
+    };
 }
 
 impl Encode for TelemetryPdu {

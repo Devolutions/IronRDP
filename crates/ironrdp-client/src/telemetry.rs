@@ -1,13 +1,14 @@
 //! Connection telemetry ([MS-RDPET]).
 //!
 //! The report is sent once per connection, after both graphics pipeline milestones are observed.
-//! Capability exchange precedes any other graphics pipeline message ([MS-RDPEGFX] section 1.7),
+//! Capability exchange precedes any other graphics pipeline message ([MS-RDPEGFX 1.7]),
 //! so the capabilities confirmation, which makes the pipeline active, marks the first graphics message.
-//! A connection without the graphics pipeline sends no report, which the protocol allows ([MS-RDPET] section 3.2.5.1).
+//! A connection without the graphics pipeline sends no report, which the protocol allows ([MS-RDPET 3.2.5.1]).
 //! The client shows no credentials prompt, so the credentials milestones are zero.
 //!
-//! [MS-RDPET]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/
-//! [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/
+//! [MS-RDPET]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/f2fd580b-75bf-42aa-9952-ae8d9ac8f658
+//! [MS-RDPET 3.2.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/e5270011-b8e2-40b3-92e1-c7460af45edc
+//! [MS-RDPEGFX 1.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/31c6e2b1-335b-4a75-9454-bb2309958c21
 
 use std::time::Instant;
 
@@ -72,11 +73,7 @@ impl ConnectionTelemetry {
     /// carries the report: it would otherwise precede that iteration's DRDYNVC Create Response, and the server would drop it.
     pub fn step(&mut self, observation: Observation, now: Instant, can_send: bool) -> Option<TelemetryPdu> {
         let report = if can_send { self.take_report() } else { None };
-        self.observe(observation, now);
-        report
-    }
 
-    fn observe(&mut self, observation: Observation, now: Instant) {
         if observation.graphics_channel_open {
             self.graphics_channel_opened.get_or_insert(now);
         }
@@ -84,13 +81,15 @@ impl ConnectionTelemetry {
             self.first_graphics_received.get_or_insert(now);
         }
         self.telemetry_channel_open = observation.telemetry_channel_open;
+
+        report
     }
 
     /// Returns the report once both milestones are recorded and the telemetry channel is open.
     ///
-    /// At most one report is returned per connection ([MS-RDPET] section 1.3).
+    /// At most one report is returned per connection ([MS-RDPET 1.3]).
     ///
-    /// [MS-RDPET]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/
+    /// [MS-RDPET 1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/39bb54fd-3221-477c-9955-6e603001ef63
     fn take_report(&mut self) -> Option<TelemetryPdu> {
         if self.done || !self.telemetry_channel_open {
             return None;

@@ -5233,6 +5233,7 @@ async fn active_session(
         #[cfg(feature = "telemetry")]
         {
             // The report waits for an iteration without another dynamic channel batch.
+            // UNTESTED: no test drives the session loop; `ConnectionTelemetry::step` tests cover `can_send`.
             let can_send = iteration
                 .dvc_batch
                 .as_ref()

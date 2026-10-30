@@ -15,10 +15,10 @@ use crate::pdu::TelemetryPdu;
 
 /// Client processor for `Microsoft::Windows::RDS::Telemetry`.
 ///
-/// The channel carries a single client-to-server report per connection ([MS-RDPET] section 1.3).
+/// The channel carries a single client-to-server report per connection ([MS-RDPET 1.3]).
 /// The caller measures the milestones and sends the report with [`Self::send_report`] once the channel is open.
 ///
-/// [MS-RDPET]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/
+/// [MS-RDPET 1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/39bb54fd-3221-477c-9955-6e603001ef63
 #[derive(Debug, Default)]
 pub struct TelemetryClient {
     channel_id: Option<u32>,
@@ -31,9 +31,9 @@ impl TelemetryClient {
 
     /// Encodes `report` for the open channel.
     ///
-    /// Sending the report is optional ([MS-RDPET] section 3.2.5.1).
+    /// Sending the report is optional ([MS-RDPET 3.2.5.1]).
     ///
-    /// [MS-RDPET]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/
+    /// [MS-RDPET 3.2.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/e5270011-b8e2-40b3-92e1-c7460af45edc
     pub fn send_report(&self, report: TelemetryPdu) -> PduResult<Vec<SvcMessage>> {
         let channel_id = self
             .channel_id
