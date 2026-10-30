@@ -1382,6 +1382,8 @@ impl RdpClient {
                 .then_some(auto_reconnect_cookie.as_ref())
                 .flatten();
             let used_auto_reconnect_cookie = reconnect_cookie.is_some();
+            #[cfg(feature = "telemetry")]
+            let connection_started = Instant::now();
             let (connection_outcome, framed, udp_tunnel) = match &self.config.transport {
                 Transport::Direct => match Box::pin(cancelable_operation(
                     connect_direct(
@@ -1649,6 +1651,8 @@ impl RdpClient {
                 &mut auto_reconnect_cookie,
                 &mut reconnect_attempt,
                 &self.input_event_sender.session_status,
+                #[cfg(feature = "telemetry")]
+                connection_started,
             )
             .await;
             // An iteration that ends the session, by terminating or failing, exits before the session loop delivers
@@ -2459,6 +2463,11 @@ fn build_connector(
     #[cfg(feature = "location")]
     if config.channels.location {
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
+    }
+
+    #[cfg(feature = "telemetry")]
+    if config.channels.telemetry {
+        drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpet::client::TelemetryClient::new());
     }
 
     #[cfg(feature = "text-input")]
@@ -4466,6 +4475,7 @@ async fn active_session(
     auto_reconnect_cookie: &mut Option<ServerAutoReconnect>,
     reconnect_attempt: &mut u32,
     session_status: &SessionStatus,
+    #[cfg(feature = "telemetry")] connection_started: Instant,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
@@ -4541,6 +4551,8 @@ async fn active_session(
     let _ = clipboard_event_receiver;
 
     let mut rdpei_input_state = None;
+    #[cfg(feature = "telemetry")]
+    let mut connection_telemetry = crate::telemetry::ConnectionTelemetry::new(connection_started);
 
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
@@ -5221,6 +5233,21 @@ async fn active_session(
                 }
             }
         };
+
+        #[cfg(feature = "telemetry")]
+        {
+            // The report waits for an iteration without another dynamic channel batch.
+            // UNTESTED: no test drives the session loop; `ConnectionTelemetry::step` tests cover `can_send`.
+            let can_send = iteration
+                .dvc_batch
+                .as_ref()
+                .is_none_or(|batch| batch.messages().is_empty());
+            if let Some(batch) = connection_telemetry.report(&active_stage, can_send) {
+                iteration.dvc_batch = Some(batch);
+                // A tunneled request's reply route does not apply to the telemetry report.
+                iteration.reply_tunnel = None;
+            }
+        }
 
         #[cfg(feature = "video")]
         if crate::video::present(

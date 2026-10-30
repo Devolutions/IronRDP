@@ -438,6 +438,12 @@ pub struct ChannelConfig {
     #[cfg(feature = "location")]
     pub location: bool,
 
+    /// Enable the MS-RDPET telemetry dynamic virtual channel, which reports connection milestones to the server.
+    ///
+    /// Off by default, like the location channel: reporting to the server is opt-in.
+    #[cfg(feature = "telemetry")]
+    pub telemetry: bool,
+
     /// Enable the MS-RDPETXT text input dynamic virtual channels.
     ///
     /// Off by default: the client hosts no input method, so it only tracks the focused remote
@@ -551,6 +557,8 @@ impl Default for ChannelConfig {
             webauthn: true,
             #[cfg(feature = "location")]
             location: false,
+            #[cfg(feature = "telemetry")]
+            telemetry: false,
             #[cfg(feature = "text-input")]
             text_input: false,
             #[cfg(feature = "multipoint")]
@@ -1975,6 +1983,14 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_location_redirection(mut self, enabled: bool) -> Self {
         self.channels.location = enabled;
+        self
+    }
+
+    /// Enable or disable the connection telemetry report.
+    #[cfg(feature = "telemetry")]
+    #[must_use]
+    pub fn with_telemetry(mut self, enabled: bool) -> Self {
+        self.channels.telemetry = enabled;
         self
     }
 

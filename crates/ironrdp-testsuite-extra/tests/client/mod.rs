@@ -8,4 +8,5 @@ mod multipoint;
 mod output_channel;
 mod rail;
 mod remote_guard;
+mod telemetry;
 mod viewer_rail;
