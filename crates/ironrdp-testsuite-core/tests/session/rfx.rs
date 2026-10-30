@@ -3,6 +3,7 @@ use ironrdp_pdu::ReadCursor;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::rfx::DecodingContext;
+use rstest::rstest;
 
 pub(crate) const IMAGE_WIDTH: usize = 64;
 pub(crate) const IMAGE_HEIGHT: usize = 64;
@@ -10,26 +11,9 @@ pub(crate) const FORMAT_SIZE: usize = 4;
 
 #[test]
 fn decode_decodes_valid_sequence_of_messages() {
-    let destination = InclusiveRectangle {
-        left: 0,
-        top: 0,
-        right: u16::try_from(IMAGE_WIDTH).unwrap() - 1,
-        bottom: u16::try_from(IMAGE_HEIGHT).unwrap() - 1,
-    };
-    let data = &mut ReadCursor::new(ENCODED_MESSAGES.as_ref());
-    let expected = DECODED_IMAGE.as_ref();
+    let image = decode_messages(ENCODED_MESSAGES.as_ref());
 
-    let mut image = DecodedImage::new(
-        PixelFormat::BgrX32,
-        IMAGE_WIDTH.try_into().unwrap(),
-        IMAGE_HEIGHT.try_into().unwrap(),
-    );
-
-    let mut handler = DecodingContext::default();
-
-    handler.decode(&mut image, &destination, data).unwrap();
-
-    assert_eq!(expected, image.data());
+    assert_eq!(DECODED_IMAGE.as_ref(), image.data());
 }
 
 /// MS-RDPRFX 4.2.2, 4.2.3 and 4.2.4.1: header, frame and tileset sample messages.
@@ -1063,3 +1047,196 @@ pub(crate) const DECODED_IMAGE: [u8; IMAGE_WIDTH * IMAGE_HEIGHT * FORMAT_SIZE] =
     0xFF, 0xF6, 0x9D, 0x13, 0xFF, 0xF6, 0x9C, 0x12, 0xFF, 0xF5, 0x9A, 0x11, 0xFF, 0xF5, 0x9A, 0x11, 0xFF, 0xF5, 0x9A,
     0x11, 0xFF, 0xF5, 0x9A, 0x11, 0xFF,
 ];
+
+/// Nothing reaches the image from a tile placed past the u16 range, from an empty rectangle,
+/// or from a rectangle outside the channel.
+#[rstest]
+#[case::tile_x(Edit::TileX)]
+#[case::tile_y(Edit::TileY)]
+#[case::region_width(Edit::RegionWidth)]
+#[case::region_height(Edit::RegionHeight)]
+#[case::region_x(Edit::RegionX)]
+#[case::region_y(Edit::RegionY)]
+#[case::channel_width(Edit::ChannelWidth)]
+#[case::channel_height(Edit::ChannelHeight)]
+fn decode_draws_nothing_for_unreachable_geometry(#[case] edit: Edit) {
+    use ironrdp_pdu::codecs::rfx::{Block, CodecChannel};
+
+    let encoded = {
+        use ironrdp_pdu::Decode as _;
+
+        let mut src = ReadCursor::new(ENCODED_MESSAGES.as_ref());
+        let mut encoded = Vec::new();
+        while !src.is_empty() {
+            let mut block = Block::decode(&mut src).unwrap();
+            match (edit, &mut block) {
+                // 1024 * 64 does not fit in u16.
+                (Edit::TileX, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].x = 1024,
+                (Edit::TileY, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].y = 1024,
+                (Edit::RegionWidth, Block::CodecChannel(CodecChannel::Region(region))) => {
+                    region.rectangles[0].width = 0
+                }
+                (Edit::RegionHeight, Block::CodecChannel(CodecChannel::Region(region))) => {
+                    region.rectangles[0].height = 0
+                }
+                // The channel is 64x64.
+                (Edit::RegionX, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].x = 100,
+                (Edit::RegionY, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].y = 100,
+                (Edit::ChannelWidth, Block::Channels(channels)) => channels.0[0].width = 0,
+                (Edit::ChannelHeight, Block::Channels(channels)) => channels.0[0].height = 0,
+                _ => {}
+            }
+            encoded.extend(ironrdp_core::encode_vec(&block).unwrap());
+        }
+        encoded
+    };
+
+    let image = decode_messages(&encoded);
+
+    assert!(image.data().iter().all(|&byte| byte == 0));
+}
+
+#[derive(Clone, Copy)]
+enum Edit {
+    TileX,
+    TileY,
+    RegionWidth,
+    RegionHeight,
+    RegionX,
+    RegionY,
+    ChannelWidth,
+    ChannelHeight,
+}
+
+/// Decodes `messages` into a fresh image covering the whole 64x64 channel.
+fn decode_messages(messages: &[u8]) -> DecodedImage {
+    let destination = InclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: u16::try_from(IMAGE_WIDTH).unwrap() - 1,
+        bottom: u16::try_from(IMAGE_HEIGHT).unwrap() - 1,
+    };
+
+    let mut image = DecodedImage::new(
+        PixelFormat::BgrX32,
+        IMAGE_WIDTH.try_into().unwrap(),
+        IMAGE_HEIGHT.try_into().unwrap(),
+    );
+    DecodingContext::default()
+        .decode(&mut image, &destination, &mut ReadCursor::new(messages))
+        .unwrap();
+
+    image
+}
+
+#[test]
+fn clipping_rectangles_reach_the_last_u16_column() {
+    use ironrdp_pdu::codecs::rfx::RfxRectangle;
+    use ironrdp_session::rfx::clipping_rectangles;
+
+    let destination = InclusiveRectangle {
+        left: u16::MAX - 63,
+        top: u16::MAX - 63,
+        right: u16::MAX,
+        bottom: u16::MAX,
+    };
+    // The rectangle and the channel both run 64 pixels past the end of the u16 range.
+    let rectangles = [RfxRectangle {
+        x: 0,
+        y: 0,
+        width: 128,
+        height: 128,
+    }];
+
+    let clip = clipping_rectangles(&rectangles, &destination, 128, 128);
+
+    assert_eq!(clip.extents, destination);
+}
+
+/// A RemoteFX surface for a secondary monitor is placed at a non-zero
+/// framebuffer offset, and its channel (frame) dimensions describe only
+/// that surface's own content rather than the entire desktop.
+#[test]
+fn clipping_rectangles_track_surface_framebuffer_offset() {
+    use ironrdp_pdu::codecs::rfx::RfxRectangle;
+    use ironrdp_session::rfx::clipping_rectangles;
+
+    // Update for a second monitor with origin (2000, 1000) and dimensions 1000x1200
+    let destination = InclusiveRectangle {
+        left: 2000,
+        top: 1000,
+        right: 2999,
+        bottom: 2199,
+    };
+    let channel_width = 1000;
+    let channel_height = 1200;
+
+    let rects = [RfxRectangle {
+        x: 0,
+        y: 0,
+        width: channel_width,
+        height: channel_height,
+    }];
+
+    let region = clipping_rectangles(&rects, &destination, channel_width, channel_height);
+
+    assert_eq!(region.extents, destination);
+}
+
+fn tile_at(x: u16, y: u16) -> ironrdp_pdu::codecs::rfx::Tile<'static> {
+    ironrdp_pdu::codecs::rfx::Tile {
+        y_quant_index: 0,
+        cb_quant_index: 0,
+        cr_quant_index: 0,
+        x,
+        y,
+        y_data: &[],
+        cb_data: &[],
+        cr_data: &[],
+    }
+}
+
+#[test]
+fn tile_rectangle_is_cut_at_the_u16_limit() {
+    use ironrdp_session::rfx::tiles_to_rectangles;
+
+    let destination = InclusiveRectangle {
+        left: 1,
+        top: 0,
+        right: u16::MAX,
+        bottom: 63,
+    };
+
+    let rectangles: Vec<_> = tiles_to_rectangles(&[tile_at(1023, 0), tile_at(1024, 0)], &destination).collect();
+
+    // The first tile starts at 1 + 1023 * 64 = 65473 and crosses the limit; the second cannot start in u16.
+    assert_eq!(
+        rectangles,
+        [
+            Some(InclusiveRectangle {
+                left: 65473,
+                top: 0,
+                right: u16::MAX,
+                bottom: 63,
+            }),
+            None,
+        ]
+    );
+}
+
+#[test]
+fn tile_pushed_past_the_u16_limit_by_the_destination_is_skipped() {
+    use ironrdp_session::rfx::tiles_to_rectangles;
+
+    let destination = InclusiveRectangle {
+        left: 64,
+        top: 64,
+        right: u16::MAX,
+        bottom: u16::MAX,
+    };
+
+    let rectangles: Vec<_> = tiles_to_rectangles(&[tile_at(1023, 0), tile_at(0, 1023)], &destination).collect();
+
+    // 1023 * 64 = 65472 fits in u16, but adding the destination offset of 64 does not.
+    assert_eq!(rectangles, [None, None]);
+}
