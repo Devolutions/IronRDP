@@ -438,6 +438,13 @@ pub struct ChannelConfig {
     #[cfg(feature = "location")]
     pub location: bool,
 
+    /// Enable the MS-RDPETXT text input dynamic virtual channels.
+    ///
+    /// Off by default: the client hosts no input method, so it only tracks the focused remote
+    /// edit control and inserts text committed with [`crate::rdp::RdpInputEvent::CommitText`].
+    #[cfg(feature = "text-input")]
+    pub text_input: bool,
+
     /// Launch URI that enables the Windows 365 virtual desktop control channel.
     ///
     /// Windows 365 Cloud PCs use the channel in Boot and Switch mode; `None` leaves it unregistered.
@@ -528,6 +535,8 @@ impl Default for ChannelConfig {
             webauthn: true,
             #[cfg(feature = "location")]
             location: false,
+            #[cfg(feature = "text-input")]
+            text_input: false,
             #[cfg(feature = "w365")]
             virtual_desktop_switch: None,
             #[cfg(feature = "w365")]
@@ -1940,6 +1949,14 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_location_redirection(mut self, enabled: bool) -> Self {
         self.channels.location = enabled;
+        self
+    }
+
+    /// Enable or disable the MS-RDPETXT text input channels.
+    #[cfg(feature = "text-input")]
+    #[must_use]
+    pub fn with_text_input(mut self, enabled: bool) -> Self {
+        self.channels.text_input = enabled;
         self
     }
 

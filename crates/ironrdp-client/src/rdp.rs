@@ -662,6 +662,12 @@ pub enum RdpInputEvent {
     },
     #[cfg(feature = "location")]
     Location(LocationRequest),
+    /// Inserts text committed by a local input method into the remote edit control that has
+    /// focus, over the MS-RDPETXT text input channels.
+    ///
+    /// Dropped when the channels are closed or no remote edit control has focus.
+    #[cfg(feature = "text-input")]
+    CommitText(String),
     /// Tells the Cloud PC that the user switched from the local desktop back to it.
     #[cfg(feature = "w365")]
     SwitchToCloud,
@@ -2439,6 +2445,11 @@ fn build_connector(
     #[cfg(feature = "location")]
     if config.channels.location {
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
+    }
+
+    #[cfg(feature = "text-input")]
+    if config.channels.text_input {
+        drdynvc = crate::text_input::attach(drdynvc);
     }
 
     #[cfg(feature = "w365")]
@@ -4923,6 +4934,11 @@ async fn active_session(
                             }
                         }
                     }
+                    #[cfg(feature = "text-input")]
+                    RdpInputEvent::CommitText(text) => match crate::text_input::commit_text(&mut active_stage, &text) {
+                        Some(batch) => ActiveSessionIteration::dvc(batch),
+                        None => ActiveSessionIteration::outputs(Vec::new()),
+                    },
                     #[cfg(feature = "w365")]
                     RdpInputEvent::SwitchToCloud => {
                         let batch = match active_stage.get_dvc::<VdcSwitchClient>() {
@@ -5192,6 +5208,12 @@ async fn active_session(
             &mut iteration.dvc_batch,
         )? {
             // A tunneled request's reply route does not apply to the video notifications.
+            iteration.reply_tunnel = None;
+        }
+
+        #[cfg(feature = "text-input")]
+        if crate::text_input::flush(&mut active_stage, &mut iteration.dvc_batch) {
+            // Text input replies travel on their own channel, whatever produced the iteration.
             iteration.reply_tunnel = None;
         }
 
