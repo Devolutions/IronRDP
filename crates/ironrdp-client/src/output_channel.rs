@@ -248,6 +248,15 @@ impl OutputEventSender {
         }
     }
 
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub async fn __test_send_deferred(
+        &self,
+        close_receiver: &mut watch::Receiver<bool>,
+    ) -> Result<bool, mpsc::error::SendError<RdpOutputEvent>> {
+        self.send_deferred(close_receiver).await
+    }
+
     /// Best-effort send used for out-of-band producers (e.g. a Hyper-V
     /// framebuffer callback) that cannot `.await`. [`DropPolicy::MustDeliver`]
     /// events use `try_send` and are dropped, matching a plain channel's

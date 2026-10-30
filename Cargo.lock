@@ -3675,6 +3675,7 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rail",
+ "ironrdp-rdpadrv",
  "ironrdp-rdpdr",
  "ironrdp-rdpdr-native",
  "ironrdp-rdpeai",
