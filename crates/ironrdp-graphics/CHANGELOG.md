@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.11.0...ironrdp-graphics-v0.11.1)] - 2026-10-30
+
+### <!-- 4 -->Bug Fixes
+
+- Fix RemoteFX quantization, DWT rounding, and pointer alpha ([#2263](https://github.com/Devolutions/IronRDP/issues/2263)) ([cf15d041c3](https://github.com/Devolutions/IronRDP/commit/cf15d041c3f1f252d794b3e38e787302b170efed)) 
+
+  Round RemoteFX wavelet coefficients during quantization using `(value +
+  (1 << (factor - 1))) >> factor` with widened `i32` intermediates as
+  specified in `[MS-RDPRFX]` 3.1.8.1.5 instead of unrounded arithmetic
+  right-shifting, which floored negative coefficients in `[-(scale / 2),
+  -1]` to `-1` and produced color speckles on smooth gradients and icons.
+  
+  Use ceiling average `(a + b + 1) >> 1` in forward DWT low-pass sub-bands
+  to match the `[MS-RDPRFX]` 3.1.8.2.4 inverse DWT lifting step.
+  
+  Premultiply software pointer RGB channels by normalized alpha instead of
+  squaring each color component.
+
+- Read the DWT variant from REGION flags ([#2085](https://github.com/Devolutions/IronRDP/issues/2085)) ([43d75cd48e](https://github.com/Devolutions/IronRDP/commit/43d75cd48e8f2dee6ffa6388346dc53790fc7bb8)) 
+
+  The Progressive decoder chose the DWT variant from bit 0 of the
+  RFX_PROGRESSIVE_CONTEXT flags. MS-RDPEGFX 2.2.4.2.1.4 defines that bit
+  as RFX_SUBBAND_DIFFING; the variant is bit 0 of each
+  RFX_PROGRESSIVE_REGION's flags (RFX_DWT_REDUCE_EXTRAPOLATE,
+  2.2.4.2.1.5). Tiles decoded correctly only while a server set both bits
+  to the same value.
+  
+  Each REGION now selects its own variant. The decoder kept the CONTEXT
+  value only for this choice, so its per-surface fallback and the
+  MissingBlock("CONTEXT") error are removed; CONTEXT is optional per
+  2.2.4.2.1.4. A stream without CONTEXT for an unseen codec context now
+  decodes instead of failing.
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-graphics-v0.10.0...ironrdp-graphics-v0.11.0)] - 2026-10-27
 
 ### <!-- 4 -->Bug Fixes

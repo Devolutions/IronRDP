@@ -29,7 +29,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11" } # public
 tracing = { version = "0.1", features = ["log"] }
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-dvc = { version = "0.10.0", path = "../ironrdp-dvc" } # public
+ironrdp-dvc = { version = "0.10.1", path = "../ironrdp-dvc" } # public
 sha2 = "0.10"
 windows = { version = "0.62", features = [
     "Win32_Foundation",

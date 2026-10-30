@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [[0.1.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-mstsgu-v0.1.0...ironrdp-mstsgu-v0.1.1)] - 2026-10-30
+
+### <!-- 1 -->Features
+
+- Use the `KdcResolution` enum instead of KDC url ([#1987](https://github.com/Devolutions/IronRDP/issues/1987)) ([d23348621a](https://github.com/Devolutions/IronRDP/commit/d23348621a05ee4fcc82de9bffd8806df0e3d789)) 
+
+  This PR adds the `KdcResolution` enum, which specifies how Kerberos
+  should resolve the KDC, either by using IAKERB proxy or by connecting
+  directly to an external KDC specified by URL.
+
+### <!-- 5 -->Performance
+
+- Disable Nagle on gateway sockets ([#2302](https://github.com/Devolutions/IronRDP/issues/2302)) ([bc3c09f6d4](https://github.com/Devolutions/IronRDP/commit/bc3c09f6d48541503ecc604bf3f9a72d42a7f809)) 
+
+  Set TCP_NODELAY before TLS and proxy negotiation on gateway sockets so
+  small writes are not held by Nagle buffering. Share the connector across
+  direct and proxied RPCH/HTTP connections, matching the existing AVD and
+  RDCleanPath socket policy.
+  
+  Propagate socket-option failures. Disabling this buffering can increase
+  the number of small TCP packets.
+  
+  Add a loopback regression for numeric and hostname endpoints, and run it
+  from the standard CI test commands.
+
+
+
 ## [[0.1.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-mstsgu-v0.0.2...ironrdp-mstsgu-v0.1.0)] - 2026-10-27
 
 ### <!-- 7 -->Build
