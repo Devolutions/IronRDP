@@ -1,0 +1,1189 @@
+use std::sync::{Arc, Mutex};
+
+use ironrdp_core::{ReadCursor, WriteCursor, decode, encode_vec};
+use ironrdp_dvc::DvcProcessor as _;
+use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu};
+use ironrdp_rdpetxt::client::{self, CommitTextError, TextInputClient, TextInputConfig};
+use ironrdp_rdpetxt::pdu::{
+    AcknowledgeOperationPdu, AcknowledgeRemoteOperationPdu, AcknowledgeUndoPendingKeyEventsPdu, AcknowledgementType,
+    CandidateList, CharacterEventPdu, ClientOptions, ClientPdu, CompositionTerminatedPdu,
+    ControlConversionModeUpdatedPdu, CoreInputProfile, CoreInputViewOcclusion, DoReconversionPdu, EditControlFocusPdu,
+    EditControlInfo, EditControlRange, FocusDepartCompletedPdu, FocusNavigatingEventPdu, GeometryChangedPdu, Guid,
+    HostFocusPdu, HotKeyRegistrationData, HotKeyRegistrationPdu, InputProfileChangedPdu, KeyEventHostInfo,
+    KeyEventPayloadPdu, NavigateFocusCompleteInfo, NavigateFocusInfo, NotifyClientVersionPdu, NotifyServerVersionPdu,
+    OccludingViewsPdu, OcclusionList, PduLayout, ReconversionCandidatesPdu, RefreshClientPdu,
+    RegisterRemoteEditControlPdu, RegisterRemoteKeyTargetPdu, ReportClientOptionsPdu, SelectionChangedPdu, ServerPdu,
+    TextChangedPdu, TextFormat, TextInputHostSettings, TextInputRect, TextString, UndoPendingKeyEventsPdu,
+    UnregisterRemoteEditControlPdu, UpdateFormatPdu, UpdateInputProfilePdu, UpdateTextAndSelectionPdu, UpdateTextPdu,
+};
+use ironrdp_rdpetxt::server::{self, TextInputServer, TextInputServerHandler};
+use ironrdp_rdpetxt::{MAX_PENDING_PDUS, QueueFull};
+use proptest::prelude::*;
+use rstest::rstest;
+
+const SERVER_TO_CLIENT_ID: u32 = 3;
+const CLIENT_TO_SERVER_ID: u32 = 4;
+
+fn bytes(fixture: &str) -> Vec<u8> {
+    hex::decode(fixture.replace(' ', "")).unwrap()
+}
+
+fn text(units: &[u16]) -> TextString {
+    TextString::from_wire_units(units.to_vec())
+}
+
+/// Client processors sharing one client, both started.
+fn client_channels(config: TextInputConfig) -> (client::ServerToClientChannel, client::ClientToServerChannel) {
+    let client = TextInputClient::new(config).into_shared();
+    let mut server_to_client = client::ServerToClientChannel::new(Arc::clone(&client));
+    let mut client_to_server = client::ClientToServerChannel::new(client);
+    server_to_client.start(SERVER_TO_CLIENT_ID).unwrap();
+    client_to_server.start(CLIENT_TO_SERVER_ID).unwrap();
+    (server_to_client, client_to_server)
+}
+
+fn receive(server_to_client: &mut client::ServerToClientChannel, pdus: &[ServerPdu]) {
+    let payload: Vec<u8> = pdus.iter().flat_map(|pdu| encode_vec(pdu).unwrap()).collect();
+    let replies = server_to_client.process(SERVER_TO_CLIENT_ID, &payload).unwrap();
+    assert!(replies.is_empty(), "replies leave on the client-to-server channel");
+}
+
+/// PDUs the client queued, which must be addressed to the client-to-server channel.
+fn sent(client_to_server: &mut client::ClientToServerChannel) -> Vec<ClientPdu> {
+    client_to_server
+        .pending_messages()
+        .unwrap()
+        .iter()
+        .map(|message| {
+            let encoded = message.encode_unframed_pdu().unwrap();
+            let DrdynvcClientPdu::Data(data) = decode(&encoded).unwrap() else {
+                panic!("expected DRDYNVC data");
+            };
+            // oracle: spec MS-RDPETXT §2.1
+            assert_eq!(data.channel_id(), CLIENT_TO_SERVER_ID);
+            let DrdynvcDataPdu::Data(data) = data else {
+                panic!("expected unsplit DRDYNVC data");
+            };
+            decode(data.data()).unwrap()
+        })
+        .collect()
+}
+
+fn edit_control_focus(text_input_client_id: u32, edit_control_id: u32, gaining_focus: bool) -> ServerPdu {
+    ServerPdu::EditControlFocus(EditControlFocusPdu {
+        text_input_client_id,
+        control_bounds: TextInputRect::default(),
+        edit_info: EditControlInfo {
+            id: edit_control_id,
+            ..EditControlInfo::default()
+        },
+        gaining_focus,
+        losing_focus_control_id: 0,
+        losing_focus_text_input_host_id: 0,
+        override_: false,
+    })
+}
+
+fn focus_gain_after(
+    text_input_client_id: u32,
+    edit_control_id: u32,
+    losing_focus_control_id: u32,
+    losing_focus_text_input_host_id: u32,
+) -> ServerPdu {
+    let ServerPdu::EditControlFocus(mut gain) = edit_control_focus(text_input_client_id, edit_control_id, true) else {
+        unreachable!()
+    };
+    gain.losing_focus_control_id = losing_focus_control_id;
+    gain.losing_focus_text_input_host_id = losing_focus_text_input_host_id;
+    ServerPdu::EditControlFocus(gain)
+}
+
+fn register_key_target(object_id: u32, text_target_id: u32) -> ServerPdu {
+    ServerPdu::RegisterRemoteKeyTarget(RegisterRemoteKeyTargetPdu {
+        object_id,
+        text_target_id,
+        text_input_host_settings: TextInputHostSettings::default(),
+        view_instance_id: 0,
+        window_instance_id: 0,
+    })
+}
+
+fn host_focus(text_input_host_id: u32, ordinal: u32, gaining_focus: bool) -> ServerPdu {
+    ServerPdu::HostFocus(HostFocusPdu {
+        text_input_host_id,
+        ordinal,
+        gaining_focus,
+        override_: false,
+    })
+}
+
+fn selection_changed(text_input_client_id: u32, edit_control_id: u32, begin: i32, end: i32) -> ServerPdu {
+    ServerPdu::SelectionChanged(SelectionChangedPdu {
+        text_input_client_id,
+        edit_control_id,
+        selection_begin: begin,
+        selection_end: end,
+        override_: false,
+        origin_key: KeyEventHostInfo::default(),
+    })
+}
+
+fn text_changed(text_input_client_id: u32, edit_control_id: u32, operation_id: u32) -> ServerPdu {
+    ServerPdu::TextChanged(TextChangedPdu {
+        text_input_client_id,
+        edit_control_id,
+        replaced_text_range: EditControlRange::default(),
+        new_selection_range: EditControlRange::default(),
+        operation_id,
+        text_length: 0,
+        origin_key: KeyEventHostInfo::default(),
+        override_: false,
+        no_conflict: false,
+        offset1: 0,
+        updated_text_region1: text(&[]),
+        offset2: -1,
+        updated_text_region2: text(&[]),
+        key_states: Vec::new(),
+    })
+}
+
+// oracle: spec MS-RDPETXT §2.2.2, §2.2.2.53
+#[test]
+fn header_size_counts_the_pdu_identifier_and_body() {
+    let encoded = bytes("0A000000 0406 01000000 02000000");
+    let pdu = ClientPdu::NotifyClientVersion(NotifyClientVersionPdu {
+        version_major: 1,
+        version_minor: 2,
+    });
+
+    assert_eq!(encode_vec(&pdu).unwrap(), encoded);
+    assert_eq!(decode::<ClientPdu>(&encoded).unwrap(), pdu);
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.10, §2.2.1.8
+#[test]
+fn update_text_and_selection_counts_text_in_utf16_code_units() {
+    let pdu = ClientPdu::UpdateTextAndSelection(UpdateTextAndSelectionPdu {
+        text_input_client_id: 1,
+        edit_control_id: 2,
+        text_input_host_id: 3,
+        operation_id: 4,
+        replace_begin: 5,
+        replace_end: 7,
+        new_text: TextString::new("a\u{1F600}"),
+        selection_begin: 8,
+        selection_end: 8,
+    });
+    let encoded = bytes(
+        "2C000000 0102 \
+         01000000 02000000 03000000 04000000 \
+         05000000 07000000 \
+         03000000 6100 3DD8 00DE \
+         08000000 08000000",
+    );
+
+    assert_eq!(encode_vec(&pdu).unwrap(), encoded);
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.36, §2.2.1.1, §2.2.1.8
+#[test]
+fn text_changed_decodes_every_field_in_order() {
+    let encoded = bytes(
+        "6A000000 0C03 \
+         07000000 02000000 \
+         00000000 00000000 02000000 02000000 \
+         09000000 02000000 \
+         0100 0100 00000000 4800 6800 0000 0000000000000000 0000 2300 00 00 00 00 00000000 00000000 000000000000 \
+         00 00 \
+         00000000 02000000 68006900 \
+         FFFFFFFF 00000000 \
+         02000000 8001",
+    );
+
+    let expected = ServerPdu::TextChanged(TextChangedPdu {
+        text_input_client_id: 7,
+        edit_control_id: 2,
+        replaced_text_range: EditControlRange { begin: 0, end: 0 },
+        new_selection_range: EditControlRange { begin: 2, end: 2 },
+        operation_id: 9,
+        text_length: 2,
+        origin_key: KeyEventHostInfo {
+            modifier_flags: 0x0001,
+            event_flags: 0x0001,
+            virtual_key: 0x48,
+            character: u16::from(b'h'),
+            scan_code: 0x23,
+            ..KeyEventHostInfo::default()
+        },
+        override_: false,
+        no_conflict: false,
+        offset1: 0,
+        updated_text_region1: TextString::new("hi"),
+        offset2: -1,
+        updated_text_region2: text(&[]),
+        key_states: vec![0x80, 0x01],
+    });
+    assert_eq!(decode::<ServerPdu>(&encoded).unwrap(), expected);
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.15
+#[test]
+fn reconversion_candidate_list_size_is_in_bytes() {
+    let pdu = ClientPdu::ReconversionCandidates(ReconversionCandidatesPdu {
+        text_input_client_id: 1,
+        candidate_list: CandidateList(vec![TextString::new("a"), TextString::new("bc")]),
+        edit_control_id: 2,
+        reconvert_range: EditControlRange { begin: 0, end: 1 },
+    });
+    let encoded = bytes(
+        "24000000 0602 \
+         01000000 \
+         0E000000 01000000 6100 02000000 62006300 \
+         02000000 \
+         00000000 01000000",
+    );
+
+    assert_eq!(encode_vec(&pdu).unwrap(), encoded);
+    assert_eq!(decode::<ClientPdu>(&encoded).unwrap(), pdu);
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.52, §2.2.1.7
+#[test]
+fn occluding_views_size_is_in_bytes_of_24_byte_entries() {
+    let pdu = ClientPdu::OccludingViews(OccludingViewsPdu {
+        core_input_view_id: 5,
+        occluding_views: OcclusionList(vec![CoreInputViewOcclusion {
+            event_id: 1,
+            occluding_rect: TextInputRect {
+                left: 10,
+                top: 20,
+                right: 30,
+                bottom: 40,
+            },
+            occlusion_kind: 1,
+        }]),
+        precalculated_occlusion: true,
+    });
+    let encoded = bytes(
+        "23000000 0004 \
+         05000000 \
+         18000000 01000000 0A000000 14000000 1E000000 28000000 01000000 \
+         01",
+    );
+
+    assert_eq!(encode_vec(&pdu).unwrap(), encoded);
+    assert_eq!(decode::<ClientPdu>(&encoded).unwrap(), pdu);
+}
+
+// oracle: spec MS-RDPETXT §2.2.2 (fixed structure sizes stated per field)
+#[rstest]
+#[case::character_event_with_44_byte_key_info(
+    ClientPdu::CharacterEvent(CharacterEventPdu {
+        text_input_host_id: 0,
+        key_event_id: 0,
+        edit_control_id: 0,
+        key_down_event_id: 0,
+        key_event_info: KeyEventHostInfo::default(),
+    }),
+    6 /* header */ + 16 /* textInputHostId .. keyDownEventId */ + 44 /* keyEventInfo */,
+)]
+#[case::focus_navigating_with_52_byte_info(
+    ClientPdu::FocusNavigatingEvent(FocusNavigatingEventPdu {
+        text_input_host_id: 0,
+        navigate_focus_info: NavigateFocusInfo::default(),
+    }),
+    6 /* header */ + 4 /* textInputHostId */ + 52 /* navigateFocusInfo */,
+)]
+#[case::focus_depart_completed_with_17_byte_info(
+    ClientPdu::FocusDepartCompleted(FocusDepartCompletedPdu {
+        text_input_host_id: 0,
+        navigate_focus_complete_info: NavigateFocusCompleteInfo::default(),
+    }),
+    6 /* header */ + 4 /* textInputHostId */ + 17 /* navigateFocusCompleteInfo */,
+)]
+#[case::key_event_payload(
+    ClientPdu::KeyEventPayload(KeyEventPayloadPdu {
+        text_input_host_id: 0,
+        edit_control_id: 0,
+        key_event_id: 0,
+        remote_key_event_id: 0,
+        key_event_info: KeyEventHostInfo::default(),
+        begin_payload: false,
+        handled: false,
+    }),
+    6 /* header */ + 12 /* textInputHostId .. keyEventId */ + 1 /* remoteKeyEventId */ + 44 /* keyEventInfo */ + 1 /* beginPayload */ + 1 /* handled */,
+)]
+#[case::update_format_with_12_byte_format(
+    ClientPdu::UpdateFormat(UpdateFormatPdu {
+        text_input_client_id: 0,
+        edit_control_id: 0,
+        text_input_host_id: 0,
+        operation_id: 0,
+        format_begin: 0,
+        format_end: 0,
+        format: TextFormat::default(),
+        format_basic: 0,
+    }),
+    6 /* header */ + 24 /* textInputClientId .. formatEnd */ + 12 /* format */ + 4 /* formatBasic */,
+)]
+#[case::update_input_profile_with_82_byte_profile(
+    ClientPdu::UpdateInputProfile(UpdateInputProfilePdu {
+        text_input_client_id: 0,
+        profile: CoreInputProfile::default(),
+        initializing: false,
+    }),
+    6 /* header */ + 4 /* textInputClientId */ + 82 /* profile */ + 1 /* initializing */,
+)]
+fn client_pdu_has_the_specified_size(#[case] pdu: ClientPdu, #[case] size: usize) {
+    let encoded = encode_vec(&pdu).unwrap();
+    assert_eq!(encoded.len(), size);
+    assert_eq!(decode::<ClientPdu>(&encoded).unwrap(), pdu);
+}
+
+// oracle: spec MS-RDPETXT §2.2.2 (fixed structure sizes stated per field)
+#[rstest]
+#[case::edit_control_focus_with_36_byte_info(
+    edit_control_focus(0, 0, true),
+    6 /* header */ + 4 /* textInputClientId */ + 16 /* controlBounds */ + 36 /* editInfo */ + 1 /* gainingFocus */
+        + 4 /* losingFocusControlId */ + 4 /* losingFocusTextInputHostId */ + 1 /* override */,
+)]
+#[case::register_key_target_with_7_byte_settings(
+    register_key_target(0, 0),
+    6 /* header */ + 4 /* objectId */ + 4 /* textTargetId */ + 7 /* textInputHostSettings */ + 8 /* viewInstanceId */
+        + 8 /* windowInstanceId */,
+)]
+#[case::selection_changed_with_44_byte_origin_key(
+    selection_changed(0, 0, 0, 0),
+    6 /* header */ + 16 /* textInputClientId .. selectionEnd */ + 1 /* override */ + 44 /* originKey */,
+)]
+#[case::geometry_changed(
+    ServerPdu::GeometryChanged(GeometryChangedPdu {
+        text_input_client_id: 0,
+        edit_control_id: 0,
+        control_bounds: TextInputRect::default(),
+        range: EditControlRange::default(),
+        range_bounds: TextInputRect::default(),
+    }),
+    6 /* header */ + 8 /* textInputClientId, editControlId */ + 16 /* controlBounds */ + 8 /* range */ + 16 /* rangeBounds */,
+)]
+#[case::hotkey_registration_with_12_byte_data(
+    ServerPdu::HotKeyRegistration(HotKeyRegistrationPdu {
+        registration: HotKeyRegistrationData::default(),
+        enabled: true,
+    }),
+    6 /* header */ + 12 /* registration */ + 1 /* enabled */,
+)]
+#[case::refresh_client_without_fields(ServerPdu::RefreshClient(RefreshClientPdu {}), 6 /* header */)]
+fn server_pdu_has_the_specified_size(#[case] pdu: ServerPdu, #[case] size: usize) {
+    let encoded = encode_vec(&pdu).unwrap();
+    assert_eq!(encoded.len(), size);
+    assert_eq!(decode::<ServerPdu>(&encoded).unwrap(), pdu);
+}
+
+// oracle: spec MS-RDPETXT §1.7, §2.2.2.43
+#[test]
+fn decoding_ignores_fields_appended_by_later_versions() {
+    let encoded = bytes(
+        "1E000000 1A03 \
+         00000000000000000000000000000000 01000000 03000000 \
+         AABBCCDD",
+    );
+
+    assert_eq!(
+        decode::<ServerPdu>(&encoded).unwrap(),
+        ServerPdu::NotifyServerVersion(NotifyServerVersionPdu {
+            container_id: Guid::default(),
+            version_major: 1,
+            version_minor: 3,
+        })
+    );
+}
+
+// oracle: spec MS-RDPETXT §2.2.2
+#[test]
+fn pdu_identifier_of_the_other_direction_is_rejected() {
+    // RDPTXT_NOTIFY_CLIENT_VERSION_PDU travels from client to server only.
+    let encoded = bytes("0A000000 0406 01000000 02000000");
+
+    assert!(decode::<ServerPdu>(&encoded).is_err());
+}
+
+fn utf16_units() -> impl Strategy<Value = Vec<u16>> {
+    // A trailing NUL is not part of the text, so it does not survive a round trip.
+    proptest::collection::vec(any::<u16>(), 0..32).prop_filter("no trailing NUL", |units| units.last() != Some(&0))
+}
+
+proptest! {
+    // oracle: property round-trip
+    #[test]
+    fn update_text_round_trips(
+        ids in any::<(u32, u32, u32, u32)>(),
+        replace_begin in any::<u32>(),
+        replace_end in any::<i32>(),
+        new_text in utf16_units(),
+    ) {
+        let pdu = ClientPdu::UpdateText(UpdateTextPdu {
+            text_input_client_id: ids.0,
+            edit_control_id: ids.1,
+            text_input_host_id: ids.2,
+            operation_id: ids.3,
+            replace_begin,
+            replace_end,
+            new_text: text(&new_text),
+        });
+        prop_assert_eq!(decode::<ClientPdu>(&encode_vec(&pdu).unwrap()).unwrap(), pdu);
+    }
+
+    // oracle: property round-trip
+    #[test]
+    fn text_changed_round_trips(
+        region1 in utf16_units(),
+        region2 in utf16_units(),
+        key_states in proptest::collection::vec(any::<u8>(), 0..300),
+        offsets in any::<(i32, i32)>(),
+        flags in any::<(bool, bool)>(),
+    ) {
+        let ServerPdu::TextChanged(mut change) = text_changed(1, 2, 3) else { unreachable!() };
+        change.updated_text_region1 = text(&region1);
+        change.updated_text_region2 = text(&region2);
+        change.key_states = key_states;
+        (change.offset1, change.offset2) = offsets;
+        (change.override_, change.no_conflict) = flags;
+        let pdu = ServerPdu::TextChanged(change);
+        prop_assert_eq!(decode::<ServerPdu>(&encode_vec(&pdu).unwrap()).unwrap(), pdu);
+    }
+}
+
+// oracle: spec MS-RDPETXT §1.7, §2.2.2.53, §2.2.2.54
+#[test]
+fn client_answers_the_server_version_once_its_channel_opens() {
+    let config = TextInputConfig {
+        version_major: 7,
+        version_minor: 0x10,
+        options: ClientOptions::ENABLE_PREDICTED_KEY_REPORTING,
+    };
+    let client = TextInputClient::new(config).into_shared();
+    let mut server_to_client = client::ServerToClientChannel::new(Arc::clone(&client));
+    let mut client_to_server = client::ClientToServerChannel::new(client);
+    server_to_client.start(SERVER_TO_CLIENT_ID).unwrap();
+    receive(
+        &mut server_to_client,
+        &[ServerPdu::NotifyServerVersion(NotifyServerVersionPdu {
+            container_id: Guid::default(),
+            version_major: 1,
+            version_minor: 3,
+        })],
+    );
+
+    let replies: Vec<ClientPdu> = client_to_server
+        .start(CLIENT_TO_SERVER_ID)
+        .unwrap()
+        .iter()
+        .map(|message| decode(&encode_vec(message.as_ref()).unwrap()).unwrap())
+        .collect();
+
+    assert_eq!(
+        replies,
+        [
+            ClientPdu::NotifyClientVersion(NotifyClientVersionPdu {
+                version_major: 7,
+                version_minor: 0x10,
+            }),
+            ClientPdu::ReportClientOptions(ReportClientOptionsPdu {
+                options: ClientOptions::ENABLE_PREDICTED_KEY_REPORTING,
+            }),
+        ]
+    );
+    let locked = server_to_client.client().lock().unwrap();
+    assert_eq!(locked.server_version(), Some((1, 3)));
+}
+
+#[rstest]
+// oracle: spec MS-RDPETXT §3.1.5.2.3
+#[case::selection_change(selection_changed(7, 2, 1, 1), AcknowledgementType::SELECTION_CHANGE)]
+// oracle: spec MS-RDPETXT §3.1.5.2.4
+#[case::composition_terminated(
+    ServerPdu::CompositionTerminated(CompositionTerminatedPdu {
+        text_input_client_id: 7,
+        edit_control_id: 2,
+        override_: false,
+    }),
+    AcknowledgementType::COMPOSITION_TERMINATED,
+)]
+// oracle: spec MS-RDPETXT §3.1.5.2.5
+#[case::conversion_mode_updated(
+    ServerPdu::ControlConversionModeUpdated(ControlConversionModeUpdatedPdu {
+        text_input_client_id: 7,
+        edit_control_id: 2,
+        conversion_mode: 0x0000_0009,
+        profile_id: Guid::default(),
+    }),
+    AcknowledgementType::CONVERSION_MODE_CHANGED,
+)]
+fn client_acknowledges_edit_control_notification(
+    #[case] notification: ServerPdu,
+    #[case] acknowledgement_type: AcknowledgementType,
+) {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+
+    receive(&mut server_to_client, &[notification]);
+
+    let [ClientPdu::AcknowledgeOperation(ack)] = sent(&mut client_to_server)[..] else {
+        panic!("expected one RDPTXT_ACKNOWLEDGE_OPERATION_PDU");
+    };
+    assert_eq!(
+        (ack.text_input_client_id, ack.edit_control_id, ack.acknowledgement_type),
+        (7, 2, acknowledgement_type)
+    );
+}
+
+// oracle: spec MS-RDPETXT §3.1.5.2.2, §2.2.2.36
+#[test]
+fn client_acknowledges_text_change_with_its_operation_identifier() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+
+    receive(&mut server_to_client, &[text_changed(7, 2, 41)]);
+
+    assert_eq!(
+        sent(&mut client_to_server),
+        [ClientPdu::AcknowledgeOperation(AcknowledgeOperationPdu {
+            text_input_client_id: 7,
+            edit_control_id: 2,
+            acknowledgement_type: AcknowledgementType::TEXT_CHANGE,
+            operation_id: 41,
+        })]
+    );
+}
+
+// oracle: spec MS-RDPETXT §3.1.5.2.1
+#[test]
+fn client_acknowledges_focus_loss_then_its_completion() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+
+    receive(&mut server_to_client, &[edit_control_focus(7, 2, false)]);
+
+    let types: Vec<_> = sent(&mut client_to_server)
+        .into_iter()
+        .map(|pdu| match pdu {
+            ClientPdu::AcknowledgeOperation(ack) => {
+                assert_eq!((ack.text_input_client_id, ack.edit_control_id), (7, 2));
+                ack.acknowledgement_type
+            }
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        types,
+        [
+            AcknowledgementType::FOCUS_LOSS,
+            AcknowledgementType::FOCUS_LEAVE_COMPLETED
+        ]
+    );
+}
+
+// oracle: spec MS-RDPETXT §3.1.5.2.6
+#[test]
+fn client_acknowledges_host_focus_loss_only() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+
+    receive(
+        &mut server_to_client,
+        &[host_focus(5, 0, true), host_focus(5, 0, false)],
+    );
+
+    let [ClientPdu::AcknowledgeHostOperation(ack)] = sent(&mut client_to_server)[..] else {
+        panic!("expected one RDPTXT_ACKNOWLEDGE_HOST_OPERATION_PDU");
+    };
+    assert_eq!(
+        (ack.text_input_host_id, ack.acknowledgement_type),
+        (5, AcknowledgementType::FOCUS_LOSS)
+    );
+}
+
+// oracle: spec MS-RDPETXT §3.1.5.2.7
+#[test]
+fn client_acknowledges_undo_request_with_its_identifier() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+
+    receive(
+        &mut server_to_client,
+        &[ServerPdu::UndoPendingKeyEvents(UndoPendingKeyEventsPdu {
+            undo_request_id: 0x1234,
+        })],
+    );
+
+    assert_eq!(
+        sent(&mut client_to_server),
+        [ClientPdu::AcknowledgeUndoPendingKeyEvents(
+            AcknowledgeUndoPendingKeyEventsPdu {
+                undo_request_id: 0x1234
+            }
+        )]
+    );
+}
+
+// oracle: spec MS-RDPETXT §3.1.5.1
+#[test]
+fn reconversion_request_is_answered_for_the_requesting_control() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+
+    receive(
+        &mut server_to_client,
+        &[ServerPdu::DoReconversion(DoReconversionPdu {
+            text_input_client_id: 7,
+            edit_control_id: 2,
+            return_candidates: false,
+            return_range: true,
+        })],
+    );
+
+    let [ClientPdu::ReconversionCandidates(ref reply)] = sent(&mut client_to_server)[..] else {
+        panic!("expected one RDPTXT_RECONVERSION_CANDIDATES_PDU");
+    };
+    assert_eq!((reply.text_input_client_id, reply.edit_control_id), (7, 2));
+}
+
+// oracle: spec MS-RDPETXT §2.2.2 (each PDU carries its own size)
+#[test]
+fn every_pdu_of_a_message_is_processed() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+
+    receive(&mut server_to_client, &[text_changed(7, 2, 1), text_changed(7, 2, 2)]);
+
+    let operation_ids: Vec<_> = sent(&mut client_to_server)
+        .into_iter()
+        .map(|pdu| match pdu {
+            ClientPdu::AcknowledgeOperation(ack) => ack.operation_id,
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(operation_ids, [1, 2]);
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.10, §2.2.2.35, §2.2.1.8
+#[test]
+fn committed_text_replaces_the_selection_and_moves_the_caret_after_it() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(
+        &mut server_to_client,
+        &[
+            register_key_target(5, 7),
+            host_focus(5, 0, true),
+            edit_control_focus(7, 2, true),
+            selection_changed(7, 2, 3, 1),
+        ],
+    );
+    sent(&mut client_to_server);
+
+    let committed = server_to_client.client().lock().unwrap().commit_text("\u{1F600}");
+
+    assert!(committed.is_ok());
+    let [ClientPdu::UpdateTextAndSelection(ref update)] = sent(&mut client_to_server)[..] else {
+        panic!("expected one RDPTXT_UPDATE_TEXT_AND_SELECTION_PDU");
+    };
+    assert_eq!(
+        (
+            update.text_input_client_id,
+            update.edit_control_id,
+            update.text_input_host_id
+        ),
+        (7, 2, 5)
+    );
+    assert_eq!((update.replace_begin, update.replace_end), (1, 3));
+    assert_eq!(update.new_text, TextString::new("\u{1F600}"));
+    // The emoji takes two UTF-16 code units.
+    assert_eq!((update.selection_begin, update.selection_end), (3, 3));
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.33
+#[test]
+fn stale_host_focus_change_is_ignored() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(
+        &mut server_to_client,
+        &[
+            register_key_target(5, 7),
+            register_key_target(6, 7),
+            host_focus(6, 3, true),
+            host_focus(6, 2, false),
+            edit_control_focus(7, 2, true),
+        ],
+    );
+    sent(&mut client_to_server);
+
+    server_to_client.client().lock().unwrap().commit_text("a").unwrap();
+
+    let [ClientPdu::UpdateTextAndSelection(ref update)] = sent(&mut client_to_server)[..] else {
+        panic!("expected one RDPTXT_UPDATE_TEXT_AND_SELECTION_PDU");
+    };
+    assert_eq!(update.text_input_host_id, 6);
+}
+
+fn server_version(version_major: u32, version_minor: u32) -> ServerPdu {
+    ServerPdu::NotifyServerVersion(NotifyServerVersionPdu {
+        container_id: Guid::default(),
+        version_major,
+        version_minor,
+    })
+}
+
+fn input_profile_changed() -> ServerPdu {
+    ServerPdu::InputProfileChanged(InputProfileChangedPdu {
+        text_input_client_id: 7,
+        profile: CoreInputProfile {
+            langid: 0x0409,
+            bcp_tag: 0x1122_3344_5566_7788,
+            ..CoreInputProfile::default()
+        },
+    })
+}
+
+fn encode_server_pdu(pdu: &ServerPdu, layout: PduLayout) -> Vec<u8> {
+    let mut encoded = vec![0; pdu.size_with(layout)];
+    pdu.encode_with(&mut WriteCursor::new(&mut encoded), layout).unwrap();
+    encoded
+}
+
+// oracle: spec MS-RDPETXT §1.7
+#[rstest]
+#[case::base_version_one((1, 0), false)]
+#[case::version_one_with_the_update((1, 2), true)]
+#[case::version_one_with_more_updates((1, 7), true)]
+#[case::version_one_with_another_update_only((1, 8), false)]
+#[case::later_major_version((2, 0), true)]
+fn bcp_tag_is_on_the_wire_only_when_both_peers_announce_it(#[case] peer: (u32, u32), #[case] expected: bool) {
+    assert_eq!(PduLayout::negotiated((1, 2), peer).bcp_tag, expected);
+    assert!(!PduLayout::negotiated((1, 0), peer).bcp_tag);
+}
+
+// oracle: spec MS-RDPETXT §1.7, §2.2.1.6, §2.2.2.46
+#[test]
+fn input_profile_takes_74_bytes_without_bcp_tag_and_82_with_it() {
+    let pdu = input_profile_changed();
+    let fields = "0904 \
+                  00000000000000000000000000000000 00000000000000000000000000000000 \
+                  00000000000000000000000000000000 \
+                  00000000 00000000 00000000 00000000 00000000 00000000";
+    let base = bytes(&format!("50000000 1403 07000000 {fields}"));
+    let full = bytes(&format!("58000000 1403 07000000 {fields} 8877665544332211"));
+
+    assert_eq!(encode_server_pdu(&pdu, PduLayout::BASE), base);
+    assert_eq!(encode_server_pdu(&pdu, PduLayout::FULL), full);
+    let ServerPdu::InputProfileChanged(decoded) =
+        ServerPdu::decode_with(&mut ReadCursor::new(&base), PduLayout::BASE).unwrap()
+    else {
+        panic!("expected RDPTXT_INPUT_PROFILE_CHANGED_PDU");
+    };
+    assert_eq!((decoded.profile.langid, decoded.profile.bcp_tag), (0x0409, 0));
+    assert_eq!(decode::<ServerPdu>(&full).unwrap(), pdu);
+    // The 74-byte profile is too short for the layout with bcpTag.
+    assert!(decode::<ServerPdu>(&base).is_err());
+}
+
+// oracle: spec MS-RDPETXT §1.7, §2.2.1.6, §2.2.2.18, §2.2.2.46
+#[rstest]
+#[case::server_without_the_update(server_version(1, 0), PduLayout::BASE, 74)]
+#[case::server_with_the_update(server_version(1, 2), PduLayout::FULL, 82)]
+fn client_lays_out_profiles_for_the_server_version(
+    #[case] version: ServerPdu,
+    #[case] server_layout: PduLayout,
+    #[case] profile_size: usize,
+) {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observer_log = Arc::clone(&observed);
+    let client = TextInputClient::default()
+        .with_observer(Box::new(move |pdu| observer_log.lock().unwrap().push(pdu.clone())))
+        .into_shared();
+    let mut server_to_client = client::ServerToClientChannel::new(Arc::clone(&client));
+    let mut client_to_server = client::ClientToServerChannel::new(Arc::clone(&client));
+    server_to_client.start(SERVER_TO_CLIENT_ID).unwrap();
+    client_to_server.start(CLIENT_TO_SERVER_ID).unwrap();
+    let payload = [
+        encode_server_pdu(&version, PduLayout::FULL),
+        encode_server_pdu(&input_profile_changed(), server_layout),
+    ]
+    .concat();
+
+    server_to_client.process(SERVER_TO_CLIENT_ID, &payload).unwrap();
+    client_to_server.pending_messages().unwrap();
+    client
+        .lock()
+        .unwrap()
+        .send(UpdateInputProfilePdu {
+            text_input_client_id: 7,
+            profile: CoreInputProfile::default(),
+            initializing: false,
+        })
+        .unwrap();
+
+    assert!(
+        observed
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|pdu| matches!(pdu, ServerPdu::InputProfileChanged(change) if change.profile.langid == 0x0409))
+    );
+    let [ref message] = client_to_server.pending_messages().unwrap()[..] else {
+        panic!("expected one message");
+    };
+    let encoded = message.encode_unframed_pdu().unwrap();
+    let DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(data)) = decode(&encoded).unwrap() else {
+        panic!("expected unsplit DRDYNVC data");
+    };
+    assert_eq!(
+        data.data().len(),
+        6 /* header */ + 4 /* textInputClientId */ + profile_size + 1 /* initializing */
+    );
+}
+
+fn register_edit_control(text_input_client_id: u32, edit_control_id: u32, operation_id: u32) -> ServerPdu {
+    ServerPdu::RegisterRemoteEditControl(RegisterRemoteEditControlPdu {
+        app_name: TextString::new("notepad"),
+        edit_client_operation_id: operation_id,
+        edit_control_id,
+        text_input_client_id,
+    })
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.26, §2.2.2.21
+#[test]
+fn edit_control_acknowledgements_carry_its_registration_operation_identifier() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+
+    receive(
+        &mut server_to_client,
+        &[
+            register_edit_control(7, 2, 0x55),
+            selection_changed(7, 2, 1, 1),
+            edit_control_focus(7, 2, false),
+            ServerPdu::UnregisterRemoteEditControl(UnregisterRemoteEditControlPdu {
+                text_input_client_id: 7,
+                edit_control_id: 2,
+            }),
+            selection_changed(7, 2, 1, 1),
+        ],
+    );
+
+    let operation_ids: Vec<_> = sent(&mut client_to_server)
+        .into_iter()
+        .map(|pdu| match pdu {
+            ClientPdu::AcknowledgeOperation(ack) => ack.operation_id,
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(operation_ids, [0x55, 0x55, 0x55, 0]);
+}
+
+// oracle: mutant processing PDUs past a reply that does not fit the queue
+#[test]
+fn client_stops_a_message_whose_replies_overflow_the_queue() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(&mut server_to_client, &[edit_control_focus(7, 2, true)]);
+    sent(&mut client_to_server);
+    let mut pdus: Vec<ServerPdu> = (0..=MAX_PENDING_PDUS)
+        .map(|operation_id| text_changed(7, 2, u32::try_from(operation_id).unwrap()))
+        .collect();
+    pdus.push(selection_changed(7, 2, 5, 5));
+
+    receive(&mut server_to_client, &pdus);
+
+    assert_eq!(sent(&mut client_to_server).len(), MAX_PENDING_PDUS);
+    let locked = server_to_client.client().lock().unwrap();
+    assert_eq!(
+        locked.focused_edit_control().unwrap().selection,
+        EditControlRange::default()
+    );
+}
+
+// oracle: mutant moving the caret for a commit that was not queued
+#[test]
+fn commit_with_a_full_queue_sends_nothing_and_keeps_the_selection() {
+    let (mut server_to_client, _client_to_server) = client_channels(TextInputConfig::default());
+    receive(
+        &mut server_to_client,
+        &[edit_control_focus(7, 2, true), selection_changed(7, 2, 1, 1)],
+    );
+    let mut client = server_to_client.client().lock().unwrap();
+    while client.send(ReportClientOptionsPdu {
+        options: ClientOptions::NONE,
+    }) != Err(QueueFull)
+    {}
+
+    assert_eq!(client.commit_text("a"), Err(CommitTextError::QueueFull));
+    assert_eq!(
+        client.focused_edit_control().unwrap().selection,
+        EditControlRange { begin: 1, end: 1 }
+    );
+}
+
+struct AcknowledgingHandler {
+    received: Arc<Mutex<Vec<ClientPdu>>>,
+}
+
+impl TextInputServerHandler for AcknowledgingHandler {
+    fn client_pdu(&mut self, pdu: ClientPdu) -> Vec<ServerPdu> {
+        let reply = match &pdu {
+            ClientPdu::UpdateText(update) => {
+                vec![ServerPdu::AcknowledgeRemoteOperation(AcknowledgeRemoteOperationPdu {
+                    text_input_client_id: update.text_input_client_id,
+                    edit_control_id: update.edit_control_id,
+                    operation_id: update.operation_id,
+                    error_code: 0,
+                })]
+            }
+            _ => Vec::new(),
+        };
+        self.received.lock().unwrap().push(pdu);
+        reply
+    }
+}
+
+// oracle: spec MS-RDPETXT §1.7, §2.1, §2.2.2.43
+#[test]
+fn server_announces_its_version_and_answers_on_the_server_to_client_channel() {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let server = TextInputServer::new(Box::new(AcknowledgingHandler {
+        received: Arc::clone(&received),
+    }))
+    .with_version(1, 2)
+    .into_shared();
+    let mut server_to_client = server::ServerToClientChannel::new(Arc::clone(&server));
+    let mut client_to_server = server::ClientToServerChannel::new(server);
+
+    let announced: Vec<ServerPdu> = server_to_client
+        .start(SERVER_TO_CLIENT_ID)
+        .unwrap()
+        .iter()
+        .map(|message| decode(&encode_vec(message.as_ref()).unwrap()).unwrap())
+        .collect();
+    assert_eq!(
+        announced,
+        [ServerPdu::NotifyServerVersion(NotifyServerVersionPdu {
+            container_id: Guid::default(),
+            version_major: 1,
+            version_minor: 2,
+        })]
+    );
+
+    client_to_server.start(CLIENT_TO_SERVER_ID).unwrap();
+    let update = ClientPdu::UpdateText(UpdateTextPdu {
+        text_input_client_id: 7,
+        edit_control_id: 2,
+        text_input_host_id: 5,
+        operation_id: 11,
+        replace_begin: 0,
+        replace_end: 0,
+        new_text: TextString::new("a"),
+    });
+    assert!(
+        client_to_server
+            .process(CLIENT_TO_SERVER_ID, &encode_vec(&update).unwrap())
+            .unwrap()
+            .is_empty()
+    );
+
+    assert_eq!(*received.lock().unwrap(), [update]);
+    let replies: Vec<ServerPdu> = server_to_client
+        .pending_messages()
+        .unwrap()
+        .iter()
+        .map(|message| {
+            let encoded = message.encode_unframed_pdu().unwrap();
+            let ironrdp_dvc::pdu::DrdynvcServerPdu::Data(data) = decode(&encoded).unwrap() else {
+                panic!("expected DRDYNVC data");
+            };
+            assert_eq!(data.channel_id(), SERVER_TO_CLIENT_ID);
+            let DrdynvcDataPdu::Data(data) = data else {
+                panic!("expected unsplit DRDYNVC data");
+            };
+            decode(data.data()).unwrap()
+        })
+        .collect();
+    assert_eq!(
+        replies,
+        [ServerPdu::AcknowledgeRemoteOperation(AcknowledgeRemoteOperationPdu {
+            text_input_client_id: 7,
+            edit_control_id: 2,
+            operation_id: 11,
+            error_code: 0,
+        })]
+    );
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.32, §3.1.5.2.1
+#[test]
+fn focus_gain_acknowledges_the_loss_it_reports_once() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(&mut server_to_client, &[edit_control_focus(7, 2, true)]);
+
+    // The gain of control 3 reports the loss of control 2 before its own notification arrives.
+    receive(
+        &mut server_to_client,
+        &[focus_gain_after(7, 3, 2, 0), edit_control_focus(7, 2, false)],
+    );
+
+    let acknowledged: Vec<_> = sent(&mut client_to_server)
+        .into_iter()
+        .map(|pdu| match pdu {
+            ClientPdu::AcknowledgeOperation(ack) => (ack.edit_control_id, ack.acknowledgement_type),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        acknowledged,
+        [
+            (2, AcknowledgementType::FOCUS_LOSS),
+            (2, AcknowledgementType::FOCUS_LEAVE_COMPLETED)
+        ]
+    );
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.32, §3.1.5.2.6
+#[test]
+fn focus_gain_acknowledges_the_host_loss_it_reports_once() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(
+        &mut server_to_client,
+        &[register_key_target(5, 7), host_focus(5, 0, true)],
+    );
+
+    // The gain in another key target reports the loss of key target 5 before its own notification.
+    receive(
+        &mut server_to_client,
+        &[focus_gain_after(8, 3, 0, 5), host_focus(5, 0, false)],
+    );
+
+    let [ClientPdu::AcknowledgeHostOperation(ack)] = sent(&mut client_to_server)[..] else {
+        panic!("expected one RDPTXT_ACKNOWLEDGE_HOST_OPERATION_PDU");
+    };
+    assert_eq!(
+        (ack.text_input_host_id, ack.acknowledgement_type),
+        (5, AcknowledgementType::FOCUS_LOSS)
+    );
+}
+
+// oracle: mutant sending acknowledgements left from a closed server-to-client channel
+#[test]
+fn closing_the_server_to_client_channel_drops_its_queued_replies() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(&mut server_to_client, &[text_changed(7, 2, 1)]);
+
+    server_to_client.close(SERVER_TO_CLIENT_ID);
+
+    assert!(sent(&mut client_to_server).is_empty());
+}
+
+fn frames(parts: &[Vec<u8>]) -> Vec<u8> {
+    parts.concat()
+}
+
+// oracle: mutant failing the whole message on one undecodable PDU
+#[test]
+fn undecodable_pdu_is_skipped_and_the_message_goes_on() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    // RDPTXT_NOTIFY_SERVER_VERSION_PDU with a 2-byte body, too short for its 24 bytes.
+    let truncated = bytes("04000000 1A03 0000");
+    let payload = frames(&[
+        encode_vec(&text_changed(7, 2, 1)).unwrap(),
+        truncated,
+        encode_vec(&text_changed(7, 2, 2)).unwrap(),
+    ]);
+
+    server_to_client.process(SERVER_TO_CLIENT_ID, &payload).unwrap();
+
+    let operation_ids: Vec<_> = sent(&mut client_to_server)
+        .into_iter()
+        .map(|pdu| match pdu {
+            ClientPdu::AcknowledgeOperation(ack) => ack.operation_id,
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(operation_ids, [1, 2]);
+}
+
+// oracle: mutant resynchronizing past a malformed header
+#[test]
+fn malformed_header_ends_the_message() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    // A size of 1 cannot even cover the 2-byte PDU identifier.
+    let malformed = bytes("01000000 0C03");
+    let payload = frames(&[
+        encode_vec(&text_changed(7, 2, 1)).unwrap(),
+        malformed,
+        encode_vec(&text_changed(7, 2, 2)).unwrap(),
+    ]);
+
+    server_to_client.process(SERVER_TO_CLIENT_ID, &payload).unwrap();
+
+    let [ClientPdu::AcknowledgeOperation(ref ack)] = sent(&mut client_to_server)[..] else {
+        panic!("expected one RDPTXT_ACKNOWLEDGE_OPERATION_PDU");
+    };
+    assert_eq!(ack.operation_id, 1);
+}
+
+// oracle: mutant sending an update for no edit control
+#[test]
+fn commit_without_focus_sends_nothing() {
+    let (server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+
+    let committed = server_to_client.client().lock().unwrap().commit_text("a");
+
+    assert_eq!(committed, Err(CommitTextError::NoFocus));
+    assert!(sent(&mut client_to_server).is_empty());
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.10 (32-bit selection positions)
+#[test]
+fn commit_whose_caret_overflows_sends_nothing() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    let ServerPdu::TextChanged(mut change) = text_changed(7, 2, 1) else {
+        unreachable!()
+    };
+    change.new_selection_range = EditControlRange {
+        begin: u32::MAX,
+        end: u32::MAX,
+    };
+    receive(
+        &mut server_to_client,
+        &[edit_control_focus(7, 2, true), ServerPdu::TextChanged(change)],
+    );
+    sent(&mut client_to_server);
+
+    let committed = server_to_client.client().lock().unwrap().commit_text("a");
+
+    assert_eq!(committed, Err(CommitTextError::TooLong));
+    assert!(sent(&mut client_to_server).is_empty());
+}
+
+// oracle: mutant clamping a negative selection position to 0
+#[test]
+fn negative_selection_keeps_the_last_known_selection() {
+    let (mut server_to_client, _client_to_server) = client_channels(TextInputConfig::default());
+
+    receive(
+        &mut server_to_client,
+        &[
+            edit_control_focus(7, 2, true),
+            selection_changed(7, 2, 1, 3),
+            selection_changed(7, 2, -1, -1),
+        ],
+    );
+
+    let locked = server_to_client.client().lock().unwrap();
+    assert_eq!(
+        locked.focused_edit_control().unwrap().selection,
+        EditControlRange { begin: 1, end: 3 }
+    );
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.26, §2.2.2.32
+#[test]
+fn focus_gain_in_another_text_input_client_folds_no_loss() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(&mut server_to_client, &[edit_control_focus(7, 2, true)]);
+
+    // Control 2 of client 8 is not control 2 of client 7, which stays focused until its own loss.
+    receive(&mut server_to_client, &[focus_gain_after(8, 3, 2, 0)]);
+
+    assert!(sent(&mut client_to_server).is_empty());
+}
