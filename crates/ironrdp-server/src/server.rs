@@ -7294,10 +7294,10 @@ mod preempt_tests {
                 // the EXPECTED outcome here -- `attach_channels`'s
                 // synchronous side effect (below) already happened before
                 // `serve_negotiated` reached its first blocking read.
-                let _ = tokio::time::timeout(
+                let _ = Box::pin(tokio::time::timeout(
                     Duration::from_millis(300),
                     server.serve_negotiated(candidate.connection),
-                )
+                ))
                 .await;
 
                 assert!(
