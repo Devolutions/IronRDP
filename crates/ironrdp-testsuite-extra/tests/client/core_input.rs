@@ -22,12 +22,23 @@ use ironrdp_pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
 use ironrdp_rdpeci::client::CoreInputClient;
-use ironrdp_rdpeci::pdu::{CoreInputPdu, InitResponsePdu, ProtocolVersion};
+use ironrdp_rdpeci::pdu::CoreInputPdu;
 use ironrdp_svc::StaticChannelSet;
 
 const USER_CHANNEL: u16 = 1002;
 const DRDYNVC: u16 = 1004;
 const CORE_INPUT: u32 = 3;
+
+// oracle: spec MS-RDPECI §4.1.2
+const INIT_RESPONSE: [u8; 16] = [
+    0x03, // signature
+    0x02, // pduType: PDUTYPE_SC_INIT_RESPONSE
+    0x00, // eventCount
+    0x00, // padding
+    0x00, 0x01, // selectedProtocolVersion: RDP_CORE_INPUT_PROTOCOL_VERSION_100
+    0x00, 0x01, // protocolVersionMax: RDP_CORE_INPUT_PROTOCOL_VERSION_100
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // reserved
+];
 
 fn mouse_move(x: u16, y: u16) -> FastPathInputEvent {
     FastPathInputEvent::MouseEvent(MousePdu {
@@ -106,15 +117,10 @@ fn open_core_input(stage: &mut ActiveStage, image: &mut DecodedImage) {
 /// Opens the channel and completes the MS-RDPECI 3.3.3 version exchange.
 fn ready_core_input(stage: &mut ActiveStage, image: &mut DecodedImage) {
     open_core_input(stage, image);
-    let response = encode_vec(&CoreInputPdu::InitResponse(InitResponsePdu {
-        selected_protocol_version: ProtocolVersion::V1_0,
-        protocol_version_max: ProtocolVersion::V1_0,
-    }))
-    .expect("encode init response");
     server_sends(
         stage,
         image,
-        DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(CORE_INPUT, response))),
+        DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(CORE_INPUT, INIT_RESPONSE.to_vec()))),
     );
 }
 
@@ -166,29 +172,39 @@ fn graphics_updates(outputs: &[ActiveStageOutput]) -> Vec<InclusiveRectangle> {
         .collect()
 }
 
-#[test]
-fn core_input_channel_is_registered_only_when_enabled() {
-    for enabled in [false, true] {
-        let config = ConfigBuilder::new()
-            .with_destination(Destination::from_parts("core-input.invalid", 3389))
-            .with_username("user")
-            .with_password(String::new())
-            .with_client_build(1)
-            .with_client_dir(r"C:\")
-            .with_platform(MajorPlatformType::WINDOWS)
-            .with_client_name("client")
-            .with_core_input(enabled)
-            .build()
-            .expect("core input test configuration");
-        let mut connector = ironrdp_client::__test_build_connector(&config, None).expect("build connector");
-        let drdynvc = connector
-            .get_static_channel_processor::<DrdynvcClient>()
-            .expect("DRDYNVC processor");
-
-        assert_eq!(drdynvc.has_registered_dvc::<CoreInputClient>(), enabled);
-    }
+/// Whether a connector built with `ChannelConfig::core_input` set to `enabled` registers the core input channel.
+fn connector_registers_core_input(enabled: bool) -> bool {
+    let config = ConfigBuilder::new()
+        .with_destination(Destination::from_parts("core-input.invalid", 3389))
+        .with_username("user")
+        .with_password(String::new())
+        .with_client_build(1)
+        .with_client_dir(r"C:\")
+        .with_platform(MajorPlatformType::WINDOWS)
+        .with_client_name("client")
+        .with_core_input(enabled)
+        .build()
+        .expect("core input test configuration");
+    let mut connector = ironrdp_client::__test_build_connector(&config, None).expect("build connector");
+    connector
+        .get_static_channel_processor::<DrdynvcClient>()
+        .expect("DRDYNVC processor")
+        .has_registered_dvc::<CoreInputClient>()
 }
 
+// oracle: mutant catches a connector that never registers the core input channel
+#[test]
+fn connector_registers_core_input_when_enabled() {
+    assert!(connector_registers_core_input(true));
+}
+
+// oracle: mutant catches a connector that registers the core input channel although the option is off
+#[test]
+fn connector_omits_core_input_when_disabled() {
+    assert!(!connector_registers_core_input(false));
+}
+
+// oracle: spec MS-RDPBCGR §2.2.8.1.2
 #[test]
 fn input_uses_fast_path_without_the_core_input_channel() {
     let mut stage = stage(false, false);
@@ -200,7 +216,9 @@ fn input_uses_fast_path_without_the_core_input_channel() {
     assert_eq!(fast_path_events(&outputs), input_events());
 }
 
-/// MS-RDPECI 3.3.3: the client sends input on the channel only after the server answers the init request.
+/// Input goes on the channel only in the Running Phase, after the server answers the init request.
+// oracle: spec MS-RDPECI §1.3
+// oracle: spec MS-RDPBCGR §2.2.8.1.2
 #[test]
 fn input_uses_fast_path_until_the_server_answers_the_init_request() {
     let mut stage = stage(true, false);
@@ -213,6 +231,8 @@ fn input_uses_fast_path_until_the_server_answers_the_init_request() {
     assert_eq!(fast_path_events(&outputs), input_events());
 }
 
+/// Once ready, the channel carries the input in place of the fast-path input PDU.
+// oracle: spec MS-RDPECI §1.4
 #[test]
 fn input_uses_only_the_core_input_channel_once_it_is_ready() {
     let mut stage = stage(true, false);
@@ -227,6 +247,7 @@ fn input_uses_only_the_core_input_channel_once_it_is_ready() {
     assert!(fast_path_events(&outputs).is_empty());
 }
 
+// oracle: mutant catches input still routed to the core input channel after the server closes it
 #[test]
 fn input_returns_to_fast_path_after_the_core_input_channel_closes() {
     let mut stage = stage(true, false);
@@ -245,6 +266,7 @@ fn input_returns_to_fast_path_after_the_core_input_channel_closes() {
 }
 
 /// A mouse move sent on the core input channel redraws the software pointer as fast-path input does.
+// oracle: mutant catches the software pointer redraw dropped from the core input path
 #[test]
 fn core_input_keeps_software_pointer_updates() {
     // A 2x2 24 bpp color pointer: each XOR row is 6 bytes and each AND row is padded to 2 bytes.

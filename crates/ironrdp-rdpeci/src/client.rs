@@ -29,14 +29,12 @@ enum State {
 #[derive(Debug)]
 pub struct CoreInputClient {
     state: State,
-    channel_id: Option<u32>,
 }
 
 impl CoreInputClient {
     pub fn new() -> Self {
         Self {
             state: State::WaitingInitResponse,
-            channel_id: None,
         }
     }
 
@@ -45,23 +43,17 @@ impl CoreInputClient {
         self.state == State::Ready
     }
 
-    /// Encodes input events for the channel.
+    /// Encodes input events for the channel with the given dynamic channel ID.
     ///
     /// The events are split into PDUs of at most [`InputPdu::MAX_EVENTS`] events, in order.
     /// Fails when the channel is not ready.
-    pub fn encode_input(&self, events: &[FastPathInputEvent]) -> PduResult<Vec<SvcMessage>> {
+    pub fn encode_input(&self, channel_id: u32, events: &[FastPathInputEvent]) -> PduResult<Vec<SvcMessage>> {
         if !self.ready() {
             return Err(pdu_other_err!(
                 "CoreInputClient::encode_input",
                 "core input channel is not ready"
             ));
         }
-        let channel_id = self.channel_id.ok_or_else(|| {
-            pdu_other_err!(
-                "CoreInputClient::encode_input",
-                "core input channel has no assigned dynamic channel id"
-            )
-        })?;
         let messages = events
             .chunks(InputPdu::MAX_EVENTS)
             .map(|chunk| {
@@ -88,7 +80,6 @@ impl DvcProcessor for CoreInputClient {
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        self.channel_id = Some(channel_id);
         self.state = State::WaitingInitResponse;
         debug!(channel_id, "Core input channel started");
         // MS-RDPECI 3.3.3: the client sends the init request as soon as the channel opens.
@@ -129,7 +120,6 @@ impl DvcProcessor for CoreInputClient {
     }
 
     fn close(&mut self, _channel_id: u32) {
-        self.channel_id = None;
         self.state = State::WaitingInitResponse;
         debug!("Core input channel closed");
     }

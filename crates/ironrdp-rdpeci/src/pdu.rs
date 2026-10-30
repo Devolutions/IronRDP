@@ -115,10 +115,6 @@ impl InputPdu {
         Ok(Self { events })
     }
 
-    pub fn events(&self) -> &[FastPathInputEvent] {
-        &self.events
-    }
-
     pub fn into_events(self) -> Vec<FastPathInputEvent> {
         self.events
     }
@@ -212,7 +208,7 @@ impl<'de> Decode<'de> for CoreInputPdu {
         ensure_size!(in: src, size: HEADER_SIZE);
         let signature = src.read_u8();
         if signature != SIGNATURE {
-            return Err(invalid_field_err!("signature", "core input signature must be 0x03"));
+            return Err(invalid_field_err!("signature", "core input signature must be 0x03", in: src));
         }
         let pdu_type = src.read_u8();
         let event_count = src.read_u8();
@@ -224,7 +220,7 @@ impl<'de> Decode<'de> for CoreInputPdu {
             PDU_TYPE_CS_INIT_REQUEST => InitRequestPdu::decode_body(src).map(Self::InitRequest),
             PDU_TYPE_SC_INIT_RESPONSE => InitResponsePdu::decode_body(src).map(Self::InitResponse),
             PDU_TYPE_CS_KEYBOARD_AND_MOUSE_INPUT => InputPdu::decode_body(src, event_count).map(Self::Input),
-            _ => Err(invalid_field_err!("pduType", "unknown core input PDU type")),
+            _ => Err(invalid_field_err!("pduType", "unknown core input PDU type", in: src)),
         }
     }
 }

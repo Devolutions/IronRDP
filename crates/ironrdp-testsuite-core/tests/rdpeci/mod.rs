@@ -184,7 +184,7 @@ fn client_sends_init_request_on_open_and_waits_for_response() {
         .collect::<Vec<_>>();
     assert_eq!(encoded, [INIT_REQUEST.to_vec()]);
     assert!(!client.ready());
-    assert!(client.encode_input(&spec_input_events()).is_err());
+    assert!(client.encode_input(CHANNEL_ID, &spec_input_events()).is_err());
 
     let responses = client
         .process(CHANNEL_ID, &INIT_RESPONSE_CAPTURE)
@@ -202,7 +202,7 @@ fn client_splits_input_into_pdus_of_at_most_255_events() {
         .chain([FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0)])
         .collect::<Vec<_>>();
 
-    let messages = client.encode_input(&events).expect("encode 257 events");
+    let messages = client.encode_input(CHANNEL_ID, &events).expect("encode 257 events");
     let decoded = messages
         .iter()
         .map(|message| match decode_svc_message(message) {

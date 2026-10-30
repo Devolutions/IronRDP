@@ -4294,10 +4294,10 @@ fn process_input(
 ) -> SessionResult<ActiveSessionIteration> {
     let batch = active_stage
         .get_dvc::<CoreInputClient>()
-        .filter(|dvc| dvc.processor().ready() && !events.is_empty())
+        .filter(|dvc| dvc.processor().ready())
         .and_then(|dvc| {
             dvc.processor()
-                .encode_input(events)
+                .encode_input(dvc.channel_id(), events)
                 .and_then(|messages| DvcMessageBatch::try_new(dvc.channel_id(), messages))
                 .inspect_err(
                     |error| warn!(%error, "Unable to encode core input events; sending them as fast-path input"),
