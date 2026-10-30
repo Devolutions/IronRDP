@@ -18,18 +18,19 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ironrdp_core::{ReadCursor, decode, impl_as_any};
+use ironrdp_core::{ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
-use ironrdp_pdu::{PduResult, encode_err};
+use ironrdp_pdu::{PduResult, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, trace, warn};
 
 use crate::pdu::{
     AcknowledgeHostOperationPdu, AcknowledgeOperationPdu, AcknowledgeUndoPendingKeyEventsPdu, AcknowledgementType,
-    CandidateList, ClientOptions, ClientPdu, EditControlInfo, EditControlRange, NotifyClientVersionPdu,
+    CandidateList, ClientOptions, ClientPdu, EditControlInfo, EditControlRange, NotifyClientVersionPdu, PduLayout,
     ReconversionCandidatesPdu, ReportClientOptionsPdu, ServerPdu, TextInputRect, TextString, UpdateTextAndSelectionPdu,
+    VersionedPdu,
 };
-use crate::{CLIENT_TO_SERVER_CHANNEL_NAME, SERVER_TO_CLIENT_CHANNEL_NAME};
+use crate::{CLIENT_TO_SERVER_CHANNEL_NAME, QueueFull, SERVER_TO_CLIENT_CHANNEL_NAME};
 
 /// Largest reassembled message accepted on the server-to-client channel.
 ///
@@ -42,8 +43,35 @@ pub const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 /// Largest number of registered key targets tracked at once.
 pub const MAX_KEY_TARGETS: usize = 1024;
 
-/// Largest number of PDUs queued for the server while the client-to-server channel is closed.
+/// Largest number of registered edit controls tracked at once.
+pub const MAX_EDIT_CONTROLS: usize = 1024;
+
+/// Largest number of PDUs queued for the server, while the client-to-server channel is closed
+/// or until the session sends them.
 pub const MAX_PENDING_PDUS: usize = 1024;
+
+/// Why [`TextInputClient::commit_text`] sent nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitTextError {
+    /// No remote edit control has focus.
+    NoFocus,
+    /// The caret after the text would not fit a 32-bit position.
+    TooLong,
+    /// The queue for the server is full.
+    QueueFull,
+}
+
+impl core::fmt::Display for CommitTextError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::NoFocus => "no remote edit control has focus",
+            Self::TooLong => "the text does not fit the edit control positions",
+            Self::QueueFull => "too many text input PDUs are queued",
+        })
+    }
+}
+
+impl core::error::Error for CommitTextError {}
 
 /// Version numbers announced by a client ([1.7] Versioning and Capability Negotiation).
 ///
@@ -108,6 +136,9 @@ pub struct TextInputClient {
     key_targets: BTreeMap<u32, u32>,
     /// Last nonzero **ordinal** seen per key target.
     host_ordinals: BTreeMap<u32, u32>,
+    /// **editClientOperationId** of each registered edit control, by
+    /// (**textInputClientId**, **editControlId**).
+    edit_controls: BTreeMap<(u32, u32), u32>,
     focused_host: Option<u32>,
     focus: Option<FocusedEditControl>,
     next_operation_id: u32,
@@ -122,6 +153,7 @@ impl TextInputClient {
             server_version: None,
             key_targets: BTreeMap::new(),
             host_ordinals: BTreeMap::new(),
+            edit_controls: BTreeMap::new(),
             focused_host: None,
             focus: None,
             next_operation_id: 1,
@@ -146,24 +178,25 @@ impl TextInputClient {
         self.server_version
     }
 
+    /// The fields both peers support, or the base layout until the server announced its version.
+    pub fn layout(&self) -> PduLayout {
+        self.server_version.map_or(PduLayout::BASE, |server_version| {
+            PduLayout::negotiated((self.config.version_major, self.config.version_minor), server_version)
+        })
+    }
+
     /// The edit control holding focus on the server.
     pub fn focused_edit_control(&self) -> Option<&FocusedEditControl> {
         self.focus.as_ref()
     }
 
-    /// Queues `pdu` for the server.
-    ///
-    /// Beyond [`MAX_PENDING_PDUS`] queued PDUs, `pdu` is dropped.
-    pub fn send(&mut self, pdu: impl Into<ClientPdu>) {
-        let pdu = pdu.into();
+    /// Queues `pdu` for the server, unless [`MAX_PENDING_PDUS`] PDUs are queued already.
+    pub fn send(&mut self, pdu: impl Into<ClientPdu>) -> Result<(), QueueFull> {
         if self.pending.len() == MAX_PENDING_PDUS {
-            warn!(
-                pdu_id = pdu.pdu_id(),
-                "Dropping a text input PDU because too many are queued"
-            );
-            return;
+            return Err(QueueFull);
         }
-        self.pending.push(pdu);
+        self.pending.push(pdu.into());
+        Ok(())
     }
 
     /// Removes and returns the PDUs queued for the server.
@@ -174,14 +207,20 @@ impl TextInputClient {
     /// Replaces the selection of the focused edit control with `text` and places the caret
     /// after it.
     ///
-    /// Returns the operation identifier the server acknowledges, or `None` when no edit control
-    /// has focus.
-    pub fn commit_text(&mut self, text: &str) -> Option<u32> {
-        let focus = self.focus?;
+    /// Returns the operation identifier the server acknowledges.
+    /// Nothing is queued and the selection is left as is when this fails.
+    pub fn commit_text(&mut self, text: &str) -> Result<u32, CommitTextError> {
+        let focus = self.focus.ok_or(CommitTextError::NoFocus)?;
         let new_text = TextString::new(text);
         let begin = focus.selection.begin.min(focus.selection.end);
         let end = focus.selection.begin.max(focus.selection.end);
-        let caret = begin.checked_add(u32::try_from(new_text.utf16_len()).ok()?)?;
+        let caret = u32::try_from(new_text.utf16_len())
+            .ok()
+            .and_then(|length| begin.checked_add(length))
+            .ok_or(CommitTextError::TooLong)?;
+        if self.pending.len() == MAX_PENDING_PDUS {
+            return Err(CommitTextError::QueueFull);
+        }
         let operation_id = self.next_operation_id();
         let text_input_host_id = self.host_of(focus.text_input_client_id);
         self.send(UpdateTextAndSelectionPdu {
@@ -194,18 +233,21 @@ impl TextInputClient {
             new_text,
             selection_begin: caret,
             selection_end: caret,
-        });
+        })
+        .map_err(|QueueFull| CommitTextError::QueueFull)?;
         if let Some(focus) = self.focus.as_mut() {
             focus.selection = EditControlRange {
                 begin: caret,
                 end: caret,
             };
         }
-        Some(operation_id)
+        Ok(operation_id)
     }
 
     /// Applies a server PDU and queues the replies it calls for.
-    pub fn process(&mut self, pdu: ServerPdu) {
+    ///
+    /// Fails when a reply cannot be queued; the replies queued before it stay queued.
+    pub fn process(&mut self, pdu: ServerPdu) -> Result<(), QueueFull> {
         trace!(pdu_id = pdu.pdu_id(), "Text input PDU received");
         match &pdu {
             ServerPdu::NotifyServerVersion(version) => {
@@ -218,11 +260,11 @@ impl TextInputClient {
                 self.send(NotifyClientVersionPdu {
                     version_major: self.config.version_major,
                     version_minor: self.config.version_minor,
-                });
+                })?;
                 if self.config.options != ClientOptions::NONE {
                     self.send(ReportClientOptionsPdu {
                         options: self.config.options,
-                    });
+                    })?;
                 }
             }
             ServerPdu::RefreshClient(_) => {
@@ -246,7 +288,21 @@ impl TextInputClient {
                     self.focused_host = None;
                 }
             }
+            ServerPdu::RegisterRemoteEditControl(control) => {
+                let key = (control.text_input_client_id, control.edit_control_id);
+                if !self.edit_controls.contains_key(&key) && self.edit_controls.len() == MAX_EDIT_CONTROLS {
+                    warn!(
+                        text_input_client_id = control.text_input_client_id,
+                        edit_control_id = control.edit_control_id,
+                        "Ignoring a text input edit control beyond the supported count"
+                    );
+                } else {
+                    self.edit_controls.insert(key, control.edit_client_operation_id);
+                }
+            }
             ServerPdu::UnregisterRemoteTextTarget(target) => {
+                self.edit_controls
+                    .retain(|&(text_input_client_id, _), _| text_input_client_id != target.object_id);
                 if self
                     .focus
                     .is_some_and(|focus| focus.text_input_client_id == target.object_id)
@@ -255,6 +311,8 @@ impl TextInputClient {
                 }
             }
             ServerPdu::UnregisterRemoteEditControl(control) => {
+                self.edit_controls
+                    .remove(&(control.text_input_client_id, control.edit_control_id));
                 if self
                     .focus
                     .is_some_and(|focus| focus.is(control.text_input_client_id, control.edit_control_id))
@@ -277,18 +335,13 @@ impl TextInputClient {
                     {
                         self.focus = None;
                     }
-                    // The PDU carries no operation identifier; the focus loss completes at once
-                    // because no input method holds state for the control ([3.1.5.2.1]).
+                    // The focus loss completes at once because no input method holds state for the
+                    // control ([3.1.5.2.1]).
                     for acknowledgement_type in [
                         AcknowledgementType::FOCUS_LOSS,
                         AcknowledgementType::FOCUS_LEAVE_COMPLETED,
                     ] {
-                        self.send(AcknowledgeOperationPdu {
-                            text_input_client_id: focus.text_input_client_id,
-                            edit_control_id: focus.edit_info.id,
-                            acknowledgement_type,
-                            operation_id: 0,
-                        });
+                        self.acknowledge_control(focus.text_input_client_id, focus.edit_info.id, acknowledgement_type)?;
                     }
                 }
             }
@@ -318,7 +371,7 @@ impl TextInputClient {
                     self.send(AcknowledgeHostOperationPdu {
                         text_input_host_id: host.text_input_host_id,
                         acknowledgement_type: AcknowledgementType::FOCUS_LOSS,
-                    });
+                    })?;
                 }
             }
             ServerPdu::SelectionChanged(selection) => {
@@ -332,12 +385,11 @@ impl TextInputClient {
                         end: u32::try_from(selection.selection_end).unwrap_or(0),
                     };
                 }
-                self.acknowledge(
+                self.acknowledge_control(
                     selection.text_input_client_id,
                     selection.edit_control_id,
                     AcknowledgementType::SELECTION_CHANGE,
-                    0,
-                );
+                )?;
             }
             ServerPdu::TextChanged(change) => {
                 if let Some(focus) = self
@@ -347,12 +399,12 @@ impl TextInputClient {
                 {
                     focus.selection = change.new_selection_range;
                 }
-                self.acknowledge(
-                    change.text_input_client_id,
-                    change.edit_control_id,
-                    AcknowledgementType::TEXT_CHANGE,
-                    change.operation_id,
-                );
+                self.send(AcknowledgeOperationPdu {
+                    text_input_client_id: change.text_input_client_id,
+                    edit_control_id: change.edit_control_id,
+                    acknowledgement_type: AcknowledgementType::TEXT_CHANGE,
+                    operation_id: change.operation_id,
+                })?;
             }
             ServerPdu::ControlConfigurationUpdated(update) => {
                 if let Some(focus) = self
@@ -372,23 +424,21 @@ impl TextInputClient {
                     focus.bounds = geometry.control_bounds;
                 }
             }
-            ServerPdu::CompositionTerminated(termination) => self.acknowledge(
+            ServerPdu::CompositionTerminated(termination) => self.acknowledge_control(
                 termination.text_input_client_id,
                 termination.edit_control_id,
                 AcknowledgementType::COMPOSITION_TERMINATED,
-                0,
-            ),
-            ServerPdu::ControlConversionModeUpdated(update) => self.acknowledge(
+            )?,
+            ServerPdu::ControlConversionModeUpdated(update) => self.acknowledge_control(
                 update.text_input_client_id,
                 update.edit_control_id,
                 AcknowledgementType::CONVERSION_MODE_CHANGED,
-                0,
-            ),
+            )?,
             ServerPdu::UndoPendingKeyEvents(undo) => {
                 // No key event is ever pending here, so there is nothing to undo ([3.1.5.2.7]).
                 self.send(AcknowledgeUndoPendingKeyEventsPdu {
                     undo_request_id: undo.undo_request_id,
-                });
+                })?;
             }
             ServerPdu::DoReconversion(request) => {
                 if request.return_candidates || request.return_range {
@@ -404,7 +454,7 @@ impl TextInputClient {
                         candidate_list: CandidateList::default(),
                         edit_control_id: request.edit_control_id,
                         reconvert_range,
-                    });
+                    })?;
                 }
             }
             ServerPdu::SendKeyToHost(key) => {
@@ -415,6 +465,7 @@ impl TextInputClient {
         if let Some(observer) = self.observer.as_mut() {
             observer(&pdu);
         }
+        Ok(())
     }
 
     /// Forgets the server state, as when the channels restart.
@@ -426,23 +477,36 @@ impl TextInputClient {
     fn forget_registrations(&mut self) {
         self.key_targets.clear();
         self.host_ordinals.clear();
+        self.edit_controls.clear();
         self.focused_host = None;
         self.focus = None;
     }
 
-    fn acknowledge(
+    /// Acknowledges a notification about an edit control that carries no operation identifier.
+    ///
+    /// The acknowledgement carries the **editClientOperationId** of the control's registration,
+    /// which [2.2.2.26] says MUST be acknowledged back, or zero for an unregistered control.
+    /// No acknowledgement type exists for the registration itself.
+    ///
+    /// [2.2.2.26]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
+    fn acknowledge_control(
         &mut self,
         text_input_client_id: u32,
         edit_control_id: u32,
         acknowledgement_type: AcknowledgementType,
-        operation_id: u32,
-    ) {
+    ) -> Result<(), QueueFull> {
+        // UNTESTED: no live server confirms that it expects the registration identifier here.
+        let operation_id = self
+            .edit_controls
+            .get(&(text_input_client_id, edit_control_id))
+            .copied()
+            .unwrap_or(0);
         self.send(AcknowledgeOperationPdu {
             text_input_client_id,
             edit_control_id,
             acknowledgement_type,
             operation_id,
-        });
+        })
     }
 
     /// The key target to address for an edit control of `text_input_client_id`.
@@ -528,8 +592,12 @@ impl DvcProcessor for ServerToClientChannel {
                     break;
                 }
             };
-            match decode::<ServerPdu>(&payload[frame_start..src.pos()]) {
-                Ok(pdu) => client.process(pdu),
+            // The version PDU comes first, so the layout is known for the PDUs that depend on it.
+            let layout = client.layout();
+            match ServerPdu::decode_with(&mut ReadCursor::new(&payload[frame_start..src.pos()]), layout) {
+                Ok(pdu) => client
+                    .process(pdu)
+                    .map_err(|error| pdu_other_err!("text input reply", source: error))?,
                 Err(error) => warn!(pdu_id, %error, "Ignoring an undecodable text input PDU"),
             }
         }
@@ -568,7 +636,7 @@ impl ClientToServerChannel {
         let Some(channel_id) = self.channel_id else {
             return Ok(Vec::new());
         };
-        let messages = to_dvc_messages(lock(&self.client).take_pending());
+        let messages = take_dvc_messages(&self.client);
         if messages.is_empty() {
             return Ok(Vec::new());
         }
@@ -587,7 +655,7 @@ impl DvcProcessor for ClientToServerChannel {
         self.channel_id = Some(channel_id);
         debug!(channel_id, "Text input client-to-server channel started");
         // PDUs queued before the channel opened, such as the version reply, leave now.
-        Ok(to_dvc_messages(lock(&self.client).take_pending()))
+        Ok(take_dvc_messages(&self.client))
     }
 
     fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
@@ -609,6 +677,12 @@ impl DvcProcessor for ClientToServerChannel {
 
 impl DvcClientProcessor for ClientToServerChannel {}
 
-fn to_dvc_messages(pdus: Vec<ClientPdu>) -> Vec<DvcMessage> {
-    pdus.into_iter().map(|pdu| -> DvcMessage { Box::new(pdu) }).collect()
+fn take_dvc_messages(client: &Mutex<TextInputClient>) -> Vec<DvcMessage> {
+    let mut client = lock(client);
+    let layout = client.layout();
+    client
+        .take_pending()
+        .into_iter()
+        .map(|pdu| -> DvcMessage { Box::new(VersionedPdu { pdu, layout }) })
+        .collect()
 }

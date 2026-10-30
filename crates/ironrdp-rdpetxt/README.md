@@ -6,6 +6,7 @@ Windows 11 and Windows Server 2025 hosts use it to connect input methods on the 
 The server sends on `TextInput_ServerToClientDVC` and the client sends on `TextInput_ClientToServerDVC`.
 
 The `pdu` module encodes and decodes every RDPTXT PDU and builds without `std`.
+Fields a minor version adds inside a structure, such as the **bcpTag** of `CoreInputProfile`, are on the wire only when both peers announced that version, so the PDUs encode and decode under a `PduLayout`.
 With the default `std` feature, `client` and `server` each provide a processor per channel around one shared state, because a reply never travels on the channel its request arrived on.
 The session sends the PDUs that state queues through `pending_messages` on the processor of the sending channel.
 

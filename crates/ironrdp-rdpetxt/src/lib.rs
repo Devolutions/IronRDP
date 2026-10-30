@@ -22,3 +22,21 @@ pub mod pdu;
 pub mod client;
 #[cfg(feature = "std")]
 pub mod server;
+
+/// A PDU could not be queued because the queue for the peer is full.
+///
+/// The replies queued while one message is processed are required by the peer, so the
+/// processors fail the channel rather than drop them.
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueFull;
+
+#[cfg(feature = "std")]
+impl core::fmt::Display for QueueFull {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("too many text input PDUs are queued")
+    }
+}
+
+#[cfg(feature = "std")]
+impl core::error::Error for QueueFull {}

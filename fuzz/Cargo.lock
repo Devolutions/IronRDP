@@ -562,7 +562,6 @@ name = "ironrdp-rdpetxt"
 version = "0.0.0"
 dependencies = [
  "ironrdp-core",
- "ironrdp-dvc",
  "ironrdp-str",
 ]
 

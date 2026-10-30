@@ -11,19 +11,20 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use ironrdp_core::{ReadCursor, decode, impl_as_any};
+use ironrdp_core::{ReadCursor, impl_as_any};
 use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor, encode_dvc_messages};
-use ironrdp_pdu::{PduResult, encode_err};
+use ironrdp_pdu::{PduResult, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, warn};
 
-use crate::pdu::{ClientPdu, Guid, NotifyServerVersionPdu, ServerPdu};
-use crate::{CLIENT_TO_SERVER_CHANNEL_NAME, SERVER_TO_CLIENT_CHANNEL_NAME};
+use crate::pdu::{ClientPdu, Guid, NotifyServerVersionPdu, PduLayout, ServerPdu, VersionedPdu};
+use crate::{CLIENT_TO_SERVER_CHANNEL_NAME, QueueFull, SERVER_TO_CLIENT_CHANNEL_NAME};
 
 /// Largest reassembled message accepted on the client-to-server channel.
 pub const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
-/// Largest number of PDUs queued for the client while the server-to-client channel is closed.
+/// Largest number of PDUs queued for the client, while the server-to-client channel is closed
+/// or until the server sends them.
 pub const MAX_PENDING_PDUS: usize = 1024;
 
 /// Application side of the text input objects.
@@ -79,19 +80,20 @@ impl TextInputServer {
         self.client_version
     }
 
-    /// Queues `pdu` for the client.
-    ///
-    /// Beyond [`MAX_PENDING_PDUS`] queued PDUs, `pdu` is dropped.
-    pub fn send(&mut self, pdu: impl Into<ServerPdu>) {
-        let pdu = pdu.into();
+    /// The fields both peers support, or the base layout until the client announced its version.
+    pub fn layout(&self) -> PduLayout {
+        self.client_version.map_or(PduLayout::BASE, |client_version| {
+            PduLayout::negotiated((self.version_major, self.version_minor), client_version)
+        })
+    }
+
+    /// Queues `pdu` for the client, unless [`MAX_PENDING_PDUS`] PDUs are queued already.
+    pub fn send(&mut self, pdu: impl Into<ServerPdu>) -> Result<(), QueueFull> {
         if self.pending.len() == MAX_PENDING_PDUS {
-            warn!(
-                pdu_id = pdu.pdu_id(),
-                "Dropping a text input PDU because too many are queued"
-            );
-            return;
+            return Err(QueueFull);
         }
-        self.pending.push(pdu);
+        self.pending.push(pdu.into());
+        Ok(())
     }
 
     /// Removes and returns the PDUs queued for the client.
@@ -100,7 +102,9 @@ impl TextInputServer {
     }
 
     /// Applies a client PDU and queues the handler's replies.
-    pub fn process(&mut self, pdu: ClientPdu) {
+    ///
+    /// Fails when a reply cannot be queued; the replies queued before it stay queued.
+    pub fn process(&mut self, pdu: ClientPdu) -> Result<(), QueueFull> {
         if let ClientPdu::NotifyClientVersion(version) = &pdu {
             debug!(
                 major = version.version_major,
@@ -109,9 +113,10 @@ impl TextInputServer {
             );
             self.client_version = Some((version.version_major, version.version_minor));
         }
-        for reply in self.handler.client_pdu(pdu) {
-            self.send(reply);
-        }
+        self.handler
+            .client_pdu(pdu)
+            .into_iter()
+            .try_for_each(|reply| self.send(reply))
     }
 
     fn version_pdu(&self) -> ServerPdu {
@@ -158,7 +163,7 @@ impl ServerToClientChannel {
         let Some(channel_id) = self.channel_id else {
             return Ok(Vec::new());
         };
-        let messages = to_dvc_messages(lock(&self.server).take_pending());
+        let messages = take_dvc_messages(&mut lock(&self.server));
         if messages.is_empty() {
             return Ok(Vec::new());
         }
@@ -180,7 +185,7 @@ impl DvcProcessor for ServerToClientChannel {
         server.client_version = None;
         // The server announces its version first ([1.7] Versioning and Capability Negotiation).
         let mut messages: Vec<DvcMessage> = vec![Box::new(server.version_pdu())];
-        messages.extend(to_dvc_messages(server.take_pending()));
+        messages.extend(take_dvc_messages(&mut server));
         Ok(messages)
     }
 
@@ -246,8 +251,12 @@ impl DvcProcessor for ClientToServerChannel {
                     break;
                 }
             };
-            match decode::<ClientPdu>(&payload[frame_start..src.pos()]) {
-                Ok(pdu) => server.process(pdu),
+            // The version PDU comes first, so the layout is known for the PDUs that depend on it.
+            let layout = server.layout();
+            match ClientPdu::decode_with(&mut ReadCursor::new(&payload[frame_start..src.pos()]), layout) {
+                Ok(pdu) => server
+                    .process(pdu)
+                    .map_err(|error| pdu_other_err!("text input reply", source: error))?,
                 Err(error) => warn!(pdu_id, %error, "Ignoring an undecodable text input PDU"),
             }
         }
@@ -257,6 +266,11 @@ impl DvcProcessor for ClientToServerChannel {
 
 impl DvcServerProcessor for ClientToServerChannel {}
 
-fn to_dvc_messages(pdus: Vec<ServerPdu>) -> Vec<DvcMessage> {
-    pdus.into_iter().map(|pdu| -> DvcMessage { Box::new(pdu) }).collect()
+fn take_dvc_messages(server: &mut TextInputServer) -> Vec<DvcMessage> {
+    let layout = server.layout();
+    server
+        .take_pending()
+        .into_iter()
+        .map(|pdu| -> DvcMessage { Box::new(VersionedPdu { pdu, layout }) })
+        .collect()
 }

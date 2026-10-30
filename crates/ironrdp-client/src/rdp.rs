@@ -701,6 +701,10 @@ pub enum RdpInputEvent {
 impl RdpInputEvent {
     /// Returns whether the event carries input from the local user, as opposed to session control.
     fn is_user_input(&self) -> bool {
+        #[cfg(feature = "text-input")]
+        if matches!(self, Self::CommitText(_)) {
+            return true;
+        }
         matches!(
             self,
             Self::FastPath(_)
@@ -6735,6 +6739,8 @@ mod tests {
         );
         assert!(keyboard.is_user_input());
         assert!(RdpInputEvent::DismissHoveringTouchContact { contact_id: 1 }.is_user_input());
+        #[cfg(feature = "text-input")]
+        assert!(RdpInputEvent::CommitText("a".to_owned()).is_user_input());
         assert!(!RdpInputEvent::Close.is_user_input());
         assert!(
             !RdpInputEvent::Resize {

@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor, cast_length, invalid_field_err};
 
-use super::{Guid, TextString};
+use super::{Guid, PduLayout, TextString};
 use crate::wire::{Wire, wire_newtype, wire_struct};
 
 wire_struct! {
@@ -80,27 +80,77 @@ wire_struct! {
     }
 }
 
-wire_struct! {
-    /// An input profile ([2.2.1.6] CoreInputProfile).
+/// An input profile ([2.2.1.6] CoreInputProfile).
+///
+/// It takes 82 bytes when [`PduLayout::bcp_tag`] is set, and 74 bytes otherwise.
+///
+/// [2.2.1.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CoreInputProfile {
+    pub langid: u16,
+    pub clsid: Guid,
+    pub guid_profile: Guid,
+    pub catid: Guid,
+    pub hkl: u32,
+    pub klid: u32,
+    pub lcid: u32,
+    /// `InputProcessor` (1) or `KeyboardLayout` (2).
+    pub profile_type: u32,
+    pub caps: u32,
+    pub flags: u32,
+    /// Language identifier convertible to a BCP-47 tag.
     ///
-    /// [2.2.1.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-    pub struct CoreInputProfile {
-        pub langid: u16,
-        pub clsid: Guid,
-        pub guid_profile: Guid,
-        pub catid: Guid,
-        pub hkl: u32,
-        pub klid: u32,
-        pub lcid: u32,
-        /// `InputProcessor` (1) or `KeyboardLayout` (2).
-        pub profile_type: u32,
-        pub caps: u32,
-        pub flags: u32,
-        /// Language identifier convertible to a BCP-47 tag.
-        ///
-        /// Introduced by version 1, minor bit 0x00000002.
-        pub bcp_tag: u64,
+    /// Introduced by version 1, minor bit 0x00000002: it is on the wire only under a
+    /// [`PduLayout`] with `bcp_tag` set, and decodes as zero otherwise.
+    pub bcp_tag: u64,
+}
+
+impl CoreInputProfile {
+    /// Size without **bcpTag**.
+    const BASE_SIZE: usize = 2 /* langid */ + 3 * 16 /* clsid, guidProfile, catid */ + 6 * 4 /* hkl .. flags */;
+}
+
+impl Wire for CoreInputProfile {
+    fn wire_size(&self, layout: PduLayout) -> usize {
+        Self::BASE_SIZE
+            + if layout.bcp_tag {
+                8 /* bcpTag */
+            } else {
+                0
+            }
+    }
+
+    fn write(&self, dst: &mut WriteCursor<'_>, layout: PduLayout) -> EncodeResult<()> {
+        self.langid.write(dst, layout)?;
+        self.clsid.write(dst, layout)?;
+        self.guid_profile.write(dst, layout)?;
+        self.catid.write(dst, layout)?;
+        self.hkl.write(dst, layout)?;
+        self.klid.write(dst, layout)?;
+        self.lcid.write(dst, layout)?;
+        self.profile_type.write(dst, layout)?;
+        self.caps.write(dst, layout)?;
+        self.flags.write(dst, layout)?;
+        if layout.bcp_tag {
+            self.bcp_tag.write(dst, layout)?;
+        }
+        Ok(())
+    }
+
+    fn read(src: &mut ReadCursor<'_>, layout: PduLayout) -> DecodeResult<Self> {
+        Ok(Self {
+            langid: Wire::read(src, layout)?,
+            clsid: Wire::read(src, layout)?,
+            guid_profile: Wire::read(src, layout)?,
+            catid: Wire::read(src, layout)?,
+            hkl: Wire::read(src, layout)?,
+            klid: Wire::read(src, layout)?,
+            lcid: Wire::read(src, layout)?,
+            profile_type: Wire::read(src, layout)?,
+            caps: Wire::read(src, layout)?,
+            flags: Wire::read(src, layout)?,
+            bcp_tag: if layout.bcp_tag { Wire::read(src, layout)? } else { 0 },
+        })
     }
 }
 
@@ -329,21 +379,24 @@ wire_newtype! {
 pub struct CandidateList(pub Vec<TextString>);
 
 impl Wire for CandidateList {
-    fn wire_size(&self) -> usize {
-        4 /* candidateListSize */ + self.0.iter().map(Wire::wire_size).sum::<usize>()
+    fn wire_size(&self, layout: PduLayout) -> usize {
+        4 /* candidateListSize */ + self.0.iter().map(|candidate| candidate.wire_size(layout)).sum::<usize>()
     }
 
-    fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        let size: u32 = cast_length!("candidateListSize", self.wire_size() - 4 /* candidateListSize */)?;
-        size.write(dst)?;
-        self.0.iter().try_for_each(|candidate| candidate.write(dst))
+    fn write(&self, dst: &mut WriteCursor<'_>, layout: PduLayout) -> EncodeResult<()> {
+        let size: u32 = cast_length!(
+            "candidateListSize",
+            self.wire_size(layout) - 4 /* candidateListSize */
+        )?;
+        size.write(dst, layout)?;
+        self.0.iter().try_for_each(|candidate| candidate.write(dst, layout))
     }
 
-    fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        let mut list = read_sized(src, "candidateListSize")?;
+    fn read(src: &mut ReadCursor<'_>, layout: PduLayout) -> DecodeResult<Self> {
+        let mut list = read_sized(src, "candidateListSize", layout)?;
         let mut candidates = Vec::new();
         while !list.is_empty() {
-            candidates.push(TextString::read(&mut list)?);
+            candidates.push(TextString::read(&mut list, layout)?);
         }
         Ok(Self(candidates))
     }
@@ -357,29 +410,32 @@ impl Wire for CandidateList {
 pub struct OcclusionList(pub Vec<CoreInputViewOcclusion>);
 
 impl Wire for OcclusionList {
-    fn wire_size(&self) -> usize {
-        4 /* occludingViewsSize */ + self.0.iter().map(Wire::wire_size).sum::<usize>()
+    fn wire_size(&self, layout: PduLayout) -> usize {
+        4 /* occludingViewsSize */ + self.0.iter().map(|occlusion| occlusion.wire_size(layout)).sum::<usize>()
     }
 
-    fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-        let size: u32 = cast_length!("occludingViewsSize", self.wire_size() - 4 /* occludingViewsSize */)?;
-        size.write(dst)?;
-        self.0.iter().try_for_each(|occlusion| occlusion.write(dst))
+    fn write(&self, dst: &mut WriteCursor<'_>, layout: PduLayout) -> EncodeResult<()> {
+        let size: u32 = cast_length!(
+            "occludingViewsSize",
+            self.wire_size(layout) - 4 /* occludingViewsSize */
+        )?;
+        size.write(dst, layout)?;
+        self.0.iter().try_for_each(|occlusion| occlusion.write(dst, layout))
     }
 
-    fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-        let mut list = read_sized(src, "occludingViewsSize")?;
+    fn read(src: &mut ReadCursor<'_>, layout: PduLayout) -> DecodeResult<Self> {
+        let mut list = read_sized(src, "occludingViewsSize", layout)?;
         let mut occlusions = Vec::new();
         while !list.is_empty() {
-            occlusions.push(CoreInputViewOcclusion::read(&mut list)?);
+            occlusions.push(CoreInputViewOcclusion::read(&mut list, layout)?);
         }
         Ok(Self(occlusions))
     }
 }
 
 /// Reads a 4-byte size in bytes and returns a cursor over that many bytes.
-fn read_sized<'a>(src: &mut ReadCursor<'a>, field: &'static str) -> DecodeResult<ReadCursor<'a>> {
-    let size = usize::try_from(u32::read(src)?).map_err(|_| invalid_field_err!(field, "too large"))?;
+fn read_sized<'a>(src: &mut ReadCursor<'a>, field: &'static str, layout: PduLayout) -> DecodeResult<ReadCursor<'a>> {
+    let size = usize::try_from(u32::read(src, layout)?).map_err(|_| invalid_field_err!(field, "too large"))?;
     if src.len() < size {
         return Err(invalid_field_err!(field, "exceeds the remaining data", in: src));
     }

@@ -61,8 +61,8 @@ pub(crate) fn commit_text(active_stage: &mut ActiveStage, text: &str) -> Option<
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .commit_text(text);
-    if committed.is_none() {
-        debug!("Dropping committed text because no remote edit control has focus");
+    if let Err(error) = committed {
+        debug!(%error, "Dropping committed text");
         return None;
     }
     pending_batch(active_stage)

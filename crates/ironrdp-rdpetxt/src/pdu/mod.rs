@@ -7,6 +7,8 @@
 //!
 //! Decoding ignores body bytes past the fields this crate knows, because later minor versions
 //! append fields ([1.7] Versioning and Capability Negotiation).
+//! Fields added inside a structure are on the wire only when both peers support them, so
+//! [`ServerPdu`] and [`ClientPdu`] encode and decode under a [`PduLayout`].
 //!
 //! [MS-RDPETXT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
 //! [2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
@@ -33,6 +35,56 @@ pub type TextString = PrefixedString<CchU32, NoNull>;
 /// [MS-DTYP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Guid(pub [u8; 16]);
+
+/// Version (major, minor bit) that introduced **bcpTag** of [`CoreInputProfile`].
+const BCP_TAG_VERSION: (u32, u32) = (1, 0x0000_0002);
+
+/// Whether `version`, as (major, minor) announced by a peer, includes the update introduced by
+/// `update` ([1.7] Versioning and Capability Negotiation).
+///
+/// A higher major version includes every update of the lower ones.
+///
+/// [1.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
+const fn has_update(version: (u32, u32), update: (u32, u32)) -> bool {
+    version.0 > update.0 || (version.0 == update.0 && version.1 & update.1 != 0)
+}
+
+/// Fields that only some protocol versions carry.
+///
+/// A field is on the wire only when both peers announced the version that introduced it
+/// ([1.7] Versioning and Capability Negotiation).
+/// [`Encode`] and [`Decode`] use [`PduLayout::FULL`].
+///
+/// [1.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
+/// [`Encode`]: ironrdp_core::Encode
+/// [`Decode`]: ironrdp_core::Decode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PduLayout {
+    /// **bcpTag** of [`CoreInputProfile`], introduced by version 1, minor bit 0x00000002.
+    pub bcp_tag: bool,
+}
+
+impl PduLayout {
+    /// The layout of version 1 without updates.
+    pub const BASE: Self = Self { bcp_tag: false };
+
+    /// Every field this crate knows.
+    pub const FULL: Self = Self { bcp_tag: true };
+
+    /// The fields both peers support, given the (major, minor) version each announced.
+    pub const fn negotiated(local: (u32, u32), peer: (u32, u32)) -> Self {
+        Self {
+            bcp_tag: has_update(local, BCP_TAG_VERSION) && has_update(peer, BCP_TAG_VERSION),
+        }
+    }
+}
+
+/// A PDU with the layout to encode it under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedPdu<P> {
+    pub pdu: P,
+    pub layout: PduLayout,
+}
 
 /// Size of the PDU header.
 const HEADER_SIZE: usize = 4 /* size */ + 2 /* pduId */;
@@ -90,15 +142,38 @@ macro_rules! pdu_enum {
                 matches!(pdu_id, $($id)|*)
             }
 
-            fn body_size(&self) -> usize {
+            /// Size of this PDU under `layout`.
+            pub fn size_with(&self, layout: PduLayout) -> usize {
+                $crate::pdu::HEADER_SIZE + self.body_size(layout)
+            }
+
+            /// Encodes this PDU under `layout`.
+            pub fn encode_with(
+                &self,
+                dst: &mut ironrdp_core::WriteCursor<'_>,
+                layout: PduLayout,
+            ) -> ironrdp_core::EncodeResult<()> {
+                ensure_size!(in: dst, size: self.size_with(layout));
+                dst.write_u32($crate::pdu::header_size_field(self.body_size(layout))?);
+                dst.write_u16(self.pdu_id());
                 match self {
-                    $(Self::$variant(pdu) => $crate::wire::Wire::wire_size(pdu),)*
+                    $(Self::$variant(pdu) => $crate::wire::Wire::write(pdu, dst, layout),)*
                 }
             }
 
-            fn write_body(&self, dst: &mut ironrdp_core::WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+            /// Decodes a PDU laid out as `layout`.
+            pub fn decode_with(src: &mut ReadCursor<'_>, layout: PduLayout) -> DecodeResult<Self> {
+                let (pdu_id, body) = $crate::pdu::read_frame(src)?;
+                let mut body = ReadCursor::new(body);
+                match pdu_id {
+                    $($id => $crate::wire::Wire::read(&mut body, layout).map(Self::$variant),)*
+                    _ => Err(invalid_field_err!("pduId", "unsupported PDU identifier", in: src)),
+                }
+            }
+
+            fn body_size(&self, layout: PduLayout) -> usize {
                 match self {
-                    $(Self::$variant(pdu) => $crate::wire::Wire::write(pdu, dst),)*
+                    $(Self::$variant(pdu) => $crate::wire::Wire::wire_size(pdu, layout),)*
                 }
             }
         }
@@ -113,10 +188,7 @@ macro_rules! pdu_enum {
 
         impl ironrdp_core::Encode for $name {
             fn encode(&self, dst: &mut ironrdp_core::WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
-                ensure_size!(in: dst, size: self.size());
-                dst.write_u32($crate::pdu::header_size_field(self.body_size())?);
-                dst.write_u16(self.pdu_id());
-                self.write_body(dst)
+                self.encode_with(dst, PduLayout::FULL)
             }
 
             fn name(&self) -> &'static str {
@@ -124,22 +196,35 @@ macro_rules! pdu_enum {
             }
 
             fn size(&self) -> usize {
-                $crate::pdu::HEADER_SIZE + self.body_size()
+                self.size_with(PduLayout::FULL)
             }
         }
 
         impl<'de> ironrdp_core::Decode<'de> for $name {
             fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-                let (pdu_id, body) = $crate::pdu::read_frame(src)?;
-                let mut body = ReadCursor::new(body);
-                match pdu_id {
-                    $($id => $crate::wire::Wire::read(&mut body).map(Self::$variant),)*
-                    _ => Err(invalid_field_err!("pduId", "unsupported PDU identifier", in: src)),
-                }
+                Self::decode_with(src, PduLayout::FULL)
             }
         }
 
+        impl ironrdp_core::Encode for VersionedPdu<$name> {
+            fn encode(&self, dst: &mut ironrdp_core::WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+                self.pdu.encode_with(dst, self.layout)
+            }
+
+            fn name(&self) -> &'static str {
+                stringify!($name)
+            }
+
+            fn size(&self) -> usize {
+                self.pdu.size_with(self.layout)
+            }
+        }
+
+        #[cfg(feature = "std")]
         impl ironrdp_dvc::DvcEncode for $name {}
+
+        #[cfg(feature = "std")]
+        impl ironrdp_dvc::DvcEncode for VersionedPdu<$name> {}
     };
 }
 
