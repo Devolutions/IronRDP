@@ -81,6 +81,7 @@ pub use ironrdp_rdpeusb_native as usb;
 
 #[cfg(all(any(windows, target_os = "linux"), feature = "clipboard"))]
 mod clipboard;
+mod mouse_cursor;
 mod redirection;
 
 #[cfg(feature = "usb")]

@@ -144,6 +144,11 @@ The crate forwards only location data supplied by its caller and performs no loc
 Telemetry dynamic channel client and PDU codec implemented as described in MS-RDPET.
 The crate sends only the connection milestones measured by its caller and reads no clock.
 
+#### [`crates/ironrdp-rdpemsc`](./crates/ironrdp-rdpemsc)
+
+Mouse cursor dynamic channel client, server, and PDU codecs implemented as described in MS-RDPEMSC.
+The client queues pointer updates for the caller, which applies them through its existing MS-RDPBCGR pointer handling; the crate performs no I/O.
+
 #### [`crates/ironrdp-rdpadrv`](./crates/ironrdp-rdpadrv)
 
 Audio level and drive letter persistence dynamic channel clients, servers, and PDU codecs implemented as described in MS-RDPADRV.
