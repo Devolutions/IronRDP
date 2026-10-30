@@ -187,14 +187,14 @@ impl<'de> Decode<'de> for ServerIoPdu {
 
         match function_id {
             CAPABILITIES_REQUEST => {
-                ensure_size!(in: src, size: 2);
+                ensure_size!(in: src, size: 2 /* Version */);
                 Ok(Self::Capabilities(CapabilitiesRequest {
                     request_id,
                     version: src.read_u16(),
                 }))
             }
             CREATE_FILE_REQUEST => {
-                ensure_size!(in: src, size: 20);
+                ensure_size!(in: src, size: 4 /* DeviceId */ + 4 /* dwDesiredAccess */ + 4 /* dwShareMode */ + 4 /* dwCreationDisposition */ + 4 /* dwFlagsAndAttributes */);
                 Ok(Self::CreateFile(CreateFileRequest {
                     request_id,
                     device_id: src.read_u32(),
@@ -205,7 +205,7 @@ impl<'de> Decode<'de> for ServerIoPdu {
                 }))
             }
             READ_REQUEST => {
-                ensure_size!(in: src, size: 12);
+                ensure_size!(in: src, size: 4 /* cbBytesToRead */ + 4 /* OffsetHigh */ + 4 /* OffsetLow */);
                 Ok(Self::Read(ReadRequest {
                     request_id,
                     bytes_to_read: src.read_u32(),
@@ -213,7 +213,7 @@ impl<'de> Decode<'de> for ServerIoPdu {
                 }))
             }
             WRITE_REQUEST => {
-                ensure_size!(in: src, size: 12);
+                ensure_size!(in: src, size: 4 /* cbWrite */ + 4 /* OffsetHigh */ + 4 /* OffsetLow */);
                 let length = read_length(src, "cbWrite")?;
                 let offset = read_offset(src);
                 ensure_size!(in: src, size: length);
@@ -226,7 +226,7 @@ impl<'de> Decode<'de> for ServerIoPdu {
                 }))
             }
             IOCONTROL_REQUEST => {
-                ensure_size!(in: src, size: 12);
+                ensure_size!(in: src, size: 4 /* IoCode */ + 4 /* cbIn */ + 4 /* cbOut */);
                 let io_code = src.read_u32();
                 let input_length = read_length(src, "cbIn")?;
                 let output_size = src.read_u32();
@@ -251,7 +251,7 @@ impl<'de> Decode<'de> for ServerIoPdu {
                 }))
             }
             SPECIFIC_IOCANCEL_REQUEST => {
-                ensure_size!(in: src, size: 4);
+                ensure_size!(in: src, size: 4 /* UnusedBits, idToCancel */);
                 // UNTESTED: UnusedBits precedes the 24-bit idToCancel on the wire, as the normative
                 // diagram of [MS-RDPEPNP] section 2.2.2.3.9 lays it out; the only sample cancels ID 0,
                 // which cannot tell this layout from the SERVER_IO_HEADER one. A wrong layout makes
@@ -373,7 +373,7 @@ impl Encode for CapabilitiesReply {
 
 impl<'de> Decode<'de> for CapabilitiesReply {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 2);
+        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 2 /* Version */);
         let request_id = read_client_header(src, RESPONSE_PACKET)?;
         Ok(Self {
             request_id,
@@ -416,7 +416,7 @@ impl Encode for CreateFileReply {
 
 impl<'de> Decode<'de> for CreateFileReply {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 4);
+        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 4 /* Result */);
         let request_id = read_client_header(src, RESPONSE_PACKET)?;
         Ok(Self {
             request_id,
@@ -463,7 +463,7 @@ impl Encode for ReadReply {
 
 impl<'de> Decode<'de> for ReadReply {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 8);
+        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 4 /* Result */ + 4 /* cbBytesRead */);
         let request_id = read_client_header(src, RESPONSE_PACKET)?;
         let result = HResult(src.read_u32());
         let data = read_data(src, "cbBytesRead")?;
@@ -511,7 +511,7 @@ impl Encode for WriteReply {
 
 impl<'de> Decode<'de> for WriteReply {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 8);
+        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 4 /* Result */ + 4 /* cbBytesWritten */);
         let request_id = read_client_header(src, RESPONSE_PACKET)?;
         Ok(Self {
             request_id,
@@ -559,7 +559,7 @@ impl Encode for IoControlReply {
 
 impl<'de> Decode<'de> for IoControlReply {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 8);
+        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + 4 /* Result */ + 4 /* cbBytesReadReturned */);
         let request_id = read_client_header(src, RESPONSE_PACKET)?;
         let result = HResult(src.read_u32());
         let data = read_data(src, "cbBytesReadReturned")?;
@@ -609,7 +609,7 @@ impl Encode for CustomEvent {
 
 impl<'de> Decode<'de> for CustomEvent {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + Guid::FIXED_PART_SIZE + 4);
+        ensure_size!(in: src, size: CLIENT_HEADER_SIZE + Guid::FIXED_PART_SIZE /* CustomEventGUID */ + 4 /* cbData */);
         read_client_header(src, CUSTOM_EVENT_PACKET)?;
         let event_guid = Guid::decode(src)?;
         let data = read_data(src, "cbData")?;

@@ -217,12 +217,7 @@ impl ReadCompletion {
     ///
     /// Oversized data is replaced with an [`HResult::INSUFFICIENT_BUFFER`] reply.
     pub fn complete(self, result: HResult, data: Vec<u8>) {
-        let (result, data) = if fits(data.len(), self.bytes_to_read) {
-            (result, data)
-        } else {
-            warn!(len = data.len(), "PnP read returned more data than requested");
-            (HResult::INSUFFICIENT_BUFFER, Vec::new())
-        };
+        let (result, data) = clamp_data(result, data, self.bytes_to_read, "Read");
         self.inner.complete(|request_id| {
             Box::new(ReadReply {
                 request_id,
@@ -267,12 +262,7 @@ impl IoControlCompletion {
     ///
     /// [MS-RDPEPNP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepnp/
     pub fn complete(self, result: HResult, data: Vec<u8>) {
-        let (result, data) = if fits(data.len(), self.output_size) {
-            (result, data)
-        } else {
-            warn!(len = data.len(), "PnP IOControl returned more data than cbOut");
-            (HResult::INSUFFICIENT_BUFFER, Vec::new())
-        };
+        let (result, data) = clamp_data(result, data, self.output_size, "IOControl");
         self.inner.complete(|request_id| {
             Box::new(IoControlReply {
                 request_id,
@@ -415,25 +405,6 @@ impl FileRedirectorClient {
                 }
                 Ok(())
             }
-            (State::Open, ServerIoPdu::IoControl(request))
-                if !request.output.is_empty() && !fits_exactly(request.output.len(), request.output_size) =>
-            {
-                // A DataOut that is present but not cbOut bytes long completes with
-                // ERROR_INSUFFICIENT_BUFFER ([MS-RDPEPNP] section 3.2.5.2.2.7).
-                let mut state = shared.state.lock();
-                if state.outstanding.contains(&request.request_id) {
-                    return Err("duplicate request ID");
-                }
-                push_inline(
-                    &mut state,
-                    Box::new(IoControlReply {
-                        request_id: request.request_id,
-                        result: HResult::INSUFFICIENT_BUFFER,
-                        data: Vec::new(),
-                    }),
-                );
-                Ok(())
-            }
             (State::Open, request @ (ServerIoPdu::Read(_) | ServerIoPdu::Write(_) | ServerIoPdu::IoControl(_))) => {
                 let request_id = request.request_id();
                 // The client terminates the channel on a duplicate request ID ([MS-RDPEPNP] section 3.1.1).
@@ -478,23 +449,26 @@ impl FileRedirectorClient {
                         },
                     ),
                     ServerIoPdu::IoControl(request) => {
-                        let output_size = request.output_size;
-                        file.io_control(
-                            request,
-                            IoControlCompletion {
-                                inner: Completion {
-                                    target,
-                                    abort: |request_id| {
-                                        Box::new(IoControlReply {
-                                            request_id,
-                                            result: HResult::E_ABORT,
-                                            data: Vec::new(),
-                                        })
-                                    },
+                        let completion = IoControlCompletion {
+                            inner: Completion {
+                                target,
+                                abort: |request_id| {
+                                    Box::new(IoControlReply {
+                                        request_id,
+                                        result: HResult::E_ABORT,
+                                        data: Vec::new(),
+                                    })
                                 },
-                                output_size,
                             },
-                        );
+                            output_size: request.output_size,
+                        };
+                        if !request.output.is_empty() && !fits_exactly(request.output.len(), request.output_size) {
+                            // A DataOut that is present but not cbOut bytes long completes with
+                            // ERROR_INSUFFICIENT_BUFFER ([MS-RDPEPNP] section 3.2.5.2.2.7).
+                            completion.complete(HResult::INSUFFICIENT_BUFFER, Vec::new());
+                        } else {
+                            file.io_control(request, completion);
+                        }
                     }
                     _ => unreachable!("the outer match selects I/O requests"),
                 }
@@ -661,8 +635,17 @@ fn push_inline(state: &mut ChannelState, message: DvcMessage) {
         .push(message);
 }
 
-fn fits(len: usize, limit: u32) -> bool {
-    u32::try_from(len).is_ok_and(|len| len <= limit)
+/// Replaces data longer than the `limit` the request allows with an `ERROR_INSUFFICIENT_BUFFER` result.
+fn clamp_data(result: HResult, data: Vec<u8>, limit: u32, request: &str) -> (HResult, Vec<u8>) {
+    if u32::try_from(data.len()).is_ok_and(|len| len <= limit) {
+        (result, data)
+    } else {
+        warn!(
+            len = data.len(),
+            limit, request, "PnP backend returned more data than the request allows"
+        );
+        (HResult::INSUFFICIENT_BUFFER, Vec::new())
+    }
 }
 
 fn fits_exactly(len: usize, size: u32) -> bool {

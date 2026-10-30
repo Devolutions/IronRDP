@@ -758,12 +758,12 @@ impl SessionStatus {
 #[derive(Clone, Debug)]
 pub struct RdpInputSender {
     input_sender: mpsc::Sender<RdpInputEvent>,
-    /// Unbounded queue for ordered protocol events that must not be dropped (clipboard, USB).
+    /// Unbounded queue for ordered protocol events that must not be dropped (clipboard, USB, PnP).
     #[cfg_attr(
-        not(any(feature = "clipboard", feature = "usb")),
+        not(any(feature = "clipboard", feature = "usb", feature = "pnp")),
         expect(
             dead_code,
-            reason = "ordered events are unavailable without the clipboard or usb feature"
+            reason = "ordered events are unavailable without the clipboard, usb or pnp feature"
         )
     )]
     clipboard_sender: mpsc::UnboundedSender<RdpInputEvent>,
@@ -785,7 +785,7 @@ impl RdpInputSender {
         (sender, receiver)
     }
 
-    fn channel_with_close_signal(
+    pub(crate) fn channel_with_close_signal(
         capacity: usize,
     ) -> (
         Self,
@@ -902,6 +902,21 @@ impl RdpInputSender {
         event: ironrdp_rdpeusb_native::UrbdrcEvent,
     ) -> Result<(), mpsc::error::SendError<RdpInputEvent>> {
         self.clipboard_sender.send(RdpInputEvent::Urbdrc(event))
+    }
+
+    /// Enqueues a PnP I/O reply or channel close independently of ordinary bounded input.
+    ///
+    /// Dropping a reply would leave the server application's request pending forever, and dropping
+    /// a close would leave a channel that violated the protocol open at the server.
+    ///
+    /// Replies answer requests this session loop already read from the server, so a stalled loop
+    /// reads no new requests; custom events are the only messages a backend sends unprompted.
+    #[cfg(feature = "pnp")]
+    pub(crate) fn send_pnp(
+        &self,
+        request: ironrdp_rdpepnp::client::UplinkRequest,
+    ) -> Result<(), mpsc::error::SendError<RdpInputEvent>> {
+        self.clipboard_sender.send(RdpInputEvent::Pnp(request))
     }
 
     /// Requests immediate session cancellation, bypassing the bounded input queue.
@@ -4406,6 +4421,19 @@ fn urbdrc_iteration(
     })
 }
 
+#[cfg(feature = "pnp")]
+fn pnp_iteration(
+    active_stage: &mut ActiveStage,
+    request: ironrdp_rdpepnp::client::UplinkRequest,
+) -> SessionResult<ActiveSessionIteration> {
+    let drdynvc = active_stage.get_svc_processor_mut::<ironrdp_dvc::DrdynvcClient>();
+    Ok(match crate::pnp::process_uplink_request(drdynvc, request)? {
+        Some((batch, None)) => ActiveSessionIteration::dvc(batch),
+        Some((batch, Some(tunnel))) => ActiveSessionIteration::tunnel(tunnel, (batch, Vec::new())),
+        None => ActiveSessionIteration::outputs(Vec::new()),
+    })
+}
+
 #[cfg(feature = "rdpdr")]
 fn process_rdpdr_drive_change(
     active_stage: &mut ActiveStage,
@@ -4604,7 +4632,7 @@ async fn active_session(
             GracefulDisconnectReason::UserInitiated,
         ));
     }
-    #[cfg(not(any(feature = "clipboard", feature = "usb")))]
+    #[cfg(not(any(feature = "clipboard", feature = "usb", feature = "pnp")))]
     let _ = clipboard_event_receiver;
 
     let mut rdpei_input_state = None;
@@ -4620,11 +4648,11 @@ async fn active_session(
         let video_deadline: Option<tokio::time::Instant> = None;
         let mut malformed_bitmap_redraw_queued = false;
         let clipboard_event = async {
-            #[cfg(any(feature = "clipboard", feature = "usb"))]
+            #[cfg(any(feature = "clipboard", feature = "usb", feature = "pnp"))]
             {
                 clipboard_event_receiver.recv().await
             }
-            #[cfg(not(any(feature = "clipboard", feature = "usb")))]
+            #[cfg(not(any(feature = "clipboard", feature = "usb", feature = "pnp")))]
             {
                 core::future::pending::<Option<RdpInputEvent>>().await
             }
@@ -4800,7 +4828,7 @@ async fn active_session(
                     }
                 }
                 clipboard_event = clipboard_event => {
-                    #[cfg(any(feature = "clipboard", feature = "usb"))]
+                    #[cfg(any(feature = "clipboard", feature = "usb", feature = "pnp"))]
                     {
                         match clipboard_event {
                             #[cfg(feature = "clipboard")]
@@ -4809,12 +4837,14 @@ async fn active_session(
                             }
                             #[cfg(feature = "usb")]
                             Some(RdpInputEvent::Urbdrc(event)) => urbdrc_iteration(&mut active_stage, event)?,
-                            // Only clipboard and USB events are queued on this channel.
+                            #[cfg(feature = "pnp")]
+                            Some(RdpInputEvent::Pnp(request)) => pnp_iteration(&mut active_stage, request)?,
+                            // Only clipboard, USB and PnP events are queued on this channel.
                             Some(_) => ActiveSessionIteration::outputs(Vec::new()),
                             None => return Err(ironrdp_session::general_err!("clipboard event channel closed")),
                         }
                     }
-                    #[cfg(not(any(feature = "clipboard", feature = "usb")))]
+                    #[cfg(not(any(feature = "clipboard", feature = "usb", feature = "pnp")))]
                     {
                         let _ = clipboard_event;
                         unreachable!("clipboard receive is pending without the clipboard feature")
@@ -4958,13 +4988,7 @@ async fn active_session(
                         )
                     }
                     #[cfg(feature = "pnp")]
-                    RdpInputEvent::Pnp(request) => {
-                        match crate::pnp::process_uplink_request(&mut active_stage, request)? {
-                            Some((batch, None)) => ActiveSessionIteration::dvc(batch),
-                            Some((batch, Some(tunnel))) => ActiveSessionIteration::tunnel(tunnel, (batch, Vec::new())),
-                            None => ActiveSessionIteration::outputs(Vec::new()),
-                        }
-                    }
+                    RdpInputEvent::Pnp(request) => pnp_iteration(&mut active_stage, request)?,
                     RdpInputEvent::SendStaticChannelData { channel_name, data } => {
                         let outputs = match active_stage.process_svc_messages_by_name(&channel_name, vec![SvcMessage::from(data)]) {
                             Ok(frame) => vec![ActiveStageOutput::ResponseFrame(frame)],

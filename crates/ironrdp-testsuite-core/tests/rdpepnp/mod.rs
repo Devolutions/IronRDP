@@ -121,6 +121,7 @@ const IOCONTROL_REQUEST: [u8; 37] = [
     0x02, 0x00, 0x00, 0x00, 0x2d, 0x00, 0x00, 0x00, 0x20, 0x72, 0x00, 0x00, 0x6c, 0x59, 0x00, 0x00, // DataIn
     0x00, // UnusedByte
 ];
+// The section 4.4 IoControl Reply sample is byte-identical to its Read Reply sample.
 const IOCONTROL_REPLY: [u8; 21] = READ_REPLY;
 const IOCANCEL_REQUEST: [u8; 12] = [
     0xff, 0xff, 0xff, 0xff, // RequestId, UnusedBits
@@ -839,14 +840,16 @@ fn custom_events_are_sent_when_the_server_supports_them() {
     assert_eq!(channel.take_uplinked(), [CUSTOM_EVENT.to_vec()]);
 }
 
-// oracle: spec MS-RDPEPNP §3.2.5.2.1.1 (no custom events below version 6)
-#[test]
-fn custom_events_are_refused_by_a_version_4_server() {
+// oracle: spec MS-RDPEPNP §3.2.5.2.1.1 (no custom events below version 6; the client replies with its own version)
+#[rstest]
+#[case::version_4(0x04)]
+#[case::version_5(0x05)]
+fn custom_events_are_refused_below_version_6(#[case] server_version: u8) {
     let info = ready_info_client(vec![sample_device()]);
     let mut channel = IoChannel::open(&info);
     let mut capabilities = CAPABILITIES_REQUEST;
-    capabilities[8] = 0x04; // Version
-    channel.process(&capabilities);
+    capabilities[8] = server_version; // Version
+    assert_eq!(channel.process(&capabilities), [CAPABILITIES_REPLY.to_vec()]);
     channel.process(&CREATE_FILE_REQUEST);
     let events = channel.observed.lock().unwrap().events.clone().unwrap();
 
