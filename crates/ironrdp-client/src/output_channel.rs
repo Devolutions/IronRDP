@@ -212,7 +212,7 @@ impl OutputEventSender {
     /// For callbacks that run synchronously inside the session loop, such as dynamic channel handlers, which cannot
     /// `.await` and must not lose a [`DropPolicy::MustDeliver`] event to a full channel.
     /// Clones of this sender share one queue.
-    #[cfg(feature = "w365")]
+    #[cfg(any(feature = "w365", feature = "multipoint"))]
     pub(crate) fn defer(&self, event: RdpOutputEvent) {
         self.deferred.lock().expect("not poisoned").push_back(event);
     }
@@ -246,6 +246,15 @@ impl OutputEventSender {
                 Err(latest) => self.send_latest(latest),
             }
         }
+    }
+
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub async fn __test_send_deferred(
+        &self,
+        close_receiver: &mut watch::Receiver<bool>,
+    ) -> Result<bool, mpsc::error::SendError<RdpOutputEvent>> {
+        self.send_deferred(close_receiver).await
     }
 
     /// Best-effort send used for out-of-band producers (e.g. a Hyper-V

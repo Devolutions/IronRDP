@@ -2649,6 +2649,7 @@ dependencies = [
  "ironrdp-server",
  "ironrdp-session",
  "ironrdp-svc",
+ "ironrdp-tls",
  "ironrdp-vmconnect",
  "opus2",
  "pico-args",
@@ -2850,6 +2851,7 @@ dependencies = [
  "ironrdp-propertyset",
  "ironrdp-rail",
  "ironrdp-rdcleanpath",
+ "ironrdp-rdpadrv",
  "ironrdp-rdpdr",
  "ironrdp-rdpeai",
  "ironrdp-rdpecam",
@@ -3109,6 +3111,7 @@ dependencies = [
  "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-rdpadrv",
  "ironrdp-rdpdr",
  "ironrdp-rdpear",
  "ironrdp-rdpel",
@@ -3228,6 +3231,16 @@ name = "ironrdp-rdcleanpath"
 version = "0.3.1"
 dependencies = [
  "der 0.8.3",
+]
+
+[[package]]
+name = "ironrdp-rdpadrv"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core 0.3.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "tracing",
 ]
 
 [[package]]
@@ -3616,6 +3629,7 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
+ "ironrdp-rdpadrv",
  "ironrdp-rdpdr",
  "ironrdp-rdpeai",
  "ironrdp-rdpear",
@@ -3675,6 +3689,7 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rail",
+ "ironrdp-rdpadrv",
  "ironrdp-rdpdr",
  "ironrdp-rdpdr-native",
  "ironrdp-rdpeai",

@@ -246,6 +246,8 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
     let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
     let _ = decode::<ironrdp_rdpemsc::pdu::MouseCursorPdu>(data);
+    let _ = decode::<ironrdp_rdpadrv::pdu::AudioLevelPdu>(data);
+    let _ = decode::<ironrdp_rdpadrv::pdu::DriveLetterPdu>(data);
     let _ = decode::<ironrdp_w365::vdcswitch::pdu::VdcSwitchPdu>(data);
     let _ = decode::<ironrdp_w365::battery::BatteryPdu>(data);
     let _ = decode::<ironrdp_w365::power_request::PowerRequestPdu>(data);
@@ -435,6 +437,10 @@ pub fn pdu_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, ironrdp_rdpear::AuthRedirectionPdu);
     pdu_round_trip_one!(data, ironrdp_rdpear::RemoteGuardInnerPacket<'_>);
     rdpear_ndr_round_trip(data);
+
+    // Audio level and drive letter persistence
+    pdu_round_trip_one!(data, ironrdp_rdpadrv::pdu::AudioLevelPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpadrv::pdu::DriveLetterPdu);
 
     // Virtual desktop control
     pdu_round_trip_one!(data, ironrdp_w365::vdcswitch::pdu::VdcSwitchPdu);

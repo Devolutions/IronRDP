@@ -462,6 +462,7 @@ dependencies = [
  "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-rdpadrv",
  "ironrdp-rdpdr",
  "ironrdp-rdpear",
  "ironrdp-rdpel",
@@ -511,6 +512,16 @@ dependencies = [
  "sha1",
  "tap",
  "x509-cert",
+]
+
+[[package]]
+name = "ironrdp-rdpadrv"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "tracing",
 ]
 
 [[package]]
