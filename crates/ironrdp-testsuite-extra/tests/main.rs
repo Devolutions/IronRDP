@@ -8,6 +8,7 @@ mod client;
 #[cfg(any(target_os = "linux", windows))]
 mod cliprdr_native;
 mod dvc_pipe_proxy;
+mod dynamic_channel;
 mod e2e;
 mod gateway_detect;
 mod rdpeudp_tokio;
