@@ -19,6 +19,13 @@ pub(crate) fn capabilities(opts: &RdpServerOptions, size: DesktopSize) -> Vec<ca
         caps.push(capability_sets::CapabilitySet::LargePointer(large_pointer));
     }
 
+    if let Some(remote_app) = &opts.remote_app {
+        caps.push(capability_sets::CapabilitySet::Rail(remote_app.rail.clone()));
+        caps.push(capability_sets::CapabilitySet::WindowList(
+            remote_app.window_list.clone(),
+        ));
+    }
+
     caps
 }
 
