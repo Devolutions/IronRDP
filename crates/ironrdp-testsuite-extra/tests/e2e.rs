@@ -3213,8 +3213,23 @@ where
     (upgraded_framed, connection_result)
 }
 
+/// Waits until at least `bytes` of server data wait unread on `tcp`. With
+/// small socket buffers, a server write larger than the buffers is then in
+/// progress and stays pending while the client does not read.
+async fn wait_until_unread(tcp: &TcpStream, bytes: usize) {
+    let mut buf = vec![0u8; bytes];
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while tcp.peek(&mut buf).await.expect("peek") < bytes {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the server's large write did not start");
+}
+
 /// Input from the client is handled while the server is in a long write: a
 /// large EGFX batch to a client that does not read stays in the socket.
+// oracle: regression #2310
 #[tokio::test]
 async fn input_is_handled_while_a_large_write_is_pending() {
     struct MouseRecorder(UnboundedSender<MouseEvent>);
@@ -3276,7 +3291,7 @@ async fn input_is_handled_while_a_large_write_is_pending() {
                     messages: vec![SvcMessage::from(vec![0u8; 16 * 1024 * 1024])],
                 }))
                 .unwrap();
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                wait_until_unread(framed.get_inner().0.get_ref().0, 2048).await;
 
                 let input = pdu::input::fast_path::FastPathInput::new(vec![
                     pdu::input::fast_path::FastPathInputEvent::MouseEvent(pdu::input::MousePdu {
@@ -3310,6 +3325,7 @@ async fn input_is_handled_while_a_large_write_is_pending() {
 /// server writes what is still queued within a time limit, so a client that
 /// does not read cannot hold the connection open. The server drops the rest,
 /// and the client reads much less than was queued.
+// oracle: mutant the final flush waits for a client that does not read
 #[tokio::test]
 async fn the_final_flush_to_a_client_that_does_not_read_has_a_time_limit() {
     // The server's `FINAL_FLUSH_TIMEOUT`, and a margin.
@@ -3362,7 +3378,7 @@ async fn the_final_flush_to_a_client_that_does_not_read_has_a_time_limit() {
                     messages: vec![SvcMessage::from(vec![0u8; QUEUED])],
                 }))
                 .unwrap();
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                wait_until_unread(framed.get_inner().0.get_ref().0, 2048).await;
                 let disconnect = pdu::x224::X224(pdu::mcs::DisconnectProviderUltimatum::from_reason(
                     pdu::mcs::DisconnectReason::UserRequested,
                 ));
@@ -3456,6 +3472,7 @@ impl ironrdp::svc::SvcClientProcessor for RawCliprdrClient {}
 /// stops reading from it once the queued replies reach their bound, so its
 /// memory does not grow without limit. Each Format List gets a Format List
 /// Response (MS-RDPECLIP 3.1.5.2.2) of about the same size.
+// oracle: mutant the server reads requests without a bound on the replies it queues
 #[tokio::test]
 async fn a_client_that_does_not_read_its_replies_is_not_read_further() {
     // Replies the server may queue (`MAX_QUEUED_REPLY_BYTES`), plus what the
@@ -3518,9 +3535,10 @@ async fn a_client_that_does_not_read_its_replies_is_not_read_further() {
                     .expect("encode format list");
                 let batch = one.repeat(1000);
 
+                // The flood ends when the server reads nothing for 2 s.
                 let mut sent = 0;
                 while sent < FLOOD_BYTES {
-                    let write = tokio::time::timeout(Duration::from_secs(1), framed.write_all(&batch)).await;
+                    let write = tokio::time::timeout(Duration::from_secs(2), framed.write_all(&batch)).await;
                     if write.is_err() {
                         break;
                     }
@@ -3533,6 +3551,12 @@ async fn a_client_that_does_not_read_its_replies_is_not_read_further() {
             });
             let sent = client.await.expect("client");
             server_task.abort();
+            // The flood went past the 1 MiB reply bound, so the server stopped
+            // reading because of it, not because the flood ended early.
+            assert!(
+                1024 * 1024 < sent,
+                "the flood stopped after {sent} bytes, before the reply bound"
+            );
             assert!(
                 sent < 16 * 1024 * 1024,
                 "the server read {sent} bytes of requests from a client that reads no replies"

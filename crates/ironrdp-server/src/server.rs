@@ -5163,7 +5163,13 @@ impl RdpServer {
         let mut event_writer = display_writer.clone();
         let mut auto_reconnect_writer = display_writer.clone();
         let mut heartbeat_writer = display_writer.clone();
-        let mut udp_tunnel_writer = display_writer.clone();
+        // Responses to tunnel payloads are replies too, so that frame acks
+        // on the tunnel are read while a large frame is written over TCP.
+        let mut udp_tunnel_writer = writer.clone();
+        let pdu_queue = Rc::clone(&queue);
+        let display_queue = Rc::clone(&queue);
+        let event_queue = Rc::clone(&queue);
+        let tunnel_queue = Rc::clone(&queue);
         let udp_transport_for_events = Rc::clone(&udp_transport);
         let udp_transport_for_pdus = Rc::clone(&udp_transport);
         let mut cliprdr_writer = display_writer.clone();
@@ -5229,7 +5235,7 @@ impl RdpServer {
                         // read its replies is read no further until they
                         // drain. PDUs with no reply (input, frame acks) are
                         // still read while a large frame is written.
-                        writer.wait_until_replies_below(MAX_QUEUED_REPLY_BYTES).await;
+                        pdu_queue.wait_until_replies_below(MAX_QUEUED_REPLY_BYTES).await;
                     }
                     state => break Ok(state),
                 }
@@ -5243,7 +5249,7 @@ impl RdpServer {
             loop {
                 // Back-pressure: take the next update only when what was
                 // queued before is on the wire, as when this wrote directly.
-                display_writer.wait_until_written().await;
+                display_queue.wait_until_written().await;
                 match display_updates.next_update().await {
                     Ok(Some(update)) => {
                         let _graphics = graphics_write.lock().await;
@@ -5288,7 +5294,7 @@ impl RdpServer {
                 }
                 // Back-pressure without the `this` lock: wait for the queued
                 // PDUs to be written, so that `dispatch_pdu` can run meanwhile.
-                event_writer.wait_until_written().await;
+                event_queue.wait_until_written().await;
                 while let Ok(ev) = ev_receiver.try_recv() {
                     events.push(ev);
                 }
@@ -5466,23 +5472,28 @@ impl RdpServer {
                     *udp_transport.borrow_mut() = None;
                     return core::future::pending::<ServerResult<RunState>>().await;
                 };
-                let mut this = this.lock().await;
-                let (server, conn) = &mut *this;
-                Self::record_tunnel_sub_headers(conn, &message.sub_headers);
-                if message.data.is_empty() {
-                    continue;
-                }
-                let result = server
-                    .dispatch_udp_tunnel_payload(
-                        conn,
-                        &message.data,
-                        &mut udp_tunnel_writer,
-                        user_channel_id,
-                        Some(&transport),
-                    )
-                    .await?;
+                let result = {
+                    let mut this = this.lock().await;
+                    let (server, conn) = &mut *this;
+                    Self::record_tunnel_sub_headers(conn, &message.sub_headers);
+                    if message.data.is_empty() {
+                        continue;
+                    }
+                    server
+                        .dispatch_udp_tunnel_payload(
+                            conn,
+                            &message.data,
+                            &mut udp_tunnel_writer,
+                            user_channel_id,
+                            Some(&transport),
+                        )
+                        .await?
+                };
                 match result {
-                    RunState::Continue => continue,
+                    // Back-pressure without the `this` lock, as in
+                    // `dispatch_pdu`: a client that floods the tunnel and does
+                    // not read TCP is read no further until the replies drain.
+                    RunState::Continue => tunnel_queue.wait_until_replies_below(MAX_QUEUED_REPLY_BYTES).await,
                     state => break Ok(state),
                 }
             }
@@ -6731,15 +6742,19 @@ const MAX_QUEUED_REPLY_BYTES: usize = 1024 * 1024;
 struct OutboundQueue {
     pending: RefCell<VecDeque<QueuedPdu>>,
     /// Bytes queued and not yet fully written.
+    ///
+    /// INVARIANT: Equals the sum of the lengths of the PDUs in `pending` and of the PDU being written, so
+    /// `write_queued` can subtract a PDU's length once it is done with it.
     queued_bytes: core::cell::Cell<usize>,
     /// The part of `queued_bytes` that replies to client PDUs.
+    ///
+    /// INVARIANT: As for `queued_bytes`, counting only the PDUs whose `reply` is set.
     queued_reply_bytes: core::cell::Cell<usize>,
     /// Write what is queued, then stop.
     finishing: core::cell::Cell<bool>,
     /// The writer stopped (write error, or finished).
     closed: core::cell::Cell<bool>,
     pushed: tokio::sync::Notify,
-    drained: tokio::sync::Notify,
     /// A PDU was written.
     written: tokio::sync::Notify,
 }
@@ -6781,28 +6796,28 @@ impl OutboundQueue {
         Ok(())
     }
 
-    /// Waits until at most `limit` bytes of replies are queued (or the
-    /// writer stopped). Other PDUs, such as a large frame, do not count, so
-    /// input that gets no reply is read while they are written.
-    async fn wait_until_replies_below(&self, limit: usize) {
+    /// Waits until `done` holds, re-checked after each written PDU, or the
+    /// writer stopped.
+    async fn wait_until(&self, done: impl Fn(&Self) -> bool) {
         loop {
             let written = self.written.notified();
-            if self.queued_reply_bytes.get() <= limit || self.closed.get() {
+            if done(self) || self.closed.get() {
                 return;
             }
             written.await;
         }
     }
 
+    /// Waits until at most `limit` bytes of replies are queued (or the
+    /// writer stopped). Other PDUs, such as a large frame, do not count, so
+    /// input that gets no reply is read while they are written.
+    async fn wait_until_replies_below(&self, limit: usize) {
+        self.wait_until(|queue| queue.queued_reply_bytes.get() <= limit).await;
+    }
+
     /// Waits until everything queued so far is written (or the writer stopped).
     async fn wait_until_written(&self) {
-        loop {
-            let drained = self.drained.notified();
-            if self.queued_bytes.get() == 0 || self.closed.get() {
-                return;
-            }
-            drained.await;
-        }
+        self.wait_until(|queue| queue.queued_bytes.get() == 0).await;
     }
 
     /// Lets [`Self::write_queued`] return once the queue is empty.
@@ -6856,19 +6871,19 @@ impl OutboundQueue {
                 let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 // A write that takes this long on a healthy LAN is TCP
                 // back-pressure (slow client or link); only the writer waits.
-                if write_ms >= 50 {
+                if 50 <= write_ms {
                     stalls += 1;
                     if stalls == 1 {
                         warn!(
                             bytes = len,
                             write_ms,
-                            "client write stalled, possible TCP back-pressure (more stalls of this connection at debug level)"
+                            "Client write stalled, possible TCP back-pressure (more stalls of this connection at debug level)"
                         );
                     } else {
-                        debug!(bytes = len, write_ms, stalls, "client write stalled");
+                        debug!(bytes = len, write_ms, stalls, "Client write stalled");
                     }
                 } else {
-                    trace!(bytes = len, write_ms, "client write");
+                    trace!(bytes = len, write_ms, "Client write");
                 }
                 if res.is_ok()
                     && let Some(c) = completion
@@ -6889,15 +6904,11 @@ impl OutboundQueue {
             if let Err(e) = res {
                 break Err(ServerError::io("write_all", e));
             }
-            if self.queued_bytes.get() == 0 {
-                self.drained.notify_waiters();
-            }
         };
         self.closed.set(true);
         self.pending.borrow_mut().clear();
         self.queued_bytes.set(0);
         self.queued_reply_bytes.set(0);
-        self.drained.notify_waiters();
         self.written.notify_waiters();
         result
     }
@@ -6962,16 +6973,8 @@ impl QueuedWriter {
         }
     }
 
-    async fn wait_until_replies_below(&self, limit: usize) {
-        self.queue.wait_until_replies_below(limit).await;
-    }
-
     fn write_counter(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.writes)
-    }
-
-    async fn wait_until_written(&self) {
-        self.queue.wait_until_written().await;
     }
 }
 
@@ -7802,61 +7805,6 @@ mod cliprdr_error_tests {
         }
     }
 
-    /// Queued PDUs reach the socket in queue order, and a finished queue is
-    /// written out before the writer returns.
-    #[tokio::test]
-    async fn queued_writes_keep_their_order() {
-        let queue = Rc::new(OutboundQueue::default());
-        let mut a = QueuedWriter::new(Rc::clone(&queue));
-        let mut b = a.clone();
-        a.write_all(b"one").await.expect("queue");
-        b.write_all(b"two").await.expect("queue");
-        a.write_all(b"three").await.expect("queue");
-        assert_eq!(a.write_counter().load(Ordering::Relaxed), 3);
-
-        let mut socket = CapturingWriter::default();
-        queue.finish();
-        queue.write_queued(&mut socket).await.expect("write");
-        assert_eq!(socket.0, b"onetwothree");
-        // Written, and the writer stopped: nothing more is accepted.
-        tokio::time::timeout(Duration::from_millis(100), a.wait_until_written())
-            .await
-            .expect("nothing left to write");
-        assert!(a.write_all(b"late").await.is_err());
-    }
-
-    /// Only replies count against the reply bound: a large frame in the
-    /// queue does not hold up the read path, and queued replies above the
-    /// bound do until they are written.
-    #[tokio::test]
-    async fn only_replies_count_against_the_reply_bound() {
-        let queue = Rc::new(OutboundQueue::default());
-        let mut frames = QueuedWriter::new(Rc::clone(&queue));
-        let mut replies = frames.for_replies();
-        frames.write_all(&[0u8; 64]).await.expect("queue");
-        tokio::time::timeout(Duration::from_millis(100), replies.wait_until_replies_below(16))
-            .await
-            .expect("a frame is not a reply");
-
-        replies.write_all(&[1u8; 16]).await.expect("queue");
-        tokio::time::timeout(Duration::from_millis(100), replies.wait_until_replies_below(16))
-            .await
-            .expect("at the bound");
-        replies.write_all(&[2u8; 1]).await.expect("queue");
-        let early = tokio::time::timeout(Duration::from_millis(20), replies.wait_until_replies_below(16)).await;
-        assert!(early.is_err(), "above the bound until written");
-
-        let mut socket = CapturingWriter::default();
-        queue.finish();
-        let (written, ()) = tokio::join!(queue.write_queued(&mut socket), async {
-            tokio::time::timeout(Duration::from_millis(100), replies.wait_until_replies_below(16))
-                .await
-                .expect("written");
-        });
-        written.expect("write");
-        assert_eq!(socket.0.len(), 64 + 16 + 1);
-    }
-
     /// A clipboard message the channel refuses keeps the session alive.
     #[tokio::test]
     async fn a_refused_clipboard_message_does_not_end_the_client_loop() {
@@ -7911,6 +7859,69 @@ mod cliprdr_error_tests {
             "the session must keep running after a refused clipboard message, got {state:?}"
         );
         assert!(writer.0.is_empty(), "a refused message has nothing to put on the wire");
+    }
+}
+
+/// The client loop's outbound queue: write order and the reply bound.
+#[cfg(test)]
+mod outbound_queue_tests {
+    use super::*;
+
+    /// Queued PDUs reach the socket in queue order, and a finished queue is
+    /// written out before the writer returns.
+    // oracle: mutant writing queued PDUs out of order, or returning before a finished queue is written
+    #[tokio::test]
+    async fn queued_writes_keep_their_order() {
+        let queue = Rc::new(OutboundQueue::default());
+        let mut a = QueuedWriter::new(Rc::clone(&queue));
+        let mut b = a.clone();
+        a.write_all(b"one").await.expect("queue");
+        b.write_all(b"two").await.expect("queue");
+        a.write_all(b"three").await.expect("queue");
+        assert_eq!(a.write_counter().load(Ordering::Relaxed), 3);
+
+        let mut socket = cliprdr_error_tests::CapturingWriter::default();
+        queue.finish();
+        queue.write_queued(&mut socket).await.expect("write");
+        assert_eq!(socket.0, b"onetwothree");
+        // Written, and the writer stopped: nothing more is accepted.
+        tokio::time::timeout(Duration::from_millis(100), queue.wait_until_written())
+            .await
+            .expect("nothing left to write");
+        assert!(a.write_all(b"late").await.is_err());
+    }
+
+    /// Only replies count against the reply bound: a large frame in the
+    /// queue does not hold up the read path, and queued replies above the
+    /// bound do until they are written.
+    // oracle: mutant counting frames against the reply bound, or not waiting for replies above it
+    #[tokio::test]
+    async fn only_replies_count_against_the_reply_bound() {
+        let queue = Rc::new(OutboundQueue::default());
+        let mut frames = QueuedWriter::new(Rc::clone(&queue));
+        let mut replies = frames.for_replies();
+        frames.write_all(&[0u8; 64]).await.expect("queue");
+        tokio::time::timeout(Duration::from_millis(100), queue.wait_until_replies_below(16))
+            .await
+            .expect("a frame is not a reply");
+
+        replies.write_all(&[1u8; 16]).await.expect("queue");
+        tokio::time::timeout(Duration::from_millis(100), queue.wait_until_replies_below(16))
+            .await
+            .expect("at the bound");
+        replies.write_all(&[2u8; 1]).await.expect("queue");
+        let early = tokio::time::timeout(Duration::from_millis(20), queue.wait_until_replies_below(16)).await;
+        assert!(early.is_err(), "above the bound until written");
+
+        let mut socket = cliprdr_error_tests::CapturingWriter::default();
+        queue.finish();
+        let (written, ()) = tokio::join!(queue.write_queued(&mut socket), async {
+            tokio::time::timeout(Duration::from_millis(100), queue.wait_until_replies_below(16))
+                .await
+                .expect("written");
+        });
+        written.expect("write");
+        assert_eq!(socket.0.len(), 64 + 16 + 1);
     }
 }
 
