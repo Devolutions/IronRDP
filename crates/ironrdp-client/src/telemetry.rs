@@ -19,7 +19,7 @@ use ironrdp_session::ActiveStage;
 use tracing::{debug, warn};
 
 /// Channel state left by one session loop iteration.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct Observation {
     /// The graphics pipeline channel is open.
     pub graphics_channel_open: bool,
@@ -65,10 +65,18 @@ impl ConnectionTelemetry {
         }
     }
 
-    /// Records the channel state an iteration ending at `now` left.
+    /// Advances by one session loop iteration that ended at `now` in `observation`, and returns the report if it is due.
     ///
-    /// Call at the end of each session loop iteration, after [`Self::take_report`].
-    pub fn observe(&mut self, observation: Observation, now: Instant) {
+    /// `can_send` is false when the iteration already carries another dynamic channel batch; the report then waits.
+    /// The report is taken before `observation` is recorded, so the iteration that opens the telemetry channel never
+    /// carries the report: it would otherwise precede that iteration's DRDYNVC Create Response, and the server would drop it.
+    pub fn step(&mut self, observation: Observation, now: Instant, can_send: bool) -> Option<TelemetryPdu> {
+        let report = if can_send { self.take_report() } else { None };
+        self.observe(observation, now);
+        report
+    }
+
+    fn observe(&mut self, observation: Observation, now: Instant) {
         if observation.graphics_channel_open {
             self.graphics_channel_opened.get_or_insert(now);
         }
@@ -80,10 +88,10 @@ impl ConnectionTelemetry {
 
     /// Returns the report once both milestones are recorded and the telemetry channel is open.
     ///
-    /// Only earlier observations count, so the iteration that opens the telemetry channel never carries the report:
-    /// the report would otherwise precede that iteration's DRDYNVC Create Response, and the server would drop it.
-    /// At most one report is returned per connection, because servers log each report they receive.
-    pub fn take_report(&mut self) -> Option<TelemetryPdu> {
+    /// At most one report is returned per connection ([MS-RDPET] section 1.3).
+    ///
+    /// [MS-RDPET]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpet/
+    fn take_report(&mut self) -> Option<TelemetryPdu> {
         if self.done || !self.telemetry_channel_open {
             return None;
         }
@@ -98,9 +106,11 @@ impl ConnectionTelemetry {
         })
     }
 
-    /// Encodes the report from [`Self::take_report`] for the telemetry channel of `active_stage`.
-    pub fn report(&mut self, active_stage: &ActiveStage) -> Option<DvcMessageBatch> {
-        let report = self.take_report()?;
+    /// Runs [`Self::step`] on the state of `active_stage`, and encodes a due report for its telemetry channel.
+    // UNTESTED: no test builds an `ActiveStage` with an open telemetry channel, so the channel lookup and the logged
+    // failures are untested. The encoding and channel ID routing are tested through `TelemetryClient::send_report`.
+    pub fn report(&mut self, active_stage: &ActiveStage, can_send: bool) -> Option<DvcMessageBatch> {
+        let report = self.step(Observation::of(active_stage), Instant::now(), can_send)?;
         let Some(telemetry) = active_stage.get_dvc::<TelemetryClient>() else {
             warn!("Telemetry channel closed before the connection telemetry was sent");
             return None;

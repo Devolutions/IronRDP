@@ -16,6 +16,12 @@ const GRAPHICS_ACTIVE: Observation = Observation {
     telemetry_channel_open: false,
 };
 
+const AWAITING_GRAPHICS: Observation = Observation {
+    graphics_channel_open: true,
+    graphics_active: false,
+    telemetry_channel_open: true,
+};
+
 const ALL_OPEN: Observation = Observation {
     graphics_channel_open: true,
     graphics_active: true,
@@ -26,22 +32,15 @@ fn after(started: Instant, millis: u64) -> Instant {
     started + Duration::from_millis(millis)
 }
 
-/// Runs one session loop iteration: the report is taken before the iteration's state is observed.
-fn iteration(telemetry: &mut ConnectionTelemetry, observation: Observation, now: Instant) -> Option<TelemetryPdu> {
-    let report = telemetry.take_report();
-    telemetry.observe(observation, now);
-    report
-}
-
 // oracle: spec MS-RDPET §2.2.1
 #[test]
 fn report_times_milestones_from_connection_start() {
     let started = Instant::now();
     let mut telemetry = ConnectionTelemetry::new(started);
 
-    assert_eq!(iteration(&mut telemetry, GRAPHICS_OPEN, after(started, 5)), None);
-    assert_eq!(iteration(&mut telemetry, ALL_OPEN, after(started, 12)), None);
-    let report = iteration(&mut telemetry, ALL_OPEN, after(started, 30));
+    assert_eq!(telemetry.step(GRAPHICS_OPEN, after(started, 5), true), None);
+    assert_eq!(telemetry.step(ALL_OPEN, after(started, 12), true), None);
+    let report = telemetry.step(ALL_OPEN, after(started, 30), true);
 
     assert_eq!(
         report,
@@ -59,25 +58,40 @@ fn report_times_milestones_from_connection_start() {
 fn report_waits_for_iteration_after_telemetry_channel_opens() {
     let started = Instant::now();
     let mut telemetry = ConnectionTelemetry::new(started);
-    assert_eq!(iteration(&mut telemetry, GRAPHICS_ACTIVE, after(started, 10)), None);
+    assert_eq!(telemetry.step(GRAPHICS_ACTIVE, after(started, 10), true), None);
 
     // This iteration answers the telemetry channel's Create Request, so it carries no report.
-    assert_eq!(iteration(&mut telemetry, ALL_OPEN, after(started, 20)), None);
+    assert_eq!(telemetry.step(ALL_OPEN, after(started, 20), true), None);
 
-    let report = iteration(&mut telemetry, ALL_OPEN, after(started, 30)).expect("report after the channel opened");
+    let report = telemetry
+        .step(ALL_OPEN, after(started, 30), true)
+        .expect("report after the channel opened");
     assert_eq!(report.graphics_channel_opened_ms, 10);
     assert_eq!(report.first_graphics_received_ms, 10);
 }
 
+// oracle: mutant sending the report in an iteration that already carries another dynamic channel batch
+#[test]
+fn report_waits_for_iteration_without_other_batch() {
+    let started = Instant::now();
+    let mut telemetry = ConnectionTelemetry::new(started);
+    telemetry.step(ALL_OPEN, after(started, 10), true);
+
+    assert_eq!(telemetry.step(ALL_OPEN, after(started, 20), false), None);
+
+    assert!(telemetry.step(ALL_OPEN, after(started, 30), true).is_some());
+}
+
+// oracle: spec MS-RDPET §1.3
 #[test]
 fn report_is_sent_once_per_connection() {
     let started = Instant::now();
     let mut telemetry = ConnectionTelemetry::new(started);
-    iteration(&mut telemetry, ALL_OPEN, after(started, 10));
+    telemetry.step(ALL_OPEN, after(started, 10), true);
 
-    assert!(iteration(&mut telemetry, ALL_OPEN, after(started, 20)).is_some());
+    assert!(telemetry.step(ALL_OPEN, after(started, 20), true).is_some());
 
-    assert_eq!(iteration(&mut telemetry, ALL_OPEN, after(started, 30)), None);
+    assert_eq!(telemetry.step(ALL_OPEN, after(started, 30), true), None);
 }
 
 // oracle: spec MS-RDPET §3.2.5.1
@@ -85,13 +99,8 @@ fn report_is_sent_once_per_connection() {
 fn no_report_before_first_graphics_message() {
     let started = Instant::now();
     let mut telemetry = ConnectionTelemetry::new(started);
-    let awaiting_graphics = Observation {
-        graphics_channel_open: true,
-        graphics_active: false,
-        telemetry_channel_open: true,
-    };
 
-    iteration(&mut telemetry, awaiting_graphics, after(started, 10));
+    telemetry.step(AWAITING_GRAPHICS, after(started, 10), true);
 
-    assert_eq!(iteration(&mut telemetry, awaiting_graphics, after(started, 20)), None);
+    assert_eq!(telemetry.step(AWAITING_GRAPHICS, after(started, 20), true), None);
 }

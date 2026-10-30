@@ -86,6 +86,7 @@ fn client_sends_report_on_open_channel() {
     assert_eq!(data.data(), REPORT_BYTES);
 }
 
+// oracle: mutant sending a report before the channel opens or after it closes
 #[test]
 fn client_sends_no_report_without_open_channel() {
     let mut client = TelemetryClient::new();
@@ -110,12 +111,16 @@ fn server_hands_report_to_handler() {
     assert_eq!(*handler.0.lock().unwrap(), [REPORT]);
 }
 
-#[test]
-fn server_ignores_malformed_report() {
+// oracle: spec MS-RDPET §3.1.5.1
+#[rstest]
+#[case::id_other_than_one(&[0x02, 0x12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])]
+#[case::length_other_than_eighteen(&[0x01, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])]
+#[case::truncated(&REPORT_BYTES[..17])]
+fn server_ignores_malformed_report(#[case] bytes: &[u8]) {
     let handler = RecordingHandler::default();
     let mut server = TelemetryServer::new(Box::new(handler.clone()));
 
-    let responses = server.process(CHANNEL_ID, &REPORT_BYTES[..17]).unwrap();
+    let responses = server.process(CHANNEL_ID, bytes).unwrap();
 
     assert!(responses.is_empty());
     assert!(handler.0.lock().unwrap().is_empty());

@@ -5233,17 +5233,15 @@ async fn active_session(
         #[cfg(feature = "telemetry")]
         {
             // The report waits for an iteration without another dynamic channel batch.
-            if iteration
+            let can_send = iteration
                 .dvc_batch
                 .as_ref()
-                .is_none_or(|batch| batch.messages().is_empty())
-                && let Some(batch) = connection_telemetry.report(&active_stage)
-            {
+                .is_none_or(|batch| batch.messages().is_empty());
+            if let Some(batch) = connection_telemetry.report(&active_stage, can_send) {
                 iteration.dvc_batch = Some(batch);
                 // A tunneled request's reply route does not apply to the telemetry report.
                 iteration.reply_tunnel = None;
             }
-            connection_telemetry.observe(crate::telemetry::Observation::of(&active_stage), Instant::now());
         }
 
         #[cfg(feature = "video")]
