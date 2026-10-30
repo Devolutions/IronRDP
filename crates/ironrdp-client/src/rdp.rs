@@ -54,6 +54,8 @@ pub use ironrdp_rdpdr::backend::{
     RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPort, RdpdrPortKind,
     RdpdrPrinter,
 };
+#[cfg(feature = "core-input")]
+use ironrdp_rdpeci::client::CoreInputClient;
 use ironrdp_rdpei::pdu::{CsReadyFlags, RdpInputProtocolVersion, TouchEventPdu};
 use ironrdp_rdpei::{RdpeiClient, RdpeiInputState};
 #[cfg(feature = "location")]
@@ -2460,6 +2462,11 @@ fn build_connector(
         drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpemsc::MouseCursorClient::new());
     }
 
+    #[cfg(feature = "core-input")]
+    if config.channels.core_input {
+        drdynvc = drdynvc.with_dynamic_channel(CoreInputClient::new());
+    }
+
     #[cfg(feature = "location")]
     if config.channels.location {
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
@@ -4281,6 +4288,30 @@ impl ActiveSessionIteration {
     }
 }
 
+/// Sends input events on the MS-RDPECI core input channel once it is ready, and as fast-path input otherwise.
+fn process_input(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    events: &[FastPathInputEvent],
+) -> SessionResult<ActiveSessionIteration> {
+    #[cfg(feature = "core-input")]
+    if let Some(dvc) = active_stage
+        .get_dvc::<CoreInputClient>()
+        .filter(|dvc| dvc.processor().ready())
+    {
+        let messages = dvc
+            .processor()
+            .encode_input(dvc.channel_id(), events)
+            .map_err(SessionError::pdu)?;
+        let batch = DvcMessageBatch::try_new(dvc.channel_id(), messages).map_err(SessionError::pdu)?;
+        let outputs = active_stage.process_input_pointer(image, events)?.into_iter().collect();
+        return Ok(ActiveSessionIteration::with_outputs(batch, outputs));
+    }
+    Ok(ActiveSessionIteration::outputs(
+        active_stage.process_fastpath_input(image, events)?,
+    ))
+}
+
 /// Completes at `deadline`, or never without one.
 async fn sleep_until_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
@@ -4840,10 +4871,10 @@ async fn active_session(
                                 last_mouse_pos = (mouse.x_position, mouse.y_position);
                             }
                         }
-                        ActiveSessionIteration::outputs(match input_batcher.queue(events, tokio::time::Instant::now()) {
-                            Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
-                            None => Vec::new(),
-                        })
+                        match input_batcher.queue(events, tokio::time::Instant::now()) {
+                            Some(events) => process_input(&mut active_stage, &mut image, &events)?,
+                            None => ActiveSessionIteration::outputs(Vec::new()),
+                        }
                     }
                     RdpInputEvent::Touch(event) => {
                         trace!(frames = event.frames.len(), "RDPEI touch event");
@@ -5204,10 +5235,10 @@ async fn active_session(
                     ActiveSessionIteration::outputs(Vec::new())
                 }
                 _ = sleep_until_deadline(input_batch_deadline) => {
-                    ActiveSessionIteration::outputs(match input_batcher.flush(tokio::time::Instant::now()) {
-                        Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
-                        None => Vec::new(),
-                    })
+                    match input_batcher.flush(tokio::time::Instant::now()) {
+                        Some(events) => process_input(&mut active_stage, &mut image, &events)?,
+                        None => ActiveSessionIteration::outputs(Vec::new()),
+                    }
                 }
                 _ = async { match fake_events_interval.as_mut() {
                 Some(interval) => interval.tick().await,
@@ -5215,7 +5246,7 @@ async fn active_session(
                 }} => {
                 // Anti-idle: synthesize a no-op mouse move if the session has been idle for at least
                 // the configured interval, keeping the connection alive without user interaction.
-                let outputs = if last_input.elapsed() >= fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) {
+                if fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) <= last_input.elapsed() {
                     last_input = tokio::time::Instant::now();
                     let mut events = SmallVec::<[FastPathInputEvent; 2]>::new();
                     events.push(FastPathInputEvent::MouseEvent(MousePdu {
@@ -5225,11 +5256,10 @@ async fn active_session(
                         y_position: last_mouse_pos.1,
                     }));
                     let events = input_batcher.queue_forced(events, tokio::time::Instant::now());
-                    active_stage.process_fastpath_input(&mut image, &events)?
+                    process_input(&mut active_stage, &mut image, &events)?
                 } else {
-                    Vec::new()
-                };
-                ActiveSessionIteration::outputs(outputs)
+                    ActiveSessionIteration::outputs(Vec::new())
+                }
                 }
             }
         };
@@ -6119,6 +6149,16 @@ pub(crate) fn __test_build_connector(
         false,
         auto_reconnect_cookie,
     )
+}
+
+#[cfg(feature = "__test")]
+pub(crate) fn __test_process_input(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    events: &[FastPathInputEvent],
+) -> SessionResult<(Option<DvcMessageBatch>, Vec<ActiveStageOutput>)> {
+    let iteration = process_input(active_stage, image, events)?;
+    Ok((iteration.dvc_batch, iteration.outputs))
 }
 
 #[cfg(test)]

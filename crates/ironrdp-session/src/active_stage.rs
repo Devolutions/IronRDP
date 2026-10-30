@@ -178,10 +178,30 @@ impl ActiveStage {
                 .into_iter()
                 .map(ActiveStageOutput::ResponseFrame),
         );
+        output.extend(self.move_software_pointer(image, events)?);
 
+        Ok(output)
+    }
+
+    /// Modifies image for input events sent on another channel, such as the MS-RDPECI core input
+    /// dynamic channel, the way [`Self::process_fastpath_input`] does without encoding the events.
+    pub fn process_input_pointer(
+        &mut self,
+        image: &mut DecodedImage,
+        events: &[FastPathInputEvent],
+    ) -> SessionResult<Option<ActiveStageOutput>> {
+        self.damage_regions.clear();
+        self.move_software_pointer(image, events)
+    }
+
+    fn move_software_pointer(
+        &mut self,
+        image: &mut DecodedImage,
+        events: &[FastPathInputEvent],
+    ) -> SessionResult<Option<ActiveStageOutput>> {
         // If pointer rendering is disabled - we can skip the rest
         if !self.enable_server_pointer {
-            return Ok(output);
+            return Ok(None);
         }
 
         // If mouse was moved by client - we should update framebuffer to reflect new
@@ -192,18 +212,16 @@ impl ActiveStage {
             _ => None,
         });
 
-        let (mouse_x, mouse_y) = match mouse_pos {
-            Some(mouse_pos) => mouse_pos,
-            None => return Ok(output),
+        let Some((mouse_x, mouse_y)) = mouse_pos else {
+            return Ok(None);
         };
 
         // Graphics update is only sent when update is visually changed the framebuffer
-        if let Some(rect) = image.move_pointer(mouse_x, mouse_y)? {
-            self.damage_regions.push(rect.clone());
-            output.push(ActiveStageOutput::GraphicsUpdate(rect));
-        }
-
-        Ok(output)
+        let Some(rect) = image.move_pointer(mouse_x, mouse_y)? else {
+            return Ok(None);
+        };
+        self.damage_regions.push(rect.clone());
+        Ok(Some(ActiveStageOutput::GraphicsUpdate(rect)))
     }
 
     /// Process a frame received from the server.

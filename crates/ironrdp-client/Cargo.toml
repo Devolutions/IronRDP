@@ -62,6 +62,7 @@ telemetry = ["dep:ironrdp-rdpet"]
 text-input = ["dep:ironrdp-rdpetxt"]
 # Windows MultiPoint audio level and drive letter persistence channels (MS-RDPADRV).
 multipoint = ["dep:ironrdp-rdpadrv"]
+core-input = ["dep:ironrdp-rdpeci"]
 # Windows 365 battery status, power request, screen capture redirection, and virtual desktop control channels.
 w365 = ["dep:ironrdp-w365"]
 # MS-RDPEVOR video optimized remoting with MS-RDPEGT geometry tracking. The channels are only
@@ -112,6 +113,7 @@ all = [
     "telemetry",
     "text-input",
     "multipoint",
+    "core-input",
     "w365",
     "camera",
     "video",
@@ -144,6 +146,7 @@ ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.3" } # public
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
 ironrdp-rail = { path = "../ironrdp-rail", version = "0.3" }
 ironrdp-rdpemsc = { path = "../ironrdp-rdpemsc", version = "0.0.0" }
+ironrdp-rdpeci = { path = "../ironrdp-rdpeci", version = "0.0.0", optional = true }
 
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.9", optional = true } # public

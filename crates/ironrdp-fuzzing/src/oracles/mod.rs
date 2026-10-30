@@ -251,6 +251,7 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ironrdp_rdpetxt::pdu::ClientPdu>(data);
     let _ = decode::<ironrdp_rdpadrv::pdu::AudioLevelPdu>(data);
     let _ = decode::<ironrdp_rdpadrv::pdu::DriveLetterPdu>(data);
+    let _ = decode::<ironrdp_rdpeci::pdu::CoreInputPdu>(data);
     let _ = decode::<ironrdp_w365::vdcswitch::pdu::VdcSwitchPdu>(data);
     let _ = decode::<ironrdp_w365::battery::BatteryPdu>(data);
     let _ = decode::<ironrdp_w365::power_request::PowerRequestPdu>(data);
@@ -431,6 +432,9 @@ pub fn pdu_round_trip(data: &[u8]) {
 
     // Display control
     pdu_round_trip_one!(data, ironrdp_displaycontrol::pdu::DisplayControlPdu);
+
+    // Core input
+    pdu_round_trip_one!(data, ironrdp_rdpeci::pdu::CoreInputPdu);
 
     // Location
     pdu_round_trip_one!(data, ironrdp_rdpel::pdu::LocationPdu);

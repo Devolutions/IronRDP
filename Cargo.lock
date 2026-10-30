@@ -2856,6 +2856,7 @@ dependencies = [
  "ironrdp-rdpeai",
  "ironrdp-rdpecam",
  "ironrdp-rdpecam-native",
+ "ironrdp-rdpeci",
  "ironrdp-rdpegt",
  "ironrdp-rdpei",
  "ironrdp-rdpel",
@@ -3116,6 +3117,7 @@ dependencies = [
  "ironrdp-rdpadrv",
  "ironrdp-rdpdr",
  "ironrdp-rdpear",
+ "ironrdp-rdpeci",
  "ironrdp-rdpel",
  "ironrdp-rdpemsc",
  "ironrdp-rdpemt",
@@ -3315,6 +3317,17 @@ dependencies = [
  "ironrdp-rdpecam",
  "tracing",
  "windows",
+]
+
+[[package]]
+name = "ironrdp-rdpeci"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core 0.3.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
 ]
 
 [[package]]
@@ -3661,6 +3674,7 @@ dependencies = [
  "ironrdp-rdpeai",
  "ironrdp-rdpear",
  "ironrdp-rdpecam",
+ "ironrdp-rdpeci",
  "ironrdp-rdpegt",
  "ironrdp-rdpei",
  "ironrdp-rdpel",
@@ -3722,6 +3736,7 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-rdpdr-native",
  "ironrdp-rdpeai",
+ "ironrdp-rdpeci",
  "ironrdp-rdpemt",
  "ironrdp-rdpet",
  "ironrdp-rdpeudp",

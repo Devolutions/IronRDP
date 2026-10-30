@@ -1,6 +1,7 @@
 mod avd;
 mod cloud;
 mod config;
+mod core_input;
 mod egfx_cache;
 mod entra;
 mod input;

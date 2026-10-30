@@ -506,6 +506,13 @@ pub struct ChannelConfig {
     /// Defaults to [`RDPEI_MAX_TOUCH_CONTACTS`](crate::rdp::RDPEI_MAX_TOUCH_CONTACTS).
     pub max_touch_contacts: u16,
 
+    /// Send keyboard and mouse input on the MS-RDPECI core input dynamic channel when the server opens it.
+    ///
+    /// Input falls back to fast-path input until the channel's version exchange completes and whenever the channel is absent.
+    /// Off by default, which keeps all input on fast-path input.
+    #[cfg(feature = "core-input")]
+    pub core_input: bool,
+
     /// MS-RDPECAM camera redirection (`camerastoredirect`). No camera is redirected by default.
     #[cfg(feature = "camera")]
     pub cameras: crate::camera::CameraConfig,
@@ -575,6 +582,8 @@ impl Default for ChannelConfig {
             interactive_entra_auth: false,
             mouse_cursor: false,
             max_touch_contacts: crate::rdp::RDPEI_MAX_TOUCH_CONTACTS,
+            #[cfg(feature = "core-input")]
+            core_input: false,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),
             #[cfg(feature = "video")]
@@ -2069,6 +2078,14 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_max_touch_contacts(mut self, contacts: u16) -> Self {
         self.channels.max_touch_contacts = contacts;
+        self
+    }
+
+    /// Enable or disable sending input on the MS-RDPECI core input dynamic channel.
+    #[must_use]
+    #[cfg(feature = "core-input")]
+    pub fn with_core_input(mut self, enabled: bool) -> Self {
+        self.channels.core_input = enabled;
         self
     }
 
