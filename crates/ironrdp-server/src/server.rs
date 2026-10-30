@@ -1323,6 +1323,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
     /// Advanced Input owns mouse delivery while its DVC is active. Core mouse
     /// events from the overlapping FastPath path are then suppressed.
     advanced_input_active: Arc<AtomicBool>,
@@ -1644,6 +1645,14 @@ pub enum ServerEvent {
 pub trait StaticChannelFactory: Send {
     /// Attaches the connection-local static-channel processor to `acceptor`.
     fn attach(&self, acceptor: &mut Acceptor);
+}
+
+/// Extends the built-in dynamic channels with fresh processors for each connection.
+///
+/// Factories run in registration order before DRDYNVC negotiation.
+pub trait DynamicChannelFactory: Send {
+    /// Adds processors to the supplied channel set, preserving its existing channels.
+    fn attach(&self, channels: dvc::DrdynvcServer) -> dvc::DrdynvcServer;
 }
 
 impl fmt::Debug for ServerEvent {
@@ -2426,6 +2435,7 @@ impl RdpServer {
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
         static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+        dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
@@ -2472,6 +2482,7 @@ impl RdpServer {
             bound_handler,
             bound_display,
             static_channel_factories,
+            dynamic_channel_factories,
             sound_factory,
             cliprdr_factory,
             rdpei_factory,
@@ -3039,6 +3050,10 @@ impl RdpServer {
             dvc
         };
 
+        let dvc = self
+            .dynamic_channel_factories
+            .iter()
+            .fold(dvc, |channels, factory| factory.attach(channels));
         acceptor.attach_static_channel(dvc);
 
         for factory in &self.static_channel_factories {

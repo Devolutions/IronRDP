@@ -92,6 +92,12 @@ local
 
 `send_request` queues a probe via the server event loop. If no client has opened the ECHO channel yet, the request is dropped.
 
+## Dynamic-channel factories
+
+Register a `DynamicChannelFactory` with `RdpServerBuilder::with_dynamic_channel_factory` to add dynamic-channel processors.
+Each factory runs for every connection, in registration order, after the built-in channels are registered and before DRDYNVC negotiation.
+The processors created by a factory belong to that connection and are dropped when it ends.
+
 ## Static-channel writes
 
 Register a per-connection processor through `StaticChannelFactory`, then send `ServerEvent::StaticChannelJoined` through `RdpServer::event_sender()` to check whether the active client joined its channel.
