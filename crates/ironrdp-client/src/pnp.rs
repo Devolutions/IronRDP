@@ -46,9 +46,9 @@ pub(crate) fn attach(drdynvc: DrdynvcClient, config: &PnpConfig, sender: &RdpInp
     let sender = sender.clone();
     // Replies completed outside the session loop share the bounded input queue, so a full queue
     // drops the reply and leaves the server's request pending; the failure is logged.
-    let uplink: IoUplink = Arc::new(move |channel_id, messages| {
+    let uplink: IoUplink = Arc::new(move |messages| {
         sender
-            .try_send(RdpInputEvent::SendDvcMessages { channel_id, messages })
+            .try_send(RdpInputEvent::SendPnpMessages(messages))
             .map_err(|_| pdu_other_err!("send PnP device replies to the event loop"))
     });
     let listener = info.file_redirector_listener((config.backend)(), uplink);

@@ -5,7 +5,7 @@ use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu};
 use ironrdp_dvc::{DvcChannelListener as _, DvcClientProcessor, DvcMessage, DvcProcessor as _};
 use ironrdp_rdpepnp::client::{
     CustomEventSender, IoControlCompletion, IoUplink, PnpBackend, PnpFile, PnpInfoClient, ReadCompletion,
-    WriteCompletion,
+    UplinkMessages, WriteCompletion,
 };
 use ironrdp_rdpepnp::pdu::info::{DeviceAdditionPdu, DeviceDescription, PnpInfoPdu, VersionPdu};
 use ironrdp_rdpepnp::pdu::io::{
@@ -262,7 +262,7 @@ impl Drop for TestFile {
 struct IoChannel {
     processor: Box<dyn DvcClientProcessor>,
     observed: SharedObserved,
-    uplinked: Arc<Mutex<Vec<SvcMessage>>>,
+    uplinked: Arc<Mutex<Vec<UplinkMessages>>>,
 }
 
 impl IoChannel {
@@ -272,9 +272,9 @@ impl IoChannel {
         let uplinked = Arc::new(Mutex::new(Vec::new()));
         let uplink: IoUplink = {
             let uplinked = Arc::clone(&uplinked);
-            Arc::new(move |channel_id, messages| {
-                assert_eq!(channel_id, IO_CHANNEL_ID);
-                uplinked.lock().unwrap().extend(messages);
+            Arc::new(move |messages: UplinkMessages| {
+                assert_eq!(messages.channel_id(), IO_CHANNEL_ID);
+                uplinked.lock().unwrap().push(messages);
                 Ok(())
             })
         };
@@ -301,8 +301,14 @@ impl IoChannel {
         encode_messages(&messages)
     }
 
+    /// Takes the uplinked replies as the session loop would write them now.
     fn take_uplinked(&self) -> Vec<Vec<u8>> {
-        let messages = core::mem::take(&mut *self.uplinked.lock().unwrap());
+        let queued = core::mem::take(&mut *self.uplinked.lock().unwrap());
+        let messages: Vec<SvcMessage> = queued
+            .into_iter()
+            .filter_map(UplinkMessages::take_if_open)
+            .flatten()
+            .collect();
         svc_payloads(&messages, IO_CHANNEL_ID)
     }
 }
@@ -483,6 +489,16 @@ fn client_replies_encode_as_in_spec_samples(
     #[case] expected: &[u8],
 ) {
     assert_eq!(encoded.unwrap(), expected);
+}
+
+// oracle: spec MS-ERREF §2.1.2 (HRESULT_FROM_WIN32)
+#[rstest]
+#[case::success(0, 0)]
+#[case::file_not_found(0x0000_0002, 0x8007_0002)]
+#[case::insufficient_buffer(0x0000_007A, 0x8007_007A)]
+#[case::already_an_hresult(0x8000_4005, 0x8000_4005)]
+fn win32_codes_map_to_hresults(#[case] code: u32, #[case] expected: u32) {
+    assert_eq!(HResult::from_win32(code), HResult(expected));
 }
 
 // oracle: spec MS-RDPEPNP §4.3
@@ -667,6 +683,21 @@ fn closing_the_channel_closes_the_file_and_discards_replies() {
     assert!(channel.observed.lock().unwrap().closed);
     let completion = channel.observed.lock().unwrap().parked_writes.pop().unwrap();
     completion.complete(HResult::S_OK, 8);
+    assert!(channel.take_uplinked().is_empty());
+}
+
+// oracle: spec MS-RDPEPNP §3.1.1 (closing the channel invalidates its requests)
+#[test]
+fn reply_queued_before_the_channel_closes_is_not_written() {
+    let info = ready_info_client(vec![sample_device()]);
+    let mut channel = IoChannel::open_file(&info);
+    channel.process(&WRITE_REQUEST);
+    let completion = channel.observed.lock().unwrap().parked_writes.pop().unwrap();
+    completion.complete(HResult::S_OK, 8);
+    assert_eq!(channel.uplinked.lock().unwrap().len(), 1);
+
+    channel.processor.close(IO_CHANNEL_ID);
+
     assert!(channel.take_uplinked().is_empty());
 }
 

@@ -23,9 +23,37 @@ use crate::pdu::{Guid, HResult};
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
 /// Sends messages to a dynamic channel from outside [`DvcProcessor::process`].
+pub type IoUplink = Arc<dyn Fn(UplinkMessages) -> PduResult<()> + Send + Sync>;
+
+/// Encoded DRDYNVC messages of one `FileRedirectorChannel` instance, sent from outside [`DvcProcessor::process`].
 ///
-/// It receives the dynamic channel ID and the encoded DRDYNVC messages.
-pub type IoUplink = Arc<dyn Fn(u32, Vec<SvcMessage>) -> PduResult<()> + Send + Sync>;
+/// The instance can close while the messages are queued, and the server can then reuse its channel ID
+/// for another file. Take the messages with [`UplinkMessages::take_if_open`] on the thread that runs the
+/// DRDYNVC channel, right before writing them.
+pub struct UplinkMessages {
+    shared: Arc<ChannelShared>,
+    messages: Vec<SvcMessage>,
+}
+
+impl UplinkMessages {
+    pub fn channel_id(&self) -> u32 {
+        self.shared.channel_id
+    }
+
+    /// Returns the messages while their channel instance is open, or `None` once it closed or failed.
+    pub fn take_if_open(self) -> Option<Vec<SvcMessage>> {
+        self.shared.state.lock().open.then_some(self.messages)
+    }
+}
+
+impl fmt::Debug for UplinkMessages {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UplinkMessages")
+            .field("channel_id", &self.shared.channel_id)
+            .field("messages", &self.messages.len())
+            .finish()
+    }
+}
 
 /// Opens file handles on the client devices announced on the `PNPDR` channel.
 pub trait PnpBackend: Send {
@@ -81,7 +109,7 @@ struct ChannelShared {
 
 impl ChannelShared {
     /// Sends a message unless the channel was closed, inline when the channel is processing.
-    fn send(&self, message: DvcMessage) -> PduResult<()> {
+    fn send(self: &Arc<Self>, message: DvcMessage) -> PduResult<()> {
         let mut state = self.state.lock();
         if !state.open {
             return Err(pdu_other_err!("FileRedirectorChannel", "channel is closed"));
@@ -96,12 +124,16 @@ impl ChannelShared {
             return Ok(());
         }
         drop(state);
+        // The channel can close from here on; the session loop checks `take_if_open` before writing.
         let messages = encode_dvc_messages(self.channel_id, vec![message], ChannelFlags::empty())
             .map_err(|error| encode_err!(error))?;
-        (self.uplink)(self.channel_id, messages)
+        (self.uplink)(UplinkMessages {
+            shared: Arc::clone(self),
+            messages,
+        })
     }
 
-    fn reply(&self, request_id: RequestId, message: DvcMessage) {
+    fn reply(self: &Arc<Self>, request_id: RequestId, message: DvcMessage) {
         if !self.state.lock().outstanding.remove(&request_id) {
             // The channel was closed or failed, which discards its outstanding requests.
             trace!(

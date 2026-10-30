@@ -88,10 +88,12 @@ impl HResult {
 
     /// Maps a Win32 error code to an HRESULT as `HRESULT_FROM_WIN32` does ([MS-ERREF] section 2.1.2).
     ///
+    /// Zero and values with the high bit set (already HRESULTs) pass through unchanged.
+    ///
     /// [MS-ERREF]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/
     pub const fn from_win32(code: u32) -> Self {
-        if code == 0 {
-            Self::S_OK
+        if code == 0 || code & 0x8000_0000 != 0 {
+            Self(code)
         } else {
             Self(0x8007_0000 | (code & 0xFFFF))
         }

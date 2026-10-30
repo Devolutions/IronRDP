@@ -15,7 +15,7 @@ mod io;
 pub use info::PnpInfoClient;
 pub use io::{
     CustomEventSender, FileRedirectorClient, FileRedirectorListener, IoControlCompletion, IoUplink, PnpBackend,
-    PnpFile, ReadCompletion, WriteCompletion,
+    PnpFile, ReadCompletion, UplinkMessages, WriteCompletion,
 };
 
 /// Client device IDs announced to the server on the active `PNPDR` channel.
