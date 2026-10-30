@@ -46,7 +46,7 @@ const BCP_TAG_VERSION: (u32, u32) = (1, 0x0000_0002);
 ///
 /// [1.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
 const fn has_update(version: (u32, u32), update: (u32, u32)) -> bool {
-    version.0 > update.0 || (version.0 == update.0 && version.1 & update.1 != 0)
+    update.0 < version.0 || (version.0 == update.0 && version.1 & update.1 != 0)
 }
 
 /// Fields that only some protocol versions carry.
@@ -95,7 +95,7 @@ const HEADER_SIZE: usize = 4 /* size */ + 2 /* pduId */;
 /// decode.
 pub(crate) fn read_frame<'a>(src: &mut ReadCursor<'a>) -> DecodeResult<(u16, &'a [u8])> {
     ensure_size!(in: src, size: HEADER_SIZE);
-    let size = usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!("size", "too large"))?;
+    let size = usize::try_from(src.read_u32()).map_err(|_| invalid_field_err!("size", "too large", in: src))?;
     let Some(body_size) = size.checked_sub(2 /* pduId */) else {
         return Err(invalid_field_err!("size", "smaller than the PDU identifier", in: src));
     };
@@ -137,11 +137,6 @@ macro_rules! pdu_enum {
                 }
             }
 
-            /// Whether `pdu_id` identifies one of these PDUs.
-            pub const fn is_known_pdu_id(pdu_id: u16) -> bool {
-                matches!(pdu_id, $($id)|*)
-            }
-
             /// Size of this PDU under `layout`.
             pub fn size_with(&self, layout: PduLayout) -> usize {
                 $crate::pdu::HEADER_SIZE + self.body_size(layout)
@@ -164,10 +159,15 @@ macro_rules! pdu_enum {
             /// Decodes a PDU laid out as `layout`.
             pub fn decode_with(src: &mut ReadCursor<'_>, layout: PduLayout) -> DecodeResult<Self> {
                 let (pdu_id, body) = $crate::pdu::read_frame(src)?;
+                Self::decode_body(pdu_id, body, layout)
+            }
+
+            /// Decodes the body of the PDU identified by `pdu_id`.
+            pub(crate) fn decode_body(pdu_id: u16, body: &[u8], layout: PduLayout) -> DecodeResult<Self> {
                 let mut body = ReadCursor::new(body);
                 match pdu_id {
                     $($id => $crate::wire::Wire::read(&mut body, layout).map(Self::$variant),)*
-                    _ => Err(invalid_field_err!("pduId", "unsupported PDU identifier", in: src)),
+                    _ => Err(invalid_field_err!("pduId", "unsupported PDU identifier", in: body)),
                 }
             }
 

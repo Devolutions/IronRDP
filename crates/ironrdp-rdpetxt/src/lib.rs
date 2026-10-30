@@ -19,6 +19,8 @@ mod wire;
 pub mod pdu;
 
 #[cfg(feature = "std")]
+mod channel;
+#[cfg(feature = "std")]
 pub mod client;
 #[cfg(feature = "std")]
 pub mod server;

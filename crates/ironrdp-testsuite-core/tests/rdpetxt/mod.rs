@@ -84,6 +84,20 @@ fn edit_control_focus(text_input_client_id: u32, edit_control_id: u32, gaining_f
     })
 }
 
+fn focus_gain_after(
+    text_input_client_id: u32,
+    edit_control_id: u32,
+    losing_focus_control_id: u32,
+    losing_focus_text_input_host_id: u32,
+) -> ServerPdu {
+    let ServerPdu::EditControlFocus(mut gain) = edit_control_focus(text_input_client_id, edit_control_id, true) else {
+        unreachable!()
+    };
+    gain.losing_focus_control_id = losing_focus_control_id;
+    gain.losing_focus_text_input_host_id = losing_focus_text_input_host_id;
+    ServerPdu::EditControlFocus(gain)
+}
+
 fn register_key_target(object_id: u32, text_target_id: u32) -> ServerPdu {
     ServerPdu::RegisterRemoteKeyTarget(RegisterRemoteKeyTargetPdu {
         object_id,
@@ -846,7 +860,7 @@ fn edit_control_acknowledgements_carry_its_registration_operation_identifier() {
     assert_eq!(operation_ids, [0x55, 0x55, 0x55, 0]);
 }
 
-// oracle: invariant (required replies are never dropped silently)
+// oracle: mutant dropping a reply that does not fit the queue
 #[test]
 fn client_fails_the_message_when_its_replies_overflow_the_queue() {
     let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
@@ -858,7 +872,7 @@ fn client_fails_the_message_when_its_replies_overflow_the_queue() {
     assert_eq!(sent(&mut client_to_server).len(), client::MAX_PENDING_PDUS);
 }
 
-// oracle: invariant (a commit that cannot be sent leaves the selection unchanged)
+// oracle: mutant moving the caret for a commit that was not queued
 #[test]
 fn commit_with_a_full_queue_sends_nothing_and_keeps_the_selection() {
     let (mut server_to_client, _client_to_server) = client_channels(TextInputConfig::default());
@@ -971,4 +985,67 @@ fn server_announces_its_version_and_answers_on_the_server_to_client_channel() {
             error_code: 0,
         })]
     );
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.32, §3.1.5.2.1
+#[test]
+fn focus_gain_acknowledges_the_loss_it_reports_once() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(&mut server_to_client, &[edit_control_focus(7, 2, true)]);
+
+    // The gain of control 3 reports the loss of control 2 before its own notification arrives.
+    receive(
+        &mut server_to_client,
+        &[focus_gain_after(7, 3, 2, 0), edit_control_focus(7, 2, false)],
+    );
+
+    let acknowledged: Vec<_> = sent(&mut client_to_server)
+        .into_iter()
+        .map(|pdu| match pdu {
+            ClientPdu::AcknowledgeOperation(ack) => (ack.edit_control_id, ack.acknowledgement_type),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        acknowledged,
+        [
+            (2, AcknowledgementType::FOCUS_LOSS),
+            (2, AcknowledgementType::FOCUS_LEAVE_COMPLETED)
+        ]
+    );
+}
+
+// oracle: spec MS-RDPETXT §2.2.2.32, §3.1.5.2.6
+#[test]
+fn focus_gain_acknowledges_the_host_loss_it_reports_once() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(
+        &mut server_to_client,
+        &[register_key_target(5, 7), host_focus(5, 0, true)],
+    );
+
+    // The gain in another key target reports the loss of key target 5 before its own notification.
+    receive(
+        &mut server_to_client,
+        &[focus_gain_after(8, 3, 0, 5), host_focus(5, 0, false)],
+    );
+
+    let [ClientPdu::AcknowledgeHostOperation(ack)] = sent(&mut client_to_server)[..] else {
+        panic!("expected one RDPTXT_ACKNOWLEDGE_HOST_OPERATION_PDU");
+    };
+    assert_eq!(
+        (ack.text_input_host_id, ack.acknowledgement_type),
+        (5, AcknowledgementType::FOCUS_LOSS)
+    );
+}
+
+// oracle: mutant sending acknowledgements left from a closed server-to-client channel
+#[test]
+fn closing_the_server_to_client_channel_drops_its_queued_replies() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(&mut server_to_client, &[text_changed(7, 2, 1)]);
+
+    server_to_client.close(SERVER_TO_CLIENT_ID);
+
+    assert!(sent(&mut client_to_server).is_empty());
 }

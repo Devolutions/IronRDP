@@ -9,14 +9,15 @@
 //! The application behind the text input objects, which acknowledges operations and reports
 //! focus and text changes, is the [`TextInputServerHandler`].
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
-use ironrdp_core::{ReadCursor, impl_as_any};
+use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor, encode_dvc_messages};
-use ironrdp_pdu::{PduResult, encode_err, pdu_other_err};
+use ironrdp_pdu::{PduResult, encode_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, warn};
 
+use crate::channel::{lock, process_frames};
 use crate::pdu::{ClientPdu, Guid, NotifyServerVersionPdu, PduLayout, ServerPdu, VersionedPdu};
 use crate::{CLIENT_TO_SERVER_CHANNEL_NAME, QueueFull, SERVER_TO_CLIENT_CHANNEL_NAME};
 
@@ -35,10 +36,6 @@ pub trait TextInputServerHandler: Send {
 
 /// Server state shared by both text input channel processors.
 pub type SharedTextInputServer = Arc<Mutex<TextInputServer>>;
-
-fn lock(server: &Mutex<TextInputServer>) -> MutexGuard<'_, TextInputServer> {
-    server.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// Server protocol state for MS-RDPETXT.
 pub struct TextInputServer {
@@ -240,26 +237,13 @@ impl DvcProcessor for ClientToServerChannel {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        let mut server = lock(&self.server);
-        let mut src = ReadCursor::new(payload);
-        while !src.is_empty() {
-            let frame_start = src.pos();
-            let pdu_id = match crate::pdu::read_frame(&mut src) {
-                Ok((pdu_id, _)) => pdu_id,
-                Err(error) => {
-                    warn!(%error, "Ignoring the rest of a malformed text input message");
-                    break;
-                }
-            };
-            // The version PDU comes first, so the layout is known for the PDUs that depend on it.
-            let layout = server.layout();
-            match ClientPdu::decode_with(&mut ReadCursor::new(&payload[frame_start..src.pos()]), layout) {
-                Ok(pdu) => server
-                    .process(pdu)
-                    .map_err(|error| pdu_other_err!("text input reply", source: error))?,
-                Err(error) => warn!(pdu_id, %error, "Ignoring an undecodable text input PDU"),
-            }
-        }
+        process_frames(
+            payload,
+            &mut *lock(&self.server),
+            TextInputServer::layout,
+            ClientPdu::decode_body,
+            TextInputServer::process,
+        )?;
         Ok(Vec::new())
     }
 }

@@ -15,20 +15,21 @@
 //! [3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
 //! [1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
-use ironrdp_core::{ReadCursor, impl_as_any};
+use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
-use ironrdp_pdu::{PduResult, encode_err, pdu_other_err};
+use ironrdp_pdu::{PduResult, encode_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, trace, warn};
 
+use crate::channel::{lock, process_frames};
 use crate::pdu::{
     AcknowledgeHostOperationPdu, AcknowledgeOperationPdu, AcknowledgeUndoPendingKeyEventsPdu, AcknowledgementType,
-    CandidateList, ClientOptions, ClientPdu, EditControlInfo, EditControlRange, NotifyClientVersionPdu, PduLayout,
-    ReconversionCandidatesPdu, ReportClientOptionsPdu, ServerPdu, TextInputRect, TextString, UpdateTextAndSelectionPdu,
-    VersionedPdu,
+    CandidateList, ClientOptions, ClientPdu, EditControlFocusPdu, EditControlInfo, EditControlRange,
+    NotifyClientVersionPdu, PduLayout, ReconversionCandidatesPdu, ReportClientOptionsPdu, ServerPdu, TextInputRect,
+    TextString, UpdateTextAndSelectionPdu, VersionedPdu,
 };
 use crate::{CLIENT_TO_SERVER_CHANNEL_NAME, QueueFull, SERVER_TO_CLIENT_CHANNEL_NAME};
 
@@ -87,8 +88,14 @@ pub struct TextInputConfig {
 
 impl Default for TextInputConfig {
     /// Version 1 with the only documented update, the **bcpTag** of `CoreInputProfile`
-    /// (minor bit 0x00000002), and predicted key reporting, because the client sends keys
-    /// through regular input and does not process them for the server.
+    /// (minor bit 0x00000002), and predicted key reporting.
+    ///
+    /// The client hosts no input method, so it has no local text input system to wait for the keys
+    /// it sends.
+    /// Without the option, the server routes keys back for the client input method with
+    /// `RDPTXT_SEND_KEY_TO_HOST_PDU`, which this client cannot process ([2.2.2.54]).
+    ///
+    /// [2.2.2.54]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
     fn default() -> Self {
         Self {
             version_major: 1,
@@ -123,10 +130,6 @@ pub type TextInputObserver = Box<dyn FnMut(&ServerPdu) + Send>;
 /// Client state shared by both text input channel processors.
 pub type SharedTextInputClient = Arc<Mutex<TextInputClient>>;
 
-fn lock(client: &Mutex<TextInputClient>) -> MutexGuard<'_, TextInputClient> {
-    client.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Client protocol state for MS-RDPETXT.
 pub struct TextInputClient {
     config: TextInputConfig,
@@ -139,6 +142,12 @@ pub struct TextInputClient {
     /// **editClientOperationId** of each registered edit control, by
     /// (**textInputClientId**, **editControlId**).
     edit_controls: BTreeMap<(u32, u32), u32>,
+    /// Edit controls whose focus loss was acknowledged when the next control gained focus,
+    /// before the server reported the loss itself.
+    folded_control_losses: BTreeSet<(u32, u32)>,
+    /// Key targets whose focus loss was acknowledged when an edit control of another key target
+    /// gained focus, before the server reported the loss itself.
+    folded_host_losses: BTreeSet<u32>,
     focused_host: Option<u32>,
     focus: Option<FocusedEditControl>,
     next_operation_id: u32,
@@ -154,6 +163,8 @@ impl TextInputClient {
             key_targets: BTreeMap::new(),
             host_ordinals: BTreeMap::new(),
             edit_controls: BTreeMap::new(),
+            folded_control_losses: BTreeSet::new(),
+            folded_host_losses: BTreeSet::new(),
             focused_host: None,
             focus: None,
             next_operation_id: 1,
@@ -218,9 +229,6 @@ impl TextInputClient {
             .ok()
             .and_then(|length| begin.checked_add(length))
             .ok_or(CommitTextError::TooLong)?;
-        if self.pending.len() == MAX_PENDING_PDUS {
-            return Err(CommitTextError::QueueFull);
-        }
         let operation_id = self.next_operation_id();
         let text_input_host_id = self.host_of(focus.text_input_client_id);
         self.send(UpdateTextAndSelectionPdu {
@@ -322,6 +330,7 @@ impl TextInputClient {
             }
             ServerPdu::EditControlFocus(focus) => {
                 if focus.gaining_focus {
+                    self.fold_focus_losses(focus)?;
                     self.focus = Some(FocusedEditControl {
                         text_input_client_id: focus.text_input_client_id,
                         info: focus.edit_info,
@@ -335,13 +344,11 @@ impl TextInputClient {
                     {
                         self.focus = None;
                     }
-                    // The focus loss completes at once because no input method holds state for the
-                    // control ([3.1.5.2.1]).
-                    for acknowledgement_type in [
-                        AcknowledgementType::FOCUS_LOSS,
-                        AcknowledgementType::FOCUS_LEAVE_COMPLETED,
-                    ] {
-                        self.acknowledge_control(focus.text_input_client_id, focus.edit_info.id, acknowledgement_type)?;
+                    if !self
+                        .folded_control_losses
+                        .remove(&(focus.text_input_client_id, focus.edit_info.id))
+                    {
+                        self.complete_focus_loss(focus.text_input_client_id, focus.edit_info.id)?;
                     }
                 }
             }
@@ -366,8 +373,8 @@ impl TextInputClient {
                     }
                 }
                 // The acknowledgement reports receipt, so a stale notification is acknowledged too
-                // ([3.1.5.2.6]).
-                if !host.gaining_focus {
+                // ([3.1.5.2.6]), unless a focus gain already acknowledged this loss.
+                if !host.gaining_focus && !self.folded_host_losses.remove(&host.text_input_host_id) {
                     self.send(AcknowledgeHostOperationPdu {
                         text_input_host_id: host.text_input_host_id,
                         acknowledgement_type: AcknowledgementType::FOCUS_LOSS,
@@ -469,17 +476,69 @@ impl TextInputClient {
     }
 
     /// Forgets the server state, as when the channels restart.
+    ///
+    /// The replies still queued answer notifications of the previous channel, so they are dropped.
     pub fn reset(&mut self) {
         self.server_version = None;
         self.forget_registrations();
+        self.pending.clear();
     }
 
     fn forget_registrations(&mut self) {
         self.key_targets.clear();
         self.host_ordinals.clear();
         self.edit_controls.clear();
+        self.folded_control_losses.clear();
+        self.folded_host_losses.clear();
         self.focused_host = None;
         self.focus = None;
+    }
+
+    /// Acknowledges the focus loss of an edit control, which completes at once because no input
+    /// method holds state for the control ([3.1.5.2.1]).
+    ///
+    /// [3.1.5.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
+    fn complete_focus_loss(&mut self, text_input_client_id: u32, edit_control_id: u32) -> Result<(), QueueFull> {
+        for acknowledgement_type in [
+            AcknowledgementType::FOCUS_LOSS,
+            AcknowledgementType::FOCUS_LEAVE_COMPLETED,
+        ] {
+            self.acknowledge_control(text_input_client_id, edit_control_id, acknowledgement_type)?;
+        }
+        Ok(())
+    }
+
+    /// Acknowledges the focus losses a focus gain reports before, or instead of, their own
+    /// notifications ([2.2.2.32] **losingFocusControlId** and **losingFocusTextInputHostId**).
+    ///
+    /// Only a loss the client has not seen yet is acknowledged here, and the late notification of
+    /// that loss is then not acknowledged again.
+    ///
+    /// [2.2.2.32]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
+    fn fold_focus_losses(&mut self, gain: &EditControlFocusPdu) -> Result<(), QueueFull> {
+        let losing_control = self
+            .focus
+            .filter(|current| current.info.id == gain.losing_focus_control_id)
+            .filter(|current| !current.is(gain.text_input_client_id, gain.edit_info.id));
+        if let Some(lost) = losing_control {
+            self.complete_focus_loss(lost.text_input_client_id, lost.info.id)?;
+            if self.folded_control_losses.len() < MAX_EDIT_CONTROLS {
+                self.folded_control_losses
+                    .insert((lost.text_input_client_id, lost.info.id));
+            }
+        }
+        let losing_host = gain.losing_focus_text_input_host_id;
+        if losing_host != 0 && self.focused_host == Some(losing_host) {
+            self.send(AcknowledgeHostOperationPdu {
+                text_input_host_id: losing_host,
+                acknowledgement_type: AcknowledgementType::FOCUS_LOSS,
+            })?;
+            self.focused_host = None;
+            if self.folded_host_losses.len() < MAX_KEY_TARGETS {
+                self.folded_host_losses.insert(losing_host);
+            }
+        }
+        Ok(())
     }
 
     /// Acknowledges a notification about an edit control that carries no operation identifier.
@@ -581,26 +640,13 @@ impl DvcProcessor for ServerToClientChannel {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        let mut client = lock(&self.client);
-        let mut src = ReadCursor::new(payload);
-        while !src.is_empty() {
-            let frame_start = src.pos();
-            let pdu_id = match crate::pdu::read_frame(&mut src) {
-                Ok((pdu_id, _)) => pdu_id,
-                Err(error) => {
-                    warn!(%error, "Ignoring the rest of a malformed text input message");
-                    break;
-                }
-            };
-            // The version PDU comes first, so the layout is known for the PDUs that depend on it.
-            let layout = client.layout();
-            match ServerPdu::decode_with(&mut ReadCursor::new(&payload[frame_start..src.pos()]), layout) {
-                Ok(pdu) => client
-                    .process(pdu)
-                    .map_err(|error| pdu_other_err!("text input reply", source: error))?,
-                Err(error) => warn!(pdu_id, %error, "Ignoring an undecodable text input PDU"),
-            }
-        }
+        process_frames(
+            payload,
+            &mut *lock(&self.client),
+            TextInputClient::layout,
+            ServerPdu::decode_body,
+            TextInputClient::process,
+        )?;
         Ok(Vec::new())
     }
 

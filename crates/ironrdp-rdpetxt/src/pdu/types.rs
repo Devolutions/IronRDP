@@ -380,25 +380,15 @@ pub struct CandidateList(pub Vec<TextString>);
 
 impl Wire for CandidateList {
     fn wire_size(&self, layout: PduLayout) -> usize {
-        4 /* candidateListSize */ + self.0.iter().map(|candidate| candidate.wire_size(layout)).sum::<usize>()
+        sized_list_size(&self.0, layout)
     }
 
     fn write(&self, dst: &mut WriteCursor<'_>, layout: PduLayout) -> EncodeResult<()> {
-        let size: u32 = cast_length!(
-            "candidateListSize",
-            self.wire_size(layout) - 4 /* candidateListSize */
-        )?;
-        size.write(dst, layout)?;
-        self.0.iter().try_for_each(|candidate| candidate.write(dst, layout))
+        write_sized_list(&self.0, "candidateListSize", dst, layout)
     }
 
     fn read(src: &mut ReadCursor<'_>, layout: PduLayout) -> DecodeResult<Self> {
-        let mut list = read_sized(src, "candidateListSize", layout)?;
-        let mut candidates = Vec::new();
-        while !list.is_empty() {
-            candidates.push(TextString::read(&mut list, layout)?);
-        }
-        Ok(Self(candidates))
+        read_sized_list(src, "candidateListSize", layout).map(Self)
     }
 }
 
@@ -411,33 +401,45 @@ pub struct OcclusionList(pub Vec<CoreInputViewOcclusion>);
 
 impl Wire for OcclusionList {
     fn wire_size(&self, layout: PduLayout) -> usize {
-        4 /* occludingViewsSize */ + self.0.iter().map(|occlusion| occlusion.wire_size(layout)).sum::<usize>()
+        sized_list_size(&self.0, layout)
     }
 
     fn write(&self, dst: &mut WriteCursor<'_>, layout: PduLayout) -> EncodeResult<()> {
-        let size: u32 = cast_length!(
-            "occludingViewsSize",
-            self.wire_size(layout) - 4 /* occludingViewsSize */
-        )?;
-        size.write(dst, layout)?;
-        self.0.iter().try_for_each(|occlusion| occlusion.write(dst, layout))
+        write_sized_list(&self.0, "occludingViewsSize", dst, layout)
     }
 
     fn read(src: &mut ReadCursor<'_>, layout: PduLayout) -> DecodeResult<Self> {
-        let mut list = read_sized(src, "occludingViewsSize", layout)?;
-        let mut occlusions = Vec::new();
-        while !list.is_empty() {
-            occlusions.push(CoreInputViewOcclusion::read(&mut list, layout)?);
-        }
-        Ok(Self(occlusions))
+        read_sized_list(src, "occludingViewsSize", layout).map(Self)
     }
 }
 
-/// Reads a 4-byte size in bytes and returns a cursor over that many bytes.
-fn read_sized<'a>(src: &mut ReadCursor<'a>, field: &'static str, layout: PduLayout) -> DecodeResult<ReadCursor<'a>> {
-    let size = usize::try_from(u32::read(src, layout)?).map_err(|_| invalid_field_err!(field, "too large"))?;
+/// Size of `items` preceded by their 4-byte total size in bytes.
+fn sized_list_size<T: Wire>(items: &[T], layout: PduLayout) -> usize {
+    4 /* size */ + items.iter().map(|item| item.wire_size(layout)).sum::<usize>()
+}
+
+/// Writes the 4-byte total size in bytes of `items`, in field `field`, then `items`.
+fn write_sized_list<T: Wire>(
+    items: &[T],
+    field: &'static str,
+    dst: &mut WriteCursor<'_>,
+    layout: PduLayout,
+) -> EncodeResult<()> {
+    let size: u32 = cast_length!(field, sized_list_size(items, layout) - 4 /* size */)?;
+    size.write(dst, layout)?;
+    items.iter().try_for_each(|item| item.write(dst, layout))
+}
+
+/// Reads a 4-byte total size in bytes, in field `field`, then the items filling that size.
+fn read_sized_list<T: Wire>(src: &mut ReadCursor<'_>, field: &'static str, layout: PduLayout) -> DecodeResult<Vec<T>> {
+    let size = usize::try_from(u32::read(src, layout)?).map_err(|_| invalid_field_err!(field, "too large", in: src))?;
     if src.len() < size {
         return Err(invalid_field_err!(field, "exceeds the remaining data", in: src));
     }
-    Ok(ReadCursor::new(src.read_slice(size)))
+    let mut list = ReadCursor::new(src.read_slice(size));
+    let mut items = Vec::new();
+    while !list.is_empty() {
+        items.push(T::read(&mut list, layout)?);
+    }
+    Ok(items)
 }

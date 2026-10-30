@@ -115,7 +115,8 @@ impl<T: Wire> Wire for Vec<T> {
     }
 
     fn read(src: &mut ReadCursor<'_>, layout: PduLayout) -> DecodeResult<Self> {
-        let count = usize::try_from(u32::read(src, layout)?).map_err(|_| invalid_field_err!("count", "too large"))?;
+        let count =
+            usize::try_from(u32::read(src, layout)?).map_err(|_| invalid_field_err!("count", "too large", in: src))?;
         // Every element takes at least one byte, so a larger count cannot be satisfied.
         if src.len() < count {
             return Err(invalid_field_err!("count", "exceeds the remaining data", in: src));

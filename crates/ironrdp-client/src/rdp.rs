@@ -6739,6 +6739,7 @@ mod tests {
         );
         assert!(keyboard.is_user_input());
         assert!(RdpInputEvent::DismissHoveringTouchContact { contact_id: 1 }.is_user_input());
+        // oracle: mutant CommitText left out of is_user_input
         #[cfg(feature = "text-input")]
         assert!(RdpInputEvent::CommitText("a".to_owned()).is_user_input());
         assert!(!RdpInputEvent::Close.is_user_input());
