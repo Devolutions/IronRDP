@@ -608,7 +608,7 @@ async fn connected_with_reports<F, Fut>(
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let (ready_tx, ready_rx) = oneshot::channel();
     let (capabilities_tx, mut capabilities_rx) = mpsc::unbounded_channel();
-    let expected_capabilities = server_capabilities.as_ref().and(capabilities.clone());
+    let expected_capabilities = server_capabilities.as_ref().and_then(|_| capabilities.clone());
     let mut builder = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_no_security()
