@@ -2649,6 +2649,7 @@ dependencies = [
  "ironrdp-server",
  "ironrdp-session",
  "ironrdp-svc",
+ "ironrdp-tls",
  "ironrdp-vmconnect",
  "opus2",
  "pico-args",
