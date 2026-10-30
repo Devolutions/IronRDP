@@ -54,6 +54,7 @@ pub use ironrdp_rdpdr::backend::{
     RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPort, RdpdrPortKind,
     RdpdrPrinter,
 };
+#[cfg(feature = "core-input")]
 use ironrdp_rdpeci::client::CoreInputClient;
 use ironrdp_rdpei::pdu::{CsReadyFlags, RdpInputProtocolVersion, TouchEventPdu};
 use ironrdp_rdpei::{RdpeiClient, RdpeiInputState};
@@ -2461,6 +2462,7 @@ fn build_connector(
         drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpemsc::MouseCursorClient::new());
     }
 
+    #[cfg(feature = "core-input")]
     if config.channels.core_input {
         drdynvc = drdynvc.with_dynamic_channel(CoreInputClient::new());
     }
@@ -4292,26 +4294,22 @@ fn process_input(
     image: &mut DecodedImage,
     events: &[FastPathInputEvent],
 ) -> SessionResult<ActiveSessionIteration> {
-    let batch = active_stage
+    #[cfg(feature = "core-input")]
+    if let Some(dvc) = active_stage
         .get_dvc::<CoreInputClient>()
         .filter(|dvc| dvc.processor().ready())
-        .and_then(|dvc| {
-            // UNTESTED: the fallback assumes a server that selected core input still accepts fast-path input.
-            dvc.processor()
-                .encode_input(dvc.channel_id(), events)
-                .and_then(|messages| DvcMessageBatch::try_new(dvc.channel_id(), messages))
-                .inspect_err(
-                    |error| warn!(%error, "Unable to encode core input events; sending them as fast-path input"),
-                )
-                .ok()
-        });
-    let Some(batch) = batch else {
-        return Ok(ActiveSessionIteration::outputs(
-            active_stage.process_fastpath_input(image, events)?,
-        ));
-    };
-    let outputs = active_stage.process_input_pointer(image, events)?.into_iter().collect();
-    Ok(ActiveSessionIteration::with_outputs(batch, outputs))
+    {
+        let messages = dvc
+            .processor()
+            .encode_input(dvc.channel_id(), events)
+            .map_err(SessionError::pdu)?;
+        let batch = DvcMessageBatch::try_new(dvc.channel_id(), messages).map_err(SessionError::pdu)?;
+        let outputs = active_stage.process_input_pointer(image, events)?.into_iter().collect();
+        return Ok(ActiveSessionIteration::with_outputs(batch, outputs));
+    }
+    Ok(ActiveSessionIteration::outputs(
+        active_stage.process_fastpath_input(image, events)?,
+    ))
 }
 
 /// Completes at `deadline`, or never without one.
@@ -5248,7 +5246,7 @@ async fn active_session(
                 }} => {
                 // Anti-idle: synthesize a no-op mouse move if the session has been idle for at least
                 // the configured interval, keeping the connection alive without user interaction.
-                if last_input.elapsed() >= fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) {
+                if fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) <= last_input.elapsed() {
                     last_input = tokio::time::Instant::now();
                     let mut events = SmallVec::<[FastPathInputEvent; 2]>::new();
                     events.push(FastPathInputEvent::MouseEvent(MousePdu {

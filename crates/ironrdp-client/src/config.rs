@@ -510,6 +510,7 @@ pub struct ChannelConfig {
     ///
     /// Input falls back to fast-path input until the channel's version exchange completes and whenever the channel is absent.
     /// Off by default, which keeps all input on fast-path input.
+    #[cfg(feature = "core-input")]
     pub core_input: bool,
 
     /// MS-RDPECAM camera redirection (`camerastoredirect`). No camera is redirected by default.
@@ -581,6 +582,7 @@ impl Default for ChannelConfig {
             interactive_entra_auth: false,
             mouse_cursor: false,
             max_touch_contacts: crate::rdp::RDPEI_MAX_TOUCH_CONTACTS,
+            #[cfg(feature = "core-input")]
             core_input: false,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),
@@ -2081,6 +2083,7 @@ impl ConfigBuilder {
 
     /// Enable or disable sending input on the MS-RDPECI core input dynamic channel.
     #[must_use]
+    #[cfg(feature = "core-input")]
     pub fn with_core_input(mut self, enabled: bool) -> Self {
         self.channels.core_input = enabled;
         self

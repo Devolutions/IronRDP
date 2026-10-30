@@ -75,7 +75,7 @@ fn ready_client() -> CoreInputClient {
     let mut client = CoreInputClient::new();
     client.start(CHANNEL_ID).expect("start core input channel");
     client
-        .process(CHANNEL_ID, &INIT_RESPONSE_CAPTURE)
+        .process(CHANNEL_ID, &INIT_RESPONSE_CAPTURE[..16])
         .expect("process init response");
     client
 }
@@ -108,7 +108,7 @@ fn init_response_decodes_spec_capture() {
     });
 
     assert_eq!(
-        decode::<CoreInputPdu>(&INIT_RESPONSE_CAPTURE).expect("decode init response"),
+        decode::<CoreInputPdu>(&INIT_RESPONSE_CAPTURE[..16]).expect("decode init response"),
         pdu
     );
     // oracle: spec MS-RDPECI §2.2.3.2
@@ -187,7 +187,7 @@ fn client_sends_init_request_on_open_and_waits_for_response() {
     assert!(client.encode_input(CHANNEL_ID, &spec_input_events()).is_err());
 
     let responses = client
-        .process(CHANNEL_ID, &INIT_RESPONSE_CAPTURE)
+        .process(CHANNEL_ID, &INIT_RESPONSE_CAPTURE[..16])
         .expect("process init response");
     assert!(responses.is_empty());
     assert!(client.ready());
@@ -224,7 +224,9 @@ fn client_is_not_ready_when_server_selects_another_version() {
     let mut response = INIT_RESPONSE_CAPTURE;
     response[5] = 0x02; // selectedProtocolVersion: 0x0200
 
-    client.process(CHANNEL_ID, &response).expect("process init response");
+    client
+        .process(CHANNEL_ID, &response[..16])
+        .expect("process init response");
 
     assert!(!client.ready());
 }
