@@ -10,20 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- Wait for new caps on a reopened channel ([#2296](https://github.com/Devolutions/IronRDP/issues/2296)) ([06cdca22f3](https://github.com/Devolutions/IronRDP/commit/06cdca22f36d0438c94d6b5b9fb5a3a327f554c4)) 
-
-  A display control channel the server closes and reopens could send a
-  monitor layout before the server's new capabilities arrived.
-  
-  Keep pre-registered channel processors available for reopening, but
-  clear DisplayControl capabilities on close so layouts wait for fresh
-  server capabilities. Custom listeners and factories retain control over
-  subsequent opens. Release EGFX graphics state when the channel closes,
-  after saving its persistent bitmap cache, and wait for pipe proxy
-  workers and pending filesystem operations to finish before starting a
-  replacement.
-  
-  ---------
+- Forget the server's capabilities when it closes the channel, so a reopened channel waits for new capabilities before sending a monitor layout ([#2296](https://github.com/Devolutions/IronRDP/issues/2296)) ([06cdca22f3](https://github.com/Devolutions/IronRDP/commit/06cdca22f36d0438c94d6b5b9fb5a3a327f554c4))
 
 
 

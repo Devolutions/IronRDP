@@ -10,26 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 4 -->Bug Fixes
 
-- Harden Windows native clipboard and file lock lifetime ([#2267](https://github.com/Devolutions/IronRDP/issues/2267)) ([3f9a1149b3](https://github.com/Devolutions/IronRDP/commit/3f9a1149b3f4d5d288106d1f8c502b5f4215276b)) 
+- Fix Windows clipboard interoperability ([#2267](https://github.com/Devolutions/IronRDP/issues/2267)) ([3f9a1149b3](https://github.com/Devolutions/IronRDP/commit/3f9a1149b3f4d5d288106d1f8c502b5f4215276b))
 
-  Retain incoming locked file-list snapshots until the peer sends
-  \UnlockClipboardData\ per \[MS-RDPECLIP]\ §3.1.5.3.2 instead of expiring
-  them on upload inactivity (evicting the oldest lock and notifying
-  \on_unlock\ if \MAX_LOCKED_FILE_LISTS\ is exceeded), and reject unknown
-  or released lock IDs instead of falling back to the current unlocked
-  clipboard.
-  
-  On Windows, omit synthesized \CF_DIBV5\ when \CF_DIB\ precedes it in
-  \EnumClipboardFormats\ to avoid Windows' corrupting \BI_BITFIELDS\
-  DIB-to-DIBV5 conversion, fail displaced \FormatDataRequest\ entries when
-  retry coalescing replaces a deferred event or a newer
-  \FormatDataRequest\ arrives, initialize \window_is_active\ from the
-  foreground window process so background clipboard hosts report clipboard
-  changes without waiting for an activation message, and clear
-  \SetLastError(ERROR_SUCCESS)\ before registering delayed rendering with
-  \SetClipboardData(format, None)\.
-  
-  ---------
+  Skip the synthesized `CF_DIBV5` format when `CF_DIB` precedes it, avoiding the corrupting `BI_BITFIELDS` conversion Windows performs.
+  Fail a pending format data request when a newer request or a coalesced retry replaces it.
+  Report clipboard changes from a background clipboard host without waiting for a window activation.
+  Clear the last error before registering delayed rendering.
 
 
 

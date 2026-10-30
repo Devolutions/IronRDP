@@ -3292,7 +3292,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpecam"
-version = "0.2.1"
+version = "0.2.0"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",
@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpegt"
-version = "0.2.1"
+version = "0.2.0"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",
@@ -3335,7 +3335,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpel"
-version = "0.0.3"
+version = "0.0.2"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",
@@ -3418,7 +3418,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpevor"
-version = "0.2.1"
+version = "0.2.0"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",
