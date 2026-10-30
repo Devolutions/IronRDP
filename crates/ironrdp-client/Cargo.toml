@@ -140,6 +140,7 @@ ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.2", optional =
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.3" } # public
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
 ironrdp-rail = { path = "../ironrdp-rail", version = "0.3" }
+ironrdp-rdpemsc = { path = "../ironrdp-rdpemsc", version = "0.0.0" }
 
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.9", optional = true } # public

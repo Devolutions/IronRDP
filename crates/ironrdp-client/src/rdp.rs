@@ -2452,6 +2452,10 @@ fn build_connector(
             }
         });
 
+    if config.channels.mouse_cursor {
+        drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpemsc::MouseCursorClient::new());
+    }
+
     #[cfg(feature = "location")]
     if config.channels.location {
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
@@ -5228,6 +5232,8 @@ async fn active_session(
             // A tunneled request's reply route does not apply to the video notifications.
             iteration.reply_tunnel = None;
         }
+
+        crate::mouse_cursor::present(&mut active_stage, &mut image, &mut iteration.outputs)?;
 
         #[cfg(feature = "text-input")]
         if crate::text_input::flush(&mut active_stage, &mut iteration.outputs, &mut iteration.dvc_batch)? {
