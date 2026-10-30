@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use ironrdp_core::encode_vec;
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_rdpadrv::client::{AudioLevelClient, AudioLevelHandler};
@@ -8,26 +6,19 @@ use ironrdp_rdpadrv::server::{AudioLevelServer, AudioLevelServerHandler};
 use proptest::prelude::*;
 use rstest::rstest;
 
-use super::{CHANNEL_ID, encoded};
+use super::{CHANNEL_ID, encoded, started};
 
-#[derive(Clone, Default)]
-struct Recorder(Arc<Mutex<Vec<VolumeChange>>>);
-
-impl Recorder {
-    fn take(&self) -> Vec<VolumeChange> {
-        core::mem::take(&mut *self.0.lock().unwrap())
-    }
-}
+type Recorder = super::Recorder<VolumeChange>;
 
 impl AudioLevelHandler for Recorder {
     fn volume_changed(&mut self, change: VolumeChange) {
-        self.0.lock().unwrap().push(change);
+        self.push(change);
     }
 }
 
 impl AudioLevelServerHandler for Recorder {
     fn volume_requested(&mut self, change: VolumeChange) {
-        self.0.lock().unwrap().push(change);
+        self.push(change);
     }
 }
 
@@ -45,12 +36,6 @@ const CAPTURE_MUTED: VolumeChange = VolumeChange {
     volume: 0.25,
     muted: true,
 };
-
-fn started_client(client: AudioLevelClient) -> AudioLevelClient {
-    let mut client = client;
-    assert!(client.start(CHANNEL_ID).expect("start channel").is_empty());
-    client
-}
 
 // oracle: spec MS-RDPADRV §2.2.2
 #[test]
@@ -85,12 +70,12 @@ fn volume_change_with_unknown_data_flow_is_rejected() {
     assert!(ironrdp_core::decode::<AudioLevelPdu>(&bytes).is_err());
 }
 
-// oracle: spec MS-RDPADRV §3.1.3.1, §4.1
+// oracle: spec MS-RDPADRV §3.1.3.1, §3.1.5 (answer to initialization), §4.1 (render before capture)
 #[rstest]
 #[case::new_session(SAE_STARTED)]
 #[case::reconnected_session(SAE_REMOTE_CONNECT)]
 fn initialization_is_answered_with_each_stored_volume(#[case] initialization: [u8; 4]) {
-    let mut client = started_client(
+    let mut client = started(
         AudioLevelClient::new(Box::new(Recorder::default()))
             .with_volume(CAPTURE_MUTED)
             .with_volume(RENDER_HALF),
@@ -120,7 +105,7 @@ fn initialization_is_answered_with_each_stored_volume(#[case] initialization: [u
 // oracle: spec MS-RDPADRV §3.1.3.1
 #[test]
 fn initialization_without_stored_volumes_is_not_answered() {
-    let mut client = started_client(AudioLevelClient::new(Box::new(Recorder::default())));
+    let mut client = started(AudioLevelClient::new(Box::new(Recorder::default())));
 
     assert!(client.process(CHANNEL_ID, &SAE_STARTED).expect("process").is_empty());
 }
@@ -129,7 +114,7 @@ fn initialization_without_stored_volumes_is_not_answered() {
 #[test]
 fn reported_volume_replaces_the_stored_one_without_an_answer() {
     let recorder = Recorder::default();
-    let mut client = started_client(AudioLevelClient::new(Box::new(recorder.clone())).with_volume(RENDER_HALF));
+    let mut client = started(AudioLevelClient::new(Box::new(recorder.clone())).with_volume(RENDER_HALF));
     let louder = VolumeChange {
         volume: 0.75,
         ..RENDER_HALF
@@ -161,7 +146,7 @@ fn server_initializes_and_receives_the_client_volumes(
 ) {
     let requested = Recorder::default();
     let mut server = configure(AudioLevelServer::new(Box::new(requested.clone())));
-    let mut client = started_client(
+    let mut client = started(
         AudioLevelClient::new(Box::new(Recorder::default()))
             .with_volume(RENDER_HALF)
             .with_volume(CAPTURE_MUTED),

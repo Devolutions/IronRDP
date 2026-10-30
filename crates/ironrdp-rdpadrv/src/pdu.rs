@@ -109,7 +109,7 @@ pub enum DataFlow {
 }
 
 impl DataFlow {
-    /// Both data flows, in the order a client reports them.
+    /// Both data flows, in the order a client reports them ([MS-RDPADRV] 4.1).
     pub const ALL: [Self; 2] = [Self::Render, Self::Capture];
 
     fn as_u32(self) -> u32 {
@@ -305,7 +305,7 @@ impl<'de> Decode<'de> for SerializedCache {
         ensure_size!(ctx: Self::NAME, in: src, size: name_value_data_size);
         let mut data = ReadCursor::new(src.read_slice(name_value_data_size));
 
-        // Every pair consumes bytes or fails, so a forged pair count cannot loop past the data.
+        // INVARIANT: every pair consumes bytes or fails, so a forged pair count cannot loop past the data.
         let entries = core::iter::repeat_with(|| CacheEntry::decode(&mut data))
             .take(pair_count)
             .collect::<DecodeResult<Vec<_>>>()?;
@@ -351,7 +351,26 @@ impl CacheEntry {
     }
 
     fn name_size(&self) -> usize {
-        self.name.encode_utf16().count() * 2
+        self.name.encode_utf16().count() * 2 // UTF-16 code units of 2 bytes each
+    }
+
+    /// Returns the size of `szName` in bytes, given the `cchName` value and the bytes that follow it.
+    ///
+    /// The specification gives `cchName` both as a length in bytes and as a count of UTF-16 code units.
+    /// The byte reading, the field's own definition, wins whenever `VALUE_DATA` starts where it puts the end of the name;
+    /// otherwise the code unit reading is used if `VALUE_DATA` starts where that one puts it.
+    fn name_size_from(name_length: usize, rest: &[u8]) -> usize {
+        let value_marker_at = |offset: usize| {
+            rest.get(offset..)
+                .and_then(|tail| tail.get(..4))
+                .is_some_and(|marker| marker == VALUE_MARKER.to_le_bytes())
+        };
+        match name_length.checked_mul(2) {
+            Some(code_units_size) if !value_marker_at(name_length) && value_marker_at(code_units_size) => {
+                code_units_size
+            }
+            _ => name_length,
+        }
     }
 }
 
@@ -375,20 +394,25 @@ impl Encode for CacheEntry {
     }
 
     fn size(&self) -> usize {
-        Self::NAME_DATA_FIXED_PART_SIZE + self.name_size() + Self::VALUE_DATA_FIXED_PART_SIZE + self.value.len()
+        Self::NAME_DATA_FIXED_PART_SIZE // Name marker + cchName
+            + self.name_size() // szName
+            + Self::VALUE_DATA_FIXED_PART_SIZE // Value marker + Value type + cbValue
+            + self.value.len() // rgValue
     }
 }
 
 impl<'de> Decode<'de> for CacheEntry {
     /// Decodes one `NAME_DATA` and `VALUE_DATA` pair.
     ///
-    /// The specification gives `cchName` both as a length in bytes and as a count of UTF-16 code units; this codec reads it in bytes, the field's own definition.
+    /// The specification gives `cchName` both as a length in bytes and as a count of UTF-16 code units.
+    /// This codec writes it in bytes, the field's own definition, and reads either: see [`Self::name_size_from`].
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(ctx: Self::NAME, in: src, size: Self::NAME_DATA_FIXED_PART_SIZE);
         if src.read_u32() != NAME_MARKER {
             return Err(invalid_field_err!(Self::NAME, "Name marker", "invalid name marker", in: src));
         }
-        let name_size = usize::try_from(src.read_u32()).unwrap_or(usize::MAX);
+        let name_length = usize::try_from(src.read_u32()).unwrap_or(usize::MAX);
+        let name_size = Self::name_size_from(name_length, src.remaining());
         if name_size % 2 != 0 {
             return Err(invalid_field_err!(Self::NAME, "cchName", "odd UTF-16 name length", in: src));
         }

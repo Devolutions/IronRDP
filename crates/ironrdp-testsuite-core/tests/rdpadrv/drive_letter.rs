@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use ironrdp_core::encode_vec;
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_rdpadrv::client::{DriveLetterClient, DriveLetterHandler};
@@ -8,26 +6,19 @@ use ironrdp_rdpadrv::server::{DriveLetterServer, DriveLetterServerHandler};
 use proptest::prelude::*;
 use rstest::rstest;
 
-use super::{CHANNEL_ID, encoded};
+use super::{CHANNEL_ID, encoded, started};
 
-#[derive(Clone, Default)]
-struct Recorder(Arc<Mutex<Vec<SerializedCache>>>);
-
-impl Recorder {
-    fn take(&self) -> Vec<SerializedCache> {
-        core::mem::take(&mut *self.0.lock().unwrap())
-    }
-}
+type Recorder = super::Recorder<SerializedCache>;
 
 impl DriveLetterHandler for Recorder {
     fn cache_changed(&mut self, cache: &SerializedCache) {
-        self.0.lock().unwrap().push(cache.clone());
+        self.push(cache.clone());
     }
 }
 
 impl DriveLetterServerHandler for Recorder {
     fn cache_restored(&mut self, cache: SerializedCache) {
-        self.0.lock().unwrap().push(cache);
+        self.push(cache);
     }
 }
 
@@ -52,12 +43,6 @@ fn one_entry_cache() -> SerializedCache {
     SerializedCache {
         entries: vec![CacheEntry::dword("AB".to_owned(), 13)],
     }
-}
-
-fn started_client(client: DriveLetterClient) -> DriveLetterClient {
-    let mut client = client;
-    assert!(client.start(CHANNEL_ID).expect("start channel").is_empty());
-    client
 }
 
 // oracle: spec MS-RDPADRV §2.2.5
@@ -88,6 +73,18 @@ fn unused_bytes_after_the_last_pair_are_ignored(#[case] data_size: u8) {
     );
 }
 
+// oracle: spec MS-RDPADRV §2.2.5, which also calls cchName a count of WCHARs; the wire layout test pins the byte reading
+#[test]
+fn name_length_counted_in_characters_is_accepted() {
+    let mut bytes = ONE_ENTRY_CACHE.to_vec();
+    bytes[20] = 0x02; // cchName: 2 WCHARs
+
+    assert_eq!(
+        ironrdp_core::decode::<DriveLetterPdu>(&bytes).expect("decode"),
+        DriveLetterPdu::SerializedCache(one_entry_cache())
+    );
+}
+
 // oracle: spec MS-RDPADRV §2.2.5
 #[test]
 fn mismatched_data_sizes_are_rejected() {
@@ -100,7 +97,7 @@ fn mismatched_data_sizes_are_rejected() {
 // oracle: spec MS-RDPADRV §3.1.3.2
 #[test]
 fn initialization_without_stored_mappings_is_not_answered() {
-    let mut client = started_client(DriveLetterClient::new(Box::new(Recorder::default())));
+    let mut client = started(DriveLetterClient::new(Box::new(Recorder::default())));
     assert!(!client.initialized());
 
     let replies = client.process(CHANNEL_ID, &SADLE_STARTED).expect("process");
@@ -112,8 +109,7 @@ fn initialization_without_stored_mappings_is_not_answered() {
 // oracle: spec MS-RDPADRV §3.1.3.2
 #[test]
 fn initialization_is_answered_with_the_stored_mappings() {
-    let mut client =
-        started_client(DriveLetterClient::new(Box::new(Recorder::default())).with_cache(one_entry_cache()));
+    let mut client = started(DriveLetterClient::new(Box::new(Recorder::default())).with_cache(one_entry_cache()));
 
     let replies = encoded(&client.process(CHANNEL_ID, &SADLE_STARTED).expect("process"));
 
@@ -124,7 +120,7 @@ fn initialization_is_answered_with_the_stored_mappings() {
 #[test]
 fn reported_mappings_replace_the_stored_ones_without_an_answer() {
     let recorder = Recorder::default();
-    let mut client = started_client(DriveLetterClient::new(Box::new(recorder.clone())).with_cache(one_entry_cache()));
+    let mut client = started(DriveLetterClient::new(Box::new(recorder.clone())).with_cache(one_entry_cache()));
     let reported = SerializedCache {
         entries: vec![
             CacheEntry::dword("AB".to_owned(), 6),
@@ -143,7 +139,7 @@ fn reported_mappings_replace_the_stored_ones_without_an_answer() {
 // oracle: spec MS-RDPADRV §3.1.3.2
 #[test]
 fn closing_the_channel_ends_initialization() {
-    let mut client = started_client(DriveLetterClient::new(Box::new(Recorder::default())));
+    let mut client = started(DriveLetterClient::new(Box::new(Recorder::default())));
     client.process(CHANNEL_ID, &SADLE_STARTED).expect("process");
 
     client.close(CHANNEL_ID);
@@ -156,8 +152,7 @@ fn closing_the_channel_ends_initialization() {
 fn server_initializes_and_receives_the_client_mappings() {
     let restored = Recorder::default();
     let mut server = DriveLetterServer::new(Box::new(restored.clone()));
-    let mut client =
-        started_client(DriveLetterClient::new(Box::new(Recorder::default())).with_cache(one_entry_cache()));
+    let mut client = started(DriveLetterClient::new(Box::new(Recorder::default())).with_cache(one_entry_cache()));
 
     let opening = encoded(&server.start(CHANNEL_ID).expect("start server"));
     assert_eq!(opening, [SADLE_STARTED.to_vec()]);

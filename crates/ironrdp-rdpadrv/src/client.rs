@@ -86,7 +86,8 @@ impl DvcProcessor for AudioLevelClient {
             }
         };
         match pdu {
-            // The client sends volume levels only in answer to an initialization message ([MS-RDPADRV] 3.1.5).
+            // The client sends volume levels only in answer to an initialization message ([MS-RDPADRV] 3.1.3.1, 3.1.5),
+            // render before capture as in the example of [MS-RDPADRV] 4.1.
             AudioLevelPdu::Started | AudioLevelPdu::RemoteConnect => {
                 debug!(?pdu, "Audio level protocol initialized");
                 Ok(DataFlow::ALL

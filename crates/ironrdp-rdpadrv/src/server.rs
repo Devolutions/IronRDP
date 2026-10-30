@@ -123,9 +123,10 @@ impl DvcProcessor for DriveLetterServer {
                 debug!(entries = cache.entries.len(), "Client restored drive letter mappings");
                 self.handler.cache_restored(cache);
             }
-            Ok(DriveLetterPdu::Started) => {
-                warn!("Ignoring server-originated drive letter message received from client")
-            }
+            Ok(pdu @ DriveLetterPdu::Started) => warn!(
+                ?pdu,
+                "Ignoring server-originated drive letter message received from client"
+            ),
             Err(error) => warn!(%error, "Ignoring malformed drive letter message"),
         }
         Ok(Vec::new())
