@@ -193,6 +193,9 @@ impl Yuv420Frame {
     pub fn to_rgba(&self) -> DecodedFrame {
         let (width, height) = (usize::from(self.width), usize::from(self.height));
         let mut rgba = vec![0; width * height * 4];
+        if width == 0 {
+            return DecodedFrame::new(rgba, 0, u32::from(self.height));
+        }
         // A pixel pair shares its chroma, so the chroma terms are worked out once a pair and
         // the pair is written as a fixed eight bytes: no bounds checks and no reallocation in
         // the loop, which then vectorises. About a quarter of the time of a call per pixel.
@@ -203,21 +206,17 @@ impl Yuv420Frame {
             };
             let (out_pairs, out_last) = out.split_at_mut(pairs * 8);
             for (((out, y), &u), &v) in out_pairs.chunks_exact_mut(8).zip(y.chunks_exact(2)).zip(u).zip(v) {
-                let (u, v) = (i32::from(u) - 128, i32::from(v) - 128);
-                let (r, g, b) = (403 * v, -48 * u - 120 * v, 475 * u);
+                let chroma = crate::avc444::chroma_terms(u, v);
                 for (out, &y) in out.chunks_exact_mut(4).zip(y) {
-                    let luma = 256 * i32::from(y);
-                    out[0] = crate::avc444::clamp_channel((luma + r) >> 8);
-                    out[1] = crate::avc444::clamp_channel((luma + g) >> 8);
-                    out[2] = crate::avc444::clamp_channel((luma + b) >> 8);
-                    out[3] = 0xFF;
+                    out.copy_from_slice(&crate::avc444::luma_to_rgba(y, chroma));
                 }
             }
-            // An odd width leaves one pixel without a partner.
-            if let (Some(&y), Some(&u), Some(&v)) = (y.last(), u.get(pairs), v.get(pairs))
-                && !out_last.is_empty()
+            // An odd width leaves one pixel without a partner; rows are exactly `width` luma and
+            // `width.div_ceil(2)` chroma samples long, so its samples are the last of each.
+            if let ([.., y], [.., u], [.., v]) = (y, u, v)
+                && width % 2 == 1
             {
-                out_last.copy_from_slice(&crate::avc444::yuv_to_rgba(y, u, v));
+                out_last.copy_from_slice(&crate::avc444::yuv_to_rgba(*y, *u, *v));
             }
         }
         DecodedFrame::new(rgba, u32::from(self.width), u32::from(self.height))
