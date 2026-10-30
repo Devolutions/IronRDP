@@ -65,4 +65,28 @@ local
 
 `send_request` queues a probe via the server event loop. If no client has opened the ECHO channel yet, the request is dropped.
 
+## Static-channel writes
+
+Register a per-connection processor through `StaticChannelFactory`, then send `ServerEvent::StaticChannelJoined` through `RdpServer::event_sender()` to check whether the active client joined its channel.
+Send a complete, unframed channel PDU with `ServerEvent::StaticChannelWithCompletion`; the server adds headers and sends its chunks in order.
+Fragmented writes set `SHOW_PROTOCOL` on every chunk, as required by MS-RDPBCGR section 3.1.5.2.1, "Sending of Virtual Channel PDU"; unfragmented writes do not set it.
+This API does not expose a flag override and does not apply the shared SVC encoder's Windows RDPDR compatibility exception, so do not use it for an endpoint that requires `SHOW_PROTOCOL` to be omitted.
+The completion receiver resolves only after the entire transport write succeeds, not when the peer processes the PDU.
+A closed receiver means failure or discard, but does not prove that no bytes were sent, so it is not permission to retry.
+
+The event queue is unbounded.
+Submit only for an active session: `run` and `serve` discard channel events while waiting for a connection.
+There is no dispatch deadline; if the event loop is not being driven, queued payloads and permits remain held until the events are drained, discarded, or the server is dropped.
+Acquire the event's owned permit from a shared, bounded Tokio semaphore before allocating the payload, cap each payload's size, and await completion before submitting another PDU.
+The event retains its permit until written or discarded, even when the producer drops its completion receiver.
+These limits belong to the producer; the server does not impose a byte budget.
+The entire PDU holds the shared writer lock while dispatch also holds server state, so a large payload or slow transport stalls other session output, inbound PDU handling (including frame acknowledgments), and auto-reconnect cookie updates until its write finishes or fails.
+
+Dropping the completion receiver or making `is_current` return `false` cancels a write that has not started.
+Shared generation state in `is_current` lets a different owner invalidate data without owning the completion receiver.
+Keep `is_current` nonblocking; it is checked again with the server-state and shared-writer locks held, so waiting on work that needs either lock can deadlock the session.
+Cancellation does not remove a queued event or immediately release its permit.
+Once transmission starts, producer cancellation does not interrupt it or release its permit early.
+Unjoined channels and events left over from a previous connection are discarded.
+
 [IronRDP]: https://github.com/Devolutions/IronRDP

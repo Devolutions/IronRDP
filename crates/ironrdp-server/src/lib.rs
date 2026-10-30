@@ -71,7 +71,7 @@ pub use server::{
     pick_remotefx_entropy_coder,
 };
 #[cfg(feature = "__test")]
-pub use server::{client_max_request_size, pick_remotefx_codec};
+pub use server::{SharedWriter, client_max_request_size, dispatch_static_channel_events, pick_remotefx_codec};
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]
 pub use urbdrc::{

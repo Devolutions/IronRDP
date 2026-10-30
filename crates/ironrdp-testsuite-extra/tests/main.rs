@@ -11,5 +11,6 @@ mod dvc_pipe_proxy;
 mod e2e;
 mod gateway_detect;
 mod rdpeudp_tokio;
+mod static_channel;
 mod vmconnect;
 mod volume;
