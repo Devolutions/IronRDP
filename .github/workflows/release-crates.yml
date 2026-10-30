@@ -53,6 +53,9 @@ jobs:
 
       # release-plz bases the release PR on the checked-out branch, so a pinned commit
       # must not leave HEAD detached.
+      # UNTESTED: release-plz must prepare the PR from this local branch even when it lags
+      # the remote branch; after changing this step, dispatch a run with an older commit
+      # and check that the release PR lists only the changes up to that commit.
       - name: Check out the pinned commit as the base branch
         if: ${{ steps.open-release-pr.outputs.skip != 'true' }}
         run: git checkout -B '${{ github.ref_name }}'
