@@ -53,6 +53,21 @@ Split larger batches at order boundaries before submitting them.
 Fields requiring extended Window List support are rejected when the client negotiated only basic support.
 The embedder remains responsible for RAIL channel messages and for respecting the reported icon-cache limits.
 
+## Runtime dynamic channels
+
+Send `ServerEvent::CreateDynamicChannel` through `RdpServer::event_sender()` to create a channel after the client joins DRDYNVC and answers its capability negotiation.
+The factory receives the reserved channel ID and returns a `DvcServerProcessor`.
+Peer acceptance invokes the processor's `start` callback.
+If DRDYNVC is unavailable or not ready, the request is discarded without calling the factory.
+
+Retain the reserved ID and send `ServerEvent::CloseDynamicChannel` to release the processor and notify the peer when appropriate.
+Close also cancels creation awaiting peer acceptance; a late response cannot start the canceled processor.
+Unknown and already-closed IDs have no effect.
+Keep a cancellation guard that sends Close if the caller stops waiting for acceptance, and stop background work when the processor is dropped.
+
+Submit only for the active session: `run` and `serve` discard channel events while idle and at connection boundaries.
+The queue is unbounded and has no dispatch deadline, so bound outstanding requests in the producer and keep factories nonblocking.
+
 ## Echo RTT probes (feature `echo`)
 
 Enable the `echo` feature to use the ECHO dynamic virtual channel (`MS-RDPEECO`) and measure round-trip time.
