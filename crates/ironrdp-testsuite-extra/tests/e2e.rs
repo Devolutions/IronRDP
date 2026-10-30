@@ -1,5 +1,6 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
+use core::error::Error as _;
 use core::net::{Ipv4Addr, SocketAddr};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use core::pin::Pin;
@@ -70,7 +71,7 @@ const RDPDR_READ_LENGTH: u32 = 32 * 1024;
 // oracle: mutant quit not queuing ServerEvent::Quit
 #[tokio::test]
 async fn server_handle_quit_stops_the_listener() {
-    let mut server = server_for_handle_tests();
+    let mut server = server_for_handle_tests(None);
     let handle = server.handle().clone();
     handle.quit("shutdown requested").unwrap();
 
@@ -83,7 +84,7 @@ async fn server_handle_quit_stops_the_listener() {
 // oracle: mutant local_addr discarding the event loop's address reply
 #[tokio::test]
 async fn server_handle_local_addr_reports_the_bound_listener() {
-    let mut server = server_for_handle_tests();
+    let mut server = server_for_handle_tests(None);
     let handle = server.handle().clone();
     let requests = async {
         let addr = handle.local_addr().await.unwrap().expect("run binds a listener");
@@ -146,7 +147,7 @@ async fn server_handle_set_credentials_applies_to_the_next_connection() {
 // oracle: mutant local_addr fabricating an address when none is bound
 #[tokio::test]
 async fn server_handle_local_addr_is_none_for_an_external_source() {
-    let mut server = server_for_handle_tests();
+    let mut server = server_for_handle_tests(None);
     let handle = server.handle().clone();
     let (mut source, _) = listener_source(false).await;
     let requests = async {
@@ -165,7 +166,7 @@ async fn server_handle_local_addr_is_none_for_an_external_source() {
 // oracle: mutant quit or set_credentials reporting success after the server is dropped
 #[tokio::test]
 async fn server_handle_requests_fail_after_server_is_dropped() {
-    let server = server_for_handle_tests();
+    let server = server_for_handle_tests(None);
     let handle = server.handle().clone();
     drop(server);
 
@@ -185,7 +186,7 @@ async fn server_handle_requests_fail_after_server_is_dropped() {
 // oracle: mutant local_addr reporting None for a dropped reply
 #[tokio::test]
 async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
-    let server = server_for_handle_tests();
+    let server = server_for_handle_tests(None);
     let handle = server.handle().clone();
     let mut query = Box::pin(handle.local_addr());
     let mut context = Context::from_waker(Waker::noop());
@@ -195,12 +196,13 @@ async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
     assert!(query.await.is_err());
 }
 
-fn server_for_handle_tests() -> RdpServer {
+fn server_for_handle_tests(connection_handler: Option<Box<dyn server::ConnectionHandler>>) -> RdpServer {
     RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_no_security()
         .with_no_input()
         .with_no_display()
+        .with_connection_handler(connection_handler)
         .build()
 }
 
@@ -333,7 +335,8 @@ async fn largest_fast_path_update(client_max_request_size: u32) -> usize {
                             rewritten,
                         },
                     )
-                    .await;
+                    .await
+                    .expect("finalize connection");
                     let mut stage = ActiveStageBuilder {
                         static_channels: connection_result.static_channels,
                         user_channel_id: connection_result.user_channel_id,
@@ -3156,7 +3159,9 @@ async fn connect_client(
     server_addr: SocketAddr,
     make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
 ) -> (Framed<TokioStream<TlsStream<TcpStream>>>, connector::ConnectionResult) {
-    connect_client_with(server_addr, make_connector, |stream| stream).await
+    connect_client_with(server_addr, make_connector, |stream| stream)
+        .await
+        .expect("finalize connection")
 }
 
 /// Connects like [`connect_client`], with the TLS stream wrapped by `wrap`.
@@ -3164,13 +3169,13 @@ async fn connect_client_with<S>(
     server_addr: SocketAddr,
     make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
     wrap: impl FnOnce(TlsStream<TcpStream>) -> S,
-) -> (Framed<TokioStream<S>>, connector::ConnectionResult)
+) -> connector::ConnectorResult<(Framed<TokioStream<S>>, connector::ConnectionResult)>
 where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
 {
     // Boxed, so the futures of the tests that connect stay under `clippy::large_futures`.
     let client = Box::pin(UpgradedClient::connect(server_addr, make_connector)).await;
-    Box::pin(client.finalize(wrap)).await
+    Box::pin(client.finalize_result(wrap)).await
 }
 
 /// A client that has done X.224 and the TLS upgrade, and not yet the rest of
@@ -3226,6 +3231,16 @@ impl UpgradedClient {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
+        self.finalize_result(wrap).await.expect("finalize connection")
+    }
+
+    async fn finalize_result<S>(
+        self,
+        wrap: impl FnOnce(TlsStream<TcpStream>) -> S,
+    ) -> connector::ConnectorResult<(Framed<TokioStream<S>>, connector::ConnectionResult)>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
         let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(wrap(self.stream));
         let connection_result = ironrdp_async::connect_finalize(
             self.upgraded,
@@ -3237,9 +3252,8 @@ impl UpgradedClient {
             None,
         )
         .await
-        .and_then(connector::ConnectionOutcome::into_connected)
-        .expect("finalize connection");
-        (upgraded_framed, connection_result)
+        .and_then(connector::ConnectionOutcome::into_connected)?;
+        Ok((upgraded_framed, connection_result))
     }
 }
 
@@ -3475,7 +3489,9 @@ impl server::ConnectionHandler for SessionConfigRecorder {
     }
 }
 
-/// A real client sends configuration before capability exchange, then the server reports it in connection metadata.
+/// A real client sends settings before capability exchange, and the server reports them through setup callbacks.
+///
+/// The session-config callback receives the server's initial desktop size, not the client's request.
 async fn client_session_config_reported() -> Vec<SessionSetupEvent> {
     let seen = Arc::new(StdMutex::new(Vec::new()));
     let (mut server, _display_tx) = handler_server(
@@ -3494,6 +3510,7 @@ async fn client_session_config_reported() -> Vec<SessionSetupEvent> {
             let server_addr = local_addr_of(&ev).await;
             let (client, _) = connect_client(server_addr, |client_addr| {
                 let mut config = default_client_config();
+                // This differs from the server's initial size passed to the callback.
                 config.desktop_size = DesktopSize {
                     width: 1280,
                     height: 720,
@@ -3529,10 +3546,10 @@ async fn server_forwards_client_session_configuration_before_connection_info() {
     let SessionSetupEvent::ClientInfo(flags) = &events[0] else {
         panic!("Client Info callback must run first");
     };
-    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1.1 (Client Info PDU flags)
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (Info Packet flags)
     assert!(flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
 
-    // oracle: spec MS-RDPBCGR §§ 2.2.1.3.2 and 2.2.1.11.1.1.1 (Client Core Data and Extended Info fields)
+    // oracle: spec MS-RDPBCGR §§ 2.2.1.3.2 and 2.2.1.11.1.1.1 (Client Core Data and Extended Info Packet fields)
     let expected = ClientSessionConfig {
         flags: *flags,
         performance_flags: PerformanceFlags::DISABLE_WALLPAPER | PerformanceFlags::DISABLE_THEMING,
@@ -3574,31 +3591,26 @@ impl server::ConnectionHandler for RejectSetupCallbacks {
     }
 }
 
-fn server_with_setup_handler(handler: Box<dyn server::ConnectionHandler>) -> RdpServer {
-    RdpServer::builder()
-        .with_addr(([127, 0, 0, 1], 0))
-        .with_no_security()
-        .with_no_input()
-        .with_no_display()
-        .with_connection_handler(Some(handler))
-        .build()
-}
-
 // oracle: mutant early Client Info callback errors must not be discarded
 #[tokio::test]
 async fn client_info_handler_errors_reach_connection_setup() {
-    let mut server = server_with_setup_handler(Box::new(RejectSetupCallbacks));
-    let error = ironrdp_acceptor::ConnectionSetupHandler::handle_client_info(&mut server, ClientInfoFlags::empty())
+    let mut server = server_for_handle_tests(Some(Box::new(RejectSetupCallbacks)));
+    let error = ironrdp::acceptor::ConnectionSetupHandler::handle_client_info(&mut server, ClientInfoFlags::empty())
         .await
         .unwrap_err();
     assert!(error.to_string().contains("client info handler failed"));
+    assert!(
+        error
+            .source()
+            .is_some_and(|source| source.to_string().contains("rejected"))
+    );
 }
 
 // oracle: mutant session configuration callback errors must not be discarded
 #[tokio::test]
 async fn client_session_config_handler_errors_reach_connection_setup() {
-    let mut server = server_with_setup_handler(Box::new(RejectSetupCallbacks));
-    let error = ironrdp_acceptor::ConnectionSetupHandler::handle_client_session_config(
+    let mut server = server_for_handle_tests(Some(Box::new(RejectSetupCallbacks)));
+    let error = ironrdp::acceptor::ConnectionSetupHandler::handle_client_session_config(
         &mut server,
         ClientInfoFlags::empty(),
         PerformanceFlags::empty(),
@@ -3615,6 +3627,96 @@ async fn client_session_config_handler_errors_reach_connection_setup() {
     .await
     .unwrap_err();
     assert!(error.to_string().contains("client session config handler failed"));
+    assert!(
+        error
+            .source()
+            .is_some_and(|source| source.to_string().contains("rejected"))
+    );
+}
+
+struct RejectClientInfo(Arc<AtomicBool>);
+
+impl server::ConnectionHandler for RejectClientInfo {
+    fn on_client_info(&mut self, _flags: ClientInfoFlags) -> ServerResult<()> {
+        self.0.store(true, Ordering::SeqCst);
+        Err(server::ServerError::reason("test client info", "rejected"))
+    }
+}
+
+struct RejectClientSessionConfig(Arc<AtomicBool>);
+
+impl server::ConnectionHandler for RejectClientSessionConfig {
+    fn on_client_session_config(
+        &mut self,
+        _flags: ClientInfoFlags,
+        _performance_flags: PerformanceFlags,
+        _keyboard_layout: u32,
+        _keyboard_type: gcc::KeyboardType,
+        _keyboard_subtype: u32,
+        _keyboard_functional_keys_count: u32,
+        _ime_file_name: &str,
+        _desktop_size: DesktopSize,
+    ) -> ServerResult<()> {
+        self.0.store(true, Ordering::SeqCst);
+        Err(server::ServerError::reason("test session config", "rejected"))
+    }
+}
+
+async fn connection_fails_for_handler(handler: Box<dyn server::ConnectionHandler>) -> bool {
+    let (mut server, _display_tx) = handler_server(handler, server::ConnectionPolicy::Queue);
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let server_addr = local_addr_of(&ev).await;
+            let result = connect_client_with(
+                server_addr,
+                |client_addr| connector::ClientConnector::new(default_client_config(), client_addr),
+                |stream| stream,
+            )
+            .await;
+            server_task.abort();
+            result.is_err()
+        })
+        .await
+}
+
+// oracle: Client Info callback rejection must fail the real connection setup
+#[tokio::test]
+async fn client_info_callback_rejection_stops_real_connection_setup() {
+    let callback_called = Arc::new(AtomicBool::new(false));
+    let connection_failed =
+        connection_fails_for_handler(Box::new(RejectClientInfo(Arc::clone(&callback_called)))).await;
+
+    assert!(
+        callback_called.load(Ordering::SeqCst),
+        "server did not invoke the rejecting callback"
+    );
+    assert!(
+        connection_failed,
+        "client connection succeeded despite callback rejection"
+    );
+}
+
+// oracle: session configuration callback rejection must fail the real connection setup
+#[tokio::test]
+async fn client_session_config_callback_rejection_stops_real_connection_setup() {
+    let callback_called = Arc::new(AtomicBool::new(false));
+    let connection_failed =
+        connection_fails_for_handler(Box::new(RejectClientSessionConfig(Arc::clone(&callback_called)))).await;
+
+    assert!(
+        callback_called.load(Ordering::SeqCst),
+        "server did not invoke the rejecting callback"
+    );
+    assert!(
+        connection_failed,
+        "client connection succeeded despite callback rejection"
+    );
 }
 
 /// Connect a real client announcing `desktop_scale_factor` (and
