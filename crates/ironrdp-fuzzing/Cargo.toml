@@ -27,6 +27,7 @@ ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-egfx = { path = "../ironrdp-egfx", features = ["arbitrary"] }
 ironrdp-svc.path = "../ironrdp-svc"
 ironrdp-rdpel.path = "../ironrdp-rdpel"
+ironrdp-rdpetxt = { path = "../ironrdp-rdpetxt", default-features = false }
 ironrdp-rdpadrv.path = "../ironrdp-rdpadrv"
 ironrdp-rdpear = { version = "0.1.0", path = "../ironrdp-rdpear" }
 ironrdp-w365.path = "../ironrdp-w365"
