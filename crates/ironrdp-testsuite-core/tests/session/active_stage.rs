@@ -12,6 +12,7 @@ use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_session::composite_graphics_updates;
 use ironrdp_session::image::DecodedImage;
+use rstest::rstest;
 
 fn update(left: u16, top: u16, right: u16, bottom: u16) -> (ExclusiveRectangle, Vec<u8>) {
     let w = usize::from(right - left);
@@ -149,44 +150,51 @@ fn a_delta_touching_the_image_edge_is_accepted() {
     );
 }
 
-/// Each RGBA pixel of a delta lands at its own position in the framebuffer's layout,
-/// and nothing outside the delta changes.
-// oracle: the framebuffer layout's channel offsets, applied a pixel at a time
-#[test]
-fn a_delta_lands_pixel_for_pixel_in_either_layout() {
+/// Each RGBA pixel of a delta lands at its own position in the framebuffer's byte order,
+/// and nothing outside the delta changes. `order` picks, for each framebuffer byte, the
+/// delta channel (r, g, b, a) stored there.
+// oracle: reference FreeRDP/FreeRDP@f0f03eb0290d:include/freerdp/codec/color.h
+// oracle: reference FreeRDP/FreeRDP@f0f03eb0290d:libfreerdp/codec/color.c
+#[rstest]
+#[case::rgba_copies_rows(PixelFormat::RgbA32, [0, 1, 2, 3])]
+#[case::rgbx_copies_rows(PixelFormat::RgbX32, [0, 1, 2, 3])]
+#[case::bgra_swaps_per_pixel(PixelFormat::BgrA32, [2, 1, 0, 3])]
+fn a_delta_lands_pixel_for_pixel(
+    #[case] format: PixelFormat,
+    #[case] order: [usize; 4],
+    #[values((3, 2, 8, 6), (0, 0, 9, 7), (0, 3, 9, 4), (8, 6, 9, 7), (4, 0, 9, 7))] (left, top, right, bottom): (
+        u16,
+        u16,
+        u16,
+        u16,
+    ),
+) {
     let (width, height) = (9u16, 7u16);
-    let (left, top, right, bottom) = (3u16, 2u16, 8u16, 6u16);
-    let pixels: Vec<u8> = (0..usize::from((right - left) * (bottom - top)) * 4)
+    let delta_width = usize::from(right - left);
+    let pixels: Vec<u8> = (0..delta_width * usize::from(bottom - top) * 4)
         .map(|i| u8::try_from(i % 251).expect("byte"))
         .collect();
+    let mut image = DecodedImage::new(format, width, height);
+    let delta = ExclusiveRectangle {
+        left,
+        top,
+        right,
+        bottom,
+    };
+    composite_graphics_updates(&mut image, [(delta, pixels.clone())]).expect("delta is inside the image");
 
-    for format in [PixelFormat::RgbA32, PixelFormat::BgrA32] {
-        let mut image = DecodedImage::new(format, width, height);
-        let delta = ExclusiveRectangle {
-            left,
-            top,
-            right,
-            bottom,
-        };
-        composite_graphics_updates(&mut image, [(delta, pixels.clone())]).expect("delta is inside the image");
-
-        let [ri, gi, bi, ai] = format.channel_offsets();
-        let mut expected = vec![0u8; usize::from(width) * usize::from(height) * 4];
-        for (i, pixel) in pixels.chunks_exact(4).enumerate() {
-            let row = usize::from(top) + i / usize::from(right - left);
-            let col = usize::from(left) + i % usize::from(right - left);
-            let at = (row * usize::from(width) + col) * 4;
-            expected[at + ri] = pixel[0];
-            expected[at + gi] = pixel[1];
-            expected[at + bi] = pixel[2];
-            expected[at + ai] = pixel[3];
-        }
-        assert_eq!(image.data(), expected.as_slice(), "{format:?}");
+    let mut expected = vec![0u8; usize::from(width) * usize::from(height) * 4];
+    for (i, pixel) in pixels.chunks_exact(4).enumerate() {
+        let row = usize::from(top) + i / delta_width;
+        let col = usize::from(left) + i % delta_width;
+        let at = (row * usize::from(width) + col) * 4;
+        expected[at..at + 4].copy_from_slice(&order.map(|channel| pixel[channel]));
     }
+    assert_eq!(image.data(), expected.as_slice());
 }
 
 /// A software pointer over a delta is drawn over the new pixels, not under them.
-// oracle: pointer composition order
+// oracle: mutant a delta written after the pointer is composited, hiding the pointer
 #[test]
 fn a_visible_pointer_stays_over_a_delta() {
     let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);

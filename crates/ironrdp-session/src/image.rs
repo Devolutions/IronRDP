@@ -950,25 +950,27 @@ impl DecodedImage {
 
         // The framebuffer's own layout: a row is one copy rather than four stores a pixel.
         if [ri, gi, bi, ai] == [0, 1, 2, 3] {
+            let row_len = usize::from(update_rectangle.width()) * DST_COLOR_DEPTH;
             for (row_idx, row) in rgba32.enumerate() {
+                // A shorter row would leave stale pixels and a longer one would spill into the next.
+                debug_assert_eq!(row.len(), row_len, "an rgba32 row is the rectangle's width");
                 let start = ((top + row_idx) * image_width + left) * DST_COLOR_DEPTH;
                 self.data[start..start + row.len()].copy_from_slice(row);
             }
-            return self.pointer_rendering_end(pointer_rendering_state);
+        } else {
+            rgba32.enumerate().for_each(|(row_idx, row)| {
+                row.chunks_exact(SRC_COLOR_DEPTH)
+                    .enumerate()
+                    .for_each(|(col_idx, src_pixel)| {
+                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+
+                        self.data[dst_idx + ri] = src_pixel[0];
+                        self.data[dst_idx + gi] = src_pixel[1];
+                        self.data[dst_idx + bi] = src_pixel[2];
+                        self.data[dst_idx + ai] = src_pixel[3];
+                    })
+            });
         }
-
-        rgba32.enumerate().for_each(|(row_idx, row)| {
-            row.chunks_exact(SRC_COLOR_DEPTH)
-                .enumerate()
-                .for_each(|(col_idx, src_pixel)| {
-                    let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
-
-                    self.data[dst_idx + ri] = src_pixel[0];
-                    self.data[dst_idx + gi] = src_pixel[1];
-                    self.data[dst_idx + bi] = src_pixel[2];
-                    self.data[dst_idx + ai] = src_pixel[3];
-                })
-        });
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
 
