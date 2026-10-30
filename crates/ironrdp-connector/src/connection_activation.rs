@@ -12,6 +12,15 @@ use crate::{
     MonotonicInstant, Sequence, State, Written, general_err, reason_err,
 };
 
+/// The largest desktop width or height accepted from the server's Bitmap capability set.
+///
+/// The Bitmap capability itself leaves these fields unconstrained, so this reuses the virtual desktop limit of the
+/// [Client Monitor Data], which servers enforce (`ERRINFO_VIRTUALDESKTOPTOOLARGE`). It bounds the framebuffer
+/// clients allocate from the negotiated size.
+///
+/// [Client Monitor Data]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
+const MAX_DESKTOP_DIM: u16 = 32766;
+
 /// Represents the Capability Exchange and Connection Finalization phases
 /// of the connection sequence (section [1.3.1.1]).
 ///
@@ -313,6 +322,17 @@ impl Sequence for ConnectionActivationSequence {
                         width: self.config.desktop_size.width,
                         height: self.config.desktop_size.height,
                     });
+
+                if !(1..=MAX_DESKTOP_DIM).contains(&desktop_size.width)
+                    || !(1..=MAX_DESKTOP_DIM).contains(&desktop_size.height)
+                {
+                    return Err(reason_err!(
+                        "ConnectionActivation::CapabilitiesExchange",
+                        "negotiated desktop size {}x{} is outside the supported range",
+                        desktop_size.width,
+                        desktop_size.height
+                    ));
+                }
 
                 let share_id = share_control_ctx.share_id;
 
