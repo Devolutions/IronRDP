@@ -9,7 +9,7 @@ use std::sync::{Arc, PoisonError};
 
 use ironrdp_dvc::{DrdynvcClient, DvcMessageBatch};
 use ironrdp_rdpetxt::client::{ClientToServerChannel, ServerToClientChannel, TextInputClient};
-use ironrdp_session::ActiveStage;
+use ironrdp_session::{ActiveStage, ActiveStageOutput, SessionResult};
 use tracing::{debug, warn};
 
 /// Registers both text input channels around one shared client.
@@ -27,26 +27,44 @@ pub(crate) fn attach(drdynvc: DrdynvcClient) -> DrdynvcClient {
         })
 }
 
-/// Moves the queued replies into `dvc_batch` when the iteration has no other dynamic channel
-/// batch.
+/// Sends the queued replies with the iteration.
 ///
+/// They become `dvc_batch` when the iteration has no other dynamic channel batch, and leave in a
+/// frame of their own appended to `outputs` otherwise.
 /// Returns whether `dvc_batch` now holds them, in which case they must be routed for the
 /// client-to-server channel rather than for the request that produced the iteration.
-pub(crate) fn flush(active_stage: &mut ActiveStage, dvc_batch: &mut Option<DvcMessageBatch>) -> bool {
-    // UNTESTED: replies wait in the shared client while another batch occupies the iteration
-    // and leave with the next iteration that has none.
-    // The server waits for some of them, such as the version reply and text change
+pub(crate) fn flush(
+    active_stage: &mut ActiveStage,
+    outputs: &mut Vec<ActiveStageOutput>,
+    dvc_batch: &mut Option<DvcMessageBatch>,
+) -> SessionResult<bool> {
+    // UNTESTED: no client test drives an ActiveStage through these paths.
+    // The server waits for some replies, such as the version reply and text change
     // acknowledgements, so a change here must not drop or reorder them.
-    if dvc_batch.as_ref().is_some_and(|batch| !batch.messages().is_empty()) {
-        return false;
-    }
-    match pending_batch(active_stage) {
-        Some(batch) => {
-            *dvc_batch = Some(batch);
-            true
+    if dvc_batch.as_ref().is_none_or(|batch| batch.messages().is_empty()) {
+        let batch = pending_batch(active_stage);
+        let installed = batch.is_some();
+        if installed {
+            *dvc_batch = batch;
         }
-        None => false,
+        return Ok(installed);
     }
+    let Some(channel_id) = active_stage
+        .get_dvc::<ClientToServerChannel>()
+        .map(|channel| channel.channel_id())
+    else {
+        return Ok(false);
+    };
+    // Only the batch reaches a Soft-Sync tunnel, so tunneled replies wait for an iteration
+    // without another batch.
+    if active_stage.dvc_tunnel_for_channel(channel_id).is_some() {
+        return Ok(false);
+    }
+    if let Some(batch) = pending_batch(active_stage) {
+        let frame = active_stage.encode_dvc_messages(batch.into_messages())?;
+        outputs.push(ActiveStageOutput::ResponseFrame(frame));
+    }
+    Ok(false)
 }
 
 /// Inserts `text` into the focused remote edit control.

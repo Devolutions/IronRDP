@@ -17,16 +17,11 @@ use ironrdp_pdu::{PduResult, encode_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, warn};
 
-use crate::channel::{lock, process_frames};
-use crate::pdu::{ClientPdu, Guid, NotifyServerVersionPdu, PduLayout, ServerPdu, VersionedPdu};
-use crate::{CLIENT_TO_SERVER_CHANNEL_NAME, QueueFull, SERVER_TO_CLIENT_CHANNEL_NAME};
-
-/// Largest reassembled message accepted on the client-to-server channel.
-pub const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
-
-/// Largest number of PDUs queued for the client, while the server-to-client channel is closed
-/// or until the server sends them.
-pub const MAX_PENDING_PDUS: usize = 1024;
+use crate::channel::{lock, process_frames, versioned_messages};
+use crate::pdu::{ClientPdu, Guid, NotifyServerVersionPdu, PduLayout, ServerPdu};
+use crate::{
+    CLIENT_TO_SERVER_CHANNEL_NAME, MAX_MESSAGE_SIZE, MAX_PENDING_PDUS, QueueFull, SERVER_TO_CLIENT_CHANNEL_NAME,
+};
 
 /// Application side of the text input objects.
 pub trait TextInputServerHandler: Send {
@@ -43,6 +38,7 @@ pub struct TextInputServer {
     version_minor: u32,
     client_version: Option<(u32, u32)>,
     handler: Box<dyn TextInputServerHandler>,
+    /// INVARIANT: `pending.len() <= MAX_PENDING_PDUS`.
     pending: Vec<ServerPdu>,
 }
 
@@ -243,7 +239,7 @@ impl DvcProcessor for ClientToServerChannel {
             TextInputServer::layout,
             ClientPdu::decode_body,
             TextInputServer::process,
-        )?;
+        );
         Ok(Vec::new())
     }
 }
@@ -252,9 +248,5 @@ impl DvcServerProcessor for ClientToServerChannel {}
 
 fn take_dvc_messages(server: &mut TextInputServer) -> Vec<DvcMessage> {
     let layout = server.layout();
-    server
-        .take_pending()
-        .into_iter()
-        .map(|pdu| -> DvcMessage { Box::new(VersionedPdu { pdu, layout }) })
-        .collect()
+    versioned_messages(server.take_pending(), layout)
 }

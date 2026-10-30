@@ -3,11 +3,11 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use ironrdp_core::{DecodeResult, ReadCursor};
-use ironrdp_pdu::{PduResult, pdu_other_err};
+use ironrdp_dvc::{DvcEncode, DvcMessage};
 use tracing::warn;
 
 use crate::QueueFull;
-use crate::pdu::{PduLayout, read_frame};
+use crate::pdu::{PduLayout, VersionedPdu, read_frame};
 
 /// Locks state shared by two channel processors.
 ///
@@ -17,17 +17,29 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Boxes `pdus` for a dynamic channel, encoded under `layout`.
+pub(crate) fn versioned_messages<P>(pdus: Vec<P>, layout: PduLayout) -> Vec<DvcMessage>
+where
+    VersionedPdu<P>: DvcEncode + Send + 'static,
+{
+    pdus.into_iter()
+        .map(|pdu| -> DvcMessage { Box::new(VersionedPdu { pdu, layout }) })
+        .collect()
+}
+
 /// Decodes each PDU of `payload` under the layout `state` negotiated so far and applies it.
 ///
-/// A PDU that does not decode is skipped, a malformed header ends the message because the next
-/// PDU cannot be located, and a reply `apply` cannot queue fails the message.
+/// A PDU that does not decode is skipped, and a malformed header ends the message because the
+/// next PDU cannot be located.
+/// When a reply does not fit the queue, the rest of the message is left unprocessed, so the
+/// state never runs ahead of the replies; the connection itself carries on.
 pub(crate) fn process_frames<S, P>(
     payload: &[u8],
     state: &mut S,
     layout: fn(&S) -> PduLayout,
     decode_body: fn(u16, &[u8], PduLayout) -> DecodeResult<P>,
     apply: fn(&mut S, P) -> Result<(), QueueFull>,
-) -> PduResult<()> {
+) {
     let mut src = ReadCursor::new(payload);
     while !src.is_empty() {
         let (pdu_id, body) = match read_frame(&mut src) {
@@ -39,9 +51,13 @@ pub(crate) fn process_frames<S, P>(
         };
         // The version PDU comes first, so the layout is known for the PDUs that depend on it.
         match decode_body(pdu_id, body, layout(state)) {
-            Ok(pdu) => apply(state, pdu).map_err(|error| pdu_other_err!("text input reply", source: error))?,
+            Ok(pdu) => {
+                if let Err(error) = apply(state, pdu) {
+                    warn!(pdu_id, %error, "Ignoring the rest of a text input message");
+                    break;
+                }
+            }
             Err(error) => warn!(pdu_id, %error, "Ignoring an undecodable text input PDU"),
         }
     }
-    Ok(())
 }

@@ -24,32 +24,22 @@ use ironrdp_pdu::{PduResult, encode_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, trace, warn};
 
-use crate::channel::{lock, process_frames};
+use crate::channel::{lock, process_frames, versioned_messages};
 use crate::pdu::{
     AcknowledgeHostOperationPdu, AcknowledgeOperationPdu, AcknowledgeUndoPendingKeyEventsPdu, AcknowledgementType,
     CandidateList, ClientOptions, ClientPdu, EditControlFocusPdu, EditControlInfo, EditControlRange,
     NotifyClientVersionPdu, PduLayout, ReconversionCandidatesPdu, ReportClientOptionsPdu, ServerPdu, TextInputRect,
-    TextString, UpdateTextAndSelectionPdu, VersionedPdu,
+    TextString, UpdateTextAndSelectionPdu,
 };
-use crate::{CLIENT_TO_SERVER_CHANNEL_NAME, QueueFull, SERVER_TO_CLIENT_CHANNEL_NAME};
-
-/// Largest reassembled message accepted on the server-to-client channel.
-///
-/// Text paging bounds each text update to a few tens of thousands of characters
-/// ([1.3.3] Text Paging).
-///
-/// [1.3.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
-pub const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+use crate::{
+    CLIENT_TO_SERVER_CHANNEL_NAME, MAX_MESSAGE_SIZE, MAX_PENDING_PDUS, QueueFull, SERVER_TO_CLIENT_CHANNEL_NAME,
+};
 
 /// Largest number of registered key targets tracked at once.
 pub const MAX_KEY_TARGETS: usize = 1024;
 
 /// Largest number of registered edit controls tracked at once.
 pub const MAX_EDIT_CONTROLS: usize = 1024;
-
-/// Largest number of PDUs queued for the server, while the client-to-server channel is closed
-/// or until the session sends them.
-pub const MAX_PENDING_PDUS: usize = 1024;
 
 /// Why [`TextInputClient::commit_text`] sent nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,7 +140,9 @@ pub struct TextInputClient {
     folded_host_losses: BTreeSet<u32>,
     focused_host: Option<u32>,
     focus: Option<FocusedEditControl>,
+    /// INVARIANT: never zero, which the PDUs without an operation identifier carry.
     next_operation_id: u32,
+    /// INVARIANT: `pending.len() <= MAX_PENDING_PDUS`.
     pending: Vec<ClientPdu>,
 }
 
@@ -218,7 +210,9 @@ impl TextInputClient {
     /// Replaces the selection of the focused edit control with `text` and places the caret
     /// after it.
     ///
-    /// Returns the operation identifier the server acknowledges.
+    /// Returns the operation identifier the server acknowledges with
+    /// `RDPTXT_ACKNOWLEDGE_REMOTE_OPERATION_PDU`, which reaches the observer; a rejection is also
+    /// logged.
     /// Nothing is queued and the selection is left as is when this fails.
     pub fn commit_text(&mut self, text: &str) -> Result<u32, CommitTextError> {
         let focus = self.focus.ok_or(CommitTextError::NoFocus)?;
@@ -243,12 +237,13 @@ impl TextInputClient {
             selection_end: caret,
         })
         .map_err(|QueueFull| CommitTextError::QueueFull)?;
-        if let Some(focus) = self.focus.as_mut() {
-            focus.selection = EditControlRange {
+        self.focus = Some(FocusedEditControl {
+            selection: EditControlRange {
                 begin: caret,
                 end: caret,
-            };
-        }
+            },
+            ..focus
+        });
         Ok(operation_id)
     }
 
@@ -382,15 +377,27 @@ impl TextInputClient {
                 }
             }
             ServerPdu::SelectionChanged(selection) => {
+                let range = u32::try_from(selection.selection_begin).and_then(|begin| {
+                    Ok(EditControlRange {
+                        begin,
+                        end: u32::try_from(selection.selection_end)?,
+                    })
+                });
                 if let Some(focus) = self
                     .focus
                     .as_mut()
                     .filter(|focus| focus.is(selection.text_input_client_id, selection.edit_control_id))
                 {
-                    focus.selection = EditControlRange {
-                        begin: u32::try_from(selection.selection_begin).unwrap_or(0),
-                        end: u32::try_from(selection.selection_end).unwrap_or(0),
-                    };
+                    match range {
+                        Ok(range) => focus.selection = range,
+                        // The positions are signed, but the specification gives no meaning to a
+                        // negative one ([2.2.2.35]), so the last known selection stays.
+                        Err(_) => debug!(
+                            begin = selection.selection_begin,
+                            end = selection.selection_end,
+                            "Ignoring a negative text input selection"
+                        ),
+                    }
                 }
                 self.acknowledge_control(
                     selection.text_input_client_id,
@@ -463,6 +470,13 @@ impl TextInputClient {
                         reconvert_range,
                     })?;
                 }
+            }
+            ServerPdu::AcknowledgeRemoteOperation(ack) if ack.error_code != 0 => {
+                warn!(
+                    operation_id = ack.operation_id,
+                    error_code = ack.error_code,
+                    "The server rejected a text input operation"
+                );
             }
             ServerPdu::SendKeyToHost(key) => {
                 debug!(op_id = key.op_id, "Ignoring a key routed to the client input method");
@@ -646,7 +660,7 @@ impl DvcProcessor for ServerToClientChannel {
             TextInputClient::layout,
             ServerPdu::decode_body,
             TextInputClient::process,
-        )?;
+        );
         Ok(Vec::new())
     }
 
@@ -726,9 +740,5 @@ impl DvcClientProcessor for ClientToServerChannel {}
 fn take_dvc_messages(client: &Mutex<TextInputClient>) -> Vec<DvcMessage> {
     let mut client = lock(client);
     let layout = client.layout();
-    client
-        .take_pending()
-        .into_iter()
-        .map(|pdu| -> DvcMessage { Box::new(VersionedPdu { pdu, layout }) })
-        .collect()
+    versioned_messages(client.take_pending(), layout)
 }

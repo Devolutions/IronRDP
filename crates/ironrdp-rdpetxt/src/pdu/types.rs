@@ -107,7 +107,16 @@ pub struct CoreInputProfile {
 
 impl CoreInputProfile {
     /// Size without **bcpTag**.
-    const BASE_SIZE: usize = 2 /* langid */ + 3 * 16 /* clsid, guidProfile, catid */ + 6 * 4 /* hkl .. flags */;
+    const BASE_SIZE: usize = 2 /* langid */
+        + 16 /* clsid */
+        + 16 /* guidProfile */
+        + 16 /* catid */
+        + 4 /* hkl */
+        + 4 /* klid */
+        + 4 /* lcid */
+        + 4 /* profileType */
+        + 4 /* caps */
+        + 4 /* flags */;
 }
 
 impl Wire for CoreInputProfile {

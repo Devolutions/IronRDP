@@ -5216,7 +5216,7 @@ async fn active_session(
         }
 
         #[cfg(feature = "text-input")]
-        if crate::text_input::flush(&mut active_stage, &mut iteration.dvc_batch) {
+        if crate::text_input::flush(&mut active_stage, &mut iteration.outputs, &mut iteration.dvc_batch)? {
             // Text input replies travel on their own channel, whatever produced the iteration.
             iteration.reply_tunnel = None;
         }

@@ -25,10 +25,21 @@ pub mod client;
 #[cfg(feature = "std")]
 pub mod server;
 
-/// A PDU could not be queued because the queue for the peer is full.
+/// Largest reassembled message accepted on the receiving channel.
 ///
-/// The replies queued while one message is processed are required by the peer, so the
-/// processors fail the channel rather than drop them.
+/// Text paging bounds each text update to a few tens of thousands of characters
+/// ([1.3.3] Text Paging).
+///
+/// [1.3.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
+#[cfg(feature = "std")]
+pub const MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
+/// Largest number of PDUs queued for the peer, while the sending channel is closed or until the
+/// session sends them.
+#[cfg(feature = "std")]
+pub const MAX_PENDING_PDUS: usize = 1024;
+
+/// A PDU could not be queued because [`MAX_PENDING_PDUS`] PDUs are queued for the peer already.
 #[cfg(feature = "std")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueFull;
