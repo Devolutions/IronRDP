@@ -30,6 +30,7 @@ const CANONICAL_SCOPES: &[&str] = &[
     "rdpeai",
     "displaycontrol",
     "rdpei",
+    "rdpet",
     "echo",
     "egfx",
     "rdpeusb",
