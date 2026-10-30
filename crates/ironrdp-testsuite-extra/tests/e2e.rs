@@ -1,8 +1,5 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
-#[cfg(windows)]
-mod credssp_backend;
-
 use core::net::{Ipv4Addr, SocketAddr};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use core::pin::Pin;
@@ -3604,7 +3601,7 @@ async fn the_default_under_hybrid_lets_an_authenticated_newcomer_take_over() {
 /// A [`server::ConnectionSource`] over a TCP listener, standing in for an
 /// embedder's own accept loop. With `report_peer` false it gives no peer
 /// address, as a Unix socket or an AF_VSOCK listener would.
-struct ListenerSource {
+pub(super) struct ListenerSource {
     listener: TcpListener,
     report_peer: bool,
     /// The tag given to the next connection; 1 for the first.
@@ -3625,7 +3622,7 @@ impl server::ConnectionSource for ListenerSource {
     }
 }
 
-async fn listener_source(report_peer: bool) -> (ListenerSource, SocketAddr) {
+pub(super) async fn listener_source(report_peer: bool) -> (ListenerSource, SocketAddr) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     (
@@ -3678,7 +3675,7 @@ const HYBRID_PASSWORD: &str = "password";
 /// that security is `Preempt`, and the display sender to keep alive for the
 /// test: once it drops, the display stream ends and the server closes the
 /// session.
-fn hybrid_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
+pub(super) fn hybrid_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
     let identity = test_tls_identity();
     let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
 
@@ -3701,7 +3698,7 @@ fn hybrid_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
 }
 
 /// The client configuration that logs in to [`hybrid_server`].
-fn hybrid_client_config() -> connector::Config {
+pub(super) fn hybrid_client_config() -> connector::Config {
     connector::Config {
         credentials: connector::Credentials::UsernamePassword {
             username: HYBRID_USER.into(),
