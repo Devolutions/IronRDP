@@ -1325,6 +1325,7 @@ impl ConnectionSource for TcpConnectionSource {
 ///# }
 /// ```
 pub struct RdpServer {
+    pending_session_server_id: Arc<()>,
     opts: RdpServerOptions,
     // FIXME: replace with a channel and poll/process the handler?
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
@@ -2005,6 +2006,50 @@ struct NegotiatedConnection<S> {
     authenticated_credentials: Option<Credentials>,
 }
 
+/// A negotiated TCP connection whose session has not started.
+///
+/// Dropping this value closes the connection without attaching session channel backends.
+pub struct PendingSession {
+    connection: NegotiatedConnection<TcpStream>,
+    captured_identity: Option<ironrdp_acceptor::CredsspAuthIdentity>,
+    server_id: Arc<()>,
+}
+
+impl PendingSession {
+    /// Returns an identity delegated through CredSSP, if the handshake received one.
+    ///
+    /// Credentials supplied only through ClientInfo are not exposed here.
+    pub fn captured_identity(&self) -> Option<&ironrdp_acceptor::CredsspAuthIdentity> {
+        self.captured_identity.as_ref()
+    }
+}
+
+fn captured_credssp_identity(
+    received: Option<&ReceivedCredentials>,
+) -> ServerResult<Option<ironrdp_acceptor::CredsspAuthIdentity>> {
+    received
+        .filter(|received| received.origin == CredentialOrigin::CredSspDelegated)
+        .map(|received| {
+            let credentials = &received.credentials;
+            let username = ironrdp_connector::sspi::Username::new(&credentials.username, credentials.domain.as_deref())
+                .map_err(|error| ServerError::custom("invalid delegated username", error))?;
+            Ok(ironrdp_acceptor::CredsspAuthIdentity {
+                username,
+                password: credentials.password.clone().into(),
+            })
+        })
+        .transpose()
+}
+
+#[cfg(feature = "__test")]
+#[doc(hidden)]
+/// Projects an acceptor credential result to the identity exposed by [`PendingSession`].
+pub fn captured_credssp_identity_for_test(
+    received: Option<&ReceivedCredentials>,
+) -> ServerResult<Option<ironrdp_acceptor::CredsspAuthIdentity>> {
+    captured_credssp_identity(received)
+}
+
 /// State that belongs to a single client connection.
 ///
 /// Created when a [`NegotiatedConnection`] enters finalization and dropped
@@ -2479,6 +2524,7 @@ impl RdpServer {
         let bound_display = Arc::new(StdMutex::new(BoundDisplayState::default()));
 
         Self {
+            pending_session_server_id: Arc::new(()),
             opts,
             handler: Arc::new(Mutex::new(Box::new(BoundInputSlot::new(
                 handler,
@@ -3315,10 +3361,63 @@ impl RdpServer {
         result
     }
 
+    /// Completes negotiation and security setup without starting session finalization.
+    ///
+    /// The returned [`PendingSession`] owns the TCP connection until consumed or dropped.
+    pub async fn run_connection_handshake(&mut self, stream: TcpStream) -> ServerResult<PendingSession> {
+        self.connection_local_addr = None;
+        let local_addr = stream
+            .local_addr()
+            .map_err(|error| ServerError::io("get local address", error))?;
+        let pending = self.prepare_pending_connection().await;
+        let Some(mut connection) = pending
+            .negotiate_and_authenticate(stream, TransportTls::Managed)
+            .await?
+        else {
+            return Err(ServerError::reason(
+                "TLS handshake failed",
+                "TLS negotiation did not complete",
+            ));
+        };
+        connection.local_addr = Some(local_addr);
+        let captured_identity = captured_credssp_identity(connection.acceptor.received_credentials())?;
+
+        Ok(PendingSession {
+            connection,
+            captured_identity,
+            server_id: Arc::clone(&self.pending_session_server_id),
+        })
+    }
+
+    /// Consumes a pending connection and starts RDP finalization and session processing.
+    ///
+    /// Dropping this future cancels session startup and closes the pending connection.
+    pub async fn run_connection_session(&mut self, pending: PendingSession) -> ServerResult<()> {
+        self.connection_local_addr = None;
+        if !Arc::ptr_eq(&self.pending_session_server_id, &pending.server_id) {
+            return Err(ServerError::reason(
+                "pending session",
+                "belongs to a different server instance",
+            ));
+        }
+        let result = Box::pin(self.finalize_negotiated(pending.connection)).await;
+        self.connection_local_addr = None;
+        result
+    }
+
     async fn run_connection_inner<S>(&mut self, stream: S, tls: TransportTls) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
+        let pending = self.prepare_pending_connection().await;
+        let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
+            return Ok(());
+        };
+
+        self.finalize_negotiated(negotiated).await
+    }
+
+    async fn prepare_pending_connection(&mut self) -> PendingConnection {
         self.clear_bound_connection();
 
         // Before negotiation, so nothing the previous session left queued can
@@ -3341,12 +3440,7 @@ impl RdpServer {
                 ..ServerCredentialsHandler::default()
             },
         );
-
-        let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
-            return Ok(());
-        };
-
-        self.finalize_negotiated(negotiated).await
+        pending
     }
 
     /// Finalize a connection that has already negotiated (and, under Hybrid,

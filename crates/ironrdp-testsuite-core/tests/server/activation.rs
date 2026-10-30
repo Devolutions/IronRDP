@@ -22,7 +22,7 @@ use ironrdp_testsuite_core::rdp::{
     CONTROL_COOPERATE_BUFFER, CONTROL_REQUEST_CONTROL_BUFFER,
 };
 use ironrdp_tokio::TokioFramed;
-use tokio::io::DuplexStream;
+use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio::sync::oneshot;
 
 use super::acceptor::encode_send_data_request;
@@ -150,30 +150,37 @@ async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag
     play_client_with_capabilities(framed, desktop_resize_flag, input, None).await;
 }
 
-pub(super) async fn play_client_with_capabilities(
-    framed: &mut TokioFramed<DuplexStream>,
-    desktop_resize_flag: bool,
-    input: &[u8],
-    remote_capabilities: Option<Vec<CapabilitySet>>,
-) -> Vec<CapabilitySet> {
-    play_client_with_network(framed, desktop_resize_flag, input, remote_capabilities, None)
-        .await
-        .capabilities
-}
-
 pub(super) struct ClientActivation {
     pub(super) capabilities: Vec<CapabilitySet>,
     pub(super) user_channel_id: u16,
     pub(super) static_channel_ids: Vec<u16>,
 }
 
-pub(super) async fn play_client_with_network(
-    framed: &mut TokioFramed<DuplexStream>,
+pub(super) async fn play_client_with_network<S>(
+    framed: &mut TokioFramed<S>,
     desktop_resize_flag: bool,
     input: &[u8],
     remote_capabilities: Option<Vec<CapabilitySet>>,
     client_network_data: Option<ClientNetworkData>,
-) -> ClientActivation {
+) -> ClientActivation
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    start_client_connection_request(framed).await;
+    play_client_after_connection_request_with_network(
+        framed,
+        desktop_resize_flag,
+        input,
+        remote_capabilities,
+        client_network_data,
+    )
+    .await
+}
+
+pub(super) async fn start_client_connection_request<S>(framed: &mut TokioFramed<S>)
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
     let request = nego::ConnectionRequest {
         nego_data: None,
         flags: nego::RequestFlags::empty(),
@@ -182,7 +189,32 @@ pub(super) async fn play_client_with_network(
     };
     framed.write_all(&encode_vec(&X224(request)).unwrap()).await.unwrap();
     let _confirm = framed.read_pdu().await.unwrap();
+}
 
+pub(super) async fn play_client_after_connection_request<S>(
+    framed: &mut TokioFramed<S>,
+    desktop_resize_flag: bool,
+    input: &[u8],
+    remote_capabilities: Option<Vec<CapabilitySet>>,
+) -> Vec<CapabilitySet>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    play_client_after_connection_request_with_network(framed, desktop_resize_flag, input, remote_capabilities, None)
+        .await
+        .capabilities
+}
+
+async fn play_client_after_connection_request_with_network<S>(
+    framed: &mut TokioFramed<S>,
+    desktop_resize_flag: bool,
+    input: &[u8],
+    remote_capabilities: Option<Vec<CapabilitySet>>,
+    client_network_data: Option<ClientNetworkData>,
+) -> ClientActivation
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
     let mut blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     blocks.network = client_network_data;
     blocks.core.desktop_width = CLIENT_SIZE.width;
@@ -281,6 +313,20 @@ pub(super) async fn play_client_with_network(
     }
 }
 
+pub(super) async fn play_client_with_capabilities<S>(
+    framed: &mut TokioFramed<S>,
+    desktop_resize_flag: bool,
+    input: &[u8],
+    remote_capabilities: Option<Vec<CapabilitySet>>,
+) -> Vec<CapabilitySet>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    play_client_with_network(framed, desktop_resize_flag, input, remote_capabilities, None)
+        .await
+        .capabilities
+}
+
 pub(super) async fn reactivate_client_with_capabilities(
     framed: &mut TokioFramed<DuplexStream>,
     desktop_size: DesktopSize,
@@ -304,14 +350,16 @@ pub(super) async fn reactivate_client_with_capabilities(
     demand.pdu.capability_sets
 }
 
-async fn confirm_activation(
-    framed: &mut TokioFramed<DuplexStream>,
+async fn confirm_activation<S>(
+    framed: &mut TokioFramed<S>,
     desktop_resize_flag: bool,
     input: &[u8],
     remote_capabilities: Option<Vec<CapabilitySet>>,
     (user_channel_id, io_channel_id): (u16, u16),
     desktop_size: DesktopSize,
-) {
+) where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
     let mut confirm = decode::<ShareControlHeader>(&CLIENT_DEMAND_ACTIVE_PDU_BUFFER).unwrap();
     let ShareControlPdu::ClientConfirmActive(active) = &mut confirm.share_control_pdu else {
         panic!("expected Confirm Active fixture");
