@@ -1,4 +1,3 @@
-use core::future::Future;
 use core::pin::Pin;
 use core::task::Poll;
 use core::time::Duration;
