@@ -1,15 +1,26 @@
 name: Release crates
 
 on:
-  workflow_dispatch:
+  # A merged release PR is published right away.
   push:
     branches:
       - master
+  # The release PR is regenerated once a day, from the head of master at that time.
+  # Regenerating it on every push would close it and discard the review edits it carries.
+  schedule:
+    - cron: '17 4 * * *' # 4:17 AM UTC every day
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Commit to prepare the release PR from (defaults to the head of the selected branch)
+        required: false
+        type: string
 
 jobs:
   # Create a PR with the new versions and changelog, preparing the next release.
   open-pr:
     name: Open release PR
+    if: ${{ github.event_name != 'push' }}
     environment: cratesio-publish
     runs-on: ubuntu-latest
     concurrency:
@@ -20,7 +31,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.commit || github.sha }}
           fetch-depth: 512
+
+      # release-plz bases the release PR on the checked-out branch, so a pinned commit
+      # must not leave HEAD detached.
+      # UNTESTED: release-plz must prepare the PR from this local branch even when it lags
+      # the remote branch; after changing this step, dispatch a run with an older commit
+      # and check that the release PR lists only the changes up to that commit.
+      - name: Check out the pinned commit as the base branch
+        run: git checkout -B '${{ github.ref_name }}'
 
       - name: Run release-plz
         id: release-plz
@@ -66,9 +86,12 @@ jobs:
           git push --force
         shell: pwsh
 
-  # Release unpublished packages.
+  # Publish the crates of a merged release PR from the PR's own head commit, the one its
+  # versions and changelogs describe. Master may already hold later changes, which belong
+  # to the next release PR.
   release:
     name: Release crates
+    if: ${{ github.event_name == 'push' }}
     environment: cratesio-publish
     runs-on: ubuntu-latest
     permissions:
@@ -76,14 +99,37 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout repository
+      - name: Find the merged release PR
+        id: release-pr
+        env:
+          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
+        run: |
+          $pr = gh api 'repos/${{ github.repository }}/commits/${{ github.sha }}/pulls' --jq '[.[] | select(.merged_at != null and (.head.ref | startswith("release-plz/")))][0].number'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($pr) {
+            Write-Host "Publish release PR #$pr"
+            echo "number=$pr" >> $Env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Not a release PR merge; nothing to publish"
+          }
+        shell: pwsh
+
+      # UNTESTED: release-plz must publish from this detached PR head and tag it, and the next
+      # release PR must still list the changes merged after the PR's base commit; after changing
+      # this job, check both on the first release that follows.
+      - name: Checkout the release PR head
+        if: ${{ steps.release-pr.outputs.number }}
         uses: actions/checkout@v6
+        with:
+          ref: refs/pull/${{ steps.release-pr.outputs.number }}/head
 
       - name: Authenticate with crates.io
+        if: ${{ steps.release-pr.outputs.number }}
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
 
       - name: Run release-plz
+        if: ${{ steps.release-pr.outputs.number }}
         uses: Devolutions/actions-public/release-plz@v1
         with:
           command: release
