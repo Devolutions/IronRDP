@@ -34,8 +34,8 @@ where
 /// When a reply does not fit the queue, the rest of the message is left unprocessed, so the
 /// state never runs ahead of the replies; the connection itself carries on.
 pub(crate) fn process_frames<S, P>(
-    payload: &[u8],
     state: &mut S,
+    payload: &[u8],
     layout: fn(&S) -> PduLayout,
     decode_body: fn(u16, &[u8], PduLayout) -> DecodeResult<P>,
     apply: fn(&mut S, P) -> Result<(), QueueFull>,

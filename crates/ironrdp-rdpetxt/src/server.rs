@@ -234,8 +234,8 @@ impl DvcProcessor for ClientToServerChannel {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         process_frames(
-            payload,
             &mut *lock(&self.server),
+            payload,
             TextInputServer::layout,
             ClientPdu::decode_body,
             TextInputServer::process,

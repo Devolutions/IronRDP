@@ -42,12 +42,11 @@ pub(crate) fn flush(
     // The server waits for some replies, such as the version reply and text change
     // acknowledgements, so a change here must not drop or reorder them.
     if dvc_batch.as_ref().is_none_or(|batch| batch.messages().is_empty()) {
-        let batch = pending_batch(active_stage);
-        let installed = batch.is_some();
-        if installed {
-            *dvc_batch = batch;
+        if let Some(batch) = pending_batch(active_stage) {
+            *dvc_batch = Some(batch);
+            return Ok(true);
         }
-        return Ok(installed);
+        return Ok(false);
     }
     let Some(channel_id) = active_stage
         .get_dvc::<ClientToServerChannel>()

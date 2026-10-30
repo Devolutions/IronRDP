@@ -1175,3 +1175,15 @@ fn negative_selection_keeps_the_last_known_selection() {
         EditControlRange { begin: 1, end: 3 }
     );
 }
+
+// oracle: spec MS-RDPETXT §2.2.2.26, §2.2.2.32
+#[test]
+fn focus_gain_in_another_text_input_client_folds_no_loss() {
+    let (mut server_to_client, mut client_to_server) = client_channels(TextInputConfig::default());
+    receive(&mut server_to_client, &[edit_control_focus(7, 2, true)]);
+
+    // Control 2 of client 8 is not control 2 of client 7, which stays focused until its own loss.
+    receive(&mut server_to_client, &[focus_gain_after(8, 3, 2, 0)]);
+
+    assert!(sent(&mut client_to_server).is_empty());
+}

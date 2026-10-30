@@ -224,7 +224,16 @@ impl TextInputClient {
             .and_then(|length| begin.checked_add(length))
             .ok_or(CommitTextError::TooLong)?;
         let operation_id = self.next_operation_id();
-        let text_input_host_id = self.host_of(focus.text_input_client_id);
+        // The key target to address: the focused one when it belongs to the thread of the edit
+        // control, else any key target of that thread.
+        let text_input_host_id = {
+            let on_thread = |host: &u32| self.key_targets.get(host) == Some(&focus.text_input_client_id);
+            self.focused_host
+                .filter(on_thread)
+                .or_else(|| self.key_targets.keys().copied().find(on_thread))
+                .or(self.focused_host)
+                .unwrap_or(0)
+        };
         self.send(UpdateTextAndSelectionPdu {
             text_input_client_id: focus.text_input_client_id,
             edit_control_id: focus.info.id,
@@ -383,11 +392,7 @@ impl TextInputClient {
                         end: u32::try_from(selection.selection_end)?,
                     })
                 });
-                if let Some(focus) = self
-                    .focus
-                    .as_mut()
-                    .filter(|focus| focus.is(selection.text_input_client_id, selection.edit_control_id))
-                {
+                if let Some(focus) = self.focused_control(selection.text_input_client_id, selection.edit_control_id) {
                     match range {
                         Ok(range) => focus.selection = range,
                         // The positions are signed, but the specification gives no meaning to a
@@ -406,11 +411,7 @@ impl TextInputClient {
                 )?;
             }
             ServerPdu::TextChanged(change) => {
-                if let Some(focus) = self
-                    .focus
-                    .as_mut()
-                    .filter(|focus| focus.is(change.text_input_client_id, change.edit_control_id))
-                {
+                if let Some(focus) = self.focused_control(change.text_input_client_id, change.edit_control_id) {
                     focus.selection = change.new_selection_range;
                 }
                 self.send(AcknowledgeOperationPdu {
@@ -421,20 +422,12 @@ impl TextInputClient {
                 })?;
             }
             ServerPdu::ControlConfigurationUpdated(update) => {
-                if let Some(focus) = self
-                    .focus
-                    .as_mut()
-                    .filter(|focus| focus.is(update.text_input_client_id, update.edit_info.id))
-                {
+                if let Some(focus) = self.focused_control(update.text_input_client_id, update.edit_info.id) {
                     focus.info = update.edit_info;
                 }
             }
             ServerPdu::GeometryChanged(geometry) => {
-                if let Some(focus) = self
-                    .focus
-                    .as_mut()
-                    .filter(|focus| focus.is(geometry.text_input_client_id, geometry.edit_control_id))
-                {
+                if let Some(focus) = self.focused_control(geometry.text_input_client_id, geometry.edit_control_id) {
                     focus.bounds = geometry.control_bounds;
                 }
             }
@@ -530,10 +523,12 @@ impl TextInputClient {
     ///
     /// [2.2.2.32]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpetxt/
     fn fold_focus_losses(&mut self, gain: &EditControlFocusPdu) -> Result<(), QueueFull> {
+        // An edit control identifier is unique only within its TextInputClient, and the gain names
+        // no other one, so the losing control belongs to the gaining control's TextInputClient.
         let losing_control = self
             .focus
-            .filter(|current| current.info.id == gain.losing_focus_control_id)
-            .filter(|current| !current.is(gain.text_input_client_id, gain.edit_info.id));
+            .filter(|current| current.is(gain.text_input_client_id, gain.losing_focus_control_id))
+            .filter(|current| current.info.id != gain.edit_info.id);
         if let Some(lost) = losing_control {
             self.complete_focus_loss(lost.text_input_client_id, lost.info.id)?;
             if self.folded_control_losses.len() < MAX_EDIT_CONTROLS {
@@ -582,16 +577,11 @@ impl TextInputClient {
         })
     }
 
-    /// The key target to address for an edit control of `text_input_client_id`.
-    ///
-    /// The focused key target is preferred when it belongs to the same thread.
-    fn host_of(&self, text_input_client_id: u32) -> u32 {
-        let on_thread = |host: &u32| self.key_targets.get(host) == Some(&text_input_client_id);
-        self.focused_host
-            .filter(on_thread)
-            .or_else(|| self.key_targets.keys().copied().find(on_thread))
-            .or(self.focused_host)
-            .unwrap_or(0)
+    /// The focused edit control, when it is `edit_control_id` of `text_input_client_id`.
+    fn focused_control(&mut self, text_input_client_id: u32, edit_control_id: u32) -> Option<&mut FocusedEditControl> {
+        self.focus
+            .as_mut()
+            .filter(|focus| focus.is(text_input_client_id, edit_control_id))
     }
 
     fn next_operation_id(&mut self) -> u32 {
@@ -655,8 +645,8 @@ impl DvcProcessor for ServerToClientChannel {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         process_frames(
-            payload,
             &mut *lock(&self.client),
+            payload,
             TextInputClient::layout,
             ServerPdu::decode_body,
             TextInputClient::process,
