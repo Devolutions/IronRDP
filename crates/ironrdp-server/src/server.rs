@@ -1321,6 +1321,7 @@ pub struct RdpServer {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "usb")]
     usb_factory: Option<Box<dyn DeviceFactory>>,
+    handle: RdpServerHandle,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -1597,6 +1598,52 @@ impl fmt::Debug for ServerEvent {
 
 pub trait ServerEventSender {
     fn set_sender(&mut self, sender: mpsc::UnboundedSender<ServerEvent>);
+}
+
+/// Cloneable handle for controlling an [`RdpServer`] from other tasks.
+///
+/// Requests use the existing [`ServerEvent`] queue and require the server to be driven concurrently.
+/// They are processed between connections and during active sessions, not during connection negotiation.
+/// Requests fail if the server has been dropped.
+#[derive(Debug, Clone)]
+pub struct RdpServerHandle {
+    sender: mpsc::UnboundedSender<ServerEvent>,
+}
+
+impl RdpServerHandle {
+    /// Queues [`ServerEvent::Quit`] to disconnect the active client or stop an idle server.
+    ///
+    /// After an active client disconnects, the listener continues unless its connection handler stops it.
+    /// Success confirms queuing, not completion.
+    pub fn quit(&self, reason: impl Into<String>) -> ServerResult<()> {
+        self.sender
+            .send(ServerEvent::Quit(reason.into()))
+            .map_err(|_| ServerError::channel("send server quit event"))
+    }
+
+    /// Queues credentials for subsequent incoming connections.
+    ///
+    /// Success confirms queuing, not that the credentials have changed.
+    /// Preempting candidates use the credentials captured when the active session began.
+    pub fn set_credentials(&self, credentials: Credentials) -> ServerResult<()> {
+        self.sender
+            .send(ServerEvent::SetCredentials(credentials))
+            .map_err(|_| ServerError::channel("send server credentials event"))
+    }
+
+    /// Queries the listener address through the server event loop.
+    ///
+    /// Returns the address bound by [`RdpServer::run`], or `None` if it has never bound a listener.
+    /// This does not report addresses owned by an external [`ConnectionSource`].
+    /// The query waits for the event loop to reply and fails if the reply is dropped.
+    pub async fn local_addr(&self) -> ServerResult<Option<SocketAddr>> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(ServerEvent::GetLocalAddr(tx))
+            .map_err(|_| ServerError::channel("send server local address request event"))?;
+        rx.await
+            .map_err(|error| ServerError::custom("receive server local address", error))
+    }
 }
 
 impl ServerEvent {
@@ -2349,6 +2396,9 @@ impl RdpServer {
             gfx_factory,
             #[cfg(feature = "usb")]
             usb_factory,
+            handle: RdpServerHandle {
+                sender: ev_sender.clone(),
+            },
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -2750,8 +2800,36 @@ impl RdpServer {
         self.advanced_input_active.store(false, Ordering::Release);
     }
 
+    /// Returns the raw event sender for requests not exposed by [`Self::handle`].
+    ///
+    /// Prefer the typed handle for quit, credential updates, and listener-address queries.
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Returns a runtime handle that can be cloned before running the server.
+    ///
+    /// Prefer this typed interface for its supported requests; [`Self::event_sender`] exposes the
+    /// same queue for other [`ServerEvent`] variants.
+    ///
+    /// ```no_run
+    /// # async fn example(mut server: ironrdp_server::RdpServer) -> ironrdp_server::ServerResult<()> {
+    /// let handle = server.handle().clone();
+    /// let control = async {
+    ///     let _addr = handle.local_addr().await?;
+    ///     handle.set_credentials(ironrdp_server::Credentials {
+    ///         username: "alice".to_owned(),
+    ///         password: "password".to_owned(),
+    ///         domain: None,
+    ///     })?;
+    ///     handle.quit("shutdown requested")
+    /// };
+    /// tokio::try_join!(server.run(), control)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn handle(&self) -> &RdpServerHandle {
+        &self.handle
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
@@ -3500,6 +3578,11 @@ impl RdpServer {
                 // The handler is shared, not taken: the live connection's own
                 // hooks (`on_connection_info`) must still reach it (#1969).
                 let handler = self.connection_handler.clone();
+                // UNTESTED: candidates authenticate against the credentials captured here
+                // at session entry; a `SetCredentials` handled during the session reaches
+                // only connections accepted after it ends. This decides which password can
+                // evict a live session, and `RdpServerHandle::set_credentials` documents it.
+                // When changing it, update that rustdoc and add a takeover test.
                 let ctx = self.negotiation_context();
                 let ev_sender = self.ev_sender.clone();
                 let mut recently_evicted = self.recently_evicted.take();

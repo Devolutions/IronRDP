@@ -24,6 +24,14 @@ Custom logic for your RDP server can be added by implementing these traits:
  - `RdpServerInputHandler` - callbacks used when the server receives input events from a client
  - `RdpServerDisplay`      - notifies the server of display updates
 
+## Runtime control
+
+Clone `RdpServer::handle()` before running the server to control it from another task.
+Use it for quit requests, credential updates, and asynchronous listener-address queries.
+See [`RdpServerHandle`] for request timing, lifecycle behavior, and error semantics.
+
+[`RdpServerHandle`]: https://docs.rs/ironrdp-server/latest/ironrdp_server/struct.RdpServerHandle.html
+
 This crate is part of the [IronRDP] project.
 
 ## Echo RTT probes (feature `echo`)
