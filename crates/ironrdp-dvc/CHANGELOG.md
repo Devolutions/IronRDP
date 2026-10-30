@@ -10,77 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 1 -->Features
 
-- Support Remote Credential Guard over RDPEAR ([#2256](https://github.com/Devolutions/IronRDP/issues/2256)) ([376eb8f566](https://github.com/Devolutions/IronRDP/commit/376eb8f56634e5c92d7137886e62ddeb6bbb280f)) 
+- Add `DvcProcessor::max_message_size` to bound the reassembled message size of a dynamic channel, and `DrdynvcClient::with_max_transport_message_size` to bound each DRDYNVC carrier message ([#2256](https://github.com/Devolutions/IronRDP/issues/2256)) ([376eb8f566](https://github.com/Devolutions/IronRDP/commit/376eb8f56634e5c92d7137886e62ddeb6bbb280f))
 
-  Remote Credential Guard redirects Kerberos and NTLMv2 operations over
-  the `Microsoft::Windows::RDS::AuthRedirection` dynamic virtual channel
-  (MS-RDPEAR) so TGT keys and password hashes remain client-owned instead
-  of delegating credentials through CredSSP `TSTicketCreds`.
-  
-  Add `ironrdp-rdpear` with `no_std`/`alloc` outer envelope framing,
-  strict ASN.1 DER `TSRemoteGuardInnerPacket` codecs, and portable NDR32
-  type-serialization codecs for all 23 MS-RDPEAR Kerberos and NTLM
-  request/response calls under both the published IDL profile and the
-  Windows-native wire profile. Bound inbound static and dynamic channel
-  reassembly before fragment retention via
-  `SvcProcessor::max_message_size`, `DvcProcessor::max_message_size`, and
-  `DrdynvcClient::with_max_transport_message_size`.
-  
-  Wire the opt-in `remote-guard` feature through `ironrdp-connector`, the
-  async/blocking/Tokio drivers, `ironrdp-cfg`, `ironrdp-client`,
-  `ironrdp-daemon`, and `ironrdp-agent` (`--remote-guard` and
-  `ironrdp_remote_guard` with `Disabled`, `Negotiate`, `Ntlm`, and
-  `Kerberos` modes) backed by `sspi` 0.23.1. RCG requires `HYBRID` or
-  `HYBRID_EX` with `REDIRECTED_AUTHENTICATION_MODE_SUPPORTED`, strict TLS
-  validation, and a completed CredSSP context handoff, and omits
-  passwords, smart-card PINs, and auto-reconnect cookies from Client Info.
+  Both are checked before fragments are retained, and both default to no limit.
+
+- Add `DrdynvcClient::has_channel_name` ([#2256](https://github.com/Devolutions/IronRDP/issues/2256)) ([376eb8f566](https://github.com/Devolutions/IronRDP/commit/376eb8f56634e5c92d7137886e62ddeb6bbb280f))
+
+- Add `DrdynvcServer::is_ready` and `DrdynvcServer::create_channel_boxed_with` ([#2275](https://github.com/Devolutions/IronRDP/issues/2275)) ([a28a57e4f1](https://github.com/Devolutions/IronRDP/commit/a28a57e4f1989ac16bb3d9d9296f1a7bb85147b0))
 
 ### <!-- 4 -->Bug Fixes
 
-- Harden channel lifecycle and pipe proxy ([#2275](https://github.com/Devolutions/IronRDP/issues/2275)) ([a28a57e4f1](https://github.com/Devolutions/IronRDP/commit/a28a57e4f1989ac16bb3d9d9296f1a7bb85147b0)) 
+- Send an empty or 1,590-byte message as a single `DATA` PDU, instead of dropping an empty message or starting a 1,590-byte one with `DATA_FIRST` ([#2275](https://github.com/Devolutions/IronRDP/issues/2275)) ([a28a57e4f1](https://github.com/Devolutions/IronRDP/commit/a28a57e4f1989ac16bb3d9d9296f1a7bb85147b0))
 
-  Emit a single `DATA` PDU for empty and 1,590-byte DVC messages instead
-  of dropping zero-length payloads or starting 1,590-byte payloads with
-  `DATA_FIRST`.
-  
-  Add `DrdynvcServer::is_ready` and
-  `DrdynvcServer::create_channel_boxed_with`, suppress `ClosePdu` for
-  pending or failed server channels, discard late in-flight data and
-  cancelled `CreateResponse` PDUs for retired channel IDs, and close only
-  the offending dynamic channel when a server processor's
-  `max_message_size` limit is exceeded.
-  
-  Add `DvcNamedPipeProxy::new_async`, cancel pending pipe writes and
-  reconnect sleeps on proxy drop without blocking the Tokio I/O driver,
-  and register client DVC pipe proxies through a channel factory with
-  async backpressure on the RDP input queue.
-  
-  ---------
+- Harden the `DrdynvcServer` channel lifecycle ([#2275](https://github.com/Devolutions/IronRDP/issues/2275)) ([a28a57e4f1](https://github.com/Devolutions/IronRDP/commit/a28a57e4f1989ac16bb3d9d9296f1a7bb85147b0))
 
-- Wait for new caps on a reopened channel ([#2296](https://github.com/Devolutions/IronRDP/issues/2296)) ([06cdca22f3](https://github.com/Devolutions/IronRDP/commit/06cdca22f36d0438c94d6b5b9fb5a3a327f554c4)) 
+  No `ClosePdu` is sent for a pending or failed channel.
+  Late data and cancelled `CreateResponse` PDUs for a retired channel ID are discarded.
+  Exceeding a processor's `max_message_size` closes only that channel.
 
-  A display control channel the server closes and reopens could send a
-  monitor layout before the server's new capabilities arrived.
-  
-  Keep pre-registered channel processors available for reopening, but
-  clear DisplayControl capabilities on close so layouts wait for fresh
-  server capabilities. Custom listeners and factories retain control over
-  subsequent opens. Release EGFX graphics state when the channel closes,
-  after saving its persistent bitmap cache, and wait for pipe proxy
-  workers and pending filesystem operations to finish before starting a
-  replacement.
-  
-  ---------
+- Keep a channel registered with `DrdynvcClient::with_dynamic_channel` when the server closes it, and start it again when the server reopens it, as xrdp does after a Deactivation-Reactivation Sequence ([#2296](https://github.com/Devolutions/IronRDP/issues/2296)) ([06cdca22f3](https://github.com/Devolutions/IronRDP/commit/06cdca22f36d0438c94d6b5b9fb5a3a327f554c4))
 
 ### <!-- 6 -->Documentation
 
-- Document early create_channel errors ([#2305](https://github.com/Devolutions/IronRDP/issues/2305)) ([93ab7c4091](https://github.com/Devolutions/IronRDP/commit/93ab7c40912a4a6d4251fb1b7a3b47111993c799)) 
-
-  create_channel and create_channel_with return an error before DRDYNVC
-  capability negotiation, but their docs don't say so.
-  
-  Document the error on all three channel-creation methods and point to
-  is_ready.
+- Document that the `DrdynvcServer` channel creation methods fail before capability negotiation completes ([#2305](https://github.com/Devolutions/IronRDP/issues/2305)) ([93ab7c4091](https://github.com/Devolutions/IronRDP/commit/93ab7c40912a4a6d4251fb1b7a3b47111993c799))
 
 
 
