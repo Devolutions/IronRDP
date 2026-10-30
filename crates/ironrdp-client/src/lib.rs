@@ -56,6 +56,20 @@ pub fn __test_build_connector(
     rdp::__test_build_connector(config, auto_reconnect_cookie)
 }
 
+/// Routes input events as the active session does and returns the core input batch, if any, and the stage outputs.
+#[cfg(feature = "__test")]
+#[doc(hidden)]
+pub fn __test_process_input(
+    active_stage: &mut ironrdp_session::ActiveStage,
+    image: &mut ironrdp_session::image::DecodedImage,
+    events: &[ironrdp_pdu::input::fast_path::FastPathInputEvent],
+) -> ironrdp_session::SessionResult<(
+    Option<ironrdp_dvc::DvcMessageBatch>,
+    Vec<ironrdp_session::ActiveStageOutput>,
+)> {
+    rdp::__test_process_input(active_stage, image, events)
+}
+
 #[cfg(any(feature = "cloud", feature = "entra-auth"))]
 fn http_client_builder() -> std::io::Result<reqwest::ClientBuilder> {
     let builder = reqwest::Client::builder();

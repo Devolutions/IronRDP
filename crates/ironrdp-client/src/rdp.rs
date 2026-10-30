@@ -6152,6 +6152,16 @@ pub(crate) fn __test_build_connector(
     )
 }
 
+#[cfg(feature = "__test")]
+pub(crate) fn __test_process_input(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    events: &[FastPathInputEvent],
+) -> SessionResult<(Option<DvcMessageBatch>, Vec<ActiveStageOutput>)> {
+    let iteration = process_input(active_stage, image, events)?;
+    Ok((iteration.dvc_batch, iteration.outputs))
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "rdpdr")]

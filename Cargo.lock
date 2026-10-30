@@ -3736,6 +3736,7 @@ dependencies = [
  "ironrdp-rdpdr",
  "ironrdp-rdpdr-native",
  "ironrdp-rdpeai",
+ "ironrdp-rdpeci",
  "ironrdp-rdpemt",
  "ironrdp-rdpet",
  "ironrdp-rdpeudp",
