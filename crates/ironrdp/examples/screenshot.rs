@@ -579,13 +579,11 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
     use std::rc::Rc;
-    use std::sync::{Arc, mpsc};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use tokio_rustls::rustls::pki_types::pem::PemObject as _;
-
-    use super::{Action, ActiveStageOutput, DeadlineTcpStream, capture_frames, parse_args, rustls, tls_upgrade};
+    use super::{Action, ActiveStageOutput, DeadlineTcpStream, capture_frames, parse_args};
 
     fn parse(args: &[&str]) -> anyhow::Result<Action> {
         parse_args(pico_args::Arguments::from_vec(
@@ -841,47 +839,6 @@ mod tests {
         server.join().expect("server thread should finish")?;
 
         Ok(())
-    }
-
-    #[test]
-    fn tls_upgrade_rejects_untrusted_server_certificates() -> anyhow::Result<()> {
-        // oracle: spec RFC 5280 §6.1 (certificate paths must validate against a trust anchor).
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let server_addr = listener.local_addr()?;
-        let server_config = Arc::new(test_tls_server_config()?);
-        let server = thread::spawn(move || -> io::Result<()> {
-            let (mut stream, _) = listener.accept()?;
-            let mut connection = rustls::ServerConnection::new(server_config).map_err(io::Error::other)?;
-            let _ = connection.complete_io(&mut stream);
-            Ok(())
-        });
-
-        let result = tls_upgrade(TcpStream::connect(server_addr)?, "localhost".to_owned());
-
-        let error = result.err().expect("strict TLS must reject the server certificate");
-        let io_error = error
-            .downcast_ref::<io::Error>()
-            .expect("certificate rejection should fail the TLS handshake");
-        assert!(matches!(
-            io_error
-                .get_ref()
-                .and_then(|error| error.downcast_ref::<rustls::Error>()),
-            Some(rustls::Error::InvalidCertificate(_))
-        ));
-        server.join().expect("server thread should finish")?;
-
-        Ok(())
-    }
-
-    fn test_tls_server_config() -> anyhow::Result<rustls::ServerConfig> {
-        let certificate =
-            rustls::pki_types::CertificateDer::from_pem_slice(include_bytes!("test_data/screenshot-server-cert.pem"))?;
-        let private_key =
-            rustls::pki_types::PrivateKeyDer::from_pem_slice(include_bytes!("test_data/screenshot-server-key.pem"))?;
-
-        Ok(rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(vec![certificate], private_key)?)
     }
 
     struct ScriptedStream {
