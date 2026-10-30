@@ -106,12 +106,15 @@ impl ConnectionTelemetry {
     }
 
     /// Runs [`Self::step`] on the state of `active_stage`, and encodes a due report for its telemetry channel.
-    // UNTESTED: no test builds an `ActiveStage` with an open telemetry channel, so the channel lookup and the logged
-    // failures are untested. The encoding and channel ID routing are tested through `TelemetryClient::send_report`.
+    // UNTESTED: no test builds an `ActiveStage` with an open telemetry channel, so the channel lookup, the retry after
+    // the channel closed, and the logged failures are untested. The encoding and channel ID routing are tested through
+    // `TelemetryClient::send_report`.
     pub fn report(&mut self, active_stage: &ActiveStage, can_send: bool) -> Option<DvcMessageBatch> {
         let report = self.step(Observation::of(active_stage), Instant::now(), can_send)?;
         let Some(telemetry) = active_stage.get_dvc::<TelemetryClient>() else {
-            warn!("Telemetry channel closed before the connection telemetry was sent");
+            // The channel closed during this iteration. Keep the report for when the server reopens it.
+            debug!("Telemetry channel closed before the connection telemetry was sent");
+            self.done = false;
             return None;
         };
         let channel_id = telemetry.channel_id();

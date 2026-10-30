@@ -440,8 +440,7 @@ pub struct ChannelConfig {
 
     /// Enable the MS-RDPET telemetry dynamic virtual channel, which reports connection milestones to the server.
     ///
-    /// On by default: the server opens the channel, and the report carries only four elapsed-time counters.
-    /// Building with the `telemetry` feature is the opt-in.
+    /// Off by default, like the location channel: reporting to the server is opt-in.
     #[cfg(feature = "telemetry")]
     pub telemetry: bool,
 
@@ -552,7 +551,7 @@ impl Default for ChannelConfig {
             #[cfg(feature = "location")]
             location: false,
             #[cfg(feature = "telemetry")]
-            telemetry: true,
+            telemetry: false,
             #[cfg(feature = "text-input")]
             text_input: false,
             #[cfg(feature = "multipoint")]

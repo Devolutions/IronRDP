@@ -65,7 +65,7 @@ Windows servers only keep the video channels open when the graphics pipeline is 
 Decoded pictures are shown at their presentation time, scaled and clipped to the tracked geometry, and composited into the framebuffer like graphics pipeline updates.
 
 The optional `telemetry` feature answers the MS-RDPET telemetry channel with one report per connection: the milliseconds from initiating the connection to opening the graphics pipeline channel and to receiving its first message.
-It is on by default when compiled in; `ConfigBuilder::with_telemetry(false)` declines the channel.
+It is off by default; `ConfigBuilder::with_telemetry(true)` enables it.
 
 When the `gateway` feature is enabled, `Transport::Gateway` uses the MS-TSGU HTTPS WebSocket transport and falls back to legacy dual-channel HTTP when necessary.
 It handles `HTTP_REAUTH_MESSAGE` through a short-lived background reauthentication transport without disrupting the active data transport.

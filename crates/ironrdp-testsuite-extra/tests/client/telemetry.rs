@@ -95,7 +95,8 @@ fn report_is_sent_once_per_connection() {
     assert_eq!(telemetry.step(ALL_OPEN, after(started, 30), true), None);
 }
 
-// oracle: spec MS-RDPET §3.2.5.1
+// oracle: spec MS-RDPET §3.2.5.1 (fields MUST be populated as §2.2.1 describes), §2.2.1 (FirstGraphicsReceivedMillis is
+// the time the first graphics message was received)
 #[test]
 fn no_report_before_first_graphics_message() {
     let started = Instant::now();
@@ -119,8 +120,8 @@ fn observation() -> impl Strategy<Value = Observation> {
 
 #[test]
 fn report_is_due_exactly_once_its_preconditions_hold() {
-    // oracle: property model (one report, in the first sending iteration after the telemetry channel was open
-    // and the graphics milestones were reached)
+    // oracle: mutant reporting twice, before the first graphics message, in the iteration that opens the telemetry
+    // channel, or in an iteration that already carries another dynamic channel batch
     proptest!(|(steps in prop::collection::vec((observation(), 0u32..50, any::<bool>()), 0..40))| {
         let started = Instant::now();
         let mut telemetry = ConnectionTelemetry::new(started);
