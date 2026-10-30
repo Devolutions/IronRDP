@@ -294,8 +294,9 @@ impl ActiveStage {
     /// one from the [MS-RDPEMSC] mouse cursor channel.
     ///
     /// The update goes through the same pointer cache, server-pointer setting and software
-    /// rendering as [MS-RDPBCGR] pointer updates. Damage regions add to those of the last call
-    /// to [`ActiveStage::process`] or [`ActiveStage::process_dvc_tunnel`].
+    /// rendering as [MS-RDPBCGR] pointer updates.
+    /// Damage regions add to those of the last call to [`ActiveStage::process`] or
+    /// [`ActiveStage::process_dvc_tunnel`].
     ///
     /// [MS-RDPEMSC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemsc/
     /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/

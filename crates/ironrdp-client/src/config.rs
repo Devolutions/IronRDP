@@ -472,6 +472,13 @@ pub struct ChannelConfig {
     #[cfg(feature = "entra-auth")]
     pub interactive_entra_auth: bool,
 
+    /// Enable the MS-RDPEMSC mouse cursor dynamic virtual channel.
+    ///
+    /// On by default.
+    /// Servers that open the channel send pointer updates on it instead of the fast path, so
+    /// turning it off keeps them on the fast path.
+    pub mouse_cursor: bool,
+
     /// Maximum number of simultaneous touch contacts advertised in the RDPEI `CS_READY` PDU.
     ///
     /// Defaults to [`RDPEI_MAX_TOUCH_CONTACTS`](crate::rdp::RDPEI_MAX_TOUCH_CONTACTS).
@@ -538,6 +545,7 @@ impl Default for ChannelConfig {
             screen_capture: false,
             #[cfg(feature = "entra-auth")]
             interactive_entra_auth: false,
+            mouse_cursor: true,
             max_touch_contacts: crate::rdp::RDPEI_MAX_TOUCH_CONTACTS,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),
@@ -1932,6 +1940,13 @@ impl ConfigBuilder {
     pub fn with_webauthn(mut self, enabled: bool) -> Self {
         self.channels.webauthn = enabled;
         self.properties.set_redirect_webauthn(enabled);
+        self
+    }
+
+    /// Enable or disable the MS-RDPEMSC mouse cursor channel.
+    #[must_use]
+    pub fn with_mouse_cursor_channel(mut self, enabled: bool) -> Self {
+        self.channels.mouse_cursor = enabled;
         self
     }
 

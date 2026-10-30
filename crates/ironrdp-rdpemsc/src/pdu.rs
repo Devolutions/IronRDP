@@ -72,11 +72,7 @@ impl Encode for CapabilitySet {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         if self.version == CAPVERSION_1 && !self.data.is_empty() {
-            return Err(invalid_field_err!(
-                Self::NAME,
-                "data",
-                "version 1 capability set has no data"
-            ));
+            return Err(invalid_field_err!("data", "version 1 capability set has no data", in: dst));
         }
 
         dst.write_u32(CAPSET_SIGNATURE);

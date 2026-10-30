@@ -277,6 +277,7 @@ fn client_keeps_a_shape_that_a_later_cached_update_reads_past_the_bound() {
     );
 
     let updates = client.take_updates();
+    // oracle: mutant growing past the bound
     assert!(updates.len() <= MAX_PENDING_UPDATES);
     assert_eq!(PointerModel::apply(&updates).visible, Some(shape));
 }
@@ -351,8 +352,9 @@ fn pointer_update_matches_the_specification_example() {
 // oracle: spec MS-RDPEMSC §2.2.2.5
 #[test]
 fn pointer_update_ignores_the_pad_byte() {
+    // TS_POINTERATTRIBUTE ends with an optional 1-byte `pad` whose value MUST be ignored.
     let mut bytes = pointer_update_bytes();
-    bytes.push(0x00); // pad
+    bytes.push(0x00);
 
     assert_eq!(
         decode::<MouseCursorPdu>(&bytes).expect("decode the update"),

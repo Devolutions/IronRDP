@@ -2436,7 +2436,9 @@ fn build_connector(
             }
         });
 
-    drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpemsc::MouseCursorClient::new());
+    if config.channels.mouse_cursor {
+        drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpemsc::MouseCursorClient::new());
+    }
 
     #[cfg(feature = "location")]
     if config.channels.location {

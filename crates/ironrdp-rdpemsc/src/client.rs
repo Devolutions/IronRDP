@@ -48,8 +48,9 @@ impl MouseCursorClient {
     ///
     /// When more than [`MAX_PENDING_UPDATES`] updates arrive between two calls, superseded updates
     /// are dropped so that applying the rest leaves the same pointer position, visible pointer and
-    /// Pointer Image Cache. Only a server that fills more cache slots than fit in the queue loses
-    /// state: the oldest update is then dropped.
+    /// Pointer Image Cache.
+    /// Only a server that fills more cache slots than fit in the queue loses state: the oldest
+    /// update is then dropped.
     pub fn take_updates(&mut self) -> Vec<PointerUpdate> {
         core::mem::take(&mut self.pending)
     }
@@ -61,10 +62,11 @@ impl MouseCursorClient {
 
     fn queue(&mut self, update: PointerUpdate) {
         if self.pending.len() == MAX_PENDING_UPDATES {
-            // Drop the updates whose effect a later update overrides. Keep the last position, the
-            // last update that sets the visible pointer, and the last shape stored in each cache
-            // slot. A kept `Cached` update is the last visible-pointer update, so every shape it
-            // can read is the last one for its slot and stays.
+            // Drop the updates whose effect a later update overrides.
+            // Keep the last position, the last update that sets the visible pointer, and the last
+            // shape stored in each cache slot.
+            // A kept `Cached` update is the last visible-pointer update, so every shape it can
+            // read is the last one for its slot and stays.
             let mut seen_position = false;
             let mut seen_visible = false;
             let mut seen_slots = Vec::new();
@@ -96,8 +98,9 @@ impl MouseCursorClient {
             self.pending = kept;
         }
         // Compaction drops nothing when every pending update is kept, for instance when each is
-        // the last shape for a different cache slot. Dropping the oldest then leaves room to push
-        // `update` without breaking the INVARIANT on `pending`.
+        // the last shape for a different cache slot.
+        // Dropping the oldest then leaves room to push `update` without breaking the INVARIANT on
+        // `pending`.
         if self.pending.len() == MAX_PENDING_UPDATES {
             warn!("Dropping the oldest pending pointer update");
             self.pending.remove(0);
@@ -125,9 +128,9 @@ impl DvcProcessor for MouseCursorClient {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         match decode::<MouseCursorPdu>(payload) {
-            // Updates are queued even before the confirmation. The client SHOULD be ready once it
-            // arrives ([3.3.5.2]), but nothing requires ignoring earlier updates, and dropping a
-            // shape would leave its cache slot empty.
+            // Updates are queued even before the confirmation.
+            // The client SHOULD be ready once it arrives ([3.3.5.2]), but nothing requires
+            // ignoring earlier updates, and dropping a shape would leave its cache slot empty.
             Ok(MouseCursorPdu::PointerUpdate(update)) => {
                 trace!(?update, "Pointer update received");
                 self.queue(update);
