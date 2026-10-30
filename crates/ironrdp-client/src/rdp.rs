@@ -2436,7 +2436,7 @@ fn build_connector(
             }
         });
 
-    drdynvc = crate::mouse_cursor::attach(drdynvc);
+    drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpemsc::MouseCursorClient::new());
 
     #[cfg(feature = "location")]
     if config.channels.location {

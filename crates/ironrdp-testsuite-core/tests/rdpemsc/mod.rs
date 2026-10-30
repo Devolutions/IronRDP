@@ -60,6 +60,9 @@ const POINTER_UPDATE_HEADER: [u8; 20] = [
 ];
 
 /// MS-RDPEMSC 4.2.2: a 48x48 24-bpp pointer with a zero XOR mask and an all-ones AND mask.
+///
+/// The example elides the mask bytes after the first row; they are filled as its annotations
+/// describe (`00 00 00 00 …` and `ff ff ff ff …`).
 fn pointer_update_bytes() -> Vec<u8> {
     let mut bytes = POINTER_UPDATE_HEADER.to_vec();
     bytes.extend([0x00; 6912]);
@@ -160,7 +163,7 @@ fn client_ignores_an_unexpected_message() {
     assert!(!client.is_ready());
 }
 
-// oracle: spec MS-RDPEMSC §2.2.2.1
+// oracle: spec MS-RDPEMSC §3.1.5.1
 #[test]
 fn client_ignores_an_unknown_update_type() {
     let mut client = started_client();
@@ -174,7 +177,7 @@ fn client_ignores_an_unknown_update_type() {
     assert!(client.take_updates().is_empty());
 }
 
-// oracle: spec MS-RDPEMSC §1.5
+// oracle: mutant keeping the confirmation or the pending updates across a channel close; a reopened channel restarts the Initializing Phase
 #[test]
 fn closing_the_channel_resets_the_client() {
     let mut client = started_client();
@@ -559,7 +562,6 @@ fn queued_update() -> impl Strategy<Value = PointerUpdate> {
     ]
 }
 
-// oracle: spec MS-RDPEMSC §3.3.5.3
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -571,7 +573,9 @@ proptest! {
         feed(&mut client, updates.iter().cloned());
 
         let queued = client.take_updates();
+        // oracle: mutant growing past the bound
         prop_assert!(queued.len() <= MAX_PENDING_UPDATES);
+        // oracle: spec MS-RDPEMSC section 3.3.5.3
         prop_assert_eq!(PointerModel::apply(&queued), PointerModel::apply(&updates));
     }
 }

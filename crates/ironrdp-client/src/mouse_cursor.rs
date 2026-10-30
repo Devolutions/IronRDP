@@ -5,15 +5,9 @@
 //!
 //! [MS-RDPEMSC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemsc/
 
-use ironrdp_dvc::DrdynvcClient;
 use ironrdp_rdpemsc::MouseCursorClient;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{ActiveStage, ActiveStageOutput, SessionResult};
-
-/// Registers the mouse cursor channel.
-pub(crate) fn attach(drdynvc: DrdynvcClient) -> DrdynvcClient {
-    drdynvc.with_dynamic_channel(MouseCursorClient::new())
-}
 
 /// Applies the pointer updates the channel received during this iteration.
 ///

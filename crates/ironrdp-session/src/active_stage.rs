@@ -285,8 +285,7 @@ impl ActiveStage {
             }
         };
 
-        self.push_processor_updates(processor_updates, &mut stage_outputs)?;
-        self.widen_to_full_refresh(image, &mut stage_outputs);
+        self.push_processor_updates(image, processor_updates, &mut stage_outputs)?;
 
         Ok(stage_outputs)
     }
@@ -307,15 +306,18 @@ impl ActiveStage {
     ) -> SessionResult<Vec<ActiveStageOutput>> {
         let processor_updates = self.fast_path_processor.process_pointer_update(image, update)?;
         let mut stage_outputs = Vec::new();
-        self.push_processor_updates(processor_updates, &mut stage_outputs)?;
-        // UNTESTED: after a graphics reset, a software-rendered pointer can be the first
-        // graphics update, so it is widened like those from `process` and `process_dvc_tunnel`.
-        self.widen_to_full_refresh(image, &mut stage_outputs);
+        self.push_processor_updates(image, processor_updates, &mut stage_outputs)?;
         Ok(stage_outputs)
     }
 
+    /// Turns processor updates into outputs, then widens the first graphics update after a
+    /// graphics reset.
+    ///
+    /// UNTESTED: through `process_pointer_update`, a software-rendered pointer can be the first
+    /// graphics update after a reset, and is widened like any other.
     fn push_processor_updates(
         &mut self,
+        image: &DecodedImage,
         processor_updates: Vec<UpdateKind>,
         stage_outputs: &mut Vec<ActiveStageOutput>,
     ) -> SessionResult<()> {
@@ -347,6 +349,7 @@ impl ActiveStage {
                 }
             }
         }
+        self.widen_to_full_refresh(image, stage_outputs);
 
         Ok(())
     }

@@ -13,7 +13,10 @@ use crate::CHANNEL_NAME;
 use crate::pdu::{CAPVERSION_1, CapabilitySet, CapsAdvertisePdu, MouseCursorPdu, PointerUpdate};
 
 /// Largest number of pointer updates kept until [`MouseCursorClient::take_updates`] collects them.
-pub const MAX_PENDING_UPDATES: usize = 256;
+///
+/// Room for a shape in each of the 32 pointer cache slots the client advertises, plus a position
+/// and a visible-pointer update.
+pub const MAX_PENDING_UPDATES: usize = 64;
 
 /// Client processor for `Microsoft::Windows::RDS::MouseCursor`.
 ///
@@ -58,51 +61,49 @@ impl MouseCursorClient {
 
     fn queue(&mut self, update: PointerUpdate) {
         if self.pending.len() == MAX_PENDING_UPDATES {
-            compact(&mut self.pending);
+            // Drop the updates whose effect a later update overrides. Keep the last position, the
+            // last update that sets the visible pointer, and the last shape stored in each cache
+            // slot. A kept `Cached` update is the last visible-pointer update, so every shape it
+            // can read is the last one for its slot and stays.
+            let mut seen_position = false;
+            let mut seen_visible = false;
+            let mut seen_slots = Vec::new();
+            let mut kept = Vec::with_capacity(MAX_PENDING_UPDATES);
+            for pending in self.pending.drain(..).rev() {
+                let keep = match &pending {
+                    PointerUpdate::Position(_) => !core::mem::replace(&mut seen_position, true),
+                    PointerUpdate::Hidden | PointerUpdate::Default | PointerUpdate::Cached { .. } => {
+                        !core::mem::replace(&mut seen_visible, true)
+                    }
+                    PointerUpdate::Pointer(shape) | PointerUpdate::LargePointer(shape) => {
+                        seen_visible = true;
+                        let last_for_slot = !seen_slots.contains(&shape.cache_index);
+                        if last_for_slot {
+                            seen_slots.push(shape.cache_index);
+                        }
+                        last_for_slot
+                    }
+                };
+                if keep {
+                    kept.push(pending);
+                }
+            }
+            kept.reverse();
+            debug!(
+                dropped = MAX_PENDING_UPDATES - kept.len(),
+                "Compacted pending pointer updates"
+            );
+            self.pending = kept;
         }
+        // Compaction drops nothing when every pending update is kept, for instance when each is
+        // the last shape for a different cache slot. Dropping the oldest then leaves room to push
+        // `update` without breaking the INVARIANT on `pending`.
         if self.pending.len() == MAX_PENDING_UPDATES {
             warn!("Dropping the oldest pending pointer update");
             self.pending.remove(0);
         }
         self.pending.push(update);
     }
-}
-
-/// Drops the updates whose effect a later update overrides.
-///
-/// Keeps the last position, the last update that sets the visible pointer, and the last shape
-/// stored in each cache slot. A kept `Cached` update is the last visible-pointer update, so every
-/// shape it can read is the last one for its slot and stays.
-fn compact(updates: &mut Vec<PointerUpdate>) {
-    let mut seen_position = false;
-    let mut seen_visible = false;
-    let mut seen_slots = Vec::new();
-
-    let mut keep: Vec<bool> = updates
-        .iter()
-        .rev()
-        .map(|update| match update {
-            PointerUpdate::Position(_) => !core::mem::replace(&mut seen_position, true),
-            PointerUpdate::Hidden | PointerUpdate::Default | PointerUpdate::Cached { .. } => {
-                !core::mem::replace(&mut seen_visible, true)
-            }
-            PointerUpdate::Pointer(shape) | PointerUpdate::LargePointer(shape) => {
-                seen_visible = true;
-                if seen_slots.contains(&shape.cache_index) {
-                    false
-                } else {
-                    seen_slots.push(shape.cache_index);
-                    true
-                }
-            }
-        })
-        .collect();
-    keep.reverse();
-
-    let before = updates.len();
-    let mut keep = keep.into_iter();
-    updates.retain(|_| keep.next().unwrap_or(true));
-    debug!(dropped = before - updates.len(), "Compacted pending pointer updates");
 }
 
 impl_as_any!(MouseCursorClient);
@@ -124,6 +125,9 @@ impl DvcProcessor for MouseCursorClient {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         match decode::<MouseCursorPdu>(payload) {
+            // Updates are queued even before the confirmation. The client SHOULD be ready once it
+            // arrives ([3.3.5.2]), but nothing requires ignoring earlier updates, and dropping a
+            // shape would leave its cache slot empty.
             Ok(MouseCursorPdu::PointerUpdate(update)) => {
                 trace!(?update, "Pointer update received");
                 self.queue(update);
