@@ -79,12 +79,13 @@ mod tests {
     use std::sync::Mutex;
 
     use ironrdp_core::encode_vec;
-    use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu, DrdynvcServerPdu};
+    use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu};
     use ironrdp_rdpepnp::client::{IoControlCompletion, PnpFile, ReadCompletion, WriteCompletion};
     use ironrdp_rdpepnp::pdu::HResult;
     use ironrdp_rdpepnp::pdu::info::{PnpInfoPdu, VersionPdu};
     use ironrdp_rdpepnp::pdu::io::{
-        CapabilitiesRequest, CreateFileRequest, IoControlRequest, ReadRequest, RequestId, ServerIoPdu, WriteRequest,
+        CapabilitiesRequest, CreateFileRequest, IoControlRequest, ReadRequest, RequestId, ServerIoPdu, WriteReply,
+        WriteRequest,
     };
     use ironrdp_rdpepnp::{FILE_REDIRECTOR_CHANNEL_NAME, PNPDR_CHANNEL_NAME};
     use ironrdp_svc::SvcProcessor as _;
@@ -207,7 +208,7 @@ mod tests {
 
     // oracle: spec MS-RDPEPNP §3.2.5.2.2.6 (a Write Reply answers each Write Request)
     #[test]
-    fn late_reply_is_queued_in_order_and_sent_on_its_channel() {
+    fn late_write_reply_is_sent_on_its_channel() {
         let (sender, _input, mut ordered, _, _) = RdpInputSender::channel_with_close_signal(1);
         let writes = ParkedWrites::default();
         let mut drdynvc = open_file(&sender, &writes);
@@ -218,8 +219,24 @@ mod tests {
         let request = take_request(&mut ordered);
         let (batch, tunnel) = process_uplink_request(Some(&mut drdynvc), request).unwrap().unwrap();
         assert_eq!(batch.channel_id(), IO_ID);
-        assert_eq!(batch.messages().len(), 1);
         assert!(tunnel.is_none());
+        let [message] = batch.messages() else {
+            panic!("expected one DRDYNVC message");
+        };
+        let DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(pdu)) =
+            ironrdp_core::decode(&message.encode_unframed_pdu().unwrap()).unwrap()
+        else {
+            panic!("expected unsplit DRDYNVC data");
+        };
+        let reply: WriteReply = ironrdp_core::decode(pdu.data()).unwrap();
+        assert_eq!(
+            reply,
+            WriteReply {
+                request_id: request_id(2),
+                result: HResult::S_OK,
+                bytes_written: 3,
+            }
+        );
     }
 
     // oracle: spec MS-RDPEPNP §3.1.1 (a duplicate request ID terminates the channel)

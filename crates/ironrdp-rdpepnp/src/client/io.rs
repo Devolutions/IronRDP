@@ -55,10 +55,10 @@ impl UplinkRequest {
     ///
     /// Messages are sent only while the instance is open, and a close only until the channel closes.
     pub fn into_action(self) -> Option<UplinkAction> {
-        let state = self.shared.state.lock();
+        let phase = self.shared.state.lock().phase;
         let current = match self.action {
-            UplinkAction::Send(_) => state.open,
-            UplinkAction::Close => !state.closed,
+            UplinkAction::Send(_) => phase == Phase::Open,
+            UplinkAction::Close => phase != Phase::Closed,
         };
         current.then_some(self.action)
     }
@@ -107,11 +107,20 @@ pub trait PnpFile: Send {
     }
 }
 
+/// Lifecycle of one channel instance, shared with the completions of its requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Messages are processed and replies sent.
+    Open,
+    /// The instance violated the protocol and waits for the session loop to close the channel;
+    /// messages are ignored and replies discarded.
+    Failed,
+    /// The channel closed, after which the server can reuse its ID.
+    Closed,
+}
+
 struct ChannelState {
-    /// Whether replies are still sent: false once the channel closes or fails.
-    open: bool,
-    /// Whether the channel closed, after which the server can reuse its ID.
-    closed: bool,
+    phase: Phase,
     /// Requests forwarded to the backend that have not replied yet.
     outstanding: BTreeSet<RequestId>,
     /// Replies completed while the channel processes a message, returned from that call.
@@ -133,7 +142,7 @@ impl ChannelShared {
     /// Sends a message unless the channel was closed, inline when the channel is processing.
     fn send(self: &Arc<Self>, message: DvcMessage) -> PduResult<()> {
         let mut state = self.state.lock();
-        if !state.open {
+        if state.phase != Phase::Open {
             return Err(pdu_other_err!("FileRedirectorChannel", "channel is closed"));
         }
         // UNTESTED: a reply completed on another thread while the channel processes a message is
@@ -314,8 +323,11 @@ enum State {
     WaitingCapabilities,
     WaitingCreateFile,
     Open,
-    /// The channel violated the protocol or its file failed to open; further messages are ignored.
-    Failed,
+    /// The CreateFile Request failed; the channel carries no other request
+    /// ([MS-RDPEPNP] section 3.2.5.2.1), so any further one terminates it.
+    ///
+    /// [MS-RDPEPNP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepnp/
+    CreateFileFailed,
 }
 
 /// Client processor for one `FileRedirectorChannel` instance (PNP Device I/O Subprotocol).
@@ -329,7 +341,7 @@ pub struct FileRedirectorClient {
     uplink: IoUplink,
     state: State,
     shared: Option<Arc<ChannelShared>>,
-    /// INVARIANT: `Some` while `state` is [`State::Open`], and `None` once the channel closes or fails.
+    /// INVARIANT: `Some` while `state` is [`State::Open`] and the channel is open, `None` otherwise.
     file: Option<Box<dyn PnpFile>>,
 }
 
@@ -383,8 +395,7 @@ impl FileRedirectorClient {
                             result = result.0,
                             "PnP CreateFile failed"
                         );
-                        // A channel carries a single CreateFile request.
-                        self.state = State::Failed;
+                        self.state = State::CreateFileFailed;
                         result
                     }
                 };
@@ -477,7 +488,7 @@ impl FileRedirectorClient {
             (State::WaitingCapabilities, _) => Err("the first message is not a Server Capabilities Request"),
             (State::WaitingCreateFile, _) => Err("an I/O request precedes the CreateFile Request"),
             (State::Open, _) => Err("a second initialization request on an open channel"),
-            (State::Failed, _) => unreachable!("failed channels skip message handling"),
+            (State::CreateFileFailed, _) => Err("a request after a failed CreateFile Request"),
         }
     }
 
@@ -487,8 +498,7 @@ impl FileRedirectorClient {
             reason,
             "Closing a FileRedirectorChannel instance after a protocol violation"
         );
-        self.state = State::Failed;
-        self.discard();
+        self.discard(Phase::Failed);
         if let Some(shared) = &self.shared {
             let request = UplinkRequest {
                 shared: Arc::clone(shared),
@@ -500,10 +510,11 @@ impl FileRedirectorClient {
         }
     }
 
-    fn discard(&mut self) {
+    /// Ends the channel instance: closes its file and discards its pending replies.
+    fn discard(&mut self, phase: Phase) {
         if let Some(shared) = &self.shared {
             let mut state = shared.state.lock();
-            state.open = false;
+            state.phase = phase;
             state.outstanding.clear();
         }
         self.file = None;
@@ -535,8 +546,7 @@ impl DvcProcessor for FileRedirectorClient {
             channel_id,
             uplink: Arc::clone(&self.uplink),
             state: spin::Mutex::new(ChannelState {
-                open: true,
-                closed: false,
+                phase: Phase::Open,
                 outstanding: BTreeSet::new(),
                 inline: None,
                 custom_events: false,
@@ -546,15 +556,15 @@ impl DvcProcessor for FileRedirectorClient {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        if self.state == State::Failed {
-            trace!("Ignoring a message on a disabled FileRedirectorChannel instance");
-            return Ok(Vec::new());
-        }
         let shared = Arc::clone(
             self.shared
                 .as_ref()
                 .ok_or_else(|| pdu_other_err!("FileRedirectorClient", "channel is not started"))?,
         );
+        if shared.state.lock().phase != Phase::Open {
+            trace!("Ignoring a message on a terminated FileRedirectorChannel instance");
+            return Ok(Vec::new());
+        }
         let pdu = match decode::<ServerIoPdu>(payload) {
             Ok(pdu) => pdu,
             Err(error) => {
@@ -579,10 +589,7 @@ impl DvcProcessor for FileRedirectorClient {
     }
 
     fn close(&mut self, _channel_id: u32) {
-        if let Some(shared) = &self.shared {
-            shared.state.lock().closed = true;
-        }
-        self.discard();
+        self.discard(Phase::Closed);
     }
 }
 

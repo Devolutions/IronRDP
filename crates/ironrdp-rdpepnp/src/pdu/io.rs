@@ -232,13 +232,15 @@ impl<'de> Decode<'de> for ServerIoPdu {
                 let output_size = src.read_u32();
                 ensure_size!(in: src, size: input_length);
                 let input = src.read_slice(input_length).to_vec();
-                // DataOut is optional and its size is whatever precedes the trailing UnusedByte
-                // ([MS-RDPEPNP] section 3.2.5.2.2.7).
+                // DataOut is optional and has no length field, but the UnusedByte that ends this
+                // request is not ([MS-RDPEPNP] sections 2.2.2.3.7 and 3.2.5.2.2.7), so DataOut is
+                // every byte before the last one. A request that also omits the UnusedByte has no
+                // DataOut.
                 let output = match src.len() {
                     0 => Vec::new(),
                     remaining => {
                         let output = src.read_slice(remaining - 1).to_vec();
-                        skip_unused_byte(src);
+                        src.advance(1); // UnusedByte
                         output
                     }
                 };
@@ -663,6 +665,8 @@ fn read_data(src: &mut ReadCursor<'_>, field: &'static str) -> DecodeResult<Vec<
 }
 
 /// Skips the trailing `UnusedByte`, which receivers must ignore, when the sender included it.
+///
+/// Only a field with an explicit length can precede it, since a missing byte is then unambiguous.
 fn skip_unused_byte(src: &mut ReadCursor<'_>) {
     if !src.is_empty() {
         src.advance(1);

@@ -542,7 +542,7 @@ fn device_added_and_removed_while_ready_is_announced_at_once() {
     request_id: request_id(0x00ff_ffff),
     id_to_cancel: request_id(0),
 }))]
-// Hand-derived from the field diagram of section 2.2.2.3.9: UnusedBits, then the 24-bit idToCancel.
+// oracle: spec MS-RDPEPNP §2.2.2.3.9 (hand-derived from the field diagram: UnusedBits, then the 24-bit idToCancel)
 #[case::io_cancel_nonzero(&[
     0x01, 0x00, 0x00, 0x00, // RequestId, UnusedBits
     0x06, 0x00, 0x00, 0x00, // FunctionId: SPECIFIC_IOCANCEL_REQUEST
@@ -616,6 +616,22 @@ fn create_file_for_an_unannounced_device_fails() {
     let reply: CreateFileReply = decode(&replies[0]).unwrap();
     assert_eq!(reply.result, HResult::FILE_NOT_FOUND);
     assert!(channel.observed.lock().unwrap().created.is_empty());
+}
+
+// oracle: spec MS-RDPEPNP §3.2.5.2.1 (one CreateFile call per channel connection)
+#[test]
+fn request_after_a_failed_create_file_closes_the_channel() {
+    let info = ready_info_client(Vec::new());
+    let mut channel = IoChannel::open(&info);
+    channel.process(&CAPABILITIES_REQUEST);
+    channel.process(&CREATE_FILE_REQUEST);
+    assert_eq!(channel.take_uplinked_actions(), (Vec::new(), false));
+
+    assert!(channel.process(&READ_REQUEST).is_empty());
+
+    assert_eq!(channel.take_uplinked_actions(), (Vec::new(), true));
+    assert!(channel.process(&READ_REQUEST).is_empty());
+    assert_eq!(channel.take_uplinked_actions(), (Vec::new(), false));
 }
 
 // oracle: spec MS-RDPEPNP §4.4
