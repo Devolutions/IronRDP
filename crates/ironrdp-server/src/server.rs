@@ -201,12 +201,15 @@ pub enum PostConnectionAction {
 /// Per-connection metadata captured during connection setup, made available to
 /// [`ConnectionHandler::on_connection_info`] once the connection is established.
 ///
-/// These are Client Info, GCC Client Core Data, Extended Info, and Client
-/// Monitor Data fields that the acceptor captures but has no use for itself;
-/// embedders that want to act on them (for example, selecting a
-/// server-side keyboard layout matching the client, or presenting as many
-/// outputs as the client has monitors) can do so here without reaching into the
-/// acceptor's internals.
+/// This metadata includes fields from the [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1],
+/// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2],
+/// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1],
+/// and [Client Monitor Data (TS_UD_CS_MONITOR), section 2.2.1.3.6].
+///
+/// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+/// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
+/// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/05ada9e4-a468-494b-8694-eb806a0ecc89
+/// [Client Monitor Data (TS_UD_CS_MONITOR), section 2.2.1.3.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ConnectionInfo {
@@ -311,44 +314,45 @@ pub trait ConnectionHandler: Send {
         true
     }
 
-    /// Observes Client Info before capability exchange.
+    /// Observes client flags from the
+    /// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1] before capability exchange.
     ///
     /// These flags do not authenticate the client.
     /// Return an error to stop connection setup.
+    ///
+    /// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
     fn on_client_info(&mut self, flags: rdp::client_info::ClientInfoFlags) -> ServerResult<()> {
         let _ = flags;
         Ok(())
     }
 
-    /// Observes Client Info, Client Core Data, and Extended Info settings before capability exchange.
+    /// Observes settings from the [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1],
+    /// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2], and
+    /// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1] before capability exchange.
     ///
-    /// `desktop_size` is the server's initial capability-exchange size, not the size later requested in Client Confirm Active.
+    /// `desktop_size` is the server's initial capability-exchange size.
+    /// The client may request a different size later in the [Client Confirm Active PDU, section 2.2.1.13.2].
     /// Return an error to stop connection setup.
+    ///
+    /// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+    /// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
+    /// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/05ada9e4-a468-494b-8694-eb806a0ecc89
+    /// [Client Confirm Active PDU, section 2.2.1.13.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4c3c2710-0bf0-4c54-8e69-aff40ffcde66
     #[expect(
         clippy::too_many_arguments,
         reason = "forwards Client Info and GCC/Extended Client Info settings together"
     )]
     fn on_client_session_config(
         &mut self,
-        flags: rdp::client_info::ClientInfoFlags,
-        performance_flags: rdp::client_info::PerformanceFlags,
-        keyboard_layout: u32,
-        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
-        keyboard_subtype: u32,
-        keyboard_functional_keys_count: u32,
-        ime_file_name: &str,
-        desktop_size: DesktopSize,
+        _flags: rdp::client_info::ClientInfoFlags,
+        _performance_flags: rdp::client_info::PerformanceFlags,
+        _keyboard_layout: u32,
+        _keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        _keyboard_subtype: u32,
+        _keyboard_functional_keys_count: u32,
+        _ime_file_name: &str,
+        _desktop_size: DesktopSize,
     ) -> ServerResult<()> {
-        let _ = (
-            flags,
-            performance_flags,
-            keyboard_layout,
-            keyboard_type,
-            keyboard_subtype,
-            keyboard_functional_keys_count,
-            ime_file_name,
-            desktop_size,
-        );
         Ok(())
     }
 
