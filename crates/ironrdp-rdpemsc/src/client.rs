@@ -43,7 +43,10 @@ impl MouseCursorClient {
 
     /// Pointer updates received since the last call, oldest first.
     ///
-    /// When more than [`MAX_PENDING_UPDATES`] updates arrive between two calls, the oldest are dropped.
+    /// When more than [`MAX_PENDING_UPDATES`] updates arrive between two calls, superseded updates
+    /// are dropped so that applying the rest leaves the same pointer position, visible pointer and
+    /// Pointer Image Cache. Only a server that fills more cache slots than fit in the queue loses
+    /// state: the oldest update is then dropped.
     pub fn take_updates(&mut self) -> Vec<PointerUpdate> {
         core::mem::take(&mut self.pending)
     }
@@ -55,11 +58,51 @@ impl MouseCursorClient {
 
     fn queue(&mut self, update: PointerUpdate) {
         if self.pending.len() == MAX_PENDING_UPDATES {
+            compact(&mut self.pending);
+        }
+        if self.pending.len() == MAX_PENDING_UPDATES {
             warn!("Dropping the oldest pending pointer update");
             self.pending.remove(0);
         }
         self.pending.push(update);
     }
+}
+
+/// Drops the updates whose effect a later update overrides.
+///
+/// Keeps the last position, the last update that sets the visible pointer, and the last shape
+/// stored in each cache slot. A kept `Cached` update is the last visible-pointer update, so every
+/// shape it can read is the last one for its slot and stays.
+fn compact(updates: &mut Vec<PointerUpdate>) {
+    let mut seen_position = false;
+    let mut seen_visible = false;
+    let mut seen_slots = Vec::new();
+
+    let mut keep: Vec<bool> = updates
+        .iter()
+        .rev()
+        .map(|update| match update {
+            PointerUpdate::Position(_) => !core::mem::replace(&mut seen_position, true),
+            PointerUpdate::Hidden | PointerUpdate::Default | PointerUpdate::Cached { .. } => {
+                !core::mem::replace(&mut seen_visible, true)
+            }
+            PointerUpdate::Pointer(shape) | PointerUpdate::LargePointer(shape) => {
+                seen_visible = true;
+                if seen_slots.contains(&shape.cache_index) {
+                    false
+                } else {
+                    seen_slots.push(shape.cache_index);
+                    true
+                }
+            }
+        })
+        .collect();
+    keep.reverse();
+
+    let before = updates.len();
+    let mut keep = keep.into_iter();
+    updates.retain(|_| keep.next().unwrap_or(true));
+    debug!(dropped = before - updates.len(), "Compacted pending pointer updates");
 }
 
 impl_as_any!(MouseCursorClient);

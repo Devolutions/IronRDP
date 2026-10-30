@@ -191,26 +191,107 @@ fn closing_the_channel_resets_the_client() {
     assert!(client.take_updates().is_empty());
 }
 
-// oracle: mutant dropping the newest update, or growing past the bound, when updates are not collected
-#[test]
-fn client_drops_the_oldest_update_past_the_bound() {
-    let mut client = started_client();
-    let count = u16::try_from(MAX_PENDING_UPDATES + 1).expect("fits");
-    for x in 0..count {
-        let pdu = MouseCursorPdu::PointerUpdate(PointerUpdate::Position(Point16 { x, y: 0 }));
+/// A 1x1 shape that `tag` tells apart from other shapes.
+fn small_shape(cache_index: u16, tag: u8) -> PointerShape {
+    PointerShape {
+        xor_bpp: 24,
+        cache_index,
+        hot_spot: Point16 { x: 0, y: 0 },
+        width: 1,
+        height: 1,
+        xor_mask: vec![tag, 0],
+        and_mask: vec![0, 0],
+    }
+}
+
+fn feed(client: &mut MouseCursorClient, updates: impl IntoIterator<Item = PointerUpdate>) {
+    for update in updates {
+        let pdu = MouseCursorPdu::PointerUpdate(update);
         client
             .process(CHANNEL_ID, &encode_vec(&pdu).expect("encode update"))
             .expect("process the update");
     }
+}
+
+/// Pointer state after applying `updates` in order, per MS-RDPEMSC §3.3.5.3.
+#[derive(Debug, Default, PartialEq)]
+struct PointerModel {
+    position: Option<Point16>,
+    /// `None` when hidden, default or set from an empty cache slot.
+    visible: Option<PointerShape>,
+    cache: std::collections::BTreeMap<u16, PointerShape>,
+}
+
+impl PointerModel {
+    fn apply(updates: &[PointerUpdate]) -> Self {
+        let mut model = Self::default();
+        for update in updates {
+            match update {
+                PointerUpdate::Hidden | PointerUpdate::Default => model.visible = None,
+                PointerUpdate::Position(position) => model.position = Some(*position),
+                PointerUpdate::Cached { cache_index } => model.visible = model.cache.get(cache_index).cloned(),
+                PointerUpdate::Pointer(shape) | PointerUpdate::LargePointer(shape) => {
+                    model.cache.insert(shape.cache_index, shape.clone());
+                    model.visible = Some(shape.clone());
+                }
+            }
+        }
+        model
+    }
+}
+
+// oracle: mutant dropping the newest update, or growing past the bound, when updates are not collected
+#[test]
+fn client_keeps_the_last_position_past_the_bound() {
+    let mut client = started_client();
+    let count = u16::try_from(MAX_PENDING_UPDATES + 1).expect("fits");
+
+    feed(
+        &mut client,
+        (0..count).map(|x| PointerUpdate::Position(Point16 { x, y: 0 })),
+    );
 
     let updates = client.take_updates();
-
-    assert_eq!(updates.len(), MAX_PENDING_UPDATES);
-    assert_eq!(updates[0], PointerUpdate::Position(Point16 { x: 1, y: 0 }));
+    assert!(updates.len() <= MAX_PENDING_UPDATES);
     assert_eq!(
-        updates[MAX_PENDING_UPDATES - 1],
-        PointerUpdate::Position(Point16 { x: count - 1, y: 0 })
+        updates.last(),
+        Some(&PointerUpdate::Position(Point16 { x: count - 1, y: 0 }))
     );
+}
+
+// oracle: spec MS-RDPEMSC §3.3.5.3
+#[test]
+fn client_keeps_a_shape_that_a_later_cached_update_reads_past_the_bound() {
+    let mut client = started_client();
+    let shape = small_shape(0, 1);
+    let count = u16::try_from(MAX_PENDING_UPDATES).expect("fits");
+
+    feed(
+        &mut client,
+        core::iter::once(PointerUpdate::Pointer(shape.clone()))
+            .chain((0..count).map(|x| PointerUpdate::Position(Point16 { x, y: 0 })))
+            .chain(core::iter::once(PointerUpdate::Cached { cache_index: 0 })),
+    );
+
+    let updates = client.take_updates();
+    assert!(updates.len() <= MAX_PENDING_UPDATES);
+    assert_eq!(PointerModel::apply(&updates).visible, Some(shape));
+}
+
+// oracle: mutant growing past the bound when every update fills a different cache slot
+#[test]
+fn client_drops_the_oldest_shape_when_the_slots_exceed_the_bound() {
+    let mut client = started_client();
+    let count = u16::try_from(MAX_PENDING_UPDATES + 1).expect("fits");
+
+    feed(
+        &mut client,
+        (0..count).map(|cache_index| PointerUpdate::Pointer(small_shape(cache_index, 0))),
+    );
+
+    let updates = client.take_updates();
+    assert_eq!(updates.len(), MAX_PENDING_UPDATES);
+    assert_eq!(updates[0], PointerUpdate::Pointer(small_shape(1, 0)));
 }
 
 // oracle: spec MS-RDPEMSC §4.1.2
@@ -336,6 +417,19 @@ fn version_1_capability_set_must_be_12_bytes() {
     decode::<MouseCursorPdu>(&confirm).expect_err("a version 1 capability set has no data");
 }
 
+// oracle: spec MS-RDPEMSC §2.2.2.3.1
+#[test]
+fn version_1_capability_set_with_data_is_not_encoded() {
+    let confirm = MouseCursorPdu::CapsConfirm(ironrdp_rdpemsc::CapsConfirmPdu {
+        caps_set: CapabilitySet {
+            version: ironrdp_rdpemsc::pdu::CAPVERSION_1,
+            data: vec![1],
+        },
+    });
+
+    encode_vec(&confirm).expect_err("a version 1 capability set has no data");
+}
+
 // oracle: spec MS-RDPEMSC §2.2.2.2
 #[test]
 fn capability_set_signature_is_checked() {
@@ -449,6 +543,37 @@ fn mouse_cursor_pdu() -> impl Strategy<Value = MouseCursorPdu> {
         caps_set.prop_map(|caps_set| MouseCursorPdu::CapsConfirm(ironrdp_rdpemsc::CapsConfirmPdu { caps_set })),
         pointer_update().prop_map(MouseCursorPdu::PointerUpdate),
     ]
+}
+
+fn queued_update() -> impl Strategy<Value = PointerUpdate> {
+    // Mostly positions, so that a shape often has no later shape for its slot and dropping it
+    // would lose cache state; few slots, so that later shapes still override earlier ones.
+    prop_oneof![
+        1 => Just(PointerUpdate::Hidden),
+        1 => Just(PointerUpdate::Default),
+        200 => (0u16..4).prop_map(|x| PointerUpdate::Position(Point16 { x, y: 0 })),
+        4 => (0u16..8).prop_map(|cache_index| PointerUpdate::Cached { cache_index }),
+        1 => (0u16..8, any::<u8>()).prop_map(|(cache_index, tag)| PointerUpdate::Pointer(small_shape(cache_index, tag))),
+        1 => (0u16..8, any::<u8>())
+            .prop_map(|(cache_index, tag)| PointerUpdate::LargePointer(small_shape(cache_index, tag))),
+    ]
+}
+
+// oracle: spec MS-RDPEMSC §3.3.5.3
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn client_queue_bound_keeps_the_pointer_state(
+        updates in proptest::collection::vec(queued_update(), MAX_PENDING_UPDATES..MAX_PENDING_UPDATES * 3),
+    ) {
+        let mut client = started_client();
+        feed(&mut client, updates.iter().cloned());
+
+        let queued = client.take_updates();
+        prop_assert!(queued.len() <= MAX_PENDING_UPDATES);
+        prop_assert_eq!(PointerModel::apply(&queued), PointerModel::apply(&updates));
+    }
 }
 
 proptest! {

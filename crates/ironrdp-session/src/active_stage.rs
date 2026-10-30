@@ -308,6 +308,9 @@ impl ActiveStage {
         let processor_updates = self.fast_path_processor.process_pointer_update(image, update)?;
         let mut stage_outputs = Vec::new();
         self.push_processor_updates(processor_updates, &mut stage_outputs)?;
+        // UNTESTED: after a graphics reset, a software-rendered pointer can be the first
+        // graphics update, so it is widened like those from `process` and `process_dvc_tunnel`.
+        self.widen_to_full_refresh(image, &mut stage_outputs);
         Ok(stage_outputs)
     }
 
