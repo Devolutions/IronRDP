@@ -146,9 +146,14 @@ async fn requested(server: &mut RdpServer, calls: &Calls) -> (StaticChannelSet, 
         .get_channel_id_by_type::<Processor>()
         .unwrap();
     let (channels, pdus) = dispatch(server, registered, vec![create(calls)]).await;
-    let [DrdynvcServerPdu::Create(request)] = pdus.as_slice() else {
-        panic!("expected exactly one Create PDU");
-    };
+    assert_eq!(pdus.len(), 1);
+    let request = pdus
+        .into_iter()
+        .find_map(|pdu| match pdu {
+            DrdynvcServerPdu::Create(request) => Some(request),
+            _ => None,
+        })
+        .expect("expected a Create PDU");
     assert_eq!(request.channel_name(), "runtime-test");
     let id = request.channel_id();
     assert_ne!(id, existing_id);
@@ -215,6 +220,10 @@ async fn acceptance_starts_the_reserved_processor_and_close_releases_it_once() {
     )
     .await;
     assert_eq!(pdus, [DrdynvcServerPdu::Close(ClosePdu::new(id))]);
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [Call::Built(id), Call::Started(id), Call::Closed(id), Call::Dropped]
+    );
     drop(channels);
     assert_eq!(
         *calls.lock().unwrap(),
@@ -257,8 +266,10 @@ async fn close_releases_a_declined_processor_without_starting_it() {
         &mut channels,
         DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::NO_LISTENER)),
     );
-    let (_, pdus) = dispatch(&mut server, channels, vec![ServerEvent::CloseDynamicChannel(id)]).await;
+    let (channels, pdus) = dispatch(&mut server, channels, vec![ServerEvent::CloseDynamicChannel(id)]).await;
     assert!(pdus.is_empty());
+    assert_eq!(*calls.lock().unwrap(), [Call::Built(id), Call::Dropped]);
+    drop(channels);
     assert_eq!(*calls.lock().unwrap(), [Call::Built(id), Call::Dropped]);
 }
 
