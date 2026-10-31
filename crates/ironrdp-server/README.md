@@ -101,6 +101,7 @@ The processors created by a factory belong to that connection and are dropped wh
 ## Dynamic-channel writes
 
 Send a validated `ironrdp_dvc::DvcMessageBatch` through `ServerEvent::DynamicChannelWithCompletion` for an already-open dynamic channel.
+Dispatch revalidates every batch and rejects control PDUs, including Create and Close responses.
 The server writes the batch over the joined DRDYNVC static channel; unavailable channels and channels migrated to a sideband transport are rejected.
 Await the completion receiver before submitting another batch, and cap batch sizes because the event queue is unbounded.
 Completion confirms the entire transport write, not peer processing.

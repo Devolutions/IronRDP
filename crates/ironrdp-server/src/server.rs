@@ -1589,6 +1589,7 @@ pub enum ServerEvent {
     Clipboard(ClipboardMessage),
     /// Writes data to an open dynamic channel over the main RDP transport.
     ///
+    /// Dispatch revalidates the batch and rejects control PDUs.
     /// Submit only for an active session and await completion before submitting another batch.
     /// Cap batch sizes; the event queue is unbounded and has no dispatch deadline.
     /// A closed receiver means dispatch failed, the event was discarded, or the channel was unavailable.
@@ -4060,6 +4061,13 @@ impl RdpServer {
             match event {
                 ServerEvent::DynamicChannelWithCompletion(batch, completion) => {
                     let channel_id = batch.channel_id();
+                    let batch = match dvc::DvcMessageBatch::try_new(channel_id, batch.into_messages()) {
+                        Ok(batch) => batch,
+                        Err(error) => {
+                            warn!(channel_id, %error, "Invalid dynamic channel data batch, rejecting write");
+                            continue;
+                        }
+                    };
                     if !conn.get_svc_processor::<dvc::DrdynvcServer>().is_some_and(|drdynvc| {
                         drdynvc.is_channel_opened(channel_id)
                             && drdynvc.tunnel_for_outgoing_channel(channel_id).is_none()

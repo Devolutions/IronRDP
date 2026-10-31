@@ -3,12 +3,14 @@ use core::net::Ipv4Addr;
 use core::task::Poll;
 use core::time::Duration;
 
-use ironrdp_core::{ReadCursor, decode_cursor, encode_vec};
+use ironrdp_core::{ReadCursor, decode_cursor, encode_vec, impl_as_any};
 use ironrdp_dvc::pdu::{
-    CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu,
-    DrdynvcServerPdu,
+    CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreateResponsePdu,
+    CreationStatus, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList,
+    SoftSyncRequestPdu, SoftSyncTunnelType,
 };
-use ironrdp_dvc::{DrdynvcServer, DvcMessageBatch};
+use ironrdp_dvc::{DrdynvcClient, DrdynvcServer, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
+use ironrdp_pdu::PduResult;
 use ironrdp_pdu::mcs::SendDataIndication;
 use ironrdp_pdu::rdp::vc::ChannelPduHeader;
 use ironrdp_pdu::x224::X224;
@@ -247,4 +249,104 @@ async fn discarded_session_data_closes_completion() {
     server.event_sender().send(event).unwrap();
     server.discard_stale_session_events().await;
     assert!(processed.await.is_err());
+}
+
+#[derive(Debug)]
+struct TunnelChannel;
+
+impl_as_any!(TunnelChannel);
+
+impl DvcProcessor for TunnelChannel {
+    fn channel_name(&self) -> &str {
+        "completion-test"
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl DvcClientProcessor for TunnelChannel {}
+
+fn tunnel_client() -> DrdynvcClient {
+    let mut client = DrdynvcClient::new().with_dynamic_channel(TunnelChannel);
+    client
+        .process(
+            &encode_vec(&DrdynvcServerPdu::Capabilities(CapabilitiesRequestPdu::new(
+                CapsVersion::V3,
+                None,
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+    client
+}
+
+fn tunnel_create(client: &mut DrdynvcClient, channel_id: u32) -> DvcMessageBatch {
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+    client
+        .process(
+            &encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+                SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, Vec::new()),
+            ])))
+            .unwrap(),
+        )
+        .unwrap();
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        channel_id,
+        "completion-test".to_owned(),
+    )))
+    .unwrap();
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+        .unwrap()
+}
+
+// oracle: regression Devolutions/IronRDP#2337: control responses must not be sent by the data-write event.
+#[tokio::test]
+async fn create_response_batches_are_rejected() {
+    let mut server = server();
+    let (drdynvc, channel_id) = opened(&server);
+    let batch = tunnel_create(&mut tunnel_client(), channel_id);
+    assert_control_batch_rejected(&mut server, drdynvc, batch).await;
+}
+
+// oracle: regression Devolutions/IronRDP#2337: a tunneled Close response must not close the peer's channel.
+#[tokio::test]
+async fn close_response_batches_are_rejected() {
+    let mut server = server();
+    let (drdynvc, channel_id) = opened(&server);
+    let mut client = tunnel_client();
+    let _ = tunnel_create(&mut client, channel_id);
+    let batch = client
+        .process_tunnel(
+            SoftSyncTunnelType::RELIABLE_UDP,
+            &encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(channel_id))).unwrap(),
+        )
+        .unwrap();
+    assert_control_batch_rejected(&mut server, drdynvc, batch).await;
+}
+
+async fn assert_control_batch_rejected(server: &mut RdpServer, drdynvc: DrdynvcServer, batch: DvcMessageBatch) {
+    assert!(!batch.messages().is_empty());
+    let (completion, processed) = oneshot::channel();
+    let (stream, mut peer) = tokio::io::duplex(128);
+    let mut transport = TokioFramed::new(stream);
+    dispatch_static_channel_events(
+        server,
+        channels(drdynvc),
+        &mut vec![ServerEvent::DynamicChannelWithCompletion(batch, completion)],
+        &mut SharedWriter::new(&mut transport),
+    )
+    .await
+    .unwrap();
+    assert!(processed.await.is_err(), "a control response was acknowledged as data");
+    drop(transport);
+    let mut bytes = Vec::new();
+    peer.read_to_end(&mut bytes).await.unwrap();
+    assert!(bytes.is_empty(), "a control response reached the peer");
 }
