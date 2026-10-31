@@ -12,8 +12,8 @@ use super::display::{DesktopSize, DisplayContext, RdpServerDisplay};
 use super::gfx::GfxServerFactory;
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::{
-    ConnectionBinder, ConnectionHandler, ConnectionPolicy, CredentialValidator, RdpServer, RdpServerOptions,
-    RdpServerSecurity, StaticChannelFactory,
+    ConnectionBinder, ConnectionHandler, ConnectionPolicy, CredentialValidator, DynamicChannelFactory, RdpServer,
+    RdpServerOptions, RdpServerSecurity, StaticChannelFactory,
 };
 use crate::error::ServerResult;
 #[cfg(feature = "usb")]
@@ -45,6 +45,7 @@ pub struct BuilderDone {
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
@@ -158,6 +159,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 handler: self.state.handler,
                 display: Box::new(display),
                 static_channel_factories: Vec::new(),
+                dynamic_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
                 rdpei_factory: None,
@@ -196,6 +198,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(NoopDisplay),
                 remote_app: None,
                 static_channel_factories: Vec::new(),
+                dynamic_channel_factories: Vec::new(),
                 sound_factory: None,
                 cliprdr_factory: None,
                 rdpei_factory: None,
@@ -238,6 +241,12 @@ impl RdpServerBuilder<BuilderDone> {
     /// Add a factory that attaches a fresh static-channel processor per connection.
     pub fn with_static_channel_factory(mut self, factory: Box<dyn StaticChannelFactory>) -> Self {
         self.state.static_channel_factories.push(factory);
+        self
+    }
+
+    /// Add a factory that extends the built-in dynamic channels for each connection.
+    pub fn with_dynamic_channel_factory(mut self, factory: Box<dyn DynamicChannelFactory>) -> Self {
+        self.state.dynamic_channel_factories.push(factory);
         self
     }
 
@@ -501,6 +510,7 @@ impl RdpServerBuilder<BuilderDone> {
             self.state.handler,
             self.state.display,
             self.state.static_channel_factories,
+            self.state.dynamic_channel_factories,
             self.state.sound_factory,
             self.state.cliprdr_factory,
             self.state.rdpei_factory,
