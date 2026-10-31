@@ -314,3 +314,107 @@ async fn pending_session_cannot_be_consumed_by_another_server() {
     );
     assert!(lifecycle.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn pending_session_discards_events_left_by_an_intervening_session() {
+    // oracle: mutant delivering an intervening session's disconnect to a resumed pending session.
+    let lifecycle = Arc::new(Mutex::new(Vec::new()));
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_no_security()
+        .with_input_handler(NoopInput)
+        .with_display_handler(RecordingDisplay {
+            lifecycle: Arc::clone(&lifecycle),
+            size: CLIENT_SIZE,
+            activated: None,
+        })
+        .build();
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let (original_stream, original_client) =
+        tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
+    let (resume_tx, resume_rx) = oneshot::channel();
+    let (original_ready_tx, original_ready_rx) = oneshot::channel();
+    let (original_close_tx, original_close_rx) = oneshot::channel();
+    let original_task = tokio::spawn(async move {
+        let mut framed = TokioFramed::new(original_client.unwrap());
+        start_client_connection_request(&mut framed).await;
+        resume_rx.await.unwrap();
+        play_client_after_connection_request(&mut framed, true, &[], None).await;
+        original_ready_tx.send(()).unwrap();
+        original_close_rx.await.unwrap();
+        framed.read_pdu().await.is_err()
+    });
+    let pending = tokio::time::timeout(
+        Duration::from_secs(5),
+        server.run_connection_handshake(original_stream.unwrap().0),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let (intervening_stream, intervening_client) =
+        tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
+    let (intervening_ready_tx, intervening_ready_rx) = oneshot::channel();
+    let (intervening_close_tx, intervening_close_rx) = oneshot::channel();
+    let intervening_task = tokio::spawn(async move {
+        let mut framed = TokioFramed::new(intervening_client.unwrap());
+        super::activation::play_client_with_capabilities(&mut framed, true, &[], None).await;
+        intervening_ready_tx.send(()).unwrap();
+        intervening_close_rx.await.unwrap();
+        framed.read_pdu().await.is_err()
+    });
+    {
+        let intervening = server.run_connection(intervening_stream.unwrap().0);
+        tokio::pin!(intervening);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut intervening => panic!("intervening session exited: {result:?}"),
+                ready = intervening_ready_rx => ready.unwrap(),
+            }
+        })
+        .await
+        .unwrap();
+    }
+    intervening_close_tx.send(()).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), intervening_task)
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    server
+        .event_sender()
+        .send(ironrdp_server::ServerEvent::Disconnect(
+            ironrdp_pdu::rdp::server_error_info::ErrorInfo::ProtocolIndependentCode(
+                ironrdp_pdu::rdp::server_error_info::ProtocolIndependentCode::RpcInitiatedDisconnect,
+            ),
+        ))
+        .unwrap();
+
+    resume_tx.send(()).unwrap();
+    {
+        let resumed = server.run_connection_session(pending);
+        tokio::pin!(resumed);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut resumed => panic!("stale disconnect reached pending session: {result:?}"),
+                ready = original_ready_rx => ready.unwrap(),
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), &mut resumed)
+                    .await
+                    .is_err(),
+                "the resumed session must remain live"
+            );
+        })
+        .await
+        .unwrap();
+    }
+    original_close_tx.send(()).unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), original_task)
+            .await
+            .unwrap()
+            .unwrap()
+    );
+}

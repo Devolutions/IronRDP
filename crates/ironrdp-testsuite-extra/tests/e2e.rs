@@ -3183,6 +3183,73 @@ struct UpgradedClient {
     server_public_key: Vec<u8>,
 }
 
+#[tokio::test]
+async fn pending_session_exposes_delegated_identity_before_session_start() {
+    // oracle: mutant dropping or corrupting the delegated identity in pending-session construction or access.
+    let identity = test_tls_identity();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(identity.make_acceptor().unwrap(), identity.pub_key)
+        .with_no_input()
+        .with_no_display()
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: "alice".to_owned(),
+        password: "secret".to_owned(),
+        domain: Some("CORP".to_owned()),
+    }));
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    let server_handshake = async {
+        let (stream, _) = listener.accept().await.unwrap();
+        let pending = server.run_connection_handshake(stream).await.unwrap();
+        assert_eq!(
+            pending.captured_identity(),
+            Some(&server::CredsspAuthIdentity {
+                username: connector::sspi::Username::new("alice", Some("CORP")).unwrap(),
+                password: "secret".to_owned().into(),
+            })
+        );
+        drop(pending);
+    };
+    let client_handshake = async {
+        let client = Box::pin(UpgradedClient::connect(server_addr, |client_addr| {
+            connector::ClientConnector::new(
+                connector::Config {
+                    credentials: connector::Credentials::UsernamePassword {
+                        username: "alice".to_owned(),
+                        password: "secret".to_owned(),
+                    },
+                    domain: Some("CORP".to_owned()),
+                    ..default_client_config()
+                },
+                client_addr,
+            )
+        }))
+        .await;
+        let mut framed = ironrdp_tokio::TokioFramed::new(client.stream);
+        let result = Box::pin(ironrdp_async::connect_finalize(
+            client.upgraded,
+            client.connector,
+            &mut framed,
+            &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+            "localhost".into(),
+            client.server_public_key,
+            None,
+        ))
+        .await;
+        assert!(
+            result.is_err(),
+            "dropping the pending session must prevent session finalization"
+        );
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(server_handshake, client_handshake);
+    })
+    .await
+    .expect("managed-TLS CredSSP handshake completed");
+}
+
 impl UpgradedClient {
     /// Connects to `server_addr` up to the TLS upgrade. `make_connector` receives
     /// the client's local address.

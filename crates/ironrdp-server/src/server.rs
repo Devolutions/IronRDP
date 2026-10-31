@@ -2020,8 +2020,6 @@ impl PendingSession {
     ///
     /// Credentials supplied only through ClientInfo are not exposed here.
     pub fn captured_identity(&self) -> Option<&ironrdp_acceptor::CredsspAuthIdentity> {
-        // UNTESTED: The public accessor must return the delegated identity captured by a real CredSSP handshake.
-        // This supplies the caller's identity boundary; check it with a managed-TLS CredSSP client when changing it.
         self.captured_identity.as_ref()
     }
 }
@@ -3406,6 +3404,7 @@ impl RdpServer {
             ));
         }
         self.connection_local_addr = None;
+        self.discard_stale_session_events().await;
         let result = Box::pin(self.finalize_negotiated(pending.connection)).await;
         self.connection_local_addr = None;
         result
@@ -3433,7 +3432,7 @@ impl RdpServer {
 
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
-        let pending = PendingConnection::new(
+        PendingConnection::new(
             self.opts.security.clone(),
             size,
             capabilities,
@@ -3445,8 +3444,7 @@ impl RdpServer {
                 require_authenticated: self.connection_binder.is_some(),
                 ..ServerCredentialsHandler::default()
             },
-        );
-        pending
+        )
     }
 
     /// Finalize a connection that has already negotiated (and, under Hybrid,
