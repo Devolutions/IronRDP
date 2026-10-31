@@ -3491,7 +3491,7 @@ impl server::ConnectionHandler for SessionConfigRecorder {
 
 /// A real client sends settings before capability exchange, and the server reports them through setup callbacks.
 ///
-/// The session-config callback receives the server's initial desktop size, not the client's request.
+/// With honoring client desktop size disabled by default, the callback receives the display handler's initial size.
 async fn client_session_config_reported() -> Vec<SessionSetupEvent> {
     let seen = Arc::new(StdMutex::new(Vec::new()));
     let (mut server, _display_tx) = handler_server(
@@ -3510,7 +3510,7 @@ async fn client_session_config_reported() -> Vec<SessionSetupEvent> {
             let server_addr = local_addr_of(&ev).await;
             let (client, _) = connect_client(server_addr, |client_addr| {
                 let mut config = default_client_config();
-                // This differs from the server's initial size passed to the callback.
+                // The GCC request is ignored because honoring client desktop size is disabled.
                 config.desktop_size = DesktopSize {
                     width: 1280,
                     height: 720,
@@ -3685,12 +3685,14 @@ async fn connection_fails_for_handler(handler: Box<dyn server::ConnectionHandler
         .await
 }
 
-// oracle: Client Info callback rejection must fail the real connection setup
+// oracle: mutant discarded Client Info callback rejection lets connection setup succeed
 #[tokio::test]
 async fn client_info_callback_rejection_stops_real_connection_setup() {
     let callback_called = Arc::new(AtomicBool::new(false));
-    let connection_failed =
-        connection_fails_for_handler(Box::new(RejectClientInfo(Arc::clone(&callback_called)))).await;
+    let connection_failed = Box::pin(connection_fails_for_handler(Box::new(RejectClientInfo(Arc::clone(
+        &callback_called,
+    )))))
+    .await;
 
     assert!(
         callback_called.load(Ordering::SeqCst),
@@ -3702,12 +3704,14 @@ async fn client_info_callback_rejection_stops_real_connection_setup() {
     );
 }
 
-// oracle: session configuration callback rejection must fail the real connection setup
+// oracle: mutant discarded session configuration callback rejection lets connection setup succeed
 #[tokio::test]
 async fn client_session_config_callback_rejection_stops_real_connection_setup() {
     let callback_called = Arc::new(AtomicBool::new(false));
-    let connection_failed =
-        connection_fails_for_handler(Box::new(RejectClientSessionConfig(Arc::clone(&callback_called)))).await;
+    let connection_failed = Box::pin(connection_fails_for_handler(Box::new(RejectClientSessionConfig(
+        Arc::clone(&callback_called),
+    ))))
+    .await;
 
     assert!(
         callback_called.load(Ordering::SeqCst),
