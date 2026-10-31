@@ -206,3 +206,9 @@ opt-level = 3
 
 [profile.test.package.rand_chacha]
 opt-level = 3
+
+# The NOW session logoff request ships in the next now-client release; drop this patch and bump
+# `now-client` once it is published.
+[patch.crates-io]
+now-client = { git = "https://github.com/Devolutions/now-libraries", rev = "587a1ce09d4f48e05cb348baae30aeb6403b96a6" }
+now-proto-pdu = { git = "https://github.com/Devolutions/now-libraries", rev = "587a1ce09d4f48e05cb348baae30aeb6403b96a6" }
