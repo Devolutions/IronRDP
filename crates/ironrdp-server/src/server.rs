@@ -239,6 +239,12 @@ pub struct ConnectionInfo {
     /// The server itself doesn't start the rdpsnd channel when they ask for no audio redirection; the rest, such as
     /// whether to offer a microphone, is the embedder's to act on.
     pub client_info_flags: rdp::client_info::ClientInfoFlags,
+    /// The remote address of this connection, as its [`IncomingConnection::peer`] gave it: the address that
+    /// [`ConnectionHandler::on_accept`] and [`ConnectionHandler::on_disconnected`] get for this connection. Under
+    /// [`ConnectionPolicy::Preempt`], `on_accept` also runs for newcomers while a session is live, so the peer of the
+    /// last `on_accept` is not always this one. `None` for a connection without a peer address, and for
+    /// [`RdpServer::run_connection`] and [`RdpServer::run_connection_with`], which get a stream and no address.
+    pub peer_addr: Option<SocketAddr>,
 }
 
 impl ConnectionInfo {
@@ -262,6 +268,7 @@ impl ConnectionInfo {
             redirected_session_id: None,
             password_cookie: None,
             client_info_flags: rdp::client_info::ClientInfoFlags::empty(),
+            peer_addr: None,
         }
     }
 }
@@ -1354,6 +1361,9 @@ pub struct RdpServer {
     /// The local address the current client reached. See
     /// [`Self::set_connection_local_addr`].
     connection_local_addr: Option<SocketAddr>,
+    /// The remote address of the connection [`Self::serve_connection`] serves, set when it starts and cleared by
+    /// [`Self::run_connection_with`]; see [`ConnectionInfo::peer_addr`].
+    connection_peer_addr: Option<SocketAddr>,
     /// Whether each connection runs auto-detect; see [`Self::enable_autodetect`].
     autodetect_enabled: bool,
     heartbeat: Option<HeartbeatConfig>,
@@ -2504,6 +2514,7 @@ impl RdpServer {
             pending_authenticated_credentials: Arc::new(StdMutex::new(None)),
             local_addr: None,
             connection_local_addr: None,
+            connection_peer_addr: None,
             autodetect_enabled: false,
             heartbeat: None,
             connection_handler: connection_handler.map(|h| Rc::new(RefCell::new(h))),
@@ -3294,6 +3305,8 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
+        // The stream comes without an address, and `serve_connection` leaves the address of its connection set.
+        self.connection_peer_addr = None;
         // Boxed to keep this future, and `run_connection`'s, under `clippy::large_futures`, so a caller awaiting either
         // doesn't have to.
         let result = Box::pin(self.run_connection_inner(stream, tls)).await;
@@ -3653,6 +3666,7 @@ impl RdpServer {
         C: ConnectionSource,
     {
         let peer = connection.peer();
+        self.connection_peer_addr = peer;
         match &connection {
             NextConnection::Incoming(incoming) => self.connection_local_addr = incoming.local_addr,
             // The eviction event is queued on the server-global channel but
@@ -5602,6 +5616,7 @@ impl RdpServer {
                         .map(|cluster| cluster.redirected_session_id),
                     password_cookie: result.password_cookie.clone(),
                     client_info_flags: result.client_info_flags,
+                    peer_addr: self.connection_peer_addr,
                 });
             });
         }
