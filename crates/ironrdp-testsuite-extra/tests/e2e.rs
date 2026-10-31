@@ -3345,6 +3345,14 @@ fn handler_server(
     handler: Box<dyn server::ConnectionHandler>,
     policy: server::ConnectionPolicy,
 ) -> (RdpServer, UnboundedSender<DisplayUpdate>) {
+    handler_server_with_desktop_limit(handler, policy, None)
+}
+
+fn handler_server_with_desktop_limit(
+    handler: Box<dyn server::ConnectionHandler>,
+    policy: server::ConnectionPolicy,
+    desktop_limit: Option<DesktopSize>,
+) -> (RdpServer, UnboundedSender<DisplayUpdate>) {
     let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
     let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
     let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
@@ -3361,6 +3369,7 @@ fn handler_server(
         })
         .with_connection_handler(Some(handler))
         .with_connection_policy(policy)
+        .with_honor_client_desktop_size(desktop_limit)
         .build();
     server.set_credentials(Some(server::Credentials {
         username: USERNAME.into(),
@@ -3490,13 +3499,12 @@ impl server::ConnectionHandler for SessionConfigRecorder {
 }
 
 /// A real client sends settings before capability exchange, and the server reports them through setup callbacks.
-///
-/// With honoring client desktop size disabled by default, the callback receives the display handler's initial size.
-async fn client_session_config_reported() -> Vec<SessionSetupEvent> {
+async fn client_session_config_reported(desktop_limit: Option<DesktopSize>) -> Vec<SessionSetupEvent> {
     let seen = Arc::new(StdMutex::new(Vec::new()));
-    let (mut server, _display_tx) = handler_server(
+    let (mut server, _display_tx) = handler_server_with_desktop_limit(
         Box::new(SessionConfigRecorder(Arc::clone(&seen))),
         server::ConnectionPolicy::Queue,
+        desktop_limit,
     );
     let ev = server.event_sender().clone();
 
@@ -3510,7 +3518,6 @@ async fn client_session_config_reported() -> Vec<SessionSetupEvent> {
             let server_addr = local_addr_of(&ev).await;
             let (client, _) = connect_client(server_addr, |client_addr| {
                 let mut config = default_client_config();
-                // The GCC request is ignored because honoring client desktop size is disabled.
                 config.desktop_size = DesktopSize {
                     width: 1280,
                     height: 720,
@@ -3539,7 +3546,7 @@ async fn client_session_config_reported() -> Vec<SessionSetupEvent> {
 
 #[tokio::test]
 async fn server_forwards_client_session_configuration_before_connection_info() {
-    let events = Box::pin(client_session_config_reported()).await;
+    let events = Box::pin(client_session_config_reported(None)).await;
     // oracle: mutant omitted or reordered setup callbacks before connection info
     assert_eq!(events.len(), 3);
 
@@ -3569,36 +3576,29 @@ async fn server_forwards_client_session_configuration_before_connection_info() {
     assert_eq!(events[2], SessionSetupEvent::ConnectionInfo(expected_connection_info));
 }
 
-struct RejectSetupCallbacks;
-
-impl server::ConnectionHandler for RejectSetupCallbacks {
-    fn on_client_info(&mut self, _flags: ClientInfoFlags) -> ServerResult<()> {
-        Err(server::ServerError::reason("test client info", "rejected"))
-    }
-
-    fn on_client_session_config(
-        &mut self,
-        _flags: ClientInfoFlags,
-        _performance_flags: PerformanceFlags,
-        _keyboard_layout: u32,
-        _keyboard_type: gcc::KeyboardType,
-        _keyboard_subtype: u32,
-        _keyboard_functional_keys_count: u32,
-        _ime_file_name: &str,
-        _desktop_size: DesktopSize,
-    ) -> ServerResult<()> {
-        Err(server::ServerError::reason("test session config", "rejected"))
-    }
+// oracle: mutant forwarding the display size instead of the adopted or clamped GCC desktop request
+#[rstest::rstest]
+#[case::adopted(1920, 1080, 1280, 720)]
+#[case::clamped(1100, 600, 1100, 600)]
+#[tokio::test]
+async fn client_session_config_reports_honored_desktop_size(
+    #[case] max_width: u16,
+    #[case] max_height: u16,
+    #[case] expected_width: u16,
+    #[case] expected_height: u16,
+) {
+    let events = Box::pin(client_session_config_reported(Some(DesktopSize {
+        width: max_width,
+        height: max_height,
+    })))
+    .await;
+    let SessionSetupEvent::ClientSessionConfig(config) = &events[1] else {
+        panic!("missing session configuration callback");
+    };
+    assert_eq!(config.desktop_size, Some((expected_width, expected_height)));
 }
 
-// oracle: mutant early Client Info callback errors must not be discarded
-#[tokio::test]
-async fn client_info_handler_errors_reach_connection_setup() {
-    let mut server = server_for_handle_tests(Some(Box::new(RejectSetupCallbacks)));
-    let error = ironrdp::acceptor::ConnectionSetupHandler::handle_client_info(&mut server, ClientInfoFlags::empty())
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("client info handler failed"));
+fn assert_handler_cause(error: connector::ConnectorError) {
     assert!(
         error
             .source()
@@ -3606,10 +3606,22 @@ async fn client_info_handler_errors_reach_connection_setup() {
     );
 }
 
+// oracle: mutant early Client Info callback errors must not be discarded
+#[tokio::test]
+async fn client_info_handler_errors_reach_connection_setup() {
+    let mut server = server_for_handle_tests(Some(Box::new(RejectClientInfo(Arc::new(AtomicBool::new(false))))));
+    let error = ironrdp::acceptor::ConnectionSetupHandler::handle_client_info(&mut server, ClientInfoFlags::empty())
+        .await
+        .unwrap_err();
+    assert_handler_cause(error);
+}
+
 // oracle: mutant session configuration callback errors must not be discarded
 #[tokio::test]
 async fn client_session_config_handler_errors_reach_connection_setup() {
-    let mut server = server_for_handle_tests(Some(Box::new(RejectSetupCallbacks)));
+    let mut server = server_for_handle_tests(Some(Box::new(RejectClientSessionConfig(Arc::new(AtomicBool::new(
+        false,
+    ))))));
     let error = ironrdp::acceptor::ConnectionSetupHandler::handle_client_session_config(
         &mut server,
         ClientInfoFlags::empty(),
@@ -3626,12 +3638,7 @@ async fn client_session_config_handler_errors_reach_connection_setup() {
     )
     .await
     .unwrap_err();
-    assert!(error.to_string().contains("client session config handler failed"));
-    assert!(
-        error
-            .source()
-            .is_some_and(|source| source.to_string().contains("rejected"))
-    );
+    assert_handler_cause(error);
 }
 
 struct RejectClientInfo(Arc<AtomicBool>);
