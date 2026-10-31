@@ -28,7 +28,8 @@ Custom logic for your RDP server can be added by implementing these traits:
 
 `ConnectionHandler::on_client_info` observes the client's Client Info flags before capability exchange.
 `ConnectionHandler::on_client_session_config` receives those flags with the keyboard settings, performance flags, IME file name, and initial desktop size offered for capability exchange.
-The desktop size requested later in Client Confirm Active is not available at this stage.
+The desktop size is the display handler's initial size by default.
+With `RdpServerBuilder::with_honor_client_desktop_size` enabled, it reflects a valid client request from GCC Client Core Data, clamped to the configured maximum.
 These callbacks do not authenticate the client, and returning an error stops connection setup.
 `ConnectionHandler::on_connection_info` later reports the keyboard subtype, function-key count, performance flags, and other metadata after the connection is established.
 

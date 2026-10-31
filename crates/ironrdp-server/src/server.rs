@@ -330,14 +330,15 @@ pub trait ConnectionHandler: Send {
     /// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2], and
     /// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1] before capability exchange.
     ///
-    /// `desktop_size` is the server's initial capability-exchange size.
-    /// The client may request a different size later in the [Client Confirm Active PDU, section 2.2.1.13.2].
+    /// `desktop_size` is the size the acceptor will offer in capability exchange.
+    /// By default, it is the display handler's initial size.
+    /// With [`RdpServerBuilder::with_honor_client_desktop_size`] enabled, a valid client request from
+    /// Client Core Data is adopted after clamping to the configured maximum.
     /// Return an error to stop connection setup.
     ///
     /// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
     /// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
     /// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/05ada9e4-a468-494b-8694-eb806a0ecc89
-    /// [Client Confirm Active PDU, section 2.2.1.13.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4c3c2710-0bf0-4c54-8e69-aff40ffcde66
     #[expect(
         clippy::too_many_arguments,
         reason = "forwards Client Info and GCC/Extended Client Info settings together"
