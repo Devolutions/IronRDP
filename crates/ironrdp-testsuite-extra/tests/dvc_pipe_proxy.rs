@@ -297,6 +297,7 @@ async fn reopening_unix_proxy_keeps_replacement_socket_reachable() {
     std::fs::remove_file(path).expect("remove test socket");
 }
 
+// oracle: reference xrdp reopens the channel after a close, and the new worker needs the pipe the old one held
 #[cfg(unix)]
 #[tokio::test]
 async fn close_releases_the_pipe_while_a_write_is_stalled() {

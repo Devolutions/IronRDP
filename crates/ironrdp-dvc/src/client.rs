@@ -216,9 +216,10 @@ impl DrdynvcClient {
     /// Registers a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
-    /// A channel the server closes is kept and started again on its next Create Request
-    /// (xrdp reopens every channel after a Deactivation-Reactivation Sequence), so the
-    /// processor must accept [`DvcProcessor::start`] after [`DvcProcessor::close`].
+    /// A channel that closes, whether the server or the client closes it, is kept and started
+    /// again on the server's next Create Request (xrdp reopens every channel after a
+    /// Deactivation-Reactivation Sequence), so the processor must accept
+    /// [`DvcProcessor::start`] after [`DvcProcessor::close`].
     ///
     /// # Note
     ///
@@ -236,7 +237,7 @@ impl DrdynvcClient {
     /// Attaches a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
-    /// A channel the server closes is kept and started again on its next Create Request,
+    /// A channel that closes is kept and started again on the server's next Create Request,
     /// as with [`DrdynvcClient::with_dynamic_channel`].
     ///
     /// # Note
@@ -882,7 +883,7 @@ impl DynamicChannelSet {
         };
         let type_id = dvc.processor_type_id();
 
-        // Only matters for pre-registered channels
+        // Only matters for pre-registered channels.
         if self.type_id_to_channel_id.get(&type_id) == Some(&id) {
             self.type_id_to_channel_id.remove(&type_id);
         }
