@@ -29,6 +29,8 @@ pub mod multipoint;
 #[cfg(all(test, not(feature = "entra-auth")))]
 use rstest as _;
 pub mod output_channel;
+#[cfg(feature = "pnp")]
+pub mod pnp;
 pub mod rail;
 pub mod rdp;
 #[cfg(feature = "telemetry")]

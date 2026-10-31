@@ -40,6 +40,7 @@ mod rdpei;
 mod rdpel;
 mod rdpemsc;
 mod rdpemt;
+mod rdpepnp;
 mod rdpet;
 mod rdpetxt;
 mod rdpeudp;
