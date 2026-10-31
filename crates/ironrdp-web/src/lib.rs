@@ -15,6 +15,7 @@ extern crate getrandom2 as _;
 extern crate getrandom4 as _;
 extern crate time as _;
 
+mod audio;
 mod canvas;
 mod clipboard;
 mod error;
