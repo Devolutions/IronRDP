@@ -2020,6 +2020,8 @@ impl PendingSession {
     ///
     /// Credentials supplied only through ClientInfo are not exposed here.
     pub fn captured_identity(&self) -> Option<&ironrdp_acceptor::CredsspAuthIdentity> {
+        // UNTESTED: The public accessor must return the delegated identity captured by a real CredSSP handshake.
+        // This supplies the caller's identity boundary; check it with a managed-TLS CredSSP client when changing it.
         self.captured_identity.as_ref()
     }
 }
@@ -3364,6 +3366,9 @@ impl RdpServer {
     /// Completes negotiation and security setup without starting session finalization.
     ///
     /// The returned [`PendingSession`] owns the TCP connection until consumed or dropped.
+    /// HYBRID_EX validates credentials with the policy configured when this handshake starts, before reporting
+    /// early authorization success; changing the validator afterwards does not revalidate those credentials.
+    /// Other negotiated security modes validate credentials during session finalization.
     pub async fn run_connection_handshake(&mut self, stream: TcpStream) -> ServerResult<PendingSession> {
         self.connection_local_addr = None;
         let local_addr = stream
@@ -3391,15 +3396,16 @@ impl RdpServer {
 
     /// Consumes a pending connection and starts RDP finalization and session processing.
     ///
+    /// The pending connection must originate from this server instance.
     /// Dropping this future cancels session startup and closes the pending connection.
     pub async fn run_connection_session(&mut self, pending: PendingSession) -> ServerResult<()> {
-        self.connection_local_addr = None;
         if !Arc::ptr_eq(&self.pending_session_server_id, &pending.server_id) {
             return Err(ServerError::reason(
                 "pending session",
                 "belongs to a different server instance",
             ));
         }
+        self.connection_local_addr = None;
         let result = Box::pin(self.finalize_negotiated(pending.connection)).await;
         self.connection_local_addr = None;
         result
@@ -3472,20 +3478,19 @@ impl RdpServer {
             .pending_authenticated_credentials
             .lock()
             .expect("authenticated credentials lock poisoned") = authenticated_credentials;
-        if local_addr.is_some() {
-            self.connection_local_addr = local_addr;
-        }
+        let local_addr = local_addr.or(self.connection_local_addr);
         match transport {
             // No security upgrade happened, so there is no TLS session to shut
             // down — matches the pre-existing `BeginResult::Continue` arm.
             NegotiatedTransport::Continued(framed) => {
-                self.accept_finalize(framed, acceptor).await?;
+                self.accept_finalize(local_addr, framed, acceptor).await?;
             }
             NegotiatedTransport::Tls(framed) => {
-                self.finalize_and_shutdown(*framed, acceptor, "TLS connection").await?;
+                self.finalize_and_shutdown(local_addr, *framed, acceptor, "TLS connection")
+                    .await?;
             }
             NegotiatedTransport::Offloaded(framed) => {
-                self.finalize_and_shutdown(framed, acceptor, "TLS-offloaded stream")
+                self.finalize_and_shutdown(local_addr, framed, acceptor, "TLS-offloaded stream")
                     .await?;
             }
         }
@@ -3499,6 +3504,7 @@ impl RdpServer {
     /// shares.
     async fn finalize_and_shutdown<S>(
         &mut self,
+        local_addr: Option<SocketAddr>,
         framed: TokioFramed<S>,
         acceptor: Acceptor,
         shutdown_label: &str,
@@ -3511,7 +3517,7 @@ impl RdpServer {
         // `PendingConnection::negotiate_and_authenticate` before this function
         // ever runs -- upstream's un-refactored equivalent still does that
         // work at this point, since it has no separate negotiation step.
-        let framed = self.accept_finalize(framed, acceptor).await?;
+        let framed = self.accept_finalize(local_addr, framed, acceptor).await?;
         debug!("Shutting down {}", shutdown_label);
         let (mut inner, _) = framed.into_inner();
         if let Err(e) = inner.shutdown().await {
@@ -6323,6 +6329,7 @@ impl RdpServer {
 
     async fn accept_finalize<S>(
         &mut self,
+        local_addr: Option<SocketAddr>,
         mut framed: TokioFramed<S>,
         mut acceptor: Acceptor,
     ) -> ServerResult<TokioFramed<S>>
@@ -6333,7 +6340,7 @@ impl RdpServer {
         let udp_bind_addr = self
             .opts
             .udp_bind_addr
-            .map(|bind| multitransport::sideband_bind_addr(bind, self.connection_local_addr));
+            .map(|bind| multitransport::sideband_bind_addr(bind, local_addr));
         let tls_config = self
             .opts
             .security
@@ -6490,6 +6497,12 @@ impl RdpServer {
     /// Cleared when the connection ends.
     pub fn set_connection_local_addr(&mut self, addr: Option<SocketAddr>) {
         self.connection_local_addr = addr;
+    }
+
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn connection_local_addr_for_test(&self) -> Option<SocketAddr> {
+        self.connection_local_addr
     }
 }
 

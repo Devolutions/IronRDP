@@ -49,7 +49,14 @@ fn credssp_delegated_credentials_are_captured() {
         origin: CredentialOrigin::CredSspDelegated,
     };
 
-    assert!(captured_credssp_identity_for_test(Some(&received)).unwrap().is_some());
+    let identity = captured_credssp_identity_for_test(Some(&received)).unwrap().unwrap();
+    assert_eq!(
+        identity,
+        ironrdp_server::CredsspAuthIdentity {
+            username: ironrdp_connector::sspi::Username::new("alice", Some("CORP")).unwrap(),
+            password: "secret".to_owned().into(),
+        }
+    );
 }
 
 struct RecordingChannelFactory(Lifecycle);
@@ -133,7 +140,7 @@ impl RdpServerInputHandler for NoopInput {
 }
 
 #[tokio::test]
-async fn handshake_defers_validation_binding_channels_and_activation_to_session_start() {
+async fn handshake_defers_client_info_validation_binding_channels_and_activation_to_session_start() {
     // oracle: mutant allowing session startup to exit before activation.
     let lifecycle = Arc::new(Mutex::new(Vec::new()));
     let (activated_tx, activated_rx) = oneshot::channel();
@@ -201,6 +208,8 @@ async fn handshake_defers_validation_binding_channels_and_activation_to_session_
         assert!(binding < activation);
     }
 
+    // oracle: mutant retaining a cancelled pending connection's local address.
+    assert_eq!(server.connection_local_addr_for_test(), None);
     close_client_tx.send(()).unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(5), client_task)
@@ -266,6 +275,8 @@ async fn pending_session_cannot_be_consumed_by_another_server() {
         .with_no_display()
         .with_static_channel_factory(Box::new(RecordingChannelFactory(Arc::clone(&lifecycle))))
         .build();
+    let other_local_addr = ([127, 0, 0, 2], 3389).into();
+    other_server.set_connection_local_addr(Some(other_local_addr));
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let (server_stream, client) = tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
     let server_stream = server_stream.unwrap().0;
@@ -292,6 +303,8 @@ async fn pending_session_cannot_be_consumed_by_another_server() {
         error.kind(),
         ServerErrorKind::Reason(reason) if reason == "belongs to a different server instance"
     ));
+    // oracle: mutant clearing another server's caller-supplied address on rejection.
+    assert_eq!(other_server.connection_local_addr_for_test(), Some(other_local_addr));
     close_client_tx.send(()).unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(5), client_task)
