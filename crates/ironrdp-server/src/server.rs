@@ -4136,9 +4136,9 @@ impl RdpServer {
                         continue;
                     }
                     // All fragments go in one queued PDU, so they stay contiguous on the wire.
+                    let mut update = Vec::with_capacity(data.len());
                     let mut fragments = UpdateFragmenter::new(UpdateCode::Orders, data);
                     let mut buffer = vec![0; fragments.size_hint()];
-                    let mut update = Vec::new();
                     while let Some(written) = fragments.next(&mut buffer) {
                         update.extend_from_slice(&buffer[..written]);
                     }
@@ -5167,11 +5167,6 @@ impl RdpServer {
         // Responses to tunnel payloads are replies too, so that frame acks
         // on the tunnel are read while a large frame is written over TCP.
         let mut udp_tunnel_writer = writer.clone();
-        let pdu_queue = Rc::clone(&queue);
-        let display_queue = Rc::clone(&queue);
-        let event_queue = Rc::clone(&queue);
-        let tunnel_queue = Rc::clone(&queue);
-        let heartbeat_queue = Rc::clone(&queue);
         let udp_transport_for_events = Rc::clone(&udp_transport);
         let udp_transport_for_pdus = Rc::clone(&udp_transport);
         let mut cliprdr_writer = display_writer.clone();
@@ -5237,7 +5232,7 @@ impl RdpServer {
                         // read its replies is read no further until they
                         // drain. PDUs with no reply (input, frame acks) are
                         // still read while a large frame is written.
-                        pdu_queue.wait_until_replies_below(MAX_QUEUED_REPLY_BYTES).await;
+                        writer.queue.wait_until_replies_below(MAX_QUEUED_REPLY_BYTES).await;
                     }
                     state => break Ok(state),
                 }
@@ -5251,7 +5246,7 @@ impl RdpServer {
             loop {
                 // Back-pressure: take the next update only when what was
                 // queued before is on the wire, as when this wrote directly.
-                display_queue.wait_until_written().await;
+                display_writer.queue.wait_until_written().await;
                 match display_updates.next_update().await {
                     Ok(Some(update)) => {
                         let _graphics = graphics_write.lock().await;
@@ -5296,7 +5291,7 @@ impl RdpServer {
                 }
                 // Back-pressure without the `this` lock: wait for the queued
                 // PDUs to be written, so that `dispatch_pdu` can run meanwhile.
-                event_queue.wait_until_written().await;
+                event_writer.queue.wait_until_written().await;
                 while let Ok(ev) = ev_receiver.try_recv() {
                     events.push(ev);
                 }
@@ -5398,7 +5393,7 @@ impl RdpServer {
                     .map_err(|e| ServerError::io("send heartbeat", e))?;
                 // Re-read after the heartbeat is written, so that its own
                 // write does not read as foreign traffic on the next tick.
-                heartbeat_queue.wait_until_written().await;
+                heartbeat_writer.queue.wait_until_written().await;
                 writes_at_last_tick = write_counter.load(Ordering::Relaxed);
             }
         };
@@ -5496,7 +5491,12 @@ impl RdpServer {
                     // Back-pressure without the `this` lock, as in
                     // `dispatch_pdu`: a client that floods the tunnel and does
                     // not read TCP is read no further until the replies drain.
-                    RunState::Continue => tunnel_queue.wait_until_replies_below(MAX_QUEUED_REPLY_BYTES).await,
+                    RunState::Continue => {
+                        udp_tunnel_writer
+                            .queue
+                            .wait_until_replies_below(MAX_QUEUED_REPLY_BYTES)
+                            .await
+                    }
                     state => break Ok(state),
                 }
             }
@@ -5537,10 +5537,8 @@ impl RdpServer {
         tokio::pin!(write_queued);
         let state = tokio::select! {
             state = &mut others => state,
-            result = &mut write_queued => {
-                result?;
-                return Err(ServerError::reason("client loop", "the writer stopped"));
-            }
+            // `write_queued` returns `Ok` only after `finish`, which is called below.
+            Err(error) = &mut write_queued => return Err(error),
         };
         // The writer writes what is queued (a Deactivate All, a disconnect
         // reason, a reply queued before an error) before the loop ends,
@@ -7854,6 +7852,7 @@ mod cliprdr_error_tests {
     }
 
     /// A clipboard message the channel refuses keeps the session alive.
+    // oracle: mutant a refused clipboard message ending the client loop or writing to the transport
     #[tokio::test]
     async fn a_refused_clipboard_message_does_not_end_the_client_loop() {
         let mut server = RdpServer::builder()

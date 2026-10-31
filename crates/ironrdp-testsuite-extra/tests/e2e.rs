@@ -3540,10 +3540,11 @@ async fn a_client_that_does_not_read_its_replies_is_not_read_further() {
                     .expect("encode format list");
                 let batch = one.repeat(1000);
 
-                // The flood ends when the server reads nothing for 2 s.
+                // The flood ends when the server reads nothing for 4 s, much
+                // longer than a slow moment of a busy host.
                 let mut sent = 0;
                 while sent < FLOOD_BYTES {
-                    let write = tokio::time::timeout(Duration::from_secs(2), framed.write_all(&batch)).await;
+                    let write = tokio::time::timeout(Duration::from_secs(4), framed.write_all(&batch)).await;
                     if write.is_err() {
                         break;
                     }
