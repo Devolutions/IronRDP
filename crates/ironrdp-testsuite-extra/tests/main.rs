@@ -7,6 +7,8 @@ mod capture_helpers;
 mod client;
 #[cfg(any(target_os = "linux", windows))]
 mod cliprdr_native;
+#[cfg(windows)]
+mod credssp_backend;
 mod dvc_pipe_proxy;
 mod e2e;
 mod gateway_detect;
