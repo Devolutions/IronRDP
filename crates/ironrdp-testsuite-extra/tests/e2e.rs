@@ -721,6 +721,8 @@ async fn test_echo_virtual_channel_end_to_end() {
                 .await
                 .expect("echo RTT measurement was not produced");
             assert_eq!(measurement.payload, echo_payload);
+            // oracle: regression #2339
+            assert!(echo_handle.is_channel_open(), "the client answered on the ECHO channel");
 
             (stage, framed)
         },

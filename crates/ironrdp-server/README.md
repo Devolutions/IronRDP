@@ -69,7 +69,8 @@ local
 	.run_until(async move {
 		let server_task = tokio::task::spawn_local(async move { server.run().await });
 
-		{
+		// The server drops a request while the client does not have the channel open.
+		if echo.is_channel_open() {
 			echo.send_request(b"ping".to_vec())?;
 
 			for measurement in echo.take_measurements() {
