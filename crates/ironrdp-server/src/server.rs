@@ -1630,6 +1630,15 @@ pub enum ServerEvent {
     /// Joins are final once the connection is active.
     /// A closed receiver means the event was discarded.
     StaticChannelJoined(ChannelName, oneshot::Sender<bool>),
+    /// Requests a dynamic channel after DRDYNVC negotiation.
+    ///
+    /// The factory receives the reserved ID so callers can cancel creation with `CloseDynamicChannel`.
+    /// Acceptance invokes the processor's `start` method.
+    /// A discarded request drops the factory without calling it.
+    CreateDynamicChannel(Box<dyn FnOnce(u32) -> Box<dyn dvc::DvcServerProcessor> + Send>),
+    /// Releases a dynamic channel and notifies the peer if creation was requested.
+    /// Also cancels pending creation; an unknown channel ID has no effect.
+    CloseDynamicChannel(u32),
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
     Rdpeai(RdpeaiServerMessage),
@@ -1679,6 +1688,8 @@ impl fmt::Debug for ServerEvent {
                 .field(&payload.len())
                 .finish(),
             Self::StaticChannelJoined(name, _) => f.debug_tuple("StaticChannelJoined").field(&name.as_str()).finish(),
+            Self::CreateDynamicChannel(_) => f.write_str("CreateDynamicChannel(..)"),
+            Self::CloseDynamicChannel(channel_id) => f.debug_tuple("CloseDynamicChannel").field(channel_id).finish(),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
@@ -4494,6 +4505,44 @@ impl RdpServer {
                         .await
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
+                ServerEvent::CreateDynamicChannel(build) => {
+                    let Some(drdynvc_channel_id) = conn.get_channel_id_by_type::<dvc::DrdynvcServer>() else {
+                        warn!("No DRDYNVC channel, rejecting dynamic channel creation");
+                        continue;
+                    };
+                    let Some(drdynvc) = conn
+                        .get_svc_processor::<dvc::DrdynvcServer>()
+                        .filter(|dvc| dvc.is_ready())
+                    else {
+                        warn!("DRDYNVC is not ready, rejecting dynamic channel creation");
+                        continue;
+                    };
+                    let message = drdynvc
+                        .create_channel_boxed_with(build)
+                        .map_err_kind("create dynamic channel", ServerErrorKind::Pdu)?;
+                    let data = server_encode_svc_messages(vec![message], drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|error| ServerError::io("create dynamic channel", error))?;
+                }
+                ServerEvent::CloseDynamicChannel(channel_id) => {
+                    let drdynvc_channel_id = conn.get_channel_id_by_type::<dvc::DrdynvcServer>();
+                    let message = conn
+                        .get_svc_processor::<dvc::DrdynvcServer>()
+                        .and_then(|drdynvc| drdynvc.close_channel(channel_id));
+                    let (Some(drdynvc_channel_id), Some(message)) = (drdynvc_channel_id, message) else {
+                        trace!(channel_id, "Dynamic channel is not open, ignoring close");
+                        continue;
+                    };
+                    let data = server_encode_svc_messages(vec![message], drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|error| ServerError::io("close dynamic channel", error))?;
+                }
                 ServerEvent::Echo(msg) => match msg {
                     EchoServerMessage::SendRequest { payload } => {
                         let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>() else {
@@ -6774,15 +6823,15 @@ pub async fn dispatch_static_channel_events(
     channels: StaticChannelSet,
     events: &mut Vec<ServerEvent>,
     writer: &mut SharedWriter<'_, impl FramedWrite>,
-) -> ServerResult<()> {
+) -> ServerResult<StaticChannelSet> {
     let mut conn = ConnectionState {
         static_channels: channels,
         ..ConnectionState::default()
     };
     server
         .dispatch_server_events(&mut conn, events, writer, 1003, 1002, None, None)
-        .await
-        .map(|_| ())
+        .await?;
+    Ok(conn.static_channels)
 }
 
 #[async_trait::async_trait(?Send)]
