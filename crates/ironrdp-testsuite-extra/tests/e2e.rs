@@ -3251,10 +3251,11 @@ struct HookCounts {
     accept: AtomicUsize,
     info: AtomicUsize,
     disconnected: AtomicUsize,
-    /// The peer of each `on_accept`, and the `ConnectionInfo::peer_addr` of each
-    /// `on_connection_info`, in call order.
+    /// The peer of each `on_accept`, the `ConnectionInfo::peer_addr` of each
+    /// `on_connection_info`, and the peer of each `on_disconnected`, in call order.
     accept_peers: StdMutex<Vec<SocketAddr>>,
     info_peers: StdMutex<Vec<Option<SocketAddr>>>,
+    disconnected_peers: StdMutex<Vec<SocketAddr>>,
 }
 
 impl HookCounts {
@@ -3302,10 +3303,11 @@ impl server::ConnectionHandler for HookRecorder {
 
     fn on_disconnected(
         &mut self,
-        _peer: SocketAddr,
+        peer: SocketAddr,
         _duration: Duration,
         _error: Option<&server::ServerError>,
     ) -> server::PostConnectionAction {
+        self.0.disconnected_peers.lock().unwrap().push(peer);
         self.0.disconnected.fetch_add(1, Ordering::SeqCst);
         server::PostConnectionAction::Continue
     }
@@ -3566,6 +3568,11 @@ async fn connection_handler_sees_every_hook_across_a_preemption() {
         let accepted: Vec<_> = counts.accept_peers.lock().unwrap().iter().copied().map(Some).collect();
         assert_eq!(*counts.info_peers.lock().unwrap(), accepted);
         assert_ne!(accepted[0], accepted[1]);
+        // The evicted session's `on_disconnected` names the peer that the same session's hooks named.
+        assert_eq!(
+            counts.disconnected_peers.lock().unwrap().as_slice(),
+            [accepted[0].unwrap()]
+        );
 
         // And the evicted client's transport is closed, not left open.
         let evicted = tokio::time::timeout(Duration::from_secs(5), async {
@@ -3606,13 +3613,17 @@ async fn connection_info_names_its_own_peer_after_a_later_on_accept() {
         let newcomer = TcpStream::connect(server_addr).await.expect("TCP connect");
         let newcomer_addr = newcomer.local_addr().expect("local_addr");
         assert_eq!(
-            counts.wait_until(|(accept, _, _)| accept >= 2).await,
+            counts.wait_until(|(accept, _, _)| 2 <= accept).await,
             (2, 0, 0),
             "the newcomer's on_accept ran before the client's on_connection_info"
         );
 
         let _client = client.finalize(|stream| stream).await;
-        counts.wait_until(|(_, info, _)| info >= 1).await;
+        assert_eq!(
+            counts.wait_until(|(_, info, _)| 1 <= info).await,
+            (2, 1, 0),
+            "the client's on_connection_info ran"
+        );
 
         assert_eq!(*counts.accept_peers.lock().unwrap(), [client_addr, newcomer_addr]);
         assert_eq!(*counts.info_peers.lock().unwrap(), [Some(client_addr)]);
@@ -3623,7 +3634,7 @@ async fn connection_info_names_its_own_peer_after_a_later_on_accept() {
     .await;
 }
 
-// oracle: intent `ConnectionInfo::peer_addr` docs (`None` for `run_connection`)
+// oracle: mutant a peer address left by a dropped `serve_connection` reaching the next `run_connection`
 /// `run_connection` gets a stream and no address, so its `ConnectionInfo` has no
 /// peer, also when it runs after a `serve_connection` that was dropped mid-session.
 #[tokio::test]
@@ -3656,15 +3667,23 @@ async fn connection_info_has_no_peer_for_run_connection_after_a_dropped_serve_co
         };
 
         let (_first, _) = connect().await;
-        counts.wait_until(|(_, info, _)| info >= 1).await;
+        assert_eq!(
+            counts.wait_until(|(_, info, _)| 1 <= info).await.1,
+            1,
+            "the first client's on_connection_info ran"
+        );
         drop_tx.send(()).expect("the server task waits for the signal");
 
         let (_second, _) = connect().await;
-        counts.wait_until(|(_, info, _)| info >= 2).await;
+        assert_eq!(
+            counts.wait_until(|(_, info, _)| 2 <= info).await.1,
+            2,
+            "the second client's on_connection_info ran"
+        );
 
-        let first_peer = counts.info_peers.lock().unwrap()[0];
-        assert!(first_peer.is_some());
-        assert_eq!(*counts.info_peers.lock().unwrap(), [first_peer, None]);
+        let info_peers = counts.info_peers.lock().unwrap().clone();
+        assert!(info_peers[0].is_some(), "serve_connection gave the first client's peer");
+        assert_eq!(info_peers[1], None);
 
         server_task.abort();
     }))

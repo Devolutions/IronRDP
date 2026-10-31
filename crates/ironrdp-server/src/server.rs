@@ -1361,8 +1361,8 @@ pub struct RdpServer {
     /// The local address the current client reached. See
     /// [`Self::set_connection_local_addr`].
     connection_local_addr: Option<SocketAddr>,
-    /// The remote address of the connection [`Self::serve_connection`] serves now; see
-    /// [`ConnectionInfo::peer_addr`].
+    /// The remote address of the connection [`Self::serve_connection`] serves, set when it starts and cleared by
+    /// [`Self::run_connection_with`]; see [`ConnectionInfo::peer_addr`].
     connection_peer_addr: Option<SocketAddr>,
     /// Whether each connection runs auto-detect; see [`Self::enable_autodetect`].
     autodetect_enabled: bool,
@@ -3305,7 +3305,7 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        // The stream comes without an address. A dropped `serve_connection` future can leave one set.
+        // The stream comes without an address, and `serve_connection` leaves the address of its connection set.
         self.connection_peer_addr = None;
         // Boxed to keep this future, and `run_connection`'s, under `clippy::large_futures`, so a caller awaiting either
         // doesn't have to.
@@ -3917,7 +3917,6 @@ impl RdpServer {
         // Neither path above goes through `run_connection_with`, which clears
         // this for embedders.
         self.connection_local_addr = None;
-        self.connection_peer_addr = None;
 
         SessionOutcome { result, successor }
     }
