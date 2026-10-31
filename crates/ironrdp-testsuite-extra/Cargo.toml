@@ -35,7 +35,7 @@ ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent.path = "../ironrdp-agent"
 ironrdp-daemon.path = "../ironrdp-daemon"
 ironrdp-bulk.path = "../ironrdp-bulk"
-ironrdp-client = { path = "../ironrdp-client", features = ["__test", "camera", "cloud", "entra-auth", "gateway", "rustls", "sound", "udp", "usb", "video"] }
+ironrdp-client = { path = "../ironrdp-client", features = ["__test", "camera", "cloud", "core-input", "entra-auth", "gateway", "multipoint", "rustls", "sound", "telemetry", "udp", "usb", "video"] }
 ironrdp-connector = { path = "../ironrdp-connector", features = ["__test"] }
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-dvc.path = "../ironrdp-dvc"
@@ -47,11 +47,14 @@ ironrdp-input.path = "../ironrdp-input"
 ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rail.path = "../ironrdp-rail"
+ironrdp-rdpadrv.path = "../ironrdp-rdpadrv"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpeai.path = "../ironrdp-rdpeai"
+ironrdp-rdpeci.path = "../ironrdp-rdpeci"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
 ironrdp-rdpeudp-tokio.path = "../ironrdp-rdpeudp-tokio"
+ironrdp-rdpet.path = "../ironrdp-rdpet"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", features = ["capture"] }
 ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }

@@ -17,6 +17,7 @@ use std::io;
 use ironrdp_connector::ConnectorError;
 use ironrdp_core::{DecodeError, EncodeError};
 use ironrdp_pdu::PduError;
+use ironrdp_pdu::rdp::server_error_info::ErrorInfo;
 
 /// Categorizes the failure modes the server crate exposes through
 /// [`ServerError`].
@@ -48,6 +49,14 @@ pub enum ServerErrorKind {
     /// Custom failure with the actual source attached via
     /// [`ironrdp_error::Error::with_source`].
     Custom,
+    /// Failure the client is told about with this code in a Set Error Info PDU
+    /// ([MS-RDPBCGR 2.2.5.1.1]).
+    ///
+    /// [`RdpServerDisplay::updates`](crate::RdpServerDisplay::updates) returns it to give the
+    /// client the reason the display cannot start.
+    ///
+    /// [MS-RDPBCGR 2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
+    ErrorInfo(ErrorInfo),
 }
 
 impl fmt::Display for ServerErrorKind {
@@ -62,6 +71,7 @@ impl fmt::Display for ServerErrorKind {
             Self::Pdu(_) => write!(f, "PDU error"),
             Self::Reason(reason) => write!(f, "reason: {reason}"),
             Self::Custom => write!(f, "custom error"),
+            Self::ErrorInfo(error_info) => write!(f, "error info: {}", error_info.description()),
         }
     }
 }
@@ -74,7 +84,7 @@ impl core::error::Error for ServerErrorKind {
             Self::Io(e) => Some(e),
             Self::Connector(e) => Some(e),
             Self::Pdu(e) => Some(e),
-            Self::Channel | Self::Unsupported | Self::Reason(_) | Self::Custom => None,
+            Self::Channel | Self::Unsupported | Self::Reason(_) | Self::Custom | Self::ErrorInfo(_) => None,
         }
     }
 }

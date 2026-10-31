@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use ironrdp_async::FramedWrite as _;
 use ironrdp_core::{WriteBuf, decode, encode_vec};
+use ironrdp_pdu::gcc::ClientNetworkData;
 use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::mouse::PointerFlags;
@@ -146,6 +147,33 @@ async fn activate(desktop_resize_flag: bool, input: &[u8]) -> DisplayState {
 }
 
 async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag: bool, input: &[u8]) {
+    play_client_with_capabilities(framed, desktop_resize_flag, input, None).await;
+}
+
+pub(super) async fn play_client_with_capabilities(
+    framed: &mut TokioFramed<DuplexStream>,
+    desktop_resize_flag: bool,
+    input: &[u8],
+    remote_capabilities: Option<Vec<CapabilitySet>>,
+) -> Vec<CapabilitySet> {
+    play_client_with_network(framed, desktop_resize_flag, input, remote_capabilities, None)
+        .await
+        .capabilities
+}
+
+pub(super) struct ClientActivation {
+    pub(super) capabilities: Vec<CapabilitySet>,
+    pub(super) user_channel_id: u16,
+    pub(super) static_channel_ids: Vec<u16>,
+}
+
+pub(super) async fn play_client_with_network(
+    framed: &mut TokioFramed<DuplexStream>,
+    desktop_resize_flag: bool,
+    input: &[u8],
+    remote_capabilities: Option<Vec<CapabilitySet>>,
+    client_network_data: Option<ClientNetworkData>,
+) -> ClientActivation {
     let request = nego::ConnectionRequest {
         nego_data: None,
         flags: nego::RequestFlags::empty(),
@@ -156,7 +184,7 @@ async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag
     let _confirm = framed.read_pdu().await.unwrap();
 
     let mut blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
-    blocks.network = None;
+    blocks.network = client_network_data;
     blocks.core.desktop_width = CLIENT_SIZE.width;
     blocks.core.desktop_height = CLIENT_SIZE.height;
     let mut initial = WriteBuf::new();
@@ -165,7 +193,9 @@ async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag
     let (_, response) = framed.read_pdu().await.unwrap();
     let payload = decode::<X224<X224Data<'_>>>(&response).unwrap().0;
     let response = decode::<mcs::ConnectResponse>(payload.data.as_ref()).unwrap();
-    let io_channel_id = response.conference_create_response.gcc_blocks().network.io_channel;
+    let network = &response.conference_create_response.gcc_blocks().network;
+    let io_channel_id = network.io_channel;
+    let static_channel_ids = network.channel_ids.clone();
 
     framed
         .write_all(
@@ -183,7 +213,10 @@ async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag
         .unwrap();
     let (_, confirm) = framed.read_pdu().await.unwrap();
     let user_channel_id = decode::<X224<mcs::AttachUserConfirm>>(&confirm).unwrap().0.initiator_id;
-    for channel_id in [user_channel_id, io_channel_id] {
+    for channel_id in [user_channel_id, io_channel_id]
+        .into_iter()
+        .chain(static_channel_ids.iter().copied())
+    {
         framed
             .write_all(
                 &encode_vec(&X224(mcs::ChannelJoinRequest {
@@ -196,11 +229,18 @@ async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag
             .unwrap();
         let _confirm = framed.read_pdu().await.unwrap();
     }
+    let mut client_info = decode::<ironrdp_pdu::rdp::ClientInfoPdu>(&CLIENT_INFO_PDU_BUFFER).unwrap();
+    if remote_capabilities.is_some() {
+        client_info
+            .client_info
+            .flags
+            .insert(ironrdp_pdu::rdp::client_info::ClientInfoFlags::RAIL);
+    }
     framed
         .write_all(&encode_send_data_request(
             user_channel_id,
             io_channel_id,
-            &CLIENT_INFO_PDU_BUFFER,
+            &encode_vec(&client_info).unwrap(),
         ))
         .await
         .unwrap();
@@ -225,16 +265,74 @@ async fn play_client(framed: &mut TokioFramed<DuplexStream>, desktop_resize_flag
         (CLIENT_SIZE.width, CLIENT_SIZE.height)
     );
 
+    confirm_activation(
+        framed,
+        desktop_resize_flag,
+        input,
+        remote_capabilities,
+        (user_channel_id, io_channel_id),
+        CLIENT_SIZE,
+    )
+    .await;
+    ClientActivation {
+        capabilities: demand.pdu.capability_sets,
+        user_channel_id,
+        static_channel_ids,
+    }
+}
+
+pub(super) async fn reactivate_client_with_capabilities(
+    framed: &mut TokioFramed<DuplexStream>,
+    desktop_size: DesktopSize,
+    remote_capabilities: Vec<CapabilitySet>,
+) -> Vec<CapabilitySet> {
+    let (_, demand) = framed.read_pdu().await.unwrap();
+    let indication = mcs::decode_send_data_indication(&demand).unwrap();
+    let header = indication.decode_user_data::<ShareControlHeader>().unwrap();
+    let ShareControlPdu::ServerDemandActive(demand) = header.share_control_pdu else {
+        panic!("expected Demand Active");
+    };
+    confirm_activation(
+        framed,
+        true,
+        &[],
+        Some(remote_capabilities),
+        (indication.initiator_id, indication.channel_id),
+        desktop_size,
+    )
+    .await;
+    demand.pdu.capability_sets
+}
+
+async fn confirm_activation(
+    framed: &mut TokioFramed<DuplexStream>,
+    desktop_resize_flag: bool,
+    input: &[u8],
+    remote_capabilities: Option<Vec<CapabilitySet>>,
+    (user_channel_id, io_channel_id): (u16, u16),
+    desktop_size: DesktopSize,
+) {
     let mut confirm = decode::<ShareControlHeader>(&CLIENT_DEMAND_ACTIVE_PDU_BUFFER).unwrap();
     let ShareControlPdu::ClientConfirmActive(active) = &mut confirm.share_control_pdu else {
         panic!("expected Confirm Active fixture");
     };
     for capability in &mut active.pdu.capability_sets {
         if let CapabilitySet::Bitmap(bitmap) = capability {
-            bitmap.desktop_width = CLIENT_SIZE.width;
-            bitmap.desktop_height = CLIENT_SIZE.height;
+            bitmap.desktop_width = desktop_size.width;
+            bitmap.desktop_height = desktop_size.height;
             bitmap.desktop_resize_flag = desktop_resize_flag;
         }
+    }
+    if let Some(capabilities) = remote_capabilities {
+        active.pdu.capability_sets.retain(|capability| {
+            !matches!(
+                capability,
+                CapabilitySet::MultiFragmentUpdate(_)
+                    | CapabilitySet::BitmapCodecs(_)
+                    | CapabilitySet::SurfaceCommands(_)
+            )
+        });
+        active.pdu.capability_sets.extend(capabilities);
     }
     framed
         .write_all(&encode_send_data_request(

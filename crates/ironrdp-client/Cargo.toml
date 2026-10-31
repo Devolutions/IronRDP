@@ -56,6 +56,13 @@ dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
 webauthn = ["dep:ironrdp-rdpewa", "dep:ironrdp-rdpewa-native", "dvc-com-plugin"]
 vmconnect = ["dep:ironrdp-vmconnect"]
 location = ["dep:ironrdp-rdpel"]
+# MS-RDPET connection telemetry: reports graphics pipeline milestones to the server.
+telemetry = ["dep:ironrdp-rdpet"]
+# MS-RDPETXT text input channels, registered only when enabled in the configuration.
+text-input = ["dep:ironrdp-rdpetxt"]
+# Windows MultiPoint audio level and drive letter persistence channels (MS-RDPADRV).
+multipoint = ["dep:ironrdp-rdpadrv"]
+core-input = ["dep:ironrdp-rdpeci"]
 # Windows 365 battery status, power request, screen capture redirection, and virtual desktop control channels.
 w365 = ["dep:ironrdp-w365"]
 # MS-RDPEVOR video optimized remoting with MS-RDPEGT geometry tracking. The channels are only
@@ -103,6 +110,10 @@ all = [
     "webauthn",
     "vmconnect",
     "location",
+    "telemetry",
+    "text-input",
+    "multipoint",
+    "core-input",
     "w365",
     "camera",
     "video",
@@ -134,6 +145,8 @@ ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.2", optional =
 ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.3" } # public
 ironrdp-propertyset = { path = "../ironrdp-propertyset", version = "0.1" } # public
 ironrdp-rail = { path = "../ironrdp-rail", version = "0.3" }
+ironrdp-rdpemsc = { path = "../ironrdp-rdpemsc", version = "0.0.0" }
+ironrdp-rdpeci = { path = "../ironrdp-rdpeci", version = "0.0.0", optional = true }
 
 # Optional protocol crates (activated by features above)
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.9", optional = true } # public
@@ -141,6 +154,9 @@ ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.9", optional = true } 
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.11", optional = true }
 ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.2", optional = true }
 ironrdp-rdpel = { path = "../ironrdp-rdpel", version = "0.0.2", optional = true }
+ironrdp-rdpet = { path = "../ironrdp-rdpet", version = "0.1", optional = true } # public
+ironrdp-rdpetxt = { path = "../ironrdp-rdpetxt", version = "0.0.0", optional = true }
+ironrdp-rdpadrv = { path = "../ironrdp-rdpadrv", version = "0.0.0", optional = true } # public
 ironrdp-w365 = { path = "../ironrdp-w365", version = "0.1", optional = true } # public
 ironrdp-rdpegt = { path = "../ironrdp-rdpegt", version = "0.2", optional = true }
 ironrdp-rdpevor = { path = "../ironrdp-rdpevor", version = "0.2", optional = true }

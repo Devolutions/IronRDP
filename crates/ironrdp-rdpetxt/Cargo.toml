@@ -1,0 +1,33 @@
+[package]
+name = "ironrdp-rdpetxt"
+version = "0.0.0"
+readme = "README.md"
+description = "Text input dynamic channel client and server as described in MS-RDPETXT"
+publish = false
+edition.workspace = true
+rust-version = "1.94"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[features]
+default = ["std"]
+std = ["ironrdp-str/std", "dep:ironrdp-dvc", "dep:ironrdp-pdu", "dep:ironrdp-svc", "dep:tracing"]
+
+[dependencies]
+ironrdp-core = { version = "0.3.1", path = "../ironrdp-core", features = ["alloc"] } # public
+ironrdp-dvc = { version = "0.10.0", path = "../ironrdp-dvc", optional = true } # public
+ironrdp-pdu = { version = "0.11.0", path = "../ironrdp-pdu", features = ["alloc"], optional = true } # public
+ironrdp-str = { version = "0.2.1", path = "../ironrdp-str", default-features = false, features = ["alloc"] } # public
+ironrdp-svc = { version = "0.10.0", path = "../ironrdp-svc", optional = true } # public
+tracing = { version = "0.1", features = ["log"], optional = true }
+
+[lints]
+workspace = true

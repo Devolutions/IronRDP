@@ -54,6 +54,8 @@ pub use ironrdp_rdpdr::backend::{
     RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPort, RdpdrPortKind,
     RdpdrPrinter,
 };
+#[cfg(feature = "core-input")]
+use ironrdp_rdpeci::client::CoreInputClient;
 use ironrdp_rdpei::pdu::{CsReadyFlags, RdpInputProtocolVersion, TouchEventPdu};
 use ironrdp_rdpei::{RdpeiClient, RdpeiInputState};
 #[cfg(feature = "location")]
@@ -329,6 +331,12 @@ pub enum RdpOutputEvent {
     InteractiveEntraAuthCompleted {
         hresult: u32,
     },
+    /// A Windows MultiPoint session changed a volume level or its drive letter mappings, and the
+    /// [`ChannelConfig::multipoint`](crate::config::ChannelConfig::multipoint) settings hold the new values.
+    ///
+    /// Save the settings so that the next connection restores them.
+    #[cfg(feature = "multipoint")]
+    MultipointSettingsChanged,
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -662,6 +670,12 @@ pub enum RdpInputEvent {
     },
     #[cfg(feature = "location")]
     Location(LocationRequest),
+    /// Inserts text committed by a local input method into the remote edit control that has
+    /// focus, over the MS-RDPETXT text input channels.
+    ///
+    /// Dropped when the channels are closed or no remote edit control has focus.
+    #[cfg(feature = "text-input")]
+    CommitText(String),
     /// Tells the Cloud PC that the user switched from the local desktop back to it.
     #[cfg(feature = "w365")]
     SwitchToCloud,
@@ -695,6 +709,10 @@ pub enum RdpInputEvent {
 impl RdpInputEvent {
     /// Returns whether the event carries input from the local user, as opposed to session control.
     fn is_user_input(&self) -> bool {
+        #[cfg(feature = "text-input")]
+        if matches!(self, Self::CommitText(_)) {
+            return true;
+        }
         matches!(
             self,
             Self::FastPath(_)
@@ -1366,6 +1384,8 @@ impl RdpClient {
                 .then_some(auto_reconnect_cookie.as_ref())
                 .flatten();
             let used_auto_reconnect_cookie = reconnect_cookie.is_some();
+            #[cfg(feature = "telemetry")]
+            let connection_started = Instant::now();
             let (connection_outcome, framed, udp_tunnel) = match &self.config.transport {
                 Transport::Direct => match Box::pin(cancelable_operation(
                     connect_direct(
@@ -1633,6 +1653,8 @@ impl RdpClient {
                 &mut auto_reconnect_cookie,
                 &mut reconnect_attempt,
                 &self.input_event_sender.session_status,
+                #[cfg(feature = "telemetry")]
+                connection_started,
             )
             .await;
             // An iteration that ends the session, by terminating or failing, exits before the session loop delivers
@@ -2395,7 +2417,7 @@ fn build_connector(
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
     let _ = (rdpdr_factory, rdpdr_policy);
-    #[cfg(not(any(all(windows, feature = "vmconnect"), feature = "entra-auth")))]
+    #[cfg(not(any(all(windows, feature = "vmconnect"), feature = "entra-auth", feature = "multipoint")))]
     let _ = output_event_sender;
     #[cfg(not(feature = "usb"))]
     let _ = usb_allowed;
@@ -2436,9 +2458,36 @@ fn build_connector(
             }
         });
 
+    if config.channels.mouse_cursor {
+        drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpemsc::MouseCursorClient::new());
+    }
+
+    #[cfg(feature = "core-input")]
+    if config.channels.core_input {
+        drdynvc = drdynvc.with_dynamic_channel(CoreInputClient::new());
+    }
+
     #[cfg(feature = "location")]
     if config.channels.location {
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
+    }
+
+    #[cfg(feature = "telemetry")]
+    if config.channels.telemetry {
+        drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpet::client::TelemetryClient::new());
+    }
+
+    #[cfg(feature = "text-input")]
+    if config.channels.text_input {
+        drdynvc = crate::text_input::attach(drdynvc);
+    }
+
+    #[cfg(feature = "multipoint")]
+    if let Some(settings) = &config.channels.multipoint {
+        let (audio_level, drive_letter) = settings.processors(output_event_sender);
+        drdynvc = drdynvc
+            .with_dynamic_channel(audio_level)
+            .with_dynamic_channel(drive_letter);
     }
 
     #[cfg(feature = "w365")]
@@ -4239,6 +4288,30 @@ impl ActiveSessionIteration {
     }
 }
 
+/// Sends input events on the MS-RDPECI core input channel once it is ready, and as fast-path input otherwise.
+fn process_input(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    events: &[FastPathInputEvent],
+) -> SessionResult<ActiveSessionIteration> {
+    #[cfg(feature = "core-input")]
+    if let Some(dvc) = active_stage
+        .get_dvc::<CoreInputClient>()
+        .filter(|dvc| dvc.processor().ready())
+    {
+        let messages = dvc
+            .processor()
+            .encode_input(dvc.channel_id(), events)
+            .map_err(SessionError::pdu)?;
+        let batch = DvcMessageBatch::try_new(dvc.channel_id(), messages).map_err(SessionError::pdu)?;
+        let outputs = active_stage.process_input_pointer(image, events)?.into_iter().collect();
+        return Ok(ActiveSessionIteration::with_outputs(batch, outputs));
+    }
+    Ok(ActiveSessionIteration::outputs(
+        active_stage.process_fastpath_input(image, events)?,
+    ))
+}
+
 /// Completes at `deadline`, or never without one.
 async fn sleep_until_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
@@ -4433,6 +4506,7 @@ async fn active_session(
     auto_reconnect_cookie: &mut Option<ServerAutoReconnect>,
     reconnect_attempt: &mut u32,
     session_status: &SessionStatus,
+    #[cfg(feature = "telemetry")] connection_started: Instant,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
@@ -4508,6 +4582,8 @@ async fn active_session(
     let _ = clipboard_event_receiver;
 
     let mut rdpei_input_state = None;
+    #[cfg(feature = "telemetry")]
+    let mut connection_telemetry = crate::telemetry::ConnectionTelemetry::new(connection_started);
 
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
@@ -4795,10 +4871,10 @@ async fn active_session(
                                 last_mouse_pos = (mouse.x_position, mouse.y_position);
                             }
                         }
-                        ActiveSessionIteration::outputs(match input_batcher.queue(events, tokio::time::Instant::now()) {
-                            Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
-                            None => Vec::new(),
-                        })
+                        match input_batcher.queue(events, tokio::time::Instant::now()) {
+                            Some(events) => process_input(&mut active_stage, &mut image, &events)?,
+                            None => ActiveSessionIteration::outputs(Vec::new()),
+                        }
                     }
                     RdpInputEvent::Touch(event) => {
                         trace!(frames = event.frames.len(), "RDPEI touch event");
@@ -4923,6 +4999,11 @@ async fn active_session(
                             }
                         }
                     }
+                    #[cfg(feature = "text-input")]
+                    RdpInputEvent::CommitText(text) => match crate::text_input::commit_text(&mut active_stage, &text) {
+                        Some(batch) => ActiveSessionIteration::dvc(batch),
+                        None => ActiveSessionIteration::outputs(Vec::new()),
+                    },
                     #[cfg(feature = "w365")]
                     RdpInputEvent::SwitchToCloud => {
                         let batch = match active_stage.get_dvc::<VdcSwitchClient>() {
@@ -5154,10 +5235,10 @@ async fn active_session(
                     ActiveSessionIteration::outputs(Vec::new())
                 }
                 _ = sleep_until_deadline(input_batch_deadline) => {
-                    ActiveSessionIteration::outputs(match input_batcher.flush(tokio::time::Instant::now()) {
-                        Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
-                        None => Vec::new(),
-                    })
+                    match input_batcher.flush(tokio::time::Instant::now()) {
+                        Some(events) => process_input(&mut active_stage, &mut image, &events)?,
+                        None => ActiveSessionIteration::outputs(Vec::new()),
+                    }
                 }
                 _ = async { match fake_events_interval.as_mut() {
                 Some(interval) => interval.tick().await,
@@ -5165,7 +5246,7 @@ async fn active_session(
                 }} => {
                 // Anti-idle: synthesize a no-op mouse move if the session has been idle for at least
                 // the configured interval, keeping the connection alive without user interaction.
-                let outputs = if last_input.elapsed() >= fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) {
+                if fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) <= last_input.elapsed() {
                     last_input = tokio::time::Instant::now();
                     let mut events = SmallVec::<[FastPathInputEvent; 2]>::new();
                     events.push(FastPathInputEvent::MouseEvent(MousePdu {
@@ -5175,14 +5256,28 @@ async fn active_session(
                         y_position: last_mouse_pos.1,
                     }));
                     let events = input_batcher.queue_forced(events, tokio::time::Instant::now());
-                    active_stage.process_fastpath_input(&mut image, &events)?
+                    process_input(&mut active_stage, &mut image, &events)?
                 } else {
-                    Vec::new()
-                };
-                ActiveSessionIteration::outputs(outputs)
+                    ActiveSessionIteration::outputs(Vec::new())
+                }
                 }
             }
         };
+
+        #[cfg(feature = "telemetry")]
+        {
+            // The report waits for an iteration without another dynamic channel batch.
+            // UNTESTED: no test drives the session loop; `ConnectionTelemetry::step` tests cover `can_send`.
+            let can_send = iteration
+                .dvc_batch
+                .as_ref()
+                .is_none_or(|batch| batch.messages().is_empty());
+            if let Some(batch) = connection_telemetry.report(&active_stage, can_send) {
+                iteration.dvc_batch = Some(batch);
+                // A tunneled request's reply route does not apply to the telemetry report.
+                iteration.reply_tunnel = None;
+            }
+        }
 
         #[cfg(feature = "video")]
         if crate::video::present(
@@ -5192,6 +5287,14 @@ async fn active_session(
             &mut iteration.dvc_batch,
         )? {
             // A tunneled request's reply route does not apply to the video notifications.
+            iteration.reply_tunnel = None;
+        }
+
+        crate::mouse_cursor::present(&mut active_stage, &mut image, &mut iteration.outputs)?;
+
+        #[cfg(feature = "text-input")]
+        if crate::text_input::flush(&mut active_stage, &mut iteration.outputs, &mut iteration.dvc_batch)? {
+            // Text input replies travel on their own channel, whatever produced the iteration.
             iteration.reply_tunnel = None;
         }
 
@@ -6048,6 +6151,16 @@ pub(crate) fn __test_build_connector(
     )
 }
 
+#[cfg(feature = "__test")]
+pub(crate) fn __test_process_input(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    events: &[FastPathInputEvent],
+) -> SessionResult<(Option<DvcMessageBatch>, Vec<ActiveStageOutput>)> {
+    let iteration = process_input(active_stage, image, events)?;
+    Ok((iteration.dvc_batch, iteration.outputs))
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "rdpdr")]
@@ -6713,6 +6826,9 @@ mod tests {
         );
         assert!(keyboard.is_user_input());
         assert!(RdpInputEvent::DismissHoveringTouchContact { contact_id: 1 }.is_user_input());
+        // oracle: mutant CommitText left out of is_user_input
+        #[cfg(feature = "text-input")]
+        assert!(RdpInputEvent::CommitText("a".to_owned()).is_user_input());
         assert!(!RdpInputEvent::Close.is_user_input());
         assert!(
             !RdpInputEvent::Resize {

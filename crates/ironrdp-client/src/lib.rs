@@ -22,6 +22,8 @@ pub mod entra;
 pub mod h264;
 #[cfg(feature = "entra-auth")]
 pub mod interactive_entra;
+#[cfg(feature = "multipoint")]
+pub mod multipoint;
 
 // Only the interactive Entra tests use rstest.
 #[cfg(all(test, not(feature = "entra-auth")))]
@@ -29,6 +31,10 @@ use rstest as _;
 pub mod output_channel;
 pub mod rail;
 pub mod rdp;
+#[cfg(feature = "telemetry")]
+pub mod telemetry;
+#[cfg(feature = "text-input")]
+mod text_input;
 #[cfg(feature = "video")]
 pub mod video;
 
@@ -48,6 +54,20 @@ pub fn __test_build_connector(
     auto_reconnect_cookie: Option<&ironrdp_pdu::rdp::session_info::ServerAutoReconnect>,
 ) -> ironrdp_connector::ConnectorResult<ironrdp_connector::ClientConnector> {
     rdp::__test_build_connector(config, auto_reconnect_cookie)
+}
+
+/// Routes input events as the active session does and returns the core input batch, if any, and the stage outputs.
+#[cfg(feature = "__test")]
+#[doc(hidden)]
+pub fn __test_process_input(
+    active_stage: &mut ironrdp_session::ActiveStage,
+    image: &mut ironrdp_session::image::DecodedImage,
+    events: &[ironrdp_pdu::input::fast_path::FastPathInputEvent],
+) -> ironrdp_session::SessionResult<(
+    Option<ironrdp_dvc::DvcMessageBatch>,
+    Vec<ironrdp_session::ActiveStageOutput>,
+)> {
+    rdp::__test_process_input(active_stage, image, events)
 }
 
 #[cfg(any(feature = "cloud", feature = "entra-auth"))]
@@ -75,6 +95,7 @@ pub use ironrdp_rdpeusb_native as usb;
 
 #[cfg(all(any(windows, target_os = "linux"), feature = "clipboard"))]
 mod clipboard;
+mod mouse_cursor;
 mod redirection;
 
 #[cfg(feature = "usb")]

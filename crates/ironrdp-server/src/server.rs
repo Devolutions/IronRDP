@@ -19,7 +19,7 @@ use ironrdp_acceptor::{
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::ClipboardMessage;
-use ironrdp_core::{WriteBuf, decode, encode_vec, impl_as_any};
+use ironrdp_core::{Encode as _, WriteBuf, decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout};
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_dvc as dvc;
@@ -29,6 +29,8 @@ use ironrdp_error::ResultExt as _;
 #[cfg(feature = "usb")]
 use ironrdp_pdu::PduError;
 use ironrdp_pdu::codecs::rfx::Quant;
+use ironrdp_pdu::fast_path::UpdateCode;
+use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
@@ -40,6 +42,7 @@ pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
+use ironrdp_pdu::window::{WindowOrderBody, WindowingOrder};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{Action, PduResult, decode_err, mcs, nego, rdp};
 use ironrdp_rdpdr as rdpdr;
@@ -62,7 +65,7 @@ use crate::autodetect::{AutoDetectHandles, AutoDetectManager, AutoDetectOutcome}
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayContext, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
 use crate::echo::{EchoDvcBridge, EchoServerHandle, EchoServerMessage, build_echo_request};
-use crate::encoder::{MAX_FASTPATH_UPDATE_SIZE, RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs};
+use crate::encoder::{MAX_FASTPATH_UPDATE_SIZE, RemoteFxCodec, UpdateEncoder, UpdateEncoderCodecs, UpdateFragmenter};
 use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResult};
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxContext, GfxServerFactory, GfxServerHandle};
@@ -213,6 +216,10 @@ pub struct ConnectionInfo {
     pub keyboard_type: ironrdp_pdu::gcc::KeyboardType,
     /// See [`ironrdp_acceptor::AcceptorResult::ime_file_name`].
     pub ime_file_name: String,
+    /// See [`ironrdp_acceptor::AcceptorResult::desktop_scale_factor`].
+    pub desktop_scale_factor: Option<u32>,
+    /// See [`ironrdp_acceptor::AcceptorResult::device_scale_factor`].
+    pub device_scale_factor: Option<u32>,
     /// The client came back with an auto-reconnect cookie the server
     /// verified, in place of its credentials.
     pub auto_reconnect: bool,
@@ -239,11 +246,16 @@ impl ConnectionInfo {
     /// that want to exercise [`ConnectionHandler::on_connection_info`] in their own unit tests
     /// without going through a live connection. `#[non_exhaustive]` blocks struct-literal
     /// construction outside this crate, so a constructor is the only way to do that.
+    ///
+    /// Fields it doesn't take start unset and, being public, can be set on the
+    /// result, e.g. `info.desktop_scale_factor = Some(200);` to exercise a 2x client.
     pub fn new(keyboard_layout: u32, keyboard_type: ironrdp_pdu::gcc::KeyboardType, ime_file_name: String) -> Self {
         Self {
             keyboard_layout,
             keyboard_type,
             ime_file_name,
+            desktop_scale_factor: None,
+            device_scale_factor: None,
             auto_reconnect: false,
             client_monitors: Vec::new(),
             routing_token: None,
@@ -288,6 +300,19 @@ pub trait ConnectionHandler: Send {
     /// validation succeed and before the session loop starts.
     fn on_connection_info(&mut self, info: &ConnectionInfo) {
         let _ = info;
+    }
+
+    /// Reports effective RemoteApp capabilities after each activation, including reactivation.
+    /// `None` means the connection did not negotiate RemoteApp.
+    /// See MS-RDPERP 2.2.1.1, ["Capability Sets"].
+    ///
+    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/a399c109-e9db-4819-b2e8-89c4eb9001c0
+    fn on_remote_app_capabilities(
+        &mut self,
+        capabilities: Option<&ironrdp_acceptor::RemoteAppCapabilities>,
+    ) -> ServerResult<()> {
+        let _ = capabilities;
+        Ok(())
     }
 
     /// Called after `run_connection()` completes (successfully or with error).
@@ -745,6 +770,12 @@ pub struct RdpServerOptions {
     pub security: RdpServerSecurity,
     pub codecs: BitmapCodecs,
     pub max_request_size: u32,
+    /// RemoteApp capabilities offered to clients that request RAIL.
+    /// The embedder supplies the RAIL channel processor and window orders.
+    /// See MS-RDPERP 2.2.1.1, ["Capability Sets"].
+    ///
+    /// ["Capability Sets"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/a399c109-e9db-4819-b2e8-89c4eb9001c0
+    pub remote_app: Option<ironrdp_acceptor::RemoteAppCapabilities>,
     /// When `Some(max)`, each connection's acceptor adopts the desktop size the
     /// client requests in its Client Core Data (instead of the size reported by
     /// the display handler), negotiating that size from the start without a
@@ -1292,6 +1323,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
     /// Advanced Input owns mouse delivery while its DVC is active. Core mouse
     /// events from the overlapping FastPath path are then suppressed.
     advanced_input_active: Arc<AtomicBool>,
@@ -1311,6 +1343,7 @@ pub struct RdpServer {
     gfx_factory: Option<Box<dyn GfxServerFactory>>,
     #[cfg(feature = "usb")]
     usb_factory: Option<Box<dyn DeviceFactory>>,
+    handle: RdpServerHandle,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -1451,6 +1484,64 @@ impl ServerRedirectionHandle {
     }
 }
 
+/// Whether a window-order batch reached the transport.
+/// See MS-RDPBCGR 2.2.9.1.2.1, ["Fast-Path Update (TS_FP_UPDATE)"].
+///
+/// ["Fast-Path Update (TS_FP_UPDATE)"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a1c4caa8-00ed-45bb-a06e-5177473766d3
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowingOrdersStatus {
+    /// All update fragments were accepted by the transport, not necessarily processed by the client.
+    Written,
+    /// No bytes were written, so the producer may retry on the same connection.
+    NotStarted,
+}
+
+/// A batch of window orders with transport-write completion.
+///
+/// Dropping an unstarted batch reports [`WindowingOrdersStatus::NotStarted`].
+/// Cancellation or failure after writing starts reports an error; retrying could duplicate orders.
+/// Orders follow MS-RDPERP 2.2.1.3, ["Windowing Alternate Secondary Drawing Orders"].
+///
+/// ["Windowing Alternate Secondary Drawing Orders"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdperp/2061e8f6-5f39-44a8-ab49-6707e04f60cb
+#[derive(Debug)]
+pub struct WindowingOrders {
+    orders: Vec<WindowingOrder>,
+    completion: Option<oneshot::Sender<ServerResult<WindowingOrdersStatus>>>,
+    started: bool,
+}
+
+impl WindowingOrders {
+    /// Creates a batch and a receiver for its transport-write result.
+    /// Dropping the receiver before writing starts cancels delivery.
+    pub fn new(orders: Vec<WindowingOrder>) -> (Self, oneshot::Receiver<ServerResult<WindowingOrdersStatus>>) {
+        let (completion, receiver) = oneshot::channel();
+        (
+            Self {
+                orders,
+                completion: Some(completion),
+                started: false,
+            },
+            receiver,
+        )
+    }
+
+    fn complete(&mut self, result: ServerResult<WindowingOrdersStatus>) {
+        if let Some(completion) = self.completion.take() {
+            let _ = completion.send(result);
+        }
+    }
+}
+
+impl Drop for WindowingOrders {
+    fn drop(&mut self) {
+        self.complete(if self.started {
+            Err(ServerError::reason("window orders", "transport write did not complete"))
+        } else {
+            Ok(WindowingOrdersStatus::NotStarted)
+        });
+    }
+}
+
 pub enum ServerEvent {
     Quit(String),
     /// End this connection because an authenticated candidate is taking the
@@ -1486,6 +1577,49 @@ pub enum ServerEvent {
     /// See [`ServerRedirectionHandle::redirect`].
     Redirect(Box<ServerRedirectionPdu>),
     Clipboard(ClipboardMessage),
+    /// Writes one PDU to a joined static channel, splitting it into chunks as needed.
+    ///
+    /// Fragmented PDUs set `SHOW_PROTOCOL` on every chunk per [MS-RDPBCGR] section 3.1.5.2.1,
+    /// "Sending of Virtual Channel PDU", using the [Channel PDU Header].
+    /// Unfragmented PDUs do not set it.
+    /// There is no flag override or Windows RDPDR compatibility exception in this API.
+    /// Do not use it for an endpoint that requires `SHOW_PROTOCOL` to be omitted.
+    ///
+    /// Submit only for an active session; `run` and `serve` discard channel events while idle.
+    /// There is no dispatch deadline; undrained events retain their payloads and permits.
+    /// Cancellation does not remove a queued event or release its permit immediately.
+    ///
+    /// Acquire `permit` from a shared, bounded semaphore before allocating `payload`.
+    /// Limit each payload's size; the server does not impose a byte budget.
+    /// Dispatch holds server state while the entire PDU holds the shared writer lock.
+    /// Large payloads or slow writes stall other session output, inbound PDU handling (including
+    /// frame acknowledgments), and auto-reconnect cookie updates until the write finishes or fails.
+    /// Await completion before submitting another PDU to bound queued data.
+    /// A closed receiver means dispatch failed, the event was discarded, or the channel was not joined.
+    /// Failure does not prove that no bytes were sent, so it is not permission to retry.
+    /// Completion confirms the transport write, not acceptance by the peer.
+    /// The event retains its permit until sent or discarded, even if its producer stops waiting.
+    /// Dispatch checks `is_current` and receiver cancellation under the writer lock before transmission.
+    /// Once transmission begins, producer cancellation does not interrupt the write.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    /// [Channel PDU Header]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f125c65e-6901-43c3-8071-d7d5aaee7ae4
+    StaticChannelWithCompletion {
+        name: ChannelName,
+        payload: Vec<u8>,
+        completion: oneshot::Sender<()>,
+        /// INVARIANT: Retained until the transport write completes or the event is discarded.
+        permit: tokio::sync::OwnedSemaphorePermit,
+        /// A nonblocking predicate indicating whether this producer's data is still current.
+        /// Shared generation state lets an owner invalidate data without owning the completion receiver.
+        /// It runs with server-state and writer locks held; waiting on work needing either can deadlock.
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
+    /// Reports whether the client joined a static channel.
+    ///
+    /// Joins are final once the connection is active.
+    /// A closed receiver means the event was discarded.
+    StaticChannelJoined(ChannelName, oneshot::Sender<bool>),
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
     Rdpeai(RdpeaiServerMessage),
@@ -1494,6 +1628,8 @@ pub enum ServerEvent {
     /// Replace or clear the Server Auto-Reconnect Cookie.
     SetAutoReconnectCookie(Option<rdp::session_info::ServerAutoReconnect>),
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
+    /// Writes window orders only after RemoteApp negotiation.
+    WindowingOrders(WindowingOrders),
     #[cfg(feature = "egfx")]
     Egfx(EgfxServerMessage),
     /// Trigger an RTT measurement probe (requires auto-detect enabled).
@@ -1511,6 +1647,14 @@ pub trait StaticChannelFactory: Send {
     fn attach(&self, acceptor: &mut Acceptor);
 }
 
+/// Extends the built-in dynamic channels with fresh processors for each connection.
+///
+/// Factories run in registration order before DRDYNVC negotiation.
+pub trait DynamicChannelFactory: Send {
+    /// Adds processors to the supplied channel set, preserving its existing channels.
+    fn attach(&self, channels: dvc::DrdynvcServer) -> dvc::DrdynvcServer;
+}
+
 impl fmt::Debug for ServerEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1519,6 +1663,12 @@ impl fmt::Debug for ServerEvent {
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
+            Self::StaticChannelWithCompletion { name, payload, .. } => f
+                .debug_tuple("StaticChannelWithCompletion")
+                .field(&name.as_str())
+                .field(&payload.len())
+                .finish(),
+            Self::StaticChannelJoined(name, _) => f.debug_tuple("StaticChannelJoined").field(&name.as_str()).finish(),
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
@@ -1527,6 +1677,7 @@ impl fmt::Debug for ServerEvent {
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
             Self::SetAutoReconnectCookie(None) => f.write_str("SetAutoReconnectCookie(None)"),
             Self::GetLocalAddr(..) => f.write_str("GetLocalAddr(..)"),
+            Self::WindowingOrders(request) => f.debug_tuple("WindowingOrders").field(&request.orders.len()).finish(),
             #[cfg(feature = "egfx")]
             Self::Egfx(..) => f.write_str("Egfx(..)"),
             #[cfg(feature = "usb")]
@@ -1538,6 +1689,52 @@ impl fmt::Debug for ServerEvent {
 
 pub trait ServerEventSender {
     fn set_sender(&mut self, sender: mpsc::UnboundedSender<ServerEvent>);
+}
+
+/// Cloneable handle for controlling an [`RdpServer`] from other tasks.
+///
+/// Requests use the existing [`ServerEvent`] queue and require the server to be driven concurrently.
+/// They are processed between connections and during active sessions, not during connection negotiation.
+/// Requests fail if the server has been dropped.
+#[derive(Debug, Clone)]
+pub struct RdpServerHandle {
+    sender: mpsc::UnboundedSender<ServerEvent>,
+}
+
+impl RdpServerHandle {
+    /// Queues [`ServerEvent::Quit`] to disconnect the active client or stop an idle server.
+    ///
+    /// After an active client disconnects, the listener continues unless its connection handler stops it.
+    /// Success confirms queuing, not completion.
+    pub fn quit(&self, reason: impl Into<String>) -> ServerResult<()> {
+        self.sender
+            .send(ServerEvent::Quit(reason.into()))
+            .map_err(|_| ServerError::channel("send server quit event"))
+    }
+
+    /// Queues credentials for subsequent incoming connections.
+    ///
+    /// Success confirms queuing, not that the credentials have changed.
+    /// Preempting candidates use the credentials captured when the active session began.
+    pub fn set_credentials(&self, credentials: Credentials) -> ServerResult<()> {
+        self.sender
+            .send(ServerEvent::SetCredentials(credentials))
+            .map_err(|_| ServerError::channel("send server credentials event"))
+    }
+
+    /// Queries the listener address through the server event loop.
+    ///
+    /// Returns the address bound by [`RdpServer::run`], or `None` if it has never bound a listener.
+    /// This does not report addresses owned by an external [`ConnectionSource`].
+    /// The query waits for the event loop to reply and fails if the reply is dropped.
+    pub async fn local_addr(&self) -> ServerResult<Option<SocketAddr>> {
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .send(ServerEvent::GetLocalAddr(tx))
+            .map_err(|_| ServerError::channel("send server local address request event"))?;
+        rx.await
+            .map_err(|error| ServerError::custom("receive server local address", error))
+    }
 }
 
 impl ServerEvent {
@@ -1806,6 +2003,10 @@ struct NegotiatedConnection<S> {
 /// manual reset between connections.
 #[derive(Default)]
 struct ConnectionState {
+    remote_app: Option<ironrdp_acceptor::RemoteAppCapabilities>,
+    max_graphics_size: Option<usize>,
+    /// Keeps fragmented display and window updates contiguous, including across resize.
+    graphics_write: Arc<Mutex<()>>,
     /// The static channels this connection negotiated.
     ///
     /// Empty until the acceptor hands them back after finalization. Handed to
@@ -1972,6 +2173,10 @@ where
 /// authenticated and waiting and a half-dead peer must not stall the takeover;
 /// exceeding it is not an error, it just degrades to an abrupt drop.
 const EVICTION_GRACE: Duration = Duration::from_millis(750);
+
+/// How long the server waits to close the connection after it sent the client a
+/// Set Error Info PDU for an error.
+const ERROR_INFO_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How long a candidate gets to complete negotiation and authentication before
 /// it is abandoned.
@@ -2230,6 +2435,7 @@ impl RdpServer {
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
         static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+        dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
@@ -2276,6 +2482,7 @@ impl RdpServer {
             bound_handler,
             bound_display,
             static_channel_factories,
+            dynamic_channel_factories,
             sound_factory,
             cliprdr_factory,
             rdpei_factory,
@@ -2286,6 +2493,9 @@ impl RdpServer {
             gfx_factory,
             #[cfg(feature = "usb")]
             usb_factory,
+            handle: RdpServerHandle {
+                sender: ev_sender.clone(),
+            },
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -2687,8 +2897,36 @@ impl RdpServer {
         self.advanced_input_active.store(false, Ordering::Release);
     }
 
+    /// Returns the raw event sender for requests not exposed by [`Self::handle`].
+    ///
+    /// Prefer the typed handle for quit, credential updates, and listener-address queries.
     pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
         &self.ev_sender
+    }
+
+    /// Returns a runtime handle that can be cloned before running the server.
+    ///
+    /// Prefer this typed interface for its supported requests; [`Self::event_sender`] exposes the
+    /// same queue for other [`ServerEvent`] variants.
+    ///
+    /// ```no_run
+    /// # async fn example(mut server: ironrdp_server::RdpServer) -> ironrdp_server::ServerResult<()> {
+    /// let handle = server.handle().clone();
+    /// let control = async {
+    ///     let _addr = handle.local_addr().await?;
+    ///     handle.set_credentials(ironrdp_server::Credentials {
+    ///         username: "alice".to_owned(),
+    ///         password: "password".to_owned(),
+    ///         domain: None,
+    ///     })?;
+    ///     handle.quit("shutdown requested")
+    /// };
+    /// tokio::try_join!(server.run(), control)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn handle(&self) -> &RdpServerHandle {
+        &self.handle
     }
 
     /// Returns the shared ECHO server handle for runtime probe requests and RTT measurements.
@@ -2812,6 +3050,10 @@ impl RdpServer {
             dvc
         };
 
+        let dvc = self
+            .dynamic_channel_factories
+            .iter()
+            .fold(dvc, |channels, factory| factory.attach(channels));
         acceptor.attach_static_channel(dvc);
 
         for factory in &self.static_channel_factories {
@@ -2819,6 +3061,9 @@ impl RdpServer {
         }
 
         ConnectionState {
+            remote_app: None,
+            max_graphics_size: None,
+            graphics_write: Arc::new(Mutex::new(())),
             static_channels: StaticChannelSet::new(),
             client_supports_heartbeat: false,
             client_supports_errinfo: false,
@@ -2870,6 +3115,7 @@ impl RdpServer {
     /// [`RdpServer::set_auto_reconnect_on_request`] it is a vouch for one
     /// connection, so a vouch the replaced connection never consumed is dropped
     /// here instead of reaching the connection that replaced it.
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     async fn discard_stale_session_events(&mut self) {
         let ev_receiver = Arc::clone(&self.ev_receiver);
         let mut ev_receiver = ev_receiver.lock().await;
@@ -3436,6 +3682,11 @@ impl RdpServer {
                 // The handler is shared, not taken: the live connection's own
                 // hooks (`on_connection_info`) must still reach it (#1969).
                 let handler = self.connection_handler.clone();
+                // UNTESTED: candidates authenticate against the credentials captured here
+                // at session entry; a `SetCredentials` handled during the session reaches
+                // only connections accepted after it ends. This decides which password can
+                // evict a live session, and `RdpServerHandle::set_credentials` documents it.
+                // When changing it, update that rustdoc and add a takeover test.
                 let ctx = self.negotiation_context();
                 let ev_sender = self.ev_sender.clone();
                 let mut recently_evicted = self.recently_evicted.take();
@@ -3749,7 +4000,7 @@ impl RdpServer {
         &mut self,
         conn: &mut ConnectionState,
         events: &mut Vec<ServerEvent>,
-        writer: &mut impl FramedWrite,
+        writer: &mut SharedWriter<'_, impl FramedWrite>,
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
@@ -3780,6 +4031,130 @@ impl RdpServer {
         for event in events.drain(..) {
             trace!(?event, "Dispatching");
             match event {
+                ServerEvent::StaticChannelWithCompletion {
+                    name,
+                    payload,
+                    completion,
+                    permit: _permit,
+                    is_current,
+                } => {
+                    if completion.is_closed() || !is_current() {
+                        trace!(channel = ?name.as_str(), "Discarding canceled static channel write");
+                        continue;
+                    }
+                    let Some(channel_id) = conn.static_channels.get_channel_id_by_channel_name(&name) else {
+                        warn!(channel = ?name.as_str(), "Static channel was not joined, rejecting write");
+                        continue;
+                    };
+                    let fragmented = ironrdp_svc::CHANNEL_CHUNK_LENGTH < payload.len();
+                    let mut message = ironrdp_svc::SvcMessage::from(payload);
+                    if fragmented {
+                        message = message.with_flags(ChannelFlags::SHOW_PROTOCOL);
+                    }
+                    let data = server_encode_svc_messages(vec![message], channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    let sent = writer
+                        .write_all_if(&data, || !completion.is_closed() && is_current())
+                        .await
+                        .map_err(|error| ServerError::io("write static channel data", error))?;
+                    if !sent {
+                        trace!(
+                            channel_id,
+                            "Discarding canceled static channel write after waiting for the writer"
+                        );
+                        continue;
+                    }
+                    if completion.send(()).is_err() {
+                        trace!(channel_id, "Static channel producer stopped waiting for dispatch");
+                    }
+                }
+                ServerEvent::StaticChannelJoined(name, reply) => {
+                    let joined = conn.static_channels.get_channel_id_by_channel_name(&name).is_some();
+                    if reply.send(joined).is_err() {
+                        trace!(channel = ?name.as_str(), "Static channel query stopped waiting for its answer");
+                    }
+                }
+                ServerEvent::WindowingOrders(mut request) => {
+                    if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
+                        continue;
+                    }
+                    let encoded: ServerResult<Vec<u8>> = (|| {
+                        let remote_app = conn
+                            .remote_app
+                            .as_ref()
+                            .ok_or_else(|| ServerError::reason("window orders", "RemoteApp was not negotiated"))?;
+                        if !remote_app
+                            .rail
+                            .support_level
+                            .contains(rdp::capability_sets::RailSupportLevel::SHELL_INTEGRATION_SUPPORTED)
+                            && request.orders.iter().any(|order| match order {
+                                WindowingOrder::Window(order) => match &order.body {
+                                    WindowOrderBody::Icon(icon) => icon.overlay,
+                                    WindowOrderBody::State(state) => {
+                                        state.overlay_description.is_some() || state.icon_overlay_null
+                                    }
+                                    WindowOrderBody::Deleted => false,
+                                },
+                                _ => false,
+                            })
+                        {
+                            return Err(ServerError::reason(
+                                "window orders",
+                                "shell integration support was not negotiated",
+                            ));
+                        }
+                        if remote_app.window_list.support_level != rdp::capability_sets::WindowSupportLevel::SupportedEx
+                            && request.orders.iter().any(WindowingOrder::requires_extended_support)
+                        {
+                            return Err(ServerError::reason(
+                                "window orders",
+                                "extended Window List support was not negotiated",
+                            ));
+                        }
+                        let count = u16::try_from(request.orders.len())
+                            .map_err(|error| ServerError::custom("window order count", error))?;
+                        let maximum = usize::try_from(self.opts.max_request_size)
+                            .map_err(|error| ServerError::custom("window update limit", error))?
+                            .max(MAX_FASTPATH_UPDATE_SIZE)
+                            .min(conn.max_graphics_size.unwrap_or(0).max(MAX_FASTPATH_UPDATE_SIZE));
+                        let length = request
+                            .orders
+                            .iter()
+                            .try_fold(2 /* numberOrders */, |length: usize, order| {
+                                length.checked_add(order.size()).filter(|length| *length <= maximum)
+                            })
+                            .ok_or_else(|| ServerError::reason("window orders", "update exceeds the graphics limit"))?;
+                        // INVARIANT: The buffer holds numberOrders plus each order's encoded size.
+                        let mut data = vec![0; length];
+                        let mut cursor = ironrdp_core::WriteCursor::new(&mut data);
+                        cursor.write_u16(count);
+                        for order in &request.orders {
+                            order.encode(&mut cursor).map_err(ServerError::encode)?;
+                        }
+                        Ok(data)
+                    })();
+                    let data = match encoded {
+                        Ok(data) => data,
+                        Err(error) => {
+                            request.complete(Err(error));
+                            continue;
+                        }
+                    };
+                    let _graphics = conn.graphics_write.lock().await;
+                    if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
+                        continue;
+                    }
+                    request.started = true;
+                    let mut fragments = UpdateFragmenter::new(UpdateCode::Orders, data);
+                    let mut buffer = vec![0; fragments.size_hint()];
+                    while let Some(written) = fragments.next(&mut buffer) {
+                        writer
+                            .write_all(&buffer[..written])
+                            .await
+                            .map_err(|error| ServerError::io("write window orders", error))?;
+                    }
+                    request.complete(Ok(WindowingOrdersStatus::Written));
+                }
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
                     return Ok(RunState::Disconnect);
@@ -3790,32 +4165,18 @@ impl RdpServer {
                 // against the preempting client — see the variant's docs).
                 ServerEvent::EvictedByOtherConnection => {
                     debug!("evicting this connection -- another client took the session over");
-                    if !conn.client_supports_errinfo {
-                        // MS-RDPBCGR 3.3.5.7.1: the client did not set
-                        // RNS_UD_CS_SUPPORT_ERRINFO_PDU, so it MUST NOT be
-                        // sent a Set Error Info PDU. Such a client cannot be
-                        // told why it is going away; it just goes.
-                        debug!("client did not opt into Set Error Info PDUs; dropping it without the eviction reason");
-                        return Ok(RunState::Disconnect);
-                    }
-                    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
-                        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
-                    ));
                     // Best-effort: if the evicted peer's socket is already
                     // half-dead the write fails, which is fine — it is leaving
                     // either way, and the caller falls back to cancelling it.
-                    // pduSource=0, not user_channel_id -- MS-RDPBCGR 2.2.5.1.1
-                    // requires it for TS_SET_ERROR_INFO_PDU specifically.
-                    match encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id) {
-                        Ok(bytes) => {
-                            if let Err(error) = writer.write_all(&bytes).await {
-                                debug!(%error, "could not send the eviction reason; disconnecting anyway");
-                            }
-                        }
-                        Err(error) => {
-                            warn!(%error, "could not encode the eviction reason; disconnecting anyway");
-                        }
-                    }
+                    send_error_info(
+                        conn,
+                        writer,
+                        io_channel_id,
+                        user_channel_id,
+                        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection),
+                        "eviction reason",
+                    )
+                    .await;
                     return Ok(RunState::Disconnect);
                 }
                 ServerEvent::Disconnect(error) => {
@@ -4780,7 +5141,24 @@ impl RdpServer {
         } else {
             None
         };
-        let mut display_updates = self.display.lock().await.updates(conn.display_context()).await?;
+        let display_updates = self.display.lock().await.updates(conn.display_context()).await;
+        let mut display_updates = match display_updates {
+            Ok(display_updates) => display_updates,
+            Err(error) => {
+                if let ServerErrorKind::ErrorInfo(error_info) = *error.kind() {
+                    send_error_info(
+                        conn,
+                        writer,
+                        io_channel_id,
+                        user_channel_id,
+                        error_info,
+                        "display error reason",
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        };
         let mut writer = SharedWriter::new(writer);
         let mut display_writer = writer.clone();
         let mut event_writer = writer.clone();
@@ -4851,12 +5229,14 @@ impl RdpServer {
             }
         };
 
+        let graphics_write = Arc::clone(&s.lock().await.1.graphics_write);
         let dispatch_display = async move {
             let mut buffer = vec![0u8; 4096];
 
             loop {
                 match display_updates.next_update().await {
                     Ok(Some(update)) => {
+                        let _graphics = graphics_write.lock().await;
                         match Self::dispatch_display_update(
                             update,
                             &mut display_writer,
@@ -5206,6 +5586,8 @@ impl RdpServer {
                     keyboard_layout: result.keyboard_layout,
                     keyboard_type: result.keyboard_type,
                     ime_file_name: result.ime_file_name.clone(),
+                    desktop_scale_factor: result.desktop_scale_factor,
+                    device_scale_factor: result.device_scale_factor,
                     auto_reconnect: is_auto_reconnect,
                     client_monitors: result.client_monitors,
                     routing_token: result.routing_token.clone(),
@@ -5235,6 +5617,21 @@ impl RdpServer {
                 None
             };
             server.set_client_frame_ack_limit(core_limit);
+        }
+        conn.remote_app = acceptor.remote_app_capabilities().cloned();
+        conn.max_graphics_size = result
+            .capabilities
+            .iter()
+            .find_map(|capability| match capability {
+                CapabilitySet::MultiFragmentUpdate(capability) => Some(usize::try_from(capability.max_request_size)),
+                _ => None,
+            })
+            .transpose()
+            .map_err(|error| ServerError::custom("client graphics limit", error))?;
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_remote_app_capabilities(conn.remote_app.as_ref())
+        }) {
+            result?;
         }
         conn.static_channels = result.static_channels;
         conn.client_supports_heartbeat = result
@@ -5897,7 +6294,7 @@ impl RdpServer {
 
             let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
-            match self
+            let state = self
                 .client_accepted(
                     &mut conn,
                     &mut reader,
@@ -5906,8 +6303,27 @@ impl RdpServer {
                     Rc::clone(&udp_transport),
                     pending_udp_accept.take(),
                 )
-                .await?
-            {
+                .await;
+            let state = match state {
+                Ok(state) => state,
+                Err(error) => {
+                    if matches!(error.kind(), ServerErrorKind::ErrorInfo(_)) {
+                        // The client was sent a Set Error Info PDU. Close the
+                        // session as on a normal disconnect, so the client gets
+                        // the PDU and then the end of the stream.
+                        let (mut inner, _) = unsplit_tokio_framed(reader, writer).into_inner();
+                        match tokio::time::timeout(ERROR_INFO_CLOSE_TIMEOUT, inner.shutdown()).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(shutdown_error)) => {
+                                debug!(%shutdown_error, "Shutdown after the error reason failed")
+                            }
+                            Err(_) => debug!("Shutdown after the error reason timed out"),
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            match state {
                 RunState::Continue => {
                     unreachable!();
                 }
@@ -6171,6 +6587,41 @@ fn encode_share_data_pdu(
     encode_vec(&X224(mcs_pdu)).map_err(ServerError::encode)
 }
 
+/// Tells the client why the session ends: sends `error_info` in a Set Error Info PDU ([MS-RDPBCGR 2.2.5.1.1]),
+/// best-effort. A client that did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU is not sent the PDU ([MS-RDPBCGR 3.3.5.7.1]).
+/// `reason` names the reason in the logs.
+///
+/// [MS-RDPBCGR 2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
+/// [MS-RDPBCGR 3.3.5.7.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/e895ef8f-829a-4166-ad29-7d64d200c136
+async fn send_error_info(
+    conn: &ConnectionState,
+    writer: &mut impl FramedWrite,
+    io_channel_id: u16,
+    user_channel_id: u16,
+    error_info: ErrorInfo,
+    reason: &str,
+) {
+    if !conn.client_supports_errinfo {
+        debug!(
+            reason,
+            "Client did not opt into Set Error Info PDUs; disconnecting without the reason"
+        );
+        return;
+    }
+    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error_info));
+    // pduSource=0 -- MS-RDPBCGR 2.2.5.1.1 requires it for TS_SET_ERROR_INFO_PDU.
+    match encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id) {
+        Ok(bytes) => {
+            if let Err(error) = writer.write_all(&bytes).await {
+                debug!(%error, reason, "Could not send the reason; disconnecting anyway");
+            }
+        }
+        Err(error) => {
+            warn!(%error, reason, "Could not encode the reason; disconnecting anyway");
+        }
+    }
+}
+
 async fn deactivate_all(io_channel_id: u16, user_channel_id: u16, writer: &mut impl FramedWrite) -> ServerResult<()> {
     let pdu = ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll);
     let pdu = rdp::headers::ShareControlHeader {
@@ -6224,6 +6675,7 @@ async fn send_access_denied(acceptor: &Acceptor, writer: &mut impl FramedWrite) 
     Ok(())
 }
 
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 struct SharedWriter<'w, W: FramedWrite> {
     writer: Rc<Mutex<&'w mut W>>,
     /// Count of successful `write_all` calls across all clones. The heartbeat
@@ -6252,47 +6704,12 @@ where
         Self: 'write;
 
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
-        Box::pin(async move {
-            // D1: time both the lock acquisition and the actual write.
-            // Three concurrent tasks (dispatch_pdu, dispatch_display,
-            // dispatch_events) share this Rc<Mutex<W>>. When the kernel TCP
-            // send buffer fills (slow client), write_all blocks while still
-            // holding the mutex — starving the other two tasks. Logging
-            // both phases tells us whether a stall is "waiting in line for
-            // the writer" (lock-wait) or "TLS write held up by TCP back-
-            // pressure" (write-time).
-            let len = buf.len();
-            let wait_start = Instant::now();
-            let mut writer = self.writer.lock().await;
-            let wait_ms = u64::try_from(wait_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-            let write_start = Instant::now();
-            let res = writer.write_all(buf).await;
-            let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-            // Threshold: 50ms total budget for one write_all. Anything above
-            // is operationally interesting on a healthy LAN. Logged at WARN
-            // when stalled, DEBUG when fast (so wire-time samples are still
-            // visible during routine debugging).
-            if wait_ms + write_ms >= 50 {
-                tracing::warn!(
-                    bytes = len,
-                    lock_wait_ms = wait_ms,
-                    write_ms,
-                    "SharedWriter.write_all stalled, possible TCP back-pressure or writer-mutex contention"
-                );
-            } else {
-                tracing::debug!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
-            }
-            if res.is_ok() {
-                self.writes.fetch_add(1, Ordering::Relaxed);
-            }
-            res
-        })
+        Box::pin(async move { self.write_all_if(buf, || true).await.map(|_| ()) })
     }
 }
 
 impl<'a, W: FramedWrite> SharedWriter<'a, W> {
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     fn new(writer: &'a mut W) -> Self {
         Self {
             writer: Rc::new(Mutex::new(writer)),
@@ -6303,6 +6720,54 @@ impl<'a, W: FramedWrite> SharedWriter<'a, W> {
     fn write_counter(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.writes)
     }
+
+    async fn write_all_if(&mut self, buf: &[u8], can_write: impl FnOnce() -> bool) -> std::io::Result<bool> {
+        // Measure lock contention separately from transport back-pressure.
+        let len = buf.len();
+        let wait_start = Instant::now();
+        let mut writer = self.writer.lock().await;
+        let wait_ms = u64::try_from(wait_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if !can_write() {
+            return Ok(false);
+        }
+
+        // INVARIANT: Producer cancellation does not interrupt a partially written RDP frame.
+        let write_start = Instant::now();
+        let res = writer.write_all(buf).await;
+        let write_ms = u64::try_from(write_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        if 50 <= wait_ms + write_ms {
+            tracing::warn!(
+                bytes = len,
+                lock_wait_ms = wait_ms,
+                write_ms,
+                "SharedWriter.write_all stalled, possible TCP back-pressure or writer-mutex contention"
+            );
+        } else {
+            tracing::trace!(bytes = len, lock_wait_ms = wait_ms, write_ms, "SharedWriter.write_all");
+        }
+        if res.is_ok() {
+            self.writes.fetch_add(1, Ordering::Relaxed);
+        }
+        res.map(|()| true)
+    }
+}
+
+#[cfg(feature = "__test")]
+pub async fn dispatch_static_channel_events(
+    server: &mut RdpServer,
+    channels: StaticChannelSet,
+    events: &mut Vec<ServerEvent>,
+    writer: &mut SharedWriter<'_, impl FramedWrite>,
+) -> ServerResult<()> {
+    let mut conn = ConnectionState {
+        static_channels: channels,
+        ..ConnectionState::default()
+    };
+    server
+        .dispatch_server_events(&mut conn, events, writer, 1003, 1002, None, None)
+        .await
+        .map(|_| ())
 }
 
 #[async_trait::async_trait(?Send)]
@@ -6377,6 +6842,7 @@ mod preempt_tests {
 
         NegotiationContext {
             opts: RdpServerOptions {
+                remote_app: None,
                 addr: (Ipv4Addr::LOCALHOST, 0).into(),
                 security: RdpServerSecurity::None,
                 codecs: BitmapCodecs(Vec::new()),
@@ -7031,10 +7497,10 @@ mod preempt_tests {
                 // the EXPECTED outcome here -- `attach_channels`'s
                 // synchronous side effect (below) already happened before
                 // `serve_negotiated` reached its first blocking read.
-                let _ = tokio::time::timeout(
+                let _ = Box::pin(tokio::time::timeout(
                     Duration::from_millis(300),
                     server.serve_negotiated(candidate.connection),
-                )
+                ))
                 .await;
 
                 assert!(
@@ -7146,7 +7612,15 @@ mod cliprdr_error_tests {
 
         let mut writer = CapturingWriter::default();
         let state = server
-            .dispatch_server_events(&mut conn, &mut events, &mut writer, 1003, 1002, None, None)
+            .dispatch_server_events(
+                &mut conn,
+                &mut events,
+                &mut SharedWriter::new(&mut writer),
+                1003,
+                1002,
+                None,
+                None,
+            )
             .await
             .expect("a refused clipboard message must not surface as a session error");
 
@@ -7292,10 +7766,33 @@ mod tests {
 
     use ironrdp_core::{Encode as _, WriteCursor, impl_as_any};
     use ironrdp_dvc::DvcProcessor as _;
-    use ironrdp_pdu::gcc::ChannelName;
     use ironrdp_svc::{SvcMessage, SvcServerProcessor};
 
     use super::*;
+
+    /// A client that did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU is not sent a
+    /// Set Error Info PDU; a client that set it is.
+    // oracle: spec MS-RDPBCGR §3.3.5.7.1
+    #[tokio::test]
+    async fn the_error_reason_goes_only_to_a_client_that_supports_it() {
+        let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
+        let mut conn = ConnectionState::default();
+
+        let mut writer = cliprdr_error_tests::CapturingWriter::default();
+        send_error_info(&conn, &mut writer, 1003, 1007, error_info, "test").await;
+        assert!(writer.0.is_empty(), "sent to a client that does not support it");
+
+        conn.client_supports_errinfo = true;
+        send_error_info(&conn, &mut writer, 1003, 1007, error_info, "test").await;
+        let expected = encode_share_data_pdu(
+            rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error_info)),
+            0,
+            1003,
+            1007,
+        )
+        .expect("encode");
+        assert_eq!(writer.0, expected);
+    }
 
     /// A channel backend that owns a resource, released on drop the way
     /// `RdpsndServer` stops its handler.

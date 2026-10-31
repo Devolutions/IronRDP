@@ -12,6 +12,7 @@ use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::pointer::PointerUpdateData;
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
@@ -177,10 +178,30 @@ impl ActiveStage {
                 .into_iter()
                 .map(ActiveStageOutput::ResponseFrame),
         );
+        output.extend(self.move_software_pointer(image, events)?);
 
+        Ok(output)
+    }
+
+    /// Modifies image for input events sent on another channel, such as the MS-RDPECI core input
+    /// dynamic channel, the way [`Self::process_fastpath_input`] does without encoding the events.
+    pub fn process_input_pointer(
+        &mut self,
+        image: &mut DecodedImage,
+        events: &[FastPathInputEvent],
+    ) -> SessionResult<Option<ActiveStageOutput>> {
+        self.damage_regions.clear();
+        self.move_software_pointer(image, events)
+    }
+
+    fn move_software_pointer(
+        &mut self,
+        image: &mut DecodedImage,
+        events: &[FastPathInputEvent],
+    ) -> SessionResult<Option<ActiveStageOutput>> {
         // If pointer rendering is disabled - we can skip the rest
         if !self.enable_server_pointer {
-            return Ok(output);
+            return Ok(None);
         }
 
         // If mouse was moved by client - we should update framebuffer to reflect new
@@ -191,18 +212,16 @@ impl ActiveStage {
             _ => None,
         });
 
-        let (mouse_x, mouse_y) = match mouse_pos {
-            Some(mouse_pos) => mouse_pos,
-            None => return Ok(output),
+        let Some((mouse_x, mouse_y)) = mouse_pos else {
+            return Ok(None);
         };
 
         // Graphics update is only sent when update is visually changed the framebuffer
-        if let Some(rect) = image.move_pointer(mouse_x, mouse_y)? {
-            self.damage_regions.push(rect.clone());
-            output.push(ActiveStageOutput::GraphicsUpdate(rect));
-        }
-
-        Ok(output)
+        let Some(rect) = image.move_pointer(mouse_x, mouse_y)? else {
+            return Ok(None);
+        };
+        self.damage_regions.push(rect.clone());
+        Ok(Some(ActiveStageOutput::GraphicsUpdate(rect)))
     }
 
     /// Process a frame received from the server.
@@ -284,6 +303,43 @@ impl ActiveStage {
             }
         };
 
+        self.push_processor_updates(image, processor_updates, &mut stage_outputs)?;
+
+        Ok(stage_outputs)
+    }
+
+    /// Applies a pointer update that arrived outside the fast-path and slow-path output, such as
+    /// one from the [MS-RDPEMSC] mouse cursor channel.
+    ///
+    /// The update goes through the same pointer cache, server-pointer setting and software
+    /// rendering as [MS-RDPBCGR] pointer updates.
+    /// Damage regions add to those of the last call to [`ActiveStage::process`] or
+    /// [`ActiveStage::process_dvc_tunnel`].
+    ///
+    /// [MS-RDPEMSC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemsc/
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    pub fn process_pointer_update(
+        &mut self,
+        image: &mut DecodedImage,
+        update: PointerUpdateData<'_>,
+    ) -> SessionResult<Vec<ActiveStageOutput>> {
+        let processor_updates = self.fast_path_processor.process_pointer_update(image, update)?;
+        let mut stage_outputs = Vec::new();
+        self.push_processor_updates(image, processor_updates, &mut stage_outputs)?;
+        Ok(stage_outputs)
+    }
+
+    /// Turns processor updates into outputs, then widens the first graphics update after a
+    /// graphics reset.
+    ///
+    /// UNTESTED: through `process_pointer_update`, a software-rendered pointer can be the first
+    /// graphics update after a reset, and is widened like any other.
+    fn push_processor_updates(
+        &mut self,
+        image: &DecodedImage,
+        processor_updates: Vec<UpdateKind>,
+        stage_outputs: &mut Vec<ActiveStageOutput>,
+    ) -> SessionResult<()> {
         for update in processor_updates {
             match update {
                 UpdateKind::None => {}
@@ -312,10 +368,9 @@ impl ActiveStage {
                 }
             }
         }
+        self.widen_to_full_refresh(image, stage_outputs);
 
-        self.widen_to_full_refresh(image, &mut stage_outputs);
-
-        Ok(stage_outputs)
+        Ok(())
     }
 
     /// Drains the client-side EGFX compositor: follows a pending `ResetGraphics`, composites
@@ -1285,7 +1340,7 @@ mod tests {
     use ironrdp_pdu::input::MousePdu;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::input::mouse::PointerFlags;
-    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute};
     use ironrdp_rdpei::pdu::{PenEventPdu, RdpInputProtocolVersion, RdpeiPdu, ScReadyPdu, TouchEventPdu};
 
     #[test]

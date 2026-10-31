@@ -766,6 +766,8 @@ impl iron_remote_desktop::Session for Session {
         let desktop_height =
             NonZeroU32::new(u32::from(connection_result.desktop_size.height)).context("desktop height is zero")?;
 
+        ensure_framebuffer_allocatable(connection_result.desktop_size)?;
+
         let mut gui =
             Canvas::new(self.render_canvas.clone(), desktop_width, desktop_height).context("canvas initialization")?;
 
@@ -1169,6 +1171,10 @@ impl iron_remote_desktop::Session for Session {
                             } = connection_activation.connection_activation_state()
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
+                                // Release the previous framebuffer first so the probe and the new allocation do not
+                                // compete with it for linear memory.
+                                drop(image);
+                                ensure_framebuffer_allocatable(desktop_size)?;
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                                 if !active_stage.reactivate(
                                     connection_activation.io_channel_id(),
@@ -2161,6 +2167,26 @@ where
 
         Ok((upgraded, server_public_key))
     }
+}
+
+/// Checks that a framebuffer for `desktop_size` can be allocated, so an oversized desktop fails the session instead of
+/// aborting in the infallible `DecodedImage::new`.
+///
+/// The probe frees its reservation before the real allocation. This holds because wasm32 is single-threaded and the
+/// canvas backing store lives outside linear memory, so nothing else claims that memory in between.
+fn ensure_framebuffer_allocatable(desktop_size: connector::DesktopSize) -> anyhow::Result<()> {
+    let connector::DesktopSize { width, height } = desktop_size;
+
+    let len = usize::from(width)
+        .checked_mul(usize::from(height))
+        .and_then(|pixels| pixels.checked_mul(usize::from(PixelFormat::RgbA32.bytes_per_pixel())))
+        .with_context(|| format!("framebuffer size overflows for a {width}x{height} desktop"))?;
+
+    Vec::<u8>::new()
+        .try_reserve_exact(len)
+        .with_context(|| format!("not enough memory for a {width}x{height} desktop framebuffer"))?;
+
+    Ok(())
 }
 
 #[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]

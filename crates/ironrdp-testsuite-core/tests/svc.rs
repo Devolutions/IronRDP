@@ -312,17 +312,12 @@ fn static_channel_without_context_validates_declared_lengths_and_size_limit() {
         ChannelControlFlags::empty(),
         EXCEEDS_MAX_SIZE,
     );
-    expect_discarded(
-        &mut channel,
-        b"123",
-        2,
-        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::PACKET_COMPRESSED,
-    );
+    expect_discarded(&mut channel, b"12", 2, ChannelControlFlags::FLAG_FIRST);
     expect_invalid_length(
         &mut channel,
-        b"45",
+        b"345",
         2,
-        ChannelControlFlags::FLAG_LAST | ChannelControlFlags::PACKET_COMPRESSED,
+        ChannelControlFlags::FLAG_LAST,
         EXCEEDS_MAX_SIZE,
     );
     assert!(delivered(&channel).is_empty());
@@ -379,18 +374,13 @@ fn static_channel_context_change_mid_sequence_validates_lengths_and_size_limit()
 
     // oracle: mutant skipping max_message_size checks after discarding a partial sequence
     set_context(&mut channel, Some(2));
-    expect_discarded(
-        &mut channel,
-        b"12345",
-        4,
-        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::PACKET_COMPRESSED,
-    );
+    expect_discarded(&mut channel, b"1234", 4, ChannelControlFlags::FLAG_FIRST);
     set_context(&mut channel, Some(3));
     expect_invalid_length(
         &mut channel,
-        b"6789",
+        b"56789",
         4,
-        ChannelControlFlags::FLAG_LAST | ChannelControlFlags::PACKET_COMPRESSED,
+        ChannelControlFlags::FLAG_LAST,
         EXCEEDS_MAX_SIZE,
     );
     assert!(delivered(&channel).is_empty());
@@ -620,6 +610,66 @@ fn static_channel_rejects_malformed_chunk_sequences() {
             ))
             .is_ok()
     );
+}
+
+#[test]
+fn static_channel_bounds_compressed_chunk_sequences_by_declared_length() {
+    let mut channel = StaticVirtualChannel::new(RuntimeChannel::new("chunk", ChannelOptions::empty()));
+    let compressed = ChannelControlFlags::PACKET_COMPRESSED;
+
+    // oracle: spec MS-RDPBCGR §2.2.6.1.1 (length is the total uncompressed length of the channel data)
+    // oracle: mutant skipping the declared-length bound for PACKET_COMPRESSED fragments
+    expect_discarded(&mut channel, b"abcd", 6, ChannelControlFlags::FLAG_FIRST | compressed);
+    expect_invalid_length(&mut channel, b"efgh", 6, compressed, EXCEEDS_DECLARED);
+
+    // oracle: mutant retaining rejected fragment bytes in the next sequence
+    expect_discarded(&mut channel, b"abc", 6, ChannelControlFlags::FLAG_FIRST | compressed);
+    let reply = channel
+        .process(&channel_chunk(b"de", 6, ChannelControlFlags::FLAG_LAST | compressed))
+        .expect("compressed sequence within its declared length should complete");
+    assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].encode_unframed_pdu().expect("encode reply"), b"abcde");
+}
+
+// oracle: property; spec MS-RDPBCGR §2.2.6.1.1 (length is the total uncompressed length of the channel data)
+// oracle: mutant skipping the declared-length bound for PACKET_COMPRESSED fragments
+proptest! {
+    #[test]
+    fn static_channel_compressed_sequences_never_exceed_declared_length(
+        declared in 0u32..=16,
+        fragments in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..=8), 1..=4),
+    ) {
+        let mut channel = StaticVirtualChannel::new(RuntimeChannel::new("chunk", ChannelOptions::empty()));
+        let declared_length = usize::try_from(declared).expect("small declared length");
+        let last_index = fragments.len() - 1;
+        let mut received_length = 0;
+
+        for (index, fragment) in fragments.iter().enumerate() {
+            let mut flags = ChannelControlFlags::PACKET_COMPRESSED;
+            if index == 0 {
+                flags |= ChannelControlFlags::FLAG_FIRST;
+            }
+            if index == last_index {
+                flags |= ChannelControlFlags::FLAG_LAST;
+            }
+
+            received_length += fragment.len();
+            if declared_length < received_length {
+                expect_invalid_length(&mut channel, fragment, declared, flags, EXCEEDS_DECLARED);
+                return Ok(());
+            }
+
+            let reply = channel
+                .process(&channel_chunk(fragment, declared, flags))
+                .expect("fragment within the declared length should be accepted");
+            if index == last_index {
+                prop_assert_eq!(reply.len(), 1);
+                prop_assert_eq!(reply[0].encode_unframed_pdu().expect("encode reply"), fragments.concat());
+            } else {
+                prop_assert!(reply.is_empty());
+            }
+        }
+    }
 }
 
 #[test]

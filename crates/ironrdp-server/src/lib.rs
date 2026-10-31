@@ -65,13 +65,13 @@ pub use server::autodetect_sub_header;
 pub use server::{
     AuthenticatedConnection, AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler,
     ConnectionInfo, ConnectionPolicy, ConnectionSource, CredentialDecision, CredentialValidationError,
-    CredentialValidator, Credentials, ErrorInfoDisconnectHandle, ExactMatchCredentialValidator, IncomingConnection,
-    NextConnection, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent,
-    ServerEventSender, ServerRedirectionHandle, SessionOutcome, StaticChannelFactory, TransportTls,
-    pick_remotefx_entropy_coder,
+    CredentialValidator, Credentials, DynamicChannelFactory, ErrorInfoDisconnectHandle, ExactMatchCredentialValidator,
+    IncomingConnection, NextConnection, PostConnectionAction, RdpServer, RdpServerHandle, RdpServerOptions,
+    RdpServerSecurity, ServerEvent, ServerEventSender, ServerRedirectionHandle, SessionOutcome, StaticChannelFactory,
+    TransportTls, WindowingOrders, WindowingOrdersStatus, pick_remotefx_entropy_coder,
 };
 #[cfg(feature = "__test")]
-pub use server::{client_max_request_size, pick_remotefx_codec};
+pub use server::{SharedWriter, client_max_request_size, dispatch_static_channel_events, pick_remotefx_codec};
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]
 pub use urbdrc::{

@@ -139,6 +139,31 @@ Its presenter decodes H.264 through the `ironrdp-egfx` decoder trait and places 
 Location dynamic channel client and PDU codecs implemented as described in MS-RDPEL.
 The crate forwards only location data supplied by its caller and performs no location acquisition or I/O.
 
+#### [`crates/ironrdp-rdpet`](./crates/ironrdp-rdpet)
+
+Telemetry dynamic channel client and PDU codec implemented as described in MS-RDPET.
+The crate sends only the connection milestones measured by its caller and reads no clock.
+
+#### [`crates/ironrdp-rdpemsc`](./crates/ironrdp-rdpemsc)
+
+Mouse cursor dynamic channel client, server, and PDU codecs implemented as described in MS-RDPEMSC.
+The client queues pointer updates for the caller, which applies them through its existing MS-RDPBCGR pointer handling; the crate performs no I/O.
+
+#### [`crates/ironrdp-rdpadrv`](./crates/ironrdp-rdpadrv)
+
+Audio level and drive letter persistence dynamic channel clients, servers, and PDU codecs implemented as described in MS-RDPADRV.
+The crate reports the values a session wants persisted through handlers and performs no storage or I/O.
+
+#### [`crates/ironrdp-rdpetxt`](./crates/ironrdp-rdpetxt)
+
+Text input dynamic channel client, server, and PDU codecs implemented as described in MS-RDPETXT.
+The client tracks the focused remote edit control and inserts text committed by its caller; it hosts no input method and performs no I/O.
+
+#### [`crates/ironrdp-rdpeci`](./crates/ironrdp-rdpeci)
+
+Core input dynamic channel client processor and PDU codecs implemented as described in MS-RDPECI.
+Input events reuse the fast-path input event type from `ironrdp-pdu`, whose wire format the channel shares.
+
 #### [`crates/ironrdp-w365`](./crates/ironrdp-w365)
 
 Windows 365 battery status, power request, screen capture redirection, and virtual desktop control dynamic channel clients and PDU codecs, following the Windows App client because no Microsoft Open Specification documents the channels.

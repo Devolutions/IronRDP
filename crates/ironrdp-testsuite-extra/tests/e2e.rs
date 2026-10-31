@@ -1,10 +1,10 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
-use core::net::SocketAddr;
+use core::net::{Ipv4Addr, SocketAddr};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::task::{Context, Poll};
+use core::task::{Context, Poll, Waker};
 use core::time::Duration;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -66,6 +66,143 @@ const RDPDR_CLIENT_ID: u32 = 0x1234;
 const RDPDR_COMPLETION_ID: u32 = 1;
 #[cfg(windows)]
 const RDPDR_READ_LENGTH: u32 = 32 * 1024;
+
+// oracle: mutant quit not queuing ServerEvent::Quit
+#[tokio::test]
+async fn server_handle_quit_stops_the_listener() {
+    let mut server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    handle.quit("shutdown requested").unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), server.run())
+        .await
+        .expect("quit must stop the listener")
+        .unwrap();
+}
+
+// oracle: mutant local_addr discarding the event loop's address reply
+#[tokio::test]
+async fn server_handle_local_addr_reports_the_bound_listener() {
+    let mut server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    let requests = async {
+        let addr = handle.local_addr().await.unwrap().expect("run binds a listener");
+        assert_eq!(addr.ip(), Ipv4Addr::LOCALHOST);
+        assert_ne!(addr.port(), 0, "the OS must assign an ephemeral port");
+        handle.quit("address received").unwrap();
+    };
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let (result, ()) = tokio::join!(server.run(), requests);
+        result.unwrap();
+    })
+    .await
+    .expect("address query and shutdown must finish");
+}
+
+// oracle: mutant set_credentials not queuing ServerEvent::SetCredentials
+#[tokio::test]
+async fn server_handle_set_credentials_applies_to_the_next_connection() {
+    let (mut server, _display_tx) = hybrid_server();
+    let handle = server.handle().clone();
+    handle
+        .set_credentials(server::Credentials {
+            username: "alice".to_owned(),
+            password: "first password".to_owned(),
+            domain: None,
+        })
+        .unwrap();
+
+    let local = tokio::task::LocalSet::new();
+    let test = Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move { server.run().await });
+        let addr = handle.local_addr().await.unwrap().unwrap();
+        let (mut client, _) = connect_client(addr, |client_addr| {
+            connector::ClientConnector::new(
+                connector::Config {
+                    credentials: connector::Credentials::UsernamePassword {
+                        username: "alice".to_owned(),
+                        password: "first password".to_owned(),
+                    },
+                    ..hybrid_client_config()
+                },
+                client_addr,
+            )
+        })
+        .await;
+
+        assert_eq!(handle.local_addr().await.unwrap(), Some(addr));
+        handle.quit("disconnect authenticated client").unwrap();
+        while client.read_pdu().await.is_ok() {}
+        assert_eq!(handle.local_addr().await.unwrap(), Some(addr));
+        handle.quit("stop idle listener").unwrap();
+        server_task.await.unwrap().unwrap();
+    }));
+    tokio::time::timeout(Duration::from_secs(15), test)
+        .await
+        .expect("credential updates and shutdown must finish");
+}
+
+// oracle: mutant local_addr fabricating an address when none is bound
+#[tokio::test]
+async fn server_handle_local_addr_is_none_for_an_external_source() {
+    let mut server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    let (mut source, _) = listener_source(false).await;
+    let requests = async {
+        assert_eq!(handle.local_addr().await.unwrap(), None);
+        handle.quit("no internal listener").unwrap();
+    };
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let (result, ()) = tokio::join!(server.serve(&mut source), requests);
+        result.unwrap();
+    })
+    .await
+    .expect("external source must still service control requests");
+}
+
+// oracle: mutant quit or set_credentials reporting success after the server is dropped
+#[tokio::test]
+async fn server_handle_requests_fail_after_server_is_dropped() {
+    let server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    drop(server);
+
+    assert!(handle.quit("server dropped").is_err());
+    assert!(
+        handle
+            .set_credentials(server::Credentials {
+                username: "alice".to_owned(),
+                password: "password".to_owned(),
+                domain: None,
+            })
+            .is_err()
+    );
+    assert!(handle.local_addr().await.is_err());
+}
+
+// oracle: mutant local_addr reporting None for a dropped reply
+#[tokio::test]
+async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
+    let server = server_for_handle_tests();
+    let handle = server.handle().clone();
+    let mut query = Box::pin(handle.local_addr());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(query.as_mut().poll(&mut context).is_pending());
+    drop(server);
+
+    assert!(query.await.is_err());
+}
+
+fn server_for_handle_tests() -> RdpServer {
+    RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .build()
+}
 
 #[tokio::test]
 async fn test_client_server() {
@@ -623,6 +760,139 @@ async fn a_new_connection_starts_without_the_previous_sessions_events() {
         },
     )
     .await
+}
+
+/// A display that cannot start returns a `ServerErrorKind::ErrorInfo` error, and the client gets that code in a Set
+/// Error Info PDU, so it can tell the user why the session ended instead of reporting a lost connection.
+// oracle: spec MS-RDPBCGR §2.2.5.1.1
+// oracle: regression #2301
+#[tokio::test]
+async fn a_display_that_cannot_start_tells_the_client_why() {
+    let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
+
+    let (reason, close) = Box::pin(run_failing_display_probe(Some(error_info))).await;
+
+    let Some(session::GracefulDisconnectReason::Other(description)) = reason else {
+        panic!("the client did not get the reason, it got {reason:?}");
+    };
+    // oracle: property round-trip
+    assert_eq!(description, error_info.description());
+    // The server closes the TLS session (close_notify) after the reason, as on a normal disconnect.
+    assert!(matches!(close, Some(Ok(0))), "{close:?}");
+}
+
+/// Other display errors close the connection as before, with no Set Error Info PDU.
+// oracle: doc RdpServerDisplay::updates and ServerErrorKind::ErrorInfo
+#[tokio::test]
+async fn a_display_error_without_error_info_sends_no_reason() {
+    let (reason, _) = Box::pin(run_failing_display_probe(None)).await;
+    assert!(reason.is_none(), "{reason:?}");
+}
+
+/// Connects a client to a server whose display fails to start with `error_info`, or with a plain error. Returns the
+/// reason the client got for the end of the session, and, when it got one, the result of the next read on the TLS
+/// stream: `Ok(0)` when the server closed the TLS session with close_notify.
+async fn run_failing_display_probe(
+    error_info: Option<ErrorInfo>,
+) -> (
+    Option<session::GracefulDisconnectReason>,
+    Option<std::io::Result<usize>>,
+) {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(FailingDisplay { error_info })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+
+        let server_addr = local_addr_of(&ev).await;
+        let (mut framed, connection_result) = connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(default_client_config(), client_addr)
+        })
+        .await;
+        let mut stage = ActiveStageBuilder {
+            static_channels: connection_result.static_channels,
+            user_channel_id: connection_result.user_channel_id,
+            io_channel_id: connection_result.io_channel_id,
+            message_channel_id: connection_result.message_channel_id,
+            share_id: connection_result.share_id,
+            compression_type: connection_result.compression_type,
+            enable_server_pointer: connection_result.enable_server_pointer,
+            pointer_software_rendering: connection_result.pointer_software_rendering,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+        // The server closes the connection right after the display fails. Read until the reason, the end of
+        // the stream, or the deadline.
+        let mut reason = None;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while reason.is_none() {
+            let Ok(read) = tokio::time::timeout_at(deadline, framed.read_pdu()).await else {
+                break;
+            };
+            let Ok((action, frame)) = read else {
+                break;
+            };
+            for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
+                if let ActiveStageOutput::Terminate(terminate) = output {
+                    reason = Some(terminate);
+                }
+            }
+        }
+
+        let close = if reason.is_some() {
+            use tokio::io::AsyncReadExt as _;
+
+            let (mut stream, _) = framed.into_inner();
+            let mut buf = [0u8; 1];
+            tokio::time::timeout_at(deadline, stream.read(&mut buf)).await.ok()
+        } else {
+            None
+        };
+
+        server_task.abort();
+        (reason, close)
+    }))
+    .await
+}
+
+struct FailingDisplay {
+    error_info: Option<ErrorInfo>,
+}
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for FailingDisplay {
+    async fn size(&mut self) -> DesktopSize {
+        DesktopSize {
+            width: DESKTOP_WIDTH,
+            height: DESKTOP_HEIGHT,
+        }
+    }
+
+    async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+        Err(match self.error_info {
+            Some(error_info) => server::ServerError::new("display", server::ServerErrorKind::ErrorInfo(error_info)),
+            None => server::ServerError::new("display", server::ServerErrorKind::Reason("capture failed".to_owned())),
+        })
+    }
 }
 
 #[tokio::test]
@@ -2952,12 +3222,22 @@ impl HookCounts {
 
     /// Poll until `done` holds for the counts, or a generous deadline passes.
     async fn wait_until(&self, done: impl Fn((usize, usize, usize)) -> bool) -> (usize, usize, usize) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !done(self.get()) && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        poll_until(|| done(self.get())).await;
         self.get()
     }
+}
+
+/// Poll `done` every 20 ms until it holds or a generous 5 s deadline passes;
+/// returns whether it held.
+async fn poll_until(mut done: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        if deadline <= Instant::now() {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    true
 }
 
 struct HookRecorder(Arc<HookCounts>);
@@ -2989,12 +3269,23 @@ impl server::ConnectionHandler for HookRecorder {
 fn hook_recording_server(
     policy: server::ConnectionPolicy,
 ) -> (RdpServer, Arc<HookCounts>, UnboundedSender<DisplayUpdate>) {
+    let counts = Arc::new(HookCounts::default());
+    let (server, display_tx) = handler_server(Box::new(HookRecorder(Arc::clone(&counts))), policy);
+    (server, counts, display_tx)
+}
+
+/// A TLS server under `policy` with `handler` as its connection handler. Keep
+/// the returned display sender alive for the test: once it drops, the display
+/// stream ends and the server closes the session.
+fn handler_server(
+    handler: Box<dyn server::ConnectionHandler>,
+    policy: server::ConnectionPolicy,
+) -> (RdpServer, UnboundedSender<DisplayUpdate>) {
     let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
     let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
     let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
     let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
 
-    let counts = Arc::new(HookCounts::default());
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let mut server = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
@@ -3004,7 +3295,7 @@ fn hook_recording_server(
             rx: Arc::new(Mutex::new(display_rx)),
             offers_display_control: true,
         })
-        .with_connection_handler(Some(Box::new(HookRecorder(Arc::clone(&counts)))))
+        .with_connection_handler(Some(handler))
         .with_connection_policy(policy)
         .build();
     server.set_credentials(Some(server::Credentials {
@@ -3012,7 +3303,7 @@ fn hook_recording_server(
         password: PASSWORD.into(),
         domain: None,
     }));
-    (server, counts, display_tx)
+    (server, display_tx)
 }
 
 async fn local_addr_of(ev: &UnboundedSender<ServerEvent>) -> SocketAddr {
@@ -3049,6 +3340,89 @@ async fn hooks_reaching_handler_under(policy: server::ConnectionPolicy) -> (bool
             (accept >= 1, info >= 1)
         })
         .await
+}
+
+/// `(desktop, device)` scale factors as `ConnectionInfo` reports them.
+type ScaleFactors = (Option<u32>, Option<u32>);
+
+/// Records the scale factors `on_connection_info` reports.
+struct ScaleRecorder(Arc<StdMutex<Option<ScaleFactors>>>);
+
+impl server::ConnectionHandler for ScaleRecorder {
+    fn on_connection_info(&mut self, info: &server::ConnectionInfo) {
+        *self.0.lock().unwrap() = Some((info.desktop_scale_factor, info.device_scale_factor));
+    }
+}
+
+/// Connect a real client announcing `desktop_scale_factor` (and
+/// `device_scale_factor`, when given) and report the `(desktop, device)` scale
+/// factors `on_connection_info` received.
+async fn scale_factors_reported_for(desktop_scale_factor: u32, device_scale_factor: Option<u32>) -> ScaleFactors {
+    let seen = Arc::new(StdMutex::new(None));
+    let (mut server, _display_tx) = handler_server(
+        Box::new(ScaleRecorder(Arc::clone(&seen))),
+        server::ConnectionPolicy::Queue,
+    );
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+
+            let server_addr = local_addr_of(&ev).await;
+            let (client, _) = connect_client(server_addr, |client_addr| {
+                let mut config = default_client_config();
+                config.desktop_scale_factor = desktop_scale_factor;
+                config.device_scale_factor = device_scale_factor;
+                connector::ClientConnector::new(config, client_addr)
+            })
+            .await;
+
+            assert!(
+                poll_until(|| seen.lock().unwrap().is_some()).await,
+                "on_connection_info never fired"
+            );
+            drop(client);
+            server_task.abort();
+            seen.lock().unwrap().expect("checked above")
+        })
+        .await
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.3.2 (a desktopScaleFactor in 100..=500 with a deviceScaleFactor of 100/140/180 is reported)
+#[tokio::test]
+async fn connection_info_reports_the_client_scale_factors() {
+    // A 2x client on a 140% device: both values are chosen here, so neither
+    // depends on the connector's defaults.
+    assert_eq!(
+        Box::pin(scale_factors_reported_for(200, Some(140))).await,
+        (Some(200), Some(140))
+    );
+}
+
+// oracle: reference crates/ironrdp-server/src/server.rs ConnectionInfo::new docs (fields the constructor leaves unset can be set on the result)
+#[test]
+fn connection_info_scale_factors_can_be_set_downstream() {
+    // An executable example of the documented pattern: ConnectionInfo is
+    // non_exhaustive, so a downstream ConnectionHandler test builds the
+    // 2x-client case from new() and sets the fields it needs.
+    let mut info = server::ConnectionInfo::new(0, gcc::KeyboardType::IBM_ENHANCED, String::new());
+    assert_eq!((info.desktop_scale_factor, info.device_scale_factor), (None, None));
+    info.desktop_scale_factor = Some(200);
+    info.device_scale_factor = Some(100);
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.3.2 (values outside 100..=500 / 100|140|180 MUST be ignored)
+#[tokio::test]
+async fn connection_info_ignores_out_of_range_scale_factors() {
+    // A desktop scale of 0 is out of range. The connector then sends a device
+    // scale of 0 too (it pairs an invalid desktop scale with Some(0)), so the
+    // wire carries (0, 0); a connector change there would alter this input.
+    // Both are outside the specified ranges, so both must read as unset.
+    assert_eq!(Box::pin(scale_factors_reported_for(0, None)).await, (None, None));
 }
 
 // A client must not send PTRFLAGS_HWHEEL to a server that does not set TS_INPUT_FLAG_MOUSE_HWHEEL.

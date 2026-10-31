@@ -245,6 +245,13 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
     let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
+    let _ = decode::<ironrdp_rdpet::pdu::TelemetryPdu>(data);
+    let _ = decode::<ironrdp_rdpemsc::pdu::MouseCursorPdu>(data);
+    let _ = decode::<ironrdp_rdpetxt::pdu::ServerPdu>(data);
+    let _ = decode::<ironrdp_rdpetxt::pdu::ClientPdu>(data);
+    let _ = decode::<ironrdp_rdpadrv::pdu::AudioLevelPdu>(data);
+    let _ = decode::<ironrdp_rdpadrv::pdu::DriveLetterPdu>(data);
+    let _ = decode::<ironrdp_rdpeci::pdu::CoreInputPdu>(data);
     let _ = decode::<ironrdp_w365::vdcswitch::pdu::VdcSwitchPdu>(data);
     let _ = decode::<ironrdp_w365::battery::BatteryPdu>(data);
     let _ = decode::<ironrdp_w365::power_request::PowerRequestPdu>(data);
@@ -426,11 +433,28 @@ pub fn pdu_round_trip(data: &[u8]) {
     // Display control
     pdu_round_trip_one!(data, ironrdp_displaycontrol::pdu::DisplayControlPdu);
 
+    // Core input
+    pdu_round_trip_one!(data, ironrdp_rdpeci::pdu::CoreInputPdu);
+
     // Location
     pdu_round_trip_one!(data, ironrdp_rdpel::pdu::LocationPdu);
+
+    // Telemetry
+    pdu_round_trip_one!(data, ironrdp_rdpet::pdu::TelemetryPdu);
+
+    // Mouse cursor
+    pdu_round_trip_one!(data, ironrdp_rdpemsc::pdu::MouseCursorPdu);
+
+    // Text input
+    pdu_round_trip_one!(data, ironrdp_rdpetxt::pdu::ServerPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpetxt::pdu::ClientPdu);
     pdu_round_trip_one!(data, ironrdp_rdpear::AuthRedirectionPdu);
     pdu_round_trip_one!(data, ironrdp_rdpear::RemoteGuardInnerPacket<'_>);
     rdpear_ndr_round_trip(data);
+
+    // Audio level and drive letter persistence
+    pdu_round_trip_one!(data, ironrdp_rdpadrv::pdu::AudioLevelPdu);
+    pdu_round_trip_one!(data, ironrdp_rdpadrv::pdu::DriveLetterPdu);
 
     // Virtual desktop control
     pdu_round_trip_one!(data, ironrdp_w365::vdcswitch::pdu::VdcSwitchPdu);
