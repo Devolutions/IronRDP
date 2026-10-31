@@ -3243,9 +3243,12 @@ async fn pending_session_exposes_delegated_identity_before_session_start() {
             "dropping the pending session must prevent session finalization"
         );
     };
-    tokio::time::timeout(Duration::from_secs(10), async {
-        tokio::join!(server_handshake, client_handshake);
-    })
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        Box::pin(async {
+            tokio::join!(server_handshake, client_handshake);
+        }),
+    )
     .await
     .expect("managed-TLS CredSSP handshake completed");
 }
