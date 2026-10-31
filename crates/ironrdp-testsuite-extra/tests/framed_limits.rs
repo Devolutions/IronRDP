@@ -14,9 +14,11 @@ use tokio::io::AsyncReadExt as _;
 /// It exceeds the range [`assert_stopped_at_the_limit`] accepts, so a framer that reads everything fails the check.
 const PEER_BYTES: usize = 4 * MAX_UNSIZED_BUFFER_LEN;
 
-fn peer_stream_len() -> u64 {
-    u64::try_from(PEER_BYTES).expect("PEER_BYTES fits in u64")
-}
+#[expect(
+    clippy::as_conversions,
+    reason = "usize to u64 is lossless on every supported target"
+)]
+const PEER_STREAM_LEN: u64 = PEER_BYTES as u64;
 
 /// Checks that the framer read at least up to the limit and then stopped.
 ///
@@ -39,10 +41,10 @@ impl PduHint for UndecidedHint {
     }
 }
 
-// oracle: spec crates/ironrdp-async/src/framed.rs §read_by_hint and crates/ironrdp-pdu/src/lib.rs §MAX_UNSIZED_BUFFER_LEN (fails with InvalidData once the limit is buffered without a size)
+// oracle: mutant async read_by_hint buffers without bound when the hint never decides (limit check removed, or made after the read)
 #[tokio::test]
 async fn async_read_by_hint_stops_buffering_when_the_hint_never_finds_a_size() {
-    let mut framed = ironrdp_tokio::TokioFramed::new(tokio::io::repeat(0xAA).take(peer_stream_len()));
+    let mut framed = ironrdp_tokio::TokioFramed::new(tokio::io::repeat(0xAA).take(PEER_STREAM_LEN));
 
     let error = framed.read_by_hint(&UndecidedHint).await.unwrap_err();
 
@@ -50,10 +52,10 @@ async fn async_read_by_hint_stops_buffering_when_the_hint_never_finds_a_size() {
     assert_stopped_at_the_limit(framed.get_inner().0.limit());
 }
 
-// oracle: spec crates/ironrdp-blocking/src/framed.rs §read_by_hint and crates/ironrdp-pdu/src/lib.rs §MAX_UNSIZED_BUFFER_LEN (fails with InvalidData once the limit is buffered without a size)
+// oracle: mutant blocking read_by_hint buffers without bound when the hint never decides (limit check removed, or made after the read)
 #[test]
 fn blocking_read_by_hint_stops_buffering_when_the_hint_never_finds_a_size() {
-    let mut framed = ironrdp_blocking::Framed::new(io::repeat(0xAA).take(peer_stream_len()));
+    let mut framed = ironrdp_blocking::Framed::new(io::repeat(0xAA).take(PEER_STREAM_LEN));
 
     let error = framed.read_by_hint(&UndecidedHint).unwrap_err();
 

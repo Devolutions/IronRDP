@@ -148,23 +148,72 @@ pub fn bulk_round_trip(data: &[u8]) {
 ///
 /// A framer reads more input for as long as its hint returns `None`, so a hint that does so for complete input that
 /// can never frame a PDU lets the peer make the framer buffer whatever it sends.
+/// The header lengths come from the wire formats rather than from the hints, so a hint that waits past its header
+/// fails here however short that header is.
 pub fn pdu_hint(data: &[u8]) {
     use ironrdp_pdu::{CREDSSP_TS_REQUEST_HINT, FAST_PATH_HINT, PduHint, RDP_HINT, X224_HINT};
 
-    // The longest header any of these hints reads: a TPKT header, or a BER SEQUENCE tag with two length octets.
-    const MAX_HEADER_LEN: usize = 4;
+    let rdp_header_len = rdp_header_len(data);
+    let hints: [(&dyn PduHint, Option<usize>); 4] = [
+        (&RDP_HINT, rdp_header_len),
+        (&X224_HINT, rdp_header_len),
+        (&FAST_PATH_HINT, rdp_header_len),
+        (&CREDSSP_TS_REQUEST_HINT, der_sequence_header_len(data)),
+    ];
 
-    let hints: [&dyn PduHint; 4] = [&RDP_HINT, &X224_HINT, &FAST_PATH_HINT, &CREDSSP_TS_REQUEST_HINT];
+    for (hint, header_len) in hints {
+        // Without a header length, `data` is too short to tell where the header ends, so it is not complete either.
+        let Some(header_len) = header_len else {
+            continue;
+        };
 
-    for hint in hints {
         if let Ok(None) = hint.find_size(data) {
             assert!(
-                data.len() < MAX_HEADER_LEN,
-                "{hint:?} found no size in {} bytes, which hold a whole header",
+                data.len() < header_len,
+                "{hint:?} found no size in {} bytes, which hold its {header_len}-byte header",
                 data.len()
             );
         }
     }
+}
+
+/// Length of the header that sizes an RDP PDU, or `None` while `data` is too short to tell.
+///
+/// The action in the low two bits of the first byte (\[MS-RDPBCGR\] 2.2.9.1.2) tells a TPKT header, whose 4 bytes end
+/// with the packet length (ITU-T T.123 §8), from a fast-path header, whose length takes one byte, or two when the
+/// first has its high bit set.
+/// Any other value can never start a PDU, so the first byte is the whole header.
+fn rdp_header_len(data: &[u8]) -> Option<usize> {
+    const FASTPATH_OUTPUT_ACTION_FASTPATH: u8 = 0x00;
+    const FASTPATH_OUTPUT_ACTION_X224: u8 = 0x03;
+
+    match data.first()? & 0x03 {
+        FASTPATH_OUTPUT_ACTION_X224 => Some(4),
+        FASTPATH_OUTPUT_ACTION_FASTPATH => {
+            let length1 = *data.get(1)?;
+            Some(if length1 & 0x80 != 0 { 3 } else { 2 })
+        }
+        _ => Some(1),
+    }
+}
+
+/// Length of the identifier and length octets of a DER SEQUENCE, or `None` while `data` is too short to tell.
+///
+/// A TSRequest is a DER-encoded SEQUENCE (\[MS-CSSP\] 2.2.1), whose identifier octet is 0x30 (ITU-T X.690 §8.1.2,
+/// §8.9.1).
+/// The first length octet holds the length itself below 0x80, and otherwise the count of length octets that follow
+/// (X.690 §8.1.3.4, §8.1.3.5).
+/// DER allows only the definite form (X.690 §10.1), so the indefinite form 0x80 and the reserved 0xFF can never
+/// frame, and the octet holding them ends the header.
+fn der_sequence_header_len(data: &[u8]) -> Option<usize> {
+    if *data.first()? != 0x30 {
+        return Some(1);
+    }
+
+    Some(match *data.get(1)? {
+        0x00..=0x7F | 0x80 | 0xFF => 2,
+        long_form => 2 + usize::from(long_form & 0x7F),
+    })
 }
 
 pub fn pdu_decode(data: &[u8]) {
