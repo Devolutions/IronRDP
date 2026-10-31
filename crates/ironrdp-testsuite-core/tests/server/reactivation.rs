@@ -92,7 +92,7 @@ async fn read_dvc(client: &mut TokioFramed<DuplexStream>, channel: u16) -> Drdyn
 
 #[tokio::test(start_paused = true)]
 async fn factory_channel_remains_registered_across_reactivation() {
-    // mutant: A resize-triggered reactivation drops a factory-owned Echo processor or its pending request.
+    // oracle: mutant a resize-triggered reactivation drops a factory-owned Echo processor or its pending request.
     let (sender, receiver) = mpsc::channel(1);
     let echo_id = Arc::new(AtomicU32::new(u32::MAX));
     let mut server = RdpServer::builder()

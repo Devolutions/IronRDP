@@ -95,7 +95,7 @@ impl DynamicChannelFactory for OrderFactory {
 
 #[tokio::test]
 async fn dynamic_channel_factory_builds_and_releases_a_fresh_processor_per_connection() {
-    // mutant: Skip or reorder a factory, remove a built-in channel, or retain its processor across connections.
+    // oracle: mutant skip or reorder a factory, remove a built-in channel, or retain its processor across connections.
     let dropped = Arc::new(AtomicUsize::new(0));
     let order = Arc::new(AtomicUsize::new(0));
     let mut server = RdpServer::builder()
