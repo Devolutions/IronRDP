@@ -74,6 +74,12 @@ fn clipboard_channels() -> StaticChannelSet {
     channels
 }
 
+fn unjoined_clipboard_channel() -> StaticChannelSet {
+    let mut channels = StaticChannelSet::new();
+    assert!(channels.insert(CliprdrServer::new(Box::new(SilentBackend))).is_none());
+    channels
+}
+
 fn completion_event(message: ClipboardMessage) -> (ServerEvent, oneshot::Receiver<()>) {
     let (completion, processed) = oneshot::channel();
     (ServerEvent::ClipboardWithCompletion(message, completion), processed)
@@ -207,6 +213,16 @@ async fn missing_clipboard_channel_completes_events_without_output() {
     assert!(bytes.is_empty());
     assert_eq!(first_processed.await, Ok(()));
     assert_eq!(second_processed.await, Ok(()));
+}
+
+// oracle: mutant return an SVC channel error for a registered-but-unjoined clipboard processor.
+#[tokio::test]
+async fn unjoined_clipboard_channel_completes_without_output() {
+    let (event, processed) = completion_event(copy_message());
+    let bytes = dispatch_and_capture(vec![event], unjoined_clipboard_channel()).await;
+
+    assert!(bytes.is_empty());
+    assert_eq!(processed.await, Ok(()));
 }
 
 // oracle: mutant writing output for a refused request or preventing the later event from running.
