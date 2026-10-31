@@ -3403,6 +3403,7 @@ impl RdpServer {
                 "belongs to a different server instance",
             ));
         }
+        self.connection_peer_addr = None;
         self.connection_local_addr = None;
         self.discard_stale_session_events().await;
         let result = Box::pin(self.finalize_negotiated(pending.connection)).await;

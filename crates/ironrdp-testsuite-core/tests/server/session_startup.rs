@@ -139,6 +139,25 @@ impl RdpServerInputHandler for NoopInput {
     fn mouse(&mut self, _event: ironrdp_server::MouseEvent) {}
 }
 
+struct PeerRecorder(Arc<Mutex<Vec<Option<std::net::SocketAddr>>>>);
+
+impl ironrdp_server::ConnectionHandler for PeerRecorder {
+    fn on_connection_info(&mut self, info: &ironrdp_server::ConnectionInfo) {
+        self.0.lock().unwrap().push(info.peer_addr);
+    }
+}
+
+struct ClosedTcpSource;
+
+#[async_trait]
+impl ironrdp_server::ConnectionSource for ClosedTcpSource {
+    type Stream = TcpStream;
+
+    async fn accept(&mut self) -> std::io::Result<Option<ironrdp_server::IncomingConnection<TcpStream>>> {
+        Ok(None)
+    }
+}
+
 #[tokio::test]
 async fn handshake_defers_client_info_validation_binding_channels_and_activation_to_session_start() {
     // oracle: mutant allowing session startup to exit before activation.
@@ -319,6 +338,7 @@ async fn pending_session_cannot_be_consumed_by_another_server() {
 async fn pending_session_discards_events_left_by_an_intervening_session() {
     // oracle: mutant delivering an intervening session's disconnect to a resumed pending session.
     let lifecycle = Arc::new(Mutex::new(Vec::new()));
+    let peers = Arc::new(Mutex::new(Vec::new()));
     let mut server = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
         .with_no_security()
@@ -328,6 +348,7 @@ async fn pending_session_discards_events_left_by_an_intervening_session() {
             size: CLIENT_SIZE,
             activated: None,
         })
+        .with_connection_handler(Some(Box::new(PeerRecorder(Arc::clone(&peers)))))
         .build();
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let (original_stream, original_client) =
@@ -363,8 +384,18 @@ async fn pending_session_discards_events_left_by_an_intervening_session() {
         intervening_close_rx.await.unwrap();
         framed.read_pdu().await.is_err()
     });
+    let intervening_stream = intervening_stream.unwrap().0;
+    let intervening_peer = intervening_stream.peer_addr().unwrap();
     {
-        let intervening = server.run_connection(intervening_stream.unwrap().0);
+        let mut source = ClosedTcpSource;
+        let intervening = server.serve_connection(
+            ironrdp_server::NextConnection::Incoming(ironrdp_server::IncomingConnection::new(
+                intervening_stream,
+                ironrdp_server::TransportTls::Managed,
+                Some(intervening_peer),
+            )),
+            &mut source,
+        );
         tokio::pin!(intervening);
         tokio::time::timeout(Duration::from_secs(5), async {
             tokio::select! {
@@ -410,6 +441,8 @@ async fn pending_session_discards_events_left_by_an_intervening_session() {
         .await
         .unwrap();
     }
+    // oracle: mutant attributing the resumed pending connection to the intervening session's peer.
+    assert_eq!(*peers.lock().unwrap(), [Some(intervening_peer), None]);
     original_close_tx.send(()).unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(5), original_task)
