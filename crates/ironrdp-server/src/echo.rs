@@ -36,6 +36,10 @@ impl core::fmt::Display for EchoServerMessage {
 struct EchoHandleState {
     pending: BTreeMap<Vec<u8>, VecDeque<Instant>>,
     measurements: VecDeque<EchoRoundTripMeasurement>,
+    /// Id of the last bridge made (one per connection).
+    last_bridge: u64,
+    /// Id of the bridge whose channel the client opened, if any.
+    open_bridge: Option<u64>,
 }
 
 /// Shared handle for runtime ECHO requests and RTT measurements.
@@ -64,6 +68,14 @@ impl EchoServerHandle {
         self.sender
             .send(ServerEvent::Echo(EchoServerMessage::SendRequest { payload }))
             .map_err(|_error| ServerError::channel("send ECHO request event"))
+    }
+
+    /// True while the client of the current connection has the ECHO dynamic
+    /// channel open. False before the client answered the DVC Create Request,
+    /// when it declined the channel, and after the connection ended. The server
+    /// drops a request sent while this is false.
+    pub fn is_channel_open(&self) -> bool {
+        self.lock_state().open_bridge.is_some()
     }
 
     /// Drains collected RTT measurements.
@@ -101,6 +113,22 @@ impl EchoServerHandle {
         });
     }
 
+    fn new_bridge_id(&self) -> u64 {
+        let mut state = self.lock_state();
+        state.last_bridge += 1;
+        state.last_bridge
+    }
+
+    fn set_open(&self, bridge: u64, open: bool) {
+        let mut state = self.lock_state();
+        if open {
+            state.open_bridge = Some(bridge);
+        } else if state.open_bridge == Some(bridge) {
+            // A newer connection may have opened its channel already.
+            state.open_bridge = None;
+        }
+    }
+
     fn lock_state(&self) -> MutexGuard<'_, EchoHandleState> {
         match self.state.lock() {
             Ok(state) => state,
@@ -113,13 +141,17 @@ impl EchoServerHandle {
 pub struct EchoDvcBridge {
     inner: EchoServer,
     handle: EchoServerHandle,
+    /// Tells this connection's channel state apart from that of another one.
+    id: u64,
 }
 
 impl EchoDvcBridge {
     pub fn new(handle: EchoServerHandle) -> Self {
+        let id = handle.new_bridge_id();
         Self {
             inner: EchoServer::new(),
             handle,
+            id,
         }
     }
 
@@ -136,6 +168,7 @@ impl DvcProcessor for EchoDvcBridge {
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        self.handle.set_open(self.id, true);
         self.inner.start(channel_id)
     }
 
@@ -146,6 +179,7 @@ impl DvcProcessor for EchoDvcBridge {
     }
 
     fn close(&mut self, channel_id: u32) {
+        self.handle.set_open(self.id, false);
         self.inner.close(channel_id)
     }
 }
@@ -154,4 +188,84 @@ impl DvcServerProcessor for EchoDvcBridge {}
 
 pub(crate) fn build_echo_request(payload: Vec<u8>) -> ServerResult<DvcMessage> {
     EchoServer::request_message(payload).map_err_kind("build ECHO request message", ServerErrorKind::Pdu)
+}
+
+#[cfg(test)]
+mod tests {
+    use ironrdp_dvc::DrdynvcServer;
+    use ironrdp_dvc::pdu::{
+        CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
+    };
+    use ironrdp_svc::SvcProcessor as _;
+
+    use super::*;
+
+    fn handle() -> EchoServerHandle {
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        EchoServerHandle::new(sender)
+    }
+
+    fn client_sends(server: &mut DrdynvcServer, pdu: DrdynvcClientPdu) {
+        server.process(&ironrdp_core::encode_vec(&pdu).unwrap()).unwrap();
+    }
+
+    /// A DVC server with the ECHO bridge, after the client sent its capabilities, and the ECHO channel id.
+    fn server(handle: &EchoServerHandle) -> (DrdynvcServer, u32) {
+        let mut server = DrdynvcServer::new().with_dynamic_channel(EchoDvcBridge::new(handle.clone()));
+        client_sends(
+            &mut server,
+            DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V2)),
+        );
+        let id = server.get_channel_id_by_type::<EchoDvcBridge>().unwrap();
+        (server, id)
+    }
+
+    fn client_answers(server: &mut DrdynvcServer, id: u32, status: CreationStatus) {
+        client_sends(server, DrdynvcClientPdu::Create(CreateResponsePdu::new(id, status)));
+    }
+
+    // oracle: regression #2339
+    #[test]
+    fn open_after_the_client_accepts_until_it_closes() {
+        let handle = handle();
+        let (mut server, id) = server(&handle);
+        assert!(!handle.is_channel_open(), "Create Request sent, no answer yet");
+        client_answers(&mut server, id, CreationStatus::OK);
+        assert!(handle.is_channel_open());
+        client_sends(&mut server, DrdynvcClientPdu::Close(ClosePdu::new(id)));
+        assert!(!handle.is_channel_open(), "the client closed the channel");
+    }
+
+    // oracle: regression #2339
+    #[test]
+    fn not_open_when_the_client_declines() {
+        let handle = handle();
+        let (mut server, id) = server(&handle);
+        client_answers(&mut server, id, CreationStatus::NO_LISTENER);
+        assert!(!handle.is_channel_open());
+    }
+
+    // oracle: regression #2339
+    #[test]
+    fn not_open_after_the_connection_ends() {
+        let handle = handle();
+        let (mut server, id) = server(&handle);
+        client_answers(&mut server, id, CreationStatus::OK);
+        drop(server);
+        assert!(!handle.is_channel_open());
+    }
+
+    // oracle: mutant the end of an old connection clearing the open channel of the next one
+    #[test]
+    fn the_end_of_an_old_connection_keeps_the_new_channel_open() {
+        let handle = handle();
+        let (mut old, old_id) = server(&handle);
+        client_answers(&mut old, old_id, CreationStatus::OK);
+        let (mut new, new_id) = server(&handle);
+        client_answers(&mut new, new_id, CreationStatus::OK);
+        drop(old);
+        assert!(handle.is_channel_open(), "the new connection's channel stays open");
+        drop(new);
+        assert!(!handle.is_channel_open());
+    }
 }
