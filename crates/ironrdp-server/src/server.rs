@@ -4015,7 +4015,10 @@ impl RdpServer {
         user_channel_id: u16,
         message: ClipboardMessage,
     ) -> ServerResult<()> {
-        let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
+        let (Some(channel_id), Some(cliprdr)) = (
+            conn.get_channel_id_by_type::<CliprdrServer>(),
+            conn.get_svc_processor::<CliprdrServer>(),
+        ) else {
             warn!("No clipboard channel, dropping event");
             return Ok(());
         };
@@ -4039,9 +4042,6 @@ impl RdpServer {
                 return Ok(());
             }
         };
-        let channel_id = conn
-            .get_channel_id_by_type::<CliprdrServer>()
-            .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
         let data =
             server_encode_svc_messages(messages.into(), channel_id, user_channel_id).map_err(ServerError::encode)?;
         writer
