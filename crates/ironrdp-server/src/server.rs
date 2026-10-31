@@ -1587,6 +1587,16 @@ pub enum ServerEvent {
     /// See [`ServerRedirectionHandle::redirect`].
     Redirect(Box<ServerRedirectionPdu>),
     Clipboard(ClipboardMessage),
+    /// Writes data to an open dynamic channel over the main RDP transport.
+    ///
+    /// Dispatch revalidates the batch and rejects control PDUs.
+    /// Submit only for an active session and await completion before submitting another batch.
+    /// Cap batch sizes; the event queue is unbounded and has no dispatch deadline.
+    /// A closed receiver means dispatch failed, the event was discarded, or the channel was unavailable.
+    /// Channels migrated to a sideband transport are rejected rather than sent over the wrong transport.
+    /// Failure does not prove that no bytes were sent, so it is not permission to retry.
+    /// Completion confirms the entire transport write, not acceptance by the peer.
+    DynamicChannelWithCompletion(dvc::DvcMessageBatch, oneshot::Sender<()>),
     /// Writes one PDU to a joined static channel, splitting it into chunks as needed.
     ///
     /// Fragmented PDUs set `SHOW_PROTOCOL` on every chunk per [MS-RDPBCGR] section 3.1.5.2.1,
@@ -1673,6 +1683,10 @@ impl fmt::Debug for ServerEvent {
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
+            Self::DynamicChannelWithCompletion(batch, _) => f
+                .debug_tuple("DynamicChannelWithCompletion")
+                .field(&batch.channel_id())
+                .finish(),
             Self::StaticChannelWithCompletion { name, payload, .. } => f
                 .debug_tuple("StaticChannelWithCompletion")
                 .field(&name.as_str())
@@ -4045,6 +4059,39 @@ impl RdpServer {
         for event in events.drain(..) {
             trace!(?event, "Dispatching");
             match event {
+                ServerEvent::DynamicChannelWithCompletion(batch, completion) => {
+                    let channel_id = batch.channel_id();
+                    let batch = match dvc::DvcMessageBatch::try_new(channel_id, batch.into_messages()) {
+                        Ok(batch) => batch,
+                        Err(error) => {
+                            warn!(channel_id, %error, "Invalid dynamic channel data batch, rejecting write");
+                            continue;
+                        }
+                    };
+                    if !conn.get_svc_processor::<dvc::DrdynvcServer>().is_some_and(|drdynvc| {
+                        drdynvc.is_channel_opened(channel_id)
+                            && drdynvc.tunnel_for_outgoing_channel(channel_id).is_none()
+                    }) {
+                        warn!(
+                            channel_id,
+                            "Dynamic channel is not open on the main transport, rejecting write"
+                        );
+                        continue;
+                    }
+                    let Some(drdynvc_channel_id) = conn.get_channel_id_by_type::<dvc::DrdynvcServer>() else {
+                        warn!(channel_id, "No DRDYNVC channel, rejecting dynamic channel write");
+                        continue;
+                    };
+                    let data = server_encode_svc_messages(batch.into_messages(), drdynvc_channel_id, user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    writer
+                        .write_all(&data)
+                        .await
+                        .map_err(|error| ServerError::io("write dynamic channel data", error))?;
+                    if completion.send(()).is_err() {
+                        trace!(channel_id, "Dynamic channel producer stopped waiting for dispatch");
+                    }
+                }
                 ServerEvent::StaticChannelWithCompletion {
                     name,
                     payload,

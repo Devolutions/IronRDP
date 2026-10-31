@@ -98,6 +98,17 @@ Register a `DynamicChannelFactory` with `RdpServerBuilder::with_dynamic_channel_
 Each factory runs for every connection, in registration order, after the built-in channels are registered and before DRDYNVC negotiation.
 The processors created by a factory belong to that connection and are dropped when it ends.
 
+## Dynamic-channel writes
+
+Send a validated `ironrdp_dvc::DvcMessageBatch` through `ServerEvent::DynamicChannelWithCompletion` for an already-open dynamic channel.
+Dispatch revalidates every batch and rejects control PDUs, including Create and Close responses.
+The server writes the batch over the joined DRDYNVC static channel; unavailable channels and channels migrated to a sideband transport are rejected.
+Await the completion receiver before submitting another batch, and cap batch sizes because the event queue is unbounded.
+Completion confirms the entire transport write, not peer processing.
+A closed receiver means failure or discard, not permission to retry: some bytes may already have been sent.
+Submit only for an active session; idle and stale-session events are discarded.
+There is no dispatch deadline, and a slow write holds server state and the shared writer until it finishes or fails.
+
 ## Static-channel writes
 
 Register a per-connection processor through `StaticChannelFactory`, then send `ServerEvent::StaticChannelJoined` through `RdpServer::event_sender()` to check whether the active client joined its channel.
