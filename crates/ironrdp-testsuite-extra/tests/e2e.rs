@@ -3169,6 +3169,18 @@ where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
 {
     let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+    Box::pin(connect_client_on(tcp_stream, make_connector, wrap)).await
+}
+
+/// Connects like [`connect_client_with`], on a TCP connection the caller made.
+async fn connect_client_on<S>(
+    tcp_stream: TcpStream,
+    make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
+    wrap: impl FnOnce(TlsStream<TcpStream>) -> S,
+) -> (Framed<TokioStream<S>>, connector::ConnectionResult)
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
     let client_addr = tcp_stream.local_addr().expect("local_addr");
     let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
     let mut connector = make_connector(client_addr);
@@ -3199,6 +3211,364 @@ where
     .and_then(connector::ConnectionOutcome::into_connected)
     .expect("finalize connection");
     (upgraded_framed, connection_result)
+}
+
+/// Waits until at least `bytes` of server data wait unread on `tcp`. With
+/// small socket buffers, a server write larger than the buffers is then in
+/// progress and stays pending while the client does not read.
+async fn wait_until_unread(tcp: &TcpStream, bytes: usize) {
+    let mut buf = vec![0u8; bytes];
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while tcp.peek(&mut buf).await.expect("peek") < bytes {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the server's large write did not start");
+}
+
+/// Input from the client is handled while the server is in a long write: a
+/// large EGFX batch to a client that does not read stays in the socket.
+// oracle: regression #2310
+#[tokio::test]
+async fn input_is_handled_while_a_large_write_is_pending() {
+    struct MouseRecorder(UnboundedSender<MouseEvent>);
+
+    impl RdpServerInputHandler for MouseRecorder {
+        fn keyboard(&mut self, _: KeyboardEvent) {}
+        fn mouse(&mut self, event: MouseEvent) {
+            let _ = self.0.send(event);
+        }
+    }
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (mouse_tx, mut mouse_rx) = mpsc::unbounded_channel();
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(MouseRecorder(mouse_tx))
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+                // A small receive buffer, so that the server's write stays pending.
+                let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+                socket.set_recv_buffer_size(4096).expect("SO_RCVBUF");
+                let tcp_stream = socket.connect(server_addr).await.expect("TCP connect");
+                let (mut framed, _) = connect_client_on(
+                    tcp_stream,
+                    |client_addr| {
+                        connector::ClientConnector::new(default_client_config(), client_addr)
+                            .with_static_channel(DrdynvcClient::new())
+                    },
+                    |stream| stream,
+                )
+                .await;
+
+                // 16 MiB on the DRDYNVC channel, more than the socket buffers hold.
+                // The client does not read it.
+                ev.send(ServerEvent::Egfx(ironrdp_server::EgfxServerMessage::SendMessages {
+                    messages: vec![SvcMessage::from(vec![0u8; 16 * 1024 * 1024])],
+                }))
+                .unwrap();
+                wait_until_unread(framed.get_inner().0.get_ref().0, 2048).await;
+
+                let input = pdu::input::fast_path::FastPathInput::new(vec![
+                    pdu::input::fast_path::FastPathInputEvent::MouseEvent(pdu::input::MousePdu {
+                        flags: pdu::input::mouse::PointerFlags::MOVE,
+                        number_of_wheel_rotation_units: 0,
+                        x_position: 12,
+                        y_position: 34,
+                    }),
+                ])
+                .expect("one event");
+                framed
+                    .write_all(&encode_vec(&input).expect("encode input"))
+                    .await
+                    .expect("write input");
+                let handled = tokio::time::timeout(Duration::from_secs(2), mouse_rx.recv()).await;
+                drop(framed);
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                handled
+            });
+            let handled = client.await.expect("client");
+            server_task.abort();
+            let event = handled
+                .expect("input handled while the write is pending")
+                .expect("a mouse event");
+            assert!(matches!(event, MouseEvent::Move { x: 12, y: 34 }), "{event:?}");
+        })
+        .await;
+}
+
+/// At a normal end (here the client's Disconnect Provider Ultimatum) the
+/// server writes what is still queued within a time limit, so a client that
+/// does not read cannot hold the connection open. The server drops the rest,
+/// and the client reads much less than was queued.
+// oracle: mutant the final flush waits for a client that does not read
+#[tokio::test]
+async fn the_final_flush_to_a_client_that_does_not_read_has_a_time_limit() {
+    // The server's flush limit, and a margin for a server that starts its
+    // flush later than the client starts to wait.
+    const FLUSH_WAIT: Duration = ironrdp_server::FINAL_FLUSH_TIMEOUT.saturating_add(Duration::from_secs(3));
+    const QUEUED: usize = 16 * 1024 * 1024;
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+                let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+                socket.set_recv_buffer_size(4096).expect("SO_RCVBUF");
+                let tcp_stream = socket.connect(server_addr).await.expect("TCP connect");
+                let (mut framed, _) = connect_client_on(
+                    tcp_stream,
+                    |client_addr| {
+                        connector::ClientConnector::new(default_client_config(), client_addr)
+                            .with_static_channel(DrdynvcClient::new())
+                    },
+                    |stream| stream,
+                )
+                .await;
+
+                ev.send(ServerEvent::Egfx(ironrdp_server::EgfxServerMessage::SendMessages {
+                    messages: vec![SvcMessage::from(vec![0u8; QUEUED])],
+                }))
+                .unwrap();
+                wait_until_unread(framed.get_inner().0.get_ref().0, 2048).await;
+                let disconnect = pdu::x224::X224(pdu::mcs::DisconnectProviderUltimatum::from_reason(
+                    pdu::mcs::DisconnectReason::UserRequested,
+                ));
+                framed
+                    .write_all(&encode_vec(&disconnect).expect("encode disconnect"))
+                    .await
+                    .expect("write disconnect");
+
+                // Read nothing until the server gave up, then read to the end.
+                tokio::time::sleep(FLUSH_WAIT).await;
+                let mut read = 0;
+                let end = tokio::time::timeout(Duration::from_secs(10), async {
+                    while let Ok((_, frame)) = framed.read_pdu().await {
+                        read += frame.len();
+                    }
+                })
+                .await;
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                (end.is_ok(), read)
+            });
+            let (ended, read) = client.await.expect("client");
+            server_task.abort();
+            assert!(ended, "the server closed the connection");
+            assert!(
+                read < QUEUED / 2,
+                "the client read {read} of {QUEUED} queued bytes: the server waited for it"
+            );
+        })
+        .await;
+}
+
+/// Server clipboard with no clipboard behind it: the channel only answers
+/// the client's PDUs.
+#[derive(Debug)]
+struct NoClipboard;
+
+impl_as_any!(NoClipboard);
+
+impl ironrdp::cliprdr::backend::CliprdrBackend for NoClipboard {
+    fn temporary_directory(&self) -> &str {
+        ".cliprdr"
+    }
+    fn client_capabilities(&self) -> ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags {
+        ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags::empty()
+    }
+    fn on_ready(&mut self) {}
+    fn on_request_format_list(&mut self) {}
+    fn on_process_negotiated_capabilities(&mut self, _: ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags) {}
+    fn on_remote_copy(&mut self, _: &[ironrdp::cliprdr::pdu::ClipboardFormat]) {}
+    fn on_format_data_request(&mut self, _: ironrdp::cliprdr::pdu::FormatDataRequest) {}
+    fn on_format_data_response(&mut self, _: ironrdp::cliprdr::pdu::FormatDataResponse<'_>) {}
+    fn on_file_contents_request(&mut self, _: ironrdp::cliprdr::pdu::FileContentsRequest) {}
+    fn on_file_contents_response(&mut self, _: ironrdp::cliprdr::pdu::FileContentsResponse<'_>) {}
+    fn on_lock(&mut self, _: ironrdp::cliprdr::pdu::LockDataId) {}
+    fn on_unlock(&mut self, _: ironrdp::cliprdr::pdu::LockDataId) {}
+}
+
+struct NoClipboardFactory;
+
+impl ironrdp::cliprdr::backend::CliprdrBackendFactory for NoClipboardFactory {
+    fn build_cliprdr_backend(&self) -> Box<dyn ironrdp::cliprdr::backend::CliprdrBackend> {
+        Box::new(NoClipboard)
+    }
+}
+
+impl ServerEventSender for NoClipboardFactory {
+    fn set_sender(&mut self, _: UnboundedSender<ServerEvent>) {}
+}
+
+impl server::CliprdrServerFactory for NoClipboardFactory {}
+
+/// Client side of the CLIPRDR static channel that ignores what it gets.
+#[derive(Debug)]
+struct RawCliprdrClient;
+
+impl_as_any!(RawCliprdrClient);
+
+impl SvcProcessor for RawCliprdrClient {
+    fn channel_name(&self) -> gcc::ChannelName {
+        gcc::ChannelName::from_static(b"cliprdr\0")
+    }
+
+    fn process(&mut self, _: &[u8]) -> pdu::PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl ironrdp::svc::SvcClientProcessor for RawCliprdrClient {}
+
+/// A client that sends requests and does not read the replies: the server
+/// stops reading from it once the queued replies reach their bound, so its
+/// memory does not grow without limit. Each Format List gets a Format List
+/// Response, as MS-RDPECLIP 3.1.5.2.2, ["Processing a Format List PDU"],
+/// requires. The Format Lists here are empty, so each response is about as
+/// large as its request.
+///
+/// ["Processing a Format List PDU"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/4e414864-6880-4b0d-8af7-1838ca000c2d
+// oracle: mutant the server reads requests without a bound on the replies it queues
+#[tokio::test]
+async fn a_client_that_does_not_read_its_replies_is_not_read_further() {
+    // Replies the server may queue (`MAX_QUEUED_REPLY_BYTES`), plus what the
+    // socket buffers on both sides hold, is far below this.
+    const FLOOD_BYTES: usize = 64 * 1024 * 1024;
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .with_cliprdr_factory(Some(Box::new(NoClipboardFactory)))
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+                let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+                socket.set_recv_buffer_size(4096).expect("SO_RCVBUF");
+                socket.set_send_buffer_size(4096).expect("SO_SNDBUF");
+                let tcp_stream = socket.connect(server_addr).await.expect("TCP connect");
+                let (mut framed, result) = connect_client_on(
+                    tcp_stream,
+                    |client_addr| {
+                        connector::ClientConnector::new(default_client_config(), client_addr)
+                            .with_static_channel(RawCliprdrClient)
+                    },
+                    |stream| stream,
+                )
+                .await;
+                let channel_id = result
+                    .static_channels
+                    .get_channel_id_by_type::<RawCliprdrClient>()
+                    .expect("the CLIPRDR channel joined");
+
+                let format_list = ironrdp::cliprdr::pdu::ClipboardPdu::FormatList(
+                    ironrdp::cliprdr::pdu::FormatList::new_unicode(&[], false).expect("format list"),
+                );
+                let message = SvcMessage::from(format_list).with_flags(ironrdp::svc::ChannelFlags::SHOW_PROTOCOL);
+                let one = ironrdp::svc::client_encode_svc_messages(vec![message], channel_id, result.user_channel_id)
+                    .expect("encode format list");
+                let batch = one.repeat(1000);
+
+                // The flood ends when the server reads nothing for 4 s, much
+                // longer than a slow moment of a busy host.
+                let mut sent = 0;
+                while sent < FLOOD_BYTES {
+                    let write = tokio::time::timeout(Duration::from_secs(4), framed.write_all(&batch)).await;
+                    if write.is_err() {
+                        break;
+                    }
+                    write.expect("checked").expect("write format lists");
+                    sent += batch.len();
+                }
+                drop(framed);
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                sent
+            });
+            let sent = client.await.expect("client");
+            server_task.abort();
+            // The flood went past the reply bound, so the server stopped
+            // reading because of it, not because the flood ended early.
+            assert!(
+                ironrdp_server::MAX_QUEUED_REPLY_BYTES < sent,
+                "the flood stopped after {sent} bytes, before the reply bound"
+            );
+            assert!(
+                sent < 16 * 1024 * 1024,
+                "the server read {sent} bytes of requests from a client that reads no replies"
+            );
+        })
+        .await;
 }
 
 /// Counts how often each `ConnectionHandler` hook reached the handler.

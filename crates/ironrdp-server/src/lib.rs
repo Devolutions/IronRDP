@@ -71,7 +71,10 @@ pub use server::{
     WindowingOrdersStatus, pick_remotefx_entropy_coder,
 };
 #[cfg(feature = "__test")]
-pub use server::{SharedWriter, client_max_request_size, dispatch_static_channel_events, pick_remotefx_codec};
+pub use server::{
+    FINAL_FLUSH_TIMEOUT, MAX_QUEUED_REPLY_BYTES, OutboundQueue, QueuedWriter, client_max_request_size,
+    dispatch_static_channel_events, pick_remotefx_codec,
+};
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]
 pub use urbdrc::{
