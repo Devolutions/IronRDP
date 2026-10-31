@@ -72,6 +72,14 @@ export function enableServerPointer(enable: boolean): Extension {
     return new Extension('enable_server_pointer', enable);
 }
 
+/**
+ * Negotiate RDP bulk compression (MPPC 64K): the server compresses what it sends and the client
+ * decompresses it. Fewer bytes cross the WebSocket and any proxy, for some CPU in the browser.
+ */
+export function enableCompression(enable: boolean): Extension {
+    return new Extension('enable_compression', enable);
+}
+
 export function legacyGraphics(enable: boolean): Extension {
     return new Extension('legacy_graphics', enable);
 }
