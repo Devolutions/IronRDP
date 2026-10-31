@@ -2800,11 +2800,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-capture"
+version = "0.0.0"
+dependencies = [
+ "aes-gcm 0.10.3",
+ "hmac 0.12.1",
+ "pcap-parser",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "zeroize",
+]
+
+[[package]]
 name = "ironrdp-capture-replay"
 version = "0.0.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "hmac 0.12.1",
+ "ironrdp-capture",
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",
  "ironrdp-egfx",
@@ -2812,7 +2825,6 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-session",
  "ironrdp-svc",
- "pcap-parser",
  "png",
  "sha2 0.10.9",
  "thiserror 2.0.21",
@@ -3724,13 +3736,16 @@ dependencies = [
 name = "ironrdp-testsuite-extra"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "hmac 0.12.1",
  "ironrdp",
  "ironrdp-agent",
  "ironrdp-async",
  "ironrdp-bulk",
+ "ironrdp-capture",
  "ironrdp-cfg",
  "ironrdp-client",
  "ironrdp-cliprdr",
@@ -3772,6 +3787,7 @@ dependencies = [
  "rstest",
  "semver",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tokio-rustls",
  "tracing",

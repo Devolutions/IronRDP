@@ -15,7 +15,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use ironrdp_capture_replay::{ExportOptions, export_capture, read_capture};
+use ironrdp_capture::{CaptureError, read_capture};
+use ironrdp_capture_replay::{ExportOptions, ReplayError, export_capture};
 use zeroize::Zeroize as _;
 
 fn main() -> ExitCode {
@@ -24,9 +25,17 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("replay export failed: {error}");
             let mut source = core::error::Error::source(error.as_ref());
+            let mut missing_tunneled_tls_secret = false;
             while let Some(cause) = source {
                 eprintln!("  caused by: {cause}");
+                missing_tunneled_tls_secret |= matches!(
+                    cause.downcast_ref::<ReplayError>(),
+                    Some(ReplayError::Capture(CaptureError::MissingTunneledTlsSecret))
+                );
                 source = cause.source();
+            }
+            if missing_tunneled_tls_secret {
+                eprintln!("  hint: supply the original key log with --keylog");
             }
             ExitCode::FAILURE
         }

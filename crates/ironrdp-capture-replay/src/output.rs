@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+use ironrdp_capture::Capture;
+
 use crate::routing::{ReplayFrame, prepare_replay_capture};
-use crate::{Capture, ReplayDirection, ReplayError, ReplayEvent, ReplayGap, ReplayGapKind, ReplayReport, ReplayRoute};
+use crate::{ReplayDirection, ReplayError, ReplayEvent, ReplayGap, ReplayGapKind, ReplayReport, ReplayRoute};
 
 /// Options that control replay artifact export.
 #[derive(Clone, Debug)]

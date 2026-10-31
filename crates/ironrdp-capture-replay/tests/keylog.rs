@@ -9,7 +9,8 @@ use std::process::Command;
 use aes_gcm::aead::{AeadInPlace as _, KeyInit as _};
 use aes_gcm::{Aes128Gcm, Nonce};
 use hmac::{Hmac, Mac};
-use ironrdp_capture_replay::{ReplayError, decrypt_tls, read_capture, replay_capture};
+use ironrdp_capture::{CaptureError, decrypt_rdp, decrypt_tls, read_capture};
+use ironrdp_capture_replay::{ReplayError, replay_capture};
 use sha2::Sha256;
 
 fn temporary_path(name: &str) -> PathBuf {
@@ -271,23 +272,7 @@ fn websocket_frame(data: &[u8], mask: Option<[u8; 4]>) -> Vec<u8> {
 }
 
 #[test]
-fn appends_external_nss_key_log() {
-    let capture_path = temporary_path("external-key-log");
-    write_capture(&capture_path, &x224_connection(0xe0), &x224_connection(0xd0));
-    let mut capture = read_capture(&capture_path).expect("read synthetic capture");
-
-    capture.add_tls_key_log("CLIENT_RANDOM first");
-    capture.add_tls_key_log("");
-    capture.add_tls_key_log("CLIENT_RANDOM second");
-
-    assert_eq!(
-        capture.tls_key_log.as_str(),
-        "CLIENT_RANDOM first\nCLIENT_RANDOM second\n"
-    );
-    std::fs::remove_file(capture_path).expect("remove synthetic capture");
-}
-
-#[test]
+// oracle: spec RFC 5246 §6.3; RFC 5288 §3
 fn decrypts_resumed_tls12_with_external_key_log() {
     let capture_path = temporary_path("decrypt-external-key-log");
     let (client_stream, server_stream, key_log) = tls12_streams(Tls12Session {
@@ -306,6 +291,7 @@ fn decrypts_resumed_tls12_with_external_key_log() {
     capture.add_tls_key_log(&key_log);
 
     let plaintext = decrypt_tls(&capture).expect("decrypt with external synthetic key log");
+    // oracle: mutant losing the source-packet attribution of decrypted application data.
     assert_eq!(plaintext.client, vec![(3, b"client".to_vec())]);
     assert_eq!(plaintext.server, vec![(4, b"server".to_vec())]);
 
@@ -313,6 +299,7 @@ fn decrypts_resumed_tls12_with_external_key_log() {
 }
 
 #[test]
+// oracle: regression #2153 missing tunneled TLS secret CLI hint
 fn decrypts_gateway_tunnel_with_external_key_log() {
     let capture_path = temporary_path("gateway-external-key-log");
     let (inner_client, inner_server, inner_key_log) = tls12_streams(Tls12Session {
@@ -344,9 +331,27 @@ fn decrypts_gateway_tunnel_with_external_key_log() {
     let mut capture = read_capture(&capture_path).expect("read synthetic gateway capture");
     capture.add_tls_key_log(&outer_key_log);
     assert!(matches!(
-        replay_capture(&capture),
-        Err(ReplayError::MissingTunneledTlsSecret)
+        decrypt_rdp(&capture),
+        Err(CaptureError::MissingTunneledTlsSecret)
     ));
+
+    let key_log_path = capture_path.with_extension("log");
+    std::fs::write(&key_log_path, &outer_key_log).expect("write outer TLS key log");
+    let output = Command::new(env!("CARGO_BIN_EXE_ironrdp-capture-replay"))
+        .arg("--keylog")
+        .arg(&key_log_path)
+        .arg(&capture_path)
+        .arg(capture_path.with_extension("output"))
+        .output()
+        .expect("run replay binary");
+    std::fs::remove_file(key_log_path).expect("remove synthetic key log");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("hint: supply the original key log with --keylog"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     capture.add_tls_key_log(&inner_key_log);
     assert!(matches!(replay_capture(&capture), Err(ReplayError::MissingRdpState)));
@@ -355,6 +360,7 @@ fn decrypts_gateway_tunnel_with_external_key_log() {
 }
 
 #[test]
+// oracle: mutant swallowing external TLS key-log read errors
 fn reports_invalid_key_log_file() {
     let capture_path = temporary_path("invalid-key-log");
     let key_log_path = capture_path.with_extension("log");
