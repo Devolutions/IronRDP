@@ -98,6 +98,19 @@ Register a `DynamicChannelFactory` with `RdpServerBuilder::with_dynamic_channel_
 Each factory runs for every connection, in registration order, after the built-in channels are registered and before DRDYNVC negotiation.
 The processors created by a factory belong to that connection and are dropped when it ends.
 
+## Clipboard dispatch completion
+
+Send `ServerEvent::ClipboardWithCompletion(message, sender)` through `RdpServer::event_sender()` and await its oneshot receiver before submitting another clipboard event.
+Completion means event handling finished, including any transport write; it does not mean the peer accepted clipboard data.
+A refused request, a backend-reported clipboard error, or a missing clipboard channel can complete without writing data and does not disconnect the session.
+A closed receiver means dispatch failed or the event was discarded, not that no bytes were sent.
+Dropping the receiver does not cancel the event.
+
+The event queue is unbounded, so bound each payload and await completion to limit queued clipboard data.
+Submit only for an active session; idle and stale-session events are discarded.
+There is no dispatch deadline, and a stalled transport write delays completion.
+Use `ServerEvent::Clipboard` when no completion notification is needed.
+
 ## Static-channel writes
 
 Register a per-connection processor through `StaticChannelFactory`, then send `ServerEvent::StaticChannelJoined` through `RdpServer::event_sender()` to check whether the active client joined its channel.

@@ -1587,6 +1587,13 @@ pub enum ServerEvent {
     /// See [`ServerRedirectionHandle::redirect`].
     Redirect(Box<ServerRedirectionPdu>),
     Clipboard(ClipboardMessage),
+    /// Signals completion after handling the event, including any transport write.
+    ///
+    /// Await the receiver before submitting another event to bound queued clipboard data.
+    /// The receiver returns an error if dispatch fails or the event is discarded.
+    /// Completion also covers events handled without output, such as a refused request or a missing clipboard channel.
+    /// It does not confirm that the peer accepted clipboard data.
+    ClipboardWithCompletion(ClipboardMessage, oneshot::Sender<()>),
     /// Writes one PDU to a joined static channel, splitting it into chunks as needed.
     ///
     /// Fragmented PDUs set `SHOW_PROTOCOL` on every chunk per [MS-RDPBCGR] section 3.1.5.2.1,
@@ -1673,6 +1680,7 @@ impl fmt::Debug for ServerEvent {
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
+            Self::ClipboardWithCompletion(..) => f.write_str("ClipboardWithCompletion(..)"),
             Self::StaticChannelWithCompletion { name, payload, .. } => f
                 .debug_tuple("StaticChannelWithCompletion")
                 .field(&name.as_str())
@@ -4001,6 +4009,47 @@ impl RdpServer {
         Ok((RunState::Continue, encoder))
     }
 
+    async fn dispatch_clipboard_event(
+        conn: &mut ConnectionState,
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+        message: ClipboardMessage,
+    ) -> ServerResult<()> {
+        let (Some(channel_id), Some(cliprdr)) = (
+            conn.get_channel_id_by_type::<CliprdrServer>(),
+            conn.get_svc_processor::<CliprdrServer>(),
+        ) else {
+            warn!("No clipboard channel, dropping event");
+            return Ok(());
+        };
+        let messages = match message {
+            ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
+            ClipboardMessage::SendInitiateFileCopy(files) => cliprdr.initiate_file_copy(files),
+            ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
+            ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
+            ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
+            ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
+            ClipboardMessage::Error(error) => {
+                error!(?error, "Handling clipboard event");
+                return Ok(());
+            }
+        };
+        // A refused clipboard request must not disconnect an otherwise healthy session.
+        let messages = match messages {
+            Ok(messages) => messages,
+            Err(error) => {
+                error!(?error, "Failed to send clipboard event");
+                return Ok(());
+            }
+        };
+        let data =
+            server_encode_svc_messages(messages.into(), channel_id, user_channel_id).map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|error| ServerError::io("write_all", error))
+    }
+
     /// `conn.client_supports_errinfo` is the client's `RNS_UD_CS_SUPPORT_ERRINFO_PDU`
     /// early-capability opt-in: MS-RDPBCGR 3.3.5.7.1 forbids sending a Server
     /// Set Error Info PDU to a client that did not set it, so the two arms below
@@ -4451,48 +4500,14 @@ impl RdpServer {
                         .await
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
-                ServerEvent::Clipboard(c) => {
-                    let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
-                        warn!("No clipboard channel, dropping event");
-                        continue;
-                    };
-                    let msgs = match c {
-                        ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
-                        ClipboardMessage::SendInitiateFileCopy(files) => cliprdr.initiate_file_copy(files),
-                        ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
-                        ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
-                        ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
-                        ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
-                        ClipboardMessage::Error(error) => {
-                            error!(?error, "Handling clipboard event");
-                            continue;
-                        }
-                    };
-
-                    // A clipboard failure is a per-request problem at worst: a
-                    // stale or malformed request, a capability that was never
-                    // negotiated, backpressure on pending transfers. None of
-                    // that is a reason to disconnect a session whose display,
-                    // audio and input are healthy. The `ClipboardMessage::Error`
-                    // arm above already takes this view; propagating here made
-                    // the two paths disagree.
-                    let msgs = match msgs {
-                        Ok(msgs) => msgs,
-                        Err(error) => {
-                            error!(?error, "Failed to send clipboard event");
-                            continue;
-                        }
-                    };
-
-                    let channel_id = conn
-                        .get_channel_id_by_type::<CliprdrServer>()
-                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
-                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
-                        .map_err(ServerError::encode)?;
-                    writer
-                        .write_all(&data)
-                        .await
-                        .map_err(|e| ServerError::io("write_all", e))?;
+                ServerEvent::Clipboard(message) => {
+                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                }
+                ServerEvent::ClipboardWithCompletion(message, completion) => {
+                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                    if completion.send(()).is_err() {
+                        trace!("Clipboard producer stopped waiting for dispatch");
+                    }
                 }
                 ServerEvent::Echo(msg) => match msg {
                     EchoServerMessage::SendRequest { payload } => {
