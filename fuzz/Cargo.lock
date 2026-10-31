@@ -376,7 +376,7 @@ version = "0.2.0"
 
 [[package]]
 name = "ironrdp-cliprdr"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "ironrdp-bulk",
  "ironrdp-core",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-egfx"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "bit_field",
  "bitflags",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpel"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -719,9 +719,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.34"
+version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "md-5"

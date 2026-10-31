@@ -6,6 +6,196 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.13.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.13.0...ironrdp-session-v0.13.1)] - 2026-10-31
+
+### <!-- 1 -->Features
+
+- Expose display control readiness and capabilities ([#2285](https://github.com/Devolutions/IronRDP/issues/2285)) ([851747a1c7](https://github.com/Devolutions/IronRDP/commit/851747a1c72b77cff9002ca3dbfdfda5ae200833)) 
+
+  `ActiveStage.EncodedResize` returns `null` until the Display Control
+  channel has received the server's capabilities, and the .NET binding
+  gave a client no way to tell when that happens, so clients polled or
+  retried blindly.
+  
+  Add `ActiveStage.DisplayControlState` (`Unavailable`, `Pending`,
+  `Ready`) and `ActiveStage.DisplayControlCapabilities` (`MaxNumMonitors`,
+  `MaxMonitorArea`), wrapping
+  `ironrdp_session::ActiveStage::display_control_ready` and
+  `display_control_capabilities`. A client checks the state after each
+  `Process` call and sends its first resize once it becomes `Ready`.
+  
+  `display_control_ready` now takes `&self`, which Diplomat requires for a
+  getter; it never needed `&mut self`.
+
+- Encode fast-path input without the active stage ([#2288](https://github.com/Devolutions/IronRDP/issues/2288)) ([cd6c224335](https://github.com/Devolutions/IronRDP/commit/cd6c224335dd83401308d66d4de4fcac28a080c7)) 
+
+  `ActiveStage.ProcessFastpathInput` was the only way for a .NET client to
+  turn input events into wire bytes, and it takes the stage and the image,
+  so input handlers had to share the lock that the PDU decode loop holds.
+  On a busy screen the UI thread waited on frame decoding for every mouse
+  move.
+  
+  Encoding needs no session state:
+  `ironrdp_session::encode_fastpath_input` chunks the events into
+  Fast-Path Input PDUs, and `ActiveStage::process_fastpath_input` reuses
+  it, so its output is unchanged. The .NET binding exposes it as
+  `FastPathInputEventIterator.Encode()`, which returns the PDUs for one
+  `InputDatabase.Apply` as a `VecU8` ready for `Framed.Write`, without
+  touching an `ActiveStage` or `DecodedImage`. `ProcessFastpathInput`
+  stays for clients with software pointer rendering, which also redraws
+  the pointer in the image.
+  
+  The Avalonia example sends input through `Encode()` unless software
+  pointer rendering is on, and the README states which calls no longer
+  need the stage lock.
+
+- Add the MS-RDPEMSC mouse cursor dynamic channel ([#2321](https://github.com/Devolutions/IronRDP/issues/2321)) ([bbd1b879ce](https://github.com/Devolutions/IronRDP/commit/bbd1b879cead8fbb8333f94fdebe337d0c0105e5)) 
+
+  Implements [MS-RDPEMSC] (the `Microsoft::Windows::RDS::MouseCursor`
+  dynamic channel) and connects it to the client's existing pointer
+  handling.
+  
+  The channel is **off by default** because it hasn't been run against a
+  real Windows or AVD server yet. With it off, the client declines the
+  channel as before, and pointer updates stay on the fast path. To turn it
+  on, call `ConfigBuilder::with_mouse_cursor_channel(true)`:
+  
+  ```rust
+  let builder = builder.with_mouse_cursor_channel(true);
+  ```
+  
+  You can also set `ChannelConfig::mouse_cursor = true` directly.
+  
+  ## New crate: `ironrdp-rdpemsc`
+  
+  - **PDUs** (`no_std`): encode and decode for the capability advertise,
+  capability confirm and pointer update messages.
+  - TS_POINTERATTRIBUTE and TS_LARGEPOINTERATTRIBUTE have the same byte
+  layout as in MS-RDPBCGR, so the update payloads reuse the codecs in
+  `ironrdp_pdu::pointer`.
+  - `PointerUpdate::as_pointer_update_data()` converts an update into the
+  existing `PointerUpdateData`.
+  - Encoding a version 1 capability set that carries data returns an
+  error, matching what the decoder accepts.
+  - **`MouseCursorClient`**: sends the version 1 capabilities when the
+  channel starts, and becomes ready only when the server confirms version
+  1.
+  - Pointer updates are queued for the caller, up to 64 of them. Updates
+  that arrive before the confirmation are queued too.
+  - When the queue is full, it first drops updates that a later one
+  replaces: older positions, older visible-pointer changes, and older
+  shapes for the same cache slot. Applying what's left gives the same
+  position, visible pointer and pointer cache. The oldest update is
+  dropped only if the queue still holds a shape for 64 different cache
+  slots; the client advertises 32.
+    - Unexpected or malformed messages are logged and ignored.
+  - **`MouseCursorServer`**: when the client advertises version 1, it
+  replies with a version 1 confirmation and becomes ready. It is not wired
+  into `ironrdp-server` yet.
+  
+  ## Wiring
+  
+  - `ironrdp-session`: new `ActiveStage::process_pointer_update(image,
+  PointerUpdateData)`. It uses the same pointer cache, server-pointer
+  setting and software rendering as fast-path pointer updates. The
+  update-to-output loop in `process` moved into a private helper that both
+  paths share. The helper also widens the first graphics update to a full
+  refresh after a graphics reset.
+  - `ironrdp-client`:
+  - New `ChannelConfig::mouse_cursor` field, `false` by default, set with
+  `with_mouse_cursor_channel`.
+  - When it is on, `rdp.rs` registers `MouseCursorClient` on the DRDYNVC
+  client.
+  - The new `mouse_cursor::present` applies the queued updates after each
+  session loop iteration, the same way `video::present` does. When the
+  channel isn't registered, it does nothing.
+  - Also updated: fuzzing oracles (decode and round-trip), the
+  `ARCHITECTURE.md` entry, and both lockfiles.
+  
+  ## Tests (`ironrdp-testsuite-core/tests/rdpemsc`)
+  
+  - Spec examples from §4.1.1, §4.1.2, §4.2.1 and §4.2.2.
+  - Large pointer layout (§2.2.2.6), the optional pad byte, the hidden,
+  default and cached updates, and capability size and signature checks,
+  including the encode-side check.
+  - Client and server behaviour:
+  - the handshake, including that a confirmation of capabilities the
+  client didn't advertise leaves it not ready;
+    - ignoring unexpected messages, and reset on close.
+  - The queue:
+    - a cached update still finds a shape sent 64 updates earlier;
+  - the oldest update is dropped only when every queued update is a shape
+  for a different cache slot;
+  - a property test checks that the queued updates leave the same pointer
+  state as all received updates.
+  - Through `ActiveStage`: a cached pointer gives the same image as the
+  shape that filled its slot, and position updates are applied.
+  - A proptest round trip that also checks `encode` writes exactly
+  `size()` bytes.
+  
+  ## Not tested
+  
+  - I haven't run it against a real Windows or AVD server, which is why it
+  is off by default.
+  - `mouse_cursor::present` in the client has no test of its own. The
+  pieces on either side (client queueing and
+  `ActiveStage::process_pointer_update`) are tested.
+  - Locally, `cargo xtask ci` passed fmt, typos, tests, clippy, the
+  feature matrix, dependencies, captures and the WASM build. It stopped at
+  `wasm2wat`, which isn't installed. The fuzz step (needs `cargo-fuzz` on
+  nightly) and the web step (npm) didn't run. `cargo xtask check locks`
+  passes.
+  - The Soft-Sync comment in `crates/ironrdp-dvc/src/client.rs` still
+  names MouseCursor as a declined channel. I left it alone because the
+  MS-RDPECI change touches the same line.
+  
+  🤖 Generated with [Claude Code](https://claude.com/claude-code)
+  
+  ---------
+
+- Add MS-RDPECI core input dynamic channel ([#2319](https://github.com/Devolutions/IronRDP/issues/2319)) ([fbf2599863](https://github.com/Devolutions/IronRDP/commit/fbf25998630e1692dbea5479e33820cf0bd70acb)) 
+
+  Add the ironrdp-rdpeci crate with the MS-RDPECI PDUs and a client
+  processor for the Microsoft::Windows::RDS::CoreInput dynamic channel.
+  Input events reuse the fast-path input event type, since MS-RDPECI packs
+  events in the same format.
+  
+  The client can opt in with the `core-input` feature and
+  ChannelConfig::core_input. Once the server opens the channel and selects
+  version 1.0, keyboard and mouse input is sent over it; otherwise input
+  stays on fast-path.
+
+### <!-- 4 -->Bug Fixes
+
+- Stop RFX geometry from wrapping u16 ([#2096](https://github.com/Devolutions/IronRDP/issues/2096)) ([56d691e3ff](https://github.com/Devolutions/IronRDP/commit/56d691e3ff4f38b2ddd3c72b504a339f116f01d4)) 
+
+  The RemoteFX decoder computed tile rectangles (xIdx * 64) and clip
+  rectangles (x + width - 1) in u16 from values the server sends. A large
+  tile index overflowed, panicking debug builds and wrapping in release
+  builds, where the tile could land at the wrong position. A zero width or
+  height could underflow the same way and widen the clip to the whole
+  channel, or produce an inverted rectangle.
+  
+  Tile positions are now checked in u16 and clip rectangles computed in
+  u32. A tile that starts past the u16 range is skipped, which draws the
+  same as a tile outside the clip region, and a tile crossing the end of
+  the range is cut there. Clip rectangles use exclusive bounds limited to
+  the channel, so a zero-sized region rectangle or channel clips nothing,
+  and a rectangle entirely outside the channel no longer leaves a
+  one-pixel strip at its edge.
+  
+  #2095 suggested failing the frame for such a tile; skipping it keeps
+  tiles past the u16 range consistent with other off-screen tiles.
+
+### <!-- 5 -->Performance
+
+- Copy RGBA32 updates a row at a time ([#2297](https://github.com/Devolutions/IronRDP/issues/2297)) ([c3a782ff7b](https://github.com/Devolutions/IronRDP/commit/c3a782ff7b6fbd91adee0264ee5ed1a0f8cee554)) 
+
+  A macOS client decoding 1080p AVC444 spent 37% of its busy samples
+  copying RGBA32 updates one pixel at a time.
+
+
+
 ## [[0.13.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.12.0...ironrdp-session-v0.13.0)] - 2026-10-27
 
 ### <!-- 1 -->Features
