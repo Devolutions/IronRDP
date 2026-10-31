@@ -40,6 +40,7 @@ use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp_core::WriteBuf;
+use ironrdp_futures::bytes::BytesMut;
 use ironrdp_futures::{FramedWrite, single_sequence_step_read};
 use rgb::AsPixels as _;
 use tap::prelude::*;
@@ -557,7 +558,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let use_display_control = self.0.borrow().use_display_control;
 
-        let (connection_result, ws) = connect(ConnectParams {
+        let (connection_result, ws, leftover) = connect(ConnectParams {
             ws,
             config,
             proxy_auth_token: auth_token,
@@ -594,7 +595,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             set_cursor_style_callback_context,
 
             input_events_rx: RefCell::new(Some(input_events_rx)),
-            rdp_reader: RefCell::new(Some(rdp_reader)),
+            rdp_reader: RefCell::new(Some((rdp_reader, leftover))),
             connection_result: RefCell::new(Some(connection_result)),
             clipboard: RefCell::new(Some(clipboard)),
             printer: RefCell::new(Some(printer)),
@@ -644,7 +645,8 @@ pub(crate) struct Session {
     // Consumed when `run` is called
     input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
     connection_result: RefCell<Option<connector::ConnectionResult>>,
-    rdp_reader: RefCell<Option<ReadHalf<WebSocket>>>,
+    // Paired with the bytes already read past the end of the connection sequence.
+    rdp_reader: RefCell<Option<(ReadHalf<WebSocket>, BytesMut)>>,
     clipboard: RefCell<Option<Option<WasmClipboard>>>,
     printer: RefCell<Option<Option<WasmPrinter>>>,
 }
@@ -696,7 +698,7 @@ impl iron_remote_desktop::Session for Session {
     type Error = IronError;
 
     async fn run(&self) -> Result<Self::SessionTerminationInfo, Self::Error> {
-        let rdp_reader = self
+        let (rdp_reader, leftover) = self
             .rdp_reader
             .borrow_mut()
             .take()
@@ -717,7 +719,7 @@ impl iron_remote_desktop::Session for Session {
         let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
         let mut wasm_printer = self.printer.borrow_mut().take().expect("run called only once");
 
-        let mut framed = ironrdp_futures::LocalFuturesFramed::new(rdp_reader);
+        let mut framed = ironrdp_futures::LocalFuturesFramed::new_with_leftover(rdp_reader, leftover);
 
         debug!("Initialize canvas");
 
@@ -1712,7 +1714,7 @@ async fn connect(
         computer_name,
         use_display_control,
     }: ConnectParams,
-) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
+) -> Result<(connector::ConnectionResult, WebSocket, BytesMut), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
     // In web browser environments, we do not have an easy access to the local address of the socket.
@@ -1782,9 +1784,14 @@ async fn connect(
     .await?
     .into_connected()?;
 
-    let ws = framed.into_inner_no_leftover();
+    // The server may send its first session PDUs right behind the last connection PDU, and a
+    // proxy can deliver them in the same WebSocket message. Those bytes are already buffered
+    // here; dropping them leaves the server waiting for replies that never come.
+    // UNTESTED: this leftover must seed the session's framed reader in `run`. No test drives
+    // `connect` and `run` over a WebSocket; keep the two in step when changing this hand-off.
+    let (ws, leftover) = framed.into_inner();
 
-    Ok((connection_result, ws))
+    Ok((connection_result, ws, leftover))
 }
 
 struct RDCleanPathConnectParams {
@@ -2044,7 +2051,6 @@ fn f64_to_u16_saturating_cast(value: f64) -> u16 {
 mod tests {
     use futures_util::io::Cursor;
     use iron_remote_desktop::IronError as _;
-    use ironrdp_futures::bytes::BytesMut;
 
     use super::*;
 
