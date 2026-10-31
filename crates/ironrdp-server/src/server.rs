@@ -319,6 +319,7 @@ pub trait ConnectionHandler: Send {
     ///
     /// These flags do not authenticate the client.
     /// Return an error to stop connection setup.
+    /// A callback error closes the transport without sending an access-denied PDU.
     ///
     /// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
     fn on_client_info(&mut self, flags: rdp::client_info::ClientInfoFlags) -> ServerResult<()> {
@@ -335,6 +336,7 @@ pub trait ConnectionHandler: Send {
     /// With [`RdpServerBuilder::with_honor_client_desktop_size`] enabled, a valid client request from
     /// Client Core Data is adopted after clamping to the configured maximum.
     /// Return an error to stop connection setup.
+    /// A callback error closes the transport without sending an access-denied PDU.
     ///
     /// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
     /// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73

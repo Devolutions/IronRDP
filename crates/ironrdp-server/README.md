@@ -31,6 +31,7 @@ Custom logic for your RDP server can be added by implementing these traits:
 The desktop size is the display handler's initial size by default.
 With `RdpServerBuilder::with_honor_client_desktop_size` enabled, it reflects a valid client request from GCC Client Core Data, clamped to the configured maximum.
 These callbacks do not authenticate the client, and returning an error stops connection setup.
+Callback errors close the transport without sending an access-denied PDU.
 `ConnectionHandler::on_connection_info` later reports the keyboard subtype, function-key count, performance flags, and other metadata after the connection is established.
 
 ## Runtime control
