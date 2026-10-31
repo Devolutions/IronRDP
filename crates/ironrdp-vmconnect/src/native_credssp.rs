@@ -2,7 +2,7 @@ use ironrdp_async::{Framed, FramedRead, FramedWrite};
 use ironrdp_connector::sspi::credssp::{CredSspMode, TsRequest, write_ts_credentials};
 use ironrdp_connector::sspi::{AuthIdentityBuffers, CredentialsBuffers};
 use ironrdp_connector::{ConnectorResult, ServerName, custom_err, general_err};
-use ironrdp_pdu::PduHint;
+use ironrdp_pdu::CREDSSP_TS_REQUEST_HINT;
 use sha2::{Digest as _, Sha256};
 use tracing::{debug, trace};
 use windows::Win32::Foundation::{SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE, SEC_I_COMPLETE_NEEDED, SEC_I_CONTINUE_NEEDED};
@@ -23,21 +23,6 @@ const MAX_NEGOTIATE_TOKEN_SIZE: usize = 64 * 1024;
 const CLIENT_SERVER_HASH_MAGIC: &[u8] = b"CredSSP Client-To-Server Binding Hash\0";
 const SERVER_CLIENT_HASH_MAGIC: &[u8] = b"CredSSP Server-To-Client Binding Hash\0";
 const VMCONNECT_AUTHENTICATION_SERVICE_CLASS: &str = "Microsoft Virtual Console Service";
-
-#[derive(Clone, Copy, Debug)]
-struct CredsspTsRequestHint;
-
-const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
-
-impl PduHint for CredsspTsRequestHint {
-    fn find_size(&self, bytes: &[u8]) -> ironrdp_core::DecodeResult<Option<(bool, usize)>> {
-        match TsRequest::read_length(bytes) {
-            Ok(length) => Ok(Some((true, length))),
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(error) => Err(ironrdp_core::other_err!("CredsspTsRequestHint", source: error)),
-        }
-    }
-}
 
 pub(super) async fn perform<S>(
     framed: &mut Framed<S>,

@@ -32,6 +32,7 @@ base64 = "0.22"
 ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol", "rdpsnd"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-async.path = "../ironrdp-async"
+ironrdp-blocking.path = "../ironrdp-blocking"
 ironrdp-agent.path = "../ironrdp-agent"
 ironrdp-daemon.path = "../ironrdp-daemon"
 ironrdp-bulk.path = "../ironrdp-bulk"
