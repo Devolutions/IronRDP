@@ -463,6 +463,45 @@ fn a_picture_holds_exactly_its_allocation_size() {
     }
 }
 
+/// Every pixel of a 4:2:0 picture converts with the reverse transform, odd edges included.
+// oracle: spec MS-RDPEGFX §3.3.8.3.1, evaluated a pixel at a time
+#[rstest]
+#[case::empty(0, 0)]
+#[case::no_columns(0, 3)]
+#[case::no_rows(3, 0)]
+#[case::one_pixel(1, 1)]
+#[case::one_pair(2, 2)]
+#[case::odd_by_odd(5, 3)]
+#[case::odd_by_even(5, 4)]
+#[case::even_by_odd(16, 9)]
+#[case::wide_odd(33, 17)]
+fn a_yuv420_picture_converts_pixel_by_pixel(#[case] width: u16, #[case] height: u16) {
+    let clamp = |value: i32| u8::try_from(value.clamp(0, 255)).expect("clamped");
+    let (w, h) = (usize::from(width), usize::from(height));
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let byte = |i: usize, k: usize| u8::try_from((i * k + k) % 256).expect("byte");
+    let y: Vec<u8> = (0..w * h).map(|i| byte(i, 37)).collect();
+    let u: Vec<u8> = (0..cw * ch).map(|i| byte(i, 91)).collect();
+    let v: Vec<u8> = (0..cw * ch).map(|i| byte(i, 53)).collect();
+    let picture = Yuv420Frame::new(width, height, y.clone(), w, u.clone(), v.clone(), cw).expect("picture");
+
+    let mut expected = Vec::with_capacity(w * h * 4);
+    for row in 0..h {
+        for col in 0..w {
+            let luma = 256 * i32::from(y[row * w + col]);
+            let cu = i32::from(u[row / 2 * cw + col / 2]) - 128;
+            let cv = i32::from(v[row / 2 * cw + col / 2]) - 128;
+            expected.extend_from_slice(&[
+                clamp((luma + 403 * cv) >> 8),
+                clamp((luma - 48 * cu - 120 * cv) >> 8),
+                clamp((luma + 475 * cu) >> 8),
+                0xFF,
+            ]);
+        }
+    }
+    assert_eq!(picture.to_rgba().data(), expected.as_slice());
+}
+
 // oracle: property round-trip
 #[test]
 fn a_converted_picture_reads_back_unchanged() {
