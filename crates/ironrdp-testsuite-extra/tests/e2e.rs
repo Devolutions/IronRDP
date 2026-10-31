@@ -3328,8 +3328,9 @@ async fn input_is_handled_while_a_large_write_is_pending() {
 // oracle: mutant the final flush waits for a client that does not read
 #[tokio::test]
 async fn the_final_flush_to_a_client_that_does_not_read_has_a_time_limit() {
-    // The server's `FINAL_FLUSH_TIMEOUT`, and a margin.
-    const FLUSH_WAIT: Duration = Duration::from_secs(5 + 1);
+    // The server's flush limit, and a margin for a server that starts its
+    // flush later than the client starts to wait.
+    const FLUSH_WAIT: Duration = ironrdp_server::FINAL_FLUSH_TIMEOUT.saturating_add(Duration::from_secs(3));
     const QUEUED: usize = 16 * 1024 * 1024;
 
     let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
@@ -3471,7 +3472,11 @@ impl ironrdp::svc::SvcClientProcessor for RawCliprdrClient {}
 /// A client that sends requests and does not read the replies: the server
 /// stops reading from it once the queued replies reach their bound, so its
 /// memory does not grow without limit. Each Format List gets a Format List
-/// Response (MS-RDPECLIP 3.1.5.2.2) of about the same size.
+/// Response, as MS-RDPECLIP 3.1.5.2.2, ["Processing a Format List PDU"],
+/// requires. The Format Lists here are empty, so each response is about as
+/// large as its request.
+///
+/// ["Processing a Format List PDU"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/4e414864-6880-4b0d-8af7-1838ca000c2d
 // oracle: mutant the server reads requests without a bound on the replies it queues
 #[tokio::test]
 async fn a_client_that_does_not_read_its_replies_is_not_read_further() {
@@ -3551,10 +3556,10 @@ async fn a_client_that_does_not_read_its_replies_is_not_read_further() {
             });
             let sent = client.await.expect("client");
             server_task.abort();
-            // The flood went past the 1 MiB reply bound, so the server stopped
+            // The flood went past the reply bound, so the server stopped
             // reading because of it, not because the flood ended early.
             assert!(
-                1024 * 1024 < sent,
+                ironrdp_server::MAX_QUEUED_REPLY_BYTES < sent,
                 "the flood stopped after {sent} bytes, before the reply bound"
             );
             assert!(

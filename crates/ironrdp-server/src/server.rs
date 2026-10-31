@@ -2168,10 +2168,11 @@ const EVICTION_GRACE: Duration = Duration::from_millis(750);
 /// Set Error Info PDU for an error.
 const ERROR_INFO_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// How long the client loop, at a normal end, writes what is still queued (a
+/// How long the client loop, at its end, writes what is still queued (a
 /// Deactivate All, a disconnect reason, the rest of a frame). A peer that
 /// does not read must not hold the loop until TCP gives up. Longer than
 /// [`EVICTION_GRACE`], because a resize goes on on the same connection.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 const FINAL_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a candidate gets to complete negotiation and authentication before
@@ -5151,8 +5152,8 @@ impl RdpServer {
         };
         // Every future below queues its PDUs here and one writer future puts
         // them on the wire in queue order. A future that holds the `this`
-        // lock so never waits for the socket, and input and frame acks read
-        // by `dispatch_pdu` get the lock while a large write is in progress.
+        // lock never waits for the socket, so `dispatch_pdu` can still read
+        // input and frame acks while a large write is in progress.
         let socket_writer = writer;
         let queue = Rc::new(OutboundQueue::default());
         let mut display_writer = QueuedWriter::new(Rc::clone(&queue));
@@ -5170,6 +5171,7 @@ impl RdpServer {
         let display_queue = Rc::clone(&queue);
         let event_queue = Rc::clone(&queue);
         let tunnel_queue = Rc::clone(&queue);
+        let heartbeat_queue = Rc::clone(&queue);
         let udp_transport_for_events = Rc::clone(&udp_transport);
         let udp_transport_for_pdus = Rc::clone(&udp_transport);
         let mut cliprdr_writer = display_writer.clone();
@@ -5394,8 +5396,9 @@ impl RdpServer {
                     .write_all(&data)
                     .await
                     .map_err(|e| ServerError::io("send heartbeat", e))?;
-                // Re-read so the heartbeat's own write does not read as
-                // foreign traffic on the next tick.
+                // Re-read after the heartbeat is written, so that its own
+                // write does not read as foreign traffic on the next tick.
+                heartbeat_queue.wait_until_written().await;
                 writes_at_last_tick = write_counter.load(Ordering::Relaxed);
             }
         };
@@ -5536,21 +5539,31 @@ impl RdpServer {
             state = &mut others => state,
             result = &mut write_queued => {
                 result?;
-                Err(ServerError::reason("client loop", "the writer stopped"))
+                return Err(ServerError::reason("client loop", "the writer stopped"));
             }
         };
-        // On a normal end the writer writes what is queued (a Deactivate
-        // All, a disconnect reason) before returning, within a time limit.
-        // At the limit it stops, maybe mid-PDU, so the connection ends.
-        if state.is_ok() {
-            queue.finish();
-            match tokio::time::timeout(FINAL_FLUSH_TIMEOUT, &mut write_queued).await {
-                Ok(result) => result?,
-                Err(_) => {
-                    warn!(
-                        queued_bytes = queue.queued_bytes.get(),
-                        "The client did not read the last PDUs in time; ending the connection"
+        // The writer writes what is queued (a Deactivate All, a disconnect
+        // reason, a reply queued before an error) before the loop ends,
+        // within a time limit. At the limit it stops, maybe mid-PDU, so the
+        // connection ends. An error end keeps its own error.
+        queue.finish();
+        match tokio::time::timeout(FINAL_FLUSH_TIMEOUT, &mut write_queued).await {
+            Ok(result) => {
+                if state.is_ok() {
+                    result?;
+                } else if let Err(error) = result {
+                    debug!(
+                        error = format!("{error:#}"),
+                        "Final flush after a client loop error failed"
                     );
+                }
+            }
+            Err(_) => {
+                warn!(
+                    queued_bytes = queue.queued_bytes.get(),
+                    "The client did not read the last PDUs in time; ending the connection"
+                );
+                if state.is_ok() {
                     return Err(ServerError::reason(
                         "client loop",
                         "the client did not read the last PDUs in time",
@@ -6734,6 +6747,7 @@ async fn send_access_denied(acceptor: &Acceptor, writer: &mut impl FramedWrite) 
 /// Above it the client loop reads no more client PDUs until the queue drains
 /// below it, so a client that sends requests and does not read cannot grow
 /// the queue without limit.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 const MAX_QUEUED_REPLY_BYTES: usize = 1024 * 1024;
 
 /// Outbound PDUs of one client loop, in the order they were queued.
@@ -6757,6 +6771,13 @@ struct OutboundQueue {
     pushed: tokio::sync::Notify,
     /// A PDU was written.
     written: tokio::sync::Notify,
+    /// Count of PDUs written to the transport. The heartbeat loop compares
+    /// it across ticks to honor the idle-only SHOULD of MS-RDPBCGR
+    /// 2.2.16.1, ["Server Heartbeat PDU"]: a changed count means ordinary
+    /// traffic already served as the liveness signal for that interval.
+    ///
+    /// ["Server Heartbeat PDU"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/86db1222-6b5c-4001-9923-6b292e1ccb47
+    writes: Arc<AtomicU64>,
 }
 
 struct QueuedPdu {
@@ -6858,6 +6879,13 @@ impl OutboundQueue {
         self.wait_until(|queue| queue.queued_bytes.get() == 0).await;
     }
 
+    /// The bytes queued and not yet fully written, and the part of them that
+    /// replies to client PDUs.
+    #[cfg(feature = "__test")]
+    pub fn queued_bytes(&self) -> (usize, usize) {
+        (self.queued_bytes.get(), self.queued_reply_bytes.get())
+    }
+
     /// Lets [`Self::write_queued`] return once the queue is empty.
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     fn finish(&self) {
@@ -6918,10 +6946,11 @@ impl OutboundQueue {
                 } else {
                     trace!(bytes = len, write_ms, "Client write");
                 }
-                if res.is_ok()
-                    && let Some(c) = completion
-                {
-                    c.written();
+                if res.is_ok() {
+                    self.writes.fetch_add(1, Ordering::Relaxed);
+                    if let Some(c) = completion {
+                        c.written();
+                    }
                 }
                 res
             };
@@ -6951,11 +6980,6 @@ struct QueuedWriter {
     queue: Rc<OutboundQueue>,
     /// What this writer queues are replies to client PDUs.
     replies: bool,
-    /// Count of PDUs queued across all clones. The heartbeat loop compares
-    /// it across ticks to honor 2.2.16.1's idle-only SHOULD: a changed count
-    /// means ordinary traffic already served as the liveness signal for that
-    /// interval.
-    writes: Arc<AtomicU64>,
 }
 
 impl FramedWrite for QueuedWriter {
@@ -6972,19 +6996,11 @@ impl FramedWrite for QueuedWriter {
 impl QueuedWriter {
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     fn new(queue: Rc<OutboundQueue>) -> Self {
-        Self {
-            queue,
-            replies: false,
-            writes: Arc::new(AtomicU64::new(0)),
-        }
+        Self { queue, replies: false }
     }
 
     fn queue_pdu(&mut self, bytes: Vec<u8>, completion: Option<WriteCompletion>) -> std::io::Result<()> {
-        let res = self.queue.push(bytes, self.replies, completion);
-        if res.is_ok() {
-            self.writes.fetch_add(1, Ordering::Relaxed);
-        }
-        res
+        self.queue.push(bytes, self.replies, completion)
     }
 
     /// Queues a PDU that [`OutboundQueue::write_queued`] writes only if its
@@ -6995,6 +7011,8 @@ impl QueuedWriter {
     }
 
     /// A clone whose PDUs count as replies to client PDUs.
+    #[must_use]
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     fn for_replies(&self) -> Self {
         Self {
             replies: true,
@@ -7002,8 +7020,9 @@ impl QueuedWriter {
         }
     }
 
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
     fn write_counter(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.writes)
+        Arc::clone(&self.queue.writes)
     }
 }
 
@@ -7907,12 +7926,14 @@ mod outbound_queue_tests {
         a.write_all(b"one").await.expect("queue");
         b.write_all(b"two").await.expect("queue");
         a.write_all(b"three").await.expect("queue");
-        assert_eq!(a.write_counter().load(Ordering::Relaxed), 3);
+        // The heartbeat counter counts PDUs on the wire, not queued ones.
+        assert_eq!(a.write_counter().load(Ordering::Relaxed), 0);
 
         let mut socket = cliprdr_error_tests::CapturingWriter::default();
         queue.finish();
         queue.write_queued(&mut socket).await.expect("write");
         assert_eq!(socket.0, b"onetwothree");
+        assert_eq!(a.write_counter().load(Ordering::Relaxed), 3);
         // Written, and the writer stopped: nothing more is accepted.
         tokio::time::timeout(Duration::from_millis(100), queue.wait_until_written())
             .await

@@ -10,6 +10,7 @@ mod cliprdr_native;
 mod dvc_pipe_proxy;
 mod e2e;
 mod gateway_detect;
+mod outbound_queue;
 mod rdpeudp_tokio;
 mod static_channel;
 mod vmconnect;
