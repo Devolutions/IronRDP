@@ -179,9 +179,21 @@ pub trait PduHint: Send + Sync + fmt::Debug + 'static {
     ///
     /// Returns `Some((hint_matching, size))` if the size is known.
     /// Returns `None` only while `bytes` is too short to hold the size, and an error for bytes that can never frame a
-    /// PDU, because a framer reads more input for as long as the hint returns `None`, up to a limit.
+    /// PDU, because a framer reads more input for as long as the hint returns `None`, up to
+    /// [`MAX_UNSIZED_BUFFER_LEN`].
     fn find_size(&self, bytes: &[u8]) -> DecodeResult<Option<(bool, usize)>>;
 }
+
+/// Most bytes a framer buffers while a [`PduHint`] cannot determine a PDU size.
+///
+/// A correct hint determines the size from a header of a few bytes, so a hint still undecided past this point
+/// is fed input that never frames, and reading on would buffer whatever the peer sends.
+/// The largest TPKT frame fits, which leaves room for a hint that needs a whole frame to decide.
+// UNTESTED: this limit is the only bound on the RDCleanPath hints in `ironrdp-client` and `ironrdp-web`.
+// `RDCleanPathPdu::detect` reports `NotEnoughBytes` for a complete header whose first element is not `[0]`, and the
+// `pdu_hint` fuzz target covers only the `ironrdp-pdu` hints.
+// When raising or removing this limit, or adding a hint, check which hints can stay undecided on complete input.
+pub const MAX_UNSIZED_BUFFER_LEN: usize = 64 * 1024;
 
 // Matches both X224 and FastPath pdus
 #[derive(Clone, Copy, Debug)]
