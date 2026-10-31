@@ -1,5 +1,6 @@
+use core::net::{Ipv4Addr, SocketAddr};
+use core::time::Duration;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use ironrdp_acceptor::Acceptor;
@@ -139,7 +140,7 @@ impl RdpServerInputHandler for NoopInput {
     fn mouse(&mut self, _event: ironrdp_server::MouseEvent) {}
 }
 
-struct PeerRecorder(Arc<Mutex<Vec<Option<std::net::SocketAddr>>>>);
+struct PeerRecorder(Arc<Mutex<Vec<Option<SocketAddr>>>>);
 
 impl ironrdp_server::ConnectionHandler for PeerRecorder {
     fn on_connection_info(&mut self, info: &ironrdp_server::ConnectionInfo) {
@@ -183,7 +184,7 @@ async fn handshake_defers_client_info_validation_binding_channels_and_activation
         .with_static_channel_factory(Box::new(RecordingChannelFactory(Arc::clone(&lifecycle))))
         .build();
 
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let (server_stream, client) = tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
     let server_stream = server_stream.unwrap().0;
     let client = client.unwrap();
@@ -249,7 +250,7 @@ async fn dropping_pending_session_closes_transport_without_attaching_channels() 
         .with_no_display()
         .with_static_channel_factory(Box::new(RecordingChannelFactory(Arc::clone(&lifecycle))))
         .build();
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let (server_stream, client) = tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
     let server_stream = server_stream.unwrap().0;
     let client = client.unwrap();
@@ -296,7 +297,7 @@ async fn pending_session_cannot_be_consumed_by_another_server() {
         .build();
     let other_local_addr = ([127, 0, 0, 2], 3389).into();
     other_server.set_connection_local_addr(Some(other_local_addr));
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let (server_stream, client) = tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
     let server_stream = server_stream.unwrap().0;
     let client = client.unwrap();
@@ -350,7 +351,7 @@ async fn pending_session_discards_events_left_by_an_intervening_session() {
         })
         .with_connection_handler(Some(Box::new(PeerRecorder(Arc::clone(&peers)))))
         .build();
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let (original_stream, original_client) =
         tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
     let (resume_tx, resume_rx) = oneshot::channel();
