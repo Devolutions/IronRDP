@@ -1,5 +1,5 @@
 use core::time::Duration;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -38,8 +38,8 @@ struct EchoHandleState {
     measurements: VecDeque<EchoRoundTripMeasurement>,
     /// Id of the last bridge made (one per connection).
     last_bridge: u64,
-    /// Id of the bridge whose channel the client opened, if any.
-    open_bridge: Option<u64>,
+    /// Ids of the bridges whose channel the client opened.
+    open_bridges: BTreeSet<u64>,
 }
 
 /// Shared handle for runtime ECHO requests and RTT measurements.
@@ -75,7 +75,7 @@ impl EchoServerHandle {
     /// when it declined the channel, and after the connection ended. The server
     /// drops a request sent while this is false.
     pub fn is_channel_open(&self) -> bool {
-        self.lock_state().open_bridge.is_some()
+        !self.lock_state().open_bridges.is_empty()
     }
 
     /// Drains collected RTT measurements.
@@ -119,14 +119,12 @@ impl EchoServerHandle {
         state.last_bridge
     }
 
-    fn set_open(&self, bridge: u64, open: bool) {
-        let mut state = self.lock_state();
-        if open {
-            state.open_bridge = Some(bridge);
-        } else if state.open_bridge == Some(bridge) {
-            // A newer connection may have opened its channel already.
-            state.open_bridge = None;
-        }
+    fn on_channel_opened(&self, bridge: u64) {
+        self.lock_state().open_bridges.insert(bridge);
+    }
+
+    fn on_channel_closed(&self, bridge: u64) {
+        self.lock_state().open_bridges.remove(&bridge);
     }
 
     fn lock_state(&self) -> MutexGuard<'_, EchoHandleState> {
@@ -147,11 +145,10 @@ pub struct EchoDvcBridge {
 
 impl EchoDvcBridge {
     pub fn new(handle: EchoServerHandle) -> Self {
-        let id = handle.new_bridge_id();
         Self {
             inner: EchoServer::new(),
+            id: handle.new_bridge_id(),
             handle,
-            id,
         }
     }
 
@@ -168,7 +165,7 @@ impl DvcProcessor for EchoDvcBridge {
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        self.handle.set_open(self.id, true);
+        self.handle.on_channel_opened(self.id);
         self.inner.start(channel_id)
     }
 
@@ -179,7 +176,7 @@ impl DvcProcessor for EchoDvcBridge {
     }
 
     fn close(&mut self, channel_id: u32) {
-        self.handle.set_open(self.id, false);
+        self.handle.on_channel_closed(self.id);
         self.inner.close(channel_id)
     }
 }
@@ -224,7 +221,8 @@ mod tests {
         client_sends(server, DrdynvcClientPdu::Create(CreateResponsePdu::new(id, status)));
     }
 
-    // oracle: regression #2339
+    // oracle: spec MS-RDPEDYC §2.2.2.2
+    // oracle: spec MS-RDPEDYC §2.2.4
     #[test]
     fn open_after_the_client_accepts_until_it_closes() {
         let handle = handle();
@@ -236,6 +234,7 @@ mod tests {
         assert!(!handle.is_channel_open(), "the client closed the channel");
     }
 
+    // oracle: spec MS-RDPEDYC §2.2.2.2
     // oracle: regression #2339
     #[test]
     fn not_open_when_the_client_declines() {
@@ -245,7 +244,7 @@ mod tests {
         assert!(!handle.is_channel_open());
     }
 
-    // oracle: regression #2339
+    // oracle: mutant the open state kept after the DVC server of the connection is dropped
     #[test]
     fn not_open_after_the_connection_ends() {
         let handle = handle();
@@ -255,17 +254,17 @@ mod tests {
         assert!(!handle.is_channel_open());
     }
 
-    // oracle: mutant the end of an old connection clearing the open channel of the next one
+    // oracle: mutant the end of one connection clearing the open channel of another
     #[test]
-    fn the_end_of_an_old_connection_keeps_the_new_channel_open() {
+    fn the_end_of_one_connection_keeps_the_other_channel_open() {
         let handle = handle();
         let (mut old, old_id) = server(&handle);
         client_answers(&mut old, old_id, CreationStatus::OK);
         let (mut new, new_id) = server(&handle);
         client_answers(&mut new, new_id, CreationStatus::OK);
-        drop(old);
-        assert!(handle.is_channel_open(), "the new connection's channel stays open");
         drop(new);
+        assert!(handle.is_channel_open(), "the old connection's channel stays open");
+        drop(old);
         assert!(!handle.is_channel_open());
     }
 }
