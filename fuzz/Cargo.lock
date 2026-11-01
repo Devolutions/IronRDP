@@ -469,6 +469,7 @@ dependencies = [
  "ironrdp-rdpel",
  "ironrdp-rdpemsc",
  "ironrdp-rdpemt",
+ "ironrdp-rdpepnp",
  "ironrdp-rdpet",
  "ironrdp-rdpetxt",
  "ironrdp-rdpeudp",
@@ -589,6 +590,18 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-error",
  "subtle",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpepnp"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "spin",
  "tracing",
 ]
 
@@ -923,6 +936,12 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
 name = "spki"

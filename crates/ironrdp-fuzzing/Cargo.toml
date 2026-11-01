@@ -32,6 +32,7 @@ ironrdp-rdpemsc.path = "../ironrdp-rdpemsc"
 ironrdp-rdpetxt = { path = "../ironrdp-rdpetxt", default-features = false }
 ironrdp-rdpadrv.path = "../ironrdp-rdpadrv"
 ironrdp-rdpeci.path = "../ironrdp-rdpeci"
+ironrdp-rdpepnp.path = "../ironrdp-rdpepnp"
 ironrdp-rdpear = { version = "0.1.0", path = "../ironrdp-rdpear" }
 ironrdp-w365.path = "../ironrdp-w365"
 

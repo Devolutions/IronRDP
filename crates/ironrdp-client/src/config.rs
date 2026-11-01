@@ -526,6 +526,10 @@ pub struct ChannelConfig {
     #[cfg(feature = "usb")]
     pub usb: Option<ironrdp_rdpeusb_native::UsbRedirectionConfig>,
 
+    /// Plug and Play devices to redirect over MS-RDPEPNP, or `None` to leave the channels unregistered.
+    #[cfg(feature = "pnp")]
+    pub pnp: Option<crate::pnp::PnpConfig>,
+
     /// H.264 decoder for the graphics pipeline and video optimized remoting.
     ///
     /// Defaults to [`crate::h264::H264DecoderFactory::platform_default`]: Media Foundation's on
@@ -590,6 +594,8 @@ impl Default for ChannelConfig {
             video: crate::video::VideoConfig::default(),
             #[cfg(feature = "usb")]
             usb: None,
+            #[cfg(feature = "pnp")]
+            pnp: None,
             h264_decoder: crate::h264::H264DecoderFactory::platform_default(),
             egfx_persistent_cache: None,
         }
@@ -2123,6 +2129,14 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_usb_redirection(mut self, usb: Option<ironrdp_rdpeusb_native::UsbRedirectionConfig>) -> Self {
         self.channels.usb = usb;
+        self
+    }
+
+    /// Redirect Plug and Play devices over MS-RDPEPNP, or disable PnP redirection with `None`.
+    #[cfg(feature = "pnp")]
+    #[must_use]
+    pub fn with_pnp_redirection(mut self, pnp: Option<crate::pnp::PnpConfig>) -> Self {
+        self.channels.pnp = pnp;
         self
     }
 

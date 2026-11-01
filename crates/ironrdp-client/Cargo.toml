@@ -75,6 +75,8 @@ openh264 = ["ironrdp-egfx/openh264-bundled"]
 camera = ["dep:ironrdp-rdpecam", "dep:ironrdp-rdpecam-native"]
 # MS-RDPEUSB USB device redirection through nusb (WinUSB on Windows, usbfs on Linux, IOKit on macOS).
 usb = ["dep:ironrdp-rdpeusb", "dep:ironrdp-rdpeusb-native"]
+# MS-RDPEPNP Plug and Play device redirection through an embedder-supplied backend.
+pnp = ["dep:ironrdp-rdpepnp"]
 cloud = [
     "dep:base64",
     "dep:picky",
@@ -119,6 +121,7 @@ all = [
     "video",
     "udp",
     "usb",
+    "pnp",
     "cloud",
     "entra-auth",
 ]
@@ -161,6 +164,7 @@ ironrdp-w365 = { path = "../ironrdp-w365", version = "0.1", optional = true } # 
 ironrdp-rdpegt = { path = "../ironrdp-rdpegt", version = "0.2", optional = true }
 ironrdp-rdpevor = { path = "../ironrdp-rdpevor", version = "0.2", optional = true }
 ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.2", optional = true }
+ironrdp-rdpepnp = { path = "../ironrdp-rdpepnp", version = "0.1", optional = true } # public
 
 # Optional backend crates (activated by features above)
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.8", optional = true } # public
