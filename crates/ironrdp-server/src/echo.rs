@@ -69,9 +69,15 @@ impl EchoServerHandle {
     }
 
     /// True while the client of the current connection has the ECHO dynamic
-    /// channel open. False before the client answered the DVC Create Request,
-    /// when it declined the channel, and after the connection ended. The server
-    /// drops a request sent while this is false.
+    /// channel open: from its [2.2.2.2] DVC Create Response PDU (DYNVC_CREATE_RSP)
+    /// with status OK until [2.2.4] Closing a DVC (DYNVC_CLOSE) or the end of the
+    /// connection. False before the client answers, and when its response has
+    /// another status. The server drops a request sent while this is false.
+    ///
+    /// The handle tracks one connection at a time, as `RdpServer` serves them.
+    ///
+    /// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/8f284ea3-54f3-4c24-8168-8a001c63b581
+    /// [2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/c02dfd21-ccbc-4254-985b-3ef6dd115dec
     pub fn is_channel_open(&self) -> bool {
         self.lock_state().channel_open
     }
