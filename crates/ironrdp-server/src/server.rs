@@ -5186,13 +5186,12 @@ impl RdpServer {
         let mut cliprdr_interval = tokio::time::interval(CLIPRDR_DRIVE_TIMEOUTS_INTERVAL);
         cliprdr_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         cliprdr_interval.tick().await;
-        let heartbeat = heartbeat.zip(message_channel_id);
         // Start after one period and skip missed ticks rather than burst after a stalled write.
-        let mut heartbeat_interval = heartbeat.map(|(config, _)| {
+        let mut heartbeat_timer = heartbeat.zip(message_channel_id).map(|(config, channel_id)| {
             let period = Duration::from_secs(u64::from(config.period_secs.max(1)));
             let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            interval
+            (interval, config, channel_id)
         });
         let mut writes_at_last_tick = write_counter.load(Ordering::Relaxed);
 
@@ -5200,6 +5199,7 @@ impl RdpServer {
         // A reactivation or disconnect drops an unfinished task's handle without aborting it.
         // Its result is then lost, and its socket can remain bound until UDP_ACCEPT_TIMEOUT.
         let state = loop {
+            // Release the RefCell borrow before awaiting so handlers can replace the transport.
             let current_udp_transport = udp_transport.borrow().clone();
             let result = tokio::select! {
                 frame = reader.read_pdu() => {
@@ -5286,19 +5286,20 @@ impl RdpServer {
                         .await?;
                     RunState::Continue
                 }
-                _ = async {
-                    match heartbeat_interval.as_mut() {
-                        Some(interval) => { interval.tick().await; }
+                (config, channel_id) = async {
+                    match heartbeat_timer.as_mut() {
+                        Some((interval, config, channel_id)) => {
+                            interval.tick().await;
+                            (*config, *channel_id)
+                        }
                         None => core::future::pending().await,
                     }
                 } => {
                     let writes_now = write_counter.load(Ordering::Relaxed);
                     // Ordinary traffic already serves as the liveness signal for this interval.
                     if writes_now == writes_at_last_tick {
-                        if let Some((config, message_channel_id)) = heartbeat {
-                            let data = encode_heartbeat(&config, message_channel_id, user_channel_id)?;
-                            writer.write_all(&data).await.map_err(|e| ServerError::io("send heartbeat", e))?;
-                        }
+                        let data = encode_heartbeat(&config, channel_id, user_channel_id)?;
+                        writer.write_all(&data).await.map_err(|e| ServerError::io("send heartbeat", e))?;
                     }
                     // Exclude the heartbeat's own write from the next interval's traffic.
                     writes_at_last_tick = write_counter.load(Ordering::Relaxed);
