@@ -641,7 +641,18 @@ impl Rdpdr {
             .into_iter()
             .zip(device_ids)
             .partition(|(device, _)| Self::is_pre_logon_device(device));
-        self.announce_batches([pre_logon, post_logon])
+        let messages = self.announce_batches([pre_logon, post_logon])?;
+        if !messages.is_empty() || !self.device_list.clone_inner().is_empty() {
+            return Ok(messages);
+        }
+
+        // With no device at all the list still goes, empty, as FreeRDP sends it: Windows servers otherwise wait
+        // about five seconds for it before starting audio playback (RDPSND).
+        let res = RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+            device_list: Vec::new(),
+        });
+        trace!("sending {:?}", res);
+        Ok(vec![SvcMessage::from(res)])
     }
 
     /// Announces each nonempty batch in a Device List Announce of its own, in order.
@@ -1511,6 +1522,31 @@ mod tests {
                 .expect("process accepted device announcement")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn user_logged_on_with_no_device_announces_an_empty_list() {
+        let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "test".to_owned());
+        let responses = rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        let client_id = read_u32(
+            &responses[0]
+                .encode_unframed_pdu()
+                .expect("encode client announce response"),
+            8,
+        );
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .expect("process server client ID confirm");
+
+        let messages = rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+        assert_eq!(messages.len(), 1);
+        let announce = messages[0].encode_unframed_pdu().expect("encode device list announce");
+        // RDPDR_HEADER (CORE, PAKID_CORE_DEVICELIST_ANNOUNCE), then a DeviceCount of zero and no device.
+        assert_eq!(announce, [0x72, 0x44, 0x41, 0x44, 0, 0, 0, 0]);
     }
 
     #[test]
