@@ -5143,7 +5143,7 @@ impl RdpServer {
         message_channel_id: Option<u16>,
         mut encoder: UpdateEncoder,
         udp_transport: Rc<RefCell<Option<multitransport::UdpTransportHandle>>>,
-        pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
+        mut pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
     ) -> ServerResult<RunState>
     where
         R: FramedRead,
@@ -5174,349 +5174,213 @@ impl RdpServer {
             }
         };
         let mut writer = SharedWriter::new(writer);
-        let mut display_writer = writer.clone();
-        let mut event_writer = writer.clone();
-        let mut auto_reconnect_writer = writer.clone();
-        let mut heartbeat_writer = writer.clone();
-        let mut udp_tunnel_writer = writer.clone();
-        let udp_transport_for_events = Rc::clone(&udp_transport);
-        let udp_transport_for_pdus = Rc::clone(&udp_transport);
-        let mut cliprdr_writer = writer.clone();
         let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
-        let s = Rc::new(Mutex::new((self, conn)));
+        let mut ev_receiver = ev_receiver.lock().await;
+        let graphics_write = Arc::clone(&conn.graphics_write);
+        let mut buffer = vec![0u8; 4096];
+        let mut events = Vec::with_capacity(100);
 
-        let this = Rc::clone(&s);
-        let dispatch_pdu = async move {
-            loop {
-                let (action, bytes) = reader.read_pdu().await.map_err(|e| ServerError::io("read pdu", e))?;
-                // D8: per-PDU lock-acquisition + dispatch timing. The `this`
-                // mutex is shared with dispatch_events; when an outbound
-                // event batch is in flight, this lock wait is the latency
-                // that a FrameAcknowledge sees before it reaches its
-                // handler. Log when the dispatch itself or the lock wait
-                // exceeds 50ms.
-                let pdu_len = bytes.len();
-                let lock_start = Instant::now();
-                let mut this = this.lock().await;
-                let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut cookie_interval = tokio::time::interval(AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL);
+        cookie_interval.tick().await;
+        let mut cliprdr_interval = tokio::time::interval(CLIPRDR_DRIVE_TIMEOUTS_INTERVAL);
+        cliprdr_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        cliprdr_interval.tick().await;
+        let heartbeat = heartbeat.zip(message_channel_id);
+        // Start after one period and skip missed ticks rather than burst after a stalled write.
+        let mut heartbeat_interval = heartbeat.map(|(config, _)| {
+            let period = Duration::from_secs(u64::from(config.period_secs.max(1)));
+            let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval
+        });
+        let mut writes_at_last_tick = write_counter.load(Ordering::Relaxed);
 
-                let dispatch_start = Instant::now();
-                let current_udp_transport = udp_transport_for_pdus.borrow().clone();
-                let (server, conn) = &mut *this;
-                let result = server
-                    .dispatch_pdu(
-                        conn,
-                        action,
-                        bytes,
-                        &mut writer,
-                        io_channel_id,
-                        user_channel_id,
-                        message_channel_id,
-                        current_udp_transport.as_ref(),
-                    )
-                    .await?;
-                let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-                if lock_wait_ms >= 50 {
-                    tracing::warn!(
-                        pdu_len,
-                        lock_wait_ms,
-                        dispatch_ms,
-                        "dispatch_pdu delayed acquiring this.lock, contended with outbound batch (dispatch_events/dispatch_display)"
-                    );
-                } else if dispatch_ms >= 50 {
-                    tracing::warn!(
-                        pdu_len,
-                        lock_wait_ms,
-                        dispatch_ms,
-                        "dispatch_pdu ran long after acquiring this.lock immediately, handler or runtime stall, not lock contention"
-                    );
-                } else {
-                    tracing::debug!(pdu_len, lock_wait_ms, dispatch_ms, "dispatch_pdu");
-                }
-
-                match result {
-                    RunState::Continue => continue,
-                    state => break Ok(state),
-                }
-            }
-        };
-
-        let graphics_write = Arc::clone(&s.lock().await.1.graphics_write);
-        let dispatch_display = async move {
-            let mut buffer = vec![0u8; 4096];
-
-            loop {
-                match display_updates.next_update().await {
-                    Ok(Some(update)) => {
-                        let _graphics = graphics_write.lock().await;
-                        match Self::dispatch_display_update(
-                            update,
-                            &mut display_writer,
-                            user_channel_id,
+        // Keep the pending accept task across select iterations and only borrow it while waiting.
+        // A reactivation or disconnect drops an unfinished task's handle without aborting it.
+        // Its result is then lost, and its socket can remain bound until UDP_ACCEPT_TIMEOUT.
+        let state = loop {
+            let current_udp_transport = udp_transport.borrow().clone();
+            let result = tokio::select! {
+                frame = reader.read_pdu() => {
+                    let (action, bytes) = frame.map_err(|e| ServerError::io("read pdu", e))?;
+                    let pdu_len = bytes.len();
+                    let dispatch_start = Instant::now();
+                    let result = self
+                        .dispatch_pdu(
+                            conn,
+                            action,
+                            bytes,
+                            &mut writer,
                             io_channel_id,
-                            &mut buffer,
-                            encoder,
+                            user_channel_id,
+                            message_channel_id,
+                            current_udp_transport.as_ref(),
                         )
-                        .await?
-                        {
-                            (RunState::Continue, enc) => {
-                                encoder = enc;
-                                continue;
-                            }
-                            (state, _) => {
-                                break Ok(state);
-                            }
+                        .await?;
+                    let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                    if 50 <= dispatch_ms {
+                        tracing::warn!(pdu_len, dispatch_ms, "PDU dispatch stalled");
+                    } else {
+                        tracing::trace!(pdu_len, dispatch_ms, "Dispatched PDU");
+                    }
+                    result
+                }
+                update = display_updates.next_update() => {
+                    match update {
+                        Ok(Some(update)) => {
+                            let _graphics = graphics_write.lock().await;
+                            let (state, enc) = Self::dispatch_display_update(
+                                update,
+                                &mut writer,
+                                user_channel_id,
+                                io_channel_id,
+                                &mut buffer,
+                                encoder,
+                            )
+                            .await?;
+                            encoder = enc;
+                            state
+                        }
+                        Ok(None) => RunState::Disconnect,
+                        Err(error) => {
+                            warn!(error = format!("{error:#}"), "Next display update failed");
+                            RunState::Continue
                         }
                     }
-                    Ok(None) => {
+                }
+                nevents = ev_receiver.recv_many(&mut events, 100) => {
+                    if nevents == 0 {
+                        debug!("Server event channel closed, stopping");
                         break Ok(RunState::Disconnect);
                     }
-                    Err(error) => {
-                        warn!(error = format!("{error:#}"), "next_updated failed");
+                    while let Ok(ev) = ev_receiver.try_recv() {
+                        events.push(ev);
                     }
-                }
-            }
-        };
 
-        let this = Rc::clone(&s);
-        let mut ev_receiver = ev_receiver.lock().await;
-        let dispatch_events = async move {
-            let mut events = Vec::with_capacity(100);
-            loop {
-                let nevents = ev_receiver.recv_many(&mut events, 100).await;
-                if nevents == 0 {
-                    debug!("No sever events.. stopping");
-                    break Ok(RunState::Disconnect);
-                }
-                while let Ok(ev) = ev_receiver.try_recv() {
-                    events.push(ev);
-                }
+                    let batch_size = events.len();
+                    let dispatch_start = Instant::now();
+                    let result = self
+                        .dispatch_server_events(
+                            conn,
+                            &mut events,
+                            &mut writer,
+                            io_channel_id,
+                            user_channel_id,
+                            message_channel_id,
+                            current_udp_transport.as_ref(),
+                        )
+                        .await?;
+                    let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-                // D7: per-batch dispatch_events timing. The events Vec can
-                // grow up to 100+ entries; dispatch_server_events holds the
-                // `this` mutex AND the SharedWriter mutex for the full
-                // batch. Log batch size + total dispatch time so operators
-                // can see when an event batch ties up both locks.
-                let batch_size = events.len();
-                let lock_start = Instant::now();
-                let mut this = this.lock().await;
-                let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-                let dispatch_start = Instant::now();
-                // Cloned out of the cell before the call, since `dispatch_server_events`
-                // is async and this must not hold the `RefCell` borrow across
-                // an await point. `UdpTransportHandle` is cheap to clone (see
-                // its own doc comment).
-                let current_udp_transport = udp_transport_for_events.borrow().clone();
-                let (server, conn) = &mut *this;
-                let result = server
-                    .dispatch_server_events(
-                        conn,
-                        &mut events,
-                        &mut event_writer,
-                        io_channel_id,
-                        user_channel_id,
-                        message_channel_id,
-                        current_udp_transport.as_ref(),
-                    )
-                    .await?;
-                let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-                if lock_wait_ms >= 50 || dispatch_ms >= 100 {
-                    tracing::warn!(
-                        batch_size,
-                        lock_wait_ms,
-                        dispatch_ms,
-                        "dispatch_events batch stalled, long write or lock contention"
-                    );
-                } else if batch_size > 1 {
-                    tracing::debug!(batch_size, lock_wait_ms, dispatch_ms, "dispatch_events batch");
-                }
-
-                match result {
-                    RunState::Continue => continue,
-                    state => break Ok(state),
-                }
-            }
-        };
-
-        let this = Rc::clone(&s);
-        let refresh_auto_reconnect_cookie = async move {
-            let mut interval = tokio::time::interval(AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL);
-            interval.tick().await;
-
-            loop {
-                interval.tick().await;
-                let mut this = this.lock().await;
-                let (server, conn) = &mut *this;
-                server
-                    .rotate_auto_reconnect_cookie(conn, &mut auto_reconnect_writer, io_channel_id, user_channel_id)
-                    .await?;
-            }
-        };
-
-        let send_heartbeats = async move {
-            let (Some(config), Some(message_channel_id)) = (heartbeat, message_channel_id) else {
-                return core::future::pending::<ServerResult<RunState>>().await;
-            };
-            // 2.2.16.1: `period` is in seconds. A zero period is meaningless
-            // (and would panic tokio's interval), so it is bumped to one.
-            let period = Duration::from_secs(u64::from(config.period_secs.max(1)));
-            let mut interval = tokio::time::interval(period);
-            // A stalled write (TCP back-pressure) can hold this future past
-            // several tick deadlines; Burst (the default) would then fire the
-            // missed ticks back-to-back and emit a run of consecutive
-            // heartbeats on an otherwise idle link. Skip fires at the next
-            // period boundary instead.
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            interval.tick().await; // first tick completes immediately; real waits start below
-
-            let mut writes_at_last_tick = write_counter.load(Ordering::Relaxed);
-            loop {
-                interval.tick().await;
-                let writes_now = write_counter.load(Ordering::Relaxed);
-                if writes_now != writes_at_last_tick {
-                    // 2.2.16.1: heartbeats SHOULD only be sent when no other
-                    // PDU went out in the interval; ordinary traffic doubles
-                    // as the liveness signal.
-                    writes_at_last_tick = writes_now;
-                    continue;
-                }
-                let data = encode_heartbeat(&config, message_channel_id, user_channel_id)?;
-                heartbeat_writer
-                    .write_all(&data)
-                    .await
-                    .map_err(|e| ServerError::io("send heartbeat", e))?;
-                // Re-read so the heartbeat's own write does not read as
-                // foreign traffic on the next tick.
-                writes_at_last_tick = write_counter.load(Ordering::Relaxed);
-            }
-        };
-
-        let this = Rc::clone(&s);
-        let dispatch_udp_tunnel = async move {
-            // Only the pass of `client_loop` that received a fresh
-            // `pending_udp_accept` waits on it; every other future in this
-            // `select!` is already dispatching over TCP while this resolves,
-            // so the session never stalls on it. The accepted transport (if
-            // any) is stashed in the shared cell so `dispatch_events`, running
-            // concurrently, can start using it as soon as it lands too.
-            //
-            // If a Deactivation-Reactivation cycle drops this future while
-            // `handle` is still unresolved, the background accept task (and
-            // whatever socket/handshake it is mid-negotiation on) is orphaned:
-            // Its eventual result has nowhere left to be delivered, and this
-            // session continues TCP-only for the rest of its lifetime. That is
-            // an accepted narrow-window tradeoff; the alternative is
-            // persisting in-flight `JoinHandle`s across reactivation, which
-            // this integration does not attempt. The orphaned task also keeps
-            // `udp_bind_addr` bound for up to `UDP_ACCEPT_TIMEOUT`, so a NEXT
-            // connection's own bind attempt during that window can collide
-            // with it too, not only a concurrently preempted session's (see
-            // `multitransport::accept`'s own doc comment on that failure
-            // mode); it degrades the same way, gracefully, to TCP-only.
-            if let Some(handle) = pending_udp_accept {
-                match handle.await {
-                    Ok(Some(transport)) => {
-                        *udp_transport.borrow_mut() = Some(transport);
+                    if 100 <= dispatch_ms {
+                        tracing::warn!(batch_size, dispatch_ms, "Server event batch stalled");
+                    } else if 1 < batch_size {
+                        tracing::trace!(batch_size, dispatch_ms, "Dispatched server event batch");
                     }
-                    Ok(None) => {
-                        debug!("UDP transport did not come up, continuing TCP-only for the rest of the session");
-                    }
-                    Err(error) if error.is_cancelled() => {
-                        debug!(
-                            "UDP transport accept stopped after the client declined, continuing TCP-only for the rest of the session"
-                        );
-                    }
-                    Err(error) => {
-                        warn!(%error, "UDP transport accept task panicked, continuing TCP-only for the rest of the session");
-                    }
+                    result
                 }
-            }
-
-            // This future is the cell's only writer, so the handle cannot
-            // change under the loop below.
-            let current = udp_transport.borrow().clone();
-            let Some(transport) = current else {
-                return core::future::pending::<ServerResult<RunState>>().await;
-            };
-            loop {
-                let Some(message) = transport.recv().await else {
-                    // Soft-Sync only moves channels onto a tunnel (MS-RDPEDYC
-                    // 2.2.5.1 has no TCP tunnel type), its request promised
-                    // no more of their data over TCP (SOFT_SYNC_TCP_FLUSHED),
-                    // and the tunnel lasts as long as the connection
-                    // (MS-RDPEMT 1.3.3). A client whose channels moved has
-                    // nowhere left to read them, so end the connection and let
-                    // it reconnect rather than keep a session it cannot draw.
-                    let (_, conn) = &mut *this.lock().await;
-                    if conn.egfx_on_udp {
-                        warn!("UDP transport lost with EGFX on it, ending the connection");
-                        return Err(ServerError::reason(
-                            "UDP transport",
-                            "lost with dynamic channels moved onto it",
-                        ));
-                    }
-                    debug!("UDP transport closed, continuing TCP-only for the rest of the session");
-                    // Without this, `dispatch_egfx_messages` would keep seeing
-                    // `Some(dead_handle)` here and stay on the UDP branch,
-                    // silently dropping every future EGFX batch instead of
-                    // actually falling back to TCP as this log claims.
-                    *udp_transport.borrow_mut() = None;
-                    return core::future::pending::<ServerResult<RunState>>().await;
-                };
-                let mut this = this.lock().await;
-                let (server, conn) = &mut *this;
-                Self::record_tunnel_sub_headers(conn, &message.sub_headers);
-                if message.data.is_empty() {
-                    continue;
+                _ = cookie_interval.tick() => {
+                    self.rotate_auto_reconnect_cookie(conn, &mut writer, io_channel_id, user_channel_id)
+                        .await?;
+                    RunState::Continue
                 }
-                let result = server
-                    .dispatch_udp_tunnel_payload(
+                _ = async {
+                    match heartbeat_interval.as_mut() {
+                        Some(interval) => { interval.tick().await; }
+                        None => core::future::pending().await,
+                    }
+                } => {
+                    let writes_now = write_counter.load(Ordering::Relaxed);
+                    // Ordinary traffic already serves as the liveness signal for this interval.
+                    if writes_now == writes_at_last_tick {
+                        if let Some((config, message_channel_id)) = heartbeat {
+                            let data = encode_heartbeat(&config, message_channel_id, user_channel_id)?;
+                            writer.write_all(&data).await.map_err(|e| ServerError::io("send heartbeat", e))?;
+                        }
+                    }
+                    // Exclude the heartbeat's own write from the next interval's traffic.
+                    writes_at_last_tick = write_counter.load(Ordering::Relaxed);
+                    RunState::Continue
+                }
+                accepted = async {
+                    match pending_udp_accept.as_mut() {
+                        Some(handle) => handle.await,
+                        None => core::future::pending().await,
+                    }
+                } => {
+                    pending_udp_accept = None;
+                    match accepted {
+                        Ok(Some(transport)) => {
+                            *udp_transport.borrow_mut() = Some(transport);
+                        }
+                        Ok(None) => {
+                            debug!("UDP transport did not come up, continuing TCP-only for the rest of the session");
+                        }
+                        Err(error) if error.is_cancelled() => {
+                            debug!(
+                                "UDP transport accept stopped after the client declined, continuing TCP-only for the rest of the session"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(%error, "UDP transport accept task panicked, continuing TCP-only for the rest of the session");
+                        }
+                    }
+                    RunState::Continue
+                }
+                message = async {
+                    match current_udp_transport.as_ref() {
+                        Some(transport) => transport.recv().await,
+                        None => core::future::pending().await,
+                    }
+                }, if pending_udp_accept.is_none() => {
+                    let Some(message) = message else {
+                        // Soft-Sync only moves channels onto a tunnel (MS-RDPEDYC
+                        // 2.2.5.1 has no TCP tunnel type), its request promised
+                        // no more of their data over TCP (SOFT_SYNC_TCP_FLUSHED),
+                        // and the tunnel lasts as long as the connection
+                        // (MS-RDPEMT 1.3.3). A client whose channels moved has
+                        // nowhere left to read them, so end the connection and let
+                        // it reconnect rather than keep a session it cannot draw.
+                        if conn.egfx_on_udp {
+                            warn!("UDP transport lost with EGFX on it, ending the connection");
+                            return Err(ServerError::reason(
+                                "UDP transport",
+                                "lost with dynamic channels moved onto it",
+                            ));
+                        }
+                        debug!("UDP transport closed, continuing TCP-only for the rest of the session");
+                        // Without this, `dispatch_egfx_messages` would keep seeing
+                        // `Some(dead_handle)` here and stay on the UDP branch,
+                        // silently dropping every future EGFX batch instead of
+                        // actually falling back to TCP as this log claims.
+                        *udp_transport.borrow_mut() = None;
+                        continue;
+                    };
+                    Self::record_tunnel_sub_headers(conn, &message.sub_headers);
+                    if message.data.is_empty() {
+                        continue;
+                    }
+                    self.dispatch_udp_tunnel_payload(
                         conn,
                         &message.data,
-                        &mut udp_tunnel_writer,
+                        &mut writer,
                         user_channel_id,
-                        Some(&transport),
+                        current_udp_transport.as_ref(),
                     )
-                    .await?;
-                match result {
-                    RunState::Continue => continue,
-                    state => break Ok(state),
+                    .await?
                 }
+                _ = cliprdr_interval.tick() => {
+                    self.drive_cliprdr_timeouts(conn, &mut writer, user_channel_id).await?;
+                    RunState::Continue
+                }
+            };
+            match result {
+                RunState::Continue => {}
+                state => break Ok(state),
             }
         };
-
-        let this = Rc::clone(&s);
-        let drive_cliprdr_timeouts = async move {
-            let mut interval = tokio::time::interval(CLIPRDR_DRIVE_TIMEOUTS_INTERVAL);
-            // A stalled write can hold this future past several tick deadlines;
-            // Burst (the default) would then fire the missed ticks back-to-back
-            // for a sweep that is idempotent anyway.
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            interval.tick().await; // first tick completes immediately
-
-            loop {
-                interval.tick().await;
-                let mut this = this.lock().await;
-                let (server, conn) = &mut *this;
-                server
-                    .drive_cliprdr_timeouts(conn, &mut cliprdr_writer, user_channel_id)
-                    .await?;
-            }
-        };
-
-        let state = tokio::select!(
-            state = dispatch_pdu => state,
-            state = dispatch_display => state,
-            state = dispatch_events => state,
-            state = refresh_auto_reconnect_cookie => state,
-            state = send_heartbeats => state,
-            state = dispatch_udp_tunnel => state,
-            state = drive_cliprdr_timeouts => state,
-        );
 
         debug!("End of client loop: {state:?}");
         state
