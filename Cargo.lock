@@ -1455,8 +1455,8 @@ dependencies = [
 
 [[package]]
 name = "diplomat"
-version = "0.16.1"
-source = "git+https://github.com/Devolutions/diplomat?tag=0.16.1-devo.2#002db80cd71327de9553ea01d4d54552d8df05e7"
+version = "0.17.0"
+source = "git+https://github.com/Devolutions/diplomat?tag=0.17.0-devo.1#b1d544ff8c035dea6db0d5f2a98f395b0fd3b293"
 dependencies = [
  "diplomat_core",
  "proc-macro2",
@@ -1466,13 +1466,13 @@ dependencies = [
 
 [[package]]
 name = "diplomat-runtime"
-version = "0.16.0"
-source = "git+https://github.com/Devolutions/diplomat?tag=0.16.1-devo.2#002db80cd71327de9553ea01d4d54552d8df05e7"
+version = "0.16.1"
+source = "git+https://github.com/Devolutions/diplomat?tag=0.17.0-devo.1#b1d544ff8c035dea6db0d5f2a98f395b0fd3b293"
 
 [[package]]
 name = "diplomat_core"
-version = "0.16.1"
-source = "git+https://github.com/Devolutions/diplomat?tag=0.16.1-devo.2#002db80cd71327de9553ea01d4d54552d8df05e7"
+version = "0.17.0"
+source = "git+https://github.com/Devolutions/diplomat?tag=0.17.0-devo.1#b1d544ff8c035dea6db0d5f2a98f395b0fd3b293"
 dependencies = [
  "proc-macro2",
  "quote",
