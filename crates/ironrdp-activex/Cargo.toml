@@ -25,7 +25,7 @@ ironrdp-client = { path = "../ironrdp-client", version = "0.1", features = ["cam
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.9" }
 ironrdp-cliprdr-format = { path = "../ironrdp-cliprdr-format", version = "0.3.0" }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9" }
-ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.3" }
+ironrdp-cfg = { path = "../ironrdp-cfg", version = "0.4" }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.12" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.3" }
 ironrdp-daemon = { path = "../ironrdp-daemon", version = "0.1" }
