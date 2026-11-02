@@ -142,6 +142,7 @@ impl Sequence for LicenseExchangeSequence {
 
                 match license_pdu {
                     LicensePdu::ServerLicenseRequest(license_request) => {
+                        debug!(message = ?license_request, "Received");
                         let mut rng = rand::rng();
                         let mut client_random = [0u8; server_license::RANDOM_NUMBER_SIZE];
                         rng.fill_bytes(&mut client_random);
@@ -176,7 +177,7 @@ impl Sequence for LicenseExchangeSequence {
                             ) {
                                 Ok((client_license_info, encryption_data)) => {
                                     trace!(?encryption_data, "Successfully generated Client License Info");
-                                    trace!(message = ?client_license_info, "Send");
+                                    debug!(message = ?client_license_info, "Send");
 
                                     let written = encode_send_data_request::<LicensePdu>(
                                         send_data_indication_ctx.initiator_id,
@@ -207,7 +208,7 @@ impl Sequence for LicenseExchangeSequence {
                             ) {
                                 Ok((new_license_request, encryption_data)) => {
                                     trace!(?encryption_data, "Successfully generated Client New License Request");
-                                    trace!(message = ?new_license_request, "Send");
+                                    debug!(message = ?new_license_request, "Send");
 
                                     let written = encode_send_data_request::<LicensePdu>(
                                         send_data_indication_ctx.initiator_id,
@@ -255,6 +256,7 @@ impl Sequence for LicenseExchangeSequence {
                                 ServerLicenseError::from(error_message)
                             ));
                         }
+                        debug!(message = ?error_message, "Received");
                         info!("Server did not initiate license exchange");
                         (Written::Nothing, LicenseExchangeState::LicenseExchanged)
                     }
