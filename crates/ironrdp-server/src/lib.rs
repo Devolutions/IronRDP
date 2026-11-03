@@ -43,9 +43,7 @@ pub use gfx::{EgfxServerMessage, GfxContext, GfxDvcBridge, GfxServerFactory, Gfx
 pub use handler::{KeyboardEvent, MouseButton, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
-<<<<<<< HEAD
 pub use ironrdp_acceptor::{Acceptor, CredentialOrigin, CredsspAuthIdentity, CredsspBackend, ReceivedCredentials};
->>>>>>> a4325f4c (feat(server): split auth from session startup)
 pub use ironrdp_pdu::rdp::server_error_info::ErrorInfo;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "usb")]
