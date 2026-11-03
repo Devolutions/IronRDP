@@ -2173,7 +2173,13 @@ fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
         kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
     }))
     .unwrap();
-    assert!(server.process(&capability_response).unwrap().is_empty());
+    // [MS-RDPEFS] 3.1.5.1.5: the Server User Logged On PDU lets the client announce its drives.
+    let logged_on = server.process(&capability_response).unwrap();
+    assert_eq!(logged_on.len(), 1);
+    assert_eq!(
+        logged_on[0].encode_unframed_pdu().unwrap(),
+        encode_vec(&RdpdrPdu::UserLoggedon).unwrap()
+    );
 
     client_id
 }

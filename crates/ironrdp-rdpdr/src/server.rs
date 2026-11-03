@@ -545,7 +545,10 @@ impl RdpdrServer {
             "received ClientCoreCapabilityResponse"
         );
         self.state = RdpdrServerState::Active;
-        Ok(Vec::new())
+        // [MS-RDPEFS] 3.1.5.1.5: clients announce their drives only after the
+        // Server User Logged On PDU. The user was authenticated when the
+        // connection was, so it follows the capability exchange at once.
+        Ok(vec![SvcMessage::from(RdpdrPdu::UserLoggedon)])
     }
 
     fn handle_device_list_announce(&mut self, src: &mut ReadCursor<'_>) -> PduResult<Vec<SvcMessage>> {
