@@ -142,11 +142,14 @@ Use `ServerEvent::Clipboard` when no completion notification is needed.
 ## Dynamic-channel writes
 
 Send a validated `ironrdp_dvc::DvcMessageBatch` through `ServerEvent::DynamicChannelWithCompletion` for an already-open dynamic channel.
+Build complete messages with `ironrdp_dvc::encode_dvc_messages` before `DvcMessageBatch::try_new` so DVC fragmentation and message boundaries follow the protocol.
+Batch validation checks data-PDU type and channel ID, not fragment sizes or sequencing; manually constructed PDUs remain the producer's responsibility.
 Dispatch revalidates every batch and rejects control PDUs, including Create and Close responses.
 The server writes the batch over the joined DRDYNVC static channel; unavailable channels and channels migrated to a sideband transport are rejected.
 Acquire a permit from a shared bounded semaphore before allocating each batch, and cap batch sizes because the server does not impose a byte budget.
 The event retains its permit until dispatch or discard.
 Provide an `is_current` predicate tied to the producer's connection or processor generation so a late event cannot target a reused channel ID.
+The server relies on this predicate for connection identity; a predicate that always returns true does not protect against stale writes.
 The predicate runs while server-state and writer locks are held, so it must not block or wait on work that needs either lock.
 Dispatch checks cancellation and producer validity before channel lookup and again after waiting for the writer lock.
 Once transmission starts, producer cancellation does not interrupt the write.

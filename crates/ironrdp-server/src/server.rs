@@ -1653,20 +1653,19 @@ pub enum ServerEvent {
     ClipboardWithCompletion(ClipboardMessage, oneshot::Sender<()>),
     /// Writes data to an open dynamic channel over the main RDP transport.
     ///
-    /// Dispatch revalidates the batch and rejects control PDUs.
-    /// Submit only for an active session and await completion before submitting another batch.
-    /// Acquire `permit` from a shared bounded semaphore before allocating the batch.
-    /// The event retains the permit until dispatch or discard; cap batch sizes because the server does not impose a byte budget.
-    /// There is no dispatch deadline, and undrained events retain their payloads and permits.
-    /// A closed receiver means dispatch failed, the event was discarded, or the channel was unavailable.
-    /// Channels migrated to a sideband transport are rejected rather than sent over the wrong transport.
-    /// `is_current` must be a nonblocking predicate tied to the producer's connection or processor generation.
-    /// Dispatch checks cancellation and producer validity before channel lookup and again after waiting for the writer lock.
-    /// A stale event is discarded even if its channel ID is open on a later connection.
-    /// The predicate runs while server-state and writer locks are held; do not wait on work that needs either lock.
+    /// Use [`dvc::encode_dvc_messages`] to fragment complete messages per [MS-RDPEDYC] section 2.2.3.1,
+    /// "DVC Data First PDU"; batch revalidation checks only PDU type and channel ID.
+    /// Submit only for an active session, bound allocations with `permit`, and await completion before sending again.
+    /// `is_current` must identify the producer's connection or processor generation without blocking under server-state or writer locks.
+    /// The server checks this predicate before dispatch and after writer-lock contention, but cannot establish its correctness.
+    /// Unavailable, sideband-migrated, canceled-before-write, and predicate-rejected batches are discarded.
     /// Once transmission starts, producer cancellation does not interrupt the write.
-    /// Failure does not prove that no bytes were sent, so it is not permission to retry.
     /// Completion confirms the entire transport write, not acceptance by the peer.
+    /// A closed receiver means failure or discard, not permission to retry: some bytes may already have been sent.
+    /// See the [dynamic-channel write guidance] for queue bounds and lifetime requirements.
+    ///
+    /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
+    /// [dynamic-channel write guidance]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-server/README.md#dynamic-channel-writes
     DynamicChannelWithCompletion {
         batch: dvc::DvcMessageBatch,
         completion: oneshot::Sender<()>,

@@ -452,6 +452,15 @@ mod completion {
         write_if_current(channel_id, &permits, Box::new(|| true))
     }
 
+    fn current_producer() -> (Arc<AtomicBool>, Box<dyn Fn() -> bool + Send>) {
+        let current = Arc::new(AtomicBool::new(true));
+        let is_current = Box::new({
+            let current = Arc::clone(&current);
+            move || current.load(Ordering::SeqCst)
+        });
+        (current, is_current)
+    }
+
     fn write_if_current(
         channel_id: u32,
         permits: &Arc<Semaphore>,
@@ -497,7 +506,11 @@ mod completion {
         drop(transport);
         let mut bytes = Vec::new();
         peer.read_to_end(&mut bytes).await.unwrap();
-        let mut frames = ReadCursor::new(&bytes);
+        assert_payload_and_destination(&bytes, channel_id);
+    }
+
+    fn assert_payload_and_destination(bytes: &[u8], channel_id: u32) {
+        let mut frames = ReadCursor::new(bytes);
         let frame: X224<SendDataIndication<'_>> = decode_cursor(&mut frames).unwrap();
         assert_eq!(frame.0.channel_id, SVC_ID);
         assert_eq!(frame.0.initiator_id, 1002);
@@ -581,39 +594,84 @@ mod completion {
         assert!(bytes.is_empty(), "rejected data reached the main transport");
     }
 
-    // oracle: mutant completing a DVC event before the entire transport write succeeds.
+    // oracle: mutant completing a DVC event before the entire transport write succeeds or interrupting it after producer invalidation.
     #[tokio::test]
     async fn completion_waits_for_a_stalled_transport_write() {
         let mut server = server();
         let (drdynvc, channel_id) = opened(&server);
         let permits = Arc::new(Semaphore::new(1));
-        let (event, mut processed) = write_if_current(channel_id, &permits, Box::new(|| true));
+        let (current, is_current) = current_producer();
+        let (event, mut processed) = write_if_current(channel_id, &permits, is_current);
         let (stream, mut peer) = tokio::io::duplex(1);
         let mut transport = TokioFramed::new(stream);
-        let mut writer = SharedWriter::new(&mut transport);
-        let mut events = vec![event];
-        let dispatch = dispatch_static_channel_events(&mut server, channels(drdynvc), &mut events, &mut writer);
-        tokio::pin!(dispatch);
-        core::future::poll_fn(|cx| {
-            assert!(dispatch.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
-        assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
-        assert_eq!(permits.available_permits(), 0);
+        let mut bytes = Vec::new();
+        {
+            let mut writer = SharedWriter::new(&mut transport);
+            let mut events = vec![event];
+            let dispatch = dispatch_static_channel_events(&mut server, channels(drdynvc), &mut events, &mut writer);
+            tokio::pin!(dispatch);
+            assert_pending(dispatch.as_mut()).await;
+            assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+            // oracle: mutant releasing a permit before its pending write completes.
+            assert_eq!(permits.available_permits(), 0);
+
+            // Invalidate only after observing partial transmission, which must still finish.
+            let mut first_byte = [0];
+            peer.read_exact(&mut first_byte).await.unwrap();
+            bytes.extend_from_slice(&first_byte);
+            current.store(false, Ordering::SeqCst);
+            drain_write(&mut peer, &mut bytes, dispatch.as_mut()).await;
+        }
+        assert_eq!(processed.try_recv(), Ok(()));
+        // oracle: mutant retaining a permit after its write completes.
+        assert_eq!(permits.available_permits(), 1);
+        drop(transport);
+        peer.read_to_end(&mut bytes).await.unwrap();
+        assert_payload_and_destination(&bytes, channel_id);
+    }
+
+    // oracle: mutant interrupting a partially transmitted DVC PDU when its completion receiver is dropped.
+    #[tokio::test]
+    async fn cancellation_does_not_interrupt_a_started_transport_write() {
+        let mut server = server();
+        let (drdynvc, channel_id) = opened(&server);
+        let (event, processed) = write(channel_id);
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut transport = TokioFramed::new(stream);
+        let mut bytes = Vec::new();
+        {
+            let mut writer = SharedWriter::new(&mut transport);
+            let mut events = vec![event];
+            let dispatch = dispatch_static_channel_events(&mut server, channels(drdynvc), &mut events, &mut writer);
+            tokio::pin!(dispatch);
+            assert_pending(dispatch.as_mut()).await;
+            let mut first_byte = [0];
+            peer.read_exact(&mut first_byte).await.unwrap();
+            bytes.extend_from_slice(&first_byte);
+            drop(processed);
+
+            drain_write(&mut peer, &mut bytes, dispatch.as_mut()).await;
+        }
+        drop(transport);
+        peer.read_to_end(&mut bytes).await.unwrap();
+        assert_payload_and_destination(&bytes, channel_id);
+    }
+
+    async fn drain_write(
+        peer: &mut tokio::io::DuplexStream,
+        bytes: &mut Vec<u8>,
+        mut dispatch: Pin<&mut impl Future<Output = ironrdp_server::ServerResult<()>>>,
+    ) {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let mut bytes = [0; 128];
             loop {
                 tokio::select! {
                     sent = &mut dispatch => break sent.unwrap(),
-                    read = peer.read(&mut bytes) => assert_ne!(read.unwrap(), 0),
+                    read = peer.read_buf(bytes) => assert_ne!(read.unwrap(), 0),
                 }
             }
         })
         .await
         .unwrap();
-        assert_eq!(processed.try_recv(), Ok(()));
-        assert_eq!(permits.available_permits(), 1);
     }
 
     async fn assert_pending(future: Pin<&mut impl Future>) {
@@ -626,10 +684,10 @@ mod completion {
     }
 
     async fn behind_writer(
+        permits: &Semaphore,
         event: ServerEvent,
         channels: StaticChannelSet,
         after_wait: impl FnOnce(),
-        permits: &Semaphore,
     ) -> Vec<u8> {
         let (stream, mut peer) = tokio::io::duplex(8192);
         let mut transport = TokioFramed::new(stream);
@@ -646,6 +704,7 @@ mod completion {
             let dispatch = dispatch_static_channel_events(&mut server, channels, &mut events, &mut writer);
             tokio::pin!(dispatch);
             assert_pending(dispatch.as_mut()).await;
+            // oracle: mutant releasing a permit before writer-lock contention ends.
             assert_eq!(permits.available_permits(), 0);
             after_wait();
 
@@ -665,7 +724,7 @@ mod completion {
         bytes
     }
 
-    // oracle: maintainer review feedback on PR #2337 requires stale DVC writes to be discarded when a later connection reuses the same channel ID.
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2337#issuecomment-6550401512.
     #[tokio::test]
     async fn stale_producer_cannot_write_to_a_reused_channel_id() {
         let mut server = server();
@@ -674,15 +733,8 @@ mod completion {
         assert_eq!(old_channel_id, current_channel_id);
 
         let permits = Arc::new(Semaphore::new(1));
-        let current = Arc::new(AtomicBool::new(true));
-        let (event, processed) = write_if_current(
-            old_channel_id,
-            &permits,
-            Box::new({
-                let current = Arc::clone(&current);
-                move || current.load(Ordering::SeqCst)
-            }),
-        );
+        let (current, is_current) = current_producer();
+        let (event, processed) = write_if_current(old_channel_id, &permits, is_current);
         current.store(false, Ordering::SeqCst);
 
         let (stream, mut peer) = tokio::io::duplex(128);
@@ -696,6 +748,7 @@ mod completion {
         .await
         .unwrap();
         assert!(processed.await.is_err(), "a stale producer was acknowledged");
+        // oracle: mutant retaining a discarded stale event's permit.
         assert_eq!(permits.available_permits(), 1);
         drop(transport);
         let mut bytes = Vec::new();
@@ -709,24 +762,15 @@ mod completion {
         let server = server();
         let (drdynvc, channel_id) = opened(&server);
         let permits = Arc::new(Semaphore::new(1));
-        let current = Arc::new(AtomicBool::new(true));
-        let (event, processed) = write_if_current(
-            channel_id,
-            &permits,
-            Box::new({
-                let current = Arc::clone(&current);
-                move || current.load(Ordering::SeqCst)
-            }),
-        );
-        let bytes = behind_writer(
-            event,
-            channels(drdynvc),
-            || current.store(false, Ordering::SeqCst),
-            &permits,
-        )
+        let (current, is_current) = current_producer();
+        let (event, processed) = write_if_current(channel_id, &permits, is_current);
+        let bytes = behind_writer(&permits, event, channels(drdynvc), || {
+            current.store(false, Ordering::SeqCst)
+        })
         .await;
         assert!(bytes.is_empty(), "invalidated data escaped after the writer lock");
         assert!(processed.await.is_err());
+        // oracle: mutant retaining an invalidated event's permit.
         assert_eq!(permits.available_permits(), 1);
     }
 
@@ -737,8 +781,9 @@ mod completion {
         let (drdynvc, channel_id) = opened(&server);
         let permits = Arc::new(Semaphore::new(1));
         let (event, processed) = write_if_current(channel_id, &permits, Box::new(|| true));
-        let bytes = behind_writer(event, channels(drdynvc), || drop(processed), &permits).await;
+        let bytes = behind_writer(&permits, event, channels(drdynvc), || drop(processed)).await;
         assert!(bytes.is_empty(), "canceled data escaped after the writer lock");
+        // oracle: mutant retaining a canceled event's permit.
         assert_eq!(permits.available_permits(), 1);
     }
 
@@ -763,6 +808,7 @@ mod completion {
             .is_err()
         );
         assert!(processed.await.is_err());
+        // oracle: mutant retaining a failed write's permit.
         assert_eq!(permits.available_permits(), 1);
     }
 
@@ -776,6 +822,7 @@ mod completion {
         server.event_sender().send(event).unwrap();
         server.discard_stale_session_events().await;
         assert!(processed.await.is_err());
+        // oracle: mutant retaining a discarded session event's permit.
         assert_eq!(permits.available_permits(), 1);
     }
 
@@ -834,7 +881,7 @@ mod completion {
             .unwrap()
     }
 
-    // oracle: regression Devolutions/IronRDP#2337: control responses must not be sent by the data-write event.
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2337#discussion_r4432146507.
     #[tokio::test]
     async fn create_response_batches_are_rejected() {
         let mut server = server();
@@ -843,7 +890,7 @@ mod completion {
         assert_control_batch_rejected(&mut server, drdynvc, batch).await;
     }
 
-    // oracle: regression Devolutions/IronRDP#2337: a tunneled Close response must not close the peer's channel.
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2337#discussion_r4432146507.
     #[tokio::test]
     async fn close_response_batches_are_rejected() {
         let mut server = server();
