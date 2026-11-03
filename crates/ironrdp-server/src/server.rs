@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use ironrdp_acceptor::{
     Acceptor, AcceptorResult, BeginResult, ConnectionSetupHandler, ConnectorError, ConnectorErrorExt as _,
-    CredentialOrigin, DesktopSize, ReceivedCredentials,
+    CredentialOrigin, CredsspBackend, DesktopSize, ReceivedCredentials,
 };
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
@@ -1410,6 +1410,7 @@ pub struct RdpServer {
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
+    credssp_backend: CredsspBackend,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     connection_binder: Option<Arc<dyn ConnectionBinder>>,
     pending_authenticated_credentials: Arc<StdMutex<Option<Credentials>>>,
@@ -2373,6 +2374,7 @@ fn refuse_reconnect_from_evicted(
 struct NegotiationContext {
     opts: RdpServerOptions,
     creds: Option<Credentials>,
+    credssp_backend: CredsspBackend,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     requires_authenticated_credentials: bool,
@@ -2405,7 +2407,7 @@ where
     } = incoming;
     let size = ctx.display.lock().await.size().await;
     let capabilities = capabilities::capabilities(&ctx.opts, size);
-    let pending = PendingConnection::new(
+    let mut pending = PendingConnection::new(
         ctx.opts.security.clone(),
         size,
         capabilities,
@@ -2418,6 +2420,7 @@ where
             ..ServerCredentialsHandler::default()
         },
     );
+    pending.acceptor.set_credssp_backend(ctx.credssp_backend);
 
     // NOTE: deliberately NO channel attachment here. Building the cliprdr /
     // sound / gfx backends means running user-supplied factories for a peer
@@ -2565,6 +2568,7 @@ impl RdpServer {
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
+            credssp_backend: CredsspBackend::default(),
             credential_validator: None,
             connection_binder: None,
             pending_authenticated_credentials: Arc::new(StdMutex::new(None)),
@@ -3229,6 +3233,7 @@ impl RdpServer {
         NegotiationContext {
             opts: self.opts.clone(),
             creds: self.creds.clone(),
+            credssp_backend: self.credssp_backend,
             display: Arc::clone(&self.display),
             credential_validator: self.credential_validator.clone(),
             requires_authenticated_credentials: self.connection_binder.is_some(),
@@ -3384,7 +3389,7 @@ impl RdpServer {
 
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
-        let pending = PendingConnection::new(
+        let mut pending = PendingConnection::new(
             self.opts.security.clone(),
             size,
             capabilities,
@@ -3397,6 +3402,7 @@ impl RdpServer {
                 ..ServerCredentialsHandler::default()
             },
         );
+        pending.acceptor.set_credssp_backend(self.credssp_backend);
 
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());
@@ -6304,6 +6310,14 @@ impl RdpServer {
         self.creds = creds
     }
 
+    /// Selects the CredSSP authentication provider for subsequent connections.
+    ///
+    /// Defaults to [`CredsspBackend::Rust`].
+    /// This does not change transport security or replace the credential validator.
+    pub fn set_credssp_backend(&mut self, backend: CredsspBackend) {
+        self.credssp_backend = backend;
+    }
+
     /// Tell the server which local address the next client reached, for
     /// connections driven through [`Self::run_connection`] or
     /// [`Self::run_connection_with`]. [`Self::run`] sets it itself.
@@ -6830,6 +6844,7 @@ mod preempt_tests {
                 udp_bind_addr: None,
             },
             creds: None,
+            credssp_backend: CredsspBackend::default(),
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),
             credential_validator: None,
             requires_authenticated_credentials: false,

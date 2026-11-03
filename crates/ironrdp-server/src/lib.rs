@@ -43,7 +43,7 @@ pub use gfx::{EgfxServerMessage, GfxContext, GfxDvcBridge, GfxServerFactory, Gfx
 pub use handler::{KeyboardEvent, MouseButton, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
-pub use ironrdp_acceptor::{Acceptor, CredentialOrigin, ReceivedCredentials};
+pub use ironrdp_acceptor::{Acceptor, CredentialOrigin, CredsspBackend, ReceivedCredentials};
 pub use ironrdp_pdu::rdp::server_error_info::ErrorInfo;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "usb")]
