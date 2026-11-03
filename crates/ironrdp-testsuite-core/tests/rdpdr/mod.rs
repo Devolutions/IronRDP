@@ -2182,11 +2182,48 @@ impl RdpdrServerBackend for TrackingServerBackend {
     }
 }
 
+/// A client whose capabilities lack a general set with RDPDR_USER_LOGGEDON_PDU is not sent the
+/// Server User Logged On PDU.
+// oracle: spec MS-RDPEFS §3.3.5.1.5
+#[test]
+fn user_logged_on_goes_only_to_a_client_that_advertises_it() {
+    let mut server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
+    handshake_to_capability_exchange(&mut server);
+
+    let capability_response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: vec![CapabilityMessage::new_drive()],
+        kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
+    }))
+    .unwrap();
+    assert!(server.process(&capability_response).unwrap().is_empty());
+}
+
 /// Drives a fresh [`RdpdrServer`] through the full MS-RDPEFS initialization handshake
 /// (`start()` through `ClientCoreCapabilityResponse`), leaving it in the `Active` state.
 /// Returns the `client_id` the server generated so callers can build further
 /// server-perspective client replies if needed.
 fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
+    let client_id = handshake_to_capability_exchange(server);
+
+    let capability_response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_drive()],
+        kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
+    }))
+    .unwrap();
+    // oracle: spec MS-RDPEFS §3.3.5.1.5 (the client's general capability set has RDPDR_USER_LOGGEDON_PDU)
+    let logged_on = server.process(&capability_response).unwrap();
+    assert_eq!(logged_on.len(), 1);
+    assert_eq!(
+        logged_on[0].encode_unframed_pdu().unwrap(),
+        encode_vec(&RdpdrPdu::UserLoggedon).unwrap()
+    );
+
+    client_id
+}
+
+/// Drives `server` through the RDPDR handshake up to the server's capability request,
+/// and returns the `client_id` it generated.
+fn handshake_to_capability_exchange(server: &mut RdpdrServer) -> u32 {
     let started = server.start().unwrap();
     assert_eq!(started.len(), 1);
     let client_id = read_u32(&started[0].encode_unframed_pdu().unwrap()[4..]);
@@ -2207,13 +2244,6 @@ fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
     .unwrap();
     let capability_and_confirm = server.process(&name_request).unwrap();
     assert_eq!(capability_and_confirm.len(), 2);
-
-    let capability_response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability {
-        capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_drive()],
-        kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
-    }))
-    .unwrap();
-    assert!(server.process(&capability_response).unwrap().is_empty());
 
     client_id
 }
