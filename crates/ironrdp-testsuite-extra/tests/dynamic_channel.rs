@@ -380,7 +380,7 @@ mod completion {
     use core::time::Duration;
     use std::sync::Arc;
 
-    use ironrdp_async::FramedWrite;
+    use ironrdp_async::FramedWrite as _;
     use ironrdp_core::{ReadCursor, decode_cursor, encode_vec, impl_as_any};
     use ironrdp_dvc::pdu::{
         CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreateResponsePdu,
