@@ -976,6 +976,11 @@ impl dvc::DvcProcessor for AInputHandler {
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::{ServerPdu, VersionPdu};
 
+        let handler = Arc::clone(&self.handler);
+        task::spawn_blocking(move || {
+            handler.blocking_lock().advanced_input_opened();
+        });
+
         let pdu = ServerPdu::Version(VersionPdu::default());
 
         Ok(vec![Box::new(pdu)])
