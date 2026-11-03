@@ -413,6 +413,10 @@ impl DeviceSpeed {
 
 impl From<DeviceSpeed> for UsbSpeed {
     fn from(value: DeviceSpeed) -> Self {
+        // MS-RDPEUSB 2.2.11 defines only full speed (0) and high speed (1).
+        // To tolerate clients reporting newer USB speeds, unknown values deliberately fall back to High.
+        // This compatibility fallback does not identify the device's actual operating speed.
+        // UNTESTED: No test pins this mapping; when changing it, check full, high, and an unknown raw value.
         if value == DeviceSpeed::FULL_SPEED {
             Self::Full
         } else {

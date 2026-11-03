@@ -1440,7 +1440,9 @@ pub trait UsbRedirDevice: Send {
     fn close(&mut self) {}
 }
 
-/// A redirected USB device as the client announced it.
+/// A redirected USB device announced by the client in an [Add Device Message (ADD_DEVICE)][1].
+///
+/// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/a26bcb6d-d45d-48a9-b9bd-22e0107d8393
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct UsbDeviceAnnounce {
@@ -1457,12 +1459,14 @@ pub struct UsbDeviceAnnounce {
     /// Identifier shared by every function of the same physical device, which
     /// groups the announcements of a composite device.
     pub container_id: String,
-    /// Bus speed the client reports the device is operating at.
+    /// Bus speed derived from the client's [USB_DEVICE_CAPABILITIES][1].
     ///
-    /// RDPEUSB reports only whether the device is operating at high speed, so
-    /// this is always either [`UsbSpeed::High`] or [`UsbSpeed::Full`]. A
-    /// low-speed device is announced as full speed, because the protocol has no
-    /// encoding to distinguish the two.
+    /// INVARIANT: `speed` is either [`UsbSpeed::High`] or [`UsbSpeed::Full`].
+    /// MS-RDPEUSB defines only full speed (0) and high speed (1), with no separate low-speed encoding.
+    /// Unknown values map to [`UsbSpeed::High`] to tolerate clients reporting newer USB speeds.
+    /// This compatibility fallback does not identify the device's actual operating speed.
+    ///
+    /// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeusb/98d4650e-b6d8-47e5-b71b-4d320ab542ee
     pub speed: UsbSpeed,
 }
 
