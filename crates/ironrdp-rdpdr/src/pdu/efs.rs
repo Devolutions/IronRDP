@@ -1525,7 +1525,7 @@ impl DeviceAnnounceHeader {
         self.preferred_dos_name.0.strip_prefix("PRN")?.parse().ok()
     }
 
-    pub(crate) fn device_type(&self) -> DeviceType {
+    pub fn device_type(&self) -> DeviceType {
         self.device_type
     }
 
