@@ -143,6 +143,8 @@ pub struct Acceptor {
     client_cluster_data: Option<gcc::ClientClusterData>,
     password_cookie: Option<PasswordCookie>,
     client_info_flags: Option<ClientInfoFlags>,
+    alternate_shell: String,
+    work_dir: String,
     performance_flags: PerformanceFlags,
     remote_app_capabilities: Option<RemoteAppCapabilities>,
     server_capabilities: Vec<CapabilitySet>,
@@ -458,6 +460,19 @@ pub struct AcceptorResult {
     ///
     /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
     pub client_info_flags: ClientInfoFlags,
+    /// The program the client asked the session to run instead of the shell, from the `alternateShell` field of its
+    /// Info Packet, MS-RDPBCGR [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET).
+    ///
+    /// Empty when the client asked for none. A server that runs no such programs may read it as a client preference.
+    /// After a reactivation it is still the value of the connection's Client Info PDU.
+    ///
+    /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+    pub alternate_shell: String,
+    /// The working directory for [`Self::alternate_shell`], from the `workingDir` field of the client's Info Packet,
+    /// MS-RDPBCGR [2.2.1.11.1.1]. Empty when the client sent none.
+    ///
+    /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+    pub work_dir: String,
 }
 
 impl Acceptor {
@@ -488,6 +503,8 @@ impl Acceptor {
             client_cluster_data: None,
             password_cookie: None,
             client_info_flags: None,
+            alternate_shell: String::new(),
+            work_dir: String::new(),
             performance_flags: PerformanceFlags::empty(),
             remote_app_capabilities: None,
             server_capabilities: capabilities,
@@ -748,6 +765,8 @@ impl Acceptor {
             client_cluster_data: consumed.client_cluster_data,
             password_cookie: consumed.password_cookie,
             client_info_flags: consumed.client_info_flags,
+            alternate_shell: consumed.alternate_shell,
+            work_dir: consumed.work_dir,
             performance_flags: consumed.performance_flags,
             remote_app_capabilities: None,
             server_capabilities: consumed.server_capabilities,
@@ -1003,6 +1022,8 @@ impl Acceptor {
                 client_cluster_data: self.client_cluster_data.clone(),
                 password_cookie: self.password_cookie.clone(),
                 client_info_flags: self.client_info_flags.unwrap_or_else(ClientInfoFlags::empty),
+                alternate_shell: self.alternate_shell.clone(),
+                work_dir: self.work_dir.clone(),
             }),
             previous_state => {
                 self.state = previous_state;
@@ -1509,6 +1530,9 @@ impl Sequence for Acceptor {
                 let client_info: rdp::ClientInfoPdu =
                     decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
                 self.client_info_flags = Some(client_info.client_info.flags);
+                self.alternate_shell
+                    .clone_from(&client_info.client_info.alternate_shell);
+                self.work_dir.clone_from(&client_info.client_info.work_dir);
                 self.performance_flags = client_info
                     .client_info
                     .extra_info
