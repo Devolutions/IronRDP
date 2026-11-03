@@ -8,7 +8,7 @@ use ironrdp_server::{
     BoundConnection, ConnectionBinder, CredentialDecision, CredentialOrigin, CredentialValidationError,
     CredentialValidator, Credentials, DesktopSize, DisplayContext, DisplayUpdate, RdpServer, RdpServerDisplay,
     RdpServerDisplayUpdates, RdpServerInputHandler, ReceivedCredentials, ServerErrorKind, ServerResult,
-    StaticChannelFactory, captured_credssp_identity_for_test,
+    StaticChannelFactory, captured_credssp_identity,
 };
 use ironrdp_tokio::TokioFramed;
 use tokio::net::{TcpListener, TcpStream};
@@ -35,11 +35,12 @@ fn client_info_credentials_are_not_exposed_as_captured_identity() {
         origin: CredentialOrigin::ClientInfo,
     };
 
-    assert!(captured_credssp_identity_for_test(Some(&received)).unwrap().is_none());
+    assert!(captured_credssp_identity(Some(&received)).unwrap().is_none());
 }
 
 #[test]
 fn credssp_delegated_credentials_are_captured() {
+    // oracle: spec MS-CSSP §2.2.1.2.1, §3.1.5
     // oracle: mutant dropping a delegated CredSSP identity.
     let received = ReceivedCredentials {
         credentials: Credentials {
@@ -50,7 +51,7 @@ fn credssp_delegated_credentials_are_captured() {
         origin: CredentialOrigin::CredSspDelegated,
     };
 
-    let identity = captured_credssp_identity_for_test(Some(&received)).unwrap().unwrap();
+    let identity = captured_credssp_identity(Some(&received)).unwrap().unwrap();
     assert_eq!(
         identity,
         ironrdp_server::CredsspAuthIdentity {
@@ -204,6 +205,8 @@ async fn handshake_defers_client_info_validation_binding_channels_and_activation
         .await
         .expect("connection handshake completed")
         .expect("connection handshake succeeded");
+    // oracle: spec MS-RDPBCGR §1.3.1.1, §2.2.1.11.1.1
+    assert_eq!(pending.captured_identity(), None);
     assert!(lifecycle.lock().unwrap().is_empty());
 
     continue_tx.send(()).unwrap();
@@ -442,6 +445,7 @@ async fn pending_session_discards_events_left_by_an_intervening_session() {
         .await
         .unwrap();
     }
+    // `run_connection_session` takes a negotiated stream rather than an `IncomingConnection::peer`, so `ConnectionInfo::peer_addr` is `None` rather than the intervening session's peer.
     // oracle: mutant attributing the resumed pending connection to the intervening session's peer.
     assert_eq!(*peers.lock().unwrap(), [Some(intervening_peer), None]);
     original_close_tx.send(()).unwrap();

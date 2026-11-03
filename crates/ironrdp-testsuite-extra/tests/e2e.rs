@@ -3192,6 +3192,7 @@ struct UpgradedClient {
 
 #[tokio::test]
 async fn pending_session_exposes_delegated_identity_before_session_start() {
+    // oracle: spec MS-CSSP §2.2.1.2.1, §3.1.5
     // oracle: mutant dropping or corrupting the delegated identity in pending-session construction or access.
     let identity = test_tls_identity();
     let mut server = RdpServer::builder()
@@ -3258,6 +3259,79 @@ async fn pending_session_exposes_delegated_identity_before_session_start() {
     )
     .await
     .expect("managed-TLS CredSSP handshake completed");
+}
+
+#[tokio::test]
+async fn hybrid_ex_handshake_preserves_early_authorization_across_validator_change() {
+    // oracle: spec MS-RDPBCGR §3.3.5.10.2, §5.4.2.1
+    // oracle: mutant revalidating HYBRID_EX credentials during `run_connection_session` after early authorization succeeded.
+    let identity = test_tls_identity();
+    let accepted_creds = server::Credentials {
+        username: "alice".to_owned(),
+        password: "secret".to_owned(),
+        domain: Some("CORP".to_owned()),
+    };
+    let rejected_creds = server::Credentials {
+        username: "bob".to_owned(),
+        password: "other".to_owned(),
+        domain: Some("CORP".to_owned()),
+    };
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(identity.make_acceptor().unwrap(), identity.pub_key)
+        .with_no_input()
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        })
+        .with_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+            accepted_creds.clone(),
+        ))))
+        .build();
+    server.set_credentials(Some(accepted_creds));
+    let ev = server.event_sender().clone();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    let server_flow = async {
+        let (stream, _) = listener.accept().await.unwrap();
+        let pending = server.run_connection_handshake(stream).await.unwrap();
+        server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+            rejected_creds,
+        ))));
+        Box::pin(server.run_connection_session(pending)).await.unwrap();
+    };
+    let client_flow = async {
+        let (mut framed, _connection_result) = Box::pin(connect_client_with(
+            server_addr,
+            |client_addr| {
+                connector::ClientConnector::new(
+                    connector::Config {
+                        credentials: connector::Credentials::UsernamePassword {
+                            username: "alice".to_owned(),
+                            password: "secret".to_owned(),
+                        },
+                        domain: Some("CORP".to_owned()),
+                        ..default_client_config()
+                    },
+                    client_addr,
+                )
+            },
+            |stream| stream,
+        ))
+        .await
+        .expect("HYBRID_EX session finalized despite validator change after handshake");
+        ev.send(ServerEvent::Quit("bye".into())).unwrap();
+        let _ = framed.read_pdu().await;
+    };
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        Box::pin(async {
+            tokio::join!(server_flow, client_flow);
+        }),
+    )
+    .await
+    .expect("HYBRID_EX staged session completed");
 }
 
 impl UpgradedClient {

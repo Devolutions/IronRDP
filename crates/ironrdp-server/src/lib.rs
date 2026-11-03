@@ -65,7 +65,7 @@ pub use server::autodetect_response_from_sub_header;
 #[cfg(all(feature = "__test", feature = "egfx"))]
 pub use server::autodetect_sub_header;
 #[cfg(feature = "__test")]
-pub use server::captured_credssp_identity_for_test;
+pub use server::captured_credssp_identity;
 pub use server::{
     AuthenticatedConnection, AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler,
     ConnectionInfo, ConnectionPolicy, ConnectionSource, CredentialDecision, CredentialValidationError,
