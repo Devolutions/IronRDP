@@ -144,6 +144,54 @@ async fn server_handle_set_credentials_applies_to_the_next_connection() {
         .expect("credential updates and shutdown must finish");
 }
 
+// oracle: mutant set_credential_list not queuing ServerEvent::SetCredentialList, or CredSSP checking only the first entry
+#[tokio::test]
+async fn server_handle_set_credential_list_accepts_any_listed_account() {
+    let (mut server, _display_tx) = hybrid_server();
+    let handle = server.handle().clone();
+    handle
+        .set_credential_list(vec![
+            server::Credentials {
+                username: "alice".to_owned(),
+                password: "alice password".to_owned(),
+                domain: None,
+            },
+            server::Credentials {
+                username: "bob".to_owned(),
+                password: "bob password".to_owned(),
+                domain: None,
+            },
+        ])
+        .unwrap();
+
+    let local = tokio::task::LocalSet::new();
+    let test = Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move { server.run().await });
+        let addr = handle.local_addr().await.unwrap().unwrap();
+        let (mut client, _) = connect_client(addr, |client_addr| {
+            connector::ClientConnector::new(
+                connector::Config {
+                    credentials: connector::Credentials::UsernamePassword {
+                        username: "bob".to_owned(),
+                        password: "bob password".to_owned(),
+                    },
+                    ..hybrid_client_config()
+                },
+                client_addr,
+            )
+        })
+        .await;
+
+        handle.quit("disconnect authenticated client").unwrap();
+        while client.read_pdu().await.is_ok() {}
+        handle.quit("stop idle listener").unwrap();
+        server_task.await.unwrap().unwrap();
+    }));
+    tokio::time::timeout(Duration::from_secs(15), test)
+        .await
+        .expect("the second listed account must connect");
+}
+
 // oracle: mutant local_addr fabricating an address when none is bound
 #[tokio::test]
 async fn server_handle_local_addr_is_none_for_an_external_source() {
