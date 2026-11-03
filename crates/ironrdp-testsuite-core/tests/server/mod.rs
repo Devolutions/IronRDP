@@ -5,6 +5,7 @@ mod autodetect;
 mod connection_policy;
 mod credential_validator;
 mod dynamic_channel_factory;
+mod echo;
 mod fast_path;
 mod finalize_timeout;
 mod max_request_size;
