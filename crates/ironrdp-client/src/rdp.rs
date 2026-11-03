@@ -2459,12 +2459,12 @@ fn build_connector(
     struct EgfxHandler;
     impl GraphicsPipelineHandler for EgfxHandler {}
 
-    let h264_decoder = config
+    let h264_decoders = config
         .channels
         .h264_decoder
         .as_ref()
-        .filter(|_| config.connector.support_dyn_vc_gfx_protocol)
-        .map(crate::h264::H264DecoderFactory::create_in_background);
+        .filter(|_| config.connector.support_dyn_vc_gfx_protocol);
+    let h264_decoder = h264_decoders.map(crate::h264::H264DecoderFactory::create_in_background);
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
@@ -2475,7 +2475,13 @@ fn build_connector(
             RdpInputProtocolVersion::V300,
         ))
         .with_dynamic_channel({
-            let egfx = GraphicsPipelineClient::new(Box::new(EgfxHandler), h264_decoder);
+            let mut egfx = GraphicsPipelineClient::new(Box::new(EgfxHandler), h264_decoder);
+            // UNTESTED: that the client's graphics pipeline gets this factory.
+            // Without it a second surface's H.264 goes to the shared decoder and fails, so check a session with two
+            // H.264 surfaces when changing this.
+            if let Some(decoders) = h264_decoders.cloned() {
+                egfx = egfx.with_h264_decoder_factory(Box::new(move || decoders.create()));
+            }
             match &config.channels.egfx_persistent_cache {
                 Some(path) => {
                     debug!(path = %path.display(), "Using a persistent graphics cache");

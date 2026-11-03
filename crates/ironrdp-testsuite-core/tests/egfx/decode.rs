@@ -72,6 +72,121 @@ fn annex_b_to_avc(data: &[u8]) -> Vec<u8> {
 }
 
 // ============================================================================
+// Surface Streams
+// ============================================================================
+
+/// Each surface is an H.264 stream of its own, and P-frames need that stream's own reference pictures.
+/// On one decoder, two interleaved streams fail with OpenH264 error 2, then error 18.
+// oracle: regression #2033
+#[test]
+fn test_openh264_interleaved_surface_streams() {
+    use std::sync::{Arc, Mutex};
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::pdu::{
+        Avc420Region, CapabilitiesConfirmPdu, CapabilitiesV107Flags, CapabilitySet, Codec1Type, CreateSurfacePdu,
+        GfxPdu, PixelFormat, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+    use ironrdp_pdu::geometry::ExclusiveRectangle;
+    use openh264::encoder::Encoder;
+    use openh264::formats::YUVBuffer;
+
+    const SIZE: u16 = 64;
+    const FRAMES: u8 = 12;
+
+    struct Sink(Arc<Mutex<Vec<(u16, u8)>>>);
+    impl GraphicsPipelineHandler for Sink {
+        fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
+            self.0.lock().unwrap().push((update.surface_id, update.data[0]));
+        }
+    }
+
+    let send = |client: &mut GraphicsPipelineClient, pdu: GfxPdu| {
+        let wire = wrap_uncompressed(&encode_vec(&pdu).expect("the PDU should encode"));
+        client.process(0, &wire).expect("the client should accept the PDU");
+    };
+    let gray_frame = |luma: u8| {
+        let (luma_size, chroma_size) = (
+            usize::from(SIZE) * usize::from(SIZE),
+            usize::from(SIZE) * usize::from(SIZE) / 2,
+        );
+        let mut planes = vec![luma; luma_size];
+        planes.resize(luma_size + chroma_size, 128);
+        YUVBuffer::from_vec(planes, usize::from(SIZE), usize::from(SIZE))
+    };
+
+    let painted = Arc::new(Mutex::new(Vec::new()));
+    let mut client = GraphicsPipelineClient::new(
+        Box::new(Sink(Arc::clone(&painted))),
+        Some(Box::new(OpenH264Decoder::new().expect("decoder should initialize"))),
+    )
+    .with_h264_decoder_factory(Box::new(|| -> Option<Box<dyn H264Decoder>> {
+        Some(Box::new(OpenH264Decoder::new().ok()?))
+    }));
+
+    send(
+        &mut client,
+        GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::empty(),
+        })),
+    );
+    for surface_id in [1, 2] {
+        send(
+            &mut client,
+            GfxPdu::CreateSurface(CreateSurfacePdu {
+                surface_id,
+                width: SIZE,
+                height: SIZE,
+                pixel_format: PixelFormat::XRgb,
+            }),
+        );
+    }
+
+    // Each stream's picture changes every frame, so the encoder sends real P-frames.
+    let mut encoders = [
+        (1u16, 180u8, Encoder::new().expect("encoder should initialize")),
+        (2u16, 60u8, Encoder::new().expect("encoder should initialize")),
+    ];
+    for frame in 0..FRAMES {
+        for (surface_id, base, encoder) in &mut encoders {
+            let bitstream = encoder
+                .encode(&gray_frame(*base + frame))
+                .expect("encode should succeed")
+                .to_vec();
+            let region = Avc420Region::full_frame(SIZE, SIZE, 22);
+            send(
+                &mut client,
+                GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                    surface_id: *surface_id,
+                    codec_id: Codec1Type::Avc420,
+                    pixel_format: PixelFormat::XRgb,
+                    destination_rectangle: ExclusiveRectangle {
+                        left: 0,
+                        top: 0,
+                        right: SIZE,
+                        bottom: SIZE,
+                    },
+                    bitmap_data: encode_avc420_bitmap_stream(&[region], &bitstream),
+                }),
+            );
+        }
+    }
+
+    let painted = painted.lock().unwrap();
+    assert_eq!(painted.len(), usize::from(FRAMES) * 2, "every update should be painted");
+    for (surface_id, first_channel) in painted.iter() {
+        let expected = if *surface_id == 1 { 180u8 } else { 60u8 };
+        assert!(
+            first_channel.abs_diff(expected) <= FRAMES + 8,
+            "surface {surface_id} painted {first_channel}, expected about {expected}"
+        );
+    }
+}
+
+// ============================================================================
 // Happy Path Tests
 // ============================================================================
 
