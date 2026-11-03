@@ -415,19 +415,28 @@ where
         S: FramedRead + FramedWrite,
         N: NetworkClient,
     {
-        let creds = acceptor
+        if acceptor.creds.is_empty() {
+            return Err(general_err!("no credentials while doing credssp"));
+        }
+        let identities = acceptor
             .creds
-            .as_ref()
-            .ok_or_else(|| general_err!("no credentials while doing credssp"))?;
-        let username =
-            Username::new(&creds.username, creds.domain.as_deref()).map_err(|e| custom_err!("invalid username", e))?;
-        let identity = AuthIdentity {
-            username,
-            password: creds.password.clone().into(),
-        };
+            .iter()
+            .map(|creds| {
+                let username = Username::new(&creds.username, creds.domain.as_deref())
+                    .map_err(|e| custom_err!("invalid username", e))?;
+                Ok(AuthIdentity {
+                    username,
+                    password: creds.password.clone().into(),
+                })
+            })
+            .collect::<ConnectorResult<Vec<_>>>()?;
 
-        let mut sequence =
-            credssp::CredsspSequence::init(&identity, client_computer_name, public_key, kerberos_config)?;
+        let mut sequence = credssp::CredsspSequence::init_with_identities(
+            &identities,
+            client_computer_name,
+            public_key,
+            kerberos_config,
+        )?;
 
         loop {
             let Some(next_pdu_hint) = sequence.next_pdu_hint()? else {

@@ -1270,7 +1270,7 @@ pub struct RdpServer {
     usb_factory: Option<Box<dyn DeviceFactory>>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
-    creds: Option<Credentials>,
+    creds: Vec<Credentials>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     connection_binder: Option<Arc<dyn ConnectionBinder>>,
     pending_authenticated_credentials: Arc<StdMutex<Option<Credentials>>>,
@@ -1448,6 +1448,9 @@ pub enum ServerEvent {
     Rdpeai(RdpeaiServerMessage),
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
+    /// Accept any of these credentials from the next connection on; see
+    /// [`RdpServer::set_credential_list`].
+    SetCredentialList(Vec<Credentials>),
     /// Replace or clear the Server Auto-Reconnect Cookie.
     SetAutoReconnectCookie(Option<rdp::session_info::ServerAutoReconnect>),
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
@@ -1481,6 +1484,7 @@ impl fmt::Debug for ServerEvent {
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
             Self::Echo(..) => f.write_str("Echo(..)"),
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
+            Self::SetCredentialList(..) => f.write_str("SetCredentialList(..)"),
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
             Self::SetAutoReconnectCookie(None) => f.write_str("SetAutoReconnectCookie(None)"),
             Self::GetLocalAddr(..) => f.write_str("GetLocalAddr(..)"),
@@ -1626,12 +1630,13 @@ impl PendingConnection {
         security: RdpServerSecurity,
         desktop_size: DesktopSize,
         capabilities: Vec<CapabilitySet>,
-        creds: Option<Credentials>,
+        creds: Vec<Credentials>,
         honor_client_desktop_size: Option<DesktopSize>,
         udp_bind_addr: Option<SocketAddr>,
         credentials_handler: ServerCredentialsHandler,
     ) -> Self {
-        let mut acceptor = Acceptor::new(security.flag(), desktop_size, capabilities, creds);
+        let mut acceptor = Acceptor::new(security.flag(), desktop_size, capabilities, None);
+        acceptor.set_credential_list(creds);
         acceptor.set_honor_client_desktop_size(honor_client_desktop_size);
         // Multitransport requires Enhanced Security: `RdpServerSecurity::None`
         // has nothing to authenticate the sideband transport's TLS with, and
@@ -2052,7 +2057,7 @@ fn refuse_reconnect_from_evicted(
 /// [`RdpServer::serve_negotiated`], from `self`.
 struct NegotiationContext {
     opts: RdpServerOptions,
-    creds: Option<Credentials>,
+    creds: Vec<Credentials>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     requires_authenticated_credentials: bool,
@@ -2239,7 +2244,7 @@ impl RdpServer {
             usb_factory,
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
-            creds: None,
+            creds: Vec::new(),
             credential_validator: None,
             connection_binder: None,
             pending_authenticated_credentials: Arc::new(StdMutex::new(None)),
@@ -2832,6 +2837,7 @@ impl RdpServer {
                 ServerEvent::Quit(_)
                 | ServerEvent::GetLocalAddr(_)
                 | ServerEvent::SetCredentials(_)
+                | ServerEvent::SetCredentialList(_)
                 | ServerEvent::SetAutoReconnectCookie(None) => true,
                 // On request, a cookie is a vouch that the connection that was
                 // current when it was sent has authenticated its user. That
@@ -3224,6 +3230,9 @@ impl RdpServer {
                                 }
                                 ServerEvent::SetCredentials(creds) => {
                                     self.set_credentials(Some(creds));
+                                }
+                                ServerEvent::SetCredentialList(creds) => {
+                                    self.set_credential_list(creds);
                                 }
                                 ServerEvent::SetAutoReconnectCookie(cookie) => {
                                     self.set_auto_reconnect_cookie(cookie);
@@ -3810,6 +3819,9 @@ impl RdpServer {
                 }
                 ServerEvent::SetCredentials(creds) => {
                     self.set_credentials(Some(creds));
+                }
+                ServerEvent::SetCredentialList(creds) => {
+                    self.set_credential_list(creds);
                 }
                 ServerEvent::SetAutoReconnectCookie(cookie) => {
                     self.update_auto_reconnect_cookie(conn, cookie, writer, io_channel_id, user_channel_id)
@@ -5875,7 +5887,16 @@ impl RdpServer {
 
     pub fn set_credentials(&mut self, creds: Option<Credentials>) {
         debug!(?creds, "Changing credentials");
-        self.creds = creds
+        self.creds = creds.into_iter().collect();
+    }
+
+    /// Accept any of `creds` from the next connection on: CredSSP checks the
+    /// client's password against the entry with its user name, and
+    /// ClientInfo credentials must equal one of them. A running session is
+    /// not affected.
+    pub fn set_credential_list(&mut self, creds: Vec<Credentials>) {
+        debug!(count = creds.len(), "Changing credentials");
+        self.creds = creds;
     }
 
     /// Tell the server which local address the next client reached, for
@@ -6304,7 +6325,7 @@ mod preempt_tests {
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
             },
-            creds: None,
+            creds: Vec::new(),
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),
             credential_validator: None,
             requires_authenticated_credentials: false,

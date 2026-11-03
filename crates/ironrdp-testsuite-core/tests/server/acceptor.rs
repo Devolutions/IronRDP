@@ -1417,6 +1417,75 @@ async fn credssp_failed_logon_is_reported_as_logon_failure(
     assert_eq!(ts_request.error_code, Some(NStatusCode::LOGON_FAILURE));
 }
 
+/// With several accepted credentials, CredSSP checks the password against the entry with the
+/// client's user name, and only that one.
+#[rstest::rstest]
+#[case::first_user("alice", "secret", true)]
+#[case::second_user("bob", "hunter2", true)]
+#[case::other_users_password("bob", "secret", false)]
+#[case::unknown_user("carol", "secret", false)]
+#[tokio::test]
+async fn credssp_accepts_any_of_several_credentials(
+    #[case] username: &str,
+    #[case] password: &str,
+    #[case] accepted: bool,
+    #[values(SecurityProtocol::HYBRID, SecurityProtocol::HYBRID_EX)] protocol: SecurityProtocol,
+) {
+    let mut acceptor = negotiated_acceptor_expecting(protocol, None);
+    acceptor.set_credential_list(vec![
+        Credentials {
+            username: "alice".to_owned(),
+            password: "secret".to_owned(),
+            domain: None,
+        },
+        Credentials {
+            username: "bob".to_owned(),
+            password: "hunter2".to_owned(),
+            domain: None,
+        },
+    ]);
+    let public_key = vec![0x42; 32];
+    let (mut client, request) = CredsspSequence::init(
+        ironrdp_connector::Credentials::UsernamePassword {
+            username: username.to_owned(),
+            password: password.to_owned(),
+        },
+        None,
+        protocol,
+        "server.example.com".to_owned().into(),
+        public_key.clone(),
+        None,
+    )
+    .unwrap();
+    let first_message = client_credssp_message(&mut client, request);
+    let mut framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: [first_message].into(),
+        credssp_client: Some(client),
+        ..HandshakeStream::default()
+    });
+    let mut handler = SetupHandler::default();
+    let result = accept_credssp_with(
+        &mut framed,
+        &mut acceptor,
+        &mut NoNetwork,
+        "client.example.com".to_owned().into(),
+        public_key,
+        None,
+        &mut handler,
+    )
+    .await;
+
+    assert_eq!(result.is_ok(), accepted, "{result:?}");
+    // With HYBRID_EX the delegated credentials reach the handler during CredSSP.
+    if protocol == SecurityProtocol::HYBRID_EX && accepted {
+        assert_eq!(handler.received.len(), 1);
+        assert_eq!(handler.received[0].credentials.username, username);
+        assert_eq!(handler.received[0].credentials.password, password);
+    } else if !accepted {
+        assert!(handler.received.is_empty());
+    }
+}
+
 /// The server Demand Active carries `RDP` as its source descriptor, as the FreeRDP
 /// server does; some clients (Jump Desktop) refuse an empty one.
 #[test]

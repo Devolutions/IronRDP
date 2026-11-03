@@ -62,7 +62,8 @@ pub struct Acceptor {
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
-    pub(crate) creds: Option<Credentials>,
+    /// Accepted credentials; empty accepts any (ClientInfo) and fails CredSSP.
+    pub(crate) creds: Vec<Credentials>,
     received_credentials: Option<ReceivedCredentials>,
     credentials_handled: bool,
     received_auto_reconnect: Option<ClientAutoReconnect>,
@@ -310,7 +311,7 @@ impl Acceptor {
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
-            creds,
+            creds: creds.into_iter().collect(),
             received_credentials: None,
             credentials_handled: false,
             received_auto_reconnect: None,
@@ -373,6 +374,15 @@ impl Acceptor {
     /// [`RdpServerDisplay`]: <https://docs.rs/ironrdp-server/latest/ironrdp_server/trait.RdpServerDisplay.html>
     pub fn set_honor_client_desktop_size(&mut self, max: Option<DesktopSize>) {
         self.honor_client_desktop_size = max;
+    }
+
+    /// Accept any of `creds`, replacing the credentials given to [`Self::new`].
+    ///
+    /// CredSSP checks the client's password against the entry with its user
+    /// name; ClientInfo credentials must equal one of them. An empty list
+    /// accepts any ClientInfo credentials and fails CredSSP, as `None` does.
+    pub fn set_credential_list(&mut self, creds: Vec<Credentials>) {
+        self.creds = creds;
     }
 
     /// Advertise UDP multitransport support (MS-RDPBCGR 2.2.1.4.6) and offer
@@ -1268,11 +1278,9 @@ impl Sequence for Acceptor {
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
 
-                    if let Some(expected) = &self.creds {
-                        if expected != &creds {
-                            self.encode_access_denied(output)?;
-                            return Err(ConnectorError::general("invalid credentials"));
-                        }
+                    if !self.creds.is_empty() && !self.creds.contains(&creds) {
+                        self.encode_access_denied(output)?;
+                        return Err(ConnectorError::general("invalid credentials"));
                     }
 
                     // Store credentials for later retrieval via AcceptorResult.
