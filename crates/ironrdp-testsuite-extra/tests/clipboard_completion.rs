@@ -1,8 +1,8 @@
+use core::any::TypeId;
+use core::net::Ipv4Addr;
 use core::pin::Pin;
 use core::task::Poll;
 use core::time::Duration;
-use core::any::TypeId;
-use core::net::Ipv4Addr;
 
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackend};
