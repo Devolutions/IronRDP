@@ -1662,9 +1662,10 @@ pub enum ServerEvent {
     /// A closed receiver means dispatch failed, the event was discarded, or the channel was unavailable.
     /// Channels migrated to a sideband transport are rejected rather than sent over the wrong transport.
     /// `is_current` must be a nonblocking predicate tied to the producer's connection or processor generation.
-    /// Dispatch checks it before channel lookup and again after waiting for the writer lock.
+    /// Dispatch checks cancellation and producer validity before channel lookup and again after waiting for the writer lock.
     /// A stale event is discarded even if its channel ID is open on a later connection.
     /// The predicate runs while server-state and writer locks are held; do not wait on work that needs either lock.
+    /// Once transmission starts, producer cancellation does not interrupt the write.
     /// Failure does not prove that no bytes were sent, so it is not permission to retry.
     /// Completion confirms the entire transport write, not acceptance by the peer.
     DynamicChannelWithCompletion {

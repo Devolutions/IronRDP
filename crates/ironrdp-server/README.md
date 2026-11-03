@@ -148,7 +148,8 @@ Acquire a permit from a shared bounded semaphore before allocating each batch, a
 The event retains its permit until dispatch or discard.
 Provide an `is_current` predicate tied to the producer's connection or processor generation so a late event cannot target a reused channel ID.
 The predicate runs while server-state and writer locks are held, so it must not block or wait on work that needs either lock.
-Dispatch checks the predicate before channel lookup and after waiting for the writer lock.
+Dispatch checks cancellation and producer validity before channel lookup and again after waiting for the writer lock.
+Once transmission starts, producer cancellation does not interrupt the write.
 Await the completion receiver before submitting another batch.
 Completion confirms the entire transport write, not peer processing.
 A closed receiver means failure or discard, not permission to retry: some bytes may already have been sent.
