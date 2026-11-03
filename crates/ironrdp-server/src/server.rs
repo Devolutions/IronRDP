@@ -669,37 +669,30 @@ impl BoundInputSlot {
     ) -> Self {
         Self { default, bound }
     }
+
+    /// Runs `deliver` on the bound handler, or on the default one when none is bound.
+    fn dispatch(&mut self, deliver: impl FnOnce(&mut dyn RdpServerInputHandler)) {
+        let mut bound = self.bound.lock().expect("bound input lock poisoned");
+        if let Some(handler) = bound.as_mut() {
+            deliver(handler.as_mut());
+        } else {
+            drop(bound);
+            deliver(self.default.as_mut());
+        }
+    }
 }
 
 impl RdpServerInputHandler for BoundInputSlot {
     fn keyboard(&mut self, event: KeyboardEvent) {
-        let mut bound = self.bound.lock().expect("bound input lock poisoned");
-        if let Some(handler) = bound.as_mut() {
-            handler.keyboard(event);
-        } else {
-            drop(bound);
-            self.default.keyboard(event);
-        }
+        self.dispatch(|handler| handler.keyboard(event));
     }
 
     fn mouse(&mut self, event: MouseEvent) {
-        let mut bound = self.bound.lock().expect("bound input lock poisoned");
-        if let Some(handler) = bound.as_mut() {
-            handler.mouse(event);
-        } else {
-            drop(bound);
-            self.default.mouse(event);
-        }
+        self.dispatch(|handler| handler.mouse(event));
     }
 
     fn advanced_input_opened(&mut self) {
-        let mut bound = self.bound.lock().expect("bound input lock poisoned");
-        if let Some(handler) = bound.as_mut() {
-            handler.advanced_input_opened();
-        } else {
-            drop(bound);
-            self.default.advanced_input_opened();
-        }
+        self.dispatch(|handler| handler.advanced_input_opened());
     }
 }
 
