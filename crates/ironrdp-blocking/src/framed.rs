@@ -109,6 +109,14 @@ where
         loop {
             match hint.find_size(self.peek()).map_err(io::Error::other)? {
                 Some((matched, length)) => {
+                    // Skipping a zero-length unmatched PDU consumes nothing and reads nothing, so the loop would
+                    // spin forever on the same bytes.
+                    if length == 0 && !matched {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "PduHint reported a zero-length unmatched PDU; cannot make progress",
+                        ));
+                    }
                     let bytes = self.read_exact(length)?.freeze();
                     if matched {
                         return Ok(bytes);

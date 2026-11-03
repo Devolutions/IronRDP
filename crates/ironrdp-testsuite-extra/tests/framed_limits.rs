@@ -62,3 +62,53 @@ fn blocking_read_by_hint_stops_buffering_when_the_hint_never_finds_a_size() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert_stopped_at_the_limit(framed.get_inner().0.limit());
 }
+
+/// A hint that reports an unmatched PDU of zero bytes, which skipping can never get past.
+#[derive(Debug)]
+struct ZeroLengthUnmatchedHint;
+
+impl PduHint for ZeroLengthUnmatchedHint {
+    fn find_size(&self, _: &[u8]) -> DecodeResult<Option<(bool, usize)>> {
+        Ok(Some((false, 0)))
+    }
+}
+
+/// Runs `f` on its own thread and fails if it has not returned within a few seconds.
+///
+/// A framer that loops without reading never returns, so the test fails instead of hanging.
+fn within_timeout<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(f());
+    });
+    receiver
+        .recv_timeout(core::time::Duration::from_secs(5))
+        .expect("read_by_hint did not return")
+}
+
+// oracle: mutant async read_by_hint spins forever on a zero-length unmatched PDU (guard removed)
+#[test]
+fn async_read_by_hint_rejects_a_zero_length_unmatched_pdu() {
+    let error = within_timeout(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build runtime");
+        let mut framed = ironrdp_tokio::TokioFramed::new(tokio::io::empty());
+        runtime
+            .block_on(framed.read_by_hint(&ZeroLengthUnmatchedHint))
+            .unwrap_err()
+    });
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
+
+// oracle: mutant blocking read_by_hint spins forever on a zero-length unmatched PDU (guard removed)
+#[test]
+fn blocking_read_by_hint_rejects_a_zero_length_unmatched_pdu() {
+    let error = within_timeout(|| {
+        let mut framed = ironrdp_blocking::Framed::new(io::empty());
+        framed.read_by_hint(&ZeroLengthUnmatchedHint).unwrap_err()
+    });
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
