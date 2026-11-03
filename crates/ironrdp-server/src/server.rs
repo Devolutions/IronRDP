@@ -1651,7 +1651,6 @@ pub enum ServerEvent {
     /// Completion also covers events handled without output, such as a refused request or a missing clipboard channel.
     /// It does not confirm that the peer accepted clipboard data.
     ClipboardWithCompletion(ClipboardMessage, oneshot::Sender<()>),
-    ///
     /// Writes data to an open dynamic channel over the main RDP transport.
     ///
     /// Dispatch revalidates the batch and rejects control PDUs.
@@ -1779,7 +1778,6 @@ impl fmt::Debug for ServerEvent {
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
-<<<<<<< HEAD
             Self::ClipboardWithCompletion(..) => f.write_str("ClipboardWithCompletion(..)"),
             Self::DynamicChannelWithCompletion { batch, .. } => f
                 .debug_tuple("DynamicChannelWithCompletion")
