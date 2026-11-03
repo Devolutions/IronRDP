@@ -517,14 +517,10 @@ mod completion {
         let mut payload = ReadCursor::new(frame.0.user_data.as_ref());
         let _: ChannelPduHeader = decode_cursor(&mut payload).unwrap();
         let pdu: DrdynvcServerPdu = decode_cursor(&mut payload).unwrap();
-        let DrdynvcServerPdu::Data(data) = pdu else {
-            panic!("expected DVC data");
-        };
-        assert_eq!(data.channel_id(), channel_id);
-        let DrdynvcDataPdu::Data(data) = data else {
-            panic!("expected unfragmented DVC data");
-        };
-        assert_eq!(data.data(), PAYLOAD);
+        assert_eq!(
+            pdu,
+            DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(channel_id, PAYLOAD.to_vec())))
+        );
         assert!(payload.is_empty());
         assert!(frames.is_empty());
     }
@@ -657,10 +653,10 @@ mod completion {
         assert_payload_and_destination(&bytes, channel_id);
     }
 
-    async fn drain_write(
+    async fn drain_write<T>(
         peer: &mut tokio::io::DuplexStream,
         bytes: &mut Vec<u8>,
-        mut dispatch: Pin<&mut impl Future<Output = ironrdp_server::ServerResult<()>>>,
+        mut dispatch: Pin<&mut impl Future<Output = ironrdp_server::ServerResult<T>>>,
     ) {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
