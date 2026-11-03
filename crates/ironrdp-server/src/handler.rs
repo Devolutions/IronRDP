@@ -111,6 +111,11 @@ pub enum MouseButton {
 pub trait RdpServerInputHandler: Send {
     fn keyboard(&mut self, event: KeyboardEvent);
     fn mouse(&mut self, event: MouseEvent);
+
+    /// The client opened the advanced input channel (`FreeRDP::Advanced::Input`,
+    /// [`ironrdp_ainput`]), which FreeRDP-based clients have and the Microsoft
+    /// clients do not. Its mouse events arrive through [`Self::mouse`].
+    fn advanced_input_opened(&mut self) {}
 }
 
 impl From<(u8, fast_path::KeyboardFlags)> for KeyboardEvent {
