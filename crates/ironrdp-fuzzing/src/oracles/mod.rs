@@ -179,10 +179,13 @@ pub fn pdu_hint(data: &[u8]) {
 
 /// Length of the header that sizes an RDP PDU, or `None` while `data` is too short to tell.
 ///
-/// The action in the low two bits of the first byte (\[MS-RDPBCGR\] 2.2.9.1.2) tells a TPKT header, whose 4 bytes end
-/// with the packet length (ITU-T T.123 §8), from a fast-path header, whose length takes one byte, or two when the
-/// first has its high bit set.
+/// The action in the low two bits of the first byte ([\[MS-RDPBCGR\] 2.2.9.1.2 Server Fast-Path Update PDU]) tells a
+/// TPKT header, whose 4 bytes end with the packet length ([ITU-T T.123] §8), from a fast-path header, whose length
+/// takes one byte, or two when the first has its high bit set.
 /// Any other value can never start a PDU, so the first byte is the whole header.
+///
+/// [\[MS-RDPBCGR\] 2.2.9.1.2 Server Fast-Path Update PDU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/68b5ee54-d0d5-4d65-8d81-e1c4025f7597
+/// [ITU-T T.123]: https://www.itu.int/rec/T-REC-T.123
 fn rdp_header_len(data: &[u8]) -> Option<usize> {
     const FASTPATH_OUTPUT_ACTION_FASTPATH: u8 = 0x00;
     const FASTPATH_OUTPUT_ACTION_X224: u8 = 0x03;
@@ -199,12 +202,15 @@ fn rdp_header_len(data: &[u8]) -> Option<usize> {
 
 /// Length of the identifier and length octets of a DER SEQUENCE, or `None` while `data` is too short to tell.
 ///
-/// A TSRequest is a DER-encoded SEQUENCE (\[MS-CSSP\] 2.2.1), whose identifier octet is 0x30 (ITU-T X.690 §8.1.2,
-/// §8.9.1).
+/// A TSRequest is a DER-encoded SEQUENCE ([\[MS-CSSP\] 2.2.1 TSRequest]), whose identifier octet is 0x30
+/// ([ITU-T X.690] §8.1.2, §8.9.1).
 /// The first length octet holds the length itself below 0x80, and otherwise the count of length octets that follow
 /// (X.690 §8.1.3.4, §8.1.3.5).
 /// DER allows only the definite form (X.690 §10.1), so the indefinite form 0x80 and the reserved 0xFF can never
 /// frame, and the octet holding them ends the header.
+///
+/// [\[MS-CSSP\] 2.2.1 TSRequest]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/6aac4dea-08ef-47a6-8747-22ea7f6d8685
+/// [ITU-T X.690]: https://www.itu.int/rec/T-REC-X.690
 fn der_sequence_header_len(data: &[u8]) -> Option<usize> {
     if *data.first()? != 0x30 {
         return Some(1);

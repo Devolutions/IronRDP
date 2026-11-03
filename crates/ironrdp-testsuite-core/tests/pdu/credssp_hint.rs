@@ -30,6 +30,9 @@ fn credssp_hint_sizes_a_ts_request_from_its_header(#[case] bytes: &[u8], #[case]
 // 0x80 announces the indefinite length form, which DER forbids.
 // oracle: spec ITU-T X.690 §10.1
 #[case::indefinite_length(&[0x30, 0x80])]
+// 0xFF is reserved as the initial length octet.
+// oracle: spec ITU-T X.690 §8.1.3.5
+#[case::reserved_length_octet(&[0x30, 0xFF])]
 // 0x83 announces three length octets, a TSRequest of 64 KiB or more, which sspi cannot decode.
 // oracle: reference Devolutions/sspi-rs@b21f4581a880:src/ber/mod.rs (read_length accepts one or two length octets)
 #[case::three_length_octets(&[0x30, 0x83, 0x01, 0x00, 0x00])]

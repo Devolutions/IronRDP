@@ -22,7 +22,11 @@ const PEER_STREAM_LEN: u64 = PEER_BYTES as u64;
 
 /// Checks that the framer read at least up to the limit and then stopped.
 ///
-/// The framer checks the limit before each read, so it may overshoot by one read; twice the limit allows for that.
+/// The framer checks the limit before each read, so it may overshoot by one read; twice the limit allows for that as
+/// long as no single read adds more than the limit.
+/// The blocking framer reads 1024 bytes at a time, and the async framer reads into the spare capacity of a buffer that
+/// grows by doubling, so a read started below the limit ends below twice the limit.
+/// A framer that checks the limit only after reading also stays within this range, so this check cannot detect it.
 fn assert_stopped_at_the_limit(unread: u64) {
     let read = PEER_BYTES - usize::try_from(unread).expect("unread bytes fit in usize");
     assert!(
@@ -41,7 +45,7 @@ impl PduHint for UndecidedHint {
     }
 }
 
-// oracle: mutant async read_by_hint buffers without bound when the hint never decides (limit check removed, or made after the read)
+// oracle: mutant async read_by_hint buffers without bound when the hint never decides (limit check removed)
 #[tokio::test]
 async fn async_read_by_hint_stops_buffering_when_the_hint_never_finds_a_size() {
     let mut framed = ironrdp_tokio::TokioFramed::new(tokio::io::repeat(0xAA).take(PEER_STREAM_LEN));
@@ -52,7 +56,7 @@ async fn async_read_by_hint_stops_buffering_when_the_hint_never_finds_a_size() {
     assert_stopped_at_the_limit(framed.get_inner().0.limit());
 }
 
-// oracle: mutant blocking read_by_hint buffers without bound when the hint never decides (limit check removed, or made after the read)
+// oracle: mutant blocking read_by_hint buffers without bound when the hint never decides (limit check removed)
 #[test]
 fn blocking_read_by_hint_stops_buffering_when_the_hint_never_finds_a_size() {
     let mut framed = ironrdp_blocking::Framed::new(io::repeat(0xAA).take(PEER_STREAM_LEN));
