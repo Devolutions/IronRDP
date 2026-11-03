@@ -525,6 +525,16 @@ impl CapabilityMessage {
         }
     }
 
+    /// Whether this is a general capability set whose `extendedPDU` has
+    /// `RDPDR_USER_LOGGEDON_PDU`: the client takes the Server User Logged On PDU
+    /// ([MS-RDPEFS] 2.2.2.7.1).
+    pub fn user_logged_on_supported(&self) -> bool {
+        match &self.capability_data {
+            CapabilityData::General(general) => general.extended_pdu.contains(ExtendedPdu::RDPDR_USER_LOGGEDON_PDU),
+            _ => false,
+        }
+    }
+
     /// Creates a new [`SMARTCARD_CAPS_SET`].
     ///
     /// [`SMARTCARD_CAPS_SET`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e02de60a-4d32-4dc7-ab17-9d591129eb93
