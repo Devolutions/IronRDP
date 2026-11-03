@@ -12,6 +12,7 @@ mod cliprdr_native;
 #[cfg(windows)]
 mod credssp_backend;
 mod dvc_pipe_proxy;
+mod dynamic_channel;
 mod e2e;
 mod gateway_detect;
 mod rdpeudp_tokio;
