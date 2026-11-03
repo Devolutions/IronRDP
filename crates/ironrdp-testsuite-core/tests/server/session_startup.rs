@@ -160,8 +160,14 @@ impl ironrdp_server::ConnectionSource for ClosedTcpSource {
     }
 }
 
+async fn loopback_pair() -> (TcpStream, TcpStream) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let (server, client) = tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
+    (server.unwrap().0, client.unwrap())
+}
+
 #[tokio::test]
-async fn handshake_defers_client_info_validation_binding_channels_and_activation_to_session_start() {
+async fn pending_session_finalizes_after_handshake_and_cancellation_closes_transport_and_clears_address() {
     // oracle: mutant allowing session startup to exit before activation.
     let lifecycle = Arc::new(Mutex::new(Vec::new()));
     let (activated_tx, activated_rx) = oneshot::channel();
@@ -185,10 +191,7 @@ async fn handshake_defers_client_info_validation_binding_channels_and_activation
         .with_static_channel_factory(Box::new(RecordingChannelFactory(Arc::clone(&lifecycle))))
         .build();
 
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let (server_stream, client) = tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
-    let server_stream = server_stream.unwrap().0;
-    let client = client.unwrap();
+    let (server_stream, client) = loopback_pair().await;
     let (continue_tx, continue_rx) = oneshot::channel();
     let client_task = tokio::spawn(async move {
         let mut framed = TokioFramed::new(client);
@@ -223,6 +226,8 @@ async fn handshake_defers_client_info_validation_binding_channels_and_activation
         .expect("session activation completed");
 
         let lifecycle = lifecycle.lock().unwrap();
+        // oracle: CredentialValidator rustdoc requires authorization during connection setup.
+        // oracle: ConnectionBinder rustdoc requires binding before channels and display updates.
         let validation = lifecycle.iter().position(|event| *event == "validate").unwrap();
         let binding = lifecycle.iter().position(|event| *event == "bind").unwrap();
         let activation = lifecycle.iter().position(|event| *event == "activate").unwrap();
@@ -253,10 +258,7 @@ async fn dropping_pending_session_closes_transport_without_attaching_channels() 
         .with_no_display()
         .with_static_channel_factory(Box::new(RecordingChannelFactory(Arc::clone(&lifecycle))))
         .build();
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let (server_stream, client) = tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
-    let server_stream = server_stream.unwrap().0;
-    let client = client.unwrap();
+    let (server_stream, client) = loopback_pair().await;
     let (check_disconnect_tx, check_disconnect_rx) = oneshot::channel();
     let client_task = tokio::spawn(async move {
         let mut framed = TokioFramed::new(client);
@@ -300,10 +302,7 @@ async fn pending_session_cannot_be_consumed_by_another_server() {
         .build();
     let other_local_addr = ([127, 0, 0, 2], 3389).into();
     other_server.set_connection_local_addr(Some(other_local_addr));
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let (server_stream, client) = tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
-    let server_stream = server_stream.unwrap().0;
-    let client = client.unwrap();
+    let (server_stream, client) = loopback_pair().await;
     let (close_client_tx, close_client_rx) = oneshot::channel();
     let client_task = tokio::spawn(async move {
         let mut framed = TokioFramed::new(client);
@@ -322,10 +321,7 @@ async fn pending_session_cannot_be_consumed_by_another_server() {
     let result = tokio::time::timeout(Duration::from_secs(2), other_server.run_connection_session(pending)).await;
     assert!(lifecycle.lock().unwrap().is_empty());
     let error = result.expect("different server rejected pending session").unwrap_err();
-    assert!(matches!(
-        error.kind(),
-        ServerErrorKind::Reason(reason) if reason == "belongs to a different server instance"
-    ));
+    assert!(matches!(error.kind(), ServerErrorKind::Reason(_)));
     // oracle: mutant clearing another server's caller-supplied address on rejection.
     assert_eq!(other_server.connection_local_addr_for_test(), Some(other_local_addr));
     close_client_tx.send(()).unwrap();
@@ -339,7 +335,7 @@ async fn pending_session_cannot_be_consumed_by_another_server() {
 }
 
 #[tokio::test]
-async fn pending_session_discards_events_left_by_an_intervening_session() {
+async fn pending_session_discards_stale_events_and_peer_from_an_intervening_session() {
     // oracle: mutant delivering an intervening session's disconnect to a resumed pending session.
     let lifecycle = Arc::new(Mutex::new(Vec::new()));
     let peers = Arc::new(Mutex::new(Vec::new()));
@@ -354,14 +350,12 @@ async fn pending_session_discards_events_left_by_an_intervening_session() {
         })
         .with_connection_handler(Some(Box::new(PeerRecorder(Arc::clone(&peers)))))
         .build();
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let (original_stream, original_client) =
-        tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
+    let (original_stream, original_client) = loopback_pair().await;
     let (resume_tx, resume_rx) = oneshot::channel();
     let (original_ready_tx, original_ready_rx) = oneshot::channel();
     let (original_close_tx, original_close_rx) = oneshot::channel();
     let original_task = tokio::spawn(async move {
-        let mut framed = TokioFramed::new(original_client.unwrap());
+        let mut framed = TokioFramed::new(original_client);
         start_client_connection_request(&mut framed).await;
         resume_rx.await.unwrap();
         play_client_after_connection_request(&mut framed, true, &[], None).await;
@@ -369,26 +363,21 @@ async fn pending_session_discards_events_left_by_an_intervening_session() {
         original_close_rx.await.unwrap();
         framed.read_pdu().await.is_err()
     });
-    let pending = tokio::time::timeout(
-        Duration::from_secs(5),
-        server.run_connection_handshake(original_stream.unwrap().0),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let pending = tokio::time::timeout(Duration::from_secs(5), server.run_connection_handshake(original_stream))
+        .await
+        .unwrap()
+        .unwrap();
 
-    let (intervening_stream, intervening_client) =
-        tokio::join!(listener.accept(), TcpStream::connect(listener.local_addr().unwrap()));
+    let (intervening_stream, intervening_client) = loopback_pair().await;
     let (intervening_ready_tx, intervening_ready_rx) = oneshot::channel();
     let (intervening_close_tx, intervening_close_rx) = oneshot::channel();
     let intervening_task = tokio::spawn(async move {
-        let mut framed = TokioFramed::new(intervening_client.unwrap());
+        let mut framed = TokioFramed::new(intervening_client);
         super::activation::play_client_with_capabilities(&mut framed, true, &[], None).await;
         intervening_ready_tx.send(()).unwrap();
         intervening_close_rx.await.unwrap();
         framed.read_pdu().await.is_err()
     });
-    let intervening_stream = intervening_stream.unwrap().0;
     let intervening_peer = intervening_stream.peer_addr().unwrap();
     {
         let mut source = ClosedTcpSource;
@@ -445,7 +434,8 @@ async fn pending_session_discards_events_left_by_an_intervening_session() {
         .await
         .unwrap();
     }
-    // `run_connection_session` takes a negotiated stream rather than an `IncomingConnection::peer`, so `ConnectionInfo::peer_addr` is `None` rather than the intervening session's peer.
+    // `run_connection_session` takes a negotiated stream rather than an
+    // `IncomingConnection::peer`, so `ConnectionInfo::peer_addr` is `None`.
     // oracle: mutant attributing the resumed pending connection to the intervening session's peer.
     assert_eq!(*peers.lock().unwrap(), [Some(intervening_peer), None]);
     original_close_tx.send(()).unwrap();

@@ -3214,7 +3214,7 @@ async fn pending_session_exposes_delegated_identity_before_session_start() {
         assert_eq!(
             pending.captured_identity(),
             Some(&server::CredsspAuthIdentity {
-                username: connector::sspi::Username::new("alice", Some("CORP")).unwrap(),
+                username: connector::sspi::Username::new("ALICE", Some("CORP")).unwrap(),
                 password: "secret".to_owned().into(),
             })
         );
@@ -3225,7 +3225,7 @@ async fn pending_session_exposes_delegated_identity_before_session_start() {
             connector::ClientConnector::new(
                 connector::Config {
                     credentials: connector::Credentials::UsernamePassword {
-                        username: "alice".to_owned(),
+                        username: "ALICE".to_owned(),
                         password: "secret".to_owned(),
                     },
                     domain: Some("CORP".to_owned()),
@@ -3263,7 +3263,8 @@ async fn pending_session_exposes_delegated_identity_before_session_start() {
 
 #[tokio::test]
 async fn hybrid_ex_handshake_preserves_early_authorization_across_validator_change() {
-    // oracle: spec MS-RDPBCGR §3.3.5.10.2, §5.4.2.1
+    // oracle: RdpServer::run_connection_handshake rustdoc describes this policy snapshot.
+    // oracle: MS-RDPBCGR §3.3.5.10.2 requires HYBRID_EX early authorization.
     // oracle: mutant revalidating HYBRID_EX credentials during `run_connection_session` after early authorization succeeded.
     let identity = test_tls_identity();
     let accepted_creds = server::Credentials {

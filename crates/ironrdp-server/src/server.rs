@@ -248,9 +248,13 @@ pub struct ConnectionInfo {
     /// The server itself doesn't start the rdpsnd channel when they ask for no audio redirection; the rest, such as
     /// whether to offer a microphone, is the embedder's to act on.
     pub client_info_flags: rdp::client_info::ClientInfoFlags,
-    /// The remote address of this connection, as its [`IncomingConnection::peer`] gave it: the address that [`ConnectionHandler::on_accept`] and [`ConnectionHandler::on_disconnected`] get for this connection.
-    /// Under [`ConnectionPolicy::Preempt`], `on_accept` also runs for newcomers while a session is live, so the peer of the last `on_accept` is not always this one.
-    /// `None` for a connection without a peer address, and for [`RdpServer::run_connection`], [`RdpServer::run_connection_with`], and [`RdpServer::run_connection_session`], which get a stream and no [`IncomingConnection::peer`] address.
+    /// The peer address supplied by [`IncomingConnection::peer`] is passed to connection hooks.
+    /// It is also exposed through [`ConnectionHandler::on_accept`] and [`ConnectionHandler::on_disconnected`].
+    /// Under [`ConnectionPolicy::Preempt`], `on_accept` runs for newcomers while a session is live.
+    /// Therefore, the latest `on_accept` peer is not always this connection's peer.
+    /// `None` is used when no peer is supplied, including direct-stream entry points.
+    /// Those entry points are [`RdpServer::run_connection`], [`RdpServer::run_connection_with`], and
+    /// [`RdpServer::run_connection_session`].
     pub peer_addr: Option<SocketAddr>,
 }
 
@@ -1379,7 +1383,8 @@ impl ConnectionSource for TcpConnectionSource {
 ///# }
 /// ```
 pub struct RdpServer {
-    /// Token compared with [`Arc::ptr_eq`] so [`Self::run_connection_session`] accepts only a [`PendingSession`] created by this server instance.
+    /// INVARIANT: This token identifies this server instance to [`PendingSession`].
+    /// [`Self::run_connection_session`] checks it with [`Arc::ptr_eq`].
     pending_session_server_id: Arc<()>,
     opts: RdpServerOptions,
     // FIXME: replace with a channel and poll/process the handler?
@@ -1418,7 +1423,9 @@ pub struct RdpServer {
     /// The local address the current client reached. See
     /// [`Self::set_connection_local_addr`].
     connection_local_addr: Option<SocketAddr>,
-    /// The remote address of the connection [`Self::serve_connection`] serves, set when it starts and cleared by [`Self::run_connection_with`] and [`Self::run_connection_session`]; see [`ConnectionInfo::peer_addr`].
+    /// Peer address of the connection served by [`Self::serve_connection`].
+    /// Set on connection entry and cleared by [`Self::run_connection_with`] and
+    /// [`Self::run_connection_session`]; see [`ConnectionInfo::peer_addr`].
     connection_peer_addr: Option<SocketAddr>,
     /// Whether each connection runs auto-detect; see [`Self::enable_autodetect`].
     autodetect_enabled: bool,
@@ -2096,7 +2103,8 @@ struct NegotiatedConnection<S> {
 pub struct PendingSession {
     connection: NegotiatedConnection<TcpStream>,
     captured_identity: Option<ironrdp_acceptor::CredsspAuthIdentity>,
-    /// Token identifying the [`RdpServer`] instance that created this pending session, checked with [`Arc::ptr_eq`] in [`RdpServer::run_connection_session`].
+    /// INVARIANT: This token identifies the [`RdpServer`] that created this session.
+    /// [`RdpServer::run_connection_session`] checks it with [`Arc::ptr_eq`].
     server_id: Arc<()>,
 }
 
@@ -3434,10 +3442,10 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
-        // The stream comes without an address, and `serve_connection` leaves the address of its connection set.
+        // The stream has no address, and `serve_connection` leaves its connection address set.
         self.connection_peer_addr = None;
-        // Boxed to keep this future, and `run_connection`'s, under `clippy::large_futures`, so a caller awaiting either
-        // doesn't have to.
+        // Boxing keeps this future and `run_connection` below `clippy::large_futures`.
+        // Callers therefore do not need to store a large future.
         let result = Box::pin(self.run_connection_inner(stream, tls)).await;
         // Given for this connection only; see `set_connection_local_addr`.
         self.connection_local_addr = None;
@@ -3447,9 +3455,10 @@ impl RdpServer {
     /// Completes negotiation and security setup without starting session finalization.
     ///
     /// The returned [`PendingSession`] owns the TCP connection until consumed or dropped.
-    /// Fixed server credentials from [`Self::set_credentials`] and capability settings are snapshotted when this handshake starts.
-    /// `HYBRID_EX` also runs the [`CredentialValidator`] configured when this handshake starts, before reporting early authorization success; changing the validator afterwards does not revalidate those credentials.
-    /// Other negotiated security modes run the [`CredentialValidator`] configured when [`Self::run_connection_session`] finalizes the session.
+    /// Fixed server credentials, the validator, and capability settings are snapshotted when this handshake starts.
+    /// In `HYBRID_EX`, the validator configured at handshake start runs before early authorization is reported.
+    /// Changing the validator later does not revalidate those credentials.
+    /// Other modes run the captured validator during [`Self::run_connection_session`] finalization.
     pub async fn run_connection_handshake(&mut self, stream: TcpStream) -> ServerResult<PendingSession> {
         self.connection_local_addr = None;
         let local_addr = stream

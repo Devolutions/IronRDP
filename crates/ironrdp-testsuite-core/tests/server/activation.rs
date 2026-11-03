@@ -1,4 +1,5 @@
 use core::time::Duration;
+use std::io;
 use std::sync::{Arc, Mutex};
 
 use ironrdp_async::FramedWrite as _;
@@ -26,6 +27,28 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream};
 use tokio::sync::oneshot;
 
 use super::acceptor::encode_send_data_request;
+
+#[async_trait::async_trait]
+trait ActivationFramed: Send {
+    async fn read_frame(&mut self) -> io::Result<(ironrdp_pdu::Action, Vec<u8>)>;
+
+    async fn write_frame(&mut self, bytes: &[u8]) -> io::Result<()>;
+}
+
+#[async_trait::async_trait]
+impl<S> ActivationFramed for TokioFramed<S>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+{
+    async fn read_frame(&mut self) -> io::Result<(ironrdp_pdu::Action, Vec<u8>)> {
+        let (action, pdu) = TokioFramed::read_pdu(self).await?;
+        Ok((action, pdu.to_vec()))
+    }
+
+    async fn write_frame(&mut self, bytes: &[u8]) -> io::Result<()> {
+        ironrdp_async::FramedWrite::write_all(self, bytes).await
+    }
+}
 
 const CLIENT_SIZE: DesktopSize = DesktopSize {
     width: 1280,
@@ -164,7 +187,7 @@ pub(super) async fn play_client_with_network<S>(
     client_network_data: Option<ClientNetworkData>,
 ) -> ClientActivation
 where
-    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
 {
     start_client_connection_request(framed).await;
     play_client_after_connection_request_with_network(
@@ -198,31 +221,28 @@ pub(super) async fn play_client_after_connection_request<S>(
     remote_capabilities: Option<Vec<CapabilitySet>>,
 ) -> Vec<CapabilitySet>
 where
-    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
 {
     play_client_after_connection_request_with_network(framed, desktop_resize_flag, input, remote_capabilities, None)
         .await
         .capabilities
 }
 
-async fn play_client_after_connection_request_with_network<S>(
-    framed: &mut TokioFramed<S>,
+async fn play_client_after_connection_request_with_network(
+    framed: &mut dyn ActivationFramed,
     desktop_resize_flag: bool,
     input: &[u8],
     remote_capabilities: Option<Vec<CapabilitySet>>,
     client_network_data: Option<ClientNetworkData>,
-) -> ClientActivation
-where
-    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
-{
+) -> ClientActivation {
     let mut blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     blocks.network = client_network_data;
     blocks.core.desktop_width = CLIENT_SIZE.width;
     blocks.core.desktop_height = CLIENT_SIZE.height;
     let mut initial = WriteBuf::new();
     ironrdp_connector::encode_x224_packet(&ConnectInitial::with_gcc_blocks(blocks).unwrap(), &mut initial).unwrap();
-    framed.write_all(initial.filled()).await.unwrap();
-    let (_, response) = framed.read_pdu().await.unwrap();
+    framed.write_frame(initial.filled()).await.unwrap();
+    let (_, response) = framed.read_frame().await.unwrap();
     let payload = decode::<X224<X224Data<'_>>>(&response).unwrap().0;
     let response = decode::<mcs::ConnectResponse>(payload.data.as_ref()).unwrap();
     let network = &response.conference_create_response.gcc_blocks().network;
@@ -230,7 +250,7 @@ where
     let static_channel_ids = network.channel_ids.clone();
 
     framed
-        .write_all(
+        .write_frame(
             &encode_vec(&X224(mcs::ErectDomainPdu {
                 sub_height: 0,
                 sub_interval: 0,
@@ -240,17 +260,17 @@ where
         .await
         .unwrap();
     framed
-        .write_all(&encode_vec(&X224(mcs::AttachUserRequest)).unwrap())
+        .write_frame(&encode_vec(&X224(mcs::AttachUserRequest)).unwrap())
         .await
         .unwrap();
-    let (_, confirm) = framed.read_pdu().await.unwrap();
+    let (_, confirm) = framed.read_frame().await.unwrap();
     let user_channel_id = decode::<X224<mcs::AttachUserConfirm>>(&confirm).unwrap().0.initiator_id;
     for channel_id in [user_channel_id, io_channel_id]
         .into_iter()
         .chain(static_channel_ids.iter().copied())
     {
         framed
-            .write_all(
+            .write_frame(
                 &encode_vec(&X224(mcs::ChannelJoinRequest {
                     initiator_id: user_channel_id,
                     channel_id,
@@ -259,7 +279,7 @@ where
             )
             .await
             .unwrap();
-        let _confirm = framed.read_pdu().await.unwrap();
+        let _confirm = framed.read_frame().await.unwrap();
     }
     let mut client_info = decode::<ironrdp_pdu::rdp::ClientInfoPdu>(&CLIENT_INFO_PDU_BUFFER).unwrap();
     if remote_capabilities.is_some() {
@@ -269,15 +289,15 @@ where
             .insert(ironrdp_pdu::rdp::client_info::ClientInfoFlags::RAIL);
     }
     framed
-        .write_all(&encode_send_data_request(
+        .write_frame(&encode_send_data_request(
             user_channel_id,
             io_channel_id,
             &encode_vec(&client_info).unwrap(),
         ))
         .await
         .unwrap();
-    let _license = framed.read_pdu().await.unwrap();
-    let (_, demand) = framed.read_pdu().await.unwrap();
+    let _license = framed.read_frame().await.unwrap();
+    let (_, demand) = framed.read_frame().await.unwrap();
     let indication = mcs::decode_send_data_indication(&demand).unwrap();
     let demand = indication.decode_user_data::<ShareControlHeader>().unwrap();
     let ShareControlPdu::ServerDemandActive(demand) = demand.share_control_pdu else {
@@ -320,7 +340,7 @@ pub(super) async fn play_client_with_capabilities<S>(
     remote_capabilities: Option<Vec<CapabilitySet>>,
 ) -> Vec<CapabilitySet>
 where
-    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
 {
     play_client_with_network(framed, desktop_resize_flag, input, remote_capabilities, None)
         .await
@@ -350,16 +370,14 @@ pub(super) async fn reactivate_client_with_capabilities(
     demand.pdu.capability_sets
 }
 
-async fn confirm_activation<S>(
-    framed: &mut TokioFramed<S>,
+async fn confirm_activation(
+    framed: &mut dyn ActivationFramed,
     desktop_resize_flag: bool,
     input: &[u8],
     remote_capabilities: Option<Vec<CapabilitySet>>,
     (user_channel_id, io_channel_id): (u16, u16),
     desktop_size: DesktopSize,
-) where
-    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
-{
+) {
     let mut confirm = decode::<ShareControlHeader>(&CLIENT_DEMAND_ACTIVE_PDU_BUFFER).unwrap();
     let ShareControlPdu::ClientConfirmActive(active) = &mut confirm.share_control_pdu else {
         panic!("expected Confirm Active fixture");
@@ -383,7 +401,7 @@ async fn confirm_activation<S>(
         active.pdu.capability_sets.extend(capabilities);
     }
     framed
-        .write_all(&encode_send_data_request(
+        .write_frame(&encode_send_data_request(
             user_channel_id,
             io_channel_id,
             &encode_vec(&confirm).unwrap(),
@@ -396,13 +414,13 @@ async fn confirm_activation<S>(
         &CONTROL_REQUEST_CONTROL_BUFFER[..],
     ] {
         framed
-            .write_all(&encode_send_data_request(user_channel_id, io_channel_id, pdu))
+            .write_frame(&encode_send_data_request(user_channel_id, io_channel_id, pdu))
             .await
             .unwrap();
     }
-    framed.write_all(input).await.unwrap();
+    framed.write_frame(input).await.unwrap();
     framed
-        .write_all(&encode_send_data_request(
+        .write_frame(&encode_send_data_request(
             user_channel_id,
             io_channel_id,
             &CLIENT_FONT_LIST_BUFFER,
@@ -410,6 +428,6 @@ async fn confirm_activation<S>(
         .await
         .unwrap();
     for _ in 0..4 {
-        let _response = framed.read_pdu().await.unwrap();
+        let _response = framed.read_frame().await.unwrap();
     }
 }
