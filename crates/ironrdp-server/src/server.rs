@@ -1656,12 +1656,25 @@ pub enum ServerEvent {
     ///
     /// Dispatch revalidates the batch and rejects control PDUs.
     /// Submit only for an active session and await completion before submitting another batch.
-    /// Cap batch sizes; the event queue is unbounded and has no dispatch deadline.
+    /// Acquire `permit` from a shared bounded semaphore before allocating the batch.
+    /// The event retains the permit until dispatch or discard; cap batch sizes because the server does not impose a byte budget.
+    /// There is no dispatch deadline, and undrained events retain their payloads and permits.
     /// A closed receiver means dispatch failed, the event was discarded, or the channel was unavailable.
     /// Channels migrated to a sideband transport are rejected rather than sent over the wrong transport.
+    /// `is_current` must be a nonblocking predicate tied to the producer's connection or processor generation.
+    /// Dispatch checks it before channel lookup and again after waiting for the writer lock.
+    /// A stale event is discarded even if its channel ID is open on a later connection.
+    /// The predicate runs while server-state and writer locks are held; do not wait on work that needs either lock.
     /// Failure does not prove that no bytes were sent, so it is not permission to retry.
     /// Completion confirms the entire transport write, not acceptance by the peer.
-    DynamicChannelWithCompletion(dvc::DvcMessageBatch, oneshot::Sender<()>),
+    DynamicChannelWithCompletion {
+        batch: dvc::DvcMessageBatch,
+        completion: oneshot::Sender<()>,
+        /// INVARIANT: Retained until the transport write completes or the event is discarded.
+        permit: tokio::sync::OwnedSemaphorePermit,
+        /// A nonblocking predicate that identifies whether this producer's data is still current.
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
     /// Writes one PDU to a joined static channel, splitting it into chunks as needed.
     ///
     /// Fragmented PDUs set `SHOW_PROTOCOL` on every chunk per [MS-RDPBCGR] section 3.1.5.2.1,
@@ -1765,8 +1778,9 @@ impl fmt::Debug for ServerEvent {
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
+<<<<<<< HEAD
             Self::ClipboardWithCompletion(..) => f.write_str("ClipboardWithCompletion(..)"),
-            Self::DynamicChannelWithCompletion(batch, _) => f
+            Self::DynamicChannelWithCompletion { batch, .. } => f
                 .debug_tuple("DynamicChannelWithCompletion")
                 .field(&batch.channel_id())
                 .finish(),
@@ -4192,8 +4206,17 @@ impl RdpServer {
         for event in events.drain(..) {
             trace!(?event, "Dispatching");
             match event {
-                ServerEvent::DynamicChannelWithCompletion(batch, completion) => {
+                ServerEvent::DynamicChannelWithCompletion {
+                    batch,
+                    completion,
+                    permit: _permit,
+                    is_current,
+                } => {
                     let channel_id = batch.channel_id();
+                    if completion.is_closed() || !is_current() {
+                        trace!(channel_id, "Discarding canceled or stale dynamic channel write");
+                        continue;
+                    }
                     let batch = match dvc::DvcMessageBatch::try_new(channel_id, batch.into_messages()) {
                         Ok(batch) => batch,
                         Err(error) => {
@@ -4217,10 +4240,17 @@ impl RdpServer {
                     };
                     let data = server_encode_svc_messages(batch.into_messages(), drdynvc_channel_id, user_channel_id)
                         .map_err(ServerError::encode)?;
-                    writer
-                        .write_all(&data)
+                    let sent = writer
+                        .write_all_if(&data, || !completion.is_closed() && is_current())
                         .await
                         .map_err(|error| ServerError::io("write dynamic channel data", error))?;
+                    if !sent {
+                        trace!(
+                            channel_id,
+                            "Discarding canceled or stale dynamic channel write after waiting for the writer"
+                        );
+                        continue;
+                    }
                     if completion.send(()).is_err() {
                         trace!(channel_id, "Dynamic channel producer stopped waiting for dispatch");
                     }

@@ -144,7 +144,12 @@ Use `ServerEvent::Clipboard` when no completion notification is needed.
 Send a validated `ironrdp_dvc::DvcMessageBatch` through `ServerEvent::DynamicChannelWithCompletion` for an already-open dynamic channel.
 Dispatch revalidates every batch and rejects control PDUs, including Create and Close responses.
 The server writes the batch over the joined DRDYNVC static channel; unavailable channels and channels migrated to a sideband transport are rejected.
-Await the completion receiver before submitting another batch, and cap batch sizes because the event queue is unbounded.
+Acquire a permit from a shared bounded semaphore before allocating each batch, and cap batch sizes because the server does not impose a byte budget.
+The event retains its permit until dispatch or discard.
+Provide an `is_current` predicate tied to the producer's connection or processor generation so a late event cannot target a reused channel ID.
+The predicate runs while server-state and writer locks are held, so it must not block or wait on work that needs either lock.
+Dispatch checks the predicate before channel lookup and after waiting for the writer lock.
+Await the completion receiver before submitting another batch.
 Completion confirms the entire transport write, not peer processing.
 A closed receiver means failure or discard, not permission to retry: some bytes may already have been sent.
 Submit only for an active session; idle and stale-session events are discarded.
