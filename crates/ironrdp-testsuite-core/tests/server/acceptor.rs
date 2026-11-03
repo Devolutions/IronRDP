@@ -284,6 +284,19 @@ fn drive_to_secure_settings_exchange_with_client_info(
     client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
     client_info: &[u8],
 ) -> (u16, u16, Option<u16>, Option<MultiTransportFlags>) {
+    let ids @ (user_channel_id, io_channel_id, ..) = drive_to_client_info(acceptor, client_blocks);
+    // The Client Info PDU on the I/O channel.
+    let client_info = encode_send_data_request(user_channel_id, io_channel_id, client_info);
+    acceptor.step(&client_info, None, &mut WriteBuf::new()).unwrap();
+    ids
+}
+
+/// Drives a fresh acceptor from the Connection Request to the Secure Settings Exchange, where it waits for the
+/// client's Client Info PDU, and returns the user, I/O and message channel ids and the server's multitransport flags.
+fn drive_to_client_info(
+    acceptor: &mut Acceptor,
+    client_blocks: ironrdp_pdu::gcc::ClientGccBlocks,
+) -> (u16, u16, Option<u16>, Option<MultiTransportFlags>) {
     let request_bytes = encode_connection_request(SecurityProtocol::SSL);
     acceptor.step(&request_bytes, None, &mut WriteBuf::new()).unwrap();
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
@@ -342,11 +355,8 @@ fn drive_to_secure_settings_exchange_with_client_info(
         acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
     }
 
-    // RdpSecurityCommencement (no input) -> SecureSettingsExchange, then the
-    // Client Info PDU on the I/O channel.
+    // RdpSecurityCommencement (no input) -> SecureSettingsExchange.
     acceptor.step(&[], None, &mut WriteBuf::new()).unwrap();
-    let client_info = encode_send_data_request(user_channel_id, io_channel_id, client_info);
-    acceptor.step(&client_info, None, &mut WriteBuf::new()).unwrap();
 
     (
         user_channel_id,
@@ -2026,22 +2036,9 @@ async fn credssp_failed_logon_is_reported_as_logon_failure(
     assert_eq!(ts_request.error_code, Some(NStatusCode::LOGON_FAILURE));
 }
 
-/// With several accepted credentials, CredSSP checks the password against the entry with the
-/// client's user name, and only that one.
-#[rstest::rstest]
-#[case::first_user("alice", "secret", true)]
-#[case::second_user("bob", "hunter2", true)]
-#[case::other_users_password("bob", "secret", false)]
-#[case::unknown_user("carol", "secret", false)]
-#[tokio::test]
-async fn credssp_accepts_any_of_several_credentials(
-    #[case] username: &str,
-    #[case] password: &str,
-    #[case] accepted: bool,
-    #[values(SecurityProtocol::HYBRID, SecurityProtocol::HYBRID_EX)] protocol: SecurityProtocol,
-) {
-    let mut acceptor = negotiated_acceptor_expecting(protocol, None);
-    acceptor.set_credential_list(vec![
+/// Alice and Bob, the accounts the several-credentials tests accept.
+fn two_accounts() -> Vec<Credentials> {
+    vec![
         Credentials {
             username: "alice".to_owned(),
             password: "secret".to_owned(),
@@ -2052,7 +2049,19 @@ async fn credssp_accepts_any_of_several_credentials(
             password: "hunter2".to_owned(),
             domain: None,
         },
-    ]);
+    ]
+}
+
+/// Runs a CredSSP logon as `username` / `password` against an acceptor that accepts `accounts`, and returns the
+/// result with the setup handler that saw it.
+async fn credssp_logon(
+    protocol: SecurityProtocol,
+    accounts: Vec<Credentials>,
+    username: &str,
+    password: &str,
+) -> (ConnectorResult<()>, SetupHandler) {
+    let mut acceptor = negotiated_acceptor_expecting(protocol, None);
+    acceptor.set_credential_list(accounts);
     let public_key = vec![0x42; 32];
     let (mut client, request) = CredsspSequence::init(
         ironrdp_connector::Credentials::UsernamePassword {
@@ -2083,16 +2092,128 @@ async fn credssp_accepts_any_of_several_credentials(
         &mut handler,
     )
     .await;
+    (result, handler)
+}
+
+/// With several accepted credentials, CredSSP checks the password against the entry with the
+/// client's user name, and only that one.
+// oracle: derived from the accounts the test seeds with `set_credential_list` and the client's user name and password
+#[rstest::rstest]
+#[case::first_user("alice", "secret", true)]
+#[case::second_user("bob", "hunter2", true)]
+#[case::other_users_password("bob", "secret", false)]
+#[case::unknown_user("carol", "secret", false)]
+#[tokio::test]
+async fn credssp_accepts_any_of_several_credentials(
+    #[case] username: &str,
+    #[case] password: &str,
+    #[case] accepted: bool,
+    #[values(SecurityProtocol::HYBRID, SecurityProtocol::HYBRID_EX)] protocol: SecurityProtocol,
+) {
+    let (result, _) = credssp_logon(protocol, two_accounts(), username, password).await;
+    assert_eq!(result.is_ok(), accepted, "{result:?}");
+}
+
+/// With HYBRID_EX the credentials CredSSP delegates reach the setup handler, and they are those of the account the
+/// client logged on as, not the first one listed.
+// oracle: derived from the second account the test seeds with `set_credential_list`
+#[tokio::test]
+async fn credssp_hands_the_matching_account_to_the_handler() {
+    let (result, handler) = credssp_logon(SecurityProtocol::HYBRID_EX, two_accounts(), "bob", "hunter2").await;
+
+    result.unwrap();
+    assert_eq!(handler.received.len(), 1);
+    assert_eq!(handler.received[0].credentials.username, "bob");
+    assert_eq!(handler.received[0].credentials.password, "hunter2");
+}
+
+/// A logon refused against several accounts hands nothing to the setup handler.
+// oracle: derived from the accounts the test seeds with `set_credential_list`
+#[rstest::rstest]
+#[tokio::test]
+async fn refused_credssp_logon_hands_nothing_to_the_handler(
+    #[values(SecurityProtocol::HYBRID, SecurityProtocol::HYBRID_EX)] protocol: SecurityProtocol,
+) {
+    let (result, handler) = credssp_logon(protocol, two_accounts(), "bob", "secret").await;
+
+    assert!(result.is_err());
+    assert!(handler.received.is_empty());
+}
+
+/// An empty credential list leaves CredSSP nothing to check a password against, so the logon fails, as it does with
+/// no credentials at all.
+// oracle: derived from the empty list the test seeds with `set_credential_list`
+#[rstest::rstest]
+#[tokio::test]
+async fn an_empty_credential_list_fails_credssp(
+    #[values(SecurityProtocol::HYBRID, SecurityProtocol::HYBRID_EX)] protocol: SecurityProtocol,
+) {
+    let (result, handler) = credssp_logon(protocol, Vec::new(), "alice", "secret").await;
+
+    assert!(result.is_err());
+    assert!(handler.received.is_empty());
+}
+
+/// Steps an acceptor that accepts `accounts` through a TLS connection up to its Client Info PDU, sent with
+/// `credentials`, and returns the result of the step that reads it.
+fn client_info_logon(accounts: Vec<Credentials>, credentials: Credentials) -> ConnectorResult<()> {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    client_info.credentials = credentials;
+    let client_info = encode_vec(&ClientInfoPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::INFO_PKT,
+        },
+        client_info,
+    })
+    .unwrap();
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+
+    let mut acceptor = Acceptor::new(SecurityProtocol::SSL, DESKTOP_SIZE, Vec::new(), None);
+    acceptor.set_credential_list(accounts);
+    let (user_channel_id, io_channel_id, ..) = drive_to_client_info(&mut acceptor, client_blocks);
+    let client_info = encode_send_data_request(user_channel_id, io_channel_id, &client_info);
+    acceptor.step(&client_info, None, &mut WriteBuf::new()).map(|_| ())
+}
+
+/// Without CredSSP, the Client Info credentials must equal one of the accepted accounts.
+// oracle: derived from the accounts the test seeds with `set_credential_list` and the Client Info credentials
+#[rstest::rstest]
+#[case::second_user("bob", "hunter2", true)]
+#[case::other_users_password("bob", "secret", false)]
+#[case::unknown_user("carol", "secret", false)]
+fn client_info_credentials_must_match_an_accepted_account(
+    #[case] username: &str,
+    #[case] password: &str,
+    #[case] accepted: bool,
+) {
+    let result = client_info_logon(
+        two_accounts(),
+        Credentials {
+            username: username.to_owned(),
+            password: password.to_owned(),
+            domain: None,
+        },
+    );
 
     assert_eq!(result.is_ok(), accepted, "{result:?}");
-    // With HYBRID_EX the delegated credentials reach the handler during CredSSP.
-    if protocol == SecurityProtocol::HYBRID_EX && accepted {
-        assert_eq!(handler.received.len(), 1);
-        assert_eq!(handler.received[0].credentials.username, username);
-        assert_eq!(handler.received[0].credentials.password, password);
-    } else if !accepted {
-        assert!(handler.received.is_empty());
-    }
+}
+
+/// An empty credential list leaves Client Info credentials unchecked, as no credentials at all do; the server's
+/// credential validator, if any, decides.
+// oracle: derived from the empty list the test seeds with `set_credential_list`
+#[test]
+fn an_empty_credential_list_accepts_any_client_info_credentials() {
+    let result = client_info_logon(
+        Vec::new(),
+        Credentials {
+            username: "anyone".to_owned(),
+            password: "anything".to_owned(),
+            domain: None,
+        },
+    );
+
+    result.unwrap();
 }
 
 /// The server Demand Active carries `RDP` as its source descriptor, as the FreeRDP
