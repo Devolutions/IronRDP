@@ -6,6 +6,8 @@ mod async_framed;
 mod capture_helpers;
 mod client;
 #[cfg(any(target_os = "linux", windows))]
+mod clipboard_completion;
+#[cfg(any(target_os = "linux", windows))]
 mod cliprdr_native;
 #[cfg(windows)]
 mod credssp_backend;
