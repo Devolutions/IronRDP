@@ -2091,6 +2091,8 @@ struct TrackingServerBackend {
     removed: Vec<u32>,
     client_name: Option<String>,
     completions: Vec<&'static str>,
+    announced_types: Vec<DeviceType>,
+    set_information_statuses: Vec<NtStatus>,
 }
 
 impl_as_any!(TrackingServerBackend);
@@ -2101,6 +2103,7 @@ impl RdpdrServerBackend for TrackingServerBackend {
             .iter()
             .map(|device| {
                 let device_id = device.device_id();
+                self.announced_types.push(device.device_type());
                 let accepted = !self.rejected_device_ids.contains(&device_id);
                 if accepted {
                     self.accepted.push(device_id);
@@ -2146,8 +2149,9 @@ impl RdpdrServerBackend for TrackingServerBackend {
         self.completions.push("query_information");
         Ok(())
     }
-    fn on_set_information_complete(&mut self, _response: &ClientDriveSetInformationResponse) -> PduResult<()> {
+    fn on_set_information_complete(&mut self, response: &ClientDriveSetInformationResponse) -> PduResult<()> {
         self.completions.push("set_information");
+        self.set_information_statuses.push(response.device_io_reply.io_status);
         Ok(())
     }
     fn on_query_directory_complete(&mut self, _response: &ClientDriveQueryDirectoryResponse) -> PduResult<()> {
@@ -2571,6 +2575,69 @@ fn drive_set_information_completion_round_trips() {
     assert_eq!(
         server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
         vec!["set_information"]
+    );
+}
+
+/// A backend outside the crate reads each announced device's type, to tell drives from printers and smart cards.
+// oracle: derived from the devices the test announces
+#[test]
+fn backend_reads_the_type_of_each_announced_device() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let announce = encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+        device_list: vec![
+            DeviceAnnounceHeader::new_smartcard(1),
+            DeviceAnnounceHeader::new_printer(2, "printer".to_owned()),
+        ],
+    }))
+    .unwrap();
+    server.process(&announce).unwrap();
+
+    assert_eq!(
+        server
+            .downcast_backend::<TrackingServerBackend>()
+            .unwrap()
+            .announced_types,
+        vec![DeviceType::Smartcard, DeviceType::Print]
+    );
+}
+
+/// A backend outside the crate reads the status of a set-information request, the way a rename or a delete reports
+/// whether it worked.
+// oracle: derived from the status the test's client reply carries
+#[test]
+fn backend_reads_the_set_information_status() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+
+    let sent = server
+        .drive_set_information(
+            1,
+            7,
+            FileInformationClass::EndOfFile(FileEndOfFileInformation { end_of_file: 0 }),
+        )
+        .unwrap();
+    let request = ServerDriveSetInformationRequest {
+        device_io_request: DeviceIoRequest {
+            device_id: 1,
+            file_id: 7,
+            completion_id: completion_id_of(&sent[0]),
+            major_function: MajorFunction::SetInformation,
+            minor_function: MinorFunction::from(0),
+        },
+        set_buffer: FileInformationClass::EndOfFile(FileEndOfFileInformation { end_of_file: 0 }),
+    };
+    let response = ClientDriveSetInformationResponse::new(&request, NtStatus::ACCESS_DENIED).unwrap();
+    let completion = encode_vec(&RdpdrPdu::ClientDriveSetInformationResponse(response)).unwrap();
+    server.process(&completion).unwrap();
+
+    assert_eq!(
+        server
+            .downcast_backend::<TrackingServerBackend>()
+            .unwrap()
+            .set_information_statuses,
+        vec![NtStatus::ACCESS_DENIED]
     );
 }
 
