@@ -370,3 +370,561 @@ async fn invalidated_close_preserves_pending_creation_until_a_current_close() {
     assert_eq!(*calls.lock().unwrap(), [Call::Built(id), Call::Dropped]);
     drop(channels);
 }
+
+mod completion {
+    use core::any::TypeId;
+    use core::net::Ipv4Addr;
+    use core::pin::Pin;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::task::Poll;
+    use core::time::Duration;
+    use std::sync::Arc;
+
+    use ironrdp_async::FramedWrite as _;
+    use ironrdp_core::{ReadCursor, decode_cursor, encode_vec, impl_as_any};
+    use ironrdp_dvc::pdu::{
+        CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreateResponsePdu,
+        CreationStatus, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, SoftSyncChannelList,
+        SoftSyncRequestPdu, SoftSyncTunnelType,
+    };
+    use ironrdp_dvc::{DrdynvcClient, DrdynvcServer, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
+    use ironrdp_pdu::PduResult;
+    use ironrdp_pdu::mcs::SendDataIndication;
+    use ironrdp_pdu::rdp::vc::ChannelPduHeader;
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_server::{EchoDvcBridge, RdpServer, ServerEvent, SharedWriter, dispatch_static_channel_events};
+    use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor as _};
+    use ironrdp_tokio::TokioFramed;
+    use rstest::rstest;
+    use tokio::io::AsyncReadExt as _;
+    use tokio::sync::{Semaphore, oneshot};
+
+    const SVC_ID: u16 = 1004;
+    const PAYLOAD: &[u8] = b"native channel data";
+
+    fn server() -> RdpServer {
+        RdpServer::builder()
+            .with_addr((Ipv4Addr::LOCALHOST, 0))
+            .with_no_security()
+            .with_no_input()
+            .with_no_display()
+            .build()
+    }
+
+    fn registered(server: &RdpServer) -> DrdynvcServer {
+        let mut drdynvc = DrdynvcServer::new().with_dynamic_channel(EchoDvcBridge::new(server.echo_handle().clone()));
+        drdynvc.start().unwrap();
+        drdynvc
+            .process(
+                &encode_vec(&DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(
+                    CapsVersion::V3,
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+        drdynvc
+    }
+
+    fn opened(server: &RdpServer) -> (DrdynvcServer, u32) {
+        let mut drdynvc = registered(server);
+        let channel_id = drdynvc.get_channel_id_by_type::<EchoDvcBridge>().unwrap();
+        drdynvc
+            .process(
+                &encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(
+                    channel_id,
+                    CreationStatus::OK,
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+        (drdynvc, channel_id)
+    }
+
+    fn channels(drdynvc: DrdynvcServer) -> StaticChannelSet {
+        let mut channels = StaticChannelSet::new();
+        channels.insert(drdynvc);
+        channels.attach_channel_id(TypeId::of::<DrdynvcServer>(), SVC_ID);
+        channels
+    }
+
+    fn write(channel_id: u32) -> (ServerEvent, oneshot::Receiver<()>) {
+        let permits = Arc::new(Semaphore::new(1));
+        write_if_current(channel_id, &permits, Box::new(|| true))
+    }
+
+    fn current_producer() -> (Arc<AtomicBool>, Box<dyn Fn() -> bool + Send>) {
+        let current = Arc::new(AtomicBool::new(true));
+        let is_current = Box::new({
+            let current = Arc::clone(&current);
+            move || current.load(Ordering::SeqCst)
+        });
+        (current, is_current)
+    }
+
+    fn write_if_current(
+        channel_id: u32,
+        permits: &Arc<Semaphore>,
+        is_current: Box<dyn Fn() -> bool + Send>,
+    ) -> (ServerEvent, oneshot::Receiver<()>) {
+        let batch = DvcMessageBatch::try_new(
+            channel_id,
+            vec![SvcMessage::from(DrdynvcDataPdu::Data(DataPdu::new(
+                channel_id,
+                PAYLOAD.to_vec(),
+            )))],
+        )
+        .unwrap();
+        let (completion, processed) = oneshot::channel();
+        (
+            ServerEvent::DynamicChannelWithCompletion {
+                batch,
+                completion,
+                permit: Arc::clone(permits).try_acquire_owned().unwrap(),
+                is_current,
+            },
+            processed,
+        )
+    }
+
+    // oracle: mutant routing an opened DVC batch to another static/dynamic destination or altering its payload.
+    #[tokio::test]
+    async fn writes_to_the_opened_channel_preserve_payload_and_destination() {
+        let mut server = server();
+        let (drdynvc, channel_id) = opened(&server);
+        let (event, processed) = write(channel_id);
+        let (stream, mut peer) = tokio::io::duplex(128);
+        let mut transport = TokioFramed::new(stream);
+        dispatch_static_channel_events(
+            &mut server,
+            channels(drdynvc),
+            &mut vec![event],
+            &mut SharedWriter::new(&mut transport),
+        )
+        .await
+        .unwrap();
+        processed.await.unwrap();
+        drop(transport);
+        let mut bytes = Vec::new();
+        peer.read_to_end(&mut bytes).await.unwrap();
+        assert_payload_and_destination(&bytes, channel_id);
+    }
+
+    fn assert_payload_and_destination(bytes: &[u8], channel_id: u32) {
+        let mut frames = ReadCursor::new(bytes);
+        let frame: X224<SendDataIndication<'_>> = decode_cursor(&mut frames).unwrap();
+        assert_eq!(frame.0.channel_id, SVC_ID);
+        assert_eq!(frame.0.initiator_id, 1002);
+        let mut payload = ReadCursor::new(frame.0.user_data.as_ref());
+        let _: ChannelPduHeader = decode_cursor(&mut payload).unwrap();
+        let pdu: DrdynvcServerPdu = decode_cursor(&mut payload).unwrap();
+        assert_eq!(
+            pdu,
+            DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(channel_id, PAYLOAD.to_vec())))
+        );
+        assert!(payload.is_empty());
+        assert!(frames.is_empty());
+    }
+
+    #[derive(Clone, Copy)]
+    enum Unavailable {
+        Missing,
+        Unjoined,
+        Pending,
+        Closed,
+        Unknown,
+        Migrated,
+    }
+
+    // oracle: mutant acknowledging or transmitting a batch for an unavailable or sideband-only channel.
+    #[rstest]
+    #[case::missing(Unavailable::Missing)]
+    #[case::unjoined(Unavailable::Unjoined)]
+    #[case::pending(Unavailable::Pending)]
+    #[case::closed(Unavailable::Closed)]
+    #[case::unknown(Unavailable::Unknown)]
+    #[case::migrated_before_response(Unavailable::Migrated)]
+    #[tokio::test]
+    async fn unavailable_destination_is_rejected(#[case] unavailable: Unavailable) {
+        let mut server = server();
+        let (mut drdynvc, mut channel_id) = opened(&server);
+        let channels = match unavailable {
+            Unavailable::Missing => StaticChannelSet::new(),
+            Unavailable::Unjoined => {
+                let mut channels = StaticChannelSet::new();
+                channels.insert(drdynvc);
+                channels
+            }
+            Unavailable::Pending => {
+                drdynvc = registered(&server);
+                channel_id = drdynvc.get_channel_id_by_type::<EchoDvcBridge>().unwrap();
+                channels(drdynvc)
+            }
+            Unavailable::Closed => {
+                drdynvc.close_channel(channel_id).unwrap();
+                channels(drdynvc)
+            }
+            Unavailable::Unknown => {
+                channel_id = u32::MAX;
+                channels(drdynvc)
+            }
+            Unavailable::Migrated => {
+                drdynvc.request_reliable_udp(vec![channel_id]).unwrap();
+                channels(drdynvc)
+            }
+        };
+        let (event, processed) = write(channel_id);
+        let (stream, mut peer) = tokio::io::duplex(128);
+        let mut transport = TokioFramed::new(stream);
+        dispatch_static_channel_events(
+            &mut server,
+            channels,
+            &mut vec![event],
+            &mut SharedWriter::new(&mut transport),
+        )
+        .await
+        .unwrap();
+        assert!(processed.await.is_err(), "an unsent batch was acknowledged");
+        drop(transport);
+        let mut bytes = Vec::new();
+        peer.read_to_end(&mut bytes).await.unwrap();
+        assert!(bytes.is_empty(), "rejected data reached the main transport");
+    }
+
+    // oracle: mutant completing a DVC event before the entire transport write succeeds or interrupting it after producer invalidation.
+    #[tokio::test]
+    async fn completion_waits_for_a_stalled_transport_write() {
+        let mut server = server();
+        let (drdynvc, channel_id) = opened(&server);
+        let permits = Arc::new(Semaphore::new(1));
+        let (current, is_current) = current_producer();
+        let (event, mut processed) = write_if_current(channel_id, &permits, is_current);
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut transport = TokioFramed::new(stream);
+        let mut bytes = Vec::new();
+        {
+            let mut writer = SharedWriter::new(&mut transport);
+            let mut events = vec![event];
+            let dispatch = dispatch_static_channel_events(&mut server, channels(drdynvc), &mut events, &mut writer);
+            tokio::pin!(dispatch);
+            assert_pending(dispatch.as_mut()).await;
+            assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+            // oracle: mutant releasing a permit before its pending write completes.
+            assert_eq!(permits.available_permits(), 0);
+
+            // Invalidate only after observing partial transmission, which must still finish.
+            let mut first_byte = [0];
+            peer.read_exact(&mut first_byte).await.unwrap();
+            bytes.extend_from_slice(&first_byte);
+            current.store(false, Ordering::SeqCst);
+            drain_write(&mut peer, &mut bytes, dispatch.as_mut()).await;
+        }
+        assert_eq!(processed.try_recv(), Ok(()));
+        // oracle: mutant retaining a permit after its write completes.
+        assert_eq!(permits.available_permits(), 1);
+        drop(transport);
+        peer.read_to_end(&mut bytes).await.unwrap();
+        assert_payload_and_destination(&bytes, channel_id);
+    }
+
+    // oracle: mutant interrupting a partially transmitted DVC PDU when its completion receiver is dropped.
+    #[tokio::test]
+    async fn cancellation_does_not_interrupt_a_started_transport_write() {
+        let mut server = server();
+        let (drdynvc, channel_id) = opened(&server);
+        let (event, processed) = write(channel_id);
+        let (stream, mut peer) = tokio::io::duplex(1);
+        let mut transport = TokioFramed::new(stream);
+        let mut bytes = Vec::new();
+        {
+            let mut writer = SharedWriter::new(&mut transport);
+            let mut events = vec![event];
+            let dispatch = dispatch_static_channel_events(&mut server, channels(drdynvc), &mut events, &mut writer);
+            tokio::pin!(dispatch);
+            assert_pending(dispatch.as_mut()).await;
+            let mut first_byte = [0];
+            peer.read_exact(&mut first_byte).await.unwrap();
+            bytes.extend_from_slice(&first_byte);
+            drop(processed);
+
+            drain_write(&mut peer, &mut bytes, dispatch.as_mut()).await;
+        }
+        drop(transport);
+        peer.read_to_end(&mut bytes).await.unwrap();
+        assert_payload_and_destination(&bytes, channel_id);
+    }
+
+    async fn drain_write<T>(
+        peer: &mut tokio::io::DuplexStream,
+        bytes: &mut Vec<u8>,
+        mut dispatch: Pin<&mut impl Future<Output = ironrdp_server::ServerResult<T>>>,
+    ) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    sent = &mut dispatch => break sent.unwrap(),
+                    read = peer.read_buf(bytes) => assert_ne!(read.unwrap(), 0),
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn assert_pending(future: Pin<&mut impl Future>) {
+        let mut future = future;
+        core::future::poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
+
+    async fn behind_writer(
+        permits: &Semaphore,
+        event: ServerEvent,
+        channels: StaticChannelSet,
+        after_wait: impl FnOnce(),
+    ) -> Vec<u8> {
+        let (stream, mut peer) = tokio::io::duplex(8192);
+        let mut transport = TokioFramed::new(stream);
+        {
+            let mut writer = SharedWriter::new(&mut transport);
+            let mut competing_writer = writer.clone();
+            let blocker = vec![0; 8193];
+            let holding = competing_writer.write_all(&blocker);
+            tokio::pin!(holding);
+            assert_pending(holding.as_mut()).await;
+
+            let mut server = server();
+            let mut events = vec![event];
+            let dispatch = dispatch_static_channel_events(&mut server, channels, &mut events, &mut writer);
+            tokio::pin!(dispatch);
+            assert_pending(dispatch.as_mut()).await;
+            // oracle: mutant releasing a permit before writer-lock contention ends.
+            assert_eq!(permits.available_permits(), 0);
+            after_wait();
+
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut drained = vec![0; 8193];
+                let (written, read) = tokio::join!(&mut holding, peer.read_exact(&mut drained));
+                written.unwrap();
+                read.unwrap();
+                dispatch.await.unwrap();
+            })
+            .await
+            .unwrap();
+        }
+        drop(transport);
+        let mut bytes = Vec::new();
+        peer.read_to_end(&mut bytes).await.unwrap();
+        bytes
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2337#issuecomment-6550401512.
+    #[tokio::test]
+    async fn stale_producer_cannot_write_to_a_reused_channel_id() {
+        let mut server = server();
+        let (_, old_channel_id) = opened(&server);
+        let (current_drdynvc, current_channel_id) = opened(&server);
+        assert_eq!(old_channel_id, current_channel_id);
+
+        let permits = Arc::new(Semaphore::new(1));
+        let (current, is_current) = current_producer();
+        let (event, processed) = write_if_current(old_channel_id, &permits, is_current);
+        current.store(false, Ordering::SeqCst);
+
+        let (stream, mut peer) = tokio::io::duplex(128);
+        let mut transport = TokioFramed::new(stream);
+        dispatch_static_channel_events(
+            &mut server,
+            channels(current_drdynvc),
+            &mut vec![event],
+            &mut SharedWriter::new(&mut transport),
+        )
+        .await
+        .unwrap();
+        assert!(processed.await.is_err(), "a stale producer was acknowledged");
+        // oracle: mutant retaining a discarded stale event's permit.
+        assert_eq!(permits.available_permits(), 1);
+        drop(transport);
+        let mut bytes = Vec::new();
+        peer.read_to_end(&mut bytes).await.unwrap();
+        assert!(bytes.is_empty(), "a stale write reached the replacement connection");
+    }
+
+    // oracle: mutant checking producer validity only before waiting for the writer lock.
+    #[tokio::test]
+    async fn producer_invalidation_is_checked_after_the_writer_lock() {
+        let server = server();
+        let (drdynvc, channel_id) = opened(&server);
+        let permits = Arc::new(Semaphore::new(1));
+        let (current, is_current) = current_producer();
+        let (event, processed) = write_if_current(channel_id, &permits, is_current);
+        let bytes = behind_writer(&permits, event, channels(drdynvc), || {
+            current.store(false, Ordering::SeqCst)
+        })
+        .await;
+        assert!(bytes.is_empty(), "invalidated data escaped after the writer lock");
+        assert!(processed.await.is_err());
+        // oracle: mutant retaining an invalidated event's permit.
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    // oracle: mutant checking receiver cancellation only before waiting for the writer lock.
+    #[tokio::test]
+    async fn producer_cancellation_is_checked_after_the_writer_lock() {
+        let server = server();
+        let (drdynvc, channel_id) = opened(&server);
+        let permits = Arc::new(Semaphore::new(1));
+        let (event, processed) = write_if_current(channel_id, &permits, Box::new(|| true));
+        let bytes = behind_writer(&permits, event, channels(drdynvc), || drop(processed)).await;
+        assert!(bytes.is_empty(), "canceled data escaped after the writer lock");
+        // oracle: mutant retaining a canceled event's permit.
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    // oracle: mutant acknowledging a failed transport write.
+    #[tokio::test]
+    async fn transport_failure_closes_completion() {
+        let mut server = server();
+        let (drdynvc, channel_id) = opened(&server);
+        let permits = Arc::new(Semaphore::new(1));
+        let (event, processed) = write_if_current(channel_id, &permits, Box::new(|| true));
+        let (stream, peer) = tokio::io::duplex(1);
+        drop(peer);
+        let mut transport = TokioFramed::new(stream);
+        assert!(
+            dispatch_static_channel_events(
+                &mut server,
+                channels(drdynvc),
+                &mut vec![event],
+                &mut SharedWriter::new(&mut transport),
+            )
+            .await
+            .is_err()
+        );
+        assert!(processed.await.is_err());
+        // oracle: mutant retaining a failed write's permit.
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    // oracle: mutant retaining or acknowledging the previous connection's queued DVC batch.
+    #[tokio::test]
+    async fn discarded_session_data_closes_completion() {
+        let mut server = server();
+        let (_, channel_id) = opened(&server);
+        let permits = Arc::new(Semaphore::new(1));
+        let (event, processed) = write_if_current(channel_id, &permits, Box::new(|| true));
+        server.event_sender().send(event).unwrap();
+        server.discard_stale_session_events().await;
+        assert!(processed.await.is_err());
+        // oracle: mutant retaining a discarded session event's permit.
+        assert_eq!(permits.available_permits(), 1);
+    }
+
+    #[derive(Debug)]
+    struct TunnelChannel;
+
+    impl_as_any!(TunnelChannel);
+
+    impl DvcProcessor for TunnelChannel {
+        fn channel_name(&self) -> &str {
+            "completion-test"
+        }
+
+        fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl DvcClientProcessor for TunnelChannel {}
+
+    fn tunnel_client() -> DrdynvcClient {
+        let mut client = DrdynvcClient::new().with_dynamic_channel(TunnelChannel);
+        client
+            .process(
+                &encode_vec(&DrdynvcServerPdu::Capabilities(CapabilitiesRequestPdu::new(
+                    CapsVersion::V3,
+                    None,
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+        client
+    }
+
+    fn tunnel_create(client: &mut DrdynvcClient, channel_id: u32) -> DvcMessageBatch {
+        client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+        client
+            .process(
+                &encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+                    SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, Vec::new()),
+                ])))
+                .unwrap(),
+            )
+            .unwrap();
+        let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+            channel_id,
+            "completion-test".to_owned(),
+        )))
+        .unwrap();
+        client
+            .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &create)
+            .unwrap()
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2337#discussion_r4432146507.
+    #[tokio::test]
+    async fn create_response_batches_are_rejected() {
+        let mut server = server();
+        let (drdynvc, channel_id) = opened(&server);
+        let batch = tunnel_create(&mut tunnel_client(), channel_id);
+        assert_control_batch_rejected(&mut server, drdynvc, batch).await;
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2337#discussion_r4432146507.
+    #[tokio::test]
+    async fn close_response_batches_are_rejected() {
+        let mut server = server();
+        let (drdynvc, channel_id) = opened(&server);
+        let mut client = tunnel_client();
+        let _ = tunnel_create(&mut client, channel_id);
+        let batch = client
+            .process_tunnel(
+                SoftSyncTunnelType::RELIABLE_UDP,
+                &encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(channel_id))).unwrap(),
+            )
+            .unwrap();
+        assert_control_batch_rejected(&mut server, drdynvc, batch).await;
+    }
+
+    async fn assert_control_batch_rejected(server: &mut RdpServer, drdynvc: DrdynvcServer, batch: DvcMessageBatch) {
+        assert!(!batch.messages().is_empty());
+        let (completion, processed) = oneshot::channel();
+        let permits = Arc::new(Semaphore::new(1));
+        let (stream, mut peer) = tokio::io::duplex(128);
+        let mut transport = TokioFramed::new(stream);
+        dispatch_static_channel_events(
+            server,
+            channels(drdynvc),
+            &mut vec![ServerEvent::DynamicChannelWithCompletion {
+                batch,
+                completion,
+                permit: permits.try_acquire_owned().unwrap(),
+                is_current: Box::new(|| true),
+            }],
+            &mut SharedWriter::new(&mut transport),
+        )
+        .await
+        .unwrap();
+        assert!(processed.await.is_err(), "a control response was acknowledged as data");
+        drop(transport);
+        let mut bytes = Vec::new();
+        peer.read_to_end(&mut bytes).await.unwrap();
+        assert!(bytes.is_empty(), "a control response reached the peer");
+    }
+}
