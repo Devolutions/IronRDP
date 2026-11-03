@@ -635,6 +635,16 @@ impl RdpServerInputHandler for BoundInputSlot {
             self.default.mouse(event);
         }
     }
+
+    fn advanced_input_opened(&mut self) {
+        let mut bound = self.bound.lock().expect("bound input lock poisoned");
+        if let Some(handler) = bound.as_mut() {
+            handler.advanced_input_opened();
+        } else {
+            drop(bound);
+            self.default.advanced_input_opened();
+        }
+    }
 }
 
 /// A built-in [`CredentialValidator`] that accepts exactly one fixed set of credentials.
