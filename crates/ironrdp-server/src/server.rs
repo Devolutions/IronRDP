@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use ironrdp_acceptor::{
     Acceptor, AcceptorResult, BeginResult, ConnectionSetupHandler, ConnectorError, ConnectorErrorExt as _,
-    CredentialOrigin, DesktopSize, ReceivedCredentials,
+    CredentialOrigin, CredsspBackend, DesktopSize, ReceivedCredentials,
 };
 use ironrdp_async::Framed;
 use ironrdp_cliprdr::CliprdrServer;
@@ -201,12 +201,15 @@ pub enum PostConnectionAction {
 /// Per-connection metadata captured during connection setup, made available to
 /// [`ConnectionHandler::on_connection_info`] once the connection is established.
 ///
-/// These are GCC Client Core Data fields (MS-RDPBCGR 2.2.1.3.2) and the Client
-/// Monitor Data block (2.2.1.3.6) that the acceptor captures but has no use for
-/// itself; embedders that want to act on them (for example, selecting a
-/// server-side keyboard layout matching the client, or presenting as many
-/// outputs as the client has monitors) can do so here without reaching into the
-/// acceptor's internals.
+/// This metadata includes fields from the [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1],
+/// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2],
+/// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1],
+/// and [Client Monitor Data (TS_UD_CS_MONITOR), section 2.2.1.3.6].
+///
+/// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+/// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
+/// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/05ada9e4-a468-494b-8694-eb806a0ecc89
+/// [Client Monitor Data (TS_UD_CS_MONITOR), section 2.2.1.3.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ConnectionInfo {
@@ -214,12 +217,18 @@ pub struct ConnectionInfo {
     pub keyboard_layout: u32,
     /// See [`ironrdp_acceptor::AcceptorResult::keyboard_type`].
     pub keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_subtype`].
+    pub keyboard_subtype: u32,
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_functional_keys_count`].
+    pub keyboard_functional_keys_count: u32,
     /// See [`ironrdp_acceptor::AcceptorResult::ime_file_name`].
     pub ime_file_name: String,
     /// See [`ironrdp_acceptor::AcceptorResult::desktop_scale_factor`].
     pub desktop_scale_factor: Option<u32>,
     /// See [`ironrdp_acceptor::AcceptorResult::device_scale_factor`].
     pub device_scale_factor: Option<u32>,
+    /// See [`ironrdp_acceptor::AcceptorResult::performance_flags`].
+    pub performance_flags: rdp::client_info::PerformanceFlags,
     /// The client came back with an auto-reconnect cookie the server
     /// verified, in place of its credentials.
     pub auto_reconnect: bool,
@@ -239,6 +248,12 @@ pub struct ConnectionInfo {
     /// The server itself doesn't start the rdpsnd channel when they ask for no audio redirection; the rest, such as
     /// whether to offer a microphone, is the embedder's to act on.
     pub client_info_flags: rdp::client_info::ClientInfoFlags,
+    /// The remote address of this connection, as its [`IncomingConnection::peer`] gave it: the address that
+    /// [`ConnectionHandler::on_accept`] and [`ConnectionHandler::on_disconnected`] get for this connection. Under
+    /// [`ConnectionPolicy::Preempt`], `on_accept` also runs for newcomers while a session is live, so the peer of the
+    /// last `on_accept` is not always this one. `None` for a connection without a peer address, and for
+    /// [`RdpServer::run_connection`] and [`RdpServer::run_connection_with`], which get a stream and no address.
+    pub peer_addr: Option<SocketAddr>,
 }
 
 impl ConnectionInfo {
@@ -253,15 +268,19 @@ impl ConnectionInfo {
         Self {
             keyboard_layout,
             keyboard_type,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 0,
             ime_file_name,
             desktop_scale_factor: None,
             device_scale_factor: None,
+            performance_flags: rdp::client_info::PerformanceFlags::empty(),
             auto_reconnect: false,
             client_monitors: Vec::new(),
             routing_token: None,
             redirected_session_id: None,
             password_cookie: None,
             client_info_flags: rdp::client_info::ClientInfoFlags::empty(),
+            peer_addr: None,
         }
     }
 }
@@ -269,9 +288,8 @@ impl ConnectionInfo {
 /// Hooks for connection lifecycle events.
 ///
 /// Implement this trait to add pre-accept filtering (rate limiting,
-/// IP allowlists), post-disconnect logic (cleanup, session validity
-/// checks, metrics), and to observe per-connection metadata once a
-/// connection is established.
+/// IP allowlists), observe client settings before capability exchange,
+/// inspect established connection metadata, and run post-disconnect logic.
 ///
 /// All methods have default implementations that accept all connections
 /// and continue unconditionally.
@@ -294,6 +312,51 @@ pub trait ConnectionHandler: Send {
     fn on_accept(&mut self, peer: SocketAddr) -> bool {
         let _ = peer;
         true
+    }
+
+    /// Observes client flags from the
+    /// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1] before capability exchange.
+    ///
+    /// These flags do not authenticate the client.
+    /// Return an error to stop connection setup.
+    /// A callback error closes the transport without sending an access-denied PDU.
+    ///
+    /// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+    fn on_client_info(&mut self, flags: rdp::client_info::ClientInfoFlags) -> ServerResult<()> {
+        let _ = flags;
+        Ok(())
+    }
+
+    /// Observes settings from the [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1],
+    /// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2], and
+    /// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1] before capability exchange.
+    ///
+    /// `desktop_size` is the size the acceptor will offer in capability exchange.
+    /// By default, it is the display handler's initial size.
+    /// With [`RdpServerBuilder::with_honor_client_desktop_size`] enabled, a valid client request from
+    /// Client Core Data is adopted after clamping to the configured maximum.
+    /// Return an error to stop connection setup.
+    /// A callback error closes the transport without sending an access-denied PDU.
+    ///
+    /// [Info Packet (TS_INFO_PACKET), section 2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+    /// [Client Core Data (TS_UD_CS_CORE), section 2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
+    /// [Extended Info Packet (TS_EXTENDED_INFO_PACKET), section 2.2.1.11.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/05ada9e4-a468-494b-8694-eb806a0ecc89
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards Client Info and GCC/Extended Client Info settings together"
+    )]
+    fn on_client_session_config(
+        &mut self,
+        _flags: rdp::client_info::ClientInfoFlags,
+        _performance_flags: rdp::client_info::PerformanceFlags,
+        _keyboard_layout: u32,
+        _keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        _keyboard_subtype: u32,
+        _keyboard_functional_keys_count: u32,
+        _ime_file_name: &str,
+        _desktop_size: DesktopSize,
+    ) -> ServerResult<()> {
+        Ok(())
     }
 
     /// Called once per connection, after credential and auto-reconnect
@@ -1323,6 +1386,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+    dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
     /// Advanced Input owns mouse delivery while its DVC is active. Core mouse
     /// events from the overlapping FastPath path are then suppressed.
     advanced_input_active: Arc<AtomicBool>,
@@ -1346,6 +1410,7 @@ pub struct RdpServer {
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
+    credssp_backend: CredsspBackend,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     connection_binder: Option<Arc<dyn ConnectionBinder>>,
     pending_authenticated_credentials: Arc<StdMutex<Option<Credentials>>>,
@@ -1353,6 +1418,9 @@ pub struct RdpServer {
     /// The local address the current client reached. See
     /// [`Self::set_connection_local_addr`].
     connection_local_addr: Option<SocketAddr>,
+    /// The remote address of the connection [`Self::serve_connection`] serves, set when it starts and cleared by
+    /// [`Self::run_connection_with`]; see [`ConnectionInfo::peer_addr`].
+    connection_peer_addr: Option<SocketAddr>,
     /// Whether each connection runs auto-detect; see [`Self::enable_autodetect`].
     autodetect_enabled: bool,
     heartbeat: Option<HeartbeatConfig>,
@@ -1576,6 +1644,13 @@ pub enum ServerEvent {
     /// See [`ServerRedirectionHandle::redirect`].
     Redirect(Box<ServerRedirectionPdu>),
     Clipboard(ClipboardMessage),
+    /// Signals completion after handling the event, including any transport write.
+    ///
+    /// Await the receiver before submitting another event to bound queued clipboard data.
+    /// The receiver returns an error if dispatch fails or the event is discarded.
+    /// Completion also covers events handled without output, such as a refused request or a missing clipboard channel.
+    /// It does not confirm that the peer accepted clipboard data.
+    ClipboardWithCompletion(ClipboardMessage, oneshot::Sender<()>),
     /// Writes one PDU to a joined static channel, splitting it into chunks as needed.
     ///
     /// Fragmented PDUs set `SHOW_PROTOCOL` on every chunk per [MS-RDPBCGR] section 3.1.5.2.1,
@@ -1646,6 +1721,14 @@ pub trait StaticChannelFactory: Send {
     fn attach(&self, acceptor: &mut Acceptor);
 }
 
+/// Extends the built-in dynamic channels with fresh processors for each connection.
+///
+/// Factories run in registration order before DRDYNVC negotiation.
+pub trait DynamicChannelFactory: Send {
+    /// Adds processors to the supplied channel set, preserving its existing channels.
+    fn attach(&self, channels: dvc::DrdynvcServer) -> dvc::DrdynvcServer;
+}
+
 impl fmt::Debug for ServerEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1654,6 +1737,7 @@ impl fmt::Debug for ServerEvent {
             Self::Disconnect(error) => f.debug_tuple("Disconnect").field(error).finish(),
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
+            Self::ClipboardWithCompletion(..) => f.write_str("ClipboardWithCompletion(..)"),
             Self::StaticChannelWithCompletion { name, payload, .. } => f
                 .debug_tuple("StaticChannelWithCompletion")
                 .field(&name.as_str())
@@ -2298,6 +2382,7 @@ fn refuse_reconnect_from_evicted(
 struct NegotiationContext {
     opts: RdpServerOptions,
     creds: Option<Credentials>,
+    credssp_backend: CredsspBackend,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     requires_authenticated_credentials: bool,
@@ -2330,7 +2415,7 @@ where
     } = incoming;
     let size = ctx.display.lock().await.size().await;
     let capabilities = capabilities::capabilities(&ctx.opts, size);
-    let pending = PendingConnection::new(
+    let mut pending = PendingConnection::new(
         ctx.opts.security.clone(),
         size,
         capabilities,
@@ -2343,6 +2428,7 @@ where
             ..ServerCredentialsHandler::default()
         },
     );
+    pending.acceptor.set_credssp_backend(ctx.credssp_backend);
 
     // NOTE: deliberately NO channel attachment here. Building the cliprdr /
     // sound / gfx backends means running user-supplied factories for a peer
@@ -2426,6 +2512,7 @@ impl RdpServer {
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
         static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
+        dynamic_channel_factories: Vec<Box<dyn DynamicChannelFactory>>,
         mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
         mut rdpei_factory: Option<Box<dyn RdpeiServerFactory>>,
@@ -2472,6 +2559,7 @@ impl RdpServer {
             bound_handler,
             bound_display,
             static_channel_factories,
+            dynamic_channel_factories,
             sound_factory,
             cliprdr_factory,
             rdpei_factory,
@@ -2488,11 +2576,13 @@ impl RdpServer {
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
+            credssp_backend: CredsspBackend::default(),
             credential_validator: None,
             connection_binder: None,
             pending_authenticated_credentials: Arc::new(StdMutex::new(None)),
             local_addr: None,
             connection_local_addr: None,
+            connection_peer_addr: None,
             autodetect_enabled: false,
             heartbeat: None,
             connection_handler: connection_handler.map(|h| Rc::new(RefCell::new(h))),
@@ -3039,6 +3129,10 @@ impl RdpServer {
             dvc
         };
 
+        let dvc = self
+            .dynamic_channel_factories
+            .iter()
+            .fold(dvc, |channels, factory| factory.attach(channels));
         acceptor.attach_static_channel(dvc);
 
         for factory in &self.static_channel_factories {
@@ -3147,6 +3241,7 @@ impl RdpServer {
         NegotiationContext {
             opts: self.opts.clone(),
             creds: self.creds.clone(),
+            credssp_backend: self.credssp_backend,
             display: Arc::clone(&self.display),
             credential_validator: self.credential_validator.clone(),
             requires_authenticated_credentials: self.connection_binder.is_some(),
@@ -3279,6 +3374,8 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
     {
+        // The stream comes without an address, and `serve_connection` leaves the address of its connection set.
+        self.connection_peer_addr = None;
         // Boxed to keep this future, and `run_connection`'s, under `clippy::large_futures`, so a caller awaiting either
         // doesn't have to.
         let result = Box::pin(self.run_connection_inner(stream, tls)).await;
@@ -3300,7 +3397,7 @@ impl RdpServer {
 
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
-        let pending = PendingConnection::new(
+        let mut pending = PendingConnection::new(
             self.opts.security.clone(),
             size,
             capabilities,
@@ -3313,6 +3410,7 @@ impl RdpServer {
                 ..ServerCredentialsHandler::default()
             },
         );
+        pending.acceptor.set_credssp_backend(self.credssp_backend);
 
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
             return Ok(());
@@ -3638,6 +3736,7 @@ impl RdpServer {
         C: ConnectionSource,
     {
         let peer = connection.peer();
+        self.connection_peer_addr = peer;
         match &connection {
             NextConnection::Incoming(incoming) => self.connection_local_addr = incoming.local_addr,
             // The eviction event is queued on the server-global channel but
@@ -3970,6 +4069,47 @@ impl RdpServer {
         }
 
         Ok((RunState::Continue, encoder))
+    }
+
+    async fn dispatch_clipboard_event(
+        conn: &mut ConnectionState,
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+        message: ClipboardMessage,
+    ) -> ServerResult<()> {
+        let (Some(channel_id), Some(cliprdr)) = (
+            conn.get_channel_id_by_type::<CliprdrServer>(),
+            conn.get_svc_processor::<CliprdrServer>(),
+        ) else {
+            warn!("No clipboard channel, dropping event");
+            return Ok(());
+        };
+        let messages = match message {
+            ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
+            ClipboardMessage::SendInitiateFileCopy(files) => cliprdr.initiate_file_copy(files),
+            ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
+            ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
+            ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
+            ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
+            ClipboardMessage::Error(error) => {
+                error!(?error, "Handling clipboard event");
+                return Ok(());
+            }
+        };
+        // A refused clipboard request must not disconnect an otherwise healthy session.
+        let messages = match messages {
+            Ok(messages) => messages,
+            Err(error) => {
+                error!(?error, "Failed to send clipboard event");
+                return Ok(());
+            }
+        };
+        let data =
+            server_encode_svc_messages(messages.into(), channel_id, user_channel_id).map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|error| ServerError::io("write_all", error))
     }
 
     /// `conn.client_supports_errinfo` is the client's `RNS_UD_CS_SUPPORT_ERRINFO_PDU`
@@ -4422,48 +4562,14 @@ impl RdpServer {
                         .await
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
-                ServerEvent::Clipboard(c) => {
-                    let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
-                        warn!("No clipboard channel, dropping event");
-                        continue;
-                    };
-                    let msgs = match c {
-                        ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
-                        ClipboardMessage::SendInitiateFileCopy(files) => cliprdr.initiate_file_copy(files),
-                        ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
-                        ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
-                        ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
-                        ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
-                        ClipboardMessage::Error(error) => {
-                            error!(?error, "Handling clipboard event");
-                            continue;
-                        }
-                    };
-
-                    // A clipboard failure is a per-request problem at worst: a
-                    // stale or malformed request, a capability that was never
-                    // negotiated, backpressure on pending transfers. None of
-                    // that is a reason to disconnect a session whose display,
-                    // audio and input are healthy. The `ClipboardMessage::Error`
-                    // arm above already takes this view; propagating here made
-                    // the two paths disagree.
-                    let msgs = match msgs {
-                        Ok(msgs) => msgs,
-                        Err(error) => {
-                            error!(?error, "Failed to send clipboard event");
-                            continue;
-                        }
-                    };
-
-                    let channel_id = conn
-                        .get_channel_id_by_type::<CliprdrServer>()
-                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
-                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
-                        .map_err(ServerError::encode)?;
-                    writer
-                        .write_all(&data)
-                        .await
-                        .map_err(|e| ServerError::io("write_all", e))?;
+                ServerEvent::Clipboard(message) => {
+                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                }
+                ServerEvent::ClipboardWithCompletion(message, completion) => {
+                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                    if completion.send(()).is_err() {
+                        trace!("Clipboard producer stopped waiting for dispatch");
+                    }
                 }
                 ServerEvent::Echo(msg) => match msg {
                     EchoServerMessage::SendRequest { payload } => {
@@ -5114,7 +5220,7 @@ impl RdpServer {
         message_channel_id: Option<u16>,
         mut encoder: UpdateEncoder,
         udp_transport: Rc<RefCell<Option<multitransport::UdpTransportHandle>>>,
-        pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
+        mut pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
     ) -> ServerResult<RunState>
     where
         R: FramedRead,
@@ -5145,349 +5251,214 @@ impl RdpServer {
             }
         };
         let mut writer = SharedWriter::new(writer);
-        let mut display_writer = writer.clone();
-        let mut event_writer = writer.clone();
-        let mut auto_reconnect_writer = writer.clone();
-        let mut heartbeat_writer = writer.clone();
-        let mut udp_tunnel_writer = writer.clone();
-        let udp_transport_for_events = Rc::clone(&udp_transport);
-        let udp_transport_for_pdus = Rc::clone(&udp_transport);
-        let mut cliprdr_writer = writer.clone();
         let write_counter = writer.write_counter();
         let ev_receiver = Arc::clone(&self.ev_receiver);
-        let s = Rc::new(Mutex::new((self, conn)));
+        let mut ev_receiver = ev_receiver.lock().await;
+        let graphics_write = Arc::clone(&conn.graphics_write);
+        let mut buffer = vec![0u8; 4096];
+        let mut events = Vec::with_capacity(100);
 
-        let this = Rc::clone(&s);
-        let dispatch_pdu = async move {
-            loop {
-                let (action, bytes) = reader.read_pdu().await.map_err(|e| ServerError::io("read pdu", e))?;
-                // D8: per-PDU lock-acquisition + dispatch timing. The `this`
-                // mutex is shared with dispatch_events; when an outbound
-                // event batch is in flight, this lock wait is the latency
-                // that a FrameAcknowledge sees before it reaches its
-                // handler. Log when the dispatch itself or the lock wait
-                // exceeds 50ms.
-                let pdu_len = bytes.len();
-                let lock_start = Instant::now();
-                let mut this = this.lock().await;
-                let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut cookie_interval = tokio::time::interval(AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL);
+        cookie_interval.tick().await;
+        let mut cliprdr_interval = tokio::time::interval(CLIPRDR_DRIVE_TIMEOUTS_INTERVAL);
+        cliprdr_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        cliprdr_interval.tick().await;
+        // Start after one period and skip missed ticks rather than burst after a stalled write.
+        let mut heartbeat_timer = heartbeat.zip(message_channel_id).map(|(config, channel_id)| {
+            let period = Duration::from_secs(u64::from(config.period_secs.max(1)));
+            let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            (interval, config, channel_id)
+        });
+        let mut writes_at_last_tick = write_counter.load(Ordering::Relaxed);
 
-                let dispatch_start = Instant::now();
-                let current_udp_transport = udp_transport_for_pdus.borrow().clone();
-                let (server, conn) = &mut *this;
-                let result = server
-                    .dispatch_pdu(
-                        conn,
-                        action,
-                        bytes,
-                        &mut writer,
-                        io_channel_id,
-                        user_channel_id,
-                        message_channel_id,
-                        current_udp_transport.as_ref(),
-                    )
-                    .await?;
-                let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-                if lock_wait_ms >= 50 {
-                    tracing::warn!(
-                        pdu_len,
-                        lock_wait_ms,
-                        dispatch_ms,
-                        "dispatch_pdu delayed acquiring this.lock, contended with outbound batch (dispatch_events/dispatch_display)"
-                    );
-                } else if dispatch_ms >= 50 {
-                    tracing::warn!(
-                        pdu_len,
-                        lock_wait_ms,
-                        dispatch_ms,
-                        "dispatch_pdu ran long after acquiring this.lock immediately, handler or runtime stall, not lock contention"
-                    );
-                } else {
-                    tracing::debug!(pdu_len, lock_wait_ms, dispatch_ms, "dispatch_pdu");
-                }
-
-                match result {
-                    RunState::Continue => continue,
-                    state => break Ok(state),
-                }
-            }
-        };
-
-        let graphics_write = Arc::clone(&s.lock().await.1.graphics_write);
-        let dispatch_display = async move {
-            let mut buffer = vec![0u8; 4096];
-
-            loop {
-                match display_updates.next_update().await {
-                    Ok(Some(update)) => {
-                        let _graphics = graphics_write.lock().await;
-                        match Self::dispatch_display_update(
-                            update,
-                            &mut display_writer,
-                            user_channel_id,
+        // Keep the pending accept task across select iterations and only borrow it while waiting.
+        // A reactivation or disconnect drops an unfinished task's handle without aborting it.
+        // Its result is then lost, and its socket can remain bound until UDP_ACCEPT_TIMEOUT.
+        let state = loop {
+            // Release the RefCell borrow before awaiting so handlers can replace the transport.
+            let current_udp_transport = udp_transport.borrow().clone();
+            let result = tokio::select! {
+                frame = reader.read_pdu() => {
+                    let (action, bytes) = frame.map_err(|e| ServerError::io("read pdu", e))?;
+                    let pdu_len = bytes.len();
+                    let dispatch_start = Instant::now();
+                    let result = self
+                        .dispatch_pdu(
+                            conn,
+                            action,
+                            bytes,
+                            &mut writer,
                             io_channel_id,
-                            &mut buffer,
-                            encoder,
+                            user_channel_id,
+                            message_channel_id,
+                            current_udp_transport.as_ref(),
                         )
-                        .await?
-                        {
-                            (RunState::Continue, enc) => {
-                                encoder = enc;
-                                continue;
-                            }
-                            (state, _) => {
-                                break Ok(state);
-                            }
+                        .await?;
+                    let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+                    if 50 <= dispatch_ms {
+                        tracing::warn!(pdu_len, dispatch_ms, "PDU dispatch stalled");
+                    } else {
+                        tracing::trace!(pdu_len, dispatch_ms, "Dispatched PDU");
+                    }
+                    result
+                }
+                update = display_updates.next_update() => {
+                    match update {
+                        Ok(Some(update)) => {
+                            let _graphics = graphics_write.lock().await;
+                            let (state, enc) = Self::dispatch_display_update(
+                                update,
+                                &mut writer,
+                                user_channel_id,
+                                io_channel_id,
+                                &mut buffer,
+                                encoder,
+                            )
+                            .await?;
+                            encoder = enc;
+                            state
+                        }
+                        Ok(None) => RunState::Disconnect,
+                        Err(error) => {
+                            warn!(error = format!("{error:#}"), "Next display update failed");
+                            RunState::Continue
                         }
                     }
-                    Ok(None) => {
+                }
+                nevents = ev_receiver.recv_many(&mut events, 100) => {
+                    if nevents == 0 {
+                        debug!("Server event channel closed, stopping");
                         break Ok(RunState::Disconnect);
                     }
-                    Err(error) => {
-                        warn!(error = format!("{error:#}"), "next_updated failed");
+                    while let Ok(ev) = ev_receiver.try_recv() {
+                        events.push(ev);
                     }
-                }
-            }
-        };
 
-        let this = Rc::clone(&s);
-        let mut ev_receiver = ev_receiver.lock().await;
-        let dispatch_events = async move {
-            let mut events = Vec::with_capacity(100);
-            loop {
-                let nevents = ev_receiver.recv_many(&mut events, 100).await;
-                if nevents == 0 {
-                    debug!("No sever events.. stopping");
-                    break Ok(RunState::Disconnect);
-                }
-                while let Ok(ev) = ev_receiver.try_recv() {
-                    events.push(ev);
-                }
+                    let batch_size = events.len();
+                    let dispatch_start = Instant::now();
+                    let result = self
+                        .dispatch_server_events(
+                            conn,
+                            &mut events,
+                            &mut writer,
+                            io_channel_id,
+                            user_channel_id,
+                            message_channel_id,
+                            current_udp_transport.as_ref(),
+                        )
+                        .await?;
+                    let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-                // D7: per-batch dispatch_events timing. The events Vec can
-                // grow up to 100+ entries; dispatch_server_events holds the
-                // `this` mutex AND the SharedWriter mutex for the full
-                // batch. Log batch size + total dispatch time so operators
-                // can see when an event batch ties up both locks.
-                let batch_size = events.len();
-                let lock_start = Instant::now();
-                let mut this = this.lock().await;
-                let lock_wait_ms = u64::try_from(lock_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-                let dispatch_start = Instant::now();
-                // Cloned out of the cell before the call, since `dispatch_server_events`
-                // is async and this must not hold the `RefCell` borrow across
-                // an await point. `UdpTransportHandle` is cheap to clone (see
-                // its own doc comment).
-                let current_udp_transport = udp_transport_for_events.borrow().clone();
-                let (server, conn) = &mut *this;
-                let result = server
-                    .dispatch_server_events(
-                        conn,
-                        &mut events,
-                        &mut event_writer,
-                        io_channel_id,
-                        user_channel_id,
-                        message_channel_id,
-                        current_udp_transport.as_ref(),
-                    )
-                    .await?;
-                let dispatch_ms = u64::try_from(dispatch_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-
-                if lock_wait_ms >= 50 || dispatch_ms >= 100 {
-                    tracing::warn!(
-                        batch_size,
-                        lock_wait_ms,
-                        dispatch_ms,
-                        "dispatch_events batch stalled, long write or lock contention"
-                    );
-                } else if batch_size > 1 {
-                    tracing::debug!(batch_size, lock_wait_ms, dispatch_ms, "dispatch_events batch");
-                }
-
-                match result {
-                    RunState::Continue => continue,
-                    state => break Ok(state),
-                }
-            }
-        };
-
-        let this = Rc::clone(&s);
-        let refresh_auto_reconnect_cookie = async move {
-            let mut interval = tokio::time::interval(AUTO_RECONNECT_COOKIE_UPDATE_INTERVAL);
-            interval.tick().await;
-
-            loop {
-                interval.tick().await;
-                let mut this = this.lock().await;
-                let (server, conn) = &mut *this;
-                server
-                    .rotate_auto_reconnect_cookie(conn, &mut auto_reconnect_writer, io_channel_id, user_channel_id)
-                    .await?;
-            }
-        };
-
-        let send_heartbeats = async move {
-            let (Some(config), Some(message_channel_id)) = (heartbeat, message_channel_id) else {
-                return core::future::pending::<ServerResult<RunState>>().await;
-            };
-            // 2.2.16.1: `period` is in seconds. A zero period is meaningless
-            // (and would panic tokio's interval), so it is bumped to one.
-            let period = Duration::from_secs(u64::from(config.period_secs.max(1)));
-            let mut interval = tokio::time::interval(period);
-            // A stalled write (TCP back-pressure) can hold this future past
-            // several tick deadlines; Burst (the default) would then fire the
-            // missed ticks back-to-back and emit a run of consecutive
-            // heartbeats on an otherwise idle link. Skip fires at the next
-            // period boundary instead.
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            interval.tick().await; // first tick completes immediately; real waits start below
-
-            let mut writes_at_last_tick = write_counter.load(Ordering::Relaxed);
-            loop {
-                interval.tick().await;
-                let writes_now = write_counter.load(Ordering::Relaxed);
-                if writes_now != writes_at_last_tick {
-                    // 2.2.16.1: heartbeats SHOULD only be sent when no other
-                    // PDU went out in the interval; ordinary traffic doubles
-                    // as the liveness signal.
-                    writes_at_last_tick = writes_now;
-                    continue;
-                }
-                let data = encode_heartbeat(&config, message_channel_id, user_channel_id)?;
-                heartbeat_writer
-                    .write_all(&data)
-                    .await
-                    .map_err(|e| ServerError::io("send heartbeat", e))?;
-                // Re-read so the heartbeat's own write does not read as
-                // foreign traffic on the next tick.
-                writes_at_last_tick = write_counter.load(Ordering::Relaxed);
-            }
-        };
-
-        let this = Rc::clone(&s);
-        let dispatch_udp_tunnel = async move {
-            // Only the pass of `client_loop` that received a fresh
-            // `pending_udp_accept` waits on it; every other future in this
-            // `select!` is already dispatching over TCP while this resolves,
-            // so the session never stalls on it. The accepted transport (if
-            // any) is stashed in the shared cell so `dispatch_events`, running
-            // concurrently, can start using it as soon as it lands too.
-            //
-            // If a Deactivation-Reactivation cycle drops this future while
-            // `handle` is still unresolved, the background accept task (and
-            // whatever socket/handshake it is mid-negotiation on) is orphaned:
-            // Its eventual result has nowhere left to be delivered, and this
-            // session continues TCP-only for the rest of its lifetime. That is
-            // an accepted narrow-window tradeoff; the alternative is
-            // persisting in-flight `JoinHandle`s across reactivation, which
-            // this integration does not attempt. The orphaned task also keeps
-            // `udp_bind_addr` bound for up to `UDP_ACCEPT_TIMEOUT`, so a NEXT
-            // connection's own bind attempt during that window can collide
-            // with it too, not only a concurrently preempted session's (see
-            // `multitransport::accept`'s own doc comment on that failure
-            // mode); it degrades the same way, gracefully, to TCP-only.
-            if let Some(handle) = pending_udp_accept {
-                match handle.await {
-                    Ok(Some(transport)) => {
-                        *udp_transport.borrow_mut() = Some(transport);
+                    if 100 <= dispatch_ms {
+                        tracing::warn!(batch_size, dispatch_ms, "Server event batch stalled");
+                    } else if 1 < batch_size {
+                        tracing::trace!(batch_size, dispatch_ms, "Dispatched server event batch");
                     }
-                    Ok(None) => {
-                        debug!("UDP transport did not come up, continuing TCP-only for the rest of the session");
-                    }
-                    Err(error) if error.is_cancelled() => {
-                        debug!(
-                            "UDP transport accept stopped after the client declined, continuing TCP-only for the rest of the session"
-                        );
-                    }
-                    Err(error) => {
-                        warn!(%error, "UDP transport accept task panicked, continuing TCP-only for the rest of the session");
-                    }
+                    result
                 }
-            }
-
-            // This future is the cell's only writer, so the handle cannot
-            // change under the loop below.
-            let current = udp_transport.borrow().clone();
-            let Some(transport) = current else {
-                return core::future::pending::<ServerResult<RunState>>().await;
-            };
-            loop {
-                let Some(message) = transport.recv().await else {
-                    // Soft-Sync only moves channels onto a tunnel (MS-RDPEDYC
-                    // 2.2.5.1 has no TCP tunnel type), its request promised
-                    // no more of their data over TCP (SOFT_SYNC_TCP_FLUSHED),
-                    // and the tunnel lasts as long as the connection
-                    // (MS-RDPEMT 1.3.3). A client whose channels moved has
-                    // nowhere left to read them, so end the connection and let
-                    // it reconnect rather than keep a session it cannot draw.
-                    let (_, conn) = &mut *this.lock().await;
-                    if conn.egfx_on_udp {
-                        warn!("UDP transport lost with EGFX on it, ending the connection");
-                        return Err(ServerError::reason(
-                            "UDP transport",
-                            "lost with dynamic channels moved onto it",
-                        ));
-                    }
-                    debug!("UDP transport closed, continuing TCP-only for the rest of the session");
-                    // Without this, `dispatch_egfx_messages` would keep seeing
-                    // `Some(dead_handle)` here and stay on the UDP branch,
-                    // silently dropping every future EGFX batch instead of
-                    // actually falling back to TCP as this log claims.
-                    *udp_transport.borrow_mut() = None;
-                    return core::future::pending::<ServerResult<RunState>>().await;
-                };
-                let mut this = this.lock().await;
-                let (server, conn) = &mut *this;
-                Self::record_tunnel_sub_headers(conn, &message.sub_headers);
-                if message.data.is_empty() {
-                    continue;
+                _ = cookie_interval.tick() => {
+                    self.rotate_auto_reconnect_cookie(conn, &mut writer, io_channel_id, user_channel_id)
+                        .await?;
+                    RunState::Continue
                 }
-                let result = server
-                    .dispatch_udp_tunnel_payload(
+                (config, channel_id) = async {
+                    match heartbeat_timer.as_mut() {
+                        Some((interval, config, channel_id)) => {
+                            interval.tick().await;
+                            (*config, *channel_id)
+                        }
+                        None => core::future::pending().await,
+                    }
+                } => {
+                    let writes_now = write_counter.load(Ordering::Relaxed);
+                    // Ordinary traffic already serves as the liveness signal for this interval.
+                    if writes_now == writes_at_last_tick {
+                        let data = encode_heartbeat(&config, channel_id, user_channel_id)?;
+                        writer.write_all(&data).await.map_err(|e| ServerError::io("send heartbeat", e))?;
+                    }
+                    // Exclude the heartbeat's own write from the next interval's traffic.
+                    writes_at_last_tick = write_counter.load(Ordering::Relaxed);
+                    RunState::Continue
+                }
+                accepted = async {
+                    match pending_udp_accept.as_mut() {
+                        Some(handle) => handle.await,
+                        None => core::future::pending().await,
+                    }
+                } => {
+                    pending_udp_accept = None;
+                    match accepted {
+                        Ok(Some(transport)) => {
+                            *udp_transport.borrow_mut() = Some(transport);
+                        }
+                        Ok(None) => {
+                            debug!("UDP transport did not come up, continuing TCP-only for the rest of the session");
+                        }
+                        Err(error) if error.is_cancelled() => {
+                            debug!(
+                                "UDP transport accept stopped after the client declined, continuing TCP-only for the rest of the session"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(%error, "UDP transport accept task panicked, continuing TCP-only for the rest of the session");
+                        }
+                    }
+                    RunState::Continue
+                }
+                message = async {
+                    match current_udp_transport.as_ref() {
+                        Some(transport) => transport.recv().await,
+                        None => core::future::pending().await,
+                    }
+                }, if pending_udp_accept.is_none() => {
+                    let Some(message) = message else {
+                        // Soft-Sync only moves channels onto a tunnel (MS-RDPEDYC
+                        // 2.2.5.1 has no TCP tunnel type), its request promised
+                        // no more of their data over TCP (SOFT_SYNC_TCP_FLUSHED),
+                        // and the tunnel lasts as long as the connection
+                        // (MS-RDPEMT 1.3.3). A client whose channels moved has
+                        // nowhere left to read them, so end the connection and let
+                        // it reconnect rather than keep a session it cannot draw.
+                        if conn.egfx_on_udp {
+                            warn!("UDP transport lost with EGFX on it, ending the connection");
+                            return Err(ServerError::reason(
+                                "UDP transport",
+                                "lost with dynamic channels moved onto it",
+                            ));
+                        }
+                        debug!("UDP transport closed, continuing TCP-only for the rest of the session");
+                        // Without this, `dispatch_egfx_messages` would keep seeing
+                        // `Some(dead_handle)` here and stay on the UDP branch,
+                        // silently dropping every future EGFX batch instead of
+                        // actually falling back to TCP as this log claims.
+                        *udp_transport.borrow_mut() = None;
+                        continue;
+                    };
+                    Self::record_tunnel_sub_headers(conn, &message.sub_headers);
+                    if message.data.is_empty() {
+                        continue;
+                    }
+                    self.dispatch_udp_tunnel_payload(
                         conn,
                         &message.data,
-                        &mut udp_tunnel_writer,
+                        &mut writer,
                         user_channel_id,
-                        Some(&transport),
+                        current_udp_transport.as_ref(),
                     )
-                    .await?;
-                match result {
-                    RunState::Continue => continue,
-                    state => break Ok(state),
+                    .await?
                 }
+                _ = cliprdr_interval.tick() => {
+                    self.drive_cliprdr_timeouts(conn, &mut writer, user_channel_id).await?;
+                    RunState::Continue
+                }
+            };
+            match result {
+                RunState::Continue => {}
+                state => break Ok(state),
             }
         };
-
-        let this = Rc::clone(&s);
-        let drive_cliprdr_timeouts = async move {
-            let mut interval = tokio::time::interval(CLIPRDR_DRIVE_TIMEOUTS_INTERVAL);
-            // A stalled write can hold this future past several tick deadlines;
-            // Burst (the default) would then fire the missed ticks back-to-back
-            // for a sweep that is idempotent anyway.
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            interval.tick().await; // first tick completes immediately
-
-            loop {
-                interval.tick().await;
-                let mut this = this.lock().await;
-                let (server, conn) = &mut *this;
-                server
-                    .drive_cliprdr_timeouts(conn, &mut cliprdr_writer, user_channel_id)
-                    .await?;
-            }
-        };
-
-        let state = tokio::select!(
-            state = dispatch_pdu => state,
-            state = dispatch_display => state,
-            state = dispatch_events => state,
-            state = refresh_auto_reconnect_cookie => state,
-            state = send_heartbeats => state,
-            state = dispatch_udp_tunnel => state,
-            state = drive_cliprdr_timeouts => state,
-        );
 
         debug!("End of client loop: {state:?}");
         state
@@ -5570,9 +5541,12 @@ impl RdpServer {
                 h.on_connection_info(&ConnectionInfo {
                     keyboard_layout: result.keyboard_layout,
                     keyboard_type: result.keyboard_type,
+                    keyboard_subtype: result.keyboard_subtype,
+                    keyboard_functional_keys_count: result.keyboard_functional_keys_count,
                     ime_file_name: result.ime_file_name.clone(),
                     desktop_scale_factor: result.desktop_scale_factor,
                     device_scale_factor: result.device_scale_factor,
+                    performance_flags: result.performance_flags,
                     auto_reconnect: is_auto_reconnect,
                     client_monitors: result.client_monitors,
                     routing_token: result.routing_token.clone(),
@@ -5587,6 +5561,7 @@ impl RdpServer {
                         .map(|cluster| cluster.redirected_session_id),
                     password_cookie: result.password_cookie.clone(),
                     client_info_flags: result.client_info_flags,
+                    peer_addr: self.connection_peer_addr,
                 });
             });
         }
@@ -6350,6 +6325,14 @@ impl RdpServer {
         self.creds = creds
     }
 
+    /// Selects the CredSSP authentication provider for subsequent connections.
+    ///
+    /// Defaults to [`CredsspBackend::Rust`].
+    /// This does not change transport security or replace the credential validator.
+    pub fn set_credssp_backend(&mut self, backend: CredsspBackend) {
+        self.credssp_backend = backend;
+    }
+
     /// Tell the server which local address the next client reached, for
     /// connections driven through [`Self::run_connection`] or
     /// [`Self::run_connection_with`]. [`Self::run`] sets it itself.
@@ -6757,6 +6740,43 @@ pub async fn dispatch_static_channel_events(
 
 #[async_trait::async_trait(?Send)]
 impl ConnectionSetupHandler for RdpServer {
+    async fn handle_client_info(&mut self, flags: rdp::client_info::ClientInfoFlags) -> Result<(), ConnectorError> {
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_client_info(flags)
+        }) {
+            result.map_err(|error| ConnectorError::custom("client info handler failed", error))?;
+        }
+        Ok(())
+    }
+
+    async fn handle_client_session_config(
+        &mut self,
+        flags: rdp::client_info::ClientInfoFlags,
+        performance_flags: rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> Result<(), ConnectorError> {
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_client_session_config(
+                flags,
+                performance_flags,
+                keyboard_layout,
+                keyboard_type,
+                keyboard_subtype,
+                keyboard_functional_keys_count,
+                ime_file_name,
+                desktop_size,
+            )
+        }) {
+            result.map_err(|error| ConnectorError::custom("client session config handler failed", error))?;
+        }
+        Ok(())
+    }
+
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> Result<(), ConnectorError> {
         self.prepare_authenticated_connection(credentials).await
     }
@@ -6839,6 +6859,7 @@ mod preempt_tests {
                 udp_bind_addr: None,
             },
             creds: None,
+            credssp_backend: CredsspBackend::default(),
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),
             credential_validator: None,
             requires_authenticated_credentials: false,

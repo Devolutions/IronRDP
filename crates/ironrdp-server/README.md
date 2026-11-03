@@ -24,6 +24,16 @@ Custom logic for your RDP server can be added by implementing these traits:
  - `RdpServerInputHandler` - callbacks used when the server receives input events from a client
  - `RdpServerDisplay`      - notifies the server of display updates
 
+## Client session configuration
+
+`ConnectionHandler::on_client_info` observes the client's Client Info flags before capability exchange.
+`ConnectionHandler::on_client_session_config` receives those flags with the keyboard settings, performance flags, IME file name, and initial desktop size offered for capability exchange.
+The desktop size is the display handler's initial size by default.
+With `RdpServerBuilder::with_honor_client_desktop_size` enabled, it reflects a valid client request from GCC Client Core Data, clamped to the configured maximum.
+These callbacks do not authenticate the client, and returning an error stops connection setup.
+Callback errors close the transport without sending an access-denied PDU.
+`ConnectionHandler::on_connection_info` later reports the keyboard subtype, function-key count, performance flags, and other metadata after the connection is established.
+
 ## Runtime control
 
 Clone `RdpServer::handle()` before running the server to control it from another task.
@@ -69,7 +79,8 @@ local
 	.run_until(async move {
 		let server_task = tokio::task::spawn_local(async move { server.run().await });
 
-		{
+		// The server drops a request while the client does not have the channel open.
+		if echo.is_channel_open() {
 			echo.send_request(b"ping".to_vec())?;
 
 			for measurement in echo.take_measurements() {
@@ -91,6 +102,25 @@ local
 ```
 
 `send_request` queues a probe via the server event loop. If no client has opened the ECHO channel yet, the request is dropped.
+
+## Dynamic-channel factories
+
+Register a `DynamicChannelFactory` with `RdpServerBuilder::with_dynamic_channel_factory` to add dynamic-channel processors.
+Each factory runs for every connection, in registration order, after the built-in channels are registered and before DRDYNVC negotiation.
+The processors created by a factory belong to that connection and are dropped when it ends.
+
+## Clipboard dispatch completion
+
+Send `ServerEvent::ClipboardWithCompletion(message, sender)` through `RdpServer::event_sender()` and await its oneshot receiver before submitting another clipboard event.
+Completion means event handling finished, including any transport write; it does not mean the peer accepted clipboard data.
+A refused request, a backend-reported clipboard error, or a missing clipboard channel can complete without writing data and does not disconnect the session.
+A closed receiver means dispatch failed or the event was discarded, not that no bytes were sent.
+Dropping the receiver does not cancel the event.
+
+The event queue is unbounded, so bound each payload and await completion to limit queued clipboard data.
+Submit only for an active session; idle and stale-session events are discarded.
+There is no dispatch deadline, and a stalled transport write delays completion.
+Use `ServerEvent::Clipboard` when no completion notification is needed.
 
 ## Static-channel writes
 

@@ -1455,8 +1455,8 @@ dependencies = [
 
 [[package]]
 name = "diplomat"
-version = "0.16.1"
-source = "git+https://github.com/Devolutions/diplomat?tag=0.16.1-devo.2#002db80cd71327de9553ea01d4d54552d8df05e7"
+version = "0.17.0"
+source = "git+https://github.com/Devolutions/diplomat?tag=0.17.0-devo.1#b1d544ff8c035dea6db0d5f2a98f395b0fd3b293"
 dependencies = [
  "diplomat_core",
  "proc-macro2",
@@ -1466,13 +1466,13 @@ dependencies = [
 
 [[package]]
 name = "diplomat-runtime"
-version = "0.16.0"
-source = "git+https://github.com/Devolutions/diplomat?tag=0.16.1-devo.2#002db80cd71327de9553ea01d4d54552d8df05e7"
+version = "0.16.1"
+source = "git+https://github.com/Devolutions/diplomat?tag=0.17.0-devo.1#b1d544ff8c035dea6db0d5f2a98f395b0fd3b293"
 
 [[package]]
 name = "diplomat_core"
-version = "0.16.1"
-source = "git+https://github.com/Devolutions/diplomat?tag=0.16.1-devo.2#002db80cd71327de9553ea01d4d54552d8df05e7"
+version = "0.17.0"
+source = "git+https://github.com/Devolutions/diplomat?tag=0.17.0-devo.1#b1d544ff8c035dea6db0d5f2a98f395b0fd3b293"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2861,6 +2861,7 @@ dependencies = [
  "ironrdp-rdpei",
  "ironrdp-rdpel",
  "ironrdp-rdpemsc",
+ "ironrdp-rdpepnp",
  "ironrdp-rdpet",
  "ironrdp-rdpetxt",
  "ironrdp-rdpeudp",
@@ -3121,6 +3122,7 @@ dependencies = [
  "ironrdp-rdpel",
  "ironrdp-rdpemsc",
  "ironrdp-rdpemt",
+ "ironrdp-rdpepnp",
  "ironrdp-rdpet",
  "ironrdp-rdpetxt",
  "ironrdp-rdpeudp",
@@ -3381,6 +3383,18 @@ dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-error 0.2.1",
  "subtle",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpepnp"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.3.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "spin",
  "tracing",
 ]
 
@@ -3680,6 +3694,7 @@ dependencies = [
  "ironrdp-rdpel",
  "ironrdp-rdpemsc",
  "ironrdp-rdpemt",
+ "ironrdp-rdpepnp",
  "ironrdp-rdpet",
  "ironrdp-rdpetxt",
  "ironrdp-rdpeudp",

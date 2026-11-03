@@ -82,6 +82,9 @@ Select devices with `ConfigBuilder::with_usb_redirection` or the `.rdp` `usbdevi
 On Windows, only devices bound to the WinUSB driver can be redirected; see that crate for the coverage limits on each platform.
 Through an RD Gateway, USB redirection follows the gateway's Plug and Play device-redirection policy.
 
+The optional `pnp` feature redirects Plug and Play devices over MS-RDPEPNP with [`ironrdp-rdpepnp`](../ironrdp-rdpepnp).
+No native backend exists: the embedder passes the device descriptions and a `PnpBackend` factory to `ConfigBuilder::with_pnp_redirection`.
+
 For the end-user RDP client binary, see [`ironrdp-viewer`](../ironrdp-viewer).
 
 ## Cloud discovery and browser handoff

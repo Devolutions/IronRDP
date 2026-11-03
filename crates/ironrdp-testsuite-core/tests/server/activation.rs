@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use ironrdp_async::FramedWrite as _;
 use ironrdp_core::{WriteBuf, decode, encode_vec};
+use ironrdp_pdu::gcc::ClientNetworkData;
 use ironrdp_pdu::input::MousePdu;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::mouse::PointerFlags;
@@ -155,6 +156,24 @@ pub(super) async fn play_client_with_capabilities(
     input: &[u8],
     remote_capabilities: Option<Vec<CapabilitySet>>,
 ) -> Vec<CapabilitySet> {
+    play_client_with_network(framed, desktop_resize_flag, input, remote_capabilities, None)
+        .await
+        .capabilities
+}
+
+pub(super) struct ClientActivation {
+    pub(super) capabilities: Vec<CapabilitySet>,
+    pub(super) user_channel_id: u16,
+    pub(super) static_channel_ids: Vec<u16>,
+}
+
+pub(super) async fn play_client_with_network(
+    framed: &mut TokioFramed<DuplexStream>,
+    desktop_resize_flag: bool,
+    input: &[u8],
+    remote_capabilities: Option<Vec<CapabilitySet>>,
+    client_network_data: Option<ClientNetworkData>,
+) -> ClientActivation {
     let request = nego::ConnectionRequest {
         nego_data: None,
         flags: nego::RequestFlags::empty(),
@@ -165,7 +184,7 @@ pub(super) async fn play_client_with_capabilities(
     let _confirm = framed.read_pdu().await.unwrap();
 
     let mut blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
-    blocks.network = None;
+    blocks.network = client_network_data;
     blocks.core.desktop_width = CLIENT_SIZE.width;
     blocks.core.desktop_height = CLIENT_SIZE.height;
     let mut initial = WriteBuf::new();
@@ -174,7 +193,9 @@ pub(super) async fn play_client_with_capabilities(
     let (_, response) = framed.read_pdu().await.unwrap();
     let payload = decode::<X224<X224Data<'_>>>(&response).unwrap().0;
     let response = decode::<mcs::ConnectResponse>(payload.data.as_ref()).unwrap();
-    let io_channel_id = response.conference_create_response.gcc_blocks().network.io_channel;
+    let network = &response.conference_create_response.gcc_blocks().network;
+    let io_channel_id = network.io_channel;
+    let static_channel_ids = network.channel_ids.clone();
 
     framed
         .write_all(
@@ -192,7 +213,10 @@ pub(super) async fn play_client_with_capabilities(
         .unwrap();
     let (_, confirm) = framed.read_pdu().await.unwrap();
     let user_channel_id = decode::<X224<mcs::AttachUserConfirm>>(&confirm).unwrap().0.initiator_id;
-    for channel_id in [user_channel_id, io_channel_id] {
+    for channel_id in [user_channel_id, io_channel_id]
+        .into_iter()
+        .chain(static_channel_ids.iter().copied())
+    {
         framed
             .write_all(
                 &encode_vec(&X224(mcs::ChannelJoinRequest {
@@ -250,7 +274,11 @@ pub(super) async fn play_client_with_capabilities(
         CLIENT_SIZE,
     )
     .await;
-    demand.pdu.capability_sets
+    ClientActivation {
+        capabilities: demand.pdu.capability_sets,
+        user_channel_id,
+        static_channel_ids,
+    }
 }
 
 pub(super) async fn reactivate_client_with_capabilities(

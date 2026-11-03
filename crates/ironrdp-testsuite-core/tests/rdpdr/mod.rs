@@ -292,6 +292,29 @@ fn printer_device_data(encoded: &[u8]) -> &[u8] {
     body
 }
 
+/// Announces one drive named `drive_name` through the handshake and returns the encoded device list announce.
+fn encoded_drive_announce(drive_name: &str) -> Vec<u8> {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
+        .with_drives(Some(vec![(42, drive_name.to_owned())]));
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(responses.len(), 1);
+    responses[0].encode_unframed_pdu().unwrap()
+}
+
+/// The DeviceData of the single drive in an encoded device list announce.
+fn drive_device_data(encoded: &[u8]) -> &[u8] {
+    let device_data_length = read_u32_as_usize(&encoded[24..]);
+    assert_eq!(28 + device_data_length, encoded.len());
+    &encoded[28..28 + device_data_length]
+}
+
 #[test]
 fn printer_capability_wire_layout() {
     let mut caps = Capabilities::new();
@@ -389,32 +412,49 @@ fn printer_announce_respects_explicit_driver() {
 }
 
 #[test]
-fn filesystem_drive_announce_encodes_unicode_data_and_valid_dos_name() {
-    let drive_name = "share \u{1F4C1}";
-    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
-        .with_drives(Some(vec![(42, drive_name.to_owned())]));
-
-    let client_id = announce_client_id(&mut rdpdr, 12);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
-    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
-    assert_eq!(responses.len(), 1);
-
-    let encoded = responses[0].encode_unframed_pdu().unwrap();
+fn filesystem_drive_announce_encodes_the_name_as_8_bit_characters_and_a_valid_dos_name() {
+    let encoded = encoded_drive_announce("share \u{1F4C1}");
     assert_eq!(&encoded[..4], &[0x72, 0x44, 0x41, 0x44]); // RDPDR + DEVICELIST_ANNOUNCE
     assert_eq!(read_u32(&encoded[4..]), 1);
     assert_eq!(read_u32(&encoded[8..]), u32::from(DeviceType::Filesystem));
     assert_eq!(read_u32(&encoded[12..]), 42);
     assert_eq!(&encoded[16..24], b"share \0\0");
 
-    let device_data_length = read_u32_as_usize(&encoded[24..]);
-    let device_data = &encoded[28..28 + device_data_length];
-    assert_eq!(28 + device_data_length, encoded.len());
-    assert_eq!(utf16le_to_string(device_data), drive_name);
+    let device_data = drive_device_data(&encoded);
+    // oracle: regression #2075 - Windows reads the name in DeviceData as 8-bit characters, null-terminated.
+    assert_eq!(&device_data[..5], b"share");
+    assert_eq!(device_data.last(), Some(&0));
+    // oracle: mutant the space dropped or replaced, or the character outside ASCII written as UTF-8 or UTF-16
+    // instead of '_'.
+    assert_eq!(device_data, b"share _\0");
+}
+
+#[test]
+fn filesystem_drive_announce_replaces_characters_a_device_name_may_not_contain() {
+    // oracle: reference FreeRDP/FreeRDP@dae0390a42ab271fa07a35979dfcd5671f83a949:channels/drive/client/drive_main.c -
+    // drive_register_drive_path writes '_' for <, >, ", /, \, | and : in DeviceData.
+    assert_eq!(
+        drive_device_data(&encoded_drive_announce(r#"a<b>c"d/e\f|g:h"#)),
+        b"a_b_c_d_e_f_g_h\0"
+    );
+}
+
+#[test]
+fn filesystem_drive_announce_keeps_a_trailing_colon() {
+    // oracle: mutant the trailing colon replaced with '_', which Windows shows as `\\tsclient\C_` rather than
+    // `\\tsclient\C`.
+    assert_eq!(drive_device_data(&encoded_drive_announce("C:")), b"C:\0");
+}
+
+#[test]
+fn filesystem_drive_announce_replaces_an_embedded_nul() {
+    let encoded = encoded_drive_announce("a\0b");
+    let device_data = drive_device_data(&encoded);
+    // oracle: spec MS-RDPEFS §2.2.3.1 - the name in DeviceData is null-terminated, so a NUL inside it would end it
+    // early.
+    assert!(!device_data[..device_data.len() - 1].contains(&0));
+    // oracle: mutant the NUL dropped instead of replaced.
+    assert_eq!(device_data, b"a_b\0");
 }
 
 #[test]

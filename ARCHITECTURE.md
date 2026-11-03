@@ -115,6 +115,11 @@ AUDIO_INPUT dynamic channel for client microphone capture implemented as describ
 URBDRC dynamic channel state machines, PDU codecs, and USB device backend interfaces implemented as described in MS-RDPEUSB.
 The crate performs no USB I/O; host device access belongs to a backend.
 
+#### [`crates/ironrdp-rdpepnp`](./crates/ironrdp-rdpepnp)
+
+PNPDR and FileRedirectorChannel dynamic channel clients and PDU codecs implemented as described in MS-RDPEPNP.
+The crate performs no device I/O; an embedder supplies the device descriptions and a backend that opens and drives file handles.
+
 #### [`crates/ironrdp-rdpecam`](./crates/ironrdp-rdpecam)
 
 Video capture dynamic channel client and backend boundary implemented as described in MS-RDPECAM.
