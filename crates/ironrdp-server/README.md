@@ -70,12 +70,14 @@ The factory receives the reserved channel ID and returns a `DvcServerProcessor`.
 Peer acceptance invokes the processor's `start` callback.
 If DRDYNVC is unavailable or not ready, the request is discarded without calling the factory.
 
-Retain the reserved ID and send `ServerEvent::CloseDynamicChannel` to release the processor and notify the peer when appropriate.
+Retain the reserved ID and send `ServerEvent::CloseDynamicChannel { channel_id, is_current }` to release the processor and notify the peer when appropriate.
 Close also cancels creation awaiting peer acceptance; a late response cannot start the canceled processor.
 Unknown and already-closed IDs have no effect.
 Keep a cancellation guard that sends Close if the caller stops waiting for acceptance, and stop background work when the processor is dropped.
+The nonblocking `is_current` predicate must identify the originating connection or processor lifetime, remain valid during pending creation, and become false before a replacement connection can use the same ID.
+It runs during event dispatch before the channel is removed; false discards the event without callbacks or wire output.
 
-Submit only for the active session: `run` and `serve` discard channel events while idle and at connection boundaries.
+Submit only for the active connection: `run` and `serve` discard channel events while idle and at connection boundaries, but draining cannot reject old producers submitting afterward.
 The queue is unbounded and has no dispatch deadline, so bound outstanding requests in the producer and keep factories nonblocking.
 
 ## Echo RTT probes (feature `echo`)

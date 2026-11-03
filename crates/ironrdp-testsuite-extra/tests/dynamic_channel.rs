@@ -1,5 +1,6 @@
 use core::any::TypeId;
 use core::net::Ipv4Addr;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{ReadCursor, decode, decode_cursor, encode_vec, impl_as_any};
@@ -99,6 +100,13 @@ fn create(calls: &Calls) -> ServerEvent {
     }))
 }
 
+fn close(channel_id: u32) -> ServerEvent {
+    ServerEvent::CloseDynamicChannel {
+        channel_id,
+        is_current: Box::new(|| true),
+    }
+}
+
 fn peer(channels: &mut StaticChannelSet, pdu: DrdynvcClientPdu) {
     channels
         .get_by_type_mut::<DrdynvcServer>()
@@ -189,12 +197,7 @@ async fn missing_drdynvc_discards_creation() {
 #[case::unknown(channels(true, true))]
 #[tokio::test]
 async fn unavailable_channel_close_is_a_no_op(#[case] channels: StaticChannelSet) {
-    let (_, pdus) = dispatch(
-        &mut server(),
-        channels,
-        vec![ServerEvent::CloseDynamicChannel(u32::MAX)],
-    )
-    .await;
+    let (_, pdus) = dispatch(&mut server(), channels, vec![close(u32::MAX)]).await;
     assert!(pdus.is_empty());
 }
 
@@ -209,16 +212,7 @@ async fn acceptance_starts_the_reserved_processor_and_close_releases_it_once() {
         DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::OK)),
     );
     assert_eq!(*calls.lock().unwrap(), [Call::Built(id), Call::Started(id)]);
-    let (channels, pdus) = dispatch(
-        &mut server,
-        channels,
-        vec![
-            ServerEvent::CloseDynamicChannel(id),
-            ServerEvent::CloseDynamicChannel(id),
-            ServerEvent::CloseDynamicChannel(u32::MAX),
-        ],
-    )
-    .await;
+    let (channels, pdus) = dispatch(&mut server, channels, vec![close(id), close(id), close(u32::MAX)]).await;
     assert_eq!(pdus, [DrdynvcServerPdu::Close(ClosePdu::new(id))]);
     assert_eq!(
         *calls.lock().unwrap(),
@@ -237,7 +231,7 @@ async fn close_cancels_pending_creation_and_late_acceptance_cannot_start_it() {
     let calls = Calls::default();
     let mut server = server();
     let (channels, id) = requested(&mut server, &calls).await;
-    let (mut channels, pdus) = dispatch(&mut server, channels, vec![ServerEvent::CloseDynamicChannel(id)]).await;
+    let (mut channels, pdus) = dispatch(&mut server, channels, vec![close(id)]).await;
     assert_eq!(pdus, [DrdynvcServerPdu::Close(ClosePdu::new(id))]);
     peer(
         &mut channels,
@@ -266,7 +260,7 @@ async fn close_releases_a_declined_processor_without_starting_it() {
         &mut channels,
         DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::NO_LISTENER)),
     );
-    let (channels, pdus) = dispatch(&mut server, channels, vec![ServerEvent::CloseDynamicChannel(id)]).await;
+    let (channels, pdus) = dispatch(&mut server, channels, vec![close(id)]).await;
     assert!(pdus.is_empty());
     assert_eq!(*calls.lock().unwrap(), [Call::Built(id), Call::Dropped]);
     drop(channels);
@@ -306,4 +300,73 @@ async fn stale_creation_is_discarded_without_building_a_processor() {
     server.event_sender().send(create(&calls)).unwrap();
     server.discard_stale_session_events().await;
     assert_eq!(*calls.lock().unwrap(), [Call::Dropped]);
+}
+
+// oracle: regression Devolutions/IronRDP#2336; a late close must not affect a reused ID in another connection.
+#[tokio::test]
+async fn old_connection_close_submitted_after_queue_draining_cannot_close_the_reused_id() {
+    let mut server = server();
+    let old_calls = Calls::default();
+    let current = Arc::new(AtomicBool::new(true));
+    let (old_channels, old_id) = requested(&mut server, &old_calls).await;
+    drop(old_channels);
+    current.store(false, Ordering::SeqCst);
+    server.discard_stale_session_events().await;
+
+    let calls = Calls::default();
+    let (mut channels, id) = requested(&mut server, &calls).await;
+    assert_eq!(
+        id, old_id,
+        "the new connection must reuse the old ID for this regression"
+    );
+    peer(
+        &mut channels,
+        DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::OK)),
+    );
+    let late_close = ServerEvent::CloseDynamicChannel {
+        channel_id: old_id,
+        is_current: Box::new(move || current.load(Ordering::SeqCst)),
+    };
+    let (channels, pdus) = dispatch(&mut server, channels, vec![late_close]).await;
+    assert!(pdus.is_empty());
+    assert_eq!(*calls.lock().unwrap(), [Call::Built(id), Call::Started(id)]);
+    assert!(
+        channels
+            .get_by_type::<DrdynvcServer>()
+            .unwrap()
+            .channel_processor_downcast_ref::<DrdynvcServer>()
+            .unwrap()
+            .is_channel_opened(id)
+    );
+    let (channels, pdus) = dispatch(&mut server, channels, vec![close(id)]).await;
+    assert_eq!(pdus, [DrdynvcServerPdu::Close(ClosePdu::new(id))]);
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [Call::Built(id), Call::Started(id), Call::Closed(id), Call::Dropped]
+    );
+    drop(channels);
+}
+
+// oracle: regression Devolutions/IronRDP#2336; validity must be checked at dispatch, not event construction.
+#[tokio::test]
+async fn invalidated_close_preserves_pending_creation_until_a_current_close() {
+    let calls = Calls::default();
+    let mut server = server();
+    let (channels, id) = requested(&mut server, &calls).await;
+    let current = Arc::new(AtomicBool::new(true));
+    let event = ServerEvent::CloseDynamicChannel {
+        channel_id: id,
+        is_current: Box::new({
+            let current = Arc::clone(&current);
+            move || current.load(Ordering::SeqCst)
+        }),
+    };
+    current.store(false, Ordering::SeqCst);
+    let (channels, pdus) = dispatch(&mut server, channels, vec![event]).await;
+    assert!(pdus.is_empty());
+    assert_eq!(*calls.lock().unwrap(), [Call::Built(id)]);
+    let (channels, pdus) = dispatch(&mut server, channels, vec![close(id)]).await;
+    assert_eq!(pdus, [DrdynvcServerPdu::Close(ClosePdu::new(id))]);
+    assert_eq!(*calls.lock().unwrap(), [Call::Built(id), Call::Dropped]);
+    drop(channels);
 }

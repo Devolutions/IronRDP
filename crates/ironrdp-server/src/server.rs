@@ -1694,7 +1694,15 @@ pub enum ServerEvent {
     CreateDynamicChannel(Box<dyn FnOnce(u32) -> Box<dyn dvc::DvcServerProcessor> + Send>),
     /// Releases a dynamic channel and notifies the peer if creation was requested.
     /// Also cancels pending creation; an unknown channel ID has no effect.
-    CloseDynamicChannel(u32),
+    CloseDynamicChannel {
+        channel_id: u32,
+        /// Nonblocking check of the originating connection or processor lifetime.
+        ///
+        /// It runs during event dispatch before channel removal; false discards the event.
+        /// Keep it valid during pending creation and invalidate it before a replacement can reuse the ID.
+        /// Waiting on work needing event dispatch can deadlock.
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
     Rdpsnd(RdpsndServerMessage),
     Rdpdr(RdpdrServerMessage),
     Rdpeai(RdpeaiServerMessage),
@@ -1745,7 +1753,9 @@ impl fmt::Debug for ServerEvent {
                 .finish(),
             Self::StaticChannelJoined(name, _) => f.debug_tuple("StaticChannelJoined").field(&name.as_str()).finish(),
             Self::CreateDynamicChannel(_) => f.write_str("CreateDynamicChannel(..)"),
-            Self::CloseDynamicChannel(channel_id) => f.debug_tuple("CloseDynamicChannel").field(channel_id).finish(),
+            Self::CloseDynamicChannel { channel_id, .. } => {
+                f.debug_tuple("CloseDynamicChannel").field(channel_id).finish()
+            }
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
@@ -4583,7 +4593,11 @@ impl RdpServer {
                         .await
                         .map_err(|error| ServerError::io("create dynamic channel", error))?;
                 }
-                ServerEvent::CloseDynamicChannel(channel_id) => {
+                ServerEvent::CloseDynamicChannel { channel_id, is_current } => {
+                    if !is_current() {
+                        trace!(channel_id, "Discarding stale dynamic channel close");
+                        continue;
+                    }
                     let drdynvc_channel_id = conn.get_channel_id_by_type::<dvc::DrdynvcServer>();
                     let message = conn
                         .get_svc_processor::<dvc::DrdynvcServer>()
