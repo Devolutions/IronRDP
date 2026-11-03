@@ -248,6 +248,10 @@ pub struct ConnectionInfo {
     /// The server itself doesn't start the rdpsnd channel when they ask for no audio redirection; the rest, such as
     /// whether to offer a microphone, is the embedder's to act on.
     pub client_info_flags: rdp::client_info::ClientInfoFlags,
+    /// See [`ironrdp_acceptor::AcceptorResult::alternate_shell`].
+    pub alternate_shell: String,
+    /// See [`ironrdp_acceptor::AcceptorResult::work_dir`].
+    pub work_dir: String,
     /// The remote address of this connection, as its [`IncomingConnection::peer`] gave it: the address that
     /// [`ConnectionHandler::on_accept`] and [`ConnectionHandler::on_disconnected`] get for this connection. Under
     /// [`ConnectionPolicy::Preempt`], `on_accept` also runs for newcomers while a session is live, so the peer of the
@@ -280,6 +284,8 @@ impl ConnectionInfo {
             redirected_session_id: None,
             password_cookie: None,
             client_info_flags: rdp::client_info::ClientInfoFlags::empty(),
+            alternate_shell: String::new(),
+            work_dir: String::new(),
             peer_addr: None,
         }
     }
@@ -5540,6 +5546,8 @@ impl RdpServer {
                         .map(|cluster| cluster.redirected_session_id),
                     password_cookie: result.password_cookie.clone(),
                     client_info_flags: result.client_info_flags,
+                    alternate_shell: result.alternate_shell.clone(),
+                    work_dir: result.work_dir.clone(),
                     peer_addr: self.connection_peer_addr,
                 });
             });

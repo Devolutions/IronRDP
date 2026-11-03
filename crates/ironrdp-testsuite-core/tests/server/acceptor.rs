@@ -1259,6 +1259,37 @@ fn client_info_flags_survive_reactivation() {
     assert_eq!(result.client_info_flags, flags);
 }
 
+/// The `AlternateShell` and `WorkingDir` of the client's Info Packet, MS-RDPBCGR [2.2.1.11.1.1], reach the
+/// `AcceptorResult` as sent, and survive a reactivation like the flags.
+///
+/// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1
+#[test]
+fn alternate_shell_and_work_dir_are_kept_as_sent() {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    client_info.alternate_shell = "curtain".to_owned();
+    client_info.work_dir = "C:\\work".to_owned();
+    let client_info = encode_vec(&ClientInfoPdu {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::INFO_PKT,
+        },
+        client_info,
+    })
+    .unwrap();
+
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    let (acceptor, result, user_channel_id, io_channel_id) = accepted(client_blocks, &client_info);
+    assert_eq!(result.alternate_shell, "curtain");
+    assert_eq!(result.work_dir, "C:\\work");
+
+    let mut acceptor = Acceptor::new_deactivation_reactivation(acceptor, result.static_channels, DESKTOP_SIZE)
+        .expect("rebuild the acceptor for reactivation");
+    let result = result_after_activation(&mut acceptor, user_channel_id, io_channel_id);
+    assert_eq!(result.alternate_shell, "curtain");
+    assert_eq!(result.work_dir, "C:\\work");
+}
+
 /// The client's GCC blocks with `desktop` and `device` as the `desktopScaleFactor` and `deviceScaleFactor` of its
 /// Client Core Data, and the optional fields that precede them filled in so that they are encoded.
 fn client_blocks_with_scale_factors(desktop: Option<u32>, device: Option<u32>) -> ironrdp_pdu::gcc::ClientGccBlocks {
