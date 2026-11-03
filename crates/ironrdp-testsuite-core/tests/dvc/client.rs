@@ -133,6 +133,192 @@ fn exchange_capabilities(client: &mut DrdynvcClient) {
     client.process(&caps).expect("Capabilities Request should be processed");
 }
 
+// oracle: regression #2005 - GNOME Remote Desktop sends AUDIO_PLAYBACK_DVC data right after its Create Request,
+// before it reads the client's decline.
+#[test]
+fn data_for_a_channel_the_client_declined_is_dropped() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    let data = |channel_id: u32, payload: &[u8]| {
+        encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+            channel_id,
+            payload.to_vec(),
+        ))))
+        .expect("DVC data should encode")
+    };
+
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        4,
+        "AUDIO_PLAYBACK_DVC".to_owned(),
+    )))
+    .expect("DVC create request should encode");
+    let responses = client
+        .process(&create)
+        .expect("a channel without a listener is declined");
+    let [response] = responses.as_slice() else {
+        panic!("expected exactly one Create Response");
+    };
+    let DrdynvcClientPdu::Create(response) = decode_client_pdu(response) else {
+        panic!("expected a Create Response");
+    };
+    assert_eq!(response.creation_status(), CreationStatus::NO_LISTENER);
+
+    assert!(
+        client
+            .process(&data(4, b"declined"))
+            .expect("data for a declined channel should be dropped, not fail")
+            .is_empty()
+    );
+    client
+        .process(&data(5, b"never created"))
+        .expect_err("data for a channel the server never created is still an error");
+    assert!(
+        client
+            .process(&data(7, b"open"))
+            .expect("open channels are unaffected")
+            .is_empty()
+    );
+
+    let channel = client
+        .get_dvc_by_channel_id::<RecordedDvc>(7)
+        .expect("recorded channel should remain attached");
+    assert_eq!(channel.processor().received, vec![b"open".to_vec()]);
+
+    // A server Close for the declined channel needs no response, and settles the decline.
+    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(4))).expect("Close should encode");
+    assert!(client.process(&close).expect("Close should be processed").is_empty());
+    client
+        .process(&data(4, b"after close"))
+        .expect_err("data for a channel that is fully closed is still an error");
+}
+
+#[test]
+fn data_for_a_channel_that_failed_to_start_is_dropped() {
+    let mut client = DrdynvcClient::new().with_dynamic_channel(FailingDvc);
+    exchange_capabilities(&mut client);
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        3,
+        "failing".to_owned(),
+    )))
+    .expect("Create Request should encode");
+    let responses = client
+        .process(&create)
+        .expect("a channel that fails to start is declined");
+    let DrdynvcClientPdu::Create(response) = decode_client_pdu(&responses[0]) else {
+        panic!("expected a Create Response");
+    };
+    assert_eq!(response.creation_status(), CreationStatus::NO_LISTENER);
+
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        3,
+        b"late".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    assert!(
+        client
+            .process(&data)
+            .expect("data for a channel that failed to start should be dropped")
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_channel_declined_again_and_again_takes_one_place_in_the_close_history() {
+    // A server can offer the same channel after every reactivation; its declines must not push out a client close.
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.close_channel(7).expect("open channel should close");
+
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        4,
+        "AUDIO_PLAYBACK_DVC".to_owned(),
+    )))
+    .expect("DVC create request should encode");
+    for _ in 0..100 {
+        client
+            .process(&create)
+            .expect("a channel without a listener is declined");
+    }
+
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        7,
+        b"late".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    assert!(
+        client
+            .process(&data)
+            .expect("late data for the closed channel is still dropped")
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_declined_channel_id_reused_for_an_accepted_channel_gets_its_data() {
+    let mut client = DrdynvcClient::new().with_dynamic_channel(RecordedDvc::default());
+    exchange_capabilities(&mut client);
+    let create = |name: &str| {
+        encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(4, name.to_owned())))
+            .expect("Create Request should encode")
+    };
+    client
+        .process(&create("unknown"))
+        .expect("a channel without a listener is declined");
+    client
+        .process(&create("recorded"))
+        .expect("Create Request should be processed");
+
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        4,
+        b"accepted".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    client
+        .process(&data)
+        .expect("data for the accepted channel is processed");
+
+    let channel = client
+        .get_dvc_by_channel_id::<RecordedDvc>(4)
+        .expect("accepted channel should be open");
+    assert_eq!(channel.processor().received, vec![b"accepted".to_vec()]);
+}
+
+#[test]
+fn declining_a_create_request_leaves_a_channel_attached_under_its_id_open() {
+    // A recorded session attaches its channels by ID, then replays the server's Create Requests, which this client
+    // has no listener for: the attached channel keeps its data.
+    let mut client = DrdynvcClient::new();
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        7,
+        "recorded".to_owned(),
+    )))
+    .expect("DVC create request should encode");
+    client.process(&create).expect("the Create Request is answered");
+
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        7,
+        b"open".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    client
+        .process(&data)
+        .expect("data for the attached channel is processed");
+
+    let channel = client
+        .get_dvc_by_channel_id::<RecordedDvc>(7)
+        .expect("recorded channel should remain attached");
+    assert_eq!(channel.processor().received, vec![b"open".to_vec()]);
+}
+
 #[test]
 fn established_dynamic_channel_routes_recorded_data_without_negotiation() {
     let mut client = DrdynvcClient::new();
@@ -654,6 +840,20 @@ fn channels_created_on_a_tunnel_are_bound_to_it() {
     assert_eq!(response.creation_status(), CreationStatus::NO_LISTENER);
     assert_eq!(client.tunnel_for_channel(17), None);
 
+    // Data the server sends on the tunnel before it sees the decline is dropped.
+    let late = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        17,
+        Vec::new(),
+    ))))
+    .expect("DVC data should encode");
+    let batch = client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &late)
+        .expect("data for a channel declined on the tunnel should be dropped");
+    assert!(batch.messages().is_empty());
+    client
+        .process(&late)
+        .expect_err("data for it over TCP is still an error");
+
     // Closing the channel on the tunnel answers the Close and unbinds it.
     let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(16))).expect("Close should encode");
     let batch = client
@@ -895,5 +1095,88 @@ fn tunneled_data_for_a_channel_closed_before_soft_sync_is_dropped() {
     let batch = client
         .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &data)
         .expect("late tunneled data is dropped");
+    assert!(batch.messages().is_empty());
+}
+
+#[test]
+fn tunneled_data_for_a_channel_declined_before_soft_sync_is_dropped() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+
+    // The server lists a channel the client declined next to one it accepted.
+    let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+        2,
+        "unknown".to_owned(),
+    )))
+    .expect("Create Request should encode");
+    client
+        .process(&create)
+        .expect("a channel without a listener is declined");
+    let request = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![2, 7]),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client.process(&request).expect("Soft-Sync request should be accepted");
+    assert_eq!(client.tunnel_for_channel(2), None);
+    assert_eq!(client.tunnel_for_channel(7), Some(SoftSyncTunnelType::RELIABLE_UDP));
+
+    // Data the server sent on the tunnel before it saw the decline is dropped.
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        2,
+        vec![1, 2, 3],
+    ))))
+    .expect("data should encode");
+    let batch = client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &data)
+        .expect("late tunneled data is dropped");
+    assert!(batch.messages().is_empty());
+
+    // A server Close settles the decline on both transports.
+    let close = encode_vec(&DrdynvcServerPdu::Close(ClosePdu::new(2))).expect("Close should encode");
+    client.process(&close).expect("Close should be processed");
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &data)
+        .expect_err("data on the tunnel after the Close is an error");
+    client
+        .process(&data)
+        .expect_err("data over TCP after the Close is an error");
+}
+
+#[test]
+fn soft_sync_checks_every_listed_channel_before_it_fills_the_close_history() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+    for channel_id in 1..=33 {
+        let create = encode_vec(&DrdynvcServerPdu::Create(CreateRequestPdu::new(
+            channel_id,
+            "unknown".to_owned(),
+        )))
+        .expect("Create Request should encode");
+        client
+            .process(&create)
+            .expect("a channel without a listener is declined");
+    }
+
+    // Remembering each listed channel on the tunnel fills the history and forgets the oldest declines,
+    // which are listed last.
+    let request = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, (1..=33).rev().collect()),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client.process(&request).expect("Soft-Sync request should be accepted");
+
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        1,
+        vec![1, 2, 3],
+    ))))
+    .expect("data should encode");
+    let batch = client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &data)
+        .expect("late tunneled data for the first declined channel is dropped");
     assert!(batch.messages().is_empty());
 }
