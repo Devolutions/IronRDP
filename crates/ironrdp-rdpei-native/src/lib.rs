@@ -10,7 +10,8 @@ pub use windows::WindowsInput;
 #[cfg(all(windows, feature = "__test"))]
 #[doc(hidden)]
 pub mod __test {
-    use ironrdp_rdpei::pdu::{CsReadyFlags, PenContact, TouchContactFlags};
+    use ironrdp_rdpei::pdu::{CsReadyFlags, PenContact, PenFlags, TouchContactFlags};
+    use windows::Win32::UI::Input::Pointer::POINTER_PEN_INFO;
 
     pub fn frame_timestamps(
         frequency: u64,
@@ -51,6 +52,12 @@ pub mod __test {
 
     pub fn pen_departures_first(contacts: &mut [PenContact]) {
         crate::windows::prioritize_pen_departures(contacts);
+    }
+
+    pub fn pen_flags(flags: PenFlags) -> u32 {
+        let mut native = POINTER_PEN_INFO::default();
+        crate::windows::set_pen_flags(&mut native, flags);
+        native.penFlags
     }
 
     pub fn pointer_flags(flags: TouchContactFlags) -> u32 {

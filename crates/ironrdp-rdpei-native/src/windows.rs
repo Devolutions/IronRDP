@@ -400,20 +400,7 @@ impl WindowsInput {
                     ..Default::default()
                 };
                 if let Some(flags) = contact.fields.pen_flags {
-                    for (rdpei, windows) in [
-                        (PenFlags::BARREL_PRESSED, PEN_FLAG_BARREL),
-                        (PenFlags::ERASER_PRESSED, PEN_FLAG_ERASER),
-                        (PenFlags::INVERTED, PEN_FLAG_INVERTED),
-                    ] {
-                        if flags.contains(rdpei) {
-                            native.penFlags |= windows;
-                        }
-                    }
-                    // Windows selects the eraser through inversion and derives its pressed state from contact.
-                    if native.penFlags & PEN_FLAG_ERASER != 0 {
-                        native.penFlags &= !PEN_FLAG_ERASER;
-                        native.penFlags |= PEN_FLAG_INVERTED;
-                    }
+                    set_pen_flags(&mut native, flags);
                 }
                 if let Some(pressure) = contact.fields.pressure {
                     anyhow::ensure!(pressure <= 1024, "invalid pen pressure");
@@ -732,6 +719,18 @@ pub(super) fn prioritize_pen_departures(contacts: &mut [PenContact]) {
         !(flags.contains(PenContactFlags::CANCELED)
             || flags.contains(PenContactFlags::UP) && !flags.contains(PenContactFlags::INRANGE))
     });
+}
+
+pub(super) fn set_pen_flags(native: &mut POINTER_PEN_INFO, flags: PenFlags) {
+    for (rdpei, windows) in [
+        (PenFlags::BARREL_PRESSED, PEN_FLAG_BARREL),
+        (PenFlags::ERASER_PRESSED, PEN_FLAG_ERASER),
+        (PenFlags::INVERTED, PEN_FLAG_INVERTED),
+    ] {
+        if flags.contains(rdpei) {
+            native.penFlags |= windows;
+        }
+    }
 }
 
 pub(super) fn pointer_flags(flags: TouchContactFlags) -> POINTER_FLAGS {

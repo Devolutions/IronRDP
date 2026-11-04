@@ -1,9 +1,9 @@
 use ironrdp_rdpei::pdu::{
-    CsReadyFlags, CsReadyPdu, PenContact, PenContactFlags, PenEventPdu, RdpInputProtocolVersion, TouchContactFlags,
-    TouchEventPdu,
+    CsReadyFlags, CsReadyPdu, PenContact, PenContactFlags, PenEventPdu, PenFlags, RdpInputProtocolVersion,
+    TouchContactFlags, TouchEventPdu,
 };
 use ironrdp_rdpei_native::__test::{
-    frame_timestamps, pen_departures_first, pointer_flags, touch_contact_rect, touch_orientation,
+    frame_timestamps, pen_departures_first, pen_flags, pointer_flags, touch_contact_rect, touch_orientation,
 };
 use ironrdp_rdpei_native::WindowsInput;
 use rstest::rstest;
@@ -11,6 +11,7 @@ use windows::Win32::UI::Input::Pointer::{
     POINTER_FLAG_CANCELED, POINTER_FLAG_DOWN, POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_UP,
     POINTER_FLAG_UPDATE,
 };
+use windows::Win32::UI::WindowsAndMessaging::{PEN_FLAG_ERASER, PEN_FLAG_INVERTED};
 
 #[rstest]
 #[case::up(0, 270)]
@@ -157,6 +158,17 @@ fn pen_departures_are_processed_before_new_devices() {
     pen_departures_first(&mut contacts);
     assert_eq!(contacts[0].device_id, 0);
     assert_eq!(contacts[1].device_id, 4);
+}
+
+#[test]
+fn eraser_button_does_not_change_the_pen_inversion_flag() {
+    // oracle: MS-RDPEI 2.2.3.7.1.1 and Windows Pen Flags define separate eraser and inversion states.
+    assert_eq!(pen_flags(PenFlags::ERASER_PRESSED), PEN_FLAG_ERASER);
+    assert_eq!(pen_flags(PenFlags::INVERTED), PEN_FLAG_INVERTED);
+    assert_eq!(
+        pen_flags(PenFlags::ERASER_PRESSED | PenFlags::INVERTED),
+        PEN_FLAG_ERASER | PEN_FLAG_INVERTED
+    );
 }
 
 #[test]
