@@ -1,5 +1,5 @@
 use ironrdp_server::DisplayUpdate;
-use ironrdp_server::cursor::{CursorCapture, CursorImage};
+use ironrdp_server_native::cursor::{CursorCapture, CursorImage};
 use rstest::rstest;
 use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HGDIOBJ};
 use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, DestroyCursor, HCURSOR, ICONINFO};

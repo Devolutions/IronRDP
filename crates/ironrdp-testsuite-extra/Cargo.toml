@@ -88,7 +88,7 @@ ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__te
 png = "0.18"
 
 [target.'cfg(windows)'.dev-dependencies]
-ironrdp-server = { path = "../ironrdp-server", features = ["native-cursor", "__test"] }
+ironrdp-server-native = { path = "../ironrdp-server-native", features = ["cursor", "__test"] }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", features = ["__test"] }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__test"] }
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"

@@ -10,7 +10,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CURSOR_SHOWING, CURSORINFO, GetCursorInfo, GetIconInfo, HCURSOR, HICON, ICONINFO,
 };
 
-use crate::{ColorPointer, DisplayUpdate, RGBAPointer};
+use ironrdp_server::{ColorPointer, DisplayUpdate, RGBAPointer};
 
 const MAX_DIMENSION: u16 = 384;
 

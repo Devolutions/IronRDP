@@ -3609,9 +3609,17 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "visibility",
- "windows",
  "x509-cert",
  "zstd-safe",
+]
+
+[[package]]
+name = "ironrdp-server-native"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-server",
+ "visibility",
+ "windows",
 ]
 
 [[package]]
@@ -3761,6 +3769,7 @@ dependencies = [
  "ironrdp-rdpsnd-native",
  "ironrdp-rpc",
  "ironrdp-server",
+ "ironrdp-server-native",
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",

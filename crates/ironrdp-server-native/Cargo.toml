@@ -1,0 +1,40 @@
+[package]
+name = "ironrdp-server-native"
+version = "0.0.0"
+publish = false
+readme = "README.md"
+description = "Native display backends for IronRDP servers"
+rust-version = "1.94"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[features]
+default = []
+cursor = ["dep:ironrdp-server", "dep:windows"]
+
+# Internal (PRIVATE!) features used to aid testing.
+# Don't rely on these whatsoever. They may disappear at any time.
+__test = ["dep:visibility"]
+
+[dependencies]
+visibility = { version = "0.1", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+ironrdp-server = { path = "../ironrdp-server", version = "0.14", default-features = false, optional = true } # public
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] } # public with __test
+
+[lints]
+workspace = true

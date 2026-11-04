@@ -339,6 +339,11 @@ Web-based frontend using `Svelte` and `Material` frameworks.
 
 Native CLIPRDR backend implementations.
 
+#### [`crates/ironrdp-server-native`](./crates/ironrdp-server-native)
+
+Native display backends producing `ironrdp-server` updates.
+The opt-in Windows cursor backend captures shapes and visibility; polling, desktop selection, and transport belong to the embedder.
+
 #### [`crates/ironrdp-rdpeusb-native`](./crates/ironrdp-rdpeusb-native)
 
 nusb backend for the MS-RDPEUSB client, handling device selection, discovery, and USB I/O outside the session loop.

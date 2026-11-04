@@ -26,15 +26,8 @@ Custom logic for your RDP server can be added by implementing these traits:
 
 ## Windows cursor capture
 
-Enable `native-cursor` on Windows and poll `cursor::CursorCapture::capture` from the interactive session's desktop.
-Forward each returned `DisplayUpdate` through your display backend; `None` means the shape and visibility are unchanged.
-Create a fresh capture on each client activation to resend the initial state.
-The backend preserves hotspots, alpha, and monochrome AND/XOR masks, including transparency and inversion.
-It uses cache index zero and leaves pointer-size negotiation to the server encoder.
-Capture errors invalidate the cached state so the next successful capture resends visibility or shape.
-The caller chooses whether to hide the pointer while capture is unavailable.
-Cursor position, injected-input echo suppression, desktop selection, polling, and transport remain the embedder's responsibility.
-The feature is off by default and adds no Windows dependency on other targets.
+Use the opt-in `cursor` feature in [`ironrdp-server-native`](../ironrdp-server-native) to capture Windows cursor shapes and visibility.
+The backend produces `DisplayUpdate` values for your display implementation; native desktop access remains outside the server engine.
 
 ## Client session configuration
 

@@ -8,8 +8,6 @@ pub mod autodetect;
 mod builder;
 mod capabilities;
 mod clipboard;
-#[cfg(all(windows, feature = "native-cursor"))]
-pub mod cursor;
 mod display;
 mod echo;
 mod encoder;
