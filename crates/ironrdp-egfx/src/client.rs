@@ -3592,17 +3592,13 @@ mod tests {
         assert_eq!(client.dropped_updates, 1);
     }
 
-    /// A client with surface 1 created at a size the compositor refuses.
-    /// 16384 x 16384 is 1 GiB of pixels, past its budget.
-    fn progressive_client_with_refused_surface() -> GraphicsPipelineClient {
-        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
-        client
-            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
-                width: 64,
-                height: 64,
-                monitors: vec![],
-            }))
-            .unwrap();
+    /// A surface the compositor refused paints nothing, so its Progressive updates aren't decoded into bitmap updates.
+    // oracle: mutant decoding Progressive for a surface the compositor refused
+    #[test]
+    fn refused_surface_does_not_decode_progressive() {
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let mut client = progressive_client();
+        // 16384 x 16384 is 1 GiB of pixel data, past the compositor's budget.
         client
             .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
                 surface_id: 1,
@@ -3611,15 +3607,6 @@ mod tests {
                 pixel_format: PixelFormat::XRgb,
             }))
             .unwrap();
-        client
-    }
-
-    /// A surface the compositor refused paints nothing, so its Progressive updates aren't decoded into bitmap updates.
-    // oracle: mutant decoding Progressive for a surface the compositor refused
-    #[test]
-    fn refused_surface_does_not_decode_progressive() {
-        let updates = Arc::new(Mutex::new(Vec::new()));
-        let mut client = progressive_client_with_refused_surface();
         client.handler = Box::new(CapturingHandler {
             updates: Arc::clone(&updates),
             unhandled: Arc::new(Mutex::new(0)),
