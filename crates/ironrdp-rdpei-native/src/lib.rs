@@ -10,21 +10,47 @@ pub use windows::WindowsInput;
 #[cfg(all(windows, feature = "__test"))]
 #[doc(hidden)]
 pub mod __test {
-    use ironrdp_rdpei::pdu::{CsReadyFlags, TouchContactFlags};
+    use ironrdp_rdpei::pdu::{CsReadyFlags, PenContact, TouchContactFlags};
 
     pub fn frame_timestamps(
         frequency: u64,
         now: u64,
         previous: u64,
+        continuing: bool,
         flags: CsReadyFlags,
         encode_time: u32,
         offsets: &[u64],
     ) -> anyhow::Result<Vec<u64>> {
-        crate::windows::frame_timestamps(frequency, now, previous, flags, encode_time, offsets.iter().copied())
+        crate::windows::frame_timestamps(
+            frequency,
+            now,
+            previous,
+            continuing,
+            flags,
+            encode_time,
+            offsets.iter().copied(),
+        )
     }
 
-    pub fn touch_orientation(orientation: u32) -> anyhow::Result<u32> {
+    pub fn touch_orientation(orientation: Option<u32>) -> anyhow::Result<u32> {
         crate::windows::touch_orientation(orientation)
+    }
+
+    pub fn touch_contact_rect(
+        x: i32,
+        y: i32,
+        left: i16,
+        top: i16,
+        right: i16,
+        bottom: i16,
+        orientation: Option<u32>,
+    ) -> anyhow::Result<(i32, i32, i32, i32)> {
+        let rect = crate::windows::touch_contact_rect(x, y, left, top, right, bottom, orientation)?;
+        Ok((rect.left, rect.top, rect.right, rect.bottom))
+    }
+
+    pub fn pen_departures_first(contacts: &mut [PenContact]) {
+        crate::windows::prioritize_pen_departures(contacts);
     }
 
     pub fn pointer_flags(flags: TouchContactFlags) -> u32 {

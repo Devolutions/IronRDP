@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use anyhow::{Context as _, anyhow};
 use ironrdp_rdpei::pdu::{
-    CsReadyFlags, CsReadyPdu, PenContactFlags, PenEventPdu, PenFlags, RdpInputProtocolVersion, TouchContactFlags,
-    TouchEventPdu,
+    CsReadyFlags, CsReadyPdu, PenContact, PenContactFlags, PenEventPdu, PenFlags, RdpInputProtocolVersion,
+    TouchContactFlags, TouchEventPdu,
 };
 use windows::Win32::Foundation::{ERROR_NOT_READY, POINT, RECT};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
@@ -209,6 +209,7 @@ impl WindowsInput {
             self.frequency,
             performance_counter()?,
             self.last_touch_timestamp,
+            !self.contacts.is_empty(),
             ready.flags,
             event.encode_time,
             event.frames.iter().map(|frame| frame.frame_offset),
@@ -251,29 +252,18 @@ impl WindowsInput {
                 ) {
                     anyhow::ensure!(left <= right && top <= bottom, "invalid touch contact rectangle");
                     native.touchMask |= TOUCH_MASK_CONTACTAREA;
-                    native.rcContact = RECT {
-                        left: contact
-                            .x
-                            .checked_add(i32::from(left))
-                            .context("touch rectangle left overflow")?,
-                        top: contact
-                            .y
-                            .checked_add(i32::from(top))
-                            .context("touch rectangle top overflow")?,
-                        right: contact
-                            .x
-                            .checked_add(i32::from(right))
-                            .context("touch rectangle right overflow")?,
-                        bottom: contact
-                            .y
-                            .checked_add(i32::from(bottom))
-                            .context("touch rectangle bottom overflow")?,
-                    };
+                    native.rcContact = touch_contact_rect(
+                        contact.x,
+                        contact.y,
+                        left,
+                        top,
+                        right,
+                        bottom,
+                        contact.fields.orientation,
+                    )?;
                 }
-                if let Some(orientation) = contact.fields.orientation {
-                    native.touchMask |= TOUCH_MASK_ORIENTATION;
-                    native.orientation = touch_orientation(orientation)?;
-                }
+                native.touchMask |= TOUCH_MASK_ORIENTATION;
+                native.orientation = touch_orientation(contact.fields.orientation)?;
                 if let Some(pressure) = contact.fields.pressure {
                     anyhow::ensure!(pressure <= 1024, "invalid touch pressure");
                     native.touchMask |= TOUCH_MASK_PRESSURE;
@@ -345,6 +335,10 @@ impl WindowsInput {
         let multipen = ready.protocol_version == RdpInputProtocolVersion::V300
             && ready.flags.contains(CsReadyFlags::ENABLE_MULTIPEN_INJECTION);
         let minimum_interval = self.frequency.div_ceil(10_000);
+        let continuing = self
+            .pens
+            .values()
+            .any(|pen| pen.previous.pointerInfo.pointerFlags.contains(POINTER_FLAG_INRANGE));
         let timestamps = {
             let previous = self
                 .pens
@@ -363,17 +357,19 @@ impl WindowsInput {
                 self.frequency,
                 performance_counter()?,
                 previous,
+                continuing,
                 ready.flags,
                 event.encode_time,
                 event.frames.iter().map(|frame| frame.frame_offset),
             )?
         };
-        for (frame, timestamp) in event.frames.into_iter().zip(timestamps) {
+        for (mut frame, timestamp) in event.frames.into_iter().zip(timestamps) {
             anyhow::ensure!(
                 !frame.contacts.is_empty() && frame.contacts.len() <= if multipen { 4 } else { 1 },
                 "invalid pen frame size"
             );
             let mut devices = HashSet::with_capacity(frame.contacts.len());
+            prioritize_pen_departures(&mut frame.contacts);
             for contact in frame.contacts {
                 anyhow::ensure!(
                     multipen || contact.device_id == 0,
@@ -584,6 +580,7 @@ pub(super) fn frame_timestamps(
     frequency: u64,
     now: u64,
     previous: u64,
+    continuing: bool,
     flags: CsReadyFlags,
     encode_time: u32,
     offsets: impl Iterator<Item = u64>,
@@ -592,14 +589,17 @@ pub(super) fn frame_timestamps(
         return Ok(offsets.map(|_| 0).collect());
     }
     let mut timestamps = Vec::new();
+    let mut first_offset = 0;
     let mut span = 0u64;
     for offset in offsets {
-        anyhow::ensure!(
-            !timestamps.is_empty() || offset == 0,
-            "first pointer frame offset is not zero"
-        );
-        span = span.checked_add(offset).context("pointer frame offset overflow")?;
-        timestamps.push(span);
+        if timestamps.is_empty() {
+            first_offset = offset;
+            anyhow::ensure!(continuing || offset == 0, "first pointer frame offset is not zero");
+            timestamps.push(0);
+        } else {
+            span = span.checked_add(offset).context("pointer frame offset overflow")?;
+            timestamps.push(span);
+        }
     }
     anyhow::ensure!(!timestamps.is_empty(), "empty pointer event");
     // Rounded encoding ages and synthetic taps can be shorter than their frame span.
@@ -611,6 +611,11 @@ pub(super) fn frame_timestamps(
         base = base.max(
             previous
                 .checked_add(frequency.div_ceil(10_000))
+                .context("pointer timestamp overflow")?,
+        );
+        base = base.max(
+            previous
+                .checked_add(counter_ticks(frequency, first_offset)?)
                 .context("pointer timestamp overflow")?,
         );
     }
@@ -628,10 +633,105 @@ pub(super) fn frame_timestamps(
     Ok(timestamps)
 }
 
-pub(super) fn touch_orientation(orientation: u32) -> anyhow::Result<u32> {
+pub(super) fn touch_orientation(orientation: Option<u32>) -> anyhow::Result<u32> {
+    let orientation = orientation.unwrap_or(0);
     anyhow::ensure!(orientation < 360, "invalid touch orientation");
     // RDPEI measures counter-clockwise from up; Windows measures clockwise from right.
     Ok((630 - orientation) % 360)
+}
+
+pub(super) fn touch_contact_rect(
+    x: i32,
+    y: i32,
+    left: i16,
+    top: i16,
+    right: i16,
+    bottom: i16,
+    orientation: Option<u32>,
+) -> anyhow::Result<RECT> {
+    anyhow::ensure!(left <= right && top <= bottom, "invalid touch contact rectangle");
+    let orientation = orientation.unwrap_or(0);
+    anyhow::ensure!(orientation < 360, "invalid touch orientation");
+    let angle = f64::from(orientation).to_radians();
+    let sin = angle.sin();
+    let cos = angle.cos();
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for (x, y) in [(left, top), (right, top), (left, bottom), (right, bottom)] {
+        let x = f64::from(x);
+        let y = f64::from(y);
+        let rotated_x = x * cos + y * sin;
+        let rotated_y = -x * sin + y * cos;
+        min_x = min_x.min(rotated_x);
+        min_y = min_y.min(rotated_y);
+        max_x = max_x.max(rotated_x);
+        max_y = max_y.max(rotated_y);
+    }
+    // Trigonometric rounding around exact integer bounds must not add an extra pixel.
+    const ROUNDING_EPSILON: f64 = 1e-9;
+    let left = (min_x + ROUNDING_EPSILON).floor();
+    let top = (min_y + ROUNDING_EPSILON).floor();
+    let right = (max_x - ROUNDING_EPSILON).ceil();
+    let bottom = (max_y - ROUNDING_EPSILON).ceil();
+    anyhow::ensure!(
+        left >= f64::from(i32::MIN)
+            && top >= f64::from(i32::MIN)
+            && right <= f64::from(i32::MAX)
+            && bottom <= f64::from(i32::MAX),
+        "rotated touch rectangle exceeds the native coordinate range"
+    );
+    #[expect(
+        clippy::as_conversions,
+        reason = "rounded coordinates were checked against the i32 range"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "rounded coordinates were checked against the i32 range"
+    )]
+    let left = left as i32;
+    #[expect(
+        clippy::as_conversions,
+        reason = "rounded coordinates were checked against the i32 range"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "rounded coordinates were checked against the i32 range"
+    )]
+    let top = top as i32;
+    #[expect(
+        clippy::as_conversions,
+        reason = "rounded coordinates were checked against the i32 range"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "rounded coordinates were checked against the i32 range"
+    )]
+    let right = right as i32;
+    #[expect(
+        clippy::as_conversions,
+        reason = "rounded coordinates were checked against the i32 range"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "rounded coordinates were checked against the i32 range"
+    )]
+    let bottom = bottom as i32;
+    Ok(RECT {
+        left: x.checked_add(left).context("touch rectangle left overflow")?,
+        top: y.checked_add(top).context("touch rectangle top overflow")?,
+        right: x.checked_add(right).context("touch rectangle right overflow")?,
+        bottom: y.checked_add(bottom).context("touch rectangle bottom overflow")?,
+    })
+}
+
+pub(super) fn prioritize_pen_departures(contacts: &mut [PenContact]) {
+    contacts.sort_by_key(|contact| {
+        let flags = contact.contact_flags;
+        !(flags.contains(PenContactFlags::CANCELED)
+            || flags.contains(PenContactFlags::UP) && !flags.contains(PenContactFlags::INRANGE))
+    });
 }
 
 pub(super) fn pointer_flags(flags: TouchContactFlags) -> POINTER_FLAGS {
