@@ -102,7 +102,10 @@ const MAX_DECOMPRESSED_BUFFER_CAPACITY: usize = 16384; // 16 KiB
 
 /// Upper bound on the decoders the client holds from [`GraphicsPipelineClient::with_h264_decoder_factory`].
 /// Each surface sending H.264 costs a decoder, and a server can create surfaces freely.
-/// This is twice the 16 monitors RDP allows (MS-RDPBCGR 2.2.1.3.6), and an update past it is dropped.
+/// This is twice the 16 monitors RDP allows, and an update past it is dropped.
+/// [MS-RDPBCGR 2.2.1.3.6] Client Monitor Data (TS_UD_CS_MONITOR) sets that limit.
+///
+/// [MS-RDPBCGR 2.2.1.3.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
 const MAX_SURFACE_H264_DECODERS: usize = 32;
 
 // ============================================================================
@@ -456,9 +459,12 @@ pub struct GraphicsPipelineClient {
     h264_decoder_factory: Option<DecoderFactory>,
     /// The surface `h264_decoder` serves when there is a factory.
     /// `None` until one sends H.264.
+    /// INVARIANT: `h264_decoder_surface` is never a key of `surface_h264_decoders`.
+    /// INVARIANT: `h264_decoder` is reset whenever this is cleared, so the next surface starts a clean stream.
     h264_decoder_surface: Option<u16>,
     /// The decoders from `h264_decoder_factory`, one for each other surface sending H.264.
-    surface_h264_decoders: BTreeMap<u16, Box<dyn H264Decoder>>,
+    /// `None` for a surface that couldn't get one, so a start that hangs doesn't block each of its updates.
+    surface_h264_decoders: BTreeMap<u16, Option<Box<dyn H264Decoder>>>,
     /// Combined AVC444 picture of each surface, kept between updates so a luma-only or
     /// chroma-only update combines with what earlier ones left.
     avc444_frames: BTreeMap<u16, Yuv444Frame>,
@@ -554,13 +560,14 @@ impl GraphicsPipelineClient {
     /// pictures.
     /// With a factory, the decoder passed to [`Self::new`] serves the first surface to send H.264, so a session with
     /// one such surface creates nothing more.
-    /// Each other surface gets a decoder when its first update arrives and keeps it until the surface is deleted or
-    /// created again.
+    /// Each other surface gets a decoder when its first update arrives and keeps it until its stream ends.
+    /// A stream ends when the surface is deleted or created again, or on `ResetGraphics` or a protocol reset.
     /// The factory goes unused when [`Self::new`] got no decoder.
     ///
     /// `factory` runs on the thread processing the channel.
-    /// An update is dropped when `factory` returns `None`, when its decoder can't start
-    /// ([`H264Decoder::wait_until_ready`]), or when the client already holds 32 decoders from it.
+    /// An update is dropped when `factory` returned `None` for its surface, when its decoder can't start
+    /// ([`H264Decoder::wait_until_ready`]), or when 32 other existing surfaces have already asked `factory` for one.
+    /// A surface asks once per stream.
     #[must_use]
     pub fn with_h264_decoder_factory(mut self, factory: DecoderFactory) -> Self {
         self.h264_decoder_factory = Some(factory);
@@ -641,11 +648,7 @@ impl GraphicsPipelineClient {
         self.clearcodec_decoder = None;
         self.planar_decoder = BitmapStreamDecoder::default();
         self.progressive_decoder = ProgressiveDecoder::new();
-        if let Some(decoder) = self.h264_decoder.as_mut() {
-            decoder.reset();
-        }
-        self.h264_decoder_surface = None;
-        self.surface_h264_decoders.clear();
+        self.end_h264_streams();
         self.current_frame_id = None;
         // Windows restarts its sent-frame count and rejects ACK counts greater than that value.
         self.total_frames_decoded = 0;
@@ -969,12 +972,7 @@ impl GraphicsPipelineClient {
         self.current_frame_id = None;
 
         // Reset decoder state for new stream
-        if let Some(ref mut decoder) = self.h264_decoder {
-            decoder.reset();
-        }
-        for decoder in self.surface_h264_decoders.values_mut() {
-            decoder.reset();
-        }
+        self.end_h264_streams();
         // The Progressive decoder is deliberately NOT reset here either. Its context lifetime
         // is driven by DeleteEncodingContext and DeleteSurface; MS-RDPEGFX 3.3.5.14 only
         // resizes the Graphics Output Buffer. Dropping it here would discard the tile state
@@ -1046,6 +1044,15 @@ impl GraphicsPipelineClient {
         }
     }
 
+    /// Ends every surface's H.264 stream, for when the client has dropped all its surfaces.
+    fn end_h264_streams(&mut self) {
+        if let Some(decoder) = self.h264_decoder.as_mut() {
+            decoder.reset();
+        }
+        self.h264_decoder_surface = None;
+        self.surface_h264_decoders.clear();
+    }
+
     /// The decoder for `surface_id`'s H.264 stream, or `None` when the client has no decoder.
     fn surface_h264_decoder(&mut self, surface_id: u16) -> PduResult<Option<&mut Box<dyn H264Decoder>>> {
         let Some(shared) = self.h264_decoder.as_mut() else {
@@ -1056,8 +1063,8 @@ impl GraphicsPipelineClient {
         };
 
         let decoder_count = self.surface_h264_decoders.len();
-        match self.surface_h264_decoders.entry(surface_id) {
-            Entry::Occupied(entry) => Ok(Some(entry.into_mut())),
+        let decoder = match self.surface_h264_decoders.entry(surface_id) {
+            Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 if *self.h264_decoder_surface.get_or_insert(surface_id) == surface_id {
                     return Ok(Some(shared));
@@ -1065,12 +1072,12 @@ impl GraphicsPipelineClient {
                 if MAX_SURFACE_H264_DECODERS <= decoder_count {
                     return Err(pdu_other_err!("too many surfaces sending H.264"));
                 }
-                let mut decoder = factory().ok_or_else(|| pdu_other_err!("no H.264 decoder for this surface"))?;
-                if !decoder.wait_until_ready() {
-                    return Err(pdu_other_err!("the H.264 decoder for this surface is unavailable"));
-                }
-                Ok(Some(entry.insert(decoder)))
+                entry.insert(factory().and_then(|mut decoder| decoder.wait_until_ready().then_some(decoder)))
             }
+        };
+        match decoder {
+            Some(decoder) => Ok(Some(decoder)),
+            None => Err(pdu_other_err!("no H.264 decoder for this surface")),
         }
     }
 

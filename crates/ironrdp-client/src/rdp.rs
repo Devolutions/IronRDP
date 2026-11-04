@@ -2476,9 +2476,6 @@ fn build_connector(
         ))
         .with_dynamic_channel({
             let mut egfx = GraphicsPipelineClient::new(Box::new(EgfxHandler), h264_decoder);
-            // UNTESTED: that the client's graphics pipeline gets this factory.
-            // Without it a second surface's H.264 goes to the shared decoder and fails, so check a session with two
-            // H.264 surfaces when changing this.
             if let Some(decoders) = h264_decoders.cloned() {
                 egfx = egfx.with_h264_decoder_factory(Box::new(move || decoders.create()));
             }
