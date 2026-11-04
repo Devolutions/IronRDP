@@ -857,6 +857,14 @@ fn delete_surface(surface_id: u16) -> GfxPdu {
     GfxPdu::DeleteSurface(DeleteSurfacePdu { surface_id })
 }
 
+fn reset_graphics() -> GfxPdu {
+    GfxPdu::ResetGraphics(ResetGraphicsPdu {
+        width: 16,
+        height: 16,
+        monitors: vec![],
+    })
+}
+
 fn avc420_update(surface_id: u16) -> GfxPdu {
     let region = Avc420Region::full_frame(16, 16, 22);
     GfxPdu::WireToSurface1(WireToSurface1Pdu {
@@ -1092,11 +1100,7 @@ fn reset_graphics_ends_every_h264_stream() {
             create_surface(2, 16, 16),
             avc420_update(1),
             avc420_update(2),
-            GfxPdu::ResetGraphics(ResetGraphicsPdu {
-                width: 16,
-                height: 16,
-                monitors: vec![],
-            }),
+            reset_graphics(),
         ],
     );
 
@@ -1117,11 +1121,7 @@ fn reset_graphics_with_new_surface_ids_keeps_the_first_decoder() {
             &[
                 create_surface(surface_id, 16, 16),
                 avc420_update(surface_id),
-                GfxPdu::ResetGraphics(ResetGraphicsPdu {
-                    width: 16,
-                    height: 16,
-                    monitors: vec![],
-                }),
+                reset_graphics(),
             ],
         );
     }
@@ -1194,6 +1194,7 @@ fn an_update_is_dropped_when_the_factory_has_no_decoder() {
     );
 
     assert_eq!(probe.log().decoded, [0, 0]);
+    assert_eq!(client.dropped_updates(), 1);
 }
 
 struct NeverReady;
@@ -1234,6 +1235,7 @@ fn an_update_is_dropped_when_its_decoder_cannot_start() {
     );
 
     assert_eq!(probe.log().decoded, [0]);
+    assert_eq!(client.dropped_updates(), 1);
 }
 
 /// A start that hangs would otherwise block the channel on every update for the surface.
@@ -1311,12 +1313,7 @@ proptest! {
                     surfaces.remove(&surface_id);
                 }
                 SurfaceOp::Reset => {
-                    let reset = GfxPdu::ResetGraphics(ResetGraphicsPdu {
-                        width: 16,
-                        height: 16,
-                        monitors: vec![],
-                    });
-                    send_all(&mut client, &[reset]);
+                    send_all(&mut client, &[reset_graphics()]);
                     surfaces.clear();
                 }
                 SurfaceOp::Update(surface_id) => {

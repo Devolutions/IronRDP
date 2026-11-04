@@ -102,6 +102,7 @@ const MAX_DECOMPRESSED_BUFFER_CAPACITY: usize = 16384; // 16 KiB
 
 /// Upper bound on the decoders the client holds from [`GraphicsPipelineClient::with_h264_decoder_factory`].
 /// Each surface sending H.264 costs a decoder, and a server can create surfaces freely.
+/// A surface whose decoder failed counts too, so a backend that hangs can't stall the channel once per new surface.
 /// This is twice the 16 monitors RDP allows, and an update past it is dropped.
 /// [MS-RDPBCGR 2.2.1.3.6] Client Monitor Data (TS_UD_CS_MONITOR) sets that limit.
 ///
@@ -1075,10 +1076,10 @@ impl GraphicsPipelineClient {
                 entry.insert(factory().and_then(|mut decoder| decoder.wait_until_ready().then_some(decoder)))
             }
         };
-        match decoder {
-            Some(decoder) => Ok(Some(decoder)),
-            None => Err(pdu_other_err!("no H.264 decoder for this surface")),
-        }
+        decoder
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("no H.264 decoder for this surface"))
+            .map(Some)
     }
 
     fn release_avc444_frame(&mut self, surface_id: u16) {
