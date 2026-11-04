@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use std::sync::Arc;
 
+use ironrdp::connector::credssp::{KdcResolution, KerberosConfig};
 #[cfg(windows)]
 use ironrdp_cfg::GatewayCredentialsSource;
 use ironrdp_cfg::PropertySetExt as _;
@@ -445,10 +446,10 @@ fn kdc_proxy_name_is_normalized_to_https_url() {
     );
 
     let kerberos = config.kerberos_config().expect("kerberos config should be present");
-    let kdc_proxy_url = kerberos
-        .kdc_proxy_url
-        .as_ref()
-        .expect("kdc proxy url should be present");
+    let kdc_proxy_url = match &kerberos.kdc_resolution {
+        KdcResolution::KdcUrl(Some(url)) => url,
+        _ => panic!("kdc proxy url should be present"),
+    };
     assert_eq!(kdc_proxy_url.as_str(), "https://kdc.example.com/KdcProxy");
 }
 
@@ -1071,6 +1072,18 @@ fn null_decoder() -> Option<H264DecoderFactory> {
     Some(H264DecoderFactory::new(|| None))
 }
 
+#[test]
+fn rdp_version_defaults_to_5_plus_and_can_be_raised() {
+    let config = complete_builder().build().expect("default config");
+    assert_eq!(config.connector().rdp_version, ironrdp_pdu::gcc::RdpVersion::V5_PLUS);
+
+    let config = complete_builder()
+        .with_rdp_version(ironrdp_pdu::gcc::RdpVersion::V10_12)
+        .build()
+        .expect("config with an RDP version");
+    assert_eq!(config.connector().rdp_version, ironrdp_pdu::gcc::RdpVersion::V10_12);
+}
+
 // oracle: mutant the graphics pipeline default ignoring the decoder or the opt-outs
 #[test]
 fn graphics_pipeline_follows_the_h264_decoder() {
@@ -1157,6 +1170,108 @@ impl ironrdp_egfx::decode::H264Decoder for YuvDecoder {
     fn supports_yuv420(&self) -> bool {
         true
     }
+}
+
+fn avc420_update(surface_id: u16) -> ironrdp_egfx::pdu::GfxPdu {
+    use ironrdp_egfx::pdu::{
+        Avc420Region, Codec1Type, GfxPdu, PixelFormat, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+    };
+
+    let region = Avc420Region::full_frame(16, 16, 22);
+    GfxPdu::WireToSurface1(WireToSurface1Pdu {
+        surface_id,
+        codec_id: Codec1Type::Avc420,
+        pixel_format: PixelFormat::XRgb,
+        destination_rectangle: ironrdp_pdu::geometry::ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 16,
+            bottom: 16,
+        },
+        bitmap_data: encode_avc420_bitmap_stream(&[region], &[0x00, 0x00, 0x00, 0x01, 0x67]),
+    })
+}
+
+/// This builds a real session's connector, so it fails if the client stops giving its factory to the graphics pipeline.
+/// The decoder is a stand-in, so this checks which decoders are created rather than what they decode.
+// oracle: regression #2033
+#[test]
+fn the_client_creates_a_decoder_for_a_second_h264_surface() {
+    use ironrdp_client::__test_build_connector;
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::pdu::{CapabilitiesRequestPdu, CapsVersion, CreateRequestPdu, DrdynvcServerPdu};
+    use ironrdp_dvc::{DrdynvcClient, DvcProcessor as _};
+    use ironrdp_egfx::client::GraphicsPipelineClient;
+    use ironrdp_egfx::pdu::{
+        CapabilitiesConfirmPdu, CapabilitiesV107Flags, CapabilitySet, CreateSurfacePdu, GfxPdu, PixelFormat,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+    use ironrdp_svc::SvcProcessor as _;
+
+    const CHANNEL_ID: u32 = 1;
+
+    let created = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let factory = {
+        let created = Arc::clone(&created);
+        H264DecoderFactory::new(move || {
+            created.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            Some(Box::new(YuvDecoder))
+        })
+    };
+    let config = complete_builder()
+        .with_h264_decoder(Some(factory))
+        .build()
+        .expect("config with a decoder");
+    let mut connector = __test_build_connector(&config, None).expect("build connector");
+    let drdynvc = connector
+        .get_static_channel_processor_mut::<DrdynvcClient>()
+        .expect("DRDYNVC processor");
+
+    let open_channel = [
+        DrdynvcServerPdu::Capabilities(CapabilitiesRequestPdu::new(CapsVersion::V1, None)),
+        DrdynvcServerPdu::Create(CreateRequestPdu::new(CHANNEL_ID, ironrdp_egfx::CHANNEL_NAME.to_owned())),
+    ];
+    for pdu in &open_channel {
+        drdynvc.process(&encode_vec(pdu).expect("encode")).expect("process");
+    }
+
+    let create_surface = |surface_id| {
+        GfxPdu::CreateSurface(CreateSurfacePdu {
+            surface_id,
+            width: 16,
+            height: 16,
+            pixel_format: PixelFormat::XRgb,
+        })
+    };
+    let setup = [
+        GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::empty(),
+        })),
+        create_surface(1),
+        create_surface(2),
+    ];
+    let mut graphics = drdynvc
+        .get_dvc_mut::<GraphicsPipelineClient>()
+        .expect("the graphics channel is open");
+    let mut send = |pdu: &GfxPdu| {
+        graphics
+            .processor_mut()
+            .process(CHANNEL_ID, &wrap_uncompressed(&encode_vec(pdu).expect("encode")))
+            .expect("process");
+    };
+    for pdu in &setup {
+        send(pdu);
+    }
+
+    send(&avc420_update(1));
+
+    // Other channels ask the same factory while the connector is built, so count only what the second surface adds.
+    let before_second_surface = created.load(core::sync::atomic::Ordering::Relaxed);
+    send(&avc420_update(2));
+    assert_eq!(
+        created.load(core::sync::atomic::Ordering::Relaxed),
+        before_second_surface + 1
+    );
 }
 
 // oracle: mutant the background start blocking its caller or losing the created decoder
@@ -1700,4 +1815,24 @@ fn property_set_rejects_invalid_usb_devices() {
     properties.set_usb_devices_to_redirect(r"USB\VID_XYZ&PID_0001");
 
     assert!(ConfigBuilder::from_property_set(&properties).is_err());
+}
+
+#[test]
+fn explicit_kerberos_config_clears_kdc_proxy_properties() {
+    let mut properties = ironrdp_propertyset::PropertySet::new();
+    properties.set_kdc_proxy_name("kdc.example.com");
+    properties.set_kdc_proxy_url("https://kdc.example.com/KdcProxy");
+
+    let config = complete_builder()
+        .with_property_set(&properties)
+        .expect("valid KDC proxy properties")
+        .with_kerberos_config(KerberosConfig {
+            kdc_resolution: KdcResolution::IAKerb,
+            hostname: "client".to_owned(),
+        })
+        .build()
+        .expect("valid configuration");
+
+    assert!(config.properties().kdc_proxy_name().is_none());
+    assert!(config.properties().kdc_proxy_url().is_none());
 }

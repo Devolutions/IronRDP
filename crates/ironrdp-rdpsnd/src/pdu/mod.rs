@@ -648,6 +648,17 @@ impl TrainingPdu {
     const FIXED_PART_SIZE: usize =
         2 /* wTimeStamp */
         + 2 /* wPackSize */;
+
+    /// The PDU's wPackSize: the size of the whole PDU, RDPSND header included,
+    /// when it carries data, and 0 when it doesn't ([MS-RDPEA] 2.2.3.1). The
+    /// client's Training Confirm echoes it ([MS-RDPEA] 2.2.3.2).
+    pub fn pack_size(&self) -> usize {
+        if self.data.is_empty() {
+            0
+        } else {
+            self.size() + ServerAudioOutputPdu::FIXED_PART_SIZE
+        }
+    }
 }
 
 impl Encode for TrainingPdu {
@@ -655,12 +666,7 @@ impl Encode for TrainingPdu {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.timestamp);
-        let len = if self.data.is_empty() {
-            0
-        } else {
-            self.size() + ServerAudioOutputPdu::FIXED_PART_SIZE
-        };
-        dst.write_u16(cast_length!("TrainingPdu::wPackSize", len, in: dst)?);
+        dst.write_u16(cast_length!("TrainingPdu::wPackSize", self.pack_size(), in: dst)?);
         dst.write_slice(&self.data);
 
         Ok(())

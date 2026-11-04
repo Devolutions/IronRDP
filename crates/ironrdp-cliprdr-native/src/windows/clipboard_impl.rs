@@ -20,8 +20,8 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Ole::{OleGetClipboard, OleSetClipboard, OleUninitialize};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    KillTimer, SetTimer, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_CLIPBOARDUPDATE, WM_NCDESTROY,
-    WM_RENDERALLFORMATS, WM_RENDERFORMAT, WM_TIMER,
+    GetForegroundWindow, GetWindowThreadProcessId, KillTimer, SetTimer, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP,
+    WM_CLIPBOARDUPDATE, WM_NCDESTROY, WM_RENDERALLFORMATS, WM_RENDERFORMAT, WM_TIMER,
 };
 use windows::core::{HRESULT, Interface as _};
 
@@ -29,7 +29,7 @@ use crate::windows::clipboard_data_ref::ClipboardDataRef;
 use crate::windows::data_object::{FileFormatIds, RemoteDataObject};
 use crate::windows::file_list::{
     build_local_file_list, decode_file_group_descriptor, fits_without_huge_file_support, is_file_list_format,
-    is_portable_format, is_sendable_descriptor,
+    is_portable_format, is_sendable_descriptor, omit_synthesized_dibv5,
 };
 use crate::windows::local_files::{LocalFileSource, LocalFiles, VirtualFiles, hglobal_data};
 use crate::windows::os_clipboard::OwnedOsClipboard;
@@ -208,6 +208,7 @@ impl WinClipboardImpl {
 
         let mut formats = formats;
         formats.retain(is_portable_format);
+        omit_synthesized_dibv5(&mut formats);
 
         let mut filtered_format_ids = formats.iter().map(|f| f.id()).collect::<HashSet<_, _>>();
         filter_format_ids(&mut filtered_format_ids);
@@ -518,9 +519,22 @@ impl WinClipboardImpl {
         self.remote_data_object = None;
     }
 
+    fn fail_deferred_format_request(&mut self) {
+        if matches!(self.retry_message, Some(BackendEvent::FormatDataRequest(_))) {
+            self.retry_message = None;
+            self.attempt = 0;
+            // Displacing a deferred format request must not leave the remote request unanswered.
+            self.transport
+                .send(ClipboardMessage::SendFormatData(FormatDataResponse::new_error()));
+        }
+    }
+
     fn handle_event(&mut self, event: BackendEvent) {
         let result = match &event {
-            BackendEvent::FormatDataRequest(request) => self.on_format_data_request(request),
+            BackendEvent::FormatDataRequest(request) => {
+                self.fail_deferred_format_request();
+                self.on_format_data_request(request)
+            }
             BackendEvent::FormatDataResponse(_) | BackendEvent::RemoteFileList { .. } => {
                 // The answer to a paste whose wait gave up.
                 self.transport.drop_late_answer();
@@ -581,17 +595,24 @@ impl WinClipboardImpl {
 
         match retry_err {
             None => {
-                self.attempt = 0;
+                if self.retry_message.is_none() {
+                    self.attempt = 0;
+                }
             }
             Some(err) => {
                 const MAX_PROCESSING_ATTEMPTS: u32 = 10;
                 const PROCESSING_TIMEOUT_MS: u32 = 100;
 
+                if self.retry_message.is_some() {
+                    self.fail_deferred_format_request();
+                    self.retry_message = None;
+                    self.attempt = 0;
+                }
+
                 #[expect(clippy::arithmetic_side_effects)]
                 // self.attempt can’t be greater than MAX_PROCESSING_ATTEMPTS, so the arithmetic is safe here
                 if self.attempt < MAX_PROCESSING_ATTEMPTS {
                     self.attempt += 1;
-
                     self.retry_message = Some(event);
 
                     // SAFETY: `SetTimer` is always safe to call when `hwnd` is a valid window handle
@@ -692,10 +713,18 @@ pub(crate) struct ClipboardWindowState {
 
 impl ClipboardWindowState {
     pub(crate) fn new(inner: WinClipboardImpl) -> Self {
+        // A background clipboard host may never receive an activation message.
+        let mut foreground_process = 0;
+        // SAFETY: GetForegroundWindow has no preconditions.
+        let foreground_window = unsafe { GetForegroundWindow() };
+        // SAFETY: The output is writable; a missing foreground window leaves the process ID at zero.
+        unsafe { GetWindowThreadProcessId(foreground_window, Some(&mut foreground_process)) };
+        let window_is_active = foreground_process == std::process::id();
+
         Self {
             inner: UnsafeCell::new(inner),
             busy: Cell::new(false),
-            window_is_active: Cell::new(true), // We assume that we start with current window active,
+            window_is_active: Cell::new(window_is_active),
             missed_backend_events: Cell::new(0),
             missed_clipboard_update: Cell::new(false),
             missed_retry_timer: Cell::new(false),

@@ -22,7 +22,7 @@ internal partial struct DecodedPointer
     internal static unsafe extern ushort GetHotspotY(DecodedPointer* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "DecodedPointer_get_data", CallingConvention = CallingConvention.Cdecl)]
-    internal static unsafe extern BytesSlice* GetData(DecodedPointer* handle);
+    internal static unsafe extern VecU8* GetData(DecodedPointer* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "DecodedPointer_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(DecodedPointer* handle);

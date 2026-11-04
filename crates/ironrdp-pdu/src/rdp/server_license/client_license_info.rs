@@ -1,3 +1,4 @@
+use core::fmt;
 use std::io;
 
 use byteorder::{LittleEndian, WriteBytesExt as _};
@@ -14,7 +15,7 @@ use crate::rdp::server_license::client_platform_challenge_response::CLIENT_HARDW
 use crate::rdp::server_license::{
     BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA, LicenseEncryptionData, LicenseHeader, MAC_SIZE, PLATFORM_ID,
     PREAMBLE_SIZE, PreambleFlags, PreambleType, PreambleVersion, RANDOM_NUMBER_SIZE, ServerLicenseError,
-    ServerLicenseRequest, compute_mac_data,
+    ServerLicenseRequest, Withheld, compute_mac_data,
 };
 
 const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
@@ -22,14 +23,19 @@ const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 /// [2.2.2.3] Client License Info (CLIENT_LICENSE_INFO)
 ///
 /// [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/9407b2eb-f180-4827-9488-cdbff4a5d4ea
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientLicenseInfo {
     pub license_header: LicenseHeader,
+    /// INVARIANT: `Debug` output withholds this field.
     pub client_random: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub encrypted_premaster_secret: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub license_info: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub encrypted_hwid: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub mac_data: Vec<u8>,
 }
 
@@ -204,5 +210,21 @@ impl ClientLicenseInfo {
             + self.license_info.len()
             + self.encrypted_hwid.len()
             + MAC_SIZE
+    }
+}
+
+impl fmt::Debug for ClientLicenseInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientLicenseInfo")
+            .field("license_header", &self.license_header)
+            .field("client_random", &Withheld(&self.client_random))
+            .field(
+                "encrypted_premaster_secret",
+                &Withheld(&self.encrypted_premaster_secret),
+            )
+            .field("license_info", &Withheld(&self.license_info))
+            .field("encrypted_hwid", &Withheld(&self.encrypted_hwid))
+            .field("mac_data", &Withheld(&self.mac_data))
+            .finish()
     }
 }

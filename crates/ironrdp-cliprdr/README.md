@@ -175,10 +175,13 @@ Backends receive the `clipDataId` and can pass it to `request_file_contents()` v
 
 #### Driving Timeouts
 
-Callers must drive [`Cliprdr::drive_timeouts()`] from a periodic timer in their event loop (e.g., every 5 seconds). This method processes:
-- **Expired locks**: Sends Unlock PDUs for locks past their inactivity timeout or max lifetime
-- **Stale requests**: Cleans up file contents requests older than the transfer timeout
-- **Abandoned uploads**: Prunes locked file list snapshots with no recent activity
+Callers must drive [`Cliprdr::drive_timeouts()`] from a periodic timer in their event loop (e.g., every 5 seconds).
+This method processes:
+- **Expired outgoing locks**: Sends Unlock PDUs for locks past their inactivity timeout or max lifetime
+- **Stale outgoing requests**: Fails file contents requests older than the transfer timeout
+
+Incoming locks retain their file snapshots until the peer sends the matching Unlock Clipboard Data PDU (evicting the oldest lock if `MAX_LOCKED_FILE_LISTS` is exceeded), even across idle periods and clipboard changes.
+Requests naming an unknown or released lock fail rather than reading the current clipboard.
 
 ```rust
 // In your event loop's timer arm (e.g., tokio::time::interval or gloo_timers::IntervalStream)

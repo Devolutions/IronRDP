@@ -3,8 +3,6 @@ name: skill-discipline
 description: Content standard for writing and reviewing agent skills (SKILL.md and references) - every sentence earns its place, one job per skill, rationale with each rule, no ceremony. Use when drafting, revising, or reviewing a skill's text.
 ---
 
-# Skill discipline
-
 A skill is loaded whole into an agent's context whenever its description matches, so each sentence costs every task that triggers it.
 This skill is the test each sentence must pass; structure checks and evals belong to other tools.
 
@@ -30,6 +28,9 @@ Write the mechanism, not the incident: "a second copy may drift", not "a second 
 ## No ceremony
 
 No "Overview" that restates the description, no closing summary, no mandatory headings; an example earns its place when it shows a rewrite (bad form to good) the rule alone leaves ambiguous, and one that only instances the rule is ceremony, while an inline form token or an output template is the rule's own wording.
+
+Omit an opening title that only repeats the skill name or frontmatter description, because that context is already available.
+Keep headings that organize the instructions or add context.
 
 ## Words
 

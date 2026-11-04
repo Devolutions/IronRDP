@@ -143,9 +143,11 @@ pub struct StaticVirtualChannel {
 
 impl StaticVirtualChannel {
     pub fn new<T: SvcProcessor + 'static>(channel_processor: T) -> Self {
+        let mut chunk_processor = ChunkProcessor::new();
+        chunk_processor.max_message_size = channel_processor.max_message_size();
         Self {
             channel_processor: Box::new(channel_processor),
-            chunk_processor: ChunkProcessor::new(),
+            chunk_processor,
         }
     }
 
@@ -169,8 +171,13 @@ impl StaticVirtualChannel {
     /// Processes a payload received on the virtual channel. Returns a vector of PDUs to be sent back
     /// to the server. If no PDUs are to be sent, an empty vector is returned.
     pub fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        if let Some(payload) = self.dechunkify(payload).map_err(|e| decode_err!(e))? {
-            return self.channel_processor.process(&payload);
+        let context = self.channel_processor.message_context();
+        if let Some((context, payload)) = self
+            .chunk_processor
+            .dechunkify(context, payload)
+            .map_err(|e| decode_err!(e))?
+        {
+            return self.channel_processor.process_with_context(context, &payload);
         }
 
         Ok(Vec::new())
@@ -190,10 +197,6 @@ impl StaticVirtualChannel {
 
     pub fn channel_processor_downcast_mut<T: SvcProcessor + 'static>(&mut self) -> Option<&mut T> {
         self.channel_processor.as_any_mut().downcast_mut()
-    }
-
-    fn dechunkify(&mut self, payload: &[u8]) -> DecodeResult<Option<Vec<u8>>> {
-        self.chunk_processor.dechunkify(payload)
     }
 }
 
@@ -305,6 +308,27 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
         }
     }
 
+    /// Limits inbound message bytes before static-channel fragments are retained.
+    ///
+    /// The limit excludes the channel PDU header and applies to both the advertised
+    /// plaintext length and accumulated wire bytes, including compressed messages.
+    /// It is captured when the static channel is constructed.
+    /// The default preserves channels without a configured limit.
+    fn max_message_size(&self) -> Option<usize> {
+        None
+    }
+
+    /// Identifies the current recipient of a message, or returns `None` to discard incoming data.
+    /// Any change permanently discards the in-flight message, even if the original value returns.
+    /// Discarded fragments still undergo [3.1.5.2.2.1] Reassembly of Chunked Virtual Channel Data validation.
+    /// Only an unchanged `Some` value across all fragments delivers a message, so each recipient needs a unique value.
+    /// The default keeps all messages in the same context.
+    ///
+    /// [3.1.5.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a542bf19-1c86-4c80-ab3e-61449653abf6
+    fn message_context(&self) -> Option<u64> {
+        Some(0)
+    }
+
     /// Start a channel, after the connection is established and the channel is joined.
     ///
     /// Returns a list of PDUs to be sent back.
@@ -317,6 +341,15 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     ///
     /// Returns a list of PDUs to be sent back.
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>>;
+
+    /// Processes a complete message in the context captured at its first fragment ([3.1.5.2.2.1]).
+    /// Processors with concurrently replaceable recipients must check the context again when delivering.
+    /// The default forwards to [`Self::process`].
+    ///
+    /// [3.1.5.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a542bf19-1c86-4c80-ab3e-61449653abf6
+    fn process_with_context(&mut self, _context: u64, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        self.process(payload)
+    }
 }
 
 assert_obj_safe!(SvcProcessor);
@@ -332,18 +365,31 @@ assert_obj_safe!(SvcServerProcessor);
 /// ChunkProcessor is used to chunkify/de-chunkify static virtual channel PDUs.
 #[derive(Debug)]
 struct ChunkProcessor {
+    max_message_size: Option<usize>,
     /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
     /// usually chunked when transferred over svc.
     chunked_pdu: Vec<u8>,
     /// Declared total length of the current chunk sequence.
     expected_length: Option<usize>,
+    /// Bytes accepted in the current sequence, including fragments whose payload was discarded.
+    ///
+    /// INVARIANT: This counts every fragment byte accepted since `expected_length` was set,
+    /// whether or not those bytes were retained in `chunked_pdu`.
+    received_length: usize,
+    /// Recipient captured at the first fragment, or `None` after that recipient was invalidated.
+    ///
+    /// INVARIANT: `chunked_pdu` is empty whenever this is `None`.
+    message_context: Option<u64>,
 }
 
 impl ChunkProcessor {
     fn new() -> Self {
         Self {
+            max_message_size: None,
             chunked_pdu: Vec::new(),
             expected_length: None,
+            received_length: 0,
+            message_context: None,
         }
     }
 
@@ -365,12 +411,13 @@ impl ChunkProcessor {
         Ok(results)
     }
 
-    /// Dechunkify a payload received on the virtual channel.
+    /// [3.1.5.2.2.1] Reassembly of Chunked Virtual Channel Data
     ///
-    /// If the payload is not chunked, returns the payload as-is.
-    /// For chunked payloads, returns `Ok(None)` until the last chunk is received, at which point
-    /// it returns `Ok(Some(payload))`.
-    fn dechunkify(&mut self, payload: &[u8]) -> DecodeResult<Option<Vec<u8>>> {
+    /// Reassembles a message for the context captured at its first fragment.
+    /// Returns `None` until complete, or when discarding an invalidated context.
+    ///
+    /// [3.1.5.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a542bf19-1c86-4c80-ab3e-61449653abf6
+    fn dechunkify(&mut self, context: Option<u64>, payload: &[u8]) -> DecodeResult<Option<(u64, Vec<u8>)>> {
         let mut cursor = ReadCursor::new(payload);
         let header: ironrdp_pdu::rdp::vc::ChannelPduHeader = decode_cursor(&mut cursor)?;
         let chunk = cursor.remaining();
@@ -378,6 +425,18 @@ impl ChunkProcessor {
             .map_err(|_| ironrdp_core::invalid_field_err!("length", "channel data length is too large", in: cursor))?;
         let first = header.flags.contains(ChannelControlFlags::FLAG_FIRST);
         let last = header.flags.contains(ChannelControlFlags::FLAG_LAST);
+
+        if self
+            .max_message_size
+            .is_some_and(|limit| limit < expected_length || limit < chunk.len())
+        {
+            self.clear_sequence();
+            return Err(ironrdp_core::invalid_field_err!(
+                "length",
+                "static channel message exceeds configured maximum size",
+                in: cursor
+            ));
+        }
 
         if !first && !last && self.expected_length.is_none() {
             if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && chunk.len() != expected_length {
@@ -388,7 +447,7 @@ impl ChunkProcessor {
                 ));
             }
 
-            return Ok(Some(chunk.to_vec()));
+            return Ok(context.map(|context| (context, chunk.to_vec())));
         }
 
         if first {
@@ -402,6 +461,7 @@ impl ChunkProcessor {
             }
 
             self.expected_length = Some(expected_length);
+            self.message_context = context;
         } else if self.expected_length != Some(expected_length) {
             self.clear_sequence();
             return Err(ironrdp_core::invalid_field_err!(
@@ -411,15 +471,37 @@ impl ChunkProcessor {
             ));
         }
 
-        self.chunked_pdu.extend_from_slice(chunk);
-
-        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && self.chunked_pdu.len() > expected_length {
+        let Some(received_length) = self.received_length.checked_add(chunk.len()) else {
+            self.clear_sequence();
+            return Err(ironrdp_core::invalid_field_err!(
+                "length",
+                "static channel message size overflow",
+                in: cursor
+            ));
+        };
+        if self.max_message_size.is_some_and(|limit| limit < received_length) {
+            self.clear_sequence();
+            return Err(ironrdp_core::invalid_field_err!(
+                "length",
+                "static channel message exceeds configured maximum size",
+                in: cursor
+            ));
+        }
+        if expected_length < received_length {
             self.clear_sequence();
             return Err(ironrdp_core::invalid_field_err!(
                 "length",
                 "channel fragment sequence exceeds its declared length",
                 in: cursor
             ));
+        }
+
+        self.received_length = received_length;
+        if self.message_context != context {
+            self.discard_partial_message();
+        }
+        if self.message_context.is_some() {
+            self.chunked_pdu.extend_from_slice(chunk);
         }
 
         if !last {
@@ -434,7 +516,7 @@ impl ChunkProcessor {
             ));
         };
 
-        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && self.chunked_pdu.len() != sequence_length {
+        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && self.received_length != sequence_length {
             self.clear_sequence();
             return Err(ironrdp_core::invalid_field_err!(
                 "length",
@@ -444,12 +526,24 @@ impl ChunkProcessor {
         }
 
         self.expected_length = None;
-        Ok(Some(core::mem::take(&mut self.chunked_pdu)))
+        self.received_length = 0;
+        Ok(self
+            .message_context
+            .take()
+            .map(|context| (context, core::mem::take(&mut self.chunked_pdu))))
+    }
+
+    fn discard_partial_message(&mut self) {
+        // UNTESTED: Release capacity when discarding a sequence so it cannot pin reassembly memory.
+        // Check retained allocation, not just buffer length, when changing this reset.
+        self.chunked_pdu = Vec::new();
+        self.message_context = None;
     }
 
     fn clear_sequence(&mut self) {
-        self.chunked_pdu.clear();
+        self.discard_partial_message();
         self.expected_length = None;
+        self.received_length = 0;
     }
 
     /// Takes a single PDU and breaks it into chunks prefixed with a [`ChannelPduHeader`].

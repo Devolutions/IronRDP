@@ -469,7 +469,6 @@ impl<'a> ReadCursor<'a> {
     /// Advance the cursor by `len` bytes.
     ///
     /// This does not check that `len` bytes remain: the caller is responsible for it (e.g. with `ensure_size!`).
-    /// Prefer `read_padding!` for skipping bytes in a decoder, which returns an error when the buffer is too short.
     ///
     /// Advancing past the end is caught by a debug assertion, so that debug, test and fuzz builds report the
     /// culprit rather than a later read.

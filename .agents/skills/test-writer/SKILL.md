@@ -3,8 +3,6 @@ name: test-writer
 description: Design tests that catch bugs, choosing between an example test, parametrized cases, a snapshot, a property, and a fuzz target, in Rust (`rstest`, `expect-test`, `proptest`) or C# (xUnit `[Theory]`, CsCheck). Use whenever adding or changing unit, integration, snapshot, or property tests in Rust or C#.
 ---
 
-# Test writer
-
 First name the bug the test catches that existing tests miss; without one it costs runtime and maintenance and guards nothing.
 Take the expected value from a source independent of the code under test, as `test-oracle-reviewer` defines; a value derived from the implementation detects change, not bugs.
 Mark that source as `test-oracle-reviewer` defines, and assert only what it decides, because an assertion past it pins how the code works today; add one only for feedback while implementing, marked `scaffold`, and never in place of a decision `tdd` says to ask for.

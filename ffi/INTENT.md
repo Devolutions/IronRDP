@@ -24,3 +24,25 @@ It does not check overlapping read-only calls.
 The hand-written layer adds locks only at fragile places, such as `Framed`, which lets one `ReadPdu` loop run while other tasks write.
 Outside those places, a consumer makes one call at a time on each native object.
 When a consumer disposes `WinCliprdr`, it does so on the thread that created it.
+
+## Copying into caller buffers
+
+A method that copies native bytes into a caller's buffer (`Fill`, `FillData`, `ReadIntoBuf`) writes them at the start of the buffer.
+It throws `IronRdpException` when the buffer is shorter than the data, and leaves every byte past the data untouched.
+
+<a id="copying-a-rectangle"></a>
+## Copying a rectangle into a caller buffer
+
+`CopyRectInto` rejects the rectangles the Rust client rejects (`pack_desktop_update` in `crates/ironrdp-client/src/rdp.rs`): an inverted one, and one that reaches past the image.
+Like that function, it rejects a row offset that overflows instead of letting it wrap.
+Where Rust code would panic on an out-of-range slice, such as a stride or buffer too short for the rectangle, it throws `IronRdpException` instead.
+It writes nothing when it rejects.
+
+## PDU framing in .NET
+
+`Framed` sizes an active-stage PDU from its first four buffered bytes, because a TPKT header (MS-RDPBCGR 2.2.9.1.1) is four bytes and a fast-path header (MS-RDPBCGR 2.2.9.1.2) at most three.
+The cost of finding a PDU therefore does not grow with the bytes buffered behind it.
+A connection-sequence read (`ReadByHint`) hands the hint everything buffered, because a hint may need more than a fixed header and those PDUs are few and small.
+Every read reports a stream that ends before the PDU is complete, in its header or its body, as `IronRdpLibException` with `EndOfFile`.
+`TryReadBufferedPdu` lets a consumer drain the PDUs already buffered before it flushes rendering, and `ReadPduSync` serves a blocking read loop on a dedicated thread.
+Both are reads under the one-read-at-a-time rule above.

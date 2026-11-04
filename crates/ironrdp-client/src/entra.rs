@@ -255,6 +255,11 @@ impl EntraAuthSession {
         })
     }
 
+    /// The `ms-device-service://` resource URI the access token was issued for.
+    pub(crate) fn resource_uri(&self) -> &str {
+        &self.resource_uri
+    }
+
     /// Whether the PoP access token has reached its expiration timestamp.
     pub fn is_expired(&self) -> bool {
         self.expires_at <= tokio::time::Instant::now()

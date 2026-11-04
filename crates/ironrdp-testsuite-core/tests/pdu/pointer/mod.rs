@@ -7,6 +7,9 @@ use ironrdp_pdu::pointer::{
     PointerPositionAttribute,
 };
 
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.4.4, §2.2.9.1.1.4.5, and §2.2.9.1.1.4.6 and W3C Compositing
+// and Blending Level 1 §4.1 (checked snapshot of RDP XOR/AND pointer masks decoded to premultiplied
+// RGBA with RGB = round(straight_rgb * alpha / 255)).
 fn expect_pointer_png(pointer: &DecodedPointer, expected_file_path: &str) {
     let path = format!("{}/test_data/{}", env!("CARGO_MANIFEST_DIR"), expected_file_path);
 
@@ -191,6 +194,27 @@ fn cached_pointer() {
     let encoded = ironrdp_core::encode_vec(&value).unwrap();
     let decoded = ironrdp_core::decode::<CachedPointerAttribute>(&encoded).unwrap();
     assert_eq!(&decoded, &value);
+}
+
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.4.5 and W3C Compositing and Blending Level 1 §4.1 (32-bit
+// BGRA xorMask [80, 40, 200, alpha] decodes to straight RGB [200, 40, 80] and premultiplies each
+// channel by round(c * alpha / 255): [100, 20, 40, 128] at alpha=128, [200, 40, 80, 255] at
+// alpha=255, and [0, 0, 0, 0] at alpha=0).
+#[test]
+fn software_pointer_multiplies_by_alpha_not_by_color() {
+    let pointer = PointerAttribute {
+        xor_bpp: 32,
+        color_pointer: ColorPointerAttribute {
+            cache_index: 0,
+            hot_spot: Point16 { x: 0, y: 0 },
+            width: 3,
+            height: 1,
+            xor_mask: &[80, 40, 200, 128, 80, 40, 200, 255, 80, 40, 200, 0],
+            and_mask: &[0, 0],
+        },
+    };
+    let decoded = DecodedPointer::decode_pointer_attribute(&pointer, PointerBitmapTarget::Software).unwrap();
+    assert_eq!(decoded.bitmap_data, [100, 20, 40, 128, 200, 40, 80, 255, 0, 0, 0, 0]);
 }
 
 #[test]

@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.13.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.12.0...ironrdp-session-v0.13.0)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- [**breaking**] Add `ActiveStageOutput::WindowSurfaceUpdates` for EGFX surfaces mapped to RemoteApp windows ([#2197](https://github.com/Devolutions/IronRDP/issues/2197)) ([6e54d5e9ec](https://github.com/Devolutions/IronRDP/commit/6e54d5e9ec58c69debaff96fa49bed4343348d3e))
+
+- [**breaking**] Add `ActiveStageOutput::SessionId` and `ActiveStageOutput::LogonErrors`, reported from Save Session Info PDUs ([#2211](https://github.com/Devolutions/IronRDP/issues/2211)) ([98413f16cc](https://github.com/Devolutions/IronRDP/commit/98413f16cc3792a3debe14ef4a2956374957a615))
+
+- Add `composite_graphics_pipeline` and `CompositedGraphics`, to composite EGFX output from a `GraphicsPipelineClient` running outside `ActiveStage` ([#2120](https://github.com/Devolutions/IronRDP/issues/2120)) ([c25dba154b](https://github.com/Devolutions/IronRDP/commit/c25dba154b39a865c2a9ebc5c9074d16227ff2dd))
+
+### <!-- 4 -->Bug Fixes
+
+- The QOIZ decompressor no longer loops forever on an empty update ([#2147](https://github.com/Devolutions/IronRDP/issues/2147)) ([b343a6f9d3](https://github.com/Devolutions/IronRDP/commit/b343a6f9d3fedd2306204f668f745bfc44411ade))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-dvc` public dependency to 0.10
+
+- [**breaking**] Update `ironrdp-egfx` public dependency to 0.5
+
+- [**breaking**] Update `ironrdp-graphics` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-rdpei` public dependency to 0.3
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
+
+
+
 ## [[0.12.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.11.0...ironrdp-session-v0.12.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

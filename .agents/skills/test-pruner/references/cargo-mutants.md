@@ -5,7 +5,8 @@ These notes target cargo-mutants 27.1.
 
 ## Run
 
-Scope with `--file '<package-dir>/src/<module>/**'` for a crate or module, `--re '<fn>|<fn>'` for a pull request's changed functions, or `--in-diff <diff>` for its whole diff; build time dominates, so scope first.
+Scope with `--file '<package-dir>/src/<module>/**'` for a module, `--re '<fn>|<fn>'` for a pull request's changed or critical functions, or `--in-diff <diff>` for its whole diff; each mutant costs an incremental build, so scope narrowly.
+Count the mutants first by adding `--list` to the same scope, and estimate the run as mutants × (incremental build + clean scoped test time), divided by `--jobs` only without `--in-place`, which rejects it; narrow `--re` when it exceeds the budget.
 A test-only diff yields no mutants under `--in-diff`, so scope with `--re` to the production functions the changed tests call, including unchanged ones.
 Package directories vary; take the path from `cargo metadata` rather than assuming `crates/<name>`.
 
@@ -59,4 +60,5 @@ For assertion-level evidence, read the `panicked at <file>:<line>` location of e
 ## Rerun
 
 Run the scoped tests on the clean tree first; with `--baseline skip`, a suite broken by a test edit marks every mutant caught.
+Rerun only the mutants the removed or changed tests caught: apply their patches from `mutants.out/diff/`, or narrow `--re` to their functions.
 Any mutant that moved from caught to missed without an approved deletion explaining it means revert.

@@ -115,6 +115,11 @@ AUDIO_INPUT dynamic channel for client microphone capture implemented as describ
 URBDRC dynamic channel state machines, PDU codecs, and USB device backend interfaces implemented as described in MS-RDPEUSB.
 The crate performs no USB I/O; host device access belongs to a backend.
 
+#### [`crates/ironrdp-rdpepnp`](./crates/ironrdp-rdpepnp)
+
+PNPDR and FileRedirectorChannel dynamic channel clients and PDU codecs implemented as described in MS-RDPEPNP.
+The crate performs no device I/O; an embedder supplies the device descriptions and a backend that opens and drives file handles.
+
 #### [`crates/ironrdp-rdpecam`](./crates/ironrdp-rdpecam)
 
 Video capture dynamic channel client and backend boundary implemented as described in MS-RDPECAM.
@@ -139,14 +144,51 @@ Its presenter decodes H.264 through the `ironrdp-egfx` decoder trait and places 
 Location dynamic channel client and PDU codecs implemented as described in MS-RDPEL.
 The crate forwards only location data supplied by its caller and performs no location acquisition or I/O.
 
+#### [`crates/ironrdp-rdpet`](./crates/ironrdp-rdpet)
+
+Telemetry dynamic channel client and PDU codec implemented as described in MS-RDPET.
+The crate sends only the connection milestones measured by its caller and reads no clock.
+
+#### [`crates/ironrdp-rdpemsc`](./crates/ironrdp-rdpemsc)
+
+Mouse cursor dynamic channel client, server, and PDU codecs implemented as described in MS-RDPEMSC.
+The client queues pointer updates for the caller, which applies them through its existing MS-RDPBCGR pointer handling; the crate performs no I/O.
+
+#### [`crates/ironrdp-rdpadrv`](./crates/ironrdp-rdpadrv)
+
+Audio level and drive letter persistence dynamic channel clients, servers, and PDU codecs implemented as described in MS-RDPADRV.
+The crate reports the values a session wants persisted through handlers and performs no storage or I/O.
+
+#### [`crates/ironrdp-rdpetxt`](./crates/ironrdp-rdpetxt)
+
+Text input dynamic channel client, server, and PDU codecs implemented as described in MS-RDPETXT.
+The client tracks the focused remote edit control and inserts text committed by its caller; it hosts no input method and performs no I/O.
+
+#### [`crates/ironrdp-rdpeci`](./crates/ironrdp-rdpeci)
+
+Core input dynamic channel client processor and PDU codecs implemented as described in MS-RDPECI.
+Input events reuse the fast-path input event type from `ironrdp-pdu`, whose wire format the channel shares.
+
+#### [`crates/ironrdp-w365`](./crates/ironrdp-w365)
+
+Windows 365 battery status, power request, screen capture redirection, and virtual desktop control dynamic channel clients and PDU codecs, following the Windows App client because no Microsoft Open Specification documents the channels.
+The crate takes battery readings and screenshots from its caller, reports power-request changes, save results, and switch-to-local and local-action requests through handlers, and performs no I/O.
+
 #### [`crates/ironrdp-rdpewa`](./crates/ironrdp-rdpewa)
 
 RDPEWA dynamic virtual channel for WebAuthn redirection as described in MS-RDPEWA.
 The Windows backend lives in [`crates/ironrdp-rdpewa-native`](./crates/ironrdp-rdpewa-native).
 
+#### [`crates/ironrdp-rdpear`](./crates/ironrdp-rdpear)
+
+Authentication-redirection dynamic channel framing, borrowed DER inner-packet codecs, portable NDR wire profiles, and an encrypted-payload backend boundary as described in MS-RDPEAR.
+The crate performs no authentication or I/O and does not enable Remote Credential Guard by itself.
+
 #### [`crates/ironrdp-connector`](./crates/ironrdp-connector)
 
 State machines to drive an RDP connection sequence.
+The experimental `remote-guard` feature owns the SSPI-to-RDPEAR backend and moves a completed CredSSP context into the authentication DVC without adding authentication dependencies to `ironrdp-rdpear`.
+See the connector README for supported operations and interoperability limits.
 
 #### [`crates/ironrdp-session`](./crates/ironrdp-session)
 
@@ -296,6 +338,11 @@ Web-based frontend using `Svelte` and `Material` frameworks.
 #### [`crates/ironrdp-cliprdr-native`](./crates/ironrdp-cliprdr-native)
 
 Native CLIPRDR backend implementations.
+
+#### [`crates/ironrdp-rdpei-native`](./crates/ironrdp-rdpei-native)
+
+Windows touch and pen injection for RDPEI server consumers.
+Owns native input devices and contact timing without coupling injection to a server runtime or companion process.
 
 #### [`crates/ironrdp-rdpeusb-native`](./crates/ironrdp-rdpeusb-native)
 

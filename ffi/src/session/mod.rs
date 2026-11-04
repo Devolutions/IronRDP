@@ -1,15 +1,5 @@
 pub mod image;
 
-fn active_stage_output(output: ironrdp::session::ActiveStageOutput) -> ffi::ActiveStageOutput {
-    let encoded_windowing_orders = match &output {
-        ironrdp::session::ActiveStageOutput::WindowingOrders(orders) => {
-            Some(encode_slow_path_orders_update(orders).map_err(|error| error.to_string()))
-        }
-        _ => None,
-    };
-    ffi::ActiveStageOutput(output, encoded_windowing_orders)
-}
-
 /// Encodes windowing orders as a complete slow-path Orders update ([MS-RDPBCGR] 2.2.9.1.1.3.1
 /// Slow-Path Graphics Update carrying an [MS-RDPEGDI] 2.2.2.1 Orders Update), the byte form this
 /// API exposed before orders were decoded.
@@ -44,8 +34,9 @@ pub mod ffi {
     use crate::error::ffi::IronRdpError;
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::graphics::ffi::DecodedPointer;
+    use crate::input::ffi::{PenFrameBuilder, TouchFrameBuilder};
     use crate::pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle};
-    use crate::utils::ffi::{BytesSlice, Position, VecU8};
+    use crate::utils::ffi::{Position, VecU8};
 
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
@@ -54,13 +45,9 @@ pub mod ffi {
         pub ironrdp::connector::connection_activation::ConnectionActivationFactory,
     );
 
-    /// The second field holds windowing orders re-encoded as a slow-path Orders update,
-    /// so the byte-oriented getter can borrow them.
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
-    pub struct ActiveStageOutput(
-        pub ironrdp::session::ActiveStageOutput,
-        pub Option<Result<Vec<u8>, String>>,
-    );
+    pub struct ActiveStageOutput(pub ironrdp::session::ActiveStageOutput);
 
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
@@ -72,6 +59,18 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct MonitorLayoutEntry(pub ironrdp::pdu::gcc::Monitor);
 
+    /// What the MS-RDPEI channel accepts.
+    pub struct RdpeiInputState {
+        /// The channel negotiated touch input.
+        pub touch: bool,
+        /// The channel negotiated pen input.
+        pub pen: bool,
+        /// Up to four pens may be injected at once.
+        pub multipen: bool,
+        /// The server paused input transmission; pending frames are held until it resumes.
+        pub suspended: bool,
+    }
+
     impl ActiveStageOutputIterator {
         pub fn len(&self) -> usize {
             self.0.len()
@@ -82,7 +81,7 @@ pub mod ffi {
         }
 
         pub fn next(&mut self) -> Option<Box<ActiveStageOutput>> {
-            self.0.pop_front().map(super::active_stage_output).map(Box::new)
+            self.0.pop_front().map(ActiveStageOutput).map(Box::new)
         }
     }
 
@@ -333,6 +332,144 @@ pub mod ffi {
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
+        /// What the MS-RDPEI channel accepts right now; every field is false until the channel
+        /// is attached, open and has exchanged `SC_READY` / `CS_READY`.
+        #[diplomat::attr(auto, getter = "rdpei_input_state")]
+        pub fn get_rdpei_input_state(&self) -> RdpeiInputState {
+            let state = self.0.rdpei_input_state();
+            RdpeiInputState {
+                touch: state.touch,
+                pen: state.pen,
+                multipen: state.multipen,
+                suspended: state.suspended,
+            }
+        }
+
+        /// Encodes the oldest frames pending in `touches` as one `RDPINPUT_TOUCH_EVENT_PDU` on the
+        /// MS-RDPEI channel and returns the frame to write to the transport.
+        ///
+        /// Returns `None` when no frame is pending.
+        /// One PDU carries at most 32767 frames, so call again while `touches` has pending frames.
+        /// Fails, and leaves the frames pending, when the channel is missing, not ready, or suspended
+        /// ([MS-RDPEI] 3.3.5.4 "Processing an RDPINPUT_SUSPEND_INPUT_PDU message"), or when the
+        /// event cannot be encoded.
+        ///
+        /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+        pub fn encode_rdpei_touch(
+            &mut self,
+            touches: &mut TouchFrameBuilder,
+        ) -> Result<Option<Box<VecU8>>, Box<IronRdpError>> {
+            let state = self.0.rdpei_input_state();
+            if !state.touch {
+                return Err("RDPEI channel is not ready".into());
+            }
+            if state.suspended {
+                return Err("RDPEI input is suspended".into());
+            }
+
+            let Some(event) = touches.take_event() else {
+                return Ok(None);
+            };
+
+            let Some(encoded) = self.0.encode_rdpei_touch(event.clone()) else {
+                touches.restore(event);
+                return Err("RDPEI channel is not available".into());
+            };
+
+            match encoded {
+                Ok(frame) => Ok(Some(Box::new(VecU8(frame)))),
+                Err(error) => {
+                    touches.restore(event);
+                    Err(error.into())
+                }
+            }
+        }
+
+        /// Encodes the oldest frames pending in `pens` as one `RDPINPUT_PEN_EVENT_PDU` on the MS-RDPEI
+        /// channel and returns the frame to write to the transport.
+        ///
+        /// Returns `None` when no frame is pending.
+        /// One PDU carries at most 32767 frames, so call again while `pens` has pending frames.
+        /// Fails, and leaves the frames pending, when the channel is missing, not ready, did not
+        /// negotiate pen input (protocol version 2 or later), or is suspended, or when the event cannot
+        /// be encoded.
+        pub fn encode_rdpei_pen(
+            &mut self,
+            pens: &mut PenFrameBuilder,
+        ) -> Result<Option<Box<VecU8>>, Box<IronRdpError>> {
+            let state = self.0.rdpei_input_state();
+            if !state.touch {
+                return Err("RDPEI channel is not ready".into());
+            }
+            if !state.pen {
+                return Err("RDPEI pen input is not negotiated".into());
+            }
+            if state.suspended {
+                return Err("RDPEI input is suspended".into());
+            }
+
+            let Some(event) = pens.take_event() else {
+                return Ok(None);
+            };
+
+            let Some(encoded) = self.0.encode_rdpei_pen(event.clone()) else {
+                pens.restore(event);
+                return Err("RDPEI channel is not available".into());
+            };
+
+            match encoded {
+                Ok(frame) => Ok(Some(Box::new(VecU8(frame)))),
+                Err(error) => {
+                    pens.restore(event);
+                    Err(error.into())
+                }
+            }
+        }
+
+        /// Encodes an `RDPINPUT_DISMISS_HOVERING_CONTACT_PDU` for the touch contact `contact_id`
+        /// ([MS-RDPEI] 2.2.3.6), telling the server to stop tracking a contact that hovers over
+        /// the surface.
+        ///
+        /// Fails when the channel is missing or not ready.
+        ///
+        /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+        pub fn encode_rdpei_dismiss_hovering(&mut self, contact_id: u8) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            if !self.0.rdpei_input_state().touch {
+                return Err("RDPEI channel is not ready".into());
+            }
+            let frame = self
+                .0
+                .encode_rdpei_dismiss_hovering(contact_id)
+                .ok_or("RDPEI channel is not available")??;
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        /// Reports whether the Display Control Virtual Channel can carry a resize request.
+        ///
+        /// Check this after each `process` call: it becomes `Ready` once the server's
+        /// capabilities PDU is processed, which is when `encoded_resize` starts returning frames.
+        #[diplomat::attr(auto, getter = "display_control_state")]
+        pub fn get_display_control_state(&self) -> DisplayControlState {
+            match self.0.display_control_ready() {
+                None => DisplayControlState::Unavailable,
+                Some(false) => DisplayControlState::Pending,
+                Some(true) => DisplayControlState::Ready,
+            }
+        }
+
+        /// Returns the capabilities the server sent over the Display Control Virtual Channel,
+        /// or `None` while `display_control_state` is not `Ready`.
+        #[diplomat::attr(auto, getter = "display_control_capabilities")]
+        pub fn get_display_control_capabilities(&self) -> Option<Box<DisplayControlCapabilities>> {
+            self.0
+                .display_control_capabilities()
+                .map(DisplayControlCapabilities)
+                .map(Box::new)
+        }
+
+        /// Encodes a resize request for the Display Control Virtual Channel.
+        ///
+        /// Returns `None` while `display_control_state` is not `Ready`.
         pub fn encoded_resize(
             &mut self,
             width: u32,
@@ -434,6 +571,38 @@ pub mod ffi {
         }
     }
 
+    /// Whether the Display Control Virtual Channel ([MS-RDPEDISP]) accepts resize requests.
+    ///
+    /// [MS-RDPEDISP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp
+    pub enum DisplayControlState {
+        /// No Display Control client is configured; see `ClientConnector.with_dynamic_channel_display_control`.
+        Unavailable = 0,
+        /// The channel is configured but still opening or waiting for the server's capabilities PDU.
+        Pending = 1,
+        /// The server's capabilities were received; `ActiveStage.encoded_resize` returns frames.
+        Ready = 2,
+    }
+
+    /// The DISPLAYCONTROL_CAPS_PDU ([MS-RDPEDISP] 2.2.2.1) the server sent.
+    ///
+    /// [MS-RDPEDISP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/8989a211-984e-4ecc-80f3-60694fc4b476
+    #[diplomat::opaque]
+    pub struct DisplayControlCapabilities(pub ironrdp::displaycontrol::pdu::DisplayControlCapabilities);
+
+    impl DisplayControlCapabilities {
+        /// The maximum number of monitors the server accepts in a monitor layout.
+        #[diplomat::attr(auto, getter = "max_num_monitors")]
+        pub fn get_max_num_monitors(&self) -> u32 {
+            self.0.max_num_monitors()
+        }
+
+        /// The maximum total area, in square pixels, of a monitor layout.
+        #[diplomat::attr(auto, getter = "max_monitor_area")]
+        pub fn get_max_monitor_area(&self) -> u64 {
+            self.0.max_monitor_area()
+        }
+    }
+
     pub enum ActiveStageOutputType {
         ResponseFrame = 0,
         GraphicsUpdate = 1,
@@ -498,9 +667,9 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "response_frame")]
-        pub fn get_response_frame<'a>(&'a self) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
+        pub fn get_response_frame(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(BytesSlice(frame))),
+                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(VecU8(frame.clone()))),
                 _ => Err(IncorrectEnumTypeError::on_variant("ResponseFrame")
                     .of_enum("ActiveStageOutput")
                     .into()),
@@ -543,13 +712,12 @@ pub mod ffi {
         }
 
         #[diplomat::attr(auto, getter = "windowing_orders")]
-        pub fn get_windowing_orders<'a>(&'a self) -> Result<Box<BytesSlice<'a>>, Box<IronRdpError>> {
+        pub fn get_windowing_orders(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::WindowingOrders(_) => match &self.1 {
-                    Some(Ok(update)) => Ok(Box::new(BytesSlice(update))),
-                    Some(Err(error)) => Err(error.as_str().into()),
-                    None => Err("windowing orders were not encoded".into()),
-                },
+                ironrdp::session::ActiveStageOutput::WindowingOrders(orders) => {
+                    let update = super::encode_slow_path_orders_update(orders)?;
+                    Ok(Box::new(VecU8(update)))
+                }
                 _ => Err(IncorrectEnumTypeError::on_variant("WindowingOrders")
                     .of_enum("ActiveStageOutput")
                     .into()),
@@ -681,7 +849,8 @@ mod tests {
 
     use ironrdp::pdu::gcc::{Monitor, MonitorFlags};
 
-    use super::ffi::{ActiveStageOutputIterator, ActiveStageOutputType};
+    use super::ffi::{ActiveStageOutput, ActiveStageOutputIterator, ActiveStageOutputType};
+    use crate::error::ffi::IronRdpErrorKind;
 
     #[test]
     fn active_stage_output_iterator_preserves_response_frame_order() {
@@ -705,12 +874,13 @@ mod tests {
         assert!(iterator.next().is_none());
     }
 
-    // oracle: spec MS-RDPERP §2.2.1.3.2.2.1 (Version 1 is not a valid notification icon version)
+    // oracle: spec MS-RDPERP §2.2.1.3.2.2.1 (Version 1 is not a valid notification icon version);
+    // the kind comes from `From<EncodeError> for Box<IronRdpError>` in ffi/src/error.rs
     #[test]
     fn windowing_orders_that_cannot_be_encoded_report_an_error() {
         use ironrdp::pdu::window::{NotifyIconOrder, NotifyIconState, WindowingOrder};
 
-        let output = super::active_stage_output(ironrdp::session::ActiveStageOutput::WindowingOrders(vec![
+        let output = ActiveStageOutput(ironrdp::session::ActiveStageOutput::WindowingOrders(vec![
             WindowingOrder::NotifyIcon(NotifyIconOrder {
                 window_id: 7,
                 notify_icon_id: 1,
@@ -722,7 +892,10 @@ mod tests {
             }),
         ]));
 
-        assert!(output.get_windowing_orders().is_err());
+        let Err(error) = output.get_windowing_orders() else {
+            panic!("invalid windowing orders should fail to encode");
+        };
+        assert!(matches!(error.get_kind(), IronRdpErrorKind::EncodeError));
     }
 
     // oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1, MS-RDPEGDI §2.2.2.1 and MS-RDPERP §2.2.1.3.1.2.4
@@ -730,7 +903,7 @@ mod tests {
     fn active_stage_output_exposes_windowing_orders_as_a_slow_path_update() {
         use ironrdp::pdu::window::{WindowOrder, WindowOrderBody, WindowingOrder};
 
-        let output = super::active_stage_output(ironrdp::session::ActiveStageOutput::WindowingOrders(vec![
+        let output = ActiveStageOutput(ironrdp::session::ActiveStageOutput::WindowingOrders(vec![
             WindowingOrder::Window(WindowOrder {
                 window_id: 7,
                 is_new: false,
@@ -757,7 +930,7 @@ mod tests {
 
     #[test]
     fn active_stage_output_exposes_monitor_layout() {
-        let output = super::active_stage_output(ironrdp::session::ActiveStageOutput::MonitorLayout(vec![Monitor {
+        let output = ActiveStageOutput(ironrdp::session::ActiveStageOutput::MonitorLayout(vec![Monitor {
             left: -800,
             top: 0,
             right: -1,

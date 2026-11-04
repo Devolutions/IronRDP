@@ -3,8 +3,6 @@ name: blind-testsuite
 description: Write or extend a conformance suite from a CONTRACT*.md and published sources only, by an author who never sees an implementation, kept read-only while implementations are built against it. Use when a contract has or will have several implementations, or a wrong expected value would be invisible to the implementer, as in cryptography, codecs, and wire protocols.
 ---
 
-# Blind test suite
-
 The suite is independent evidence derived from the contract, not the definition of conformance, so a failing test says the implementation or the test is wrong, never the contract.
 `test-writer` decides each test's shape and `test-oracle-reviewer` what counts as an independent value; this skill is the isolation around them.
 

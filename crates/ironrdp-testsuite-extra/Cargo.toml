@@ -16,6 +16,10 @@ autotests = false
 doctest = false
 test = false
 
+[features]
+default = []
+remote-guard = ["ironrdp-client/remote-guard", "ironrdp-connector/remote-guard"]
+
 [[test]]
 name = "integration_tests_extra"
 path = "tests/main.rs"
@@ -25,13 +29,14 @@ harness = true
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
-ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol"] }
+ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol", "rdpsnd", "acceptor"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent.path = "../ironrdp-agent"
 ironrdp-daemon.path = "../ironrdp-daemon"
 ironrdp-bulk.path = "../ironrdp-bulk"
-ironrdp-client = { path = "../ironrdp-client", features = ["__test", "camera", "entra-auth", "sound", "udp", "usb", "video"] }
+ironrdp-client = { path = "../ironrdp-client", features = ["__test", "camera", "cloud", "core-input", "entra-auth", "gateway", "multipoint", "rustls", "sound", "telemetry", "udp", "usb", "video"] }
+ironrdp-connector = { path = "../ironrdp-connector", features = ["__test"] }
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-dvc.path = "../ironrdp-dvc"
 ironrdp-dvc-pipe-proxy.path = "../ironrdp-dvc-pipe-proxy"
@@ -42,22 +47,25 @@ ironrdp-input.path = "../ironrdp-input"
 ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rail.path = "../ironrdp-rail"
+ironrdp-rdpadrv.path = "../ironrdp-rdpadrv"
 ironrdp-rdpdr.path = "../ironrdp-rdpdr"
 ironrdp-rdpeai.path = "../ironrdp-rdpeai"
+ironrdp-rdpeci.path = "../ironrdp-rdpeci"
 ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
 ironrdp-rdpeudp-tokio.path = "../ironrdp-rdpeudp-tokio"
+ironrdp-rdpet.path = "../ironrdp-rdpet"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", features = ["capture"] }
 ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 # The EGFX-over-UDP migration in ironrdp-server is behind its `egfx` feature,
 # which nothing else in the workspace enables.
-ironrdp-server = { path = "../ironrdp-server", features = ["egfx"] }
+ironrdp-server = { path = "../ironrdp-server", features = ["egfx", "__test"] }
 ironrdp-viewer.path = "../ironrdp-viewer"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
-picky = "=7.0.0-rc.26"
+picky = "=7.0.0-rc.27"
 proptest.workspace = true
 rcgen = "0.14"
 rstest.workspace = true
@@ -80,6 +88,8 @@ ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__te
 png = "0.18"
 
 [target.'cfg(windows)'.dev-dependencies]
+ironrdp-rdpei.path = "../ironrdp-rdpei"
+ironrdp-rdpei-native = { path = "../ironrdp-rdpei-native", features = ["__test"] }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", features = ["__test"] }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__test"] }
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
@@ -93,6 +103,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_Pointer",
 ] }
 
 [lints]

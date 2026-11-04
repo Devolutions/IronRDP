@@ -21,6 +21,24 @@ fn test_decodes<'a, T: Decode<'a> + PartialEq + core::fmt::Debug>(encoded: &'a [
     assert_eq!(*expected, T::decode(&mut src).unwrap());
 }
 
+struct TestPayload(Vec<u8>);
+
+impl ironrdp_dvc::DvcEncode for TestPayload {}
+
+impl Encode for TestPayload {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        self.0.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "TestPayload"
+    }
+
+    fn size(&self) -> usize {
+        self.0.len()
+    }
+}
+
 mod capabilities;
 mod client;
 mod close;

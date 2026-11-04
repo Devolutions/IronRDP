@@ -3,8 +3,6 @@ name: tdd
 description: Red-green loop for one behaviour at an agreed seam - failing test first, the least code that passes, refactoring outside the loop. Use for test-first bug fixes and small features, or whenever the user says TDD or red-green.
 ---
 
-# Test-driven development
-
 `test-writer` decides what a good test is and `test-oracle-reviewer` where its expected value may come from; this skill is the loop around them.
 
 ## Seam

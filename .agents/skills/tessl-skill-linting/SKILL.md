@@ -3,8 +3,6 @@ name: tessl-skill-linting
 description: Review, lint, create, edit, refine, optimize, compress, or validate any agent skill in this repository, including any SKILL.md. Use this skill whenever a user asks to author or change a skill, improve its instructions or trigger coverage, assess skill quality, or reduce its context usage, even when Tessl is not mentioned. Keep skills small and split distinct workflows into focused micro-skills when that reduces context and trigger overlap. Do not use it for ordinary application code, documentation, or workflow changes that are not agent skills.
 ---
 
-# Tessl Skill Linting
-
 Keep repository-local agent skills correct, focused, and inexpensive to load.
 
 ## Workflow

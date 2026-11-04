@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.10.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.9.0...ironrdp-dvc-v0.10.0)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- Add `DrdynvcClient::close_channel_batch`, which returns the Close PDU with the Soft-Sync tunnel the channel used ([#2181](https://github.com/Devolutions/IronRDP/issues/2181)) ([35247071a3](https://github.com/Devolutions/IronRDP/commit/35247071a32a718094fc4df1de60e220e3730f4b))
+
+### <!-- 4 -->Bug Fixes
+
+- A client-initiated `DYNVC_CLOSE` tolerates data that arrives before the server confirms it, and the channel ID can then be reused ([#2181](https://github.com/Devolutions/IronRDP/issues/2181)) ([35247071a3](https://github.com/Devolutions/IronRDP/commit/35247071a32a718094fc4df1de60e220e3730f4b))
+
+### <!-- 7 -->Build
+
+- [**breaking**] Update `ironrdp-pdu` public dependency to 0.11
+
+- [**breaking**] Update `ironrdp-svc` public dependency to 0.10
+
+
+
 ## [[0.9.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-v0.8.0...ironrdp-dvc-v0.9.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

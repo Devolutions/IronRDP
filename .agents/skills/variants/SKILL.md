@@ -3,8 +3,6 @@ name: variants
 description: Run two or three isolated probe implementations of one brief that differ in named decisions or approaches, judge them blind against fixed criteria, and return a decision brief from which the human or the lead picks or composes the final design. Use inside a delivery or intent flow once the alternatives are named and only implementation evidence can settle them, or when the user asks to try several approaches.
 ---
 
-# Variants
-
 A variant is a probe: build it only far enough to measure the criteria and never merge it, because probe code carries shortcuts and has not been through the review loop; the chosen design - one variant, or the best decisions of several - is implemented fresh and the criteria rerun on it.
 A run answers a question nobody could settle on paper; when the facts or the human can settle it, ask instead, since three probes cost more than one question.
 

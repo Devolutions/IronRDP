@@ -3,8 +3,6 @@ name: rust-style-reviewer
 description: Review changed Rust code against the Devolutions Rust style conventions after it is written. Use when a diff or pull request touches Rust files, when asked to check Rust style, or as a fresh-context pass before committing Rust changes.
 ---
 
-# Rust style reviewer
-
 Invoke `rust-style` and use its rules as review criteria without following its generation workflow.
 `STYLE.md` is the full guide those rules summarize; open the matching section when a rule's intent is unclear and cite it in the finding.
 Review only the touched Rust lines.

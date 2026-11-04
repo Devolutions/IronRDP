@@ -3,8 +3,6 @@ name: test-reviewer
 description: Review changed Rust or C# tests against the `test-writer` rules, including a named bug, an independent oracle, non-branching parametrized bodies, checked snapshots, and real properties. Use when a diff or pull request adds or changes tests, or when asked to review test organization or parametrization.
 ---
 
-# Test reviewer
-
 Invoke `test-writer` and use its rules as review criteria without following its generation workflow.
 Review only changed tests unless the user requests a broader audit.
 Run `test-oracle-reviewer` on each changed test; this skill covers a test's shape, not where its expected values come from.

@@ -203,9 +203,9 @@ dependencies = [
 
 [[package]]
 name = "der"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
+checksum = "6a996a108feb8b427a6e12fcf6af4aa83409b79d72c15337d7741368131ee004"
 dependencies = [
  "const-oid 0.10.2",
  "der_derive",
@@ -376,7 +376,7 @@ version = "0.2.0"
 
 [[package]]
 name = "ironrdp-cliprdr"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -395,14 +395,14 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ironrdp-error",
 ]
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ironrdp-bulk",
  "ironrdp-core",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-egfx"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -462,18 +462,26 @@ dependencies = [
  "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-rdpadrv",
  "ironrdp-rdpdr",
+ "ironrdp-rdpear",
+ "ironrdp-rdpeci",
  "ironrdp-rdpel",
+ "ironrdp-rdpemsc",
  "ironrdp-rdpemt",
+ "ironrdp-rdpepnp",
+ "ironrdp-rdpet",
+ "ironrdp-rdpetxt",
  "ironrdp-rdpeudp",
  "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
+ "ironrdp-w365",
 ]
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bit_field",
  "bitflags",
@@ -489,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -511,8 +519,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpadrv"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-rdpdr"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bitflags",
  "getrandom 0.3.4",
@@ -524,13 +542,43 @@ dependencies = [
 ]
 
 [[package]]
-name = "ironrdp-rdpel"
-version = "0.0.1"
+name = "ironrdp-rdpear"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+]
+
+[[package]]
+name = "ironrdp-rdpeci"
+version = "0.0.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpel"
+version = "0.0.2"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpemsc"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
  "tracing",
 ]
 
@@ -546,6 +594,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpepnp"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "spin",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpet"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpetxt"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-str",
+]
+
+[[package]]
 name = "ironrdp-rdpeudp"
 version = "0.1.0"
 dependencies = [
@@ -558,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpeusb"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -569,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -582,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-str"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytemuck",
  "ironrdp-core",
@@ -590,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -600,6 +679,17 @@ dependencies = [
 [[package]]
 name = "ironrdp-usb"
 version = "0.1.0"
+
+[[package]]
+name = "ironrdp-w365"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
 
 [[package]]
 name = "jobserver"
@@ -629,9 +719,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.34"
+version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "md-5"
@@ -848,6 +938,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
+
+[[package]]
 name = "spki"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -864,7 +960,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ef958a98b9d5da290cfc78946e9f3e61e1e62a18db0d92cac0b83cc161491a9"
 dependencies = [
  "base64ct",
- "der 0.8.2",
+ "der 0.8.3",
 ]
 
 [[package]]
@@ -1044,16 +1140,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "105ef4642d9cb137ef83d623d0e4bf08b8adf69e9918ca904a174adb6d3d038b"
 dependencies = [
  "const-oid 0.10.2",
- "der 0.8.2",
+ "der 0.8.3",
  "spki 0.8.1",
  "tls_codec",
 ]
 
 [[package]]
 name = "yuv"
-version = "0.8.19"
+version = "0.8.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a295923535c00a4e72a50a0a1130097f93160b39892dd4d2d006b1e2b90d6bf9"
+checksum = "3d109d1eacc7b034329873d2d848039b365c65ab7d751b19ee84e4921c62c607"
 dependencies = [
  "num-traits",
 ]

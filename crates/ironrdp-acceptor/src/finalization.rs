@@ -1,12 +1,37 @@
 use ironrdp_connector::{
     ConnectorError, ConnectorErrorExt as _, ConnectorResult, MonotonicInstant, Sequence, State, Written, general_err,
 };
-use ironrdp_core::WriteBuf;
-use ironrdp_pdu::rdp;
+use ironrdp_core::{WriteBuf, decode};
 use ironrdp_pdu::x224::X224;
+use ironrdp_pdu::{mcs, rdp};
 use tracing::debug;
 
 use crate::util::{self, wrap_share_data};
+
+const MAX_INPUT_BACKLOG_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Default)]
+pub(crate) struct InputEventBuffer {
+    events: Vec<Vec<u8>>,
+    /// INVARIANT: `bytes <= MAX_INPUT_BACKLOG_BYTES`.
+    bytes: usize,
+}
+
+impl InputEventBuffer {
+    pub(crate) fn push(&mut self, input: &[u8]) -> ConnectorResult<()> {
+        // Per invariant: bytes <= MAX_INPUT_BACKLOG_BYTES, so this subtraction does not underflow.
+        if MAX_INPUT_BACKLOG_BYTES - self.bytes < input.len() {
+            return Err(general_err!("input event backlog exceeds 16 MiB"));
+        }
+        self.bytes += input.len();
+        self.events.push(input.to_vec());
+        Ok(())
+    }
+
+    fn into_events(self) -> Vec<Vec<u8>> {
+        self.events
+    }
+}
 
 /// Server side of the Connection Finalization phase of the [1.3.1.1] Connection Sequence.
 ///
@@ -20,7 +45,7 @@ pub struct FinalizationSequence {
     user_channel_id: u16,
     io_channel_id: u16,
 
-    input_events: Vec<Vec<u8>>,
+    input_events: InputEventBuffer,
 }
 
 #[derive(Default, Debug)]
@@ -92,7 +117,22 @@ impl Sequence for FinalizationSequence {
         _received_at: Option<MonotonicInstant>,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
-        let (written, next_state) = match core::mem::take(&mut self.state) {
+        let prev_state = core::mem::take(&mut self.state);
+        if matches!(
+            prev_state,
+            FinalizationState::WaitSynchronize
+                | FinalizationState::WaitControlCooperate
+                | FinalizationState::WaitRequestControl
+                | FinalizationState::WaitFontList
+        ) && let Ok(X224(data)) = decode::<X224<mcs::SendDataRequest<'_>>>(input)
+            && data.channel_id != self.io_channel_id
+        {
+            self.input_events.push(input)?;
+            self.state = prev_state;
+            return Ok(Written::Nothing);
+        }
+
+        let (written, next_state) = match prev_state {
             FinalizationState::WaitSynchronize => {
                 let synchronize = decode_share_control(input);
 
@@ -125,7 +165,7 @@ impl Sequence for FinalizationSequence {
                 }
 
                 Err(()) => {
-                    self.input_events.push(input.to_vec());
+                    self.input_events.push(input)?;
 
                     (Written::Nothing, FinalizationState::WaitFontList)
                 }
@@ -207,12 +247,17 @@ impl FinalizationSequence {
             state: FinalizationState::WaitSynchronize,
             user_channel_id,
             io_channel_id,
-            input_events: Vec::new(),
+            input_events: InputEventBuffer::default(),
         }
     }
 
+    pub(crate) fn with_input_events(mut self, input_events: InputEventBuffer) -> Self {
+        self.input_events = input_events;
+        self
+    }
+
     pub fn into_input_events(self) -> Vec<Vec<u8>> {
-        self.input_events
+        self.input_events.into_events()
     }
 
     pub fn is_done(&self) -> bool {
@@ -245,11 +290,11 @@ fn create_font_map() -> rdp::headers::ShareDataPdu {
 }
 
 fn decode_share_control(input: &[u8]) -> ConnectorResult<rdp::headers::ShareControlHeader> {
-    let data_request = ironrdp_core::decode::<X224<ironrdp_pdu::mcs::SendDataRequest<'_>>>(input)
+    let data_request = decode::<X224<mcs::SendDataRequest<'_>>>(input)
         .map_err(ConnectorError::decode)
         .map(|p| p.0)?;
-    let share_control = ironrdp_core::decode::<rdp::headers::ShareControlHeader>(data_request.user_data.as_ref())
-        .map_err(ConnectorError::decode)?;
+    let share_control =
+        decode::<rdp::headers::ShareControlHeader>(data_request.user_data.as_ref()).map_err(ConnectorError::decode)?;
     Ok(share_control)
 }
 

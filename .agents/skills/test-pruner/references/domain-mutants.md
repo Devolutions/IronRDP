@@ -1,9 +1,13 @@
 # Domain mutants
 
+## Apply
+
 Neither mutation tool takes user-defined operators, so write each domain mutant as a patch.
 Take it, or rebuild a challenger's patch, with `git diff --output=<file>` from an edit you then revert, since a hand-written hunk header is easily wrong and a Windows PowerShell redirect re-encodes the patch as UTF-16 with CRLF, which `git apply` rejects.
 `git apply` it, run the scoped tests, and `git apply -R` it; caught means a test failed, and a patch that does not build proves nothing until it does.
 Patches are pull request evidence, not repository files.
+
+## Catalog
 
 Codec catalog:
 

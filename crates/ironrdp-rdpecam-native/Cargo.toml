@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpecam-native"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 description = "Native camera capture backends for the IronRDP MS-RDPECAM client"
 edition.workspace = true
@@ -16,7 +16,7 @@ categories.workspace = true
 doctest = false
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-rdpecam = { version = "0.1", path = "../ironrdp-rdpecam" } # public
+ironrdp-rdpecam = { version = "0.2", path = "../ironrdp-rdpecam" } # public
 tracing = { version = "0.1", features = ["log"] }
 windows = { version = "0.62", features = [
     "Win32_Devices_DeviceAndDriverInstallation",

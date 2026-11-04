@@ -13,6 +13,50 @@ public partial class ActiveStage: IDisposable
 
     private static readonly unsafe RustDestructor<Raw.ActiveStage> _destroy = Raw.ActiveStage.Destroy;
 
+    /// <returns>
+    /// A <c>DisplayControlCapabilities</c> allocated on Rust side.
+    /// </returns>
+    public DisplayControlCapabilities? DisplayControlCapabilities
+    {
+        get
+        {
+            unsafe
+            {
+                BorrowLease<Raw.ActiveStage>? selfLease = null;
+                try
+                {
+                    selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                    Raw.DisplayControlCapabilities* result = Raw.ActiveStage.GetDisplayControlCapabilities(selfLease!.Ptr);
+                    return result == null ? null : new DisplayControlCapabilities(result);
+                }
+                finally
+                {
+                    selfLease?.Release();
+                }
+            }
+        }
+    }
+
+    public DisplayControlState DisplayControlState
+    {
+        get
+        {
+            unsafe
+            {
+                BorrowLease<Raw.ActiveStage>? selfLease = null;
+                try
+                {
+                    selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                    return Raw.ActiveStage.GetDisplayControlState(selfLease!.Ptr);
+                }
+                finally
+                {
+                    selfLease?.Release();
+                }
+            }
+        }
+    }
+
     public bool EnableServerPointer
     {
         set
@@ -24,6 +68,27 @@ public partial class ActiveStage: IDisposable
                 {
                     selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
                     Raw.ActiveStage.SetEnableServerPointer(selfLease!.Ptr, value);
+                }
+                finally
+                {
+                    selfLease?.Release();
+                }
+            }
+        }
+    }
+
+    public RdpeiInputState RdpeiInputState
+    {
+        get
+        {
+            unsafe
+            {
+                BorrowLease<Raw.ActiveStage>? selfLease = null;
+                try
+                {
+                    selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                    Raw.RdpeiInputState result = Raw.ActiveStage.GetRdpeiInputState(selfLease!.Ptr);
+                    return RdpeiInputState.FromFFI(result);
                 }
                 finally
                 {
@@ -417,6 +482,92 @@ public partial class ActiveStage: IDisposable
                     throw new IronRdpException(new IronRdpError(result.Err));
                 }
                 return new ActiveStageOutputIterator(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8? EncodeRdpeiTouch(TouchFrameBuilder touches)
+    {
+        unsafe
+        {
+            if (touches == null) throw new ArgumentNullException(nameof(touches));
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            BorrowLease<Raw.TouchFrameBuilder>? touchesLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                touchesLease = touches._diplomatHandle.Lease(BorrowKind.Exclusive);
+                var result = Raw.ActiveStage.EncodeRdpeiTouch(selfLease!.Ptr, touchesLease!.Ptr);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return result.Ok == null ? null : new VecU8(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+                touchesLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8? EncodeRdpeiPen(PenFrameBuilder pens)
+    {
+        unsafe
+        {
+            if (pens == null) throw new ArgumentNullException(nameof(pens));
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            BorrowLease<Raw.PenFrameBuilder>? pensLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                pensLease = pens._diplomatHandle.Lease(BorrowKind.Exclusive);
+                var result = Raw.ActiveStage.EncodeRdpeiPen(selfLease!.Ptr, pensLease!.Ptr);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return result.Ok == null ? null : new VecU8(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+                pensLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 EncodeRdpeiDismissHovering(byte contactId)
+    {
+        unsafe
+        {
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                var result = Raw.ActiveStage.EncodeRdpeiDismissHovering(selfLease!.Ptr, contactId);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return new VecU8(result.Ok);
             }
             finally
             {

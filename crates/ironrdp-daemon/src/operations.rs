@@ -5,19 +5,19 @@
 
 use core::time::Duration;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use now_client::{
     BatchRequest, Execution, ExecutionEvent, ExecutionStatus, NowClientError, ProcessRequest, PwshRequest, RunRequest,
     WinPsRequest,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::ipc::{
     AgentError, AgentErrorCategory, NowCapabilities, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent,
     OperationEventKind, OperationInfo, OperationState,
 };
-use crate::now::{Capabilities, NowEndpoint, NowEndpointError, invalidates_handle};
+use crate::now::{Capabilities, NowEndpoint, NowEndpointError};
 
 const MAX_OPERATION_OUTPUT: usize = 8 * 1024 * 1024;
 const MAX_TERMINAL_OPERATIONS: usize = 32;
@@ -26,7 +26,6 @@ const MAX_STDIN_CHUNK: usize = 1024 * 1024;
 const MAX_IPC_OUTPUT_CHUNK: usize = 1024 * 1024;
 const MAX_OPERATION_EVENTS: usize = 8 * 1024;
 const MAX_LIVE_SUBSCRIBERS: usize = 8;
-const LIVE_SUBSCRIBER_QUEUE_CAPACITY: usize = 1;
 
 /// Durable NOW operation manager for one RDP session.
 #[derive(Clone)]
@@ -42,6 +41,12 @@ struct OperationStateStore {
     records: BTreeMap<u64, OperationRecord>,
     terminal_order: VecDeque<u64>,
     total_output: usize,
+    /// Signals live readers that the active operation gained an event.
+    ///
+    /// INVARIANT: `finish` replaces this sender, dropping the previous one so blocked readers
+    /// wake, observe the terminal record, and release their live-subscriber slots before another
+    /// operation starts.
+    changed: watch::Sender<()>,
 }
 
 struct ActiveOperation {
@@ -53,7 +58,6 @@ struct ActiveOperation {
 struct OperationRecord {
     info: OperationInfo,
     events: VecDeque<OperationEvent>,
-    subscribers: Vec<mpsc::Sender<OperationEvent>>,
 }
 
 enum Control {
@@ -73,9 +77,69 @@ pub struct OperationAttachment {
     pub info: OperationInfo,
     /// Retained events newer than the requested sequence.
     pub replay: Vec<OperationEvent>,
-    /// Live events. It closes when the operation becomes terminal, the client disconnects, or the
-    /// client cannot keep up with remote output.
-    pub live: mpsc::Receiver<OperationEvent>,
+    /// Events that follow the replay.
+    pub live: LiveEvents,
+}
+
+/// Cursor over the retained events of one operation, starting after an attachment's replay.
+///
+/// It reads the retained events instead of owning a queue, so a slow reader never makes the
+/// producer buffer or drop events.
+/// The stream ends after the terminal event, once the reader falls behind the retained events, or
+/// when the operation is gone.
+pub struct LiveEvents {
+    state: Weak<Mutex<OperationStateStore>>,
+    operation_id: u64,
+    next_sequence: u64,
+    changed: Option<watch::Receiver<()>>,
+}
+
+impl LiveEvents {
+    /// Waits for the next event, or returns `None` when the stream has ended.
+    pub async fn recv(&mut self) -> Option<OperationEvent> {
+        loop {
+            let state = self.state.upgrade()?;
+            let next = next_event(&lock(&state), self.operation_id, self.next_sequence);
+            drop(state);
+            match next {
+                NextEvent::Ready(event) => {
+                    self.next_sequence = event.sequence.saturating_add(1);
+                    return Some(event);
+                }
+                NextEvent::End => {
+                    self.changed = None;
+                    return None;
+                }
+                NextEvent::Pending => {
+                    // `finish` replaces `changed`, dropping the previous sender so blocked readers
+                    // wake and re-check.
+                    if self.changed.as_mut()?.changed().await.is_err() {
+                        self.changed = None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum NextEvent {
+    Ready(OperationEvent),
+    Pending,
+    End,
+}
+
+fn next_event(state: &OperationStateStore, operation_id: u64, sequence: u64) -> NextEvent {
+    let Some(record) = state.records.get(&operation_id) else {
+        return NextEvent::End;
+    };
+    let index = record.events.partition_point(|event| event.sequence < sequence);
+    match record.events.get(index) {
+        Some(event) if event.sequence == sequence => NextEvent::Ready(event.clone()),
+        // Trimmed output sits between the reader and this event, so continuing would skip it.
+        Some(_) => NextEvent::End,
+        None if matches!(record.info.state, OperationState::Running | OperationState::Cancelling) => NextEvent::Pending,
+        None => NextEvent::End,
+    }
 }
 
 impl OperationManager {
@@ -90,11 +154,12 @@ impl OperationManager {
                 records: BTreeMap::new(),
                 terminal_order: VecDeque::new(),
                 total_output: 0,
+                changed: watch::Sender::new(()),
             })),
         }
     }
 
-    /// Gets NOW capabilities, lazily connecting the DVC endpoint if necessary.
+    /// Gets NOW capabilities, connecting the DVC endpoint first if necessary.
     pub async fn capabilities(&self) -> Result<NowCapabilities, AgentError> {
         let handle = self.endpoint.handle().await.map_err(endpoint_error)?;
         Ok(capabilities(handle.capabilities().into()))
@@ -115,13 +180,7 @@ impl OperationManager {
             }
         };
         self.release_submission();
-        match result {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                self.invalidate_if_needed(&error).await;
-                Err(client_error(error))
-            }
-        }
+        result.map(|_| ()).map_err(client_error)
     }
 
     /// Submits a tracked or detached NOW execution.
@@ -159,7 +218,6 @@ impl OperationManager {
             OperationRecord {
                 info: info.clone(),
                 events: VecDeque::new(),
-                subscribers: Vec::new(),
             },
         );
         state.active = Some(ActiveOperation {
@@ -196,31 +254,39 @@ impl OperationManager {
             .ok_or_else(operation_not_found)
     }
 
-    /// Replays bounded retained output and subscribes to subsequent output.
+    /// Replays bounded retained output and follows subsequent events.
     pub fn attach(&self, operation_id: u64, after_sequence: Option<u64>) -> Result<OperationAttachment, AgentError> {
-        let mut state = lock(&self.state);
-        let record = state.records.get_mut(&operation_id).ok_or_else(operation_not_found)?;
-        record.subscribers.retain(|subscriber| !subscriber.is_closed());
-        if record.subscribers.len() == MAX_LIVE_SUBSCRIBERS {
-            return Err(AgentError {
-                category: AgentErrorCategory::Conflict,
-                message: "maximum live NOW subscribers reached".to_owned(),
-            });
-        }
-        let (sender, receiver) = mpsc::channel(LIVE_SUBSCRIBER_QUEUE_CAPACITY);
+        let state = lock(&self.state);
+        let record = state.records.get(&operation_id).ok_or_else(operation_not_found)?;
+        let running = matches!(record.info.state, OperationState::Running | OperationState::Cancelling);
+        // Every live reader holds one receiver and releases it when dropped.
+        let changed = if running {
+            if state.changed.receiver_count() < MAX_LIVE_SUBSCRIBERS {
+                Some(state.changed.subscribe())
+            } else {
+                return Err(AgentError {
+                    category: AgentErrorCategory::Conflict,
+                    message: "maximum live NOW subscribers reached".to_owned(),
+                });
+            }
+        } else {
+            None
+        };
         let replay = record
             .events
             .iter()
             .filter(|event| after_sequence.is_none_or(|sequence| event.sequence > sequence))
             .cloned()
             .collect();
-        if matches!(record.info.state, OperationState::Running | OperationState::Cancelling) {
-            record.subscribers.push(sender);
-        }
         Ok(OperationAttachment {
             info: record.info.clone(),
             replay,
-            live: receiver,
+            live: LiveEvents {
+                state: Arc::downgrade(&self.state),
+                operation_id,
+                next_sequence: record.info.next_sequence,
+                changed,
+            },
         })
     }
 
@@ -315,7 +381,6 @@ impl OperationManager {
         };
         self.release_submission();
         if let Err(error) = result {
-            self.invalidate_if_needed(&error).await;
             return Err(client_error(error));
         }
 
@@ -335,7 +400,6 @@ impl OperationManager {
             OperationRecord {
                 info: info.clone(),
                 events: VecDeque::new(),
-                subscribers: Vec::new(),
             },
         );
         state.terminal_order.push_back(info.id);
@@ -352,14 +416,7 @@ impl OperationManager {
             NowExecutionKind::PowerShell => handle.win_ps(build_win_ps(request)).await,
             NowExecutionKind::Pwsh => handle.pwsh(build_pwsh(request)).await,
         };
-        let execution = match result {
-            Ok(execution) => execution,
-            Err(error) => {
-                self.invalidate_if_needed(&error).await;
-                return Err(client_error(error));
-            }
-        };
-        Ok(execution)
+        result.map_err(client_error)
     }
 
     async fn drive_execution(
@@ -378,24 +435,14 @@ impl OperationManager {
             while let Ok(control) = controls.try_recv() {
                 match control {
                     Control::Stdin { data, last, response } => {
-                        let result = match execution.send_stdin(data, last).await {
-                            Ok(()) => Ok(()),
-                            Err(error) => {
-                                self.invalidate_if_needed(&error).await;
-                                Err(client_error(error))
-                            }
-                        };
+                        let result = execution.send_stdin(data, last).await.map_err(client_error);
                         let _ = response.send(result);
                     }
                     Control::Cancel { response } => {
-                        let result = match submit_cancel(&execution).await {
-                            Ok(()) => Ok(()),
-                            Err(error) => {
-                                self.invalidate_if_needed(&error).await;
-                                self.clear_cancellation_requested(operation_id);
-                                Err(client_error(error))
-                            }
-                        };
+                        let result = submit_cancel(&execution).await.map_err(|error| {
+                            self.clear_cancellation_requested(operation_id);
+                            client_error(error)
+                        });
                         let _ = response.send(result);
                     }
                 }
@@ -420,7 +467,6 @@ impl OperationManager {
                 );
             }
             Err(error) => {
-                self.invalidate_if_needed(&error).await;
                 let error = client_error(error);
                 self.emit(operation_id, OperationEventKind::Failed(error.clone()));
                 self.finish(operation_id, OperationState::Failed, None, Some(error));
@@ -470,7 +516,7 @@ impl OperationManager {
 
     fn emit(&self, operation_id: u64, kind: OperationEventKind) {
         let mut state = lock(&self.state);
-        let (event, output_len) = {
+        let output_len = {
             let Some(record) = state.records.get_mut(&operation_id) else {
                 return;
             };
@@ -485,16 +531,13 @@ impl OperationManager {
                 .info
                 .retained_output_bytes
                 .saturating_add(u64::try_from(output_len).unwrap_or(u64::MAX));
-            record.events.push_back(event.clone());
-            record
-                .subscribers
-                .retain(|sender| sender.try_send(event.clone()).is_ok());
-            (event, output_len)
+            record.events.push_back(event);
+            output_len
         };
         state.total_output = state.total_output.saturating_add(output_len);
         trim_operation_events(&mut state, operation_id);
         trim_retention(&mut state);
-        let _ = event;
+        state.changed.send_replace(());
     }
 
     fn finish(
@@ -509,19 +552,13 @@ impl OperationManager {
             record.info.state = operation_state;
             record.info.exit_code = exit_code;
             record.info.error = error;
-            record.subscribers.clear();
         }
         if state.active.as_ref().is_some_and(|active| active.id == operation_id) {
             state.active = None;
         }
         state.terminal_order.push_back(operation_id);
         trim_retention(&mut state);
-    }
-
-    async fn invalidate_if_needed(&self, error: &NowClientError) {
-        if invalidates_handle(error) {
-            self.endpoint.invalidate().await;
-        }
+        state.changed = watch::Sender::new(());
     }
 
     fn clear_cancellation_requested(&self, operation_id: u64) {
@@ -755,6 +792,7 @@ mod tests {
             records: BTreeMap::new(),
             terminal_order: VecDeque::new(),
             total_output: MAX_OPERATION_OUTPUT + 1,
+            changed: watch::Sender::new(()),
         };
         let id = 1;
         let data = vec![0; MAX_OPERATION_OUTPUT + 1];
@@ -780,7 +818,6 @@ mod tests {
                         last: false,
                     },
                 }]),
-                subscribers: Vec::new(),
             },
         );
 
@@ -800,6 +837,7 @@ mod tests {
             records: BTreeMap::new(),
             terminal_order: VecDeque::new(),
             total_output: 0,
+            changed: watch::Sender::new(()),
         };
         for id in 1..=33 {
             state.terminal_order.push_back(id);
@@ -817,7 +855,6 @@ mod tests {
                         next_sequence: 0,
                     },
                     events: VecDeque::new(),
-                    subscribers: Vec::new(),
                 },
             );
         }
@@ -825,49 +862,6 @@ mod tests {
         trim_retention(&mut state);
         assert_eq!(state.records.len(), MAX_TERMINAL_OPERATIONS);
         assert!(!state.records.contains_key(&1));
-    }
-
-    #[tokio::test]
-    async fn slow_subscribers_are_disconnected_instead_of_buffering_output() {
-        let manager = OperationManager::new(Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed")));
-        let id = 1;
-        lock(&manager.state).records.insert(
-            id,
-            OperationRecord {
-                info: OperationInfo {
-                    id,
-                    kind: NowExecutionKind::Batch,
-                    state: OperationState::Running,
-                    detached: false,
-                    exit_code: None,
-                    error: None,
-                    retained_output_bytes: 0,
-                    next_sequence: 0,
-                },
-                events: VecDeque::new(),
-                subscribers: Vec::new(),
-            },
-        );
-
-        let attachments: Vec<_> =
-            core::iter::repeat_with(|| manager.attach(id, None).expect("subscription is accepted"))
-                .take(MAX_LIVE_SUBSCRIBERS)
-                .collect();
-        manager.emit(id, OperationEventKind::Started);
-        manager.emit(id, OperationEventKind::Started);
-
-        assert!(
-            lock(&manager.state)
-                .records
-                .get(&id)
-                .expect("operation remains")
-                .subscribers
-                .is_empty()
-        );
-        for mut attachment in attachments {
-            assert!(attachment.live.recv().await.is_some());
-            assert!(attachment.live.recv().await.is_none());
-        }
     }
 
     #[test]
@@ -888,7 +882,6 @@ mod tests {
                     next_sequence: 0,
                 },
                 events: VecDeque::new(),
-                subscribers: Vec::new(),
             },
         );
 
@@ -930,7 +923,6 @@ mod tests {
                     next_sequence: 0,
                 },
                 events: VecDeque::new(),
-                subscribers: Vec::new(),
             },
         );
 
@@ -966,7 +958,6 @@ mod tests {
                     next_sequence: 0,
                 },
                 events: VecDeque::new(),
-                subscribers: Vec::new(),
             },
         );
 
@@ -983,5 +974,222 @@ mod tests {
                 .len(),
             MAX_OPERATION_EVENTS
         );
+    }
+
+    fn running_manager() -> (OperationManager, u64) {
+        let manager = OperationManager::new(Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed")));
+        let id = 1;
+        lock(&manager.state).records.insert(
+            id,
+            OperationRecord {
+                info: OperationInfo {
+                    id,
+                    kind: NowExecutionKind::Process,
+                    state: OperationState::Running,
+                    detached: false,
+                    exit_code: None,
+                    error: None,
+                    retained_output_bytes: 0,
+                    next_sequence: 0,
+                },
+                events: VecDeque::new(),
+            },
+        );
+        (manager, id)
+    }
+
+    // oracle: mutant a lagging reader loses events or consuming events affects other readers
+    #[tokio::test]
+    async fn lagging_live_readers_each_receive_every_event_through_the_terminal_event() {
+        const BURST: u64 = 64;
+        let (manager, id) = running_manager();
+        let readers: [_; 2] = core::array::from_fn(|_| manager.attach(id, None).expect("attachment is accepted"));
+
+        for _ in 0..BURST {
+            manager.emit(id, OperationEventKind::Started);
+        }
+        manager.emit(id, OperationEventKind::Completed { exit_code: 0 });
+        manager.finish(id, OperationState::Completed, Some(0), None);
+
+        for mut reader in readers {
+            let mut sequences = Vec::new();
+            let mut last = None;
+            while let Some(event) = reader.live.recv().await {
+                sequences.push(event.sequence);
+                last = Some(event.kind);
+            }
+            assert_eq!(sequences, (0..=BURST).collect::<Vec<_>>());
+            assert!(matches!(last, Some(OperationEventKind::Completed { exit_code: 0 })));
+        }
+    }
+
+    async fn assert_waiting_live_reader_receives_events(state: OperationState) {
+        let (manager, id) = running_manager();
+        manager.update_state(id, state);
+        let mut attachment = manager.attach(id, None).expect("attachment is accepted");
+        let (received_tx, mut received_rx) = mpsc::unbounded_channel();
+
+        let read = async {
+            while let Some(event) = attachment.live.recv().await {
+                received_tx.send(event.sequence).expect("the producer is waiting");
+            }
+        };
+        let produce = async {
+            for sequence in 0..2 {
+                manager.emit(id, OperationEventKind::Started);
+                assert_eq!(received_rx.recv().await, Some(sequence));
+            }
+            manager.finish(id, OperationState::Completed, Some(0), None);
+        };
+        tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(read, produce) })
+            .await
+            .expect("the reader ends once the operation finishes");
+    }
+
+    // oracle: mutant a running operation reader misses a wake-up or ends before finish
+    #[tokio::test(start_paused = true)]
+    async fn waiting_live_reader_on_running_operation_receives_each_event_before_finish() {
+        assert_waiting_live_reader_receives_events(OperationState::Running).await;
+    }
+
+    // oracle: mutant a cancelling operation reader treats cancelling as terminal and stops waiting
+    #[tokio::test(start_paused = true)]
+    async fn waiting_live_reader_on_cancelling_operation_receives_each_event_before_finish() {
+        assert_waiting_live_reader_receives_events(OperationState::Cancelling).await;
+    }
+
+    // oracle: mutant seeding the live cursor at 0 or past `next_sequence` after a running replay
+    #[tokio::test(start_paused = true)]
+    async fn attaching_to_a_running_operation_replays_after_sequence_then_streams_live_events() {
+        let (manager, id) = running_manager();
+        manager.emit(id, OperationEventKind::Started);
+        manager.emit_output(id, NowStream::Stdout, vec![b'a'], false);
+
+        let mut attachment = manager.attach(id, Some(0)).expect("attachment is accepted");
+        let replayed: Vec<_> = attachment.replay.iter().map(|event| event.sequence).collect();
+        assert_eq!(replayed, [1]);
+
+        manager.emit_output(id, NowStream::Stdout, vec![b'b'], true);
+        manager.emit(id, OperationEventKind::Completed { exit_code: 0 });
+        manager.finish(id, OperationState::Completed, Some(0), None);
+
+        let mut live_sequences = Vec::new();
+        while let Some(event) = attachment.live.recv().await {
+            live_sequences.push(event.sequence);
+        }
+        assert_eq!(live_sequences, [2, 3]);
+    }
+
+    // oracle: mutant attaching to a finished operation replays seen events or stays open
+    #[tokio::test(start_paused = true)]
+    async fn attaching_to_a_finished_operation_replays_newer_events_and_ends() {
+        let (manager, id) = running_manager();
+        manager.emit(id, OperationEventKind::Started);
+        manager.emit(id, OperationEventKind::Completed { exit_code: 0 });
+        manager.finish(id, OperationState::Completed, Some(0), None);
+
+        let mut attachment = manager.attach(id, Some(0)).expect("attachment is accepted");
+
+        let replayed: Vec<_> = attachment.replay.iter().map(|event| event.sequence).collect();
+        assert_eq!(replayed, [1]);
+        let next = tokio::time::timeout(Duration::from_secs(5), attachment.live.recv())
+            .await
+            .expect("the stream ends");
+        assert!(next.is_none());
+    }
+
+    // oracle: mutant a reader behind trimmed events skips missing output instead of ending
+    #[tokio::test(start_paused = true)]
+    async fn live_reader_behind_trimmed_events_ends_instead_of_skipping_output() {
+        let (manager, id) = running_manager();
+        let mut attachment = manager.attach(id, None).expect("attachment is accepted");
+
+        for _ in 0..=MAX_OPERATION_EVENTS {
+            manager.emit_output(id, NowStream::Stdout, Vec::new(), true);
+        }
+
+        let next = tokio::time::timeout(Duration::from_secs(5), attachment.live.recv())
+            .await
+            .expect("the stream ends");
+        assert!(next.is_none());
+    }
+
+    // oracle: mutant a live reader keeps state alive and waits forever after its manager drops
+    #[tokio::test(start_paused = true)]
+    async fn waiting_live_reader_ends_when_its_manager_is_dropped() {
+        let (manager, id) = running_manager();
+        let mut attachment = manager.attach(id, None).expect("attachment is accepted");
+
+        let drop_manager = async {
+            tokio::task::yield_now().await;
+            drop(manager);
+        };
+        let (next, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(attachment.live.recv(), drop_manager)
+        })
+        .await
+        .expect("the stream ends");
+
+        assert!(next.is_none());
+    }
+
+    // oracle: mutant an attach that never refuses, letting idle attachments accumulate unbounded
+    #[test]
+    fn live_attachments_are_bounded_and_released_when_dropped() {
+        let (manager, id) = running_manager();
+        let _held: Vec<_> = core::iter::repeat_with(|| manager.attach(id, None).expect("attachment is accepted"))
+            .take(MAX_LIVE_SUBSCRIBERS - 1)
+            .collect();
+        let last = manager.attach(id, None).expect("the last slot is available");
+
+        let refused = manager
+            .attach(id, None)
+            .err()
+            .expect("an attachment past the bound is refused");
+        assert_eq!(refused.category, AgentErrorCategory::Conflict);
+
+        drop(last);
+        manager.attach(id, None).expect("a released attachment frees its slot");
+    }
+
+    // oracle: mutant a replay of a finished operation refused when live attachments reach the cap
+    #[test]
+    fn a_finished_operation_can_be_replayed_while_live_attachments_are_at_their_bound() {
+        let (manager, finished_id) = running_manager();
+        let _prior_attachments: Vec<_> =
+            core::iter::repeat_with(|| manager.attach(finished_id, None).expect("attachment is accepted"))
+                .take(MAX_LIVE_SUBSCRIBERS)
+                .collect();
+        manager.finish(finished_id, OperationState::Completed, Some(0), None);
+        let _replays: Vec<_> =
+            core::iter::repeat_with(|| manager.attach(finished_id, None).expect("replay is accepted"))
+                .take(MAX_LIVE_SUBSCRIBERS)
+                .collect();
+
+        let running_id = 2;
+        lock(&manager.state).records.insert(
+            running_id,
+            OperationRecord {
+                info: OperationInfo {
+                    id: running_id,
+                    kind: NowExecutionKind::Process,
+                    state: OperationState::Running,
+                    detached: false,
+                    exit_code: None,
+                    error: None,
+                    retained_output_bytes: 0,
+                    next_sequence: 0,
+                },
+                events: VecDeque::new(),
+            },
+        );
+        let _live_attachments: Vec<_> =
+            core::iter::repeat_with(|| manager.attach(running_id, None).expect("live attachment is accepted"))
+                .take(MAX_LIVE_SUBSCRIBERS)
+                .collect();
+
+        manager
+            .attach(finished_id, None)
+            .expect("a finished operation has no live stream to bound");
     }
 }

@@ -2,7 +2,9 @@ mod active_stage;
 mod autodetect;
 mod connection_activation;
 mod fast_path;
+mod fastpath_input;
 mod heartbeat;
+mod image;
 pub(crate) mod rfx;
 mod save_session_info;
 

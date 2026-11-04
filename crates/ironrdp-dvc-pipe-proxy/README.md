@@ -13,3 +13,8 @@ multiple RDP clients without duplicating code.
 
 Additionally, this crate can be used for other scenarios, such as testing your own custom DVC
 channel client, without needing to patch or rebuild IronRDP itself.
+
+The proxy keeps the DVC open when its local pipe client disconnects and waits for a replacement client.
+Dropping the proxy cancels connection attempts and retry delays.
+Use `DvcNamedPipeProxy::new_async` when the write callback must wait for transport capacity.
+A failed write callback stops forwarding rather than discarding bytes and continuing a corrupted stream.

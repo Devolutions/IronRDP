@@ -676,6 +676,53 @@ fn an_update_only_paints_its_region_rectangles(#[case] layout: Avc444Layout) {
     }
 }
 
+/// A chroma-only update to a surface with no picture yet has no luma to refine, so it paints
+/// nothing rather than chroma over black.
+// oracle: mutant decode_avc444 creating the surface's picture for a chroma-only update
+#[test]
+fn a_chroma_update_without_an_earlier_luma_update_paints_nothing() {
+    let layout = Avc444Layout::V2;
+    let mut session = Session::new();
+    let picture = Yuv444Frame::from_rgba(&checkerboard(0), WIDTH, HEIGHT).expect("picture");
+    let (_, auxiliary) = picture.split(layout).expect("views");
+    let untouched = session.canvas.clone();
+
+    session.send(layout, Encoding::CHROMA, (&auxiliary, &[region(0, WIDTH)]), None);
+
+    assert_eq!(session.canvas, untouched);
+    assert_eq!(session.client.dropped_updates(), 1);
+}
+
+/// Both views describe one picture, so views of two sizes are two pictures, and the update is
+/// dropped whole, main view included. The sizes differ in height alone.
+// oracle: mutant decode_avc444 applying a main view whose auxiliary view has another size
+#[rstest]
+#[case::avc444(Avc444Layout::V1)]
+#[case::avc444v2(Avc444Layout::V2)]
+fn views_of_different_sizes_are_dropped(#[case] layout: Avc444Layout) {
+    let mut session = Session::new();
+    let (main, _) = Yuv444Frame::from_rgba(&checkerboard(0), WIDTH, HEIGHT)
+        .expect("picture")
+        .split(layout)
+        .expect("views");
+    let (_, auxiliary) = Yuv444Frame::from_rgba(&checkerboard_of(0, 48, 16), 48, 16)
+        .expect("shorter picture")
+        .split(layout)
+        .expect("shorter views");
+    let untouched = session.canvas.clone();
+    let regions = [region(0, WIDTH)];
+
+    session.send(
+        layout,
+        Encoding::LUMA_AND_CHROMA,
+        (&main, &regions),
+        Some((&auxiliary, &regions)),
+    );
+
+    assert_eq!(session.canvas, untouched);
+    assert_eq!(session.client.dropped_updates(), 1);
+}
+
 // oracle: spec MS-RDPEGFX §2.2.3.3
 #[test]
 fn a_decoder_without_yuv_planes_advertises_no_avc444() {

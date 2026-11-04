@@ -5,6 +5,14 @@ use core::time::Duration;
 use std::borrow::Cow;
 use std::rc::Rc;
 
+use crate::canvas::Canvas;
+use crate::clipboard;
+use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
+use crate::error::IronError;
+use crate::image::extract_partial_image;
+use crate::input::InputTransaction;
+use crate::network_client::WasmNetworkClient;
+use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
 use anyhow::Context as _;
 use base64::Engine as _;
 use futures_channel::mpsc;
@@ -18,7 +26,7 @@ use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::pdu::{FileContentsFlags, FileContentsRequest, FileContentsResponse, FileDescriptor};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
-use ironrdp::connector::credssp::KerberosConfig;
+use ironrdp::connector::credssp::{KdcResolution, KerberosConfig};
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::dvc::DrdynvcClient;
@@ -39,15 +47,6 @@ use tracing::{debug, error, info, trace, warn};
 use wasm_bindgen::{JsCast as _, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
-
-use crate::canvas::Canvas;
-use crate::clipboard;
-use crate::clipboard::{ClipboardData, FileMetadata, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
-use crate::error::IronError;
-use crate::image::extract_partial_image;
-use crate::input::InputTransaction;
-use crate::network_client::WasmNetworkClient;
-use crate::printer::{JsPrinterStreamCallbacks, WasmPrinter, WasmPrinterBackend, wasm_printer_pair};
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
@@ -727,6 +726,8 @@ impl iron_remote_desktop::Session for Session {
         let desktop_height =
             NonZeroU32::new(u32::from(connection_result.desktop_size.height)).context("desktop height is zero")?;
 
+        ensure_framebuffer_allocatable(connection_result.desktop_size)?;
+
         let mut gui =
             Canvas::new(self.render_canvas.clone(), desktop_width, desktop_height).context("canvas initialization")?;
 
@@ -1130,6 +1131,10 @@ impl iron_remote_desktop::Session for Session {
                             } = connection_activation.connection_activation_state()
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
+                                // Release the previous framebuffer first so the probe and the new allocation do not
+                                // compete with it for linear memory.
+                                drop(image);
+                                ensure_framebuffer_allocatable(desktop_size)?;
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                                 if !active_stage.reactivate(
                                     connection_activation.io_channel_id(),
@@ -1583,6 +1588,7 @@ fn build_config(
         pointer_software_rendering: false,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
+        rdp_version: ironrdp::pdu::gcc::RdpVersion::V5_PLUS,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
         desktop_physical_size: None,
@@ -1741,7 +1747,7 @@ async fn connect(
     let kerberos_config = url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str())
         .ok()
         .map(|url| KerberosConfig {
-            kdc_proxy_url: Some(url),
+            kdc_resolution: KdcResolution::KdcUrl(Some(url)),
             // HACK: It's supposed to be the computer name of the client, but since it's not easy to retrieve this information in the browser,
             // we set the destination hostname instead because it happens to work.
             hostname: destination.clone(),
@@ -2007,6 +2013,26 @@ where
 
         Ok((upgraded, server_public_key))
     }
+}
+
+/// Checks that a framebuffer for `desktop_size` can be allocated, so an oversized desktop fails the session instead of
+/// aborting in the infallible `DecodedImage::new`.
+///
+/// The probe frees its reservation before the real allocation. This holds because wasm32 is single-threaded and the
+/// canvas backing store lives outside linear memory, so nothing else claims that memory in between.
+fn ensure_framebuffer_allocatable(desktop_size: connector::DesktopSize) -> anyhow::Result<()> {
+    let connector::DesktopSize { width, height } = desktop_size;
+
+    let len = usize::from(width)
+        .checked_mul(usize::from(height))
+        .and_then(|pixels| pixels.checked_mul(usize::from(PixelFormat::RgbA32.bytes_per_pixel())))
+        .with_context(|| format!("framebuffer size overflows for a {width}x{height} desktop"))?;
+
+    Vec::<u8>::new()
+        .try_reserve_exact(len)
+        .with_context(|| format!("not enough memory for a {width}x{height} desktop framebuffer"))?;
+
+    Ok(())
 }
 
 #[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]

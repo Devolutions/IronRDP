@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-str-v0.2.0...ironrdp-str-v0.2.1)] - 2026-10-27
+
+### <!-- 7 -->Build
+
+- Declare `ironrdp-core` as a public dependency, since the string types implement its `Encode` and `DecodeOwned` traits ([#2213](https://github.com/Devolutions/IronRDP/issues/2213)) ([405e6576ba](https://github.com/Devolutions/IronRDP/commit/405e6576bac7c64b04efc8a0d00beeecdc648356))
+
+
+
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-str-v0.1.1...ironrdp-str-v0.2.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

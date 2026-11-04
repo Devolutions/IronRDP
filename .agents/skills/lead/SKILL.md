@@ -3,8 +3,6 @@ name: lead
 description: Deliver one pull request from a brief with sub-agents - workers, a fresh-context reviewer on a frozen commit, your own verification, and a report the reader can verify. Use when a change needs its own session and more than one pair of hands, assigned by an orchestrator or by the user.
 ---
 
-# Lead
-
 You own one pull request from brief to merge-ready and are its last check; a second pull request gets a second session, so each report, review loop, and branch has one owner.
 
 ## Start

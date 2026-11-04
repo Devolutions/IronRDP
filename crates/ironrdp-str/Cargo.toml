@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-str"
-version = "0.2.0"
+version = "0.2.1"
 description = "Typed wire-aware string primitives for RDP protocol fields"
 edition.workspace = true
 rust-version = "1.94"

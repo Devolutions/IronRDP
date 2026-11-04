@@ -13,6 +13,7 @@ use ironrdp::client::config::{
 use ironrdp::client::usb::UsbRedirectionConfig;
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp_cfg::PropertySetExt as _;
+use ironrdp_propertyset::Value;
 use tap::prelude::*;
 use url::Url;
 
@@ -27,6 +28,45 @@ pub enum ClipboardType {
     Disable,
     /// Use a stub clipboard backend (for testing or headless usage).
     Stub,
+}
+
+/// A single `--prop KEY:TYPE:VALUE` override, parsed with the same grammar as one `.rdp` file line
+/// (see `ironrdp_rdpfile::load`): `TYPE` is `i` for integer or `s` for string.
+#[derive(Clone, Debug)]
+struct PropOverride {
+    key: String,
+    value: Value,
+}
+
+impl core::str::FromStr for PropOverride {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let mut parts = input.splitn(3, ':');
+        let (Some(key), Some(ty), Some(value)) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(format!("malformed --prop '{input}', expected KEY:TYPE:VALUE"));
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("empty key in --prop '{input}', expected KEY:TYPE:VALUE"));
+        }
+        let value = match ty {
+            "i" => value
+                .parse::<i64>()
+                .map(Value::from)
+                .map_err(|_| format!("invalid integer value in --prop '{input}'"))?,
+            "s" => Value::from(value),
+            other => {
+                return Err(format!(
+                    "unknown type '{other}' in --prop '{input}', expected 'i' or 's'"
+                ));
+            }
+        };
+        Ok(Self {
+            key: key.to_owned(),
+            value,
+        })
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -85,6 +125,13 @@ struct Args {
     /// Path to a .rdp file to read the configuration from.
     #[clap(long)]
     rdp_file: Option<PathBuf>,
+
+    /// Arbitrary property override (repeatable): `KEY:TYPE:VALUE`, the same grammar as one `.rdp`
+    /// file line (`TYPE` is `i` for integer or `s` for string), e.g. `--prop
+    /// enablerdsaadauth:i:1 --prop username:s:admin`. Applied on top of `--rdp-file` but under the
+    /// named flags below (e.g. `--username`), which always win for the same key.
+    #[clap(long = "prop", value_name = "KEY:TYPE:VALUE")]
+    prop: Vec<PropOverride>,
 
     /// A target RDP server user name
     #[clap(short, long, env = "RDP_USERNAME")]
@@ -619,6 +666,11 @@ impl ViewerConfig {
                     eprintln!("Warning: skipped entry in {}: {error}", rdp_file.display());
                 }
             }
+            ConfigBuilder::apply_rdp_launch_companion(rdp_file, &mut properties);
+        }
+
+        for over in core::mem::take(&mut args.prop) {
+            properties.insert(over.key, over.value);
         }
 
         let log_file = args.log_file.clone();

@@ -47,7 +47,8 @@ impl BitmapEncoder {
         BitmapUpdateData::encode_header(total, &mut cursor).map_err(BitmapEncodeError::Encode)?;
 
         for (i, chunk) in chunks.enumerate() {
-            let height = cast_int!("bitmap height", chunk.len() / stride).map_err(BitmapEncodeError::Encode)?;
+            // The last row of a bitmap narrower than its stride ends at the row's pixels.
+            let height = cast_int!("bitmap height", chunk.len().div_ceil(stride)).map_err(BitmapEncodeError::Encode)?;
             let i: u16 = cast_int!("chunk idx", i).map_err(BitmapEncodeError::Encode)?;
             let top = bitmap.y + i * chunk_height;
 

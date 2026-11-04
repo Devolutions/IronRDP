@@ -1,18 +1,19 @@
 mod target_addr;
 use std::path::PathBuf;
 
-pub use target_addr::{ParseTargetAddrError, TargetAddr, TargetHost};
-
 use ironrdp_propertyset::PropertySet;
+pub use target_addr::{ParseTargetAddrError, TargetAddr, TargetHost};
 
 /// Property keys whose values are secrets and must never be surfaced verbatim.
 ///
 /// Matching is case-insensitive, so a single lowercase entry covers casing variants such as
 /// `GatewayPassword`/`gatewaypassword` and `ClearTextPassword`/`cleartextpassword`.
 const SECRET_KEYS: &[&str] = &[
-    "cleartextpassword",        // plaintext RDP account password
-    "gatewaypassword",          // RD gateway password (both casings)
-    "ironrdp_rdcleanpathtoken", // RDCleanPath authentication token
+    "cleartextpassword",           // plaintext RDP account password
+    "gatewaypassword",             // RD gateway password (both casings)
+    "ironrdp_rdcleanpathtoken",    // RDCleanPath authentication token
+    "ironrdp_avd_gateway_token",   // AVD orchestration gateway bearer token
+    "ironrdp_avd_sso_logon_token", // AVD orchestration SSO logon token
 ];
 
 /// Returns `true` when `key` names a property whose value is a secret (password or token).
@@ -46,6 +47,45 @@ impl core::fmt::Display for InvalidDesktopSize {
 }
 
 impl core::error::Error for InvalidDesktopSize {}
+
+/// Experimental Remote Credential Guard policy (`ironrdp_remote_guard`).
+///
+/// Every enabled mode requires Kerberos for the initial logon and prohibits password delegation.
+/// The mode selects which authentication packages the remote session may redirect afterwards,
+/// mirroring the CredSSP package selection: `Negotiate` leaves both Kerberos and NTLMv2 available
+/// and the remote side picks per connection, while `Kerberos` and `Ntlm` restrict redirection to
+/// one package.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RemoteGuardMode {
+    /// Use ordinary RDP authentication.
+    #[default]
+    Disabled,
+    /// Redirect both Kerberos and NTLMv2 operations (CredSSP `Negotiate` equivalent).
+    Negotiate,
+    /// Redirect NTLMv2 operations only; Kerberos still performs the mandatory initial logon.
+    Ntlm,
+    /// Redirect Kerberos operations only.
+    Kerberos,
+}
+
+impl RemoteGuardMode {
+    /// Whether Remote Credential Guard is required.
+    pub fn is_enabled(self) -> bool {
+        self != Self::Disabled
+    }
+}
+
+/// Invalid `ironrdp_remote_guard` property type or value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidRemoteGuardMode;
+
+impl core::fmt::Display for InvalidRemoteGuardMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ironrdp_remote_guard must be 0-3 or one of: disabled, negotiate, ntlm, kerberos")
+    }
+}
+
+impl core::error::Error for InvalidRemoteGuardMode {}
 
 /// Controls whether and how an RD Gateway server is used.
 ///
@@ -574,6 +614,14 @@ pub trait PropertySetExt {
     /// Removes the `enablecredsspsupport` property.
     fn clear_enable_credssp_support(&mut self);
 
+    /// Experimental Remote Credential Guard policy (`ironrdp_remote_guard`).
+    fn remote_guard_mode(&self) -> Result<Option<RemoteGuardMode>, InvalidRemoteGuardMode>;
+    /// Sets `ironrdp_remote_guard`: 0 disables RCG, 1 negotiates Kerberos and NTLMv2, 2
+    /// redirects NTLMv2 only, 3 redirects Kerberos only.
+    fn set_remote_guard_mode(&mut self, mode: RemoteGuardMode);
+    /// Removes the `ironrdp_remote_guard` property.
+    fn clear_remote_guard_mode(&mut self);
+
     /// Target server address (`full address`).
     fn full_address(&self) -> Result<Option<TargetAddr>, ParseTargetAddrError>;
     /// Sets the `full address` property.
@@ -1045,6 +1093,38 @@ impl PropertySetExt for PropertySet {
 
     fn clear_enable_credssp_support(&mut self) {
         self.remove("enablecredsspsupport");
+    }
+
+    fn remote_guard_mode(&self) -> Result<Option<RemoteGuardMode>, InvalidRemoteGuardMode> {
+        match (
+            self.get::<i64>("ironrdp_remote_guard"),
+            self.get::<&str>("ironrdp_remote_guard"),
+        ) {
+            (None, None) => Ok(None),
+            (Some(0), _) => Ok(Some(RemoteGuardMode::Disabled)),
+            (Some(1), _) => Ok(Some(RemoteGuardMode::Negotiate)),
+            (Some(2), _) => Ok(Some(RemoteGuardMode::Ntlm)),
+            (Some(3), _) => Ok(Some(RemoteGuardMode::Kerberos)),
+            (None, Some(value)) if value.eq_ignore_ascii_case("disabled") => Ok(Some(RemoteGuardMode::Disabled)),
+            (None, Some(value)) if value.eq_ignore_ascii_case("kerberos") => Ok(Some(RemoteGuardMode::Kerberos)),
+            (None, Some(value)) if value.eq_ignore_ascii_case("ntlm") => Ok(Some(RemoteGuardMode::Ntlm)),
+            (None, Some(value)) if value.eq_ignore_ascii_case("negotiate") => Ok(Some(RemoteGuardMode::Negotiate)),
+            _ => Err(InvalidRemoteGuardMode),
+        }
+    }
+
+    fn set_remote_guard_mode(&mut self, mode: RemoteGuardMode) {
+        let value: i64 = match mode {
+            RemoteGuardMode::Disabled => 0,
+            RemoteGuardMode::Negotiate => 1,
+            RemoteGuardMode::Ntlm => 2,
+            RemoteGuardMode::Kerberos => 3,
+        };
+        self.insert("ironrdp_remote_guard", value);
+    }
+
+    fn clear_remote_guard_mode(&mut self) {
+        self.remove("ironrdp_remote_guard");
     }
 
     fn full_address(&self) -> Result<Option<TargetAddr>, ParseTargetAddrError> {

@@ -12,6 +12,7 @@ use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::gcc::{ChannelName, Monitor};
 use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::pointer::PointerUpdateData;
 use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
 use ironrdp_pdu::rdp::capability_sets::WindowSupportLevel;
 use ironrdp_pdu::rdp::client_info::CompressionType;
@@ -118,6 +119,25 @@ fn new_bulk_decompressor(compression_type: Option<CompressionType>) -> Option<Bu
     compression_type.map(|compression_type| BulkCompressor::new(to_bulk_compression_type(compression_type)))
 }
 
+/// Encodes `events` into Fast-Path Input PDUs ([\[MS-RDPBCGR\] 2.2.8.1.2]), one PDU per
+/// [`FastPathInput::MAX_EVENTS`] events, in order.
+///
+/// It reads no session state, so a client can call it while another thread drives
+/// [`ActiveStage::process`]. It does not redraw the client-side software pointer:
+/// [`ActiveStage::process_fastpath_input`] does that on top of these frames.
+///
+/// [\[MS-RDPBCGR\] 2.2.8.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b8e7c588-51cb-455b-bb73-92d480903133
+pub fn encode_fastpath_input(events: &[FastPathInputEvent]) -> SessionResult<Vec<Vec<u8>>> {
+    events
+        .chunks(FastPathInput::MAX_EVENTS)
+        .map(|event_chunk| {
+            // PERF: unnecessary copy
+            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
+            ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)
+        })
+        .collect()
+}
+
 impl ActiveStage {
     pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
         self.fast_path_processor.update_mouse_pos(x, y);
@@ -137,6 +157,9 @@ impl ActiveStage {
 
     /// Encodes outgoing input events and modifies image if necessary (e.g for client-side pointer
     /// rendering).
+    ///
+    /// Without software pointer rendering, the frames are exactly those of
+    /// [`encode_fastpath_input`], which needs neither the stage nor the image.
     pub fn process_fastpath_input(
         &mut self,
         image: &mut DecodedImage,
@@ -150,17 +173,35 @@ impl ActiveStage {
         // Mouse move events are prevalent, so we can preallocate space for
         // response frames + graphics update.
         let mut output = Vec::with_capacity(events.len().div_ceil(FastPathInput::MAX_EVENTS) + 1);
+        output.extend(
+            encode_fastpath_input(events)?
+                .into_iter()
+                .map(ActiveStageOutput::ResponseFrame),
+        );
+        output.extend(self.move_software_pointer(image, events)?);
 
-        for event_chunk in events.chunks(FastPathInput::MAX_EVENTS) {
-            // PERF: unnecessary copy
-            let fastpath_input = FastPathInput::new(event_chunk.to_vec()).map_err(SessionError::decode)?;
-            let frame = ironrdp_core::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
-            output.push(ActiveStageOutput::ResponseFrame(frame));
-        }
+        Ok(output)
+    }
 
+    /// Modifies image for input events sent on another channel, such as the MS-RDPECI core input
+    /// dynamic channel, the way [`Self::process_fastpath_input`] does without encoding the events.
+    pub fn process_input_pointer(
+        &mut self,
+        image: &mut DecodedImage,
+        events: &[FastPathInputEvent],
+    ) -> SessionResult<Option<ActiveStageOutput>> {
+        self.damage_regions.clear();
+        self.move_software_pointer(image, events)
+    }
+
+    fn move_software_pointer(
+        &mut self,
+        image: &mut DecodedImage,
+        events: &[FastPathInputEvent],
+    ) -> SessionResult<Option<ActiveStageOutput>> {
         // If pointer rendering is disabled - we can skip the rest
         if !self.enable_server_pointer {
-            return Ok(output);
+            return Ok(None);
         }
 
         // If mouse was moved by client - we should update framebuffer to reflect new
@@ -171,18 +212,16 @@ impl ActiveStage {
             _ => None,
         });
 
-        let (mouse_x, mouse_y) = match mouse_pos {
-            Some(mouse_pos) => mouse_pos,
-            None => return Ok(output),
+        let Some((mouse_x, mouse_y)) = mouse_pos else {
+            return Ok(None);
         };
 
         // Graphics update is only sent when update is visually changed the framebuffer
-        if let Some(rect) = image.move_pointer(mouse_x, mouse_y)? {
-            self.damage_regions.push(rect.clone());
-            output.push(ActiveStageOutput::GraphicsUpdate(rect));
-        }
-
-        Ok(output)
+        let Some(rect) = image.move_pointer(mouse_x, mouse_y)? else {
+            return Ok(None);
+        };
+        self.damage_regions.push(rect.clone());
+        Ok(Some(ActiveStageOutput::GraphicsUpdate(rect)))
     }
 
     /// Process a frame received from the server.
@@ -264,6 +303,43 @@ impl ActiveStage {
             }
         };
 
+        self.push_processor_updates(image, processor_updates, &mut stage_outputs)?;
+
+        Ok(stage_outputs)
+    }
+
+    /// Applies a pointer update that arrived outside the fast-path and slow-path output, such as
+    /// one from the [MS-RDPEMSC] mouse cursor channel.
+    ///
+    /// The update goes through the same pointer cache, server-pointer setting and software
+    /// rendering as [MS-RDPBCGR] pointer updates.
+    /// Damage regions add to those of the last call to [`ActiveStage::process`] or
+    /// [`ActiveStage::process_dvc_tunnel`].
+    ///
+    /// [MS-RDPEMSC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemsc/
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    pub fn process_pointer_update(
+        &mut self,
+        image: &mut DecodedImage,
+        update: PointerUpdateData<'_>,
+    ) -> SessionResult<Vec<ActiveStageOutput>> {
+        let processor_updates = self.fast_path_processor.process_pointer_update(image, update)?;
+        let mut stage_outputs = Vec::new();
+        self.push_processor_updates(image, processor_updates, &mut stage_outputs)?;
+        Ok(stage_outputs)
+    }
+
+    /// Turns processor updates into outputs, then widens the first graphics update after a
+    /// graphics reset.
+    ///
+    /// UNTESTED: through `process_pointer_update`, a software-rendered pointer can be the first
+    /// graphics update after a reset, and is widened like any other.
+    fn push_processor_updates(
+        &mut self,
+        image: &DecodedImage,
+        processor_updates: Vec<UpdateKind>,
+        stage_outputs: &mut Vec<ActiveStageOutput>,
+    ) -> SessionResult<()> {
         for update in processor_updates {
             match update {
                 UpdateKind::None => {}
@@ -292,10 +368,9 @@ impl ActiveStage {
                 }
             }
         }
+        self.widen_to_full_refresh(image, stage_outputs);
 
-        self.widen_to_full_refresh(image, &mut stage_outputs);
-
-        Ok(stage_outputs)
+        Ok(())
     }
 
     /// Drains the client-side EGFX compositor: follows a pending `ResetGraphics`, composites
@@ -546,9 +621,10 @@ impl ActiveStage {
     ///
     /// `None` means no Display Control client is configured. `Some(false)` means it is configured
     /// but its dynamic channel is still opening or has not received its capabilities PDU.
-    pub fn display_control_ready(&mut self) -> Option<bool> {
+    pub fn display_control_ready(&self) -> Option<bool> {
         let Some(dvc) = self.get_dvc::<DisplayControlClient>() else {
             return self
+                .x224_processor
                 .get_svc_processor::<DrdynvcClient>()
                 .and_then(|drdynvc| drdynvc.has_registered_dvc::<DisplayControlClient>().then_some(false));
         };
@@ -1264,7 +1340,7 @@ mod tests {
     use ironrdp_pdu::input::MousePdu;
     use ironrdp_pdu::input::fast_path::KeyboardFlags;
     use ironrdp_pdu::input::mouse::PointerFlags;
-    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerUpdateData};
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute};
     use ironrdp_rdpei::pdu::{PenEventPdu, RdpInputProtocolVersion, RdpeiPdu, ScReadyPdu, TouchEventPdu};
 
     #[test]

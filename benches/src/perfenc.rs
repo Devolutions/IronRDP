@@ -69,6 +69,7 @@ async fn main() -> Result<(), anyhow::Error> {
         update_codecs,
         8 * 1024 * 1024,
         u16::MAX,
+        u16::MAX,
         LargePointerSupportFlags::all(),
     )
     .context("failed to initialize update encoder")?;

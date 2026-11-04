@@ -106,6 +106,21 @@ pub fn is_portable_format(format: &ClipboardFormat) -> bool {
     })
 }
 
+/// Removes `CF_DIBV5` when `CF_DIB` precedes it in `EnumClipboardFormats` order.
+///
+/// Windows lists the application-supplied bitmap format before its synthesized
+/// conversions and can corrupt `BI_BITFIELDS` pixels when synthesizing `CF_DIBV5`
+/// from `CF_DIB`.
+pub fn omit_synthesized_dibv5(formats: &mut Vec<ClipboardFormat>) {
+    if formats
+        .iter()
+        .find(|format| matches!(format.id(), ClipboardFormatId::CF_DIB | ClipboardFormatId::CF_DIBV5))
+        .is_some_and(|format| format.id() == ClipboardFormatId::CF_DIB)
+    {
+        formats.retain(|format| format.id() != ClipboardFormatId::CF_DIBV5);
+    }
+}
+
 /// Returns whether `format` is the file list format, which is identified by name.
 pub fn is_file_list_format(format: &ClipboardFormat) -> bool {
     format.name().map(ClipboardFormatName::value) == Some(ClipboardFormatName::FILE_LIST.value())

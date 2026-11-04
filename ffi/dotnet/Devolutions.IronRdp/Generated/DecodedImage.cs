@@ -7,20 +7,13 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class DecodedImage
+public partial class DecodedImage: IDisposable
 {
     private unsafe RustHandle<Raw.DecodedImage>? _inner;
 
     private static readonly unsafe RustDestructor<Raw.DecodedImage> _destroy = Raw.DecodedImage.Destroy;
 
-    /// <returns>
-    /// A <c>BytesSlice</c> allocated on Rust side.
-    /// </returns>
-    /// <remarks>
-    /// Lifetime: the returned native-backed value may borrow from the receiver or one or more inputs.
-    /// Source handles stay reachable while the returned value exists.
-    /// </remarks>
-    public BytesSlice Data
+    public nuint DataSize
     {
         get
         {
@@ -30,8 +23,7 @@ public partial class DecodedImage
                 try
                 {
                     selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
-                    Raw.BytesSlice* result = Raw.DecodedImage.GetData(selfLease!.Ptr);
-                    return new BytesSlice(result, LifetimeEdge.Move(ref selfLease));
+                    return Raw.DecodedImage.GetDataSize(selfLease!.Ptr);
                 }
                 finally
                 {
@@ -137,6 +129,64 @@ public partial class DecodedImage
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    public void FillData(byte[] buffer)
+    {
+        unsafe
+        {
+            if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+            BorrowLease<Raw.DecodedImage>? selfLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                fixed (byte* bufferPtr = buffer)
+                {
+                    var result = Raw.DecodedImage.FillData(selfLease!.Ptr, new DiplomatSliceMutU8 { Ptr = bufferPtr, Len = (nuint)buffer.Length });
+                    if (!result.IsOk)
+                    {
+                        throw new IronRdpException(new IronRdpError(result.Err));
+                    }
+                    return;
+                }
+            }
+            finally
+            {
+                selfLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public void CopyRectInto(InclusiveRectangle rect, byte[] buffer, nuint bufferStride)
+    {
+        unsafe
+        {
+            if (rect == null) throw new ArgumentNullException(nameof(rect));
+            if (buffer == null) throw new ArgumentNullException(nameof(buffer));
+            BorrowLease<Raw.DecodedImage>? selfLease = null;
+            BorrowLease<Raw.InclusiveRectangle>? rectLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                rectLease = rect._diplomatHandle.Lease(BorrowKind.Shared);
+                fixed (byte* bufferPtr = buffer)
+                {
+                    var result = Raw.DecodedImage.CopyRectInto(selfLease!.Ptr, rectLease!.Ptr, new DiplomatSliceMutU8 { Ptr = bufferPtr, Len = (nuint)buffer.Length }, bufferStride);
+                    if (!result.IsOk)
+                    {
+                        throw new IronRdpException(new IronRdpError(result.Err));
+                    }
+                    return;
+                }
+            }
+            finally
+            {
+                selfLease?.Release();
+                rectLease?.Release();
+            }
+        }
+    }
+
     private void Cleanup()
     {
         unsafe
@@ -150,5 +200,19 @@ public partial class DecodedImage
             inner.ReleaseWrapper();
             _inner = null;
         }
+    }
+    /// <summary>
+    /// Releases this wrapper's native resource immediately.
+    /// </summary>
+    /// <remarks>
+    /// Retained-borrow returns sourced from a manually_disposable opaque are
+    /// rejected during generation, so Dispose is not a parent-invalidation API.
+    /// Callers must not race Dispose with calls from another thread. Later calls
+    /// throw <see cref="ObjectDisposedException"/>.
+    /// </remarks>
+    public void Dispose()
+    {
+        Cleanup();
+        GC.SuppressFinalize(this);
     }
 }

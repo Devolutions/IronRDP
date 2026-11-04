@@ -3,8 +3,6 @@ name: docs-writer
 description: Write clear, concise technical documentation that helps readers complete a task or understand an interface. Use whenever creating or substantially rewriting READMEs, guides, tutorials, reference docs, rustdoc, explanatory comments, or release notes.
 ---
 
-# Documentation writer
-
 For Markdown, invoke `markdown-writer`; otherwise invoke `prose-writer`.
 Apply the selected writer's rules throughout.
 Identify the intended reader, their goal, and the prerequisites they need.

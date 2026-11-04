@@ -3,8 +3,6 @@ name: markdown-writer
 description: Write clean, readable Markdown with concise prose and maintainable source formatting. Use whenever creating or substantially rewriting Markdown files, including READMEs, guides, release notes, issue templates, and Markdown-based documentation.
 ---
 
-# Markdown writer
-
 Invoke `prose-writer` before drafting and apply its rules throughout.
 Use the shallowest heading hierarchy that makes the document easy to scan.
 Prefer short paragraphs and lists only when items are easier to compare or follow separately.

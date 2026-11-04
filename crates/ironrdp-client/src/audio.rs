@@ -16,14 +16,12 @@ use ironrdp_dvc::{DrdynvcClient, DvcChannelListener, DvcClientProcessor};
 use ironrdp_pdu::pdu_other_err;
 use ironrdp_rdpsnd::client::{Clock, DVC_CHANNEL_NAME, LOSSY_DVC_CHANNEL_NAME, RdpsndClientHandler, RdpsndDvcState};
 use ironrdp_rdpsnd::pdu::{AudioFormat, AudioFormatFlags, PitchPdu, QualityMode, VolumePdu};
-use ironrdp_rdpsnd_native::DeviceSelector;
-use ironrdp_rdpsnd_native::RdpeaiCaptureBackend;
 use ironrdp_rdpsnd_native::capture::CaptureConfig;
 use ironrdp_rdpsnd_native::cpal::{PlaybackConfig, RdpsndBackend};
+pub use ironrdp_rdpsnd_native::{AudioDeviceInfo, Direction, list_devices};
+use ironrdp_rdpsnd_native::{DeviceSelector, RdpeaiCaptureBackend};
 
 use crate::rdp::{RdpInputEvent, RdpInputSender};
-
-pub use ironrdp_rdpsnd_native::{AudioDeviceInfo, Direction, list_devices};
 
 /// `.rdp` property naming the audio output device (IronRDP extension).
 pub const OUTPUT_DEVICE_PROPERTY: &str = "ironrdp_audiooutputdevice";
@@ -152,12 +150,10 @@ pub(crate) fn attach_playback(
 ///
 /// Windows opens and closes the AUDIO_INPUT (MS-RDPEAI) dynamic virtual channel repeatedly
 /// over the lifetime of a session, as applications on the remote side grab and release the
-/// microphone. Registering this channel via `with_dynamic_channel` (the `OnceListener` path)
-/// hands out its `RdpeaiClient` exactly once: after the first Close, `OnceListener::create`
-/// keeps returning `None`, so the client answers every later Create Request with
-/// `NO_LISTENER` and the microphone silently stops working for the rest of the session.
-/// `with_listener` + this factory recreates the processor (and the underlying capture
-/// backend/cpal stream) on every open, matching how the RDPEWA listener is wired.
+/// microphone. Registering this channel via `with_dynamic_channel` would hand the same
+/// `RdpeaiClient` back on every open. `with_listener` + this factory recreates the processor
+/// (and the underlying capture backend/cpal stream) on every open, matching how the RDPEWA
+/// listener is wired.
 pub(crate) struct AudioInputListener {
     pub(crate) sender: RdpInputSender,
     pub(crate) config: AudioConfig,

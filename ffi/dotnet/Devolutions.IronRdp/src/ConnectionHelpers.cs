@@ -36,7 +36,8 @@ internal static class ConnectionHelpers
         WriteBuf writeBuf,
         Framed<T> framed,
         byte[] serverpubkey,
-        uint? selectedProtocol = null) where T : Stream
+        uint? selectedProtocol = null,
+        CancellationToken cancellationToken = default) where T : Stream
     {
         // Extract hostname from "hostname:port" format if needed
         // CredSSP needs just the hostname for the service principal name (TERMSRV/hostname)
@@ -79,7 +80,7 @@ internal static class ConnectionHelpers
                 break;
             }
 
-            var pdu = await framed.ReadByHint(pduHint);
+            var pdu = await framed.ReadByHint(pduHint, cancellationToken);
             var decoded = credsspSequence.DecodeServerMessage(pdu);
 
             // Don't remove, DecodeServerMessage is generated, and it can return null
@@ -100,18 +101,19 @@ internal static class ConnectionHelpers
         string serverName,
         ClientConnector connector,
         byte[] serverPubKey,
-        Framed<T> framedSsl) where T : Stream
+        Framed<T> framedSsl,
+        CancellationToken cancellationToken = default) where T : Stream
     {
         var writeBuf = WriteBuf.New();
 
         if (connector.ShouldPerformCredssp())
         {
-            await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey);
+            await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey, cancellationToken: cancellationToken);
         }
 
         while (!connector.DynState.IsTerminal())
         {
-            await Connection.SingleSequenceStep(connector, writeBuf, framedSsl);
+            await Connection.SingleSequenceStep(connector, writeBuf, framedSsl, cancellationToken);
         }
 
         ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();

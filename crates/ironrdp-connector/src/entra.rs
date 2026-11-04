@@ -6,6 +6,9 @@
 //! Framing and message parsing are property-tested in `ironrdp-testsuite-core` rather than fuzzed in
 //! `ironrdp-fuzzing`, which does not depend on `ironrdp-connector`.
 //!
+//! The framing, parsing, and assertion helpers are public so that the same exchange can run over other
+//! TLS transports, such as the TLS tunnel of the `Microsoft::Windows::RDS::InteractiveEntraAuth` dynamic channel.
+//!
 //! [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 
 use ironrdp_core::{DecodeResult, WriteBuf, other_err};
@@ -17,10 +20,12 @@ use crate::{ConnectorResult, Written, custom_err, reason_err};
 // Local resource limit, not a protocol-defined maximum.
 const MAX_MESSAGE_SIZE: usize = 64 * 1024;
 
+/// Finds the end of one RDS AAD JSON message, including its optional NUL terminator.
 #[derive(Debug)]
-pub(crate) struct EntraJsonHint;
+pub struct EntraJsonHint;
 
-pub(crate) const ENTRA_JSON_HINT: EntraJsonHint = EntraJsonHint;
+/// The [`EntraJsonHint`] instance.
+pub const ENTRA_JSON_HINT: EntraJsonHint = EntraJsonHint;
 
 impl PduHint for EntraJsonHint {
     fn find_size(&self, bytes: &[u8]) -> DecodeResult<Option<(bool, usize)>> {
@@ -69,7 +74,8 @@ fn json_whitespace_len(bytes: &[u8]) -> usize {
         .count()
 }
 
-pub(crate) fn server_nonce(input: &[u8]) -> ConnectorResult<String> {
+/// Parses the server nonce (`ts_nonce`) from an RDS AAD server nonce message.
+pub fn server_nonce(input: &[u8]) -> ConnectorResult<String> {
     let value = message(input)?;
     let nonce = value
         .get("ts_nonce")
@@ -79,7 +85,8 @@ pub(crate) fn server_nonce(input: &[u8]) -> ConnectorResult<String> {
     Ok(nonce.to_owned())
 }
 
-pub(crate) fn authentication_result(input: &[u8]) -> ConnectorResult<u32> {
+/// Parses the HRESULT from an RDS AAD authentication result message.
+pub fn authentication_result(input: &[u8]) -> ConnectorResult<u32> {
     let value = message(input)?;
     let result = value
         .get("authentication_result")
@@ -114,7 +121,8 @@ fn message(input: &[u8]) -> ConnectorResult<Value> {
     Ok(value)
 }
 
-pub(crate) fn write_assertion(assertion: &str, output: &mut WriteBuf) -> ConnectorResult<Written> {
+/// Writes the NUL-terminated RDS AAD authentication request carrying a compact JWS `rdp_assertion`.
+pub fn write_assertion(assertion: &str, output: &mut WriteBuf) -> ConnectorResult<Written> {
     if MAX_MESSAGE_SIZE < assertion.len() {
         return Err(reason_err!("EntraAuth", "RDP assertion exceeds size limit"));
     }

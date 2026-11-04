@@ -279,6 +279,7 @@ pub mod ffi {
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
                 multitransport_flags: None,
                 support_dyn_vc_gfx_protocol: false,
+                rdp_version: ironrdp::pdu::gcc::RdpVersion::V5_PLUS,
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
                 desktop_scale_factor: 0,
                 desktop_physical_size: None,

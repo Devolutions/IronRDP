@@ -3,8 +3,6 @@ name: agents-md
 description: Discipline for writing and updating AGENTS.md (or CLAUDE.md) so it holds only what an agent cannot infer - policy, gotchas, and pointers - and stays under about 40 lines. Use instead of /init when creating, editing, or adapting one.
 ---
 
-# AGENTS.md
-
 `AGENTS.md` is loaded on every task, so every line is a cost paid everywhere.
 Measured on real repositories (arXiv 2602.11988): developer-written files raised resolve rate about 4% and cost about 20%; LLM-generated files lowered resolve rate; repository overviews did not help.
 What helped agents was locating the right place to change, not writing better patches.
@@ -30,6 +28,9 @@ Put positively: there is no way the agent learns this unless we write it.
 
 What `/init` generates is the blacklist: product overview, directory map, command lists, "follow standard conventions", inventories of packages or scopes, and lossy summaries of `STYLE.md`.
 Examples without the rule behind them are the costliest lines; agents copy the example, mistakes included.
+
+Omit an opening banner that only repeats the repository, path, or body context, because it adds no guidance.
+Keep headings that organize the rules or add context.
 
 ## Division of labour
 

@@ -1,8 +1,9 @@
-//! RemoteApp window model, coordinate translation and pixel helpers of the viewer.
+//! RemoteApp window model, coordinate translation, pixel helpers, and shutdown classification of the viewer.
 
 use ironrdp::input::MousePosition;
 use ironrdp::pdu::geometry::ExclusiveRectangle;
 use ironrdp::pdu::window::{IconInfo, ShowState, WindowPoint, WindowSize, WindowState, WindowStyle};
+use ironrdp_viewer::app::RpcApp;
 use ironrdp_viewer::rail::{
     MAX_TOTAL_WINDOW_PIXELS, MAX_WINDOW_PIXELS, ModelChanges, RailWindowModel, WindowPixels, bounded_window_size,
     crop_frame, fits_window_pixel_budget, icon_to_rgba, window_point_to_desktop,
@@ -466,4 +467,109 @@ fn server_window_sizes_are_bounded_for_local_windows(#[case] size: (u32, u32), #
 
     assert_eq!((width, height), bounded);
     assert!(usize::try_from(u64::from(width) * u64::from(height)).unwrap() <= MAX_WINDOW_PIXELS);
+}
+
+// oracle: spec MS-RDPBCGR §1.3.1.4.2 (the server may close the transport upon receiving a shutdown request)
+#[rstest::rstest]
+#[case::unexpected_eof(std::io::ErrorKind::UnexpectedEof)]
+#[case::connection_aborted(std::io::ErrorKind::ConnectionAborted)]
+#[case::connection_reset(std::io::ErrorKind::ConnectionReset)]
+#[case::broken_pipe(std::io::ErrorKind::BrokenPipe)]
+fn shutdown_classifier_accepts_transport_teardown_io_kinds(#[case] kind: std::io::ErrorKind) {
+    let error = ironrdp::session::custom_err!("read frame", std::io::Error::from(kind));
+    assert!(RpcApp::is_expected_shutdown_error(&error));
+}
+
+// oracle: spec MS-RDPBCGR §1.3.1.4.2 (transport teardown wrapped by an intermediate connector or framing layer)
+#[test]
+fn shutdown_classifier_accepts_nested_transport_teardown_io_error() {
+    let inner = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+    let outer = ironrdp::connector::custom_err!("read frame", inner);
+    let error = ironrdp::session::custom_err!("active session", outer);
+    assert!(RpcApp::is_expected_shutdown_error(&error));
+}
+
+// oracle: mutant malformed PDU decode errors or non-teardown failures masked as graceful user-initiated shutdown
+#[test]
+fn shutdown_classifier_rejects_decode_and_non_teardown_errors() {
+    use ironrdp::session::SessionErrorExt as _;
+
+    let decode_err: ironrdp_core::DecodeError = ironrdp_core::not_enough_bytes_err!("test", 1, 4);
+    let direct_decode = ironrdp::session::SessionError::decode(decode_err);
+    assert!(!RpcApp::is_expected_shutdown_error(&direct_decode));
+
+    let nested_decode_err: ironrdp_core::DecodeError = ironrdp_core::not_enough_bytes_err!("test", 1, 4);
+    let nested_decode = ironrdp::session::custom_err!("read frame", std::io::Error::other(nested_decode_err));
+    assert!(!RpcApp::is_expected_shutdown_error(&nested_decode));
+
+    let timed_out = ironrdp::session::custom_err!("read frame", std::io::Error::from(std::io::ErrorKind::TimedOut));
+    assert!(!RpcApp::is_expected_shutdown_error(&timed_out));
+
+    let general = ironrdp::session::general_err!("protocol violation");
+    assert!(!RpcApp::is_expected_shutdown_error(&general));
+}
+
+// oracle: spec MS-RDPEI §2.2.3.7.1.1 (nonzero pen deviceId requires negotiated multipen injection)
+#[test]
+fn rpc_pen_conversion_with_nonzero_device_id_is_gated_by_rdpei_multipen_negotiation() {
+    use ironrdp::dvc::DvcProcessor as _;
+    use ironrdp::rdpei::RdpeiClient;
+    use ironrdp::rdpei::pdu::{
+        CsReadyFlags, PenContactFlags, RdpInputProtocolVersion, RdpeiPdu, ScReadyFeatures, ScReadyPdu,
+    };
+    use ironrdp_core::encode_vec;
+    use ironrdp_rpc::ipc::{PenContactRequest, PenFrameRequest, pen_event_from_request};
+
+    let flags = u16::try_from((PenContactFlags::DOWN | PenContactFlags::INRANGE | PenContactFlags::INCONTACT).bits())
+        .expect("fits in u16");
+    let event = pen_event_from_request(
+        0,
+        vec![PenFrameRequest {
+            frame_offset: 0,
+            contacts: vec![PenContactRequest {
+                device_id: 2,
+                x: 100,
+                y: 200,
+                flags,
+                pressure: None,
+                rotation: None,
+                tilt_x: None,
+                tilt_y: None,
+                pen_flags: None,
+            }],
+        }],
+    )
+    .expect("stateless conversion preserves nonzero device_id");
+
+    let mut single_pen_client = RdpeiClient::new(
+        10,
+        CsReadyFlags::ENABLE_MULTIPEN_INJECTION,
+        RdpInputProtocolVersion::V300,
+    );
+    let sc_ready_single = encode_vec(&RdpeiPdu::ScReady(ScReadyPdu::new(RdpInputProtocolVersion::V300)))
+        .expect("encode SC_READY without multipen");
+    single_pen_client
+        .process(1, &sc_ready_single)
+        .expect("negotiate single-pen V300");
+    assert!(
+        single_pen_client.encode_pen_event(1, event.clone()).is_err(),
+        "RDPEI client without negotiated multipen must reject nonzero device_id"
+    );
+
+    let mut multipen_client = RdpeiClient::new(
+        10,
+        CsReadyFlags::ENABLE_MULTIPEN_INJECTION,
+        RdpInputProtocolVersion::V300,
+    );
+    let sc_ready_multipen = encode_vec(&RdpeiPdu::ScReady(
+        ScReadyPdu::new(RdpInputProtocolVersion::V300).with_features(ScReadyFeatures::MULTIPEN_INJECTION_SUPPORTED),
+    ))
+    .expect("encode SC_READY with multipen");
+    multipen_client
+        .process(1, &sc_ready_multipen)
+        .expect("negotiate multipen V300");
+    assert!(
+        multipen_client.encode_pen_event(1, event).is_ok(),
+        "RDPEI client with negotiated multipen must accept nonzero device_id"
+    );
 }

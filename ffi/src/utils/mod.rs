@@ -26,34 +26,6 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
-    pub struct BytesSlice<'a>(pub &'a [u8]);
-
-    impl<'a> BytesSlice<'a> {
-        #[diplomat::attr(auto, getter = "size")]
-        pub fn get_size(&'a self) -> usize {
-            self.0.len()
-        }
-
-        pub fn fill(&'a self, buffer: &'a mut [u8]) -> Result<(), Box<IronRdpError>> {
-            super::fill_prefix(buffer, self.0)
-        }
-    }
-
-    #[diplomat::opaque]
-    pub struct U32Slice<'a>(pub &'a [u32]);
-
-    impl<'a> U32Slice<'a> {
-        #[diplomat::attr(auto, getter = "size")]
-        pub fn get_size(&'a self) -> usize {
-            self.0.len()
-        }
-
-        pub fn fill(&'a self, buffer: &'a mut [u32]) -> Result<(), Box<IronRdpError>> {
-            super::fill_prefix(buffer, self.0)
-        }
-    }
-
     pub struct Position {
         pub x: u16,
         pub y: u16,
@@ -82,7 +54,7 @@ pub(crate) fn monotonic_now() -> ironrdp::connector::MonotonicInstant {
     ironrdp::connector::MonotonicInstant::from_millis(u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX))
 }
 
-pub(crate) fn fill_prefix<T: Copy>(buffer: &mut [T], src: &[T]) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
+pub(crate) fn fill_prefix(buffer: &mut [u8], src: &[u8]) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
     buffer
         .get_mut(..src.len())
         .ok_or("buffer is too small")?

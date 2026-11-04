@@ -3,8 +3,6 @@ name: intent-review
 description: Review INTENT.md and *.intent.md files or drafts for contradictions, unscoped absolutes, misplaced content, rot, and missing rationale; returns findings and proposed rewordings, never edits. Use when asked to review, check, or tighten intent files.
 ---
 
-# Intent review
-
 Intent files are defined in `intent-files`; agents read them literally before every change in their directory, so a loose sentence becomes a wrong implementation.
 A proposal rewords a commitment the human already holds; when a finding can only be fixed by deciding what the software should be, ask instead of proposing.
 
@@ -36,7 +34,7 @@ Four probes decide most of them: is this authoritative or only explanatory; woul
 - **History for rationale**: "previously Gateway was stateless, which caused problems with deletion" where the intent is "deleting an agent survives Gateway restarts"; propose the property.
 - **Missing reason**: a rule a contributor could plausibly "fix" because no alternative is named as excluded.
 - **Not checkable**: "handles", "supports", "properly", a condition without a stated outcome, or two outcomes in one sentence; propose an observable with a bound.
-- **Anchor**: a section a test, code comment, or document cites without an anchor, cited rules in a flat list with no heading, a published anchor renamed, or an anchor removed while citations still name it, since each breaks or blocks a citation (`intent-files` Anchors); search the tree for the file's name to find the citers.
+- **Anchor**: a section a test, code comment, or document cites without an anchor, cited rules in a flat list with no heading, an id repeated within the file, a published anchor renamed, or an anchor removed while citations still name it, since each breaks or blocks a citation (`intent-files` Anchors); search the tree for the file's name to find the citers.
 - **Hygiene**: links and anchors that do not resolve, removed rules still named, a synonym the glossary avoids, duplicated sentences across siblings, house style.
 
 ## Report

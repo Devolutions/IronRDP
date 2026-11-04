@@ -31,9 +31,10 @@ public static class RDCleanPathConnection
         string authToken,
         string destination,
         string? pcb = null,
-        CliprdrBackendFactory? factory = null)
+        CliprdrBackendFactory? factory = null,
+        CancellationToken cancellationToken = default)
     {
-        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, pcb, null, factory);
+        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, pcb, null, factory, cancellationToken);
     }
 
     /// <summary>
@@ -49,7 +50,8 @@ public static class RDCleanPathConnection
         string destination,
         string vmId,
         VmConnectMode mode = VmConnectMode.Enhanced,
-        CliprdrBackendFactory? factory = null)
+        CliprdrBackendFactory? factory = null,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(vmId))
         {
@@ -57,7 +59,7 @@ public static class RDCleanPathConnection
         }
 
         var pcbPayload = mode == VmConnectMode.Enhanced ? $"{vmId};EnhancedMode=1" : vmId;
-        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, null, pcbPayload, factory);
+        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, null, pcbPayload, factory, cancellationToken);
     }
 
     private static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPathCore(
@@ -67,7 +69,8 @@ public static class RDCleanPathConnection
         string destination,
         string? pcb,
         string? vmconnectPayload,
-        CliprdrBackendFactory? factory)
+        CliprdrBackendFactory? factory,
+        CancellationToken cancellationToken)
     {
         // Step 1: Connect WebSocket to gateway
         System.Diagnostics.Debug.WriteLine($"Connecting to gateway at {gatewayUrl}...");
@@ -86,7 +89,7 @@ public static class RDCleanPathConnection
         // Step 4: Perform RDCleanPath handshake
         System.Diagnostics.Debug.WriteLine("Performing RDCleanPath handshake...");
         var (serverPublicKey, framedAfterHandshake, hasX224) = await ConnectRdCleanPath(
-            framed, connector, destination, authToken, pcb ?? "", vmconnectPayload);
+            framed, connector, destination, authToken, pcb ?? "", vmconnectPayload, cancellationToken);
 
         if (hasX224)
         {
@@ -105,7 +108,8 @@ public static class RDCleanPathConnection
                 writeBuf,
                 framedAfterHandshake,
                 serverPublicKey,
-                HybridProtocol);
+                HybridProtocol,
+                cancellationToken);
 
             connector.ClearCredentialsAfterHostAuth();
 
@@ -121,7 +125,7 @@ public static class RDCleanPathConnection
 
             while (!connector.ShouldPerformSecurityUpgrade())
             {
-                await Connection.SingleSequenceStep(connector, writeBuf, framedAfterHandshake);
+                await Connection.SingleSequenceStep(connector, writeBuf, framedAfterHandshake, cancellationToken);
             }
 
             connector.EnsureSelectedHybrid();
@@ -131,7 +135,7 @@ public static class RDCleanPathConnection
 
         // Step 6: Finalize connection
         System.Diagnostics.Debug.WriteLine("Finalizing RDP connection...");
-        var result = await ConnectionHelpers.ConnectFinalize(destination, connector, serverPublicKey, framedAfterHandshake);
+        var result = await ConnectionHelpers.ConnectFinalize(destination, connector, serverPublicKey, framedAfterHandshake, cancellationToken);
 
         System.Diagnostics.Debug.WriteLine("Gateway connection established successfully!");
         return (result, framedAfterHandshake);
@@ -146,7 +150,8 @@ public static class RDCleanPathConnection
         string destination,
         string authToken,
         string pcb,
-        string? vmconnectPayload)
+        string? vmconnectPayload,
+        CancellationToken cancellationToken)
     {
         var writeBuf = WriteBuf.New();
         var vmconnect = vmconnectPayload != null;
@@ -171,7 +176,7 @@ public static class RDCleanPathConnection
         await framed.Write(reqBytesArray);
 
         System.Diagnostics.Debug.WriteLine("Waiting for RDCleanPath response...");
-        var respBytes = await framed.ReadByHint(new RDCleanPathHint());
+        var respBytes = await framed.ReadByHint(new RDCleanPathHint(), cancellationToken);
         var rdCleanPathResp = RDCleanPathPdu.FromDer(respBytes);
 
         var resultType = rdCleanPathResp.Type;

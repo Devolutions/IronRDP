@@ -106,6 +106,19 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct FastPathInputEventIterator(pub Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>);
+
+    impl FastPathInputEventIterator {
+        /// Encodes the events into Fast-Path Input PDUs, back to back, ready to write to the
+        /// transport.
+        ///
+        /// It touches no `ActiveStage` or `DecodedImage`, so call it without the lock that
+        /// serializes them. `ActiveStage::process_fastpath_input` sends the same bytes and also
+        /// redraws the pointer in the image when pointer software rendering is on.
+        pub fn encode(&self) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let frames = ironrdp::session::encode_fastpath_input(&self.0)?;
+            Ok(Box::new(VecU8(frames.concat())))
+        }
+    }
 }
 
 impl From<Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>> for ffi::FastPathInputEventIterator {

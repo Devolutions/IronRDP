@@ -80,7 +80,7 @@ use crate::cache::{
     SMALL_CACHE_BYTES, SMALL_CACHE_SLOTS,
 };
 use crate::compositor::{Compositor, OutputUpdate};
-use crate::decode::H264Decoder;
+use crate::decode::{DecoderFactory, H264Decoder};
 use crate::pdu::{
     Avc420BitmapStream, Avc444BitmapStream, CacheImportOfferPdu, CacheImportReplyPdu, CacheToSurfacePdu,
     CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags,
@@ -99,6 +99,15 @@ const MAX_RFX_CLIPPING_WORK: usize = 1 << 20;
 
 /// Max capacity to keep for decompressed buffer when cleared.
 const MAX_DECOMPRESSED_BUFFER_CAPACITY: usize = 16384; // 16 KiB
+
+/// Upper bound on the decoders the client holds from [`GraphicsPipelineClient::with_h264_decoder_factory`].
+/// Each surface sending H.264 costs a decoder, and a server can create surfaces freely.
+/// A surface whose decoder failed counts too, so a backend that hangs can't stall the channel once per new surface.
+/// This is twice the 16 monitors RDP allows, and an update past it is dropped.
+/// [MS-RDPBCGR 2.2.1.3.6] Client Monitor Data (TS_UD_CS_MONITOR) sets that limit.
+///
+/// [MS-RDPBCGR 2.2.1.3.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
+const MAX_SURFACE_H264_DECODERS: usize = 32;
 
 // ============================================================================
 // Surface Management
@@ -448,6 +457,15 @@ enum ClientState {
 pub struct GraphicsPipelineClient {
     handler: Box<dyn GraphicsPipelineHandler>,
     h264_decoder: Option<Box<dyn H264Decoder>>,
+    h264_decoder_factory: Option<DecoderFactory>,
+    /// The surface `h264_decoder` serves when there is a factory.
+    /// `None` until one sends H.264.
+    /// INVARIANT: `h264_decoder_surface` is never a key of `surface_h264_decoders`.
+    /// INVARIANT: `h264_decoder` is reset whenever this is cleared, so the next surface starts a clean stream.
+    h264_decoder_surface: Option<u16>,
+    /// The decoders from `h264_decoder_factory`, one for each other surface sending H.264.
+    /// `None` for a surface that couldn't get one, so a start that hangs doesn't block each of its updates.
+    surface_h264_decoders: BTreeMap<u16, Option<Box<dyn H264Decoder>>>,
     /// Combined AVC444 picture of each surface, kept between updates so a luma-only or
     /// chroma-only update combines with what earlier ones left.
     avc444_frames: BTreeMap<u16, Yuv444Frame>,
@@ -488,6 +506,7 @@ impl GraphicsPipelineClient {
     /// Create a new `GraphicsPipelineClient`
     ///
     /// If `h264_decoder` is `None`, AVC420 frames are logged and skipped.
+    /// Every surface shares the decoder unless [`Self::with_h264_decoder_factory`] provides others.
     /// ClearCodec decoding is always available (no external decoder required)
     /// and its cache spine is allocated lazily, on the first ClearCodec frame,
     /// rather than up front for a codec the session may never use.
@@ -495,6 +514,9 @@ impl GraphicsPipelineClient {
         Self {
             handler,
             h264_decoder,
+            h264_decoder_factory: None,
+            h264_decoder_surface: None,
+            surface_h264_decoders: BTreeMap::new(),
             avc444_frames: BTreeMap::new(),
             clearcodec_decoder: None,
             planar_decoder: BitmapStreamDecoder::default(),
@@ -529,6 +551,29 @@ impl GraphicsPipelineClient {
     #[must_use]
     pub fn with_persistent_cache(mut self, store: Box<dyn PersistentCacheStore>) -> Self {
         self.persistent_cache = Some(store);
+        self
+    }
+
+    /// Decode each surface's H.264 with its own decoder, creating them with `factory`.
+    ///
+    /// A server can encode each surface as an H.264 stream of its own.
+    /// One decoder fed two of them fails, because each stream replaces the other's parameter sets and reference
+    /// pictures.
+    /// With a factory, the decoder passed to [`Self::new`] serves the first surface to send H.264, so a session with
+    /// one such surface creates nothing more.
+    /// Each other surface gets a decoder when its first update arrives and keeps it until its stream ends.
+    /// A stream ends when the surface is deleted or created again, or on `ResetGraphics` or a protocol reset.
+    /// The factory goes unused when [`Self::new`] got no decoder.
+    /// Its decoders must match the one passed to [`Self::new`] in [`H264Decoder::supports_yuv420`], because that
+    /// decoder alone decides whether AVC444 is advertised and decoded.
+    ///
+    /// `factory` runs on the thread processing the channel.
+    /// An update is dropped when `factory` returned `None` for its surface, when its decoder can't start
+    /// ([`H264Decoder::wait_until_ready`]), or when 32 other existing surfaces have already asked `factory` for one.
+    /// A surface asks once per stream.
+    #[must_use]
+    pub fn with_h264_decoder_factory(mut self, factory: DecoderFactory) -> Self {
+        self.h264_decoder_factory = Some(factory);
         self
     }
 
@@ -585,12 +630,20 @@ impl GraphicsPipelineClient {
         }
         let pdu = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(core::slice::from_ref(caps)));
         self.state = ClientState::Resetting;
-        self.surfaces.clear();
-        // The compositor reset below drops their budget charge with everything else.
-        self.avc444_frames.clear();
         // The reset discards the bitmap cache; save it first, and let the confirmation offer it
         // again, so the server can paste from it without uploading the tiles anew.
         self.save_persistent_cache();
+        self.restart_channel_state();
+        // ZGFX history still decodes packets already in flight before confirmation.
+        Some(pdu)
+    }
+
+    /// Forgets everything a new capability exchange starts over: surfaces, caches, codec
+    /// contexts and the frame count.
+    fn restart_channel_state(&mut self) {
+        self.surfaces.clear();
+        // The compositor reset below drops their budget charge with everything else.
+        self.avc444_frames.clear();
         self.cache_import_attempted = false;
         self.offered_cache_keys = None;
         self.compositor.reset_protocol();
@@ -598,14 +651,10 @@ impl GraphicsPipelineClient {
         self.clearcodec_decoder = None;
         self.planar_decoder = BitmapStreamDecoder::default();
         self.progressive_decoder = ProgressiveDecoder::new();
-        if let Some(decoder) = self.h264_decoder.as_mut() {
-            decoder.reset();
-        }
+        self.end_h264_streams();
         self.current_frame_id = None;
         // Windows restarts its sent-frame count and rejects ACK counts greater than that value.
         self.total_frames_decoded = 0;
-        // ZGFX history still decodes packets already in flight before confirmation.
-        Some(pdu)
     }
 
     /// Get codec capabilities determined from negotiation
@@ -926,14 +975,11 @@ impl GraphicsPipelineClient {
         self.current_frame_id = None;
 
         // Reset decoder state for new stream
-        if let Some(ref mut decoder) = self.h264_decoder {
-            decoder.reset();
-        }
+        self.end_h264_streams();
         // The Progressive decoder is deliberately NOT reset here either. Its context lifetime
         // is driven by DeleteEncodingContext and DeleteSurface; MS-RDPEGFX 3.3.5.14 only
-        // resizes the Graphics Output Buffer. Windows establishes a codec context once and
-        // never re-sends SYNC + CONTEXT afterwards, so dropping it here makes every later
-        // payload fail with MissingBlock("CONTEXT").
+        // resizes the Graphics Output Buffer. Dropping it here would discard the tile state
+        // that later upgrade passes refine.
         // The ClearCodec decoder is deliberately NOT reset here. MS-RDPEGFX 3.3.5.14 only
         // resizes the Graphics Output Buffer; cache lifetime is driven by the stream instead,
         // through CLEARCODEC_FLAG_CACHE_RESET (2.2.4.1), which ClearCodecDecoder::decode
@@ -970,6 +1016,7 @@ impl GraphicsPipelineClient {
         };
 
         debug!(surface_id, width, height, ?pixel_format, "Surface created");
+        self.end_h264_stream(surface_id);
         self.release_avc444_frame(surface_id);
         self.compositor.create_surface(surface_id, width, height);
         self.handler.on_surface_created(&surface);
@@ -978,6 +1025,7 @@ impl GraphicsPipelineClient {
 
     fn handle_delete_surface(&mut self, surface_id: u16) {
         self.progressive_decoder.delete_surface(surface_id);
+        self.end_h264_stream(surface_id);
         self.release_avc444_frame(surface_id);
         if self.surfaces.remove(&surface_id).is_some() {
             self.compositor.delete_surface(surface_id);
@@ -986,6 +1034,54 @@ impl GraphicsPipelineClient {
         } else {
             warn!(surface_id, "DeleteSurface for unknown surface");
         }
+    }
+
+    /// Frees the decoder serving `surface_id`'s H.264 stream, which ends with the surface.
+    fn end_h264_stream(&mut self, surface_id: u16) {
+        self.surface_h264_decoders.remove(&surface_id);
+        if self.h264_decoder_surface == Some(surface_id) {
+            self.h264_decoder_surface = None;
+            if let Some(decoder) = self.h264_decoder.as_mut() {
+                decoder.reset();
+            }
+        }
+    }
+
+    /// Ends every surface's H.264 stream, for when the client has dropped all its surfaces.
+    fn end_h264_streams(&mut self) {
+        if let Some(decoder) = self.h264_decoder.as_mut() {
+            decoder.reset();
+        }
+        self.h264_decoder_surface = None;
+        self.surface_h264_decoders.clear();
+    }
+
+    /// The decoder for `surface_id`'s H.264 stream, or `None` when the client has no decoder.
+    fn surface_h264_decoder(&mut self, surface_id: u16) -> PduResult<Option<&mut Box<dyn H264Decoder>>> {
+        let Some(shared) = self.h264_decoder.as_mut() else {
+            return Ok(None);
+        };
+        let Some(factory) = self.h264_decoder_factory.as_mut() else {
+            return Ok(Some(shared));
+        };
+
+        let decoder_count = self.surface_h264_decoders.len();
+        let decoder = match self.surface_h264_decoders.entry(surface_id) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                if *self.h264_decoder_surface.get_or_insert(surface_id) == surface_id {
+                    return Ok(Some(shared));
+                }
+                if MAX_SURFACE_H264_DECODERS <= decoder_count {
+                    return Err(pdu_other_err!("too many surfaces sending H.264"));
+                }
+                entry.insert(factory().and_then(|mut decoder| decoder.wait_until_ready().then_some(decoder)))
+            }
+        };
+        decoder
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("no H.264 decoder for this surface"))
+            .map(Some)
     }
 
     fn release_avc444_frame(&mut self, surface_id: u16) {
@@ -1127,16 +1223,13 @@ impl GraphicsPipelineClient {
             .get(&pdu.surface_id)
             .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface2"))?;
         let (surface_width, surface_height) = (surface.width, surface.height);
-        // A surface the compositor refused paints nothing, so it keeps no Progressive tile state either, only the
-        // CONTEXT flag a re-created surface of the same id falls back on.
+        // A surface the compositor refused paints nothing, so it keeps no Progressive tile state either.
         if !self.compositor.has_surface(pdu.surface_id) {
             trace!(
                 surface_id = pdu.surface_id,
                 "WireToSurface2 for a surface without pixels -- not decoded"
             );
-            if let Err(error) = self.progressive_decoder.skip_bitmap(pdu.surface_id, &pdu.bitmap_data) {
-                self.drop_update(pdu.codec_id, pdu.surface_id, pdu.bitmap_data.len(), &error);
-            }
+            self.progressive_decoder.delete_surface(pdu.surface_id);
             return Ok(());
         }
 
@@ -1245,7 +1338,7 @@ impl GraphicsPipelineClient {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc420BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
 
-        let Some(ref mut decoder) = self.h264_decoder else {
+        let Some(decoder) = self.surface_h264_decoder(surface_id)? else {
             debug!("No H.264 decoder configured, skipping AVC420 frame");
             return Ok(());
         };
@@ -1382,11 +1475,6 @@ impl GraphicsPipelineClient {
     fn decode_avc444(&mut self, codec_id: Codec1Type, surface_id: u16, bitmap_data: &[u8]) -> PduResult<()> {
         let mut cursor = ReadCursor::new(bitmap_data);
         let stream = Avc444BitmapStream::decode(&mut cursor).map_err(|e| decode_err!(e))?;
-        // The caller forwards AVC444 to the handler unless a YUV decoder is present.
-        let decoder = self
-            .h264_decoder
-            .as_mut()
-            .ok_or_else(|| pdu_other_err!("no H.264 decoder for AVC444"))?;
         let layout = if codec_id == Codec1Type::Avc444 {
             Avc444Layout::V1
         } else {
@@ -1404,6 +1492,10 @@ impl GraphicsPipelineClient {
             Encoding::CHROMA => (None, Some(&stream.stream1)),
             _ => (Some(&stream.stream1), stream.stream2.as_ref()),
         };
+        // The caller forwards AVC444 to the handler unless a YUV decoder is present.
+        let decoder = self
+            .surface_h264_decoder(surface_id)?
+            .ok_or_else(|| pdu_other_err!("no H.264 decoder for AVC444"))?;
         // UNTESTED: that the decoder returns each view for its own sub-stream. Both sub-streams
         // are one H.264 stream (MS-RDPEGFX 2.2.4.5), and a decoder that delays pictures would
         // pair a main view with the previous auxiliary view; the tests use a decoder that cannot
@@ -1416,6 +1508,19 @@ impl GraphicsPipelineClient {
             .map(|auxiliary| decoder.decode_yuv420(auxiliary.data))
             .transpose()
             .map_err(|e| pdu_other_err!("H.264 decode", source: e))?;
+
+        // Both views describe one picture. Views of two different sizes are two pictures, and
+        // combining them paints the wrong chroma over the main view.
+        if let (Some(main), Some(auxiliary)) = (&main_view, &auxiliary_view)
+            && (main.width(), main.height()) != (auxiliary.width(), auxiliary.height())
+        {
+            return Err(pdu_other_err!("AVC444 views differ in size"));
+        }
+        // A chroma-only update refines the luma already there. With no picture yet, it would
+        // paint chroma over black.
+        if main.is_none() && !self.avc444_frames.contains_key(&surface_id) {
+            return Err(pdu_other_err!("AVC444 chroma without a luma picture"));
+        }
 
         // The combined picture lives as long as the surface, so it is charged to the
         // compositor's budget, and only for a surface the compositor accepted, whose
@@ -1970,6 +2075,7 @@ impl DvcProcessor for GraphicsPipelineClient {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        self.state = ClientState::WaitingForConfirm;
         if let Some(decoder) = self.h264_decoder.as_mut()
             && !decoder.wait_until_ready()
         {
@@ -2012,6 +2118,7 @@ impl DvcProcessor for GraphicsPipelineClient {
 
     fn close(&mut self, _channel_id: u32) {
         self.save_persistent_cache();
+        self.restart_channel_state();
         self.state = ClientState::Closed;
         self.handler.on_close();
     }
@@ -2184,6 +2291,8 @@ fn copy_frame_region(frame_data: &[u8], frame_width: u32, region: &ExclusiveRect
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+
+    use ironrdp_pdu::codecs::rfx::progressive::TILE_FLAG_DIFFERENCE;
 
     use super::*;
 
@@ -2548,6 +2657,40 @@ mod tests {
         assert!(!client.is_active());
     }
 
+    /// xrdp closes and reopens the channel after a Deactivation-Reactivation Sequence;
+    /// the client it hands back starts over from an empty channel and takes the server's new
+    /// CapabilitiesConfirm. Its frame count restarts at zero because Windows restarts its
+    /// sent-frame count and rejects FrameAcknowledge counts greater than that value.
+    // oracle: mutant close keeping the previous channel's surfaces, frame count or cache import flag
+    #[test]
+    fn reopened_channel_waits_for_confirm() {
+        let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
+        let _ = client.handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+            surface_id: 1,
+            width: 100,
+            height: 100,
+            pixel_format: PixelFormat::XRgb,
+        }));
+        client.total_frames_decoded = 7;
+        client.cache_import_attempted = true;
+        client.close(1);
+
+        client.start(2).unwrap();
+        assert_eq!(client.state, ClientState::WaitingForConfirm);
+        assert!(client.surfaces.is_empty());
+        assert_eq!(client.total_frames_decoded, 0);
+        assert!(!client.cache_import_attempted);
+
+        let confirm = ironrdp_core::encode_vec(&GfxPdu::CapabilitiesConfirm(
+            crate::pdu::CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V8 {
+                flags: CapabilitiesV8Flags::empty(),
+            }),
+        ))
+        .unwrap();
+        client.process(2, &zgfx::wrap_uncompressed(&confirm)).unwrap();
+        assert_eq!(client.state, ClientState::Active);
+    }
+
     #[test]
     fn reset_graphics_clears_surfaces_and_frame_tracking() {
         let mut client = GraphicsPipelineClient::new(Box::new(TestHandler), None);
@@ -2727,48 +2870,11 @@ mod tests {
         }))
     }
 
-    fn progressive_context_stream(with_context: bool) -> Vec<u8> {
-        use ironrdp_pdu::codecs::rfx::RfxRectangle;
-        use ironrdp_pdu::codecs::rfx::progressive::{
-            ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
-            ProgressiveRegion, ProgressiveSyncPdu, encode_progressive_stream,
-        };
-
-        let mut blocks = Vec::new();
-        if with_context {
-            blocks.push(ProgressiveBlock::Sync(ProgressiveSyncPdu));
-            blocks.push(ProgressiveBlock::Context(ProgressiveContextPdu {
-                context_id: 0,
-                tile_size: 0x0040,
-                flags: 0,
-            }));
-        }
-        blocks.push(ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
-            frame_index: 0,
-            region_count: 1,
-        }));
-        blocks.push(ProgressiveBlock::Region(ProgressiveRegion {
-            tile_size: 0x40,
-            rects: vec![RfxRectangle {
-                x: 0,
-                y: 0,
-                width: 64,
-                height: 64,
-            }],
-            quant_vals: vec![],
-            quant_prog_vals: vec![],
-            flags: 0,
-            tiles: vec![],
-        }));
-        blocks.push(ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu));
-
-        encode_progressive_stream(&blocks).unwrap()
-    }
-
     fn progressive_tile_stream(
         tile_x: u16,
         tile_y: u16,
         region_rect: ironrdp_pdu::codecs::rfx::RfxRectangle,
+        tile_flags: u8,
     ) -> Vec<u8> {
         use ironrdp_graphics::progressive::{COEFFICIENTS_PER_COMPONENT, encode_first_pass};
         use ironrdp_pdu::codecs::rfx::progressive::{
@@ -2813,7 +2919,7 @@ mod tests {
                     quant_idx_cr: 0,
                     x_idx: tile_x,
                     y_idx: tile_y,
-                    flags: 0,
+                    flags: tile_flags,
                     y_data: component_data,
                     cb_data: component_data,
                     cr_data: component_data,
@@ -2884,7 +2990,7 @@ mod tests {
                 frame_id: 2,
             }))
             .unwrap();
-        wire_progressive(&mut client, progressive_tile_stream(1, 1, rect(64, 64, 36, 36))).unwrap();
+        wire_progressive(&mut client, progressive_tile_stream(1, 1, rect(64, 64, 36, 36), 0)).unwrap();
         client
             .handle_pdu(GfxPdu::EndFrame(crate::pdu::EndFramePdu { frame_id: 2 }))
             .unwrap();
@@ -3125,7 +3231,7 @@ mod tests {
             send(
                 &mut client,
                 surface_id,
-                progressive_tile_stream(0, 0, rect(0, 0, 64, 64)),
+                progressive_tile_stream(0, 0, rect(0, 0, 64, 64), 0),
             );
         }
         assert_eq!(updates.lock().unwrap().len(), 2);
@@ -3233,7 +3339,7 @@ mod tests {
             encode_progressive_stream,
         };
 
-        let first = progressive_tile_stream(0, 0, rect(8, 12, 16, 20));
+        let first = progressive_tile_stream(0, 0, rect(8, 12, 16, 20), 0);
         let shared = encode_progressive_stream(&[
             ProgressiveBlock::FrameBegin(ProgressiveFrameBeginPdu {
                 frame_index: 1,
@@ -3312,12 +3418,18 @@ mod tests {
         );
     }
 
-    fn assert_progressive_context_is_deleted(clear: impl FnOnce(&mut GraphicsPipelineClient)) {
+    /// Sends a tile, runs `step`, then sends a difference tile, which needs the reference the first
+    /// tile left on its surface. Returns the client so that its dropped updates can be checked.
+    fn wire_difference_tile_after(step: impl FnOnce(&mut GraphicsPipelineClient)) -> GraphicsPipelineClient {
         let mut client = progressive_client();
-        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
-        clear(&mut client);
-        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
-        assert_eq!(client.dropped_updates, 1);
+        wire_progressive(&mut client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64), 0)).unwrap();
+        step(&mut client);
+        wire_progressive(
+            &mut client,
+            progressive_tile_stream(0, 0, rect(0, 0, 64, 64), TILE_FLAG_DIFFERENCE),
+        )
+        .unwrap();
+        client
     }
 
     #[test]
@@ -3349,7 +3461,7 @@ mod tests {
             updates: Arc::clone(&updates),
             unhandled: Arc::new(Mutex::new(0)),
         });
-        wire_progressive(&mut client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64))).unwrap();
+        wire_progressive(&mut client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64), 0)).unwrap();
         assert_eq!(updates.lock().unwrap().len(), 1);
         updates.lock().unwrap().clear();
 
@@ -3413,7 +3525,7 @@ mod tests {
                 bitmap_data,
             })
         };
-        let seed = wire(progressive_tile_stream(0, 0, rect(0, 0, 64, 64)));
+        let seed = wire(progressive_tile_stream(0, 0, rect(0, 0, 64, 64), 0));
         let upgrade = wire(progressive_upgrade_stream());
         for pdu in [&confirm, &create, &seed, &upgrade] {
             process(&mut client, pdu);
@@ -3425,16 +3537,18 @@ mod tests {
         for pdu in [&confirm, &create, &upgrade] {
             process(&mut client, pdu);
         }
-        assert_eq!(
-            client.dropped_updates(),
-            1,
-            "the previous codec context must no longer exist"
-        );
-        process(&mut client, &wire(progressive_context_stream(true)));
-        process(&mut client, &upgrade);
         assert!(
             updates.lock().unwrap().is_empty(),
             "a fresh context must not inherit the previous tile"
+        );
+        process(
+            &mut client,
+            &wire(progressive_tile_stream(0, 0, rect(0, 0, 64, 64), TILE_FLAG_DIFFERENCE)),
+        );
+        assert_eq!(
+            client.dropped_updates(),
+            1,
+            "the previous surface's sub-band reference must no longer exist"
         );
         for pdu in [&seed, &upgrade] {
             process(&mut client, pdu);
@@ -3445,24 +3559,23 @@ mod tests {
 
     #[test]
     fn progressive_tiles_survive_encoding_context_deletion() {
-        let mut client = progressive_client();
-        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
-        client
-            .handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
-                surface_id: 1,
-                codec_context_id: 7,
-            }))
-            .unwrap();
+        // The surface keeps its sub-band reference. Windows deletes a codec context as it opens
+        // the next one.
+        let client = wire_difference_tile_after(|client| {
+            client
+                .handle_pdu(GfxPdu::DeleteEncodingContext(DeleteEncodingContextPdu {
+                    surface_id: 1,
+                    codec_context_id: 7,
+                }))
+                .unwrap();
+        });
 
-        // The surface keeps its tiles and the band layout it was given, so a payload reusing
-        // the id still decodes. Windows deletes a codec context as it opens the next one and
-        // never repeats SYNC + CONTEXT.
-        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
+        assert_eq!(client.dropped_updates, 0);
     }
 
     #[test]
     fn progressive_context_is_deleted_with_surface() {
-        assert_progressive_context_is_deleted(|client| {
+        let client = wire_difference_tile_after(|client| {
             client
                 .handle_pdu(GfxPdu::DeleteSurface(crate::pdu::DeleteSurfacePdu { surface_id: 1 }))
                 .unwrap();
@@ -3475,6 +3588,8 @@ mod tests {
                 }))
                 .unwrap();
         });
+
+        assert_eq!(client.dropped_updates, 1);
     }
 
     /// A client with surface 1 created at a size the compositor refuses.
@@ -3509,46 +3624,33 @@ mod tests {
             updates: Arc::clone(&updates),
             unhandled: Arc::new(Mutex::new(0)),
         });
-        assert!(wire_progressive(&mut client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64))).is_ok());
+        assert!(wire_progressive(&mut client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64), 0)).is_ok());
         assert_eq!(client.dropped_updates(), 0);
         assert!(updates.lock().unwrap().is_empty());
     }
 
-    /// An unreadable stream for a refused surface is dropped like any other undecodable update.
-    /// It isn't fatal to the session.
-    // oracle: mutant skip_bitmap's parse error ending the session
+    /// An update a refused surface skips changes tiles the decoder no longer tracks.
+    /// A difference tile sent once the surface is accepted again has no reference.
+    // oracle: mutant skipping a refused surface's update without discarding its earlier tile state
     #[test]
-    fn refused_surface_drops_an_unreadable_progressive_stream() {
-        let mut client = progressive_client_with_refused_surface();
-        assert!(wire_progressive(&mut client, vec![0xFF; 16]).is_ok());
-        assert_eq!(client.dropped_updates(), 1);
-    }
+    fn refused_surface_discards_earlier_progressive_tile_state() {
+        let create_surface = |client: &mut GraphicsPipelineClient, side: u16| {
+            client
+                .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                    surface_id: 1,
+                    width: side,
+                    height: side,
+                    pixel_format: PixelFormat::XRgb,
+                }))
+                .unwrap();
+        };
+        let client = wire_difference_tile_after(|client| {
+            create_surface(client, 16384);
+            wire_progressive(client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64), 0)).unwrap();
+            create_surface(client, 64);
+        });
 
-    /// A refused surface still records the CONTEXT flag.
-    /// A surface re-created with its id after a reset then decodes the CONTEXT-less updates Windows sends.
-    // oracle: mutant skip_bitmap not recording the CONTEXT flag
-    #[test]
-    fn refused_surface_keeps_its_progressive_context_flag() {
-        let mut client = progressive_client_with_refused_surface();
-        wire_progressive(&mut client, progressive_context_stream(true)).unwrap();
-
-        client
-            .handle_pdu(GfxPdu::ResetGraphics(crate::pdu::ResetGraphicsPdu {
-                width: 64,
-                height: 64,
-                monitors: vec![],
-            }))
-            .unwrap();
-        client
-            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
-                surface_id: 1,
-                width: 64,
-                height: 64,
-                pixel_format: PixelFormat::XRgb,
-            }))
-            .unwrap();
-        assert!(wire_progressive(&mut client, progressive_context_stream(false)).is_ok());
-        assert_eq!(client.dropped_updates(), 0);
+        assert_eq!(client.dropped_updates, 1);
     }
 
     // ========================================================================

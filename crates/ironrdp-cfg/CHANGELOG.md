@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cfg-v0.2.0...ironrdp-cfg-v0.3.0)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- Add `PropertySetExt::usb_devices_to_redirect`, `set_usb_devices_to_redirect` and `clear_usb_devices_to_redirect` for the `usbdevicestoredirect` property ([#2181](https://github.com/Devolutions/IronRDP/issues/2181)) ([35247071a3](https://github.com/Devolutions/IronRDP/commit/35247071a32a718094fc4df1de60e220e3730f4b))
+
+
+
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cfg-v0.1.0...ironrdp-cfg-v0.2.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

@@ -187,3 +187,10 @@ pub async fn validate_proxy_response(response: &[u8]) -> Result<(), String> {
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
+
+/// Connect a TCP socket using the same setup as direct and proxied gateways.
+pub async fn connect_gateway_tcp(address: &str) -> Result<tokio::net::TcpStream, String> {
+    crate::packet_io::connect_tcp("tcp connect", address)
+        .await
+        .map_err(|error| error.to_string())
+}

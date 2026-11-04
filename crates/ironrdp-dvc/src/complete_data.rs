@@ -9,7 +9,8 @@ use crate::pdu::DrdynvcDataPdu;
 
 #[derive(Debug)]
 pub(crate) struct CompleteData {
-    total_size: usize,
+    max_message_size: Option<usize>,
+    total_size: Option<usize>,
     data: Vec<u8>,
     /// MS-RDPEDYC 3.1.5.2.5: each channel has its own decompression context, created when
     /// the channel first receives compressed data.
@@ -20,9 +21,10 @@ pub(crate) struct CompleteData {
 }
 
 impl CompleteData {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(max_message_size: Option<usize>) -> Self {
         Self {
-            total_size: 0,
+            max_message_size,
+            total_size: None,
             data: Vec::new(),
             decompressor: None,
             decompression_failed: false,
@@ -68,41 +70,56 @@ impl CompleteData {
     fn process_data_first(&mut self, total_size: u32, data: Vec<u8>) -> DecodeResult<Option<Vec<u8>>> {
         let total_data_size: DecodeResult<_> = cast_length!("DataFirstPdu::length", total_size);
         let total_data_size = total_data_size?;
-        if self.total_size != 0 || !self.data.is_empty() {
+        if self.total_size.is_some() {
             error!("Incomplete DVC message, it will be skipped");
+            self.clear();
+        }
 
-            self.data.clear();
+        if self
+            .max_message_size
+            .is_some_and(|max_message_size| total_data_size > max_message_size)
+        {
+            return Err(invalid_field_err!(
+                "DataFirstPdu::length",
+                "DVC message exceeds configured maximum size"
+            ));
+        }
+
+        if data.len() > total_data_size {
+            return Err(invalid_field_err!(
+                "DataFirstPdu::data",
+                "fragment exceeds advertised DVC message size"
+            ));
         }
 
         if total_data_size == data.len() {
-            Ok(Some(data))
-        } else if data.len() > total_data_size {
-            self.total_size = 0;
-            self.data.clear();
-
-            Err(invalid_field_err!(
-                "DVC message",
-                "data",
-                "first block is longer than the message length"
-            ))
-        } else {
-            self.total_size = total_data_size;
-            self.data = data;
-
-            Ok(None)
+            return Ok(Some(data));
         }
+
+        self.total_size = Some(total_data_size);
+        self.data = data;
+        Ok(None)
     }
 
     fn process_data_block(&mut self, mut data: Vec<u8>) -> DecodeResult<Option<Vec<u8>>> {
-        if self.total_size == 0 && self.data.is_empty() {
+        let Some(total_size) = self.total_size else {
             // message is not fragmented
+            if self
+                .max_message_size
+                .is_some_and(|max_message_size| data.len() > max_message_size)
+            {
+                return Err(invalid_field_err!(
+                    "DataPdu::data",
+                    "DVC message exceeds configured maximum size"
+                ));
+            }
             return Ok(Some(data));
-        }
+        };
 
         // The message is fragmented and needs to be reassembled.
         match self.data.len().checked_add(data.len()) {
             Some(actual_data_length) => {
-                match actual_data_length.cmp(&(self.total_size)) {
+                match actual_data_length.cmp(&total_size) {
                     cmp::Ordering::Less => {
                         // this is one of the fragmented messages, just append it
                         self.data.append(&mut data);
@@ -110,22 +127,29 @@ impl CompleteData {
                     }
                     cmp::Ordering::Equal => {
                         // this is the last fragmented message, need to return the whole reassembled message
-                        self.total_size = 0;
                         self.data.append(&mut data);
-                        Ok(Some(self.data.drain(..).collect()))
+                        self.total_size = None;
+                        Ok(Some(core::mem::take(&mut self.data)))
                     }
                     cmp::Ordering::Greater => {
-                        self.total_size = 0;
-                        self.data.clear();
+                        error!("Actual DVC message size is greater than expected total DVC message size");
+                        self.clear();
                         Err(invalid_field_err!(
-                            "DVC message",
-                            "data",
-                            "blocks are longer than the message length"
+                            "DataPdu::data",
+                            "fragment exceeds advertised DVC message size"
                         ))
                     }
                 }
             }
-            _ => Err(invalid_field_err!("DVC message", "data", "overflow occurred")),
+            _ => {
+                self.clear();
+                Err(invalid_field_err!("DVC message", "data", "overflow occurred"))
+            }
         }
+    }
+
+    fn clear(&mut self) {
+        self.total_size = None;
+        self.data.clear();
     }
 }

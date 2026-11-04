@@ -1,13 +1,16 @@
-use ironrdp_core::{Decode as _, Encode, ReadCursor, WriteCursor, encode_vec};
+use std::sync::{Arc, Mutex};
+
+use ironrdp_core::{Decode as _, DecodeErrorKind, Encode, ReadCursor, WriteCursor, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler, Surface};
-use ironrdp_egfx::decode::{DecodedFrame, DecoderResult, H264Decoder};
+use ironrdp_egfx::decode::{DecodedFrame, DecoderResult, H264Decoder, Yuv420Frame};
 use ironrdp_egfx::pdu::{
-    CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV10Flags,
-    CapabilitiesV81Flags, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet,
-    CapabilityVersion, Codec1Type, Color, CreateSurfacePdu, DeleteSurfacePdu, EndFramePdu, GfxPdu,
-    MapSurfaceToOutputPdu, MapSurfaceToScaledWindowPdu, MapSurfaceToWindowPdu, PixelFormat, Point, RawCapabilitySet,
-    ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu, Timestamp, WireToSurface1Pdu,
+    Avc420BitmapStream, Avc420Region, Avc444BitmapStream, CacheToSurfacePdu, CapabilitiesAdvertisePdu,
+    CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV103Flags,
+    CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitySet, CapabilityVersion, Codec1Type, Color,
+    CreateSurfacePdu, DeleteSurfacePdu, Encoding, EndFramePdu, GfxPdu, MapSurfaceToOutputPdu,
+    MapSurfaceToScaledWindowPdu, MapSurfaceToWindowPdu, PixelFormat, Point, RawCapabilitySet, ResetGraphicsPdu,
+    SolidFillPdu, StartFramePdu, SurfaceToCachePdu, Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
 };
 use ironrdp_graphics::clearcodec::ClearCodecEncoder;
 use ironrdp_graphics::zgfx::{CompressionMode, Compressor, compress_and_wrap_egfx, wrap_uncompressed};
@@ -403,6 +406,21 @@ fn protocol_reset_truncated_confirmation_is_terminal() {
     assert!(!client.is_active());
 }
 
+// oracle: spec MS-RDPEGFX §2.2.2.14 fixes the PDU at 340 bytes, so the trailing pad is part of it.
+#[test]
+fn reset_graphics_truncated_in_padding_is_rejected() {
+    let pdu = GfxPdu::ResetGraphics(ResetGraphicsPdu {
+        width: 16,
+        height: 16,
+        monitors: vec![],
+    });
+    let encoded = encode_pdu(&pdu);
+
+    let e = GfxPdu::decode(&mut ReadCursor::new(&encoded[..encoded.len() - 1])).unwrap_err();
+
+    assert!(matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }), "{e:?}");
+}
+
 // oracle: spec MS-RDPEGFX §1.7 makes the server's confirmed flags authoritative.
 #[test]
 fn protocol_reset_accepts_changed_flags() {
@@ -737,54 +755,120 @@ fn client_handles_uncompressed_via_process() {
         .expect("uncompressed should succeed");
 }
 
+// oracle: mutant failing the channel on an AVC420 update.
 #[test]
 fn client_dispatches_avc420_via_process() {
     let mut client = setup_active_client_with_surface(Some(Box::new(MockH264Decoder)), 1, 16, 16);
 
-    // Build minimal AVC420 bitmap stream
-    let mut bitmap_data = Vec::new();
-    bitmap_data.extend_from_slice(&1u32.to_le_bytes()); // nRect = 1
-    bitmap_data.extend_from_slice(&0u16.to_le_bytes()); // left
-    bitmap_data.extend_from_slice(&0u16.to_le_bytes()); // top
-    bitmap_data.extend_from_slice(&15u16.to_le_bytes()); // right
-    bitmap_data.extend_from_slice(&15u16.to_le_bytes()); // bottom
-    bitmap_data.push(22); // qp
-    bitmap_data.push(100); // quality
-    bitmap_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67]); // fake H.264
-
-    let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
-        surface_id: 1,
-        codec_id: Codec1Type::Avc420,
-        pixel_format: PixelFormat::XRgb,
-        destination_rectangle: ExclusiveRectangle {
-            left: 0,
-            top: 0,
-            right: 16,
-            bottom: 16,
-        },
-        bitmap_data,
-    });
     client
-        .process(0, &encode_for_process(&pdu))
+        .process(0, &encode_for_process(&avc420_update(1)))
         .expect("AVC420 should succeed");
 }
 
+// oracle: mutant failing the channel when no decoder is configured.
 #[test]
 fn client_skips_avc420_without_decoder() {
     let mut client = setup_active_client_with_surface(None, 1, 16, 16);
 
-    let mut bitmap_data = Vec::new();
-    bitmap_data.extend_from_slice(&1u32.to_le_bytes());
-    bitmap_data.extend_from_slice(&0u16.to_le_bytes());
-    bitmap_data.extend_from_slice(&0u16.to_le_bytes());
-    bitmap_data.extend_from_slice(&15u16.to_le_bytes());
-    bitmap_data.extend_from_slice(&15u16.to_le_bytes());
-    bitmap_data.push(22);
-    bitmap_data.push(100);
-    bitmap_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x01, 0x67]);
+    client
+        .process(0, &encode_for_process(&avc420_update(1)))
+        .expect("should succeed without decoder");
+}
 
-    let pdu = GfxPdu::WireToSurface1(WireToSurface1Pdu {
-        surface_id: 1,
+// ============================================================================
+// Tests: One H.264 Decoder per Surface
+// ============================================================================
+
+/// What the decoders made by [`DecoderProbe::decoder`] were asked to do, by creation order.
+#[derive(Clone, Default)]
+struct DecoderProbe(Arc<Mutex<DecoderLog>>);
+
+#[derive(Clone, Default)]
+struct DecoderLog {
+    created: usize,
+    decoded: Vec<usize>,
+    reset: Vec<usize>,
+    dropped: Vec<usize>,
+}
+
+impl DecoderProbe {
+    fn decoder(&self) -> Box<dyn H264Decoder> {
+        let mut log = self.0.lock().unwrap();
+        let id = log.created;
+        log.created += 1;
+        Box::new(ProbeDecoder {
+            id,
+            probe: self.clone(),
+        })
+    }
+
+    fn log(&self) -> DecoderLog {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+struct ProbeDecoder {
+    id: usize,
+    probe: DecoderProbe,
+}
+
+impl H264Decoder for ProbeDecoder {
+    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+        self.decode_yuv420(data).map(|picture| picture.to_rgba())
+    }
+
+    fn decode_yuv420(&mut self, _data: &[u8]) -> DecoderResult<Yuv420Frame> {
+        self.probe.0.lock().unwrap().decoded.push(self.id);
+        Yuv420Frame::new(16, 16, vec![0; 256], 16, vec![128; 64], vec![128; 64], 8)
+    }
+
+    fn supports_yuv420(&self) -> bool {
+        true
+    }
+
+    fn reset(&mut self) {
+        self.probe.0.lock().unwrap().reset.push(self.id);
+    }
+}
+
+impl Drop for ProbeDecoder {
+    fn drop(&mut self) {
+        self.probe.0.lock().unwrap().dropped.push(self.id);
+    }
+}
+
+fn client_with_decoder_factory(probe: &DecoderProbe) -> GraphicsPipelineClient {
+    let factory_probe = probe.clone();
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(probe.decoder()))
+        .with_h264_decoder_factory(Box::new(move || Some(factory_probe.decoder())));
+    send_all(&mut client, &[v107_confirm()]);
+    client
+}
+
+fn send_all(client: &mut GraphicsPipelineClient, pdus: &[GfxPdu]) {
+    for pdu in pdus {
+        client
+            .process(0, &encode_for_process(pdu))
+            .expect("the client should accept the PDU");
+    }
+}
+
+fn delete_surface(surface_id: u16) -> GfxPdu {
+    GfxPdu::DeleteSurface(DeleteSurfacePdu { surface_id })
+}
+
+fn reset_graphics() -> GfxPdu {
+    GfxPdu::ResetGraphics(ResetGraphicsPdu {
+        width: 16,
+        height: 16,
+        monitors: vec![],
+    })
+}
+
+fn avc420_update(surface_id: u16) -> GfxPdu {
+    let region = Avc420Region::full_frame(16, 16, 22);
+    GfxPdu::WireToSurface1(WireToSurface1Pdu {
+        surface_id,
         codec_id: Codec1Type::Avc420,
         pixel_format: PixelFormat::XRgb,
         destination_rectangle: ExclusiveRectangle {
@@ -793,11 +877,472 @@ fn client_skips_avc420_without_decoder() {
             right: 16,
             bottom: 16,
         },
-        bitmap_data,
-    });
-    client
-        .process(0, &encode_for_process(&pdu))
-        .expect("should succeed without decoder");
+        bitmap_data: encode_avc420_bitmap_stream(&[region], &[0x00, 0x00, 0x00, 0x01, 0x67]),
+    })
+}
+
+/// Two surfaces interleaving updates reach two decoders, so neither stream's parameter sets or reference pictures
+/// replace the other's.
+// oracle: regression #2033
+#[test]
+fn each_surface_decodes_h264_on_its_own_decoder() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    send_all(
+        &mut client,
+        &[
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            create_surface(3, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+            avc420_update(1),
+            avc420_update(3),
+            avc420_update(2),
+        ],
+    );
+
+    let log = probe.log();
+    assert_eq!(log.decoded, [0, 1, 0, 2, 1]);
+    assert_eq!(log.created, 3);
+}
+
+// oracle: regression #2033
+#[test]
+fn each_surface_decodes_avc444_on_its_own_decoder() {
+    let avc444_update = |surface_id| {
+        let region = Avc420Region::full_frame(16, 16, 22);
+        let stream = Avc444BitmapStream {
+            encoding: Encoding::LUMA,
+            stream1: Avc420BitmapStream {
+                rectangles: vec![region.to_rectangle()],
+                quant_qual_vals: vec![region.to_quant_quality()],
+                data: &[0x00, 0x00, 0x00, 0x01, 0x67],
+            },
+            stream2: None,
+        };
+        GfxPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id,
+            codec_id: Codec1Type::Avc444,
+            pixel_format: PixelFormat::XRgb,
+            destination_rectangle: ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 16,
+                bottom: 16,
+            },
+            bitmap_data: encode_vec(&stream).expect("the stream should encode"),
+        })
+    };
+
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    send_all(
+        &mut client,
+        &[
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            avc444_update(1),
+            avc444_update(2),
+            avc420_update(1),
+        ],
+    );
+
+    assert_eq!(probe.log().decoded, [0, 1, 0]);
+}
+
+// oracle: mutant creating a decoder from the factory for the first surface.
+#[test]
+fn one_surface_needs_no_decoder_from_the_factory() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    send_all(
+        &mut client,
+        &[create_surface(1, 16, 16), avc420_update(1), avc420_update(1)],
+    );
+
+    let log = probe.log();
+    assert_eq!(log.decoded, [0, 0]);
+    assert_eq!(log.created, 1);
+}
+
+// oracle: mutant resetting the shared decoder when one of its surfaces is deleted.
+#[test]
+fn surfaces_share_the_decoder_without_a_factory() {
+    let probe = DecoderProbe::default();
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(probe.decoder()));
+    send_all(
+        &mut client,
+        &[
+            v107_confirm(),
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+            delete_surface(1),
+        ],
+    );
+
+    let log = probe.log();
+    assert_eq!(log.decoded, [0, 0]);
+    assert!(log.reset.is_empty());
+}
+
+// oracle: mutant keeping a decoder after its surface is deleted.
+#[test]
+fn deleting_a_surface_frees_its_decoder() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    send_all(
+        &mut client,
+        &[
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+            delete_surface(2),
+        ],
+    );
+    assert_eq!(probe.log().dropped, [1]);
+
+    send_all(&mut client, &[create_surface(2, 16, 16), avc420_update(2)]);
+    let log = probe.log();
+    assert_eq!(log.decoded, [0, 1, 2]);
+    assert_eq!(log.created, 3);
+}
+
+/// A CreateSurface for a live id replaces that surface, so its stream's decoder goes with it.
+// oracle: mutant continuing the old stream on a surface created again.
+#[test]
+fn creating_a_surface_again_restarts_its_stream() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    send_all(
+        &mut client,
+        &[
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+            create_surface(2, 16, 16),
+            avc420_update(2),
+        ],
+    );
+
+    let log = probe.log();
+    assert_eq!(log.dropped, [1]);
+    assert_eq!(log.decoded, [0, 1, 2]);
+}
+
+/// The decoder passed to the constructor isn't dropped with its surface, since it also answers for the client's
+/// capabilities.
+/// It's reset and goes to the next surface that needs one.
+// oracle: mutant dropping or never reassigning the first decoder.
+#[test]
+fn the_first_decoder_serves_another_surface_once_free() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    send_all(
+        &mut client,
+        &[
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            create_surface(3, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+            delete_surface(1),
+        ],
+    );
+    let log = probe.log();
+    assert_eq!(log.reset, [0]);
+    assert!(log.dropped.is_empty());
+
+    send_all(&mut client, &[avc420_update(3), avc420_update(2)]);
+    let log = probe.log();
+    assert_eq!(log.decoded, [0, 1, 0, 1]);
+    assert_eq!(log.created, 2);
+}
+
+/// A surface mid-stream stays on its decoder when the first decoder comes free, since its P-frames need its pictures.
+// oracle: regression #2033
+#[test]
+fn a_surface_keeps_its_decoder_when_the_first_decoder_is_freed() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    send_all(
+        &mut client,
+        &[
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            create_surface(3, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+            delete_surface(1),
+            avc420_update(2),
+            avc420_update(3),
+        ],
+    );
+
+    let log = probe.log();
+    assert_eq!(log.decoded, [0, 1, 1, 0]);
+    assert_eq!(log.created, 2);
+}
+
+// oracle: mutant keeping the factory decoders of surfaces ResetGraphics removed.
+#[test]
+fn reset_graphics_ends_every_h264_stream() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    send_all(
+        &mut client,
+        &[
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+            reset_graphics(),
+        ],
+    );
+
+    let log = probe.log();
+    assert_eq!(log.reset, [0]);
+    assert_eq!(log.dropped, [1]);
+}
+
+/// The server here sends no DeleteSurface and takes a new surface ID after every ResetGraphics.
+// oracle: mutant keeping decoders across ResetGraphics, which reaches the decoder limit and drops updates.
+#[test]
+fn reset_graphics_with_new_surface_ids_keeps_the_first_decoder() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    for surface_id in 1..=40 {
+        send_all(
+            &mut client,
+            &[
+                create_surface(surface_id, 16, 16),
+                avc420_update(surface_id),
+                reset_graphics(),
+            ],
+        );
+    }
+
+    let log = probe.log();
+    assert_eq!(log.decoded, [0; 40]);
+    assert_eq!(log.created, 1);
+}
+
+// oracle: mutant keeping the factory decoders of a restarted channel.
+#[test]
+fn protocol_reset_frees_the_decoders_from_the_factory() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    send_all(
+        &mut client,
+        &[
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+        ],
+    );
+    assert!(client.request_protocol_reset().is_some());
+
+    let log = probe.log();
+    assert_eq!(log.reset, [0]);
+    assert_eq!(log.dropped, [1]);
+}
+
+/// The first surface uses the decoder passed to the constructor, and 32 more use the factory's.
+// oracle: mutant allocating a decoder for every surface a server creates.
+#[test]
+fn updates_past_the_decoder_limit_are_dropped() {
+    let probe = DecoderProbe::default();
+    let mut client = client_with_decoder_factory(&probe);
+    for surface_id in 1..=34 {
+        send_all(
+            &mut client,
+            &[create_surface(surface_id, 16, 16), avc420_update(surface_id)],
+        );
+    }
+    let log = probe.log();
+    assert_eq!(log.created, 33);
+    assert_eq!(log.decoded.len(), 33);
+    assert_eq!(client.dropped_updates(), 1);
+
+    send_all(&mut client, &[delete_surface(2), avc420_update(34)]);
+    let log = probe.log();
+    assert_eq!(log.created, 34);
+    assert_eq!(log.decoded.last(), Some(&33));
+}
+
+// oracle: mutant ending the session when the factory has no decoder.
+#[test]
+fn an_update_is_dropped_when_the_factory_has_no_decoder() {
+    let probe = DecoderProbe::default();
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(probe.decoder()))
+        .with_h264_decoder_factory(Box::new(|| None));
+    send_all(
+        &mut client,
+        &[
+            v107_confirm(),
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+            avc420_update(1),
+        ],
+    );
+
+    assert_eq!(probe.log().decoded, [0, 0]);
+    assert_eq!(client.dropped_updates(), 1);
+}
+
+struct NeverReady;
+
+impl H264Decoder for NeverReady {
+    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+        MockH264Decoder.decode(data)
+    }
+
+    fn wait_until_ready(&mut self) -> bool {
+        false
+    }
+}
+
+fn decoder_that_cannot_start() -> Option<Box<dyn H264Decoder>> {
+    Some(Box::new(NeverReady))
+}
+
+fn no_decoder() -> Option<Box<dyn H264Decoder>> {
+    None
+}
+
+// oracle: mutant decoding on a decoder that reported it cannot start.
+#[test]
+fn an_update_is_dropped_when_its_decoder_cannot_start() {
+    let probe = DecoderProbe::default();
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(probe.decoder()))
+        .with_h264_decoder_factory(Box::new(decoder_that_cannot_start));
+    send_all(
+        &mut client,
+        &[
+            v107_confirm(),
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            avc420_update(2),
+            avc420_update(1),
+        ],
+    );
+
+    assert_eq!(probe.log().decoded, [0]);
+    assert_eq!(client.dropped_updates(), 1);
+}
+
+/// A start that hangs would otherwise block the channel on every update for the surface.
+// oracle: mutant calling the factory again for each update of a surface whose decoder failed.
+#[rstest]
+#[case::factory_has_none(no_decoder)]
+#[case::decoder_cannot_start(decoder_that_cannot_start)]
+fn a_failed_decoder_is_tried_once_per_stream(#[case] create: fn() -> Option<Box<dyn H264Decoder>>) {
+    let probe = DecoderProbe::default();
+    let calls = Arc::new(Mutex::new(0));
+    let factory_calls = Arc::clone(&calls);
+    let mut client = GraphicsPipelineClient::new(Box::new(TestHandler::new()), Some(probe.decoder()))
+        .with_h264_decoder_factory(Box::new(move || {
+            *factory_calls.lock().unwrap() += 1;
+            create()
+        }));
+    send_all(
+        &mut client,
+        &[
+            v107_confirm(),
+            create_surface(1, 16, 16),
+            create_surface(2, 16, 16),
+            avc420_update(1),
+            avc420_update(2),
+            avc420_update(2),
+            avc420_update(2),
+        ],
+    );
+    assert_eq!(*calls.lock().unwrap(), 1);
+
+    send_all(
+        &mut client,
+        &[delete_surface(2), create_surface(2, 16, 16), avc420_update(2)],
+    );
+    assert_eq!(*calls.lock().unwrap(), 2);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SurfaceOp {
+    Create(u16),
+    Delete(u16),
+    Update(u16),
+    Reset,
+}
+
+fn surface_op() -> impl Strategy<Value = SurfaceOp> {
+    let surface_id = 1u16..=5;
+    prop_oneof![
+        2 => surface_id.clone().prop_map(SurfaceOp::Create),
+        1 => surface_id.clone().prop_map(SurfaceOp::Delete),
+        6 => surface_id.prop_map(SurfaceOp::Update),
+        1 => Just(SurfaceOp::Reset),
+    ]
+}
+
+// oracle: regression #2033 (each stream's decoder, and the reset before a decoder takes a new stream)
+// oracle: mutant keeping a decoder after its stream ends (the count of live decoders)
+proptest! {
+    #[test]
+    fn surface_streams_keep_their_own_decoders(ops in prop::collection::vec(surface_op(), 1..60)) {
+        let probe = DecoderProbe::default();
+        let mut client = client_with_decoder_factory(&probe);
+        // The live surfaces, each with the decoder of its stream once it has sent an update.
+        let mut surfaces = std::collections::BTreeMap::<u16, Option<usize>>::new();
+        let mut resets_at_last_decode = std::collections::BTreeMap::<usize, usize>::new();
+
+        for op in ops {
+            match op {
+                SurfaceOp::Create(surface_id) => {
+                    send_all(&mut client, &[create_surface(surface_id, 16, 16)]);
+                    surfaces.insert(surface_id, None);
+                }
+                SurfaceOp::Delete(surface_id) => {
+                    send_all(&mut client, &[delete_surface(surface_id)]);
+                    surfaces.remove(&surface_id);
+                }
+                SurfaceOp::Reset => {
+                    send_all(&mut client, &[reset_graphics()]);
+                    surfaces.clear();
+                }
+                SurfaceOp::Update(surface_id) => {
+                    let Some(&stream) = surfaces.get(&surface_id) else {
+                        continue;
+                    };
+                    send_all(&mut client, &[avc420_update(surface_id)]);
+
+                    let log = probe.log();
+                    let decoder = *log.decoded.last().expect("an update was decoded");
+                    let resets = log.reset.iter().filter(|reset| **reset == decoder).count();
+                    if let Some(held) = stream {
+                        prop_assert_eq!(held, decoder);
+                    } else {
+                        prop_assert!(!surfaces.values().flatten().any(|held| *held == decoder));
+                        if let Some(earlier) = resets_at_last_decode.get(&decoder) {
+                            prop_assert!(*earlier < resets);
+                        }
+                        surfaces.insert(surface_id, Some(decoder));
+                    }
+                    resets_at_last_decode.insert(decoder, resets);
+                }
+            }
+
+            prop_assert_eq!(client.dropped_updates(), 0);
+            let log = probe.log();
+            prop_assert!(log.created - log.dropped.len() <= surfaces.values().flatten().count() + 1);
+        }
+    }
 }
 
 #[test]
@@ -1178,6 +1723,29 @@ fn client_close_transitions_to_inactive() {
 
     client.close(0);
     assert!(!client.is_active(), "client should not be active after close");
+}
+
+#[test]
+fn client_close_discards_surfaces_and_queued_pixels() {
+    let mut client = client_with_output((4, 4), 1, (4, 4));
+    map_and_settle(&mut client, map_to_output(1));
+    fill_frame(
+        &mut client,
+        1,
+        ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 4,
+        },
+    );
+    assert!(client.get_surface(1).is_some());
+
+    client.close(0);
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2296#discussion_r4408520753
+    assert!(client.get_surface(1).is_none());
+    assert!(client.drain_output().is_empty());
 }
 
 // ============================================================================

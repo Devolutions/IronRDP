@@ -9,6 +9,9 @@ namespace Devolutions.IronRdp.Raw;
 internal partial struct FastPathInputEventIterator
 {
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "FastPathInputEventIterator_encode", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVecU8IronRdpError Encode(FastPathInputEventIterator* handle);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "FastPathInputEventIterator_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(FastPathInputEventIterator* handle);
 }

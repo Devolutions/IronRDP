@@ -9,8 +9,12 @@ This crate is part of the [IronRDP] project.
 ## Windows
 
 `WinClipboard` runs on the thread that creates it, which must have a message loop (a GUI thread): a hidden window listens for clipboard changes and renders remote formats on demand.
+Background hosts report clipboard changes without waiting for an activation message.
+Replacing a deferred format request with a newer clipboard event sends a failed response instead of leaving the request pending.
 Only formats whose data is a self-contained `HGLOBAL` are exchanged; handle-based formats (`CF_BITMAP`, `CF_ENHMETAFILE`, `CF_METAFILEPICT`, `CF_PALETTE`), local paths and shell items (`CF_HDROP`, `FileNameW`, `Shell IDList Array`) and OLE storage formats are never advertised in either direction.
 Windows synthesizes `CF_DIB` from `CF_BITMAP`, so images still go through.
+When Windows lists `CF_DIB` before `CF_DIBV5`, only `CF_DIB` is offered to avoid [Windows' corrupting DIB-to-DIBV5 conversion][dib-conversion-bug].
+Images supplied as `CF_DIBV5` first remain available with their alpha channel.
 
 With file transfer enabled (`WinClipboard::with_file_transfer`; `WinClipboard::new` leaves it off), files are copied in both directions with the [MS-RDPECLIP] file stream protocol:
 
@@ -32,6 +36,7 @@ IRONRDP_WIN_CLIPBOARD_LIVE=1 cargo test -p ironrdp-testsuite-extra cliprdr_nativ
 ```
 
 [MS-RDPECLIP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/fb9b7e0b-6db4-41c2-b83c-f889c1ee7688
+[dib-conversion-bug]: https://techcommunity.microsoft.com/discussions/windows11/serious-bug-in-windows-clipboard---images-get-corrupted/4466584
 
 ## Linux
 

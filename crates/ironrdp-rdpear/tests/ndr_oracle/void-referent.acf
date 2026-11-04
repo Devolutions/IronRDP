@@ -1,0 +1,4 @@
+interface VoidReferent
+{
+    typedef [encode, decode] KERB_RPC_ENCRYPTION_KEY;
+}

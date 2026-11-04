@@ -31,6 +31,7 @@ use ironrdp_rail::pdu::{ExecutePdu, RailPdu};
 use ironrdp_tls::CertificateValidation;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
+use tracing::instrument::WithSubscriber as _;
 use tracing::{debug, error, info, trace, warn};
 
 #[cfg(windows)]
@@ -484,6 +485,7 @@ struct Live {
     /// Most recent frame (with the cursor already composited in by the session). Replaced on every
     /// graphics update; `None` until the first frame arrives.
     frame: Option<Frame>,
+    pending_pointer_position: Option<MousePosition>,
     rail_initial_execute: Option<(u16, String)>,
     rail: RailLedger,
     /// Set by the certificate callback when strict validation rejects an untrusted certificate, so
@@ -809,7 +811,7 @@ impl Daemon {
                 data,
                 last,
             } => DaemonResponse::Single(self.now_stdin(operation_id, data, last).await),
-            Request::NowDiagnostics => DaemonResponse::Single(self.now_diagnostics().await),
+            Request::NowDiagnostics => DaemonResponse::Single(self.now_diagnostics()),
             Request::Touch { encode_time, frames } => DaemonResponse::Single(self.touch(encode_time, frames)),
             Request::Pen { encode_time, frames } => DaemonResponse::Single(self.pen(encode_time, frames)),
             Request::DismissHoveringTouchContact { contact_id } => {
@@ -854,8 +856,8 @@ impl Daemon {
         // in particular — can be preconfigured without the (possibly untrusted) caller supplying it.
         properties.merge(&self.overlay);
 
-        // Each RDP session receives a distinct DVC endpoint. It is only contacted later by a NOW
-        // request, after the RDP engine has connected and the proxy has opened its local listener.
+        // Each RDP session receives a distinct DVC endpoint.
+        // The negotiator started below connects to it once the remote host opens the channel.
         let now_endpoint = match NowEndpoint::new() {
             Ok(endpoint) => Arc::new(endpoint),
             Err(error) => {
@@ -902,8 +904,13 @@ impl Daemon {
             .with_pointer_software_rendering(true);
         // Under strict validation, a certificate that fails is still accepted when the user has
         // pinned its exact fingerprint for this endpoint in the known-certificates store.
+        // Entra RDS AAD connections forbid caller certificate-validation callbacks (AVD pins
+        // `redirectedServerCert` internally during gateway orchestration).
         let certificate_rejection = Arc::new(Mutex::new(None));
-        let builder = if certificate_validation == CertificateValidation::Strict {
+        let entra_auth_enabled = properties.get::<bool>("enablerdsaadauth").unwrap_or(false);
+        let builder = if certificate_validation == CertificateValidation::Strict
+            && (!entra_auth_enabled || properties.get::<&str>(ACCEPT_CERTIFICATE_PROPERTY).is_some())
+        {
             let mut store = match KnownCertificates::default_path().and_then(|path| KnownCertificates::load(&path)) {
                 Ok(store) => store,
                 Err(error) => {
@@ -1119,6 +1126,7 @@ impl Daemon {
             state: ConnState::Connecting,
             error: None,
             frame: None,
+            pending_pointer_position: None,
             rail_initial_execute: initial_rail_execute.clone(),
             rail: RailLedger::new(
                 self.next_rail_generation.fetch_add(1, Ordering::Relaxed),
@@ -1132,6 +1140,7 @@ impl Daemon {
         // instead of the daemon's terminal, refined by the caller-supplied directive. The dispatch
         // is installed as the session thread's thread-local default below.
         let dispatch = logbuf::session_dispatch(Arc::clone(&self.logs), log_directive.as_deref());
+        let negotiator_dispatch = dispatch.clone();
 
         // The RDP client engine runs on its own thread with a current-thread runtime, mirroring
         // `ironrdp-viewer`. This sidesteps any `Send` requirement on the connection future.
@@ -1152,13 +1161,21 @@ impl Daemon {
             );
         }
 
-        tokio::spawn(consume_output(
+        let consumer = tokio::spawn(consume_output(
             output_rx,
             Arc::clone(&live),
             self.notification.clone(),
             Arc::clone(&rail_notify),
             Arc::clone(&self.next_rail_generation),
         ));
+
+        // The NOW host abandons a channel whose client stays silent, so negotiation cannot wait
+        // for a request.
+        // The negotiator runs under the session's dispatch so its logs reach the session's log
+        // buffer.
+        tokio::spawn(
+            negotiate_until_session_ends(Arc::clone(&now_endpoint), consumer).with_subscriber(negotiator_dispatch),
+        );
 
         info!(%destination, "Started RDP session");
 
@@ -2065,6 +2082,16 @@ impl Daemon {
                 );
             }
         };
+        if let Some(position) = session
+            .live
+            .lock()
+            .expect("session live state poisoned")
+            .pending_pointer_position
+            .take()
+        {
+            // Update click coordinates without echoing the server's movement.
+            let _ = session.input_db.apply([Operation::MouseMove(position)]);
+        }
         let events = session.input_db.apply(operations);
         if events.is_empty() {
             return Response::ok();
@@ -2176,7 +2203,7 @@ impl Daemon {
         }
     }
 
-    async fn now_diagnostics(&self) -> Response {
+    fn now_diagnostics(&self) -> Response {
         let endpoint = match self
             .state
             .lock()
@@ -2189,7 +2216,7 @@ impl Daemon {
                 return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active RDP session");
             }
         };
-        let (connected, capabilities) = endpoint.diagnostic_snapshot().await;
+        let (connected, capabilities) = endpoint.diagnostic_snapshot();
         let capabilities = capabilities.map(|capabilities| NowDiagnostics {
             endpoint_allocated: true,
             connected,
@@ -2211,6 +2238,15 @@ impl Daemon {
             connected,
             capabilities: None,
         })))
+    }
+}
+
+/// Keeps the endpoint negotiated until the session's output consumer ends, which is when the
+/// session ends.
+async fn negotiate_until_session_ends(endpoint: Arc<NowEndpoint>, consumer: tokio::task::JoinHandle<()>) {
+    tokio::select! {
+        () = endpoint.keep_negotiated() => {}
+        _ = consumer => {}
     }
 }
 
@@ -2248,6 +2284,7 @@ async fn consume_output(
                 queued_execute_count,
             } => {
                 guard.rail.handshake_complete = true;
+                guard.rail.desktop_synchronized = false;
                 guard.rail.record(RailEventKind::Handshake {
                     handshake_ex_flags,
                     initialization_message_count: u16::try_from(initialization_message_count).unwrap_or(u16::MAX),
@@ -2353,6 +2390,10 @@ async fn consume_output(
                 if previous != ConnState::Connected {
                     info!(width, height, "Session connected");
                 }
+                false
+            }
+            RdpOutputEvent::PointerPosition { x, y } => {
+                guard.pending_pointer_position = Some(MousePosition { x, y });
                 false
             }
             RdpOutputEvent::ConnectionFailure(error) => {
@@ -2630,8 +2671,8 @@ mod tests {
     use super::{
         BoundedLog, ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_RETAINED_EVENTS,
         MAX_UNICODE_TEXT_CHARS, NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, Request, ResizeError,
-        Scancode, Session, consume_output, enqueue_unicode_text, filetime_to_unix_secs, notify,
-        system_time_to_filetime,
+        Scancode, Session, consume_output, enqueue_unicode_text, filetime_to_unix_secs, negotiate_until_session_ends,
+        notify, system_time_to_filetime,
     };
     use crate::ipc::{AgentErrorCategory, Payload, Response};
     use ironrdp_rpc::ipc::{RailEventKind, RailExecuteRequest, RailLaunchInfo};
@@ -2769,6 +2810,7 @@ mod tests {
             state: ConnState::Connected,
             error: None,
             frame: None,
+            pending_pointer_position: None,
             rail_initial_execute: Some((0, "notepad.exe".to_owned())),
             rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
             certificate_rejection: Arc::default(),
@@ -2830,6 +2872,7 @@ mod tests {
             state: ConnState::Connected,
             error: None,
             frame: None,
+            pending_pointer_position: None,
             rail_initial_execute: None,
             rail: RailLedger::new(1, 1, None),
             certificate_rejection: Arc::default(),
@@ -2875,6 +2918,67 @@ mod tests {
             live.lock().expect("session live state poisoned").state,
             ConnState::Disconnecting
         );
+    }
+
+    // oracle: mutant echoing a server pointer warp as a move or overriding a later local move
+    #[tokio::test]
+    async fn server_pointer_position_updates_clicks_without_overriding_later_local_moves() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+        use ironrdp_input::{MouseButton, MousePosition};
+        use ironrdp_pdu::input::MousePdu;
+        use ironrdp_pdu::input::mouse::PointerFlags;
+
+        let (daemon, mut receiver, live, rail_notify) = active_rail_session(false);
+        let original = MousePosition { x: 10, y: 20 };
+        assert!(daemon.input(Operation::MouseMove(original)).is_ok());
+        receiver.try_recv().expect("initial local movement");
+        let (output_tx, output_rx) = output_channel(1);
+        let (notification_tx, mut notification_rx) = mpsc::channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            Some(notification_tx),
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        output_tx
+            .send(RdpOutputEvent::PointerPosition { x: 713, y: 338 })
+            .await
+            .unwrap();
+        notification_rx.recv().await.expect("server position consumed");
+        assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        assert!(daemon.input(Operation::MouseButtonPressed(MouseButton::Left)).is_ok());
+        let RdpInputEvent::FastPath(events) = receiver.try_recv().expect("click after server warp") else {
+            panic!("expected FastPath input");
+        };
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1.4.2
+        assert_eq!(
+            events.as_slice(),
+            [FastPathInputEvent::MouseEvent(MousePdu {
+                flags: PointerFlags::DOWN | PointerFlags::LEFT_BUTTON,
+                number_of_wheel_rotation_units: 0,
+                x_position: 713,
+                y_position: 338,
+            })]
+        );
+
+        assert!(daemon.input(Operation::MouseMove(original)).is_ok());
+        receiver.try_recv().expect("movement back to original position");
+        assert!(daemon.input(Operation::MouseButtonReleased(MouseButton::Left)).is_ok());
+        let RdpInputEvent::FastPath(events) = receiver.try_recv().expect("release after local movement") else {
+            panic!("expected FastPath input");
+        };
+        assert_eq!(
+            events.as_slice(),
+            [FastPathInputEvent::MouseEvent(MousePdu {
+                flags: PointerFlags::LEFT_BUTTON,
+                number_of_wheel_rotation_units: 0,
+                x_position: 10,
+                y_position: 20,
+            })]
+        );
+        drop(output_tx);
+        consumer.await.unwrap();
     }
 
     #[tokio::test]
@@ -2946,6 +3050,20 @@ mod tests {
             ]
         );
         assert!(matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    // oracle: mutant a negotiator that outlives its session and keeps polling for a closed channel
+    #[tokio::test]
+    async fn the_negotiator_ends_when_the_session_output_ends() {
+        let endpoint = Arc::new(NowEndpoint::new().expect("create NOW endpoint"));
+        let consumer = tokio::spawn(async {});
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            negotiate_until_session_ends(endpoint, consumer),
+        )
+        .await
+        .expect("the negotiator must end with the session's output consumer");
     }
 
     #[tokio::test]
@@ -3028,6 +3146,40 @@ mod tests {
                     events.events.as_slice(),
                     [event] if matches!(event.kind, RailEventKind::ExecuteQueued(_))
                 )
+        ));
+    }
+
+    // oracle: mutant a new handshake inherits desktop synchronization from the previous shell.
+    #[tokio::test]
+    async fn rail_reinitialization_clears_previous_desktop_synchronization() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+
+        let (daemon, _, live, rail_notify) = active_rail_session(true);
+        let (output_tx, output_rx) = output_channel(3);
+        for event in [
+            RdpOutputEvent::RailHandshake {
+                handshake_ex_flags: None,
+                initialization_message_count: 8,
+                queued_execute_count: 0,
+            },
+            RdpOutputEvent::RailDesktopSynchronized {
+                released_execute_count: 0,
+            },
+            RdpOutputEvent::RailHandshake {
+                handshake_ex_flags: None,
+                initialization_message_count: 8,
+                queued_execute_count: 0,
+            },
+        ] {
+            output_tx.send(event).await.expect("send RAIL output");
+        }
+        drop(output_tx);
+        consume_output(output_rx, live, None, rail_notify, Arc::new(AtomicU64::new(2))).await;
+
+        assert!(matches!(
+            daemon.handle(Request::RailStatus).await.response(),
+            Response::Ok(Payload::RailStatus(status))
+                if status.handshake_complete && !status.desktop_synchronized
         ));
     }
 
@@ -3438,6 +3590,20 @@ mod tests {
                 if error.message
                     == "missing required fields: server address, username, password, gateway username, gateway password"
         ));
+    }
+
+    #[tokio::test]
+    async fn avd_entra_property_set_builds_without_known_certificates_callback_conflict() {
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        let mut properties = PropertySet::new();
+        properties.insert("full address", "rdgateway-r1.wvd.microsoft.com");
+        properties.set_gateway_hostname("127.0.0.1:1");
+        properties.set_gateway_usage_method(GatewayUsageMethod::UseAlways);
+        properties.insert("gatewaybrokeringtype", 1i64);
+        properties.insert("enablerdsaadauth", 1i64);
+
+        assert!(matches!(daemon.connect(properties, None), Response::Ok(_)));
+        let _ = daemon.disconnect();
     }
 
     #[test]

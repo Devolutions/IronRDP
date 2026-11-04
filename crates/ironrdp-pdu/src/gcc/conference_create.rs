@@ -163,6 +163,7 @@ impl<'de> Decode<'de> for ConferenceCreateRequest {
         // ConferenceCreateRequest::ConferenceName
         per::read_numeric_string(src, 1).map_err(|e| other_err!("confName", source: e))?;
         // padding
+        ensure_size!(in: src, size: 1);
         read_padding!(src, 1);
 
         // UserData (SET OF SEQUENCE)

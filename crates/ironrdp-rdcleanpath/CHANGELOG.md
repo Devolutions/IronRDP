@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.3.0...ironrdp-rdcleanpath-v0.3.1)] - 2026-10-27
+
+### <!-- 1 -->Features
+
+- Add standard error reason codes `EXPIRED_ERROR_CODE`, `NOT_YET_VALID_ERROR_CODE`, `REVOKED_ERROR_CODE`, `TARGET_UNREACHABLE_ERROR_CODE`, `DNS_RESOLUTION_FAILED_ERROR_CODE` and `TLS_HANDSHAKE_FAILED_ERROR_CODE` (100 to 105), which `Display` describes ([#2127](https://github.com/Devolutions/IronRDP/issues/2127)) ([0c7e3abfb3](https://github.com/Devolutions/IronRDP/commit/0c7e3abfb3fbbef0027ce74d50c6038c245978e0))
+
+- Add `IMPLEMENTATION_SPECIFIC_ERROR_CODES` (16384 to 32767), the range of reason codes each proxy defines for itself ([#2127](https://github.com/Devolutions/IronRDP/issues/2127)) ([0c7e3abfb3](https://github.com/Devolutions/IronRDP/commit/0c7e3abfb3fbbef0027ce74d50c6038c245978e0))
+
+
+
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdcleanpath-v0.2.2...ironrdp-rdcleanpath-v0.3.0)] - 2026-10-23
 
 ### <!-- 1 -->Features

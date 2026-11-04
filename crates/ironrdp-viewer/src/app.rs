@@ -1,5 +1,6 @@
 #![allow(clippy::print_stderr, clippy::print_stdout)] // allowed in this module only
 
+use core::error::Error as _;
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
@@ -74,6 +75,13 @@ pub struct RpcApp {
     pending_touch_mouse: Vec<ironrdp::input::Operation>,
     /// Origin of the touch frame timestamps.
     touch_epoch: Instant,
+    /// Whether the user requested closing the local desktop window for the active session.
+    ///
+    /// INVARIANT: set on `CloseRequested`, cleared on `Connected` and `AutoReconnected`, and read by `Terminated`.
+    ///
+    /// UNTESTED: `CloseRequested` sets `close_requested` and `Terminated` reads it on a running winit event loop.
+    /// Keep `close_requested`, `Connected`, `AutoReconnected`, and `Terminated` wired together so close exits cleanly.
+    close_requested: bool,
     /// RemoteApp mode: server windows open as local windows and no desktop window is shown.
     remote_app: bool,
     rail_windows: RailWindows,
@@ -155,11 +163,34 @@ impl RpcApp {
             mouse_touch: None,
             pending_touch_mouse: Vec::new(),
             touch_epoch: Instant::now(),
+            close_requested: false,
             remote_app,
             rail_windows: RailWindows::default(),
             pending_rail_inputs: std::collections::VecDeque::new(),
             release_pending: false,
         })
+    }
+
+    /// Whether `error` is a transport EOF, abort, reset, or broken pipe expected after a local close request.
+    pub fn is_expected_shutdown_error(error: &ironrdp::session::SessionError) -> bool {
+        use std::io::ErrorKind;
+
+        let mut source = error.source();
+        while let Some(err) = source {
+            if let Some(io) = err.downcast_ref::<std::io::Error>()
+                && matches!(
+                    io.kind(),
+                    ErrorKind::UnexpectedEof
+                        | ErrorKind::ConnectionAborted
+                        | ErrorKind::ConnectionReset
+                        | ErrorKind::BrokenPipe
+                )
+            {
+                return true;
+            }
+            source = err.source();
+        }
+        false
     }
 
     fn touch_timestamp_us(&self) -> u64 {
@@ -424,7 +455,7 @@ impl RpcApp {
 
     fn on_window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
@@ -447,14 +478,16 @@ impl RpcApp {
                 self.last_size = Some(window.inner_size());
                 self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
-            WindowEvent::CloseRequested => match &self.input_target {
-                InputTarget::Direct(input_event_sender) => input_event_sender.request_graceful_close(),
-                InputTarget::Rpc(daemon) => {
-                    let _ = daemon.disconnect();
-                    daemon.shutdown();
-                    event_loop.exit();
+            WindowEvent::CloseRequested => {
+                self.close_requested = true;
+                match &self.input_target {
+                    InputTarget::Direct(input_event_sender) => input_event_sender.request_graceful_close(),
+                    InputTarget::Rpc(daemon) => {
+                        let _ = daemon.disconnect();
+                        daemon.shutdown();
+                    }
                 }
-            },
+            }
             WindowEvent::DroppedFile(_) => {
                 // TODO(#110): File upload
             }
@@ -627,7 +660,10 @@ impl RpcApp {
 
     fn handle_output_event(&mut self, event_loop: &ActiveEventLoop, event: RdpOutputEvent) {
         match event {
-            RdpOutputEvent::Connected => info!("RDP session connected"),
+            RdpOutputEvent::Connected => {
+                self.close_requested = false;
+                info!("RDP session connected");
+            }
             RdpOutputEvent::MonitorLayout(monitors) => {
                 debug!(monitor_count = monitors.len(), "Received remote monitor layout");
             }
@@ -668,9 +704,17 @@ impl RpcApp {
                         proc_exit::sysexits::OK
                     }
                     Err(error) => {
-                        error!(?error);
-                        eprintln!("Active session error: {}", error.report().with_locations());
-                        proc_exit::sysexits::PROTOCOL_ERR
+                        if self.close_requested && Self::is_expected_shutdown_error(&error) {
+                            println!(
+                                "Terminated gracefully: {}",
+                                ironrdp::session::GracefulDisconnectReason::UserInitiated
+                            );
+                            proc_exit::sysexits::OK
+                        } else {
+                            error!(?error);
+                            eprintln!("Active session error: {}", error.report().with_locations());
+                            proc_exit::sysexits::PROTOCOL_ERR
+                        }
                     }
                 };
                 // TODO set exit_code.as_raw());
@@ -722,6 +766,7 @@ impl RpcApp {
                 let _ = response.send(AutoReconnectDecision::Stop);
             }
             RdpOutputEvent::AutoReconnected => {
+                self.close_requested = false;
                 info!("RDP session automatically reconnected");
             }
             RdpOutputEvent::LogonError(errors) => {
@@ -817,6 +862,34 @@ impl RpcApp {
             // Only produced when the client is built with `.with_desktop_updates()`, which the
             // viewer does not opt into: it always presents full-frame `Image` snapshots instead.
             RdpOutputEvent::DesktopUpdate(_) => {}
+            // Only produced when the virtual desktop control channel is configured, which the viewer does not do.
+            RdpOutputEvent::SwitchToLocalRequested => debug!("Cloud PC requested a switch to the local desktop"),
+            RdpOutputEvent::LocalActionRequested(action) => debug!(?action, "Cloud PC requested a local action"),
+            RdpOutputEvent::SwitchToCloudCompleted { hresult } => {
+                debug!(hresult, "Cloud PC answered the switch to the cloud desktop")
+            }
+            RdpOutputEvent::VirtualDesktopSwitchUnavailable { version } => {
+                debug!(
+                    version,
+                    "Cloud PC selected an unsupported virtual desktop control version"
+                )
+            }
+            // Only produced when the Windows 365 redirection channels are enabled, which the viewer does not do.
+            RdpOutputEvent::BatteryStatusRequested => debug!("Cloud PC requested the battery status"),
+            RdpOutputEvent::PowerRequestsChanged { active } => debug!(active, "Cloud PC power requests changed"),
+            RdpOutputEvent::ScreenCaptureReady => debug!("Cloud PC accepts screen capture uploads"),
+            RdpOutputEvent::ScreenCaptureUploaded { capture_id } => debug!(?capture_id, "Screen capture uploaded"),
+            RdpOutputEvent::ScreenCaptureSaved(result) => debug!(?result, "Cloud PC saved a screen capture"),
+            // Only produced when the interactive Entra channel is enabled, which the viewer does not do; it has no
+            // sign-in flow, so dropping the request reports the sign-in as cancelled.
+            RdpOutputEvent::InteractiveEntraAuthRequested(request) => {
+                debug!(?request, "Declining an interactive Entra sign-in request");
+            }
+            RdpOutputEvent::InteractiveEntraAuthCompleted { hresult } => {
+                debug!(hresult, "Interactive Entra sign-in completed");
+            }
+            // Only produced when the MultiPoint persistence channels are configured, which the viewer does not do.
+            RdpOutputEvent::MultipointSettingsChanged => debug!("MultiPoint session settings changed"),
         }
     }
 }

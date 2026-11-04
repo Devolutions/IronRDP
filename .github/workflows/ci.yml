@@ -8,6 +8,12 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+concurrency:
+  # Stacked PRs get two `synchronize` events per push (base and head branch), and a new push makes
+  # the previous run obsolete: keep only the latest run per PR. Other events never share a group.
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 env:
   # Disable incremental compilation. CI builds are often closer to from-scratch builds, as changes
   # are typically bigger than from a local edit-compile cycle.
@@ -68,6 +74,15 @@ jobs:
       - name: typos (check)
         run: cargo xtask check typos -v
 
+      # release-binaries.yml cannot use the shared action (it checks out the release tag), so it
+      # carries a copy that must stay identical.
+      - name: Inlined prune step matches shared action
+        run: |
+          shared="$(yq '.runs.steps[] | select(.name == "Uninstall unpinned Rust toolchains") | .run' .github/actions/prune-rust-toolchains/action.yml)"
+          release="$(yq '.jobs.build.steps[] | select(.name == "Prune Rust toolchains") | .run' .github/workflows/release-binaries.yml)"
+          test -n "$shared"
+          diff -u <(echo "$shared") <(echo "$release")
+
   # TODO: Move this action to a dedicated repository.
   openai-agent:
     name: OpenAI agent action [${{ matrix.os }}]
@@ -101,7 +116,6 @@ jobs:
 
   checks:
     name: Checks [${{ matrix.os }}]
-    needs: [formatting]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -122,8 +136,13 @@ jobs:
       - name: Install build dependencies
         uses: ./.github/actions/install-build-deps
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -163,16 +182,19 @@ jobs:
 
   fuzz:
     name: Fuzzing
-    needs: [formatting]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
           workspaces: fuzz -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -192,14 +214,18 @@ jobs:
 
   web:
     name: Web Client
-    needs: [formatting]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -218,7 +244,6 @@ jobs:
 
   ffi:
     name: FFI
-    needs: [formatting]
     runs-on: ubuntu-latest
 
     steps:
@@ -241,7 +266,6 @@ jobs:
 
   ffi-bindings-check:
     name: FFI bindings reproducibility
-    needs: [formatting]
     runs-on: windows-latest
 
     steps:
@@ -280,7 +304,6 @@ jobs:
 
   feature-matrix-setup:
     name: feature matrix setup
-    needs: [formatting]
     runs-on: ubuntu-latest
     outputs:
       feature-matrix: ${{ steps.setup-matrix.outputs.feature-matrix }}
@@ -288,8 +311,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Setup matrix
         id: setup-matrix
@@ -299,7 +327,7 @@ jobs:
 
   feature-matrix:
     name: feature matrix [${{ matrix.case }}]
-    needs: [formatting, feature-matrix-setup]
+    needs: [feature-matrix-setup]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -312,8 +340,13 @@ jobs:
       - name: Install build dependencies
         uses: ./.github/actions/install-build-deps
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5

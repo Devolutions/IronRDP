@@ -8,8 +8,17 @@ mod connection;
 pub mod connection_activation;
 mod connection_finalization;
 pub mod credssp;
-mod entra;
+pub mod entra;
 mod license_exchange;
+#[cfg(all(feature = "remote-guard", not(feature = "__test")))]
+#[expect(
+    unreachable_pub,
+    reason = "items are pub for the integration test suite under the __test feature"
+)]
+mod remote_guard;
+#[cfg(all(feature = "remote-guard", feature = "__test"))]
+#[doc(hidden)]
+pub mod remote_guard;
 mod server_name;
 
 use core::any::Any;
@@ -30,7 +39,7 @@ pub use self::connection::{
     MultitransportResult, encode_send_data_request,
 };
 pub use self::connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
-pub use self::license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
+pub use self::license_exchange::{LicenseExchangeSequence, LicenseExchangeState, LicenseRng};
 pub use self::server_name::ServerName;
 pub use crate::license_exchange::LicenseCache;
 
@@ -102,9 +111,11 @@ pub struct BitmapConfig {
     pub codecs: BitmapCodecs,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SmartCardIdentity {
-    /// DER-encoded X509 certificate
+    /// DER-encoded X509 certificate.
+    ///
+    /// INVARIANT: `Debug` output reports only `certificate.len()`, never raw bytes.
     pub certificate: Vec<u8>,
     /// Smart card reader name
     pub reader_name: String,
@@ -112,21 +123,54 @@ pub struct SmartCardIdentity {
     pub container_name: String,
     /// Smart card CSP name
     pub csp_name: String,
-    /// DER-encoded RSA 2048-bit private key
+    /// DER-encoded RSA 2048-bit private key.
+    ///
+    /// INVARIANT: `Debug` output reports only `private_key.len()`, never raw bytes.
     pub private_key: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+impl fmt::Debug for SmartCardIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SmartCardIdentity")
+            .field("certificate_len", &self.certificate.len())
+            .field("reader_name", &self.reader_name)
+            .field("container_name", &self.container_name)
+            .field("csp_name", &self.csp_name)
+            .field("private_key_len", &self.private_key.len())
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub enum Credentials {
     UsernamePassword {
         /// An empty username suppresses the X.224 `mstshash` cookie.
         username: String,
+        /// INVARIANT: `Debug` output redacts this field.
         password: String,
     },
     SmartCard {
+        /// INVARIANT: `Debug` output redacts this field.
         pin: String,
         config: Option<SmartCardIdentity>,
     },
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UsernamePassword { username, .. } => f
+                .debug_struct("Credentials::UsernamePassword")
+                .field("username", username)
+                .field("password", &"<redacted>")
+                .finish(),
+            Self::SmartCard { config, .. } => f
+                .debug_struct("Credentials::SmartCard")
+                .field("pin", &"<redacted>")
+                .field("config", config)
+                .finish(),
+        }
+    }
 }
 
 impl Credentials {
@@ -183,7 +227,7 @@ pub struct Config {
     /// Whether the client sends relative mouse input ([MS-RDPBCGR] 2.2.8.1.2.2.7).
     ///
     /// This sets `RNS_UD_CS_RELATIVE_MOUSE_INPUT` in the `earlyCapabilityFlags` of the
-    /// [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure and advertises RDP 10.12
+    /// [`TS_UD_CS_CORE`](gcc::ClientCoreOptionalData) structure and advertises at least RDP 10.12
     /// (`0x00080011`), the lowest version for which servers honor relative mouse support.
     ///
     /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
@@ -350,6 +394,22 @@ pub struct Config {
     /// [`DrdynvcClient::with_dynamic_channel`]: https://docs.rs/ironrdp-dvc/latest/ironrdp_dvc/struct.DrdynvcClient.html#method.with_dynamic_channel
     /// [`GraphicsPipelineClient`]: https://docs.rs/ironrdp-egfx/latest/ironrdp_egfx/client/struct.GraphicsPipelineClient.html
     pub support_dyn_vc_gfx_protocol: bool,
+    /// The RDP version the client announces in the `version` field of [`TS_UD_CS_CORE`](gcc::ClientCoreData).
+    ///
+    /// Servers gate some features on it.
+    /// Per [\[MS-RDPBCGR\] 2.2.7.1.6], a server may only take relative mouse events
+    /// (`INPUT_FLAG_MOUSE_RELATIVE`) from a client announcing RDP 10.12 (0x00080011) or later.
+    ///
+    /// [`RdpVersion::V5_PLUS`](gcc::RdpVersion::V5_PLUS) keeps the previous behavior.
+    /// When [`relative_mouse_input`](Self::relative_mouse_input) is enabled, the announced version is
+    /// raised to at least [`RdpVersion::V10_12`](gcc::RdpVersion::V10_12).
+    ///
+    /// Use [`RdpVersion::V5_PLUS`](gcc::RdpVersion::V5_PLUS) or later: the connector always sends the optional
+    /// core data fields (`postBeta2ColorDepth` onward), which RDP 4.0 clients never sent, so announcing
+    /// [`RdpVersion::V4`](gcc::RdpVersion::V4) would describe a client that couldn't have sent this block.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.7.1.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b3bc76ae-9ee5-454f-b197-ede845ca69cc
+    pub rdp_version: gcc::RdpVersion,
 }
 
 ironrdp_core::assert_impl!(Config: Send, Sync);

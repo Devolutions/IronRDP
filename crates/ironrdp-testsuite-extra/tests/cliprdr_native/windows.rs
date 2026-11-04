@@ -13,7 +13,7 @@ use ironrdp_cliprdr_native::StubClipboard;
 use ironrdp_cliprdr_native::windows_file_list::{
     LocalFileEntry, MAX_FILE_CONTENTS_CHUNK, build_local_file_list, decode_file_group_descriptor,
     encode_file_group_descriptor, fits_without_huge_file_support, is_directory, is_file_list_format,
-    is_portable_format, is_sendable_descriptor, range_request_len, read_file_contents,
+    is_portable_format, is_sendable_descriptor, omit_synthesized_dibv5, range_request_len, read_file_contents,
 };
 
 use super::TempDir;
@@ -76,6 +76,37 @@ fn byte_formats_are_portable() {
     assert!(is_portable_format(&named("HTML Format")));
     assert!(is_portable_format(&named("Rich Text Format")));
     assert!(is_portable_format(&named("PNG")));
+}
+
+// oracle: spec EnumClipboardFormats (winuser.h) §Remarks: original formats precede synthesized ones.
+// oracle: reference https://techcommunity.microsoft.com/discussions/windows11/serious-bug-in-windows-clipboard---images-get-corrupted/4466584
+#[test]
+fn synthesized_dibv5_is_omitted_only_when_dib_precedes_it() {
+    let mut dib_first = vec![
+        ClipboardFormat::new(ClipboardFormatId::CF_DIB),
+        ClipboardFormat::new(ClipboardFormatId::CF_DIBV5),
+        ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+    ];
+    omit_synthesized_dibv5(&mut dib_first);
+    assert_eq!(
+        dib_first.iter().map(ClipboardFormat::id).collect::<Vec<_>>(),
+        [ClipboardFormatId::CF_DIB, ClipboardFormatId::CF_UNICODETEXT]
+    );
+
+    let mut dibv5_first = vec![
+        ClipboardFormat::new(ClipboardFormatId::CF_DIBV5),
+        ClipboardFormat::new(ClipboardFormatId::CF_DIB),
+        ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+    ];
+    omit_synthesized_dibv5(&mut dibv5_first);
+    assert_eq!(
+        dibv5_first.iter().map(ClipboardFormat::id).collect::<Vec<_>>(),
+        [
+            ClipboardFormatId::CF_DIBV5,
+            ClipboardFormatId::CF_DIB,
+            ClipboardFormatId::CF_UNICODETEXT,
+        ]
+    );
 }
 
 #[test]
