@@ -14,7 +14,7 @@ use windows::Win32::UI::Input::Pointer::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{PEN_FLAG_ERASER, PEN_FLAG_INVERTED};
 
-static INPUT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static INPUT_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[rstest]
 #[case::up(0, 270)]
@@ -175,9 +175,9 @@ fn successive_events_leave_a_native_clock_interval() -> anyhow::Result<()> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
-    // oracle: spec Windows API InjectTouchInput §Remarks requires 0.1 ms between injected frames.
+    // oracle: spec Windows API InjectTouchInput Remarks requires 0.1 ms between injected frames.
     // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-injecttouchinput
-    // oracle: spec MS-RDPEI §2.2.3.3.1 RDPINPUT_TOUCH_FRAME defines offsets in microseconds.
+    // oracle: spec MS-RDPEI section 2.2.3.3.1 RDPINPUT_TOUCH_FRAME defines offsets in microseconds.
     // oracle: mutant frame timestamp scheduling accepts values beyond its 100 ms wait horizon.
     #[test]
     fn frame_timestamps_stay_in_order_and_within_the_native_clock_window(
@@ -190,7 +190,7 @@ proptest! {
         const FREQUENCY: u64 = 10_000_000;
         const NOW: u64 = 1_000_000_000;
         let first_offset = if continuing { first_offset } else { 0 };
-        let offsets = std::iter::once(first_offset).chain(later_offsets).collect::<Vec<_>>();
+        let offsets = core::iter::once(first_offset).chain(later_offsets).collect::<Vec<_>>();
         let timestamps = frame_timestamps(
             FREQUENCY,
             NOW,
@@ -292,10 +292,10 @@ fn disabled_timestamps_ignore_both_timing_fields() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
-fn ownership_is_exclusive_and_released_after_drop() -> anyhow::Result<()> {
+#[tokio::test]
+async fn ownership_is_exclusive_and_released_after_drop() -> anyhow::Result<()> {
     // oracle: mutant permitting simultaneous injectors or retaining ownership after drop.
-    let _guard = INPUT_TEST_LOCK.lock().expect("input test lock is not poisoned");
+    let _guard = INPUT_TEST_LOCK.lock().await;
     let mut input = WindowsInput::new()?;
     assert!(WindowsInput::new().is_err());
     input.reset();
@@ -308,7 +308,7 @@ fn ownership_is_exclusive_and_released_after_drop() -> anyhow::Result<()> {
 #[tokio::test]
 async fn uninitialized_input_operations_are_rejected() -> anyhow::Result<()> {
     // oracle: mutant accepting input operations before CS_READY initialization.
-    let _guard = INPUT_TEST_LOCK.lock().expect("input test lock is not poisoned");
+    let _guard = INPUT_TEST_LOCK.lock().await;
     let mut input = WindowsInput::new()?;
     assert!(matches!(
         input
@@ -332,10 +332,10 @@ async fn uninitialized_input_operations_are_rejected() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
-fn touch_initialization_can_be_repeated_after_reset() -> anyhow::Result<()> {
+#[tokio::test]
+async fn touch_initialization_can_be_repeated_after_reset() -> anyhow::Result<()> {
     // oracle: mutant reset leaves touch initialization unavailable after reset.
-    let _guard = INPUT_TEST_LOCK.lock().expect("input test lock is not poisoned");
+    let _guard = INPUT_TEST_LOCK.lock().await;
     let mut input = WindowsInput::new()?;
     let touch_ready = CsReadyPdu::new(CsReadyFlags::empty(), RdpInputProtocolVersion::V100, 1);
     input.initialize(touch_ready.clone())?;
