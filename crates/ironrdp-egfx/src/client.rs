@@ -564,6 +564,8 @@ impl GraphicsPipelineClient {
     /// Each other surface gets a decoder when its first update arrives and keeps it until its stream ends.
     /// A stream ends when the surface is deleted or created again, or on `ResetGraphics` or a protocol reset.
     /// The factory goes unused when [`Self::new`] got no decoder.
+    /// Its decoders must match the one passed to [`Self::new`] in [`H264Decoder::supports_yuv420`], because that
+    /// decoder alone decides whether AVC444 is advertised and decoded.
     ///
     /// `factory` runs on the thread processing the channel.
     /// An update is dropped when `factory` returned `None` for its surface, when its decoder can't start
