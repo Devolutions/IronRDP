@@ -3358,9 +3358,9 @@ dependencies = [
 name = "ironrdp-rdpei-native"
 version = "0.0.0"
 dependencies = [
- "anyhow",
+ "futures-timer",
+ "ironrdp-error 0.2.1",
  "ironrdp-rdpei",
- "tokio",
  "tracing",
  "windows",
 ]

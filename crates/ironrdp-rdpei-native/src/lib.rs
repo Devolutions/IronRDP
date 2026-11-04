@@ -2,7 +2,13 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
 #[cfg(windows)]
+mod error;
+
+#[cfg(windows)]
 mod windows;
+
+#[cfg(windows)]
+pub use error::{WindowsInputError, WindowsInputErrorKind, WindowsInputResult};
 
 #[cfg(windows)]
 pub use windows::WindowsInput;
@@ -21,19 +27,12 @@ pub mod __test {
         flags: CsReadyFlags,
         encode_time: u32,
         offsets: &[u64],
-    ) -> anyhow::Result<Vec<u64>> {
-        crate::windows::frame_timestamps(
-            frequency,
-            now,
-            previous,
-            continuing,
-            flags,
-            encode_time,
-            offsets.iter().copied(),
-        )
+    ) -> crate::WindowsInputResult<Vec<u64>> {
+        let mut offsets = offsets.iter().copied();
+        crate::windows::frame_timestamps(frequency, now, previous, continuing, flags, encode_time, &mut offsets)
     }
 
-    pub fn touch_orientation(orientation: Option<u32>) -> anyhow::Result<u32> {
+    pub fn touch_orientation(orientation: Option<u32>) -> crate::WindowsInputResult<u32> {
         crate::windows::touch_orientation(orientation)
     }
 
@@ -45,7 +44,7 @@ pub mod __test {
         right: i16,
         bottom: i16,
         orientation: Option<u32>,
-    ) -> anyhow::Result<(i32, i32, i32, i32)> {
+    ) -> crate::WindowsInputResult<(i32, i32, i32, i32)> {
         let rect = crate::windows::touch_contact_rect(x, y, left, top, right, bottom, orientation)?;
         Ok((rect.left, rect.top, rect.right, rect.bottom))
     }

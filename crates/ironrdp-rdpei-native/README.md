@@ -5,7 +5,8 @@ It translates contact fields, preserves frame timing, tracks active contacts, an
 The crate is a Windows-only extra-tier backend; `ironrdp-rdpei` remains portable and handles the wire protocol.
 
 Create one injector on the desktop's input thread, call `initialize` with the negotiated `CsReadyPdu`, then forward `touch`, `pen`, and `dismiss` calls in order.
-The asynchronous methods require a Tokio timer and must remain on that thread, for example in a `LocalSet`.
+The asynchronous methods are executor-agnostic and must remain on that thread.
+Fallible methods return `WindowsInputError`, grouped by invalid input, invalid state, native API, or clock failure.
 The injector is deliberately neither `Send` nor `Sync`, and only one instance can own touch injection in the process.
 Do not mix it with another caller of Windows touch-injection APIs.
 Coordinates are desktop pixel coordinates; the caller handles desktop selection, permissions, and any coordinate mapping.
