@@ -15,6 +15,8 @@ mod dvc_pipe_proxy;
 mod dynamic_channel;
 mod e2e;
 mod gateway_detect;
+#[cfg(windows)]
+mod rdpei_native;
 mod rdpeudp_tokio;
 mod static_channel;
 mod vmconnect;

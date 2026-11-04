@@ -3355,6 +3355,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpei-native"
+version = "0.0.0"
+dependencies = [
+ "futures-timer",
+ "ironrdp-error 0.2.1",
+ "ironrdp-rdpei",
+ "tracing",
+ "windows",
+]
+
+[[package]]
 name = "ironrdp-rdpel"
 version = "0.0.2"
 dependencies = [
@@ -3752,6 +3763,8 @@ dependencies = [
  "ironrdp-rdpdr-native",
  "ironrdp-rdpeai",
  "ironrdp-rdpeci",
+ "ironrdp-rdpei",
+ "ironrdp-rdpei-native",
  "ironrdp-rdpemt",
  "ironrdp-rdpet",
  "ironrdp-rdpeudp",
