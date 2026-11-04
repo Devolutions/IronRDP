@@ -2157,6 +2157,16 @@ async fn an_empty_credential_list_fails_credssp(
 /// Steps an acceptor that accepts `accounts` through a TLS connection up to its Client Info PDU, sent with
 /// `credentials`, and returns the result of the step that reads it.
 fn client_info_logon(accounts: Vec<Credentials>, credentials: Credentials) -> ConnectorResult<()> {
+    client_info_logon_with(Some(accounts), false, credentials)
+}
+
+/// Like [`client_info_logon`], with `accounts` left unset when `None`, and ClientInfo credentials handed to an
+/// external validator when `unverified`.
+fn client_info_logon_with(
+    accounts: Option<Vec<Credentials>>,
+    unverified: bool,
+    credentials: Credentials,
+) -> ConnectorResult<()> {
     let mut client_info = CLIENT_INFO_UNICODE.clone();
     client_info.credentials = credentials;
     let client_info = encode_vec(&ClientInfoPdu {
@@ -2170,7 +2180,10 @@ fn client_info_logon(accounts: Vec<Credentials>, credentials: Credentials) -> Co
     client_blocks.network = None;
 
     let mut acceptor = Acceptor::new(SecurityProtocol::SSL, DESKTOP_SIZE, Vec::new(), None);
-    acceptor.set_credential_list(accounts);
+    if let Some(accounts) = accounts {
+        acceptor.set_credential_list(accounts);
+    }
+    acceptor.set_allow_unverified_credentials(unverified);
     let (user_channel_id, io_channel_id, ..) = drive_to_client_info(&mut acceptor, client_blocks);
     let client_info = encode_send_data_request(user_channel_id, io_channel_id, &client_info);
     acceptor.step(&client_info, None, &mut WriteBuf::new()).map(|_| ())
@@ -2199,11 +2212,12 @@ fn client_info_credentials_must_match_an_accepted_account(
     assert_eq!(result.is_ok(), accepted, "{result:?}");
 }
 
-/// An empty credential list leaves Client Info credentials unchecked, as no credentials at all do; the server's
-/// credential validator, if any, decides.
-// oracle: derived from the empty list the test seeds with `set_credential_list`
+/// An empty credential list refuses every Client Info logon: a list that has emptied, say after an account store
+/// reloads with no rows, must not open the server to anyone.
+// oracle: review of Devolutions/IronRDP#2356 (an empty list must refuse ClientInfo logons, unlike no credentials at
+// all, https://github.com/Devolutions/IronRDP/pull/2356)
 #[test]
-fn an_empty_credential_list_accepts_any_client_info_credentials() {
+fn an_empty_credential_list_refuses_client_info_credentials() {
     let result = client_info_logon(
         Vec::new(),
         Credentials {
@@ -2213,7 +2227,30 @@ fn an_empty_credential_list_accepts_any_client_info_credentials() {
         },
     );
 
-    result.unwrap();
+    result.unwrap_err();
+}
+
+fn anyone() -> Credentials {
+    Credentials {
+        username: "anyone".to_owned(),
+        password: "anything".to_owned(),
+        domain: None,
+    }
+}
+
+/// With no credentials configured at all, Client Info credentials stay unchecked, as since
+/// Devolutions/IronRDP#1150; only a configured list, empty or not, requires a match.
+// oracle: regression Devolutions/IronRDP#1150 (an acceptor without credentials refused every TLS logon)
+#[test]
+fn no_credentials_leave_client_info_credentials_unchecked() {
+    client_info_logon_with(None, false, anyone()).unwrap();
+}
+
+/// When an external validator decides ClientInfo logons, an empty list does not refuse them first.
+// oracle: derived from `set_allow_unverified_credentials`, which hands ClientInfo credentials to the validator
+#[test]
+fn an_empty_credential_list_leaves_client_info_credentials_to_the_validator() {
+    client_info_logon_with(Some(Vec::new()), true, anyone()).unwrap();
 }
 
 /// The server Demand Active carries `RDP` as its source descriptor, as the FreeRDP

@@ -483,11 +483,11 @@ where
             }
         }
 
-        if acceptor.creds.is_empty() {
+        let accepted = acceptor.creds.as_deref().unwrap_or_default();
+        if accepted.is_empty() {
             return Err(general_err!("no credentials while doing credssp"));
         }
-        let identities = acceptor
-            .creds
+        let identities = accepted
             .iter()
             .map(|creds| {
                 let username = if creds.domain.is_none() && creds.username.contains(['\\', '@']) {
