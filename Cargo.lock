@@ -3609,6 +3609,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "visibility",
+ "windows",
  "x509-cert",
  "zstd-safe",
 ]

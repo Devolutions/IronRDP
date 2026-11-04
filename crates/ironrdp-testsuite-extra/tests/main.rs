@@ -11,6 +11,8 @@ mod clipboard_completion;
 mod cliprdr_native;
 #[cfg(windows)]
 mod credssp_backend;
+#[cfg(windows)]
+mod cursor;
 mod dvc_pipe_proxy;
 mod dynamic_channel;
 mod e2e;
