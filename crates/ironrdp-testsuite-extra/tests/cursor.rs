@@ -163,7 +163,7 @@ impl Drop for OwnedCursor {
 #[test]
 fn native_monochrome_capture_keeps_masks_and_hotspot() -> anyhow::Result<()> {
     // SAFETY: The buffer has two word-aligned monochrome rows for the 4x2 bitmap.
-    let mask = unsafe { CreateBitmap(4, 2, 1, 1, Some([0x30_u8, 0, 0x50, 0].as_ptr().cast())) };
+    let mask = unsafe { CreateBitmap(4, 2, 1, 1, Some([0x30u8, 0, 0x50, 0].as_ptr().cast())) };
     assert!(!mask.is_invalid());
     let info = ICONINFO {
         fIcon: false.into(),
@@ -193,9 +193,9 @@ fn native_monochrome_capture_keeps_masks_and_hotspot() -> anyhow::Result<()> {
 #[test]
 fn native_alpha_capture_preserves_premultiplied_channels() -> anyhow::Result<()> {
     // SAFETY: Each buffer has a complete scanline for its bitmap's format.
-    let mask = unsafe { CreateBitmap(1, 1, 1, 1, Some([0_u8; 2].as_ptr().cast())) };
+    let mask = unsafe { CreateBitmap(1, 1, 1, 1, Some([0u8; 2].as_ptr().cast())) };
     // SAFETY: The buffer has one complete 32-bit pixel.
-    let color = unsafe { CreateBitmap(1, 1, 1, 32, Some([60_u8, 30, 100, 128].as_ptr().cast())) };
+    let color = unsafe { CreateBitmap(1, 1, 1, 32, Some([60u8, 30, 100, 128].as_ptr().cast())) };
     let info = ICONINFO {
         fIcon: false.into(),
         xHotspot: 0,
