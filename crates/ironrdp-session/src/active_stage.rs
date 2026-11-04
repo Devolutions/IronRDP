@@ -555,26 +555,10 @@ impl ActiveStage {
     ) -> SessionResult<Vec<Vec<u8>>> {
         debug_assert!(width != 0 && height != 0);
         if suppress_output_support {
-            let mut suppress = WriteBuf::new();
-            self.x224_processor.encode_static(
-                &mut suppress,
-                ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect: None }),
-            )?;
-
-            let mut resume = WriteBuf::new();
-            self.x224_processor.encode_static(
-                &mut resume,
-                ShareDataPdu::SuppressOutput(SuppressOutputPdu {
-                    desktop_rect: Some(InclusiveRectangle {
-                        left: 0,
-                        top: 0,
-                        right: width.saturating_sub(1),
-                        bottom: height.saturating_sub(1),
-                    }),
-                }),
-            )?;
-
-            return Ok(vec![suppress.into_inner(), resume.into_inner()]);
+            return Ok(vec![
+                self.encode_suppress_output(None)?,
+                self.encode_suppress_output(Some((width, height)))?,
+            ]);
         }
 
         if refresh_rect_support {
@@ -582,6 +566,29 @@ impl ActiveStage {
         }
 
         Ok(Vec::new())
+    }
+
+    /// Encodes a [2.2.11.3.1] Suppress Output PDU Data (TS_SUPPRESS_OUTPUT_PDU).
+    ///
+    /// `None` stops the server's display updates, as a client does when its window is minimized.
+    /// `Some((width, height))` resumes them for the whole desktop of that size, and the server repaints it.
+    /// Send it only when the server advertised Suppress Output support in its General Capability Set.
+    ///
+    /// [2.2.11.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/0be71491-0b01-402c-947d-080706ccf91b
+    pub fn encode_suppress_output(&self, resume: Option<(u16, u16)>) -> SessionResult<Vec<u8>> {
+        let mut frame = WriteBuf::new();
+        self.x224_processor.encode_static(
+            &mut frame,
+            ShareDataPdu::SuppressOutput(SuppressOutputPdu {
+                desktop_rect: resume.map(|(width, height)| InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: width.saturating_sub(1),
+                    bottom: height.saturating_sub(1),
+                }),
+            }),
+        )?;
+        Ok(frame.into_inner())
     }
 
     /// Send a pdu on the static global channel. Typically used to send input events
@@ -1363,6 +1370,43 @@ mod tests {
 
         assert_eq!(stage.request_full_redraw(1024, 768, true, false).unwrap().len(), 1);
         assert!(stage.request_full_redraw(1024, 768, false, false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn suppress_output_stops_updates_or_resumes_the_whole_desktop() {
+        let stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+
+        let encode = |desktop_rect| {
+            let mut frame = WriteBuf::new();
+            stage
+                .encode_static(
+                    &mut frame,
+                    ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect }),
+                )
+                .unwrap();
+            frame.into_inner()
+        };
+
+        assert_eq!(stage.encode_suppress_output(None).unwrap(), encode(None));
+        assert_eq!(
+            stage.encode_suppress_output(Some((1024, 768))).unwrap(),
+            encode(Some(InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 1023,
+                bottom: 767,
+            }))
+        );
     }
 
     #[test]

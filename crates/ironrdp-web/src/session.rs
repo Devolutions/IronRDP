@@ -618,6 +618,10 @@ pub(crate) enum RdpInputEvent {
         scale_factor: Option<u32>,
         physical_size: Option<(u32, u32)>,
     },
+    /// Stop (`false`) or resume (`true`) the server's display updates.
+    DisplayUpdates {
+        allow: bool,
+    },
     TerminateSession,
 }
 
@@ -748,6 +752,8 @@ impl iron_remote_desktop::Session for Session {
 
         // We retain the factory to drive the Deactivation-Reactivation Sequence locally.
         let activation_factory = connection_result.activation_factory;
+
+        let mut suppress_output_support = connection_result.suppress_output_support;
 
         let mut active_stage = ActiveStageBuilder {
             static_channels: connection_result.static_channels,
@@ -929,6 +935,19 @@ impl iron_remote_desktop::Session for Session {
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                             } else {
                                 debug!("Resize event ignored");
+                                Vec::new()
+                            }
+                        },
+                        RdpInputEvent::DisplayUpdates { allow } => {
+                            // UNTESTED: the PDU goes out only while the server advertises Suppress Output support,
+                            // which reactivation refreshes.
+                            // No test drives this loop; check both when changing how capabilities reach it.
+                            if suppress_output_support {
+                                debug!(allow, "Display updates toggled");
+                                let resume = allow.then(|| (image.width(), image.height()));
+                                vec![ActiveStageOutput::ResponseFrame(active_stage.encode_suppress_output(resume)?)]
+                            } else {
+                                debug!("Display updates toggle ignored: the server does not support Suppress Output");
                                 Vec::new()
                             }
                         },
@@ -1127,10 +1146,12 @@ impl iron_remote_desktop::Session for Session {
                                 pointer_software_rendering,
                                 static_channel_chunk_size,
                                 window_support_level,
+                                suppress_output_support: reactivated_suppress_output_support,
                                 ..
                             } = connection_activation.connection_activation_state()
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
+                                suppress_output_support = reactivated_suppress_output_support;
                                 // Release the previous framebuffer first so the probe and the new allocation do not
                                 // compete with it for linear memory.
                                 drop(image);
@@ -1326,6 +1347,19 @@ impl iron_remote_desktop::Session for Session {
                         },
                     ))
                     .context("send file contents response")
+                    .map_err(IronError::from)?;
+
+                return Ok(JsValue::NULL);
+            };
+            |display_updates: JsValue| {
+                let allow = display_updates
+                    .as_bool()
+                    .context("display_updates expects a boolean")
+                    .map_err(IronError::from)?;
+
+                self.input_events_tx
+                    .unbounded_send(RdpInputEvent::DisplayUpdates { allow })
+                    .context("send display updates toggle")
                     .map_err(IronError::from)?;
 
                 return Ok(JsValue::NULL);
