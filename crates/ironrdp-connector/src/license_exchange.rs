@@ -92,7 +92,7 @@ pub trait LicenseRng: Sync + Send + Debug + RefUnwindSafe {
 
 /// Default [`LicenseRng`], backed by `rand::rng()`.
 #[derive(Debug)]
-struct DefaultLicenseRng;
+pub(crate) struct DefaultLicenseRng;
 
 impl LicenseRng for DefaultLicenseRng {
     fn fill_secrets(

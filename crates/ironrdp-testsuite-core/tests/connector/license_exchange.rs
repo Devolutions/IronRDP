@@ -11,15 +11,16 @@ use ironrdp_pdu::rdp::server_license::{
     PreambleType, PreambleVersion, ProductInfo, RANDOM_NUMBER_SIZE, ServerCertificate, ServerLicenseRequest,
 };
 use ironrdp_pdu::x224::X224;
+use proptest::prelude::*;
 
 const USER_CHANNEL_ID: u16 = 1002;
 const IO_CHANNEL_ID: u16 = 1003;
 
-const CLIENT_RANDOM: [u8; RANDOM_NUMBER_SIZE] = [0x11; RANDOM_NUMBER_SIZE];
-const PREMASTER_SECRET: [u8; PREMASTER_SECRET_SIZE] = [0x22; PREMASTER_SECRET_SIZE];
-
 #[derive(Debug)]
-struct FixedRng;
+struct FixedRng {
+    client_random: [u8; RANDOM_NUMBER_SIZE],
+    premaster_secret: Vec<u8>,
+}
 
 impl LicenseRng for FixedRng {
     fn fill_secrets(
@@ -27,8 +28,8 @@ impl LicenseRng for FixedRng {
         client_random: &mut [u8; RANDOM_NUMBER_SIZE],
         premaster_secret: &mut [u8; PREMASTER_SECRET_SIZE],
     ) {
-        *client_random = CLIENT_RANDOM;
-        *premaster_secret = PREMASTER_SECRET;
+        *client_random = self.client_random;
+        premaster_secret.copy_from_slice(&self.premaster_secret);
     }
 }
 
@@ -102,12 +103,21 @@ fn connector() -> ClientConnector {
 }
 
 // oracle: spec MS-RDPELE §2.2.2.2 (the request carries the client's random number and premaster secret)
-#[test]
-fn the_license_request_uses_the_injected_rng() {
-    let (request, encryption_data) = answer_license_request(connector().with_license_rng(Arc::new(FixedRng)));
+proptest! {
+    #[test]
+    fn the_license_request_uses_the_injected_rng(
+        client_random in prop::array::uniform32(any::<u8>()),
+        premaster_secret in prop::collection::vec(any::<u8>(), PREMASTER_SECRET_SIZE),
+    ) {
+        let rng = FixedRng {
+            client_random,
+            premaster_secret: premaster_secret.clone(),
+        };
+        let (request, encryption_data) = answer_license_request(connector().with_license_rng(Arc::new(rng)));
 
-    assert_eq!(request.client_random, CLIENT_RANDOM);
-    assert_eq!(encryption_data.premaster_secret, PREMASTER_SECRET);
+        prop_assert_eq!(request.client_random, client_random);
+        prop_assert_eq!(encryption_data.premaster_secret, premaster_secret);
+    }
 }
 
 /// The client generates both values with a cryptographically secure generator, so two connections never repeat them.
