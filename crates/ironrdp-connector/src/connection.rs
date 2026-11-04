@@ -17,7 +17,7 @@ use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionStat
 use crate::connection_activation::{
     ConnectionActivationFactory, ConnectionActivationSequence, ConnectionActivationState,
 };
-use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
+use crate::license_exchange::{LicenseExchangeSequence, LicenseRng, NoopLicenseCache};
 use crate::{
     Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, MonotonicInstant,
     NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
@@ -450,6 +450,8 @@ pub struct ClientConnector {
     // False rejects Kerberos operations on the redirection channel, restricting the session to NTLM.
     #[cfg(feature = "remote-guard")]
     remote_guard_kerberos: bool,
+    /// Set via [`ClientConnector::with_license_rng`].
+    license_rng: Option<Arc<dyn LicenseRng>>,
 }
 
 impl ClientConnector {
@@ -475,6 +477,7 @@ impl ClientConnector {
             remote_guard_ntlm: None,
             #[cfg(feature = "remote-guard")]
             remote_guard_kerberos: false,
+            license_rng: None,
         }
     }
 
@@ -677,6 +680,13 @@ impl ClientConnector {
     #[must_use]
     pub fn with_cluster_data(mut self, cluster_data: gcc::ClientClusterData) -> Self {
         self.cluster_data = Some(cluster_data);
+        self
+    }
+
+    /// Take the client random and premaster secret of the licensing exchange from `rng` instead of `rand::rng()`.
+    #[must_use]
+    pub fn with_license_rng(mut self, rng: Arc<dyn LicenseRng>) -> Self {
+        self.license_rng = Some(rng);
         self
     }
 
@@ -1805,7 +1815,7 @@ impl Sequence for ClientConnector {
                 // what does is the first licensing PDU on the I/O channel, and it ends
                 // the phase. Without a message channel nothing is read and we go
                 // straight to licensing, as before.
-                let license_exchange = LicenseExchangeSequence::new(
+                let mut license_exchange = LicenseExchangeSequence::new(
                     io_channel_id,
                     self.config.credentials.username().unwrap_or("").to_owned(),
                     self.config.domain.clone(),
@@ -1815,6 +1825,9 @@ impl Sequence for ClientConnector {
                         .clone()
                         .unwrap_or_else(|| Arc::new(NoopLicenseCache)),
                 );
+                if let Some(rng) = &self.license_rng {
+                    license_exchange.rng = Arc::clone(rng);
+                }
                 // If a PDU was read (message channel present) it is the first
                 // licensing PDU; advance the licensing sequence with it now,
                 // through the same helper the LicensingExchange state uses, so
