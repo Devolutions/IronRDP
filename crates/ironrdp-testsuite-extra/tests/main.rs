@@ -16,6 +16,8 @@ mod dynamic_channel;
 mod e2e;
 mod gateway_detect;
 mod rdpeudp_tokio;
+#[cfg(windows)]
+mod rdpei_native;
 mod static_channel;
 mod vmconnect;
 mod volume;
