@@ -424,10 +424,12 @@ fn filesystem_drive_announce_encodes_the_name_as_8_bit_characters_and_a_valid_do
     // oracle: regression #2075 - Windows reads the name in DeviceData as 8-bit characters, null-terminated.
     assert_eq!(&device_data[..5], b"share");
     assert_eq!(device_data.last(), Some(&0));
+    // oracle: mutant the space dropped, or replaced with '_' as FreeRDP's drive_register_drive_path does.
+    assert_eq!(&device_data[..6], b"share ");
     // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c -
-    // drive_register_drive_path copies the UTF-8 name byte for byte into DeviceData, so U+1F4C1 goes as F0 9F 93 81.
-    // The space stays, unlike FreeRDP: a mutant dropping or replacing it, or writing the character as UTF-16 or '_'.
-    assert_eq!(device_data, b"share \xF0\x9F\x93\x81\0");
+    // drive_register_drive_path copies the UTF-8 name byte for byte into DeviceData, so U+1F4C1 goes as F0 9F 93 81
+    // (a mutant writes it as UTF-16 or '_').
+    assert_eq!(&device_data[6..], b"\xF0\x9F\x93\x81\0");
 }
 
 #[test]
@@ -461,6 +463,9 @@ fn filesystem_drive_announce_keeps_any_name_null_terminated_and_free_of_forbidde
 }
 
 /// Checks the DeviceData a drive named `name` is announced with.
+///
+/// A function rather than a block in the `proptest!` closure because the macro stringifies its body, and the `§` in
+/// the oracle markers below would then be a non-ASCII literal that `clippy::non_ascii_literal` rejects.
 fn assert_drive_name_invariants(name: &str) {
     let encoded = encoded_drive_announce(name);
     let device_data = drive_device_data(&encoded);
@@ -475,7 +480,9 @@ fn assert_drive_name_invariants(name: &str) {
     if let Some((_, before_last)) = body.split_last() {
         assert!(!before_last.contains(&b':'));
     }
-    // oracle: mutant a character outside ASCII dropped or re-encoded instead of passing through as UTF-8.
+    // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c -
+    // drive_register_drive_path copies the UTF-8 name byte for byte, so the characters outside ASCII arrive as their
+    // UTF-8 bytes, in order (a mutant drops or re-encodes them).
     let outside_ascii: String = name.chars().filter(|c| !c.is_ascii()).collect();
     let passed: Vec<u8> = body.iter().copied().filter(|b| !b.is_ascii()).collect();
     assert_eq!(passed, outside_ascii.into_bytes());

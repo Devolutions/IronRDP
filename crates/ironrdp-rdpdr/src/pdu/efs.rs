@@ -1332,25 +1332,21 @@ impl DeviceAnnounceHeader {
         // which this client advertises, but Windows 11 and Windows Server 2022 and 2025 read the field as 8-bit
         // characters: a UTF-16 name shows as its first letter. FreeRDP's client writes the name as 8-bit characters too:
         // the bytes of its UTF-8 name, which Windows Server 2025 shows with the characters outside ASCII intact.
-        let device_data = {
-            let bytes = name.as_bytes();
-            // INVARIANT: every byte of a UTF-8 character outside ASCII is 0x80 or above, so a byte that matches an
-            // ASCII character below is that whole character; the bytes of other characters pass through unchanged,
-            // and the name stays null-terminated and gains no character MS-RDPEFS 2.2.1.3 forbids.
-            let mut out: Vec<u8> = bytes
-                .iter()
-                .enumerate()
-                .map(|(i, &b)| match b {
-                    // Windows refuses an 8-bit name with a character MS-RDPEFS 2.2.1.3 forbids in a device name, or
-                    // a colon before its end; FreeRDP replaces them too. A NUL would end the name early.
-                    b'<' | b'>' | b'"' | b'/' | b'\\' | b'|' | 0 => b'_',
-                    b':' if i + 1 != bytes.len() => b'_',
-                    _ => b,
-                })
-                .collect();
-            out.push(0 /* NUL terminator */);
-            out
-        };
+        // INVARIANT: every byte of a UTF-8 character outside ASCII is 0x80 or above, so a byte that matches an ASCII
+        // character below is that whole character; the bytes of other characters pass through unchanged, and the
+        // name stays null-terminated and gains no character MS-RDPEFS 2.2.1.3 forbids.
+        let mut device_data: Vec<u8> = name
+            .bytes()
+            .enumerate()
+            .map(|(i, b)| match b {
+                // Windows refuses an 8-bit name with a character MS-RDPEFS 2.2.1.3 forbids in a device name, or a
+                // colon before its end; FreeRDP replaces them too. A NUL would end the name early.
+                b'<' | b'>' | b'"' | b'/' | b'\\' | b'|' | 0 => b'_',
+                b':' if i + 1 != name.len() => b'_',
+                _ => b,
+            })
+            .collect();
+        device_data.push(0 /* NUL terminator */);
 
         Self {
             device_type: DeviceType::Filesystem,
