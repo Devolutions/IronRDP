@@ -541,11 +541,11 @@ mod windows_main {
     impl RdpServerInputHandler for TermSrvInputHandler {
         fn keyboard(&mut self, event: KeyboardEvent) {
             match event {
-                KeyboardEvent::Pressed { code, extended } => {
+                KeyboardEvent::Pressed { code, extended, .. } => {
                     self.update_pressed_input(PressedInput::Scancode { code, extended }, true);
                     self.send_scancode(code, extended, false);
                 }
-                KeyboardEvent::Released { code, extended } => {
+                KeyboardEvent::Released { code, extended, .. } => {
                     self.update_pressed_input(PressedInput::Scancode { code, extended }, false);
                     self.send_scancode(code, extended, true);
                 }
@@ -7219,6 +7219,7 @@ mod windows_main {
             handler.keyboard(KeyboardEvent::Pressed {
                 code: 0x1d,
                 extended: false,
+                extended1: false,
             });
             handler.keyboard(KeyboardEvent::UnicodePressed(u16::from(b'x')));
             handler.keyboard(KeyboardEvent::Synchronize(SynchronizeFlags::CAPS_LOCK));
@@ -7349,11 +7350,13 @@ mod windows_main {
             input.keyboard(KeyboardEvent::Pressed {
                 code: 0x1D,
                 extended: false,
+                extended1: false,
             });
             for _ in 0..10 {
                 input.keyboard(KeyboardEvent::Released {
                     code: 0x1D,
                     extended: false,
+                    extended1: false,
                 });
             }
             assert!(matches!(received.try_recv(), Ok(ServerEvent::Quit(_))));
@@ -7388,6 +7391,7 @@ mod windows_main {
             input.keyboard(KeyboardEvent::Pressed {
                 code: 0x1E,
                 extended: false,
+                extended1: false,
             });
             timeout(Duration::from_secs(2), async {
                 while input.tx.capacity() != 4 {
@@ -7443,6 +7447,7 @@ mod windows_main {
             input.keyboard(KeyboardEvent::Pressed {
                 code: 0x1E,
                 extended: false,
+                extended1: false,
             });
             assert!(
                 timeout(Duration::from_millis(50), read_helper_input_event(&mut reader))
@@ -7473,6 +7478,7 @@ mod windows_main {
             input.keyboard(KeyboardEvent::Pressed {
                 code: 0x1E,
                 extended: false,
+                extended1: false,
             });
             timeout(Duration::from_secs(2), async {
                 while input.tx.capacity() != 4 {
