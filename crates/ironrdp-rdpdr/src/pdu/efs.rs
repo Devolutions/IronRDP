@@ -1333,18 +1333,21 @@ impl DeviceAnnounceHeader {
         // characters: a UTF-16 name shows as its first letter. FreeRDP's client writes the name as 8-bit characters too:
         // the bytes of its UTF-8 name, which Windows Server 2025 shows with the characters outside ASCII intact.
         let device_data = {
-            let char_count = name.chars().count();
-            let mut out: Vec<u8> = Vec::with_capacity(name.len() + 1);
-            for (i, c) in name.chars().enumerate() {
-                match c {
+            let bytes = name.as_bytes();
+            // INVARIANT: every byte of a UTF-8 character outside ASCII is 0x80 or above, so a byte that matches an
+            // ASCII character below is that whole character; the bytes of other characters pass through unchanged,
+            // and the name stays null-terminated and gains no character MS-RDPEFS 2.2.1.3 forbids.
+            let mut out: Vec<u8> = bytes
+                .iter()
+                .enumerate()
+                .map(|(i, &b)| match b {
                     // Windows refuses an 8-bit name with a character MS-RDPEFS 2.2.1.3 forbids in a device name, or
                     // a colon before its end; FreeRDP replaces them too. A NUL would end the name early.
-                    '<' | '>' | '"' | '/' | '\\' | '|' | '\0' => out.push(b'_'),
-                    ':' if i + 1 != char_count => out.push(b'_'),
-                    // A character outside ASCII goes as its UTF-8 bytes, none of which is zero or ASCII.
-                    _ => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
-                }
-            }
+                    b'<' | b'>' | b'"' | b'/' | b'\\' | b'|' | 0 => b'_',
+                    b':' if i + 1 != bytes.len() => b'_',
+                    _ => b,
+                })
+                .collect();
             out.push(0 /* NUL terminator */);
             out
         };
@@ -1565,7 +1568,8 @@ impl DeviceAnnounceHeader {
     /// For [`DeviceType::Filesystem`], the full drive name, null-terminated, as 8-bit characters.
     /// [2.2.3.1] Client Device List Announce (DR_DEVICELIST_ANNOUNCE) asks for a null-terminated Unicode string, but
     /// Windows reads the field as 8-bit characters, so a UTF-16 name shows as its first letter.
-    /// Characters outside ASCII, a NUL, and the characters a device name may not contain become `_`.
+    /// Characters outside ASCII go as their UTF-8 bytes; a NUL, and the characters a device name may not contain,
+    /// become `_`.
     ///
     /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d8b2bc1c-0207-4c15-abe3-62eaa2afcaf1
     pub fn device_data(&self) -> &[u8] {
