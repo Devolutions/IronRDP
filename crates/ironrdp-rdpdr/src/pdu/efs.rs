@@ -1330,21 +1330,21 @@ impl DeviceAnnounceHeader {
     fn new_drive(device_id: u32, name: String) -> Self {
         // MS-RDPEFS 2.2.3.1 asks for the name in DeviceData as a Unicode string with DRIVE_CAPABILITY_VERSION_02,
         // which this client advertises, but Windows 11 and Windows Server 2022 and 2025 read the field as 8-bit
-        // characters: a UTF-16 name shows as its first letter. FreeRDP's client writes the name as 8-bit characters too.
+        // characters: a UTF-16 name shows as its first letter. FreeRDP's client writes the name as 8-bit characters too:
+        // the bytes of its UTF-8 name, which Windows Server 2025 shows with the characters outside ASCII intact.
         let device_data = {
             let char_count = name.chars().count();
-            let mut out: Vec<u8> = name
-                .chars()
-                .enumerate()
-                .map(|(i, c)| match c {
+            let mut out: Vec<u8> = Vec::with_capacity(name.len() + 1);
+            for (i, c) in name.chars().enumerate() {
+                match c {
                     // Windows refuses an 8-bit name with a character MS-RDPEFS 2.2.1.3 forbids in a device name, or
                     // a colon before its end; FreeRDP replaces them too. A NUL would end the name early.
-                    '<' | '>' | '"' | '/' | '\\' | '|' | '\0' => b'_',
-                    ':' if i + 1 != char_count => b'_',
-                    // A character outside ASCII has no 8-bit form here.
-                    _ => u8::try_from(c).ok().filter(u8::is_ascii).unwrap_or(b'_'),
-                })
-                .collect();
+                    '<' | '>' | '"' | '/' | '\\' | '|' | '\0' => out.push(b'_'),
+                    ':' if i + 1 != char_count => out.push(b'_'),
+                    // A character outside ASCII goes as its UTF-8 bytes, none of which is zero or ASCII.
+                    _ => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+                }
+            }
             out.push(0 /* NUL terminator */);
             out
         };

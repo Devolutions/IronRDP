@@ -424,9 +424,26 @@ fn filesystem_drive_announce_encodes_the_name_as_8_bit_characters_and_a_valid_do
     // oracle: regression #2075 - Windows reads the name in DeviceData as 8-bit characters, null-terminated.
     assert_eq!(&device_data[..5], b"share");
     assert_eq!(device_data.last(), Some(&0));
-    // oracle: mutant the space dropped or replaced, or the character outside ASCII written as UTF-8 or UTF-16
-    // instead of '_'.
-    assert_eq!(device_data, b"share _\0");
+    // oracle: mutant the space dropped or replaced, or the character outside ASCII written as UTF-16 or replaced
+    // instead of as its UTF-8 bytes.
+    assert_eq!(device_data, "share \u{1F4C1}\0".as_bytes());
+}
+
+#[test]
+fn filesystem_drive_announce_writes_a_name_outside_ascii_as_utf8() {
+    // oracle: reference FreeRDP/FreeRDP@3.32.1:channels/drive/client/drive_main.c - drive_register_drive_path copies
+    // the UTF-8 name byte for byte into DeviceData; Windows Server 2025 accepts that drive and lists it as
+    // "їжачок on <client>", and refuses the same name sent as UTF-16 with STATUS_UNSUCCESSFUL.
+    let encoded = encoded_drive_announce("\u{457}\u{436}\u{430}\u{447}\u{43e}\u{43a}"); // "їжачок"
+    // oracle: mutant the name replaced with underscores, which Windows lists as "______", or written as UTF-16.
+    assert_eq!(
+        drive_device_data(&encoded),
+        [
+            0xD1, 0x97, 0xD0, 0xB6, 0xD0, 0xB0, 0xD1, 0x87, 0xD0, 0xBE, 0xD0, 0xBA, 0x00
+        ]
+    );
+    // oracle: spec MS-RDPEFS §2.2.1.3 - PreferredDosName is 8 ASCII bytes; a name with no ASCII prefix falls back.
+    assert_eq!(&encoded[16..24], b"DRIVE\0\0\0");
 }
 
 #[test]
