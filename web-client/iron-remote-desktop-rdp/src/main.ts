@@ -160,6 +160,7 @@ export function monitorLayoutCallback(callback: (monitors: MonitorRect[]) => voi
  *
  * Call it on `visibilitychange`, for example.
  * Resuming repaints the whole desktop.
+ * Stopped updates stay stopped when the server reactivates the session, for example after a resize.
  * The call is ignored when the server does not support the Suppress Output PDU.
  */
 export function displayUpdates(allow: boolean): Extension {

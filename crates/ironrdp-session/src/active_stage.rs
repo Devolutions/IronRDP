@@ -1386,27 +1386,32 @@ mod tests {
         }
         .build();
 
-        let encode = |desktop_rect| {
-            let mut frame = WriteBuf::new();
-            stage
-                .encode_static(
-                    &mut frame,
-                    ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect }),
-                )
-                .unwrap();
-            frame.into_inner()
-        };
+        // Expected bytes are written by hand from [MS-RDPBCGR] 2.2.11.3.1, not produced by the encoder.
+        // streamId and uncompressedLength are what `encode_share_data` writes for every PDU.
+        #[rustfmt::skip]
+        let suppress: &[u8] = &[
+            0x03, 0x00, 0x00, 0x24, // TPKT header, length 36
+            0x02, 0xf0, 0x80, // X.224 Data TPDU
+            0x64, 0x00, 0x00, 0x03, 0xeb, 0x70, 0x16, // MCS Send Data Request: user 1001, I/O channel 1003, 22 bytes
+            0x16, 0x00, 0x17, 0x00, 0xe9, 0x03, // Share Control Header: totalLength 22, PDUTYPE_DATAPDU, source 1001
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x04, 0x00, // Share Data Header: shareId 1, STREAM_MED, uncompressedLength 4
+            0x23, 0x00, 0x00, 0x00, // pduType2 PDUTYPE2_SUPPRESS_OUTPUT, not compressed
+            0x00, 0x00, 0x00, 0x00, // allowDisplayUpdates SUPPRESS_DISPLAY_UPDATES, pad, no desktopRect
+        ];
+        #[rustfmt::skip]
+        let resume: &[u8] = &[
+            0x03, 0x00, 0x00, 0x2c, // TPKT header, length 44
+            0x02, 0xf0, 0x80, // X.224 Data TPDU
+            0x64, 0x00, 0x00, 0x03, 0xeb, 0x70, 0x1e, // MCS Send Data Request: user 1001, I/O channel 1003, 30 bytes
+            0x1e, 0x00, 0x17, 0x00, 0xe9, 0x03, // Share Control Header: totalLength 30, PDUTYPE_DATAPDU, source 1001
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x0c, 0x00, // Share Data Header: shareId 1, STREAM_MED, uncompressedLength 12
+            0x23, 0x00, 0x00, 0x00, // pduType2 PDUTYPE2_SUPPRESS_OUTPUT, not compressed
+            0x01, 0x00, 0x00, 0x00, // allowDisplayUpdates ALLOW_DISPLAY_UPDATES, pad
+            0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xff, 0x02, // desktopRect: inclusive 0, 0, 1023, 767
+        ];
 
-        assert_eq!(stage.encode_suppress_output(None).unwrap(), encode(None));
-        assert_eq!(
-            stage.encode_suppress_output(Some((1024, 768))).unwrap(),
-            encode(Some(InclusiveRectangle {
-                left: 0,
-                top: 0,
-                right: 1023,
-                bottom: 767,
-            }))
-        );
+        assert_eq!(stage.encode_suppress_output(None).unwrap(), suppress);
+        assert_eq!(stage.encode_suppress_output(Some((1024, 768))).unwrap(), resume);
     }
 
     #[test]
