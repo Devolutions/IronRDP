@@ -140,7 +140,8 @@ impl ClientLicenseInfo {
         BlobHeader::new(BlobType::DATA, self.license_info.len()).encode(dst)?;
         dst.write_slice(&self.license_info);
 
-        BlobHeader::new(BlobType::ENCRYPTED_DATA, self.encrypted_hwid.len()).encode(dst)?;
+        // The blob is encrypted, but MS-RDPBCGR 2.2.1.12.1.2 and the MS-RDPELE 4.3 sample give it BB_DATA_BLOB here.
+        BlobHeader::new(BlobType::DATA, self.encrypted_hwid.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_hwid);
 
         dst.write_slice(&self.mac_data);
