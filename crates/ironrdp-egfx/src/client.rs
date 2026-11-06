@@ -1223,6 +1223,15 @@ impl GraphicsPipelineClient {
             .get(&pdu.surface_id)
             .ok_or_else(|| pdu_other_err!("unknown surface in WireToSurface2"))?;
         let (surface_width, surface_height) = (surface.width, surface.height);
+        // A surface the compositor refused paints nothing, so it keeps no Progressive tile state either.
+        if !self.compositor.has_surface(pdu.surface_id) {
+            trace!(
+                surface_id = pdu.surface_id,
+                "WireToSurface2 for a surface without pixels -- not decoded"
+            );
+            self.progressive_decoder.delete_surface(pdu.surface_id);
+            return Ok(());
+        }
 
         let tiles = match self.progressive_decoder.decode_bitmap(
             pdu.surface_id,
@@ -3578,6 +3587,54 @@ mod tests {
                     pixel_format: PixelFormat::XRgb,
                 }))
                 .unwrap();
+        });
+
+        assert_eq!(client.dropped_updates, 1);
+    }
+
+    /// A surface the compositor refused paints nothing, so its Progressive updates aren't decoded into bitmap updates.
+    // oracle: mutant decoding Progressive for a surface the compositor refused
+    #[test]
+    fn refused_surface_does_not_decode_progressive() {
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let mut client = progressive_client();
+        // 16384 x 16384 is 1 GiB of pixel data, past the compositor's budget.
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: 16384,
+                height: 16384,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
+        client.handler = Box::new(CapturingHandler {
+            updates: Arc::clone(&updates),
+            unhandled: Arc::new(Mutex::new(0)),
+        });
+        assert!(wire_progressive(&mut client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64), 0)).is_ok());
+        assert_eq!(client.dropped_updates(), 0);
+        assert!(updates.lock().unwrap().is_empty());
+    }
+
+    /// An update a refused surface skips changes tiles the decoder no longer tracks.
+    /// A difference tile sent once the surface is accepted again has no reference.
+    // oracle: mutant skipping a refused surface's update without discarding its earlier tile state
+    #[test]
+    fn refused_surface_discards_earlier_progressive_tile_state() {
+        let create_surface = |client: &mut GraphicsPipelineClient, side: u16| {
+            client
+                .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                    surface_id: 1,
+                    width: side,
+                    height: side,
+                    pixel_format: PixelFormat::XRgb,
+                }))
+                .unwrap();
+        };
+        let client = wire_difference_tile_after(|client| {
+            create_surface(client, 16384);
+            wire_progressive(client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64), 0)).unwrap();
+            create_surface(client, 64);
         });
 
         assert_eq!(client.dropped_updates, 1);
