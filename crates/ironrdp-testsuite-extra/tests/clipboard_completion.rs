@@ -3,6 +3,7 @@ use core::net::Ipv4Addr;
 use core::pin::Pin;
 use core::task::Poll;
 use core::time::Duration;
+use std::rc::Rc;
 
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackend};
@@ -11,7 +12,9 @@ use ironrdp_cliprdr::pdu::{
     FormatDataRequest, FormatDataResponse, LockDataId, OwnedFormatDataResponse,
 };
 use ironrdp_core::impl_as_any;
-use ironrdp_server::{RdpServer, ServerEvent, SharedWriter, dispatch_static_channel_events};
+use ironrdp_server::{
+    OutboundQueue, QueuedWriter, RdpServer, ServerEvent, ServerResult, dispatch_static_channel_events,
+};
 use ironrdp_svc::StaticChannelSet;
 use ironrdp_tokio::TokioFramed;
 use tokio::io::AsyncReadExt as _;
@@ -109,19 +112,25 @@ async fn read_frame(peer: &mut tokio::io::DuplexStream) -> Vec<u8> {
     frame
 }
 
+/// Queues `events` as the client loop does, then writes the queue to `transport`.
+async fn dispatch_and_write(
+    server: &mut RdpServer,
+    channels: StaticChannelSet,
+    mut events: Vec<ServerEvent>,
+    transport: &mut TokioFramed<tokio::io::DuplexStream>,
+) -> ServerResult<()> {
+    let queue = Rc::new(OutboundQueue::default());
+    dispatch_static_channel_events(server, channels, &mut events, &mut QueuedWriter::new(Rc::clone(&queue))).await?;
+    queue.finish();
+    queue.write_queued(transport).await
+}
+
 async fn dispatch_and_capture(events: Vec<ServerEvent>, channels: StaticChannelSet) -> Vec<u8> {
     let (stream, mut peer) = tokio::io::duplex(8192);
     let mut transport = TokioFramed::new(stream);
-    let mut server = server();
-    let mut events = events;
-    dispatch_static_channel_events(
-        &mut server,
-        channels,
-        &mut events,
-        &mut SharedWriter::new(&mut transport),
-    )
-    .await
-    .unwrap();
+    dispatch_and_write(&mut server(), channels, events, &mut transport)
+        .await
+        .unwrap();
     drop(transport);
     let mut bytes = Vec::new();
     peer.read_to_end(&mut bytes).await.unwrap();
@@ -146,10 +155,8 @@ async fn completion_waits_for_clipboard_output_to_drain() {
     let (event, mut processed) = completion_event(copy_message());
     let (stream, mut peer) = tokio::io::duplex(1);
     let mut transport = TokioFramed::new(stream);
-    let mut writer = SharedWriter::new(&mut transport);
     let mut server = server();
-    let mut events = vec![event];
-    let dispatch = dispatch_static_channel_events(&mut server, clipboard_channels(), &mut events, &mut writer);
+    let dispatch = dispatch_and_write(&mut server, clipboard_channels(), vec![event], &mut transport);
     tokio::pin!(dispatch);
 
     assert_pending(dispatch.as_mut()).await;
@@ -176,18 +183,10 @@ async fn transport_failure_closes_completion() {
     let (stream, peer) = tokio::io::duplex(1);
     drop(peer);
     let mut transport = TokioFramed::new(stream);
-    let mut server = server();
-    let mut events = vec![event];
-
     assert!(
-        dispatch_static_channel_events(
-            &mut server,
-            clipboard_channels(),
-            &mut events,
-            &mut SharedWriter::new(&mut transport),
-        )
-        .await
-        .is_err()
+        dispatch_and_write(&mut server(), clipboard_channels(), vec![event], &mut transport)
+            .await
+            .is_err()
     );
     assert!(processed.await.is_err());
 }
@@ -233,13 +232,11 @@ async fn refused_request_completes_before_a_later_event() {
     let (later, later_processed) = completion_event(copy_message());
     let (stream, mut peer) = tokio::io::duplex(8192);
     let mut transport = TokioFramed::new(stream);
-    let mut server = server();
-    let mut events = vec![refused, later];
-    dispatch_static_channel_events(
-        &mut server,
+    dispatch_and_write(
+        &mut server(),
         clipboard_channels(),
-        &mut events,
-        &mut SharedWriter::new(&mut transport),
+        vec![refused, later],
+        &mut transport,
     )
     .await
     .unwrap();
