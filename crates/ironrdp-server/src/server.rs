@@ -671,27 +671,30 @@ impl BoundInputSlot {
     ) -> Self {
         Self { default, bound }
     }
+
+    /// Runs `deliver` on the bound handler, or on the default one when none is bound.
+    fn dispatch(&mut self, deliver: impl FnOnce(&mut dyn RdpServerInputHandler)) {
+        let mut bound = self.bound.lock().expect("bound input lock poisoned");
+        if let Some(handler) = bound.as_mut() {
+            deliver(handler.as_mut());
+        } else {
+            drop(bound);
+            deliver(self.default.as_mut());
+        }
+    }
 }
 
 impl RdpServerInputHandler for BoundInputSlot {
     fn keyboard(&mut self, event: KeyboardEvent) {
-        let mut bound = self.bound.lock().expect("bound input lock poisoned");
-        if let Some(handler) = bound.as_mut() {
-            handler.keyboard(event);
-        } else {
-            drop(bound);
-            self.default.keyboard(event);
-        }
+        self.dispatch(|handler| handler.keyboard(event));
     }
 
     fn mouse(&mut self, event: MouseEvent) {
-        let mut bound = self.bound.lock().expect("bound input lock poisoned");
-        if let Some(handler) = bound.as_mut() {
-            handler.mouse(event);
-        } else {
-            drop(bound);
-            self.default.mouse(event);
-        }
+        self.dispatch(|handler| handler.mouse(event));
+    }
+
+    fn advanced_input_opened(&mut self) {
+        self.dispatch(|handler| handler.advanced_input_opened());
     }
 }
 
@@ -1033,6 +1036,11 @@ impl dvc::DvcProcessor for AInputHandler {
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::{ServerPdu, VersionPdu};
+
+        let handler = Arc::clone(&self.handler);
+        task::spawn_blocking(move || {
+            handler.blocking_lock().advanced_input_opened();
+        });
 
         let pdu = ServerPdu::Version(VersionPdu::default());
 
@@ -8021,6 +8029,58 @@ mod tests {
     use ironrdp_svc::{SvcMessage, SvcServerProcessor};
 
     use super::*;
+
+    struct AdvancedInputRecorder(Arc<AtomicBool>);
+
+    impl RdpServerInputHandler for AdvancedInputRecorder {
+        fn keyboard(&mut self, _event: KeyboardEvent) {}
+        fn mouse(&mut self, _event: MouseEvent) {}
+        fn advanced_input_opened(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    // oracle: mutant AInputHandler::start not telling the input handler
+    #[tokio::test]
+    async fn opening_ainput_tells_the_input_handler() {
+        let opened = Arc::new(AtomicBool::new(false));
+        let handler: Box<dyn RdpServerInputHandler> = Box::new(AdvancedInputRecorder(Arc::clone(&opened)));
+        let mut ainput = AInputHandler {
+            handler: Arc::new(Mutex::new(handler)),
+            active: Arc::new(AtomicBool::new(false)),
+        };
+
+        let messages = ainput.start(0).expect("start");
+        assert_eq!(messages.len(), 1, "the version PDU");
+        for _ in 0..200 {
+            if opened.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(opened.load(Ordering::Acquire));
+    }
+
+    // oracle: mutant BoundInputSlot not forwarding advanced_input_opened
+    #[test]
+    fn the_bound_input_slot_forwards_advanced_input_opened() {
+        let default_opened = Arc::new(AtomicBool::new(false));
+        let bound_opened = Arc::new(AtomicBool::new(false));
+        let bound = Arc::new(StdMutex::new(None));
+        let mut slot = BoundInputSlot::new(
+            Box::new(AdvancedInputRecorder(Arc::clone(&default_opened))),
+            Arc::clone(&bound),
+        );
+
+        slot.advanced_input_opened();
+        assert!(default_opened.load(Ordering::Acquire));
+
+        default_opened.store(false, Ordering::Release);
+        *bound.lock().expect("bound input lock") = Some(Box::new(AdvancedInputRecorder(Arc::clone(&bound_opened))));
+        slot.advanced_input_opened();
+        assert!(bound_opened.load(Ordering::Acquire));
+        assert!(!default_opened.load(Ordering::Acquire));
+    }
 
     /// A client that did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU is not sent a
     /// Set Error Info PDU; a client that set it is.
