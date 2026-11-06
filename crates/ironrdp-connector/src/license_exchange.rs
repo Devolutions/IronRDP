@@ -100,6 +100,10 @@ impl LicenseRng for DefaultLicenseRng {
         client_random: &mut [u8; server_license::RANDOM_NUMBER_SIZE],
         premaster_secret: &mut [u8; server_license::PREMASTER_SECRET_SIZE],
     ) {
+        // UNTESTED: `rand::rng()` must stay cryptographically secure, because MS-RDPELE 2.2.2.2 requires it for the
+        // client random.
+        // These values also key the licensing exchange, and no test can tell a weak generator from a secure one.
+        // Check the generator's documentation when changing this.
         let mut rng = rand::rng();
         rng.fill_bytes(client_random);
         rng.fill_bytes(premaster_secret);
