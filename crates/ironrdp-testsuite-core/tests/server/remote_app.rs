@@ -401,6 +401,56 @@ async fn dropping_completion_while_waiting_for_bitmap_skips_orders() {
     .await;
 }
 
+// oracle: mutant a cancelled batch queued behind an in-flight batch must not reach the client.
+#[tokio::test]
+async fn dropping_completion_while_queued_behind_orders_skips_batch() {
+    connected(
+        Some(remote_app()),
+        Some(65536),
+        |mut client, events, display, _| async move {
+            let (first, first_completion) = WindowingOrders::new(vec![deleted(7); 4000]);
+            let (second, second_completion) = WindowingOrders::new(vec![deleted(9)]);
+            events.send(ServerEvent::WindowingOrders(first)).unwrap();
+            events.send(ServerEvent::WindowingOrders(second)).unwrap();
+            let (code, fragment, _) = read_update(&mut client).await;
+            assert_eq!(code, UpdateCode::Orders);
+            assert_eq!(fragment, Fragmentation::First);
+            drop(second_completion);
+            loop {
+                let (code, fragment, _) = read_update(&mut client).await;
+                assert_eq!(code, UpdateCode::Orders);
+                if fragment == Fragmentation::Last {
+                    break;
+                }
+                assert_eq!(fragment, Fragmentation::Next);
+            }
+            assert_eq!(first_completion.await.unwrap().unwrap(), WindowingOrdersStatus::Written);
+            display.send(DisplayUpdate::HidePointer).unwrap();
+            assert_eq!(read_update(&mut client).await.0, UpdateCode::HiddenPointer);
+        },
+    )
+    .await;
+}
+
+// oracle: mutant a queued batch whose turn to write never arrives must report NotStarted on transport failure.
+#[tokio::test]
+async fn transport_failure_on_earlier_orders_reports_queued_batch_not_started() {
+    connected(Some(remote_app()), Some(65536), |mut client, events, _, _| async move {
+        let (first, first_completion) = WindowingOrders::new(vec![deleted(7); 4000]);
+        let (second, second_completion) = WindowingOrders::new(vec![deleted(9)]);
+        events.send(ServerEvent::WindowingOrders(first)).unwrap();
+        events.send(ServerEvent::WindowingOrders(second)).unwrap();
+        assert_eq!(read_update(&mut client).await.1, Fragmentation::First);
+        drop(client);
+        assert!(first_completion.await.unwrap().is_err());
+        assert_eq!(
+            second_completion.await.unwrap().unwrap(),
+            WindowingOrdersStatus::NotStarted
+        );
+    })
+    .await;
+}
+
 // oracle: mutant cancellation after FIRST must not leave the client's fragmented update incomplete.
 #[tokio::test]
 async fn dropping_completion_after_first_fragment_preserves_remaining_fragments() {
