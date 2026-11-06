@@ -555,26 +555,10 @@ impl ActiveStage {
     ) -> SessionResult<Vec<Vec<u8>>> {
         debug_assert!(width != 0 && height != 0);
         if suppress_output_support {
-            let mut suppress = WriteBuf::new();
-            self.x224_processor.encode_static(
-                &mut suppress,
-                ShareDataPdu::SuppressOutput(SuppressOutputPdu { desktop_rect: None }),
-            )?;
-
-            let mut resume = WriteBuf::new();
-            self.x224_processor.encode_static(
-                &mut resume,
-                ShareDataPdu::SuppressOutput(SuppressOutputPdu {
-                    desktop_rect: Some(InclusiveRectangle {
-                        left: 0,
-                        top: 0,
-                        right: width.saturating_sub(1),
-                        bottom: height.saturating_sub(1),
-                    }),
-                }),
-            )?;
-
-            return Ok(vec![suppress.into_inner(), resume.into_inner()]);
+            return Ok(vec![
+                self.encode_suppress_output(None)?,
+                self.encode_suppress_output(Some((width, height)))?,
+            ]);
         }
 
         if refresh_rect_support {
@@ -582,6 +566,29 @@ impl ActiveStage {
         }
 
         Ok(Vec::new())
+    }
+
+    /// Encodes a [2.2.11.3.1] Suppress Output PDU Data (TS_SUPPRESS_OUTPUT_PDU).
+    ///
+    /// `None` stops the server's display updates, as a client does when its window is minimized.
+    /// `Some((width, height))` resumes them for the whole desktop of that size, and the server repaints it.
+    /// Send it only when the server advertised Suppress Output support in its General Capability Set.
+    ///
+    /// [2.2.11.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/0be71491-0b01-402c-947d-080706ccf91b
+    pub fn encode_suppress_output(&self, resume: Option<(u16, u16)>) -> SessionResult<Vec<u8>> {
+        let mut frame = WriteBuf::new();
+        self.x224_processor.encode_static(
+            &mut frame,
+            ShareDataPdu::SuppressOutput(SuppressOutputPdu {
+                desktop_rect: resume.map(|(width, height)| InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: width.saturating_sub(1),
+                    bottom: height.saturating_sub(1),
+                }),
+            }),
+        )?;
+        Ok(frame.into_inner())
     }
 
     /// Send a pdu on the static global channel. Typically used to send input events
@@ -1363,6 +1370,48 @@ mod tests {
 
         assert_eq!(stage.request_full_redraw(1024, 768, true, false).unwrap().len(), 1);
         assert!(stage.request_full_redraw(1024, 768, false, false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn suppress_output_stops_updates_or_resumes_the_whole_desktop() {
+        let stage = ActiveStageBuilder {
+            static_channels: StaticChannelSet::new(),
+            user_channel_id: 1001,
+            io_channel_id: 1003,
+            message_channel_id: None,
+            share_id: 1,
+            compression_type: None,
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build();
+
+        // Expected bytes are written by hand from [MS-RDPBCGR] 2.2.11.3.1, not produced by the encoder.
+        // streamId and uncompressedLength are what `encode_share_data` writes for every PDU.
+        #[rustfmt::skip]
+        let suppress: &[u8] = &[
+            0x03, 0x00, 0x00, 0x24, // TPKT header, length 36
+            0x02, 0xf0, 0x80, // X.224 Data TPDU
+            0x64, 0x00, 0x00, 0x03, 0xeb, 0x70, 0x16, // MCS Send Data Request: user 1001, I/O channel 1003, 22 bytes
+            0x16, 0x00, 0x17, 0x00, 0xe9, 0x03, // Share Control Header: totalLength 22, PDUTYPE_DATAPDU, source 1001
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x04, 0x00, // Share Data Header: shareId 1, STREAM_MED, uncompressedLength 4
+            0x23, 0x00, 0x00, 0x00, // pduType2 PDUTYPE2_SUPPRESS_OUTPUT, not compressed
+            0x00, 0x00, 0x00, 0x00, // allowDisplayUpdates SUPPRESS_DISPLAY_UPDATES, pad, no desktopRect
+        ];
+        #[rustfmt::skip]
+        let resume: &[u8] = &[
+            0x03, 0x00, 0x00, 0x2c, // TPKT header, length 44
+            0x02, 0xf0, 0x80, // X.224 Data TPDU
+            0x64, 0x00, 0x00, 0x03, 0xeb, 0x70, 0x1e, // MCS Send Data Request: user 1001, I/O channel 1003, 30 bytes
+            0x1e, 0x00, 0x17, 0x00, 0xe9, 0x03, // Share Control Header: totalLength 30, PDUTYPE_DATAPDU, source 1001
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x0c, 0x00, // Share Data Header: shareId 1, STREAM_MED, uncompressedLength 12
+            0x23, 0x00, 0x00, 0x00, // pduType2 PDUTYPE2_SUPPRESS_OUTPUT, not compressed
+            0x01, 0x00, 0x00, 0x00, // allowDisplayUpdates ALLOW_DISPLAY_UPDATES, pad
+            0x00, 0x00, 0x00, 0x00, 0xff, 0x03, 0xff, 0x02, // desktopRect: inclusive 0, 0, 1023, 767
+        ];
+
+        assert_eq!(stage.encode_suppress_output(None).unwrap(), suppress);
+        assert_eq!(stage.encode_suppress_output(Some((1024, 768))).unwrap(), resume);
     }
 
     #[test]
