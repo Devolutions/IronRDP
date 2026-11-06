@@ -57,6 +57,12 @@ fn check_pdu_round_trip() {
     check!(pdu_round_trip);
 }
 
+// oracle: mutant a PduHint returns None for a complete header (header lengths per ITU-T X.690 §8.1.2-8.1.3, ITU-T T.123 §8 and MS-RDPBCGR 2.2.9.1.2)
+#[test]
+fn check_pdu_hint() {
+    check!(pdu_hint);
+}
+
 #[test]
 fn check_channel_process() {
     check!(channel_process);

@@ -9,8 +9,8 @@ use ironrdp_connector::sspi::{
 use ironrdp_connector::{
     ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written, custom_err, general_err,
 };
-use ironrdp_core::{WriteBuf, other_err};
-use ironrdp_pdu::PduHint;
+use ironrdp_core::WriteBuf;
+use ironrdp_pdu::{CREDSSP_TS_REQUEST_HINT, PduHint};
 use tracing::debug;
 
 /// Selects the authentication provider used inside CredSSP.
@@ -31,21 +31,6 @@ pub(crate) enum CredsspState {
     Ongoing,
     Finished(AuthIdentity),
     ServerError(sspi::Error),
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CredsspTsRequestHint;
-
-const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
-
-impl PduHint for CredsspTsRequestHint {
-    fn find_size(&self, bytes: &[u8]) -> ironrdp_core::DecodeResult<Option<(bool, usize)>> {
-        match TsRequest::read_length(bytes) {
-            Ok(length) => Ok(Some((true, length))),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(e) => Err(other_err!("CredsspTsRequestHint", source: e)),
-        }
-    }
 }
 
 /// Start of an NTLM message that is not wrapped in SPNEGO ([MS-NLMP] 2.2.1.1).
