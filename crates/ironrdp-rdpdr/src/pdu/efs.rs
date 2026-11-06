@@ -1547,7 +1547,7 @@ impl DeviceAnnounceHeader {
         self.preferred_dos_name.0.strip_prefix("PRN")?.parse().ok()
     }
 
-    pub(crate) fn device_type(&self) -> DeviceType {
+    pub fn device_type(&self) -> DeviceType {
         self.device_type
     }
 
@@ -5621,9 +5621,9 @@ impl FileAllocationInformation {
 /// [2.2.3.4.9]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/16b893d5-5d8b-49d1-8dcb-ee21e7612970
 #[derive(Debug, PartialEq, Clone)]
 pub struct ClientDriveSetInformationResponse {
-    pub(crate) device_io_reply: DeviceIoResponse,
+    pub device_io_reply: DeviceIoResponse,
     /// This field MUST be equal to the Length field in the Server Drive Set Information Request (section 2.2.3.3.9).
-    pub(crate) length: u32,
+    pub length: u32,
 }
 
 impl ClientDriveSetInformationResponse {
