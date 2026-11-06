@@ -353,7 +353,7 @@ impl From<PerformanceFlagsType> for PerformanceFlags {
             PerformanceFlagsType::DisableTheming => PerformanceFlags::DISABLE_THEMING,
             PerformanceFlagsType::DisableWallpaper => PerformanceFlags::DISABLE_WALLPAPER,
             PerformanceFlagsType::EnableDesktopComposition => PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
-            PerformanceFlagsType::EnableFontSmoothing => PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
+            PerformanceFlagsType::EnableFontSmoothing => PerformanceFlags::ENABLE_FONT_SMOOTHING,
             PerformanceFlagsType::Reserved1 => PerformanceFlags::RESERVED1,
             PerformanceFlagsType::Reserved2 => PerformanceFlags::RESERVED2,
         }
@@ -389,5 +389,30 @@ mod tests {
                 .iter()
                 .any(|codec| matches!(codec.property, CodecProperty::RemoteFx(_)))
         );
+    }
+
+    #[test]
+    fn each_performance_flag_type_sets_its_own_bit() {
+        use ironrdp::pdu::rdp::client_info::PerformanceFlags as Bits;
+
+        use super::ffi::{PerformanceFlags, PerformanceFlagsType as Flag};
+
+        let cases = [
+            (Flag::DisableWallpaper, Bits::DISABLE_WALLPAPER),
+            (Flag::DisableFullWindowDrag, Bits::DISABLE_FULLWINDOWDRAG),
+            (Flag::DisableMenuAnimations, Bits::DISABLE_MENUANIMATIONS),
+            (Flag::DisableTheming, Bits::DISABLE_THEMING),
+            (Flag::Reserved1, Bits::RESERVED1),
+            (Flag::DisableCursorShadow, Bits::DISABLE_CURSOR_SHADOW),
+            (Flag::DisableCursorSettings, Bits::DISABLE_CURSORSETTINGS),
+            (Flag::EnableFontSmoothing, Bits::ENABLE_FONT_SMOOTHING),
+            (Flag::EnableDesktopComposition, Bits::ENABLE_DESKTOP_COMPOSITION),
+            (Flag::Reserved2, Bits::RESERVED2),
+        ];
+        for (flag, bit) in cases {
+            let mut flags = PerformanceFlags::new_empty();
+            flags.add_flag(flag);
+            assert_eq!(flags.0, bit);
+        }
     }
 }
