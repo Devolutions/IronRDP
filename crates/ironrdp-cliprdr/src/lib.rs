@@ -101,6 +101,14 @@ pub(crate) struct OutgoingLock {
     /// (milliseconds from backend clock).
     /// Updated to prevent timeout during active transfers.
     pub last_used_at_ms: u64,
+
+    /// Whether a FileContentsRequest has been sent under this lock, so a download used it.
+    pub used: bool,
+
+    /// Kept when the local side took clipboard ownership, because a download was still
+    /// using it. Released after [`KEPT_LOCK_INACTIVITY_MS`] without a request, not after
+    /// the usual inactivity timeout.
+    pub kept_past_local_copy: bool,
 }
 
 /// Detects if a filename contains an absolute path.
@@ -373,6 +381,15 @@ pub const MAX_LOCKED_FILE_LISTS: usize = 100;
 /// growth of `outgoing_locks` if the application repeatedly creates locks
 /// without unlocking them.
 const MAX_OUTGOING_LOCKS: usize = 100;
+
+/// A lock with a FileContentsRequest this recent counts as a download in progress when
+/// the local side takes clipboard ownership, so it is kept instead of released.
+const LOCK_IN_USE_WINDOW_MS: u64 = 10_000;
+
+/// How long a lock kept past a local file copy may go without a request before it is
+/// released. Short, so the overlap with our own clipboard ownership ends soon after the
+/// download does.
+const KEPT_LOCK_INACTIVITY_MS: u64 = 10_000;
 
 /// Maximum number of pending (unanswered) file contents requests.
 ///
@@ -1071,6 +1088,8 @@ impl<R: Role> Cliprdr<R> {
             state: LockState::Active,
             created_at_ms: now,
             last_used_at_ms: now,
+            used: false,
+            kept_past_local_copy: false,
         };
 
         // Store in outgoing locks map
@@ -1146,6 +1165,11 @@ impl<R: Role> Cliprdr<R> {
     /// finish; some servers (notably Windows `rdpclip.exe`) react badly to that overlap.
     /// Releasing them up front keeps the lock/ownership state consistent.
     ///
+    /// A lock a download is still using (a request under it within
+    /// [`LOCK_IN_USE_WINDOW_MS`]) is the exception: releasing it would make the remote drop
+    /// the files mid-transfer, which is what the lock is for ([MS-RDPECLIP] 2.2.4.1). It is
+    /// expired instead and released [`KEPT_LOCK_INACTIVITY_MS`] after its last request.
+    ///
     /// Returns the `Unlock` PDUs to send (these must precede the new `FormatList` on the
     /// wire); empty when no locks are held.
     fn release_outgoing_locks(&mut self) -> Vec<SvcMessage> {
@@ -1153,10 +1177,48 @@ impl<R: Role> Cliprdr<R> {
             return Vec::new();
         }
 
-        let cleared: Vec<u32> = self.outgoing_locks.keys().copied().collect();
-        self.outgoing_locks.clear();
-        self.locked_remote_file_lists.clear();
+        let now = self.backend.now_ms();
+        let mut cleared = Vec::new();
+        let mut kept = Vec::new();
+        for (&id, lock) in &self.outgoing_locks {
+            if lock.used && now.saturating_sub(lock.last_used_at_ms) < LOCK_IN_USE_WINDOW_MS {
+                kept.push(id);
+            } else {
+                cleared.push(id);
+            }
+        }
+
+        for id in &cleared {
+            self.outgoing_locks.remove(id);
+            self.locked_remote_file_lists.remove(id);
+        }
+
+        let mut newly_expired = Vec::new();
+        for id in &kept {
+            if let Some(lock) = self.outgoing_locks.get_mut(id) {
+                lock.kept_past_local_copy = true;
+                if matches!(lock.state, LockState::Active) {
+                    lock.state = LockState::Expired { expired_at_ms: now };
+                    newly_expired.push(LockDataId(*id));
+                }
+            }
+        }
+
         self.current_lock_id = None;
+        if !kept.is_empty() {
+            debug!(
+                count = kept.len(),
+                "Keeping outgoing locks a download is still using past taking clipboard ownership"
+            );
+        }
+
+        if !newly_expired.is_empty() {
+            self.backend.on_outgoing_locks_expired(&newly_expired);
+        }
+
+        if cleared.is_empty() {
+            return Vec::new();
+        }
 
         debug!(
             count = cleared.len(),
@@ -1221,9 +1283,15 @@ impl<R: Role> Cliprdr<R> {
             if matches!(lock.state, LockState::Expired { .. }) {
                 let total_lifetime_ms = now.saturating_sub(lock.created_at_ms);
                 let time_since_activity_ms = now.saturating_sub(lock.last_used_at_ms);
+                let allowed_inactivity_ms = if lock.kept_past_local_copy {
+                    inactivity_timeout_ms.min(KEPT_LOCK_INACTIVITY_MS)
+                } else {
+                    inactivity_timeout_ms
+                };
 
-                // Rule 1: Cleanup if inactive for inactivity_timeout (60s)
-                if inactivity_timeout_ms <= time_since_activity_ms {
+                // Rule 1: Cleanup if inactive for inactivity_timeout (60s), or a short
+                // while for a lock kept past our own clipboard ownership.
+                if allowed_inactivity_ms <= time_since_activity_ms {
                     debug!(
                         clip_data_id,
                         inactive_secs = time_since_activity_ms / 1000,
@@ -1389,6 +1457,7 @@ impl<R: Role> Cliprdr<R> {
         if let Some(clip_data_id) = request.data_id {
             if let Some(lock) = self.outgoing_locks.get_mut(&clip_data_id) {
                 lock.last_used_at_ms = self.backend.now_ms();
+                lock.used = true;
                 trace!(
                     clip_data_id,
                     stream_id = request.stream_id,

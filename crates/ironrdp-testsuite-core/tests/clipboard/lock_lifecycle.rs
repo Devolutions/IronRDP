@@ -13,7 +13,7 @@ use ironrdp_cliprdr::pdu::{
     ClipboardPdu, ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileDescriptor, FormatList,
     LockDataId, PackedFileList,
 };
-use ironrdp_cliprdr::{Cliprdr, CliprdrClient, CliprdrState};
+use ironrdp_cliprdr::{Cliprdr, CliprdrClient, CliprdrState, LockState};
 use ironrdp_core::Encode as _;
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
@@ -714,6 +714,97 @@ fn initiate_file_copy_releases_outgoing_download_locks() {
         matches!(last_pdu, ClipboardPdu::FormatList(_)),
         "FormatList must come after the Unlock PDUs, got {last_pdu:?}"
     );
+}
+
+/// A lock a download is still using survives a local file copy: releasing it would make
+/// the remote drop the files mid-transfer, which is what the lock is for. Only the lock
+/// nothing has used is unlocked.
+#[test]
+fn initiate_file_copy_keeps_a_lock_a_download_is_using() {
+    let mut cliprdr = ready_locking_client();
+    let idle = process_file_format_list(&mut cliprdr);
+    let busy = process_file_format_list(&mut cliprdr);
+
+    // A FileContentsRequest went out under `busy` just now.
+    let lock = cliprdr.__test_outgoing_locks_mut().get_mut(&busy).unwrap();
+    lock.used = true;
+    lock.last_used_at_ms = lock.created_at_ms;
+
+    let messages: Vec<SvcMessage> = cliprdr
+        .initiate_file_copy(vec![FileDescriptor::new("upload.txt")])
+        .unwrap()
+        .into();
+
+    assert_eq!(messages.len(), 2, "expected 1 Unlock PDU + 1 FormatList");
+    decode_pdu!(messages[0] => _b0, pdu0);
+    assert!(
+        matches!(&pdu0, ClipboardPdu::UnlockData(id) if id.0 == idle),
+        "only the idle lock is unlocked, got {pdu0:?}"
+    );
+    decode_pdu!(messages[1] => _b1, pdu1);
+    assert!(
+        matches!(&pdu1, ClipboardPdu::FormatList(_)),
+        "expected FormatList, got {pdu1:?}"
+    );
+
+    let kept = cliprdr
+        .__test_outgoing_locks()
+        .get(&busy)
+        .expect("the busy lock is kept");
+    assert!(kept.kept_past_local_copy);
+    assert!(matches!(kept.state, LockState::Expired { .. }));
+    assert!(!cliprdr.__test_outgoing_locks().contains_key(&idle));
+    assert_eq!(
+        cliprdr.__test_current_lock_id(),
+        None,
+        "new requests don't attach the kept lock"
+    );
+
+    // While the download keeps using it, the timeout sweep leaves it alone.
+    let messages: Vec<SvcMessage> = cliprdr.drive_timeouts().unwrap().into();
+    assert!(messages.is_empty(), "a kept lock in use is not unlocked");
+    assert!(cliprdr.__test_outgoing_locks().contains_key(&busy));
+}
+
+/// A lock kept past a local file copy is released once its download goes quiet, by the
+/// shorter of the kept-lock grace and the configured inactivity timeout.
+#[test]
+fn a_kept_lock_is_released_once_its_download_goes_quiet() {
+    let mut cliprdr: CliprdrClient = Cliprdr::with_lock_timeouts(
+        Box::new(LockingBackend::new()),
+        core::time::Duration::ZERO,
+        core::time::Duration::from_secs(600),
+    );
+    *cliprdr.__test_state_mut() = CliprdrState::Ready;
+    *cliprdr.__test_capabilities_mut() = Capabilities::new(
+        ClipboardProtocolVersion::V2,
+        ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
+            | ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
+            | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED,
+    );
+    let busy = process_file_format_list(&mut cliprdr);
+    let lock = cliprdr.__test_outgoing_locks_mut().get_mut(&busy).unwrap();
+    lock.used = true;
+    lock.last_used_at_ms = lock.created_at_ms;
+
+    let messages: Vec<SvcMessage> = cliprdr
+        .initiate_file_copy(vec![FileDescriptor::new("upload.txt")])
+        .unwrap()
+        .into();
+    assert_eq!(
+        messages.len(),
+        1,
+        "the busy lock is kept, so only the FormatList goes out"
+    );
+
+    let messages: Vec<SvcMessage> = cliprdr.drive_timeouts().unwrap().into();
+    assert_eq!(messages.len(), 1);
+    decode_pdu!(messages[0] => _b0, pdu0);
+    assert!(
+        matches!(&pdu0, ClipboardPdu::UnlockData(id) if id.0 == busy),
+        "got {pdu0:?}"
+    );
+    assert!(cliprdr.__test_outgoing_locks().is_empty());
 }
 
 /// With no outgoing locks held, `initiate_file_copy` sends only the `FormatList`
