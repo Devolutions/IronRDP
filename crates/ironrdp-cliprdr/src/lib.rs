@@ -442,6 +442,14 @@ pub struct Cliprdr<R: Role> {
     /// [`MAX_PENDING_FORMAT_DATA_REQUESTS`] bounds one that doesn't.
     pending_format_data_requests: VecDeque<PendingFormatDataRequest>,
 
+    /// Whether the remote's last Format List Response was CB_RESPONSE_FAIL.
+    ///
+    /// Format Data Requests are answered with failure while it stands, until the remote accepts a Format List,
+    /// per [MS-RDPECLIP 3.1.5.2.4, "Processing a Format List Response PDU"][3.1.5.2.4].
+    ///
+    /// [3.1.5.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/1ac0265a-779b-481d-a95b-809f28d957dd
+    local_format_list_refused: bool,
+
     /// Stores the local file list when initiating a file copy operation.
     /// Set by initiate_file_copy(), used to respond to FormatDataRequest.
     local_file_list: Option<PackedFileList>,
@@ -609,6 +617,7 @@ impl<R: Role> Cliprdr<R> {
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
             pending_format_data_requests: VecDeque::new(),
+            local_format_list_refused: false,
             local_file_list: None,
             local_file_list_format_id: None,
             local_drop_effect_format_id: None,
@@ -701,25 +710,30 @@ impl<R: Role> Cliprdr<R> {
     }
 
     fn handle_format_list_response(&mut self, response: FormatListResponse) -> PduResult<Vec<SvcMessage>> {
+        // [MS-RDPECLIP] 1.3.2.1 - Initialization Sequence: its last step is the server's Format List Response,
+        // whether it accepts the list or not, so a client whose first Format List is refused still takes the
+        // server's copies.
+        if !R::is_server() && self.state == CliprdrState::Initialization {
+            debug!("Clipboard virtual channel initialized");
+            self.state = CliprdrState::Ready;
+            self.backend.on_ready();
+        }
+
         match response {
             FormatListResponse::Ok => {
-                if !R::is_server() {
-                    if self.state == CliprdrState::Initialization {
-                        debug!("Clipboard virtual channel initialized");
-                        self.state = CliprdrState::Ready;
-                        self.backend.on_ready();
-                    } else {
-                        trace!("Remote accepted format list");
-                    }
-                }
+                trace!("Remote accepted format list");
+                self.local_format_list_refused = false;
                 self.backend.on_format_list_response(true);
             }
             FormatListResponse::Fail => {
                 // [MS-RDPECLIP] 3.1.5.2.4 - The remote rejected our FormatList but the
                 // channel remains operational. Clear local state so we don't serve stale
                 // data, but stay in Ready state to allow subsequent clipboard operations.
+                // Format Data Requests are answered with failure until the remote accepts a list; File Contents
+                // Requests without a locked clipDataId are, as the local file list is cleared.
                 warn!("Remote rejected our format list, clearing local clipboard state");
 
+                self.local_format_list_refused = true;
                 self.local_file_list = None;
                 self.local_file_list_format_id = None;
                 self.local_drop_effect_format_id = None;
@@ -805,7 +819,23 @@ impl<R: Role> Cliprdr<R> {
         // because the remote rejected our clipboard and no further responses for
         // those requests will arrive.
 
-        let formats = format_list.get_formats(self.are_long_format_names_enabled())?;
+        let formats = match format_list.get_formats(self.are_long_format_names_enabled()) {
+            Ok(formats) => formats,
+            Err(error) => {
+                // [MS-RDPECLIP] 2.2.3.2 - CB_RESPONSE_FAIL: the Format List was not processed.
+                // One whose formats can't be decoded, or that holds more than MAX_FORMAT_COUNT formats or a name
+                // longer than MAX_FORMAT_NAME_LENGTH, leaves the remote clipboard with nothing to paste here.
+                // The channel goes on with the next copy.
+                // A list whose header can't be decoded never gets here: `process` returns that error, as 3.1.5.1
+                // has the connection dropped rather than answered.
+                warn!(%error, "Refusing the remote format list");
+                self.backend.on_remote_copy(&[]);
+
+                return Ok(vec![into_cliprdr_message(ClipboardPdu::FormatListResponse(
+                    FormatListResponse::Fail,
+                ))]);
+            }
+        };
 
         // Notify backend of available formats
         self.backend.on_remote_copy(&formats);
@@ -1742,6 +1772,16 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
                 Ok(Vec::new())
             }
             ClipboardPdu::FormatDataRequest(request) => {
+                // [MS-RDPECLIP] 3.1.5.4.3 - A request that follows an unsuccessful Format List Response is
+                // answered with CB_RESPONSE_FAIL and no data: the remote has nothing of ours to paste.
+                if self.local_format_list_refused {
+                    warn!(
+                        format_id = ?request.format,
+                        "Refusing a format data request after the remote rejected our format list"
+                    );
+                    let pdu = ClipboardPdu::FormatDataResponse(OwnedFormatDataResponse::new_error());
+                    return Ok(vec![into_cliprdr_message(pdu)]);
+                }
                 // Short-circuit: if the remote is asking for our Preferred
                 // DropEffect, answer inline with DROPEFFECT_COPY (0x00000001,
                 // 4-byte little-endian). This is what we always mean by an

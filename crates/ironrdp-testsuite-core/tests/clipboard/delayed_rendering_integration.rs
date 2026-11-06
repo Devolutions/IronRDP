@@ -4,8 +4,8 @@ use ironrdp_cliprdr::CliprdrClient;
 use ironrdp_cliprdr::backend::CliprdrBackend;
 use ironrdp_cliprdr::pdu::{
     Capabilities, CapabilitySet, ClipboardFileAttributes, ClipboardFormat, ClipboardFormatId, ClipboardFormatName,
-    ClipboardGeneralCapabilityFlags, ClipboardPdu, ClipboardProtocolVersion, FileDescriptor, FormatDataResponse,
-    FormatList, FormatListResponse, GeneralCapabilitySet, PackedFileList,
+    ClipboardGeneralCapabilityFlags, ClipboardPdu, ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest,
+    FileDescriptor, FormatDataResponse, FormatList, FormatListResponse, GeneralCapabilitySet, PackedFileList,
 };
 use ironrdp_core::AsAny;
 use ironrdp_svc::SvcProcessor as _;
@@ -49,7 +49,7 @@ impl CliprdrBackend for IntegrationMockBackend {
 
     fn on_format_data_request(&mut self, _request: ironrdp_cliprdr::pdu::FormatDataRequest) {}
     fn on_format_data_response(&mut self, _response: FormatDataResponse<'_>) {}
-    fn on_file_contents_request(&mut self, _request: ironrdp_cliprdr::pdu::FileContentsRequest) {}
+    fn on_file_contents_request(&mut self, _request: FileContentsRequest) {}
     fn on_file_contents_response(&mut self, _response: ironrdp_cliprdr::pdu::FileContentsResponse<'_>) {}
     fn on_lock(&mut self, _data_id: ironrdp_cliprdr::pdu::LockDataId) {}
     fn on_unlock(&mut self, _data_id: ironrdp_cliprdr::pdu::LockDataId) {}
@@ -419,8 +419,9 @@ fn integration_unexpected_file_list_response_ignored() {
 #[test]
 fn integration_format_list_response_fail_clears_local_state() {
     // Verify that FormatListResponse::Fail clears local file list state
-    // Per MS-RDPECLIP 3.1.5.2.4, if the remote rejects our FormatList, we should
-    // clear our local clipboard state since the remote cannot process it
+    // Per MS-RDPECLIP 3.1.5.2.4, if the remote rejects our FormatList, its later requests
+    // for our data are answered with failure; clearing the local file list is what makes
+    // a File Contents Request fail rather than be served from it
 
     let tracker = Arc::new(Mutex::new(IntegrationCallbackTracker::default()));
     let backend = Box::new(IntegrationMockBackend {
@@ -477,9 +478,8 @@ fn integration_format_list_response_fail_clears_local_state() {
     // Should not send any response
     assert_eq!(messages.len(), 0, "No messages expected after FormatListResponse::Fail");
 
-    // Verify state was cleared by attempting to send a FormatDataRequest
-    // If state wasn't cleared, the cliprdr would try to respond with the stored file list
-    // Since state WAS cleared, it should forward the request to backend instead
+    // A FormatDataRequest for our file list format is refused outright after the Fail,
+    // whether or not the stored file list was cleared
     let request_pdu = ClipboardPdu::FormatDataRequest(ironrdp_cliprdr::pdu::FormatDataRequest {
         format: ClipboardFormatId::new(0xC0FE), // Our format ID from initiate_file_copy
     });
@@ -487,11 +487,45 @@ fn integration_format_list_response_fail_clears_local_state() {
 
     let messages: Vec<_> = cliprdr.process(&encoded_request).unwrap();
 
-    // Should NOT send FormatDataResponse with file list (since state was cleared)
-    // Instead, request should be forwarded to backend (no immediate response)
+    // oracle: spec MS-RDPECLIP §3.1.5.4.3 - a request after an unsuccessful Format List Response is answered with
+    // CB_RESPONSE_FAIL and no data.
     assert_eq!(
         messages.len(),
-        0,
-        "Should not auto-respond with file list after state was cleared by Fail"
+        1,
+        "One failure response expected after FormatListResponse::Fail"
     );
+    let bytes = messages[0].encode_unframed_pdu().unwrap();
+    let ClipboardPdu::FormatDataResponse(response) = ironrdp_core::decode::<ClipboardPdu<'_>>(&bytes).unwrap() else {
+        panic!("expected a Format Data Response");
+    };
+    assert!(response.is_error());
+    assert!(response.data().is_empty());
+
+    // Verify the file list was cleared by requesting its first file's size
+    // If it wasn't, the request would be forwarded to the backend to serve from the stored list
+    let request_pdu = ClipboardPdu::FileContentsRequest(FileContentsRequest {
+        stream_id: 7,
+        index: 0,
+        flags: FileContentsFlags::SIZE,
+        position: 0,
+        requested_size: 8,
+        data_id: None,
+    });
+    let encoded_request = ironrdp_core::encode_vec(&request_pdu).unwrap();
+
+    let messages: Vec<_> = cliprdr.process(&encoded_request).unwrap();
+
+    // oracle: spec MS-RDPECLIP §3.1.5.4.7 - a File Contents Request after an unsuccessful Format List Response is
+    // answered with CB_RESPONSE_FAIL and no data.
+    assert_eq!(
+        messages.len(),
+        1,
+        "One failure response expected for the cleared file list"
+    );
+    let bytes = messages[0].encode_unframed_pdu().unwrap();
+    let ClipboardPdu::FileContentsResponse(response) = ironrdp_core::decode::<ClipboardPdu<'_>>(&bytes).unwrap() else {
+        panic!("expected a File Contents Response");
+    };
+    assert!(response.is_error());
+    assert_eq!(response.stream_id(), 7);
 }
