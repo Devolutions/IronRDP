@@ -765,19 +765,26 @@ impl FrameTracker {
 
     /// Discard pending frames for a graphics reset without ending the DVC generation.
     /// Previously issued frames can still be named by delayed suspend ACKs.
+    /// A suspension outlives the reset.
+    /// The client does not repeat SUSPEND_FRAME_ACKNOWLEDGEMENT after RDPGFX_RESET_GRAPHICS_PDU.
     fn clear_pending_frames(&mut self) {
         self.unacknowledged.clear();
         self.client_queue_depth = 0;
+        self.last_backpressure_state = false;
+    }
+
+    /// Discard pending frames and any suspension ahead of a new capability exchange.
+    fn clear_acknowledgement_state(&mut self) {
+        self.clear_pending_frames();
         self.ack_suspended = false;
         self.suspension_outstanding.clear();
         self.suspension_first_frame_id = None;
-        self.last_backpressure_state = false;
         self.last_ack_suspended_state = false;
     }
 
     /// Clear per-channel tracking while preserving operator config and the connection ceiling.
     pub fn clear(&mut self) {
-        self.clear_pending_frames();
+        self.clear_acknowledgement_state();
         self.generation_first_frame_id = self.next_frame_id;
     }
 }
@@ -2604,7 +2611,7 @@ impl GraphicsPipelineServer {
                  state for re-initialization (no DeleteSurface PDU emitted, surface ID counter reset)"
             );
             self.surfaces.reset_for_reinit();
-            self.frames.clear_pending_frames();
+            self.frames.clear_acknowledgement_state();
             self.reset_graphics_sent = false;
         }
 
