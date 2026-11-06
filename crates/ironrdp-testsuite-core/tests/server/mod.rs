@@ -8,6 +8,7 @@ mod dynamic_channel_factory;
 mod echo;
 mod fast_path;
 mod finalize_timeout;
+mod input_events;
 mod max_request_size;
 mod multitransport_finalize;
 mod pointer_cache_index;
