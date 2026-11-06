@@ -44,6 +44,12 @@ export class PublicAPI {
         this.remoteDesktopService.sendSpecialCombination(SpecialCombination.CTRL_V);
     }
 
+    // Keys for this session whether or not its canvas has the focus, for a host that routes the keyboard itself (the
+    // same keys to several sessions, for one). Handled as the canvas's own: codes as scancodes, modifiers kept in sync.
+    private sendKeyboardEvent(evt: KeyboardEvent) {
+        this.remoteDesktopService.sendKeyboardEvent(evt);
+    }
+
     private setVisibility(state: boolean) {
         loggingService.info(`Change component visibility to: ${state}`);
         this.remoteDesktopService.setVisibility(state);
@@ -125,6 +131,7 @@ export class PublicAPI {
             metaKey: this.metaKey.bind(this),
             ctrlC: this.ctrlC.bind(this),
             ctrlV: this.ctrlV.bind(this),
+            sendKeyboardEvent: this.sendKeyboardEvent.bind(this),
             shutdown: this.shutdown.bind(this),
             setKeyboardUnicodeMode: this.setKeyboardUnicodeMode.bind(this),
             setCursorStyleOverride: this.setCursorStyleOverride.bind(this),
