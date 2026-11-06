@@ -5489,6 +5489,7 @@ impl RdpServer {
                         "display error reason",
                     )
                     .await;
+                    send_disconnect_ultimatum(writer).await;
                 }
                 return Err(error);
             }
@@ -6512,9 +6513,9 @@ impl RdpServer {
                 Ok(state) => state,
                 Err(error) => {
                     if matches!(error.kind(), ServerErrorKind::ErrorInfo(_)) {
-                        // The client was sent a Set Error Info PDU. Close the
-                        // session as on a normal disconnect, so the client gets
-                        // the PDU and then the end of the stream.
+                        // The server sent the client the reason and the ultimatum.
+                        // Close the session as on a normal disconnect, so the client
+                        // gets them and then the end of the stream.
                         let (mut inner, _) = unsplit_tokio_framed(reader, writer).into_inner();
                         match tokio::time::timeout(ERROR_INFO_CLOSE_TIMEOUT, inner.shutdown()).await {
                             Ok(Ok(())) => {}
