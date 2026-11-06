@@ -3,6 +3,7 @@ mod client_auto_reconnect;
 mod gcc;
 mod gfx;
 mod input;
+mod logon_info;
 mod mcs;
 mod message_channel;
 #[expect(
