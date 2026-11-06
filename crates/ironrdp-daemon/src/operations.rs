@@ -165,6 +165,20 @@ impl OperationManager {
         Ok(capabilities(handle.capabilities().into()))
     }
 
+    /// Asks the NOW agent inside the remote session to log the user off.
+    ///
+    /// Completes once the request is written: the NOW logoff message has no response.
+    pub async fn session_logoff(&self) -> Result<(), AgentError> {
+        let handle = self.endpoint.handle().await.map_err(endpoint_error)?;
+        if !handle.capabilities().supports_session_logoff() {
+            return Err(AgentError {
+                category: AgentErrorCategory::Unavailable,
+                message: "the NOW agent in the remote session does not support logoff".to_owned(),
+            });
+        }
+        handle.session_logoff().await.map_err(client_error)
+    }
+
     /// Submits a generic untracked NOW Run request.
     pub async fn run(&self, command: String, directory: Option<String>) -> Result<(), AgentError> {
         self.reserve_submission()?;
