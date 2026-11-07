@@ -134,11 +134,26 @@ export class ClipboardService {
                     this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
                 }
             } catch {
-                try {
-                    // Try to read clipboard to check if the asyncClipboard pref is enabled
-                    await navigator.clipboard.read();
-                } catch {
-                    this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
+                const isWebKit =
+                    typeof navigator.userAgent === 'string' &&
+                    /AppleWebKit\//.test(navigator.userAgent) &&
+                    !/Chrome|Chromium|Android/.test(navigator.userAgent);
+                if (isWebKit) {
+                    // WebKit does not support the "clipboard-read" PermissionName and shows a native
+                    // floating "Paste" confirmation menu whenever navigator.clipboard.read() is called,
+                    // so it must not be probed during initialization or polled in the background.
+                    // When autoClipboard is disabled, keep Full mode so manual saveRemoteClipboardData()
+                    // and sendClipboardData() retain image/HTML ClipboardItem support.
+                    if (this.remoteDesktopService.autoClipboard) {
+                        this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
+                    }
+                } else {
+                    try {
+                        // Try to read clipboard to check if the asyncClipboard pref is enabled
+                        await navigator.clipboard.read();
+                    } catch {
+                        this.ClipboardApiSupported = ClipboardApiSupported.TextOnly;
+                    }
                 }
             }
         }

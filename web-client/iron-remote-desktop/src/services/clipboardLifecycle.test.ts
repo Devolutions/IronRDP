@@ -200,4 +200,37 @@ describe('clipboard lifecycle', () => {
 
         expect(written).toEqual([]);
     });
+
+    it('does not probe navigator.clipboard.read() during initialization on WebKit when permissions.query throws', async () => {
+        vi.stubGlobal('navigator', {
+            ...navigator,
+            userAgent:
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
+            clipboard: {
+                read: reads,
+                write: vi.fn(async ([item]: [{ items: Record<string, { parts: string[] }> }]) => {
+                    written.push(item.items['text/plain'].parts[0]);
+                }),
+                readText: vi.fn(),
+                writeText: vi.fn(),
+            },
+            permissions: {
+                query: vi.fn(async () => {
+                    throw new TypeError("'clipboard-read' is not a valid PermissionName");
+                }),
+            },
+        });
+
+        const service = new RemoteDesktopService(module);
+        service.setEnableAutoClipboard(false);
+        const clipboard = new ClipboardService(service, module);
+        await clipboard.initClipboard();
+
+        expect(reads).not.toHaveBeenCalled();
+
+        remoteCopies(service, 'from-remote');
+        await clipboard.saveRemoteClipboardData();
+        expect(written).toEqual(['from-remote']);
+        clipboard.dispose();
+    });
 });
