@@ -742,6 +742,7 @@ impl iron_remote_desktop::Session for Session {
         );
 
         let mut requested_resize = None;
+        let mut pending_resize = None;
 
         // Reused across frames so per-region extraction doesn't allocate on every draw.
         let mut draw_buffer = WriteBuf::new();
@@ -765,7 +766,7 @@ impl iron_remote_desktop::Session for Session {
         let mut cleanup_interval = IntervalStream::new(5_000).fuse();
 
         let disconnect_reason = 'outer: loop {
-            let outputs = select! {
+            let mut outputs = select! {
                 frame = framed.read_pdu().fuse() => {
                     let (action, payload) = frame.context("read frame")?;
                     trace!(?action, frame_length = payload.len(), "Frame received");
@@ -925,10 +926,15 @@ impl iron_remote_desktop::Session for Session {
                                 let width = NonZeroU32::new(width).expect("width is guaranteed to be non-zero due to the prior check");
                                 let height = NonZeroU32::new(height).expect("height is guaranteed to be non-zero due to the prior check");
 
+                                pending_resize = None;
                                 requested_resize = Some((width, height));
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
+                            } else if active_stage.display_control_ready() == Some(false) {
+                                debug!(width, height, "Deferring resize until Display Control capabilities arrive");
+                                pending_resize = Some((width, height, scale_factor, physical_size));
+                                Vec::new()
                             } else {
-                                debug!("Resize event ignored");
+                                warn!("Resize request was not sent: Display Control is unavailable or not ready");
                                 Vec::new()
                             }
                         },
@@ -972,6 +978,28 @@ impl iron_remote_desktop::Session for Session {
                     }
                 }
             };
+
+            // UNTESTED: A resize request received while `active_stage.display_control_ready() == Some(false)`
+            // is held in `pending_resize` and encoded as soon as the server's `DISPLAYCONTROL_CAPS_PDU`
+            // arrives.
+            // Check initial-connect and post-reactivation resize behavior against Windows and `xrdp`
+            // servers when changing this loop.
+            if let Some((width, height, scale_factor, physical_size)) = pending_resize {
+                if (u32::from(image.width()), u32::from(image.height())) == (width, height)
+                    || active_stage.display_control_ready().is_none()
+                {
+                    pending_resize = None;
+                } else if active_stage.display_control_ready() == Some(true) {
+                    pending_resize = None;
+                    if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size)
+                    {
+                        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+                            requested_resize = Some((w, h));
+                        }
+                        outputs.push(ActiveStageOutput::ResponseFrame(response_frame?));
+                    }
+                }
+            }
 
             for out in outputs {
                 match out {
