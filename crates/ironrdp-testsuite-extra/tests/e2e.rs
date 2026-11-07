@@ -4798,3 +4798,201 @@ async fn strict_validation_accepts_the_target_certificate_the_redirecting_server
 async fn strict_validation_rejects_an_unreported_target_certificate() {
     assert!(!follows_redirection_under_strict_validation(false).await);
 }
+
+/// Level and message of the `ironrdp_server::server` events logged while it is
+/// the default subscriber of the test's thread.
+#[derive(Clone, Default)]
+struct ServerLog(Arc<StdMutex<Vec<(tracing::Level, String)>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ServerLog {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct Message(String);
+
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn core::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+
+        if event.metadata().target() != "ironrdp_server::server" {
+            return;
+        }
+        let mut message = Message(String::new());
+        event.record(&mut message);
+        self.0.lock().unwrap().push((*event.metadata().level(), message.0));
+    }
+}
+
+impl ServerLog {
+    /// The events the server logged when a connection ended with an error.
+    fn connection_ends(&self) -> Vec<(tracing::Level, String)> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, message)| message.starts_with("Connection error") || message.starts_with("Connection ended"))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Runs `server` while `client` connects to it, and returns the log events of
+/// the connection's end.
+async fn connection_end_log<F>(
+    mut server: RdpServer,
+    client: impl FnOnce(SocketAddr) -> F,
+) -> Vec<(tracing::Level, String)>
+where
+    F: Future<Output = ()>,
+{
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let log = ServerLog::default();
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
+    let handle = server.handle().clone();
+    let local = tokio::task::LocalSet::new();
+    let test = Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move { server.run().await });
+        let addr = handle.local_addr().await.unwrap().unwrap();
+        client(addr).await;
+        while log.connection_ends().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        handle.quit("test done").unwrap();
+        server_task.await.unwrap().unwrap();
+        log.connection_ends()
+    }));
+    tokio::time::timeout(Duration::from_secs(15), test)
+        .await
+        .expect("the connection ends and the server stops")
+}
+
+/// A server with TLS security only, and the display sender to keep alive for
+/// the test.
+fn tls_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
+    let acceptor = test_tls_identity()
+        .make_acceptor()
+        .expect("failed to build TLS acceptor");
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
+    (server, display_tx)
+}
+
+/// The client configuration of [`hybrid_client_config`], with a wrong password.
+fn wrong_password_client_config() -> connector::Config {
+    connector::Config {
+        credentials: connector::Credentials::UsernamePassword {
+            username: HYBRID_USER.into(),
+            password: "wrong password".into(),
+        },
+        ..default_client_config()
+    }
+}
+
+fn assert_not_logged_as_an_error(log: &[(tracing::Level, String)]) {
+    assert!(!log.is_empty());
+    for (level, message) in log {
+        assert_ne!(*level, tracing::Level::ERROR, "{message}");
+    }
+}
+
+// oracle: regression #2392
+#[tokio::test]
+async fn a_refused_credssp_logon_is_not_logged_as_an_error() {
+    let (server, _display_tx) = hybrid_server();
+    let log = connection_end_log(server, |addr| async move {
+        let result = connect_client_with(
+            addr,
+            |client_addr| connector::ClientConnector::new(wrong_password_client_config(), client_addr),
+            |stream| stream,
+        )
+        .await;
+        assert!(result.is_err(), "the logon is refused");
+    })
+    .await;
+    assert_not_logged_as_an_error(&log);
+}
+
+// oracle: regression #2392
+#[tokio::test]
+async fn a_refused_tls_logon_is_not_logged_as_an_error() {
+    let (server, _display_tx) = tls_server();
+    let log = connection_end_log(server, |addr| async move {
+        let config = connector::Config {
+            enable_credssp: false,
+            ..wrong_password_client_config()
+        };
+        let result = connect_client_with(
+            addr,
+            |client_addr| connector::ClientConnector::new(config, client_addr),
+            |stream| stream,
+        )
+        .await;
+        assert!(result.is_err(), "the logon is refused");
+    })
+    .await;
+    assert_not_logged_as_an_error(&log);
+}
+
+// oracle: regression #2392
+#[tokio::test]
+async fn a_security_protocol_mismatch_is_not_logged_as_an_error() {
+    let (server, _display_tx) = hybrid_server();
+    let log = connection_end_log(server, |addr| async move {
+        let tcp_stream = TcpStream::connect(addr).await.expect("TCP connect");
+        let client_addr = tcp_stream.local_addr().expect("local_addr");
+        let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
+        let mut connector = connector::ClientConnector::new(
+            connector::Config {
+                enable_credssp: false,
+                ..hybrid_client_config()
+            },
+            client_addr,
+        );
+        let result = ironrdp_async::connect_begin(&mut framed, &mut connector).await;
+        assert!(result.is_err(), "the server requires CredSSP");
+    })
+    .await;
+    assert_not_logged_as_an_error(&log);
+}
+
+// oracle: regression #2392
+#[tokio::test]
+async fn a_connection_closed_before_the_handshake_is_not_logged_as_an_error() {
+    let (server, _display_tx) = hybrid_server();
+    let log = connection_end_log(server, |addr| async move {
+        drop(TcpStream::connect(addr).await.expect("TCP connect"));
+    })
+    .await;
+    assert_not_logged_as_an_error(&log);
+}
+
+// oracle: regression #2392
+#[tokio::test]
+async fn a_client_that_closes_its_session_is_not_logged_as_an_error() {
+    let (server, _display_tx) = hybrid_server();
+    let log = connection_end_log(server, |addr| async move {
+        let (framed, _) = connect_client(addr, |client_addr| {
+            connector::ClientConnector::new(hybrid_client_config(), client_addr)
+        })
+        .await;
+        drop(framed);
+    })
+    .await;
+    assert_not_logged_as_an_error(&log);
+}
