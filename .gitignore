@@ -2,6 +2,7 @@
 /target
 /dependencies
 /bench-data
+/server/termsrv/package/msi/obj/
 # Local smoke-test artifacts
 /artifacts
 # Local cargo root
