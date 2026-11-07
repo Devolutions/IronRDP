@@ -45,7 +45,7 @@ fn rejects_a_layout_larger_than_the_advertised_area() {
     );
 }
 
-// oracle: property round-trip
+// oracle: mutant lose boundary dimensions when writing or reading a display request.
 #[test]
 fn boundary_dimensions_survive_publication() {
     let directory = std::env::temp_dir().join(format!("ironrdp-display-boundaries-{}", std::process::id()));

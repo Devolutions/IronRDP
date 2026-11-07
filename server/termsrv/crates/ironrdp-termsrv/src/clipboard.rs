@@ -647,7 +647,7 @@ mod tests {
         );
     }
 
-    // oracle: spec server/termsrv/crates/ironrdp-termsrv/README.md section Clipboard redirection
+    // oracle: mutant reject a frame exactly at the configured maximum helper-frame size.
     #[tokio::test]
     async fn helper_accepts_a_frame_at_the_16_mib_limit() {
         let mut wire = vec![0x5a; 4 + 16 * 1024 * 1024];

@@ -27,7 +27,7 @@ fn open_virtual_channel_without_the_static_flag_is_dynamic() {
     );
 }
 
-// oracle: property round-trip
+// oracle: mutant drop the static flag when serializing or deserializing a virtual-channel open.
 #[test]
 fn open_virtual_channel_keeps_the_static_flag() {
     for static_channel in [false, true] {

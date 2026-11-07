@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn pointer_timestamps_remain_monotonic_after_a_previous_frame() -> anyhow::Result<()> {
-        // oracle: property monotonic
+        // oracle: mutant allow duplicate timestamps when QPC values tie.
         let frequency = 10_000_000u64;
         let previous = 10_000_000;
         let timestamps = frame_timestamps(
