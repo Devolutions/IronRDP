@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::Write as _;
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::{AsRawHandle as _, IntoRawHandle as _};
 use std::sync::{Arc, OnceLock, mpsc};
@@ -918,8 +918,8 @@ impl ProviderControlBridge {
             .encode_utf16()
             .chain(core::iter::once(0))
             .collect::<Vec<_>>();
-        let mut port = 0_u32;
-        let mut bytes = 4_u32;
+        let mut port = 0u32;
+        let mut bytes = 4u32;
         let status = unsafe {
             RegGetValueW(
                 HKEY_LOCAL_MACHINE,

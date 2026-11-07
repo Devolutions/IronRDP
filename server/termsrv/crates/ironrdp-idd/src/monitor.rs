@@ -190,6 +190,10 @@ pub(crate) struct IDARG_IN_SETSWAPCHAIN {
 #[cfg(any(test, ironrdp_idd_link))]
 pub(crate) use crate::iddcx::IDARG_OUT_MONITORGETPHYSICALSIZE;
 
+#[expect(
+    clippy::cfg_not_test,
+    reason = "Non-WDK builds use this ABI fallback type; tests exercise the IddCx-backed type."
+)]
 #[cfg(not(any(test, ironrdp_idd_link)))]
 #[repr(C)]
 pub(crate) struct IDARG_OUT_MONITORGETPHYSICALSIZE {
@@ -321,6 +325,10 @@ pub struct IronRdpIddMonitor {
 
 impl IronRdpIddMonitor {
     pub fn create_and_arrive(adapter: IDDCX_ADAPTER, connector_idx: u32, edid: Option<&[u8]>) -> NTSTATUS {
+        #[expect(
+            clippy::cfg_not_test,
+            reason = "The no-link monitor callback is a safe fallback; unit tests exercise the IddCx-backed path."
+        )]
         #[cfg(not(any(test, ironrdp_idd_link)))]
         {
             let _ = (adapter, edid);
@@ -444,6 +452,10 @@ impl IronRdpIddMonitor {
     }
 
     pub fn departure(&self) -> NTSTATUS {
+        #[expect(
+            clippy::cfg_not_test,
+            reason = "The no-link monitor callback is a safe fallback; unit tests exercise the IddCx-backed path."
+        )]
         #[cfg(not(any(test, ironrdp_idd_link)))]
         {
             tracing::info!(connector_idx = self.connector_index, "IddCxMonitorDeparture (stub)");

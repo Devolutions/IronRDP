@@ -595,6 +595,10 @@ impl SwapChainProcessor {
                 tracing::info!("IddCxSwapChain processing thread exiting");
             }
 
+            #[expect(
+                clippy::cfg_not_test,
+                reason = "The no-link swapchain loop is a safe fallback; unit tests exercise the IddCx-backed loop."
+            )]
             #[cfg(not(any(test, ironrdp_idd_link)))]
             {
                 crate::debug_trace(&format!(
@@ -606,7 +610,8 @@ impl SwapChainProcessor {
                     let handles = [new_frame_event.raw(), terminate_event.raw()];
 
                     // SAFETY: `handles` contains valid event handles.
-                    let wait = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) };
+                    let wait =
+                        unsafe { WaitForMultipleObjects(&handles, false, windows::Win32::System::Threading::INFINITE) };
 
                     if wait == WAIT_OBJECT_0 {
                         tracing::debug!("IddCxSwapChain new frame signaled (stub)");

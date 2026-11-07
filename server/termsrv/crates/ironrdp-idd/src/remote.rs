@@ -186,6 +186,10 @@ pub(crate) fn load_runtime_config() -> RuntimeConfig {
     default_runtime_config()
 }
 
+#[expect(
+    clippy::cfg_not_test,
+    reason = "Unit tests avoid machine-specific runtime files and test the parser with explicit text."
+)]
 #[cfg(not(test))]
 pub(crate) fn load_runtime_config() -> RuntimeConfig {
     let mut config = default_runtime_config();

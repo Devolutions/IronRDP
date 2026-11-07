@@ -120,6 +120,10 @@ pub(crate) extern "system" fn adapter_init_finished(
     adapter: IDDCX_ADAPTER,
     args: *const IDARG_IN_ADAPTER_INIT_FINISHED,
 ) -> NTSTATUS {
+    #[expect(
+        clippy::cfg_not_test,
+        reason = "The no-link adapter callback is a safe fallback; unit tests exercise the IddCx-backed path."
+    )]
     #[cfg(not(any(test, ironrdp_idd_link)))]
     {
         let _ = (adapter, args);
