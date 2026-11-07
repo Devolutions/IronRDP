@@ -40,6 +40,7 @@ use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp_core::WriteBuf;
+use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_futures::{FramedWrite, single_sequence_step_read};
 use rgb::AsPixels as _;
 use tap::prelude::*;
@@ -740,8 +741,10 @@ impl iron_remote_desktop::Session for Session {
             connection_result.desktop_size.width,
             connection_result.desktop_size.height,
         );
-
-        let mut requested_resize = None;
+        let mut framebuffer_size = (
+            connection_result.desktop_size.width,
+            connection_result.desktop_size.height,
+        );
 
         // Reused across frames so per-region extraction doesn't allocate on every draw.
         let mut draw_buffer = WriteBuf::new();
@@ -922,10 +925,6 @@ impl iron_remote_desktop::Session for Session {
                                 warn!("Resize event ignored: width or height is zero");
                                 Vec::new()
                             } else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
-                                let width = NonZeroU32::new(width).expect("width is guaranteed to be non-zero due to the prior check");
-                                let height = NonZeroU32::new(height).expect("height is guaranteed to be non-zero due to the prior check");
-
-                                requested_resize = Some((width, height));
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                             } else {
                                 debug!("Resize event ignored");
@@ -972,6 +971,18 @@ impl iron_remote_desktop::Session for Session {
                     }
                 }
             };
+
+            // UNTESTED: HTML canvas dimensions stay synchronized with `image` after an EGFX
+            // `ResetGraphics` PDU updates `DecodedImage` without a `DeactivateAll` sequence,
+            // so `gui.draw` never blits post-reset regions onto stale canvas bounds. Check
+            // dynamic resize against an EGFX-capable server when changing this loop.
+            let output_size = (image.width(), image.height());
+            if output_size != framebuffer_size {
+                let width = NonZeroU32::new(u32::from(output_size.0)).context("graphics output width is zero")?;
+                let height = NonZeroU32::new(u32::from(output_size.1)).context("graphics output height is zero")?;
+                gui.resize(width, height);
+                framebuffer_size = output_size;
+            }
 
             for out in outputs {
                 match out {
@@ -1100,13 +1111,6 @@ impl iron_remote_desktop::Session for Session {
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
                         debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
 
-                        // We need to perform resize after receiving the Deactivate All PDU, because there may be frames
-                        // with the previous dimensions arriving between the resize request and this message.
-                        if let Some((width, height)) = requested_resize {
-                            gui.resize(width, height);
-                            requested_resize = None;
-                        }
-
                         let mut connection_activation = activation_factory.create();
                         let mut buf = WriteBuf::new();
                         'activation_seq: loop {
@@ -1136,6 +1140,15 @@ impl iron_remote_desktop::Session for Session {
                                 drop(image);
                                 ensure_framebuffer_allocatable(desktop_size)?;
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+                                let output_size = (image.width(), image.height());
+                                if output_size != framebuffer_size {
+                                    let width = NonZeroU32::new(u32::from(output_size.0))
+                                        .context("graphics output width is zero")?;
+                                    let height = NonZeroU32::new(u32::from(output_size.1))
+                                        .context("graphics output height is zero")?;
+                                    gui.resize(width, height);
+                                    framebuffer_size = output_size;
+                                }
                                 if !active_stage.reactivate(
                                     connection_activation.io_channel_id(),
                                     connection_activation.user_channel_id(),
@@ -1533,18 +1546,15 @@ fn build_config(
     security: SecurityConfig,
 ) -> connector::Config {
     // Win7-class servers need 32-bpp lossless bitmaps and no advertised codecs.
-    let bitmap = if legacy_graphics {
-        connector::BitmapConfig {
-            color_depth: 32,
-            lossy_compression: false,
-            codecs: BitmapCodecs(Vec::new()),
-        }
+    let codecs = if legacy_graphics {
+        BitmapCodecs(Vec::new())
     } else {
-        connector::BitmapConfig {
-            color_depth: 16,
-            lossy_compression: true,
-            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
-        }
+        client_codecs_capabilities(&[]).expect("can't panic for &[]")
+    };
+    let bitmap = connector::BitmapConfig {
+        color_depth: 32,
+        lossy_compression: false,
+        codecs,
     };
 
     connector::Config {
@@ -1587,7 +1597,7 @@ fn build_config(
         request_data: None,
         pointer_software_rendering: false,
         multitransport_flags: None,
-        support_dyn_vc_gfx_protocol: false,
+        support_dyn_vc_gfx_protocol: true,
         rdp_version: ironrdp::pdu::gcc::RdpVersion::V5_PLUS,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
@@ -1695,6 +1705,9 @@ fn macos_major_version_from_user_agent(user_agent: &str) -> Option<u32> {
         .and_then(|major| major.parse().ok())
 }
 
+struct NoopGraphicsPipelineHandler;
+impl GraphicsPipelineHandler for NoopGraphicsPipelineHandler {}
+
 async fn connect(
     ConnectParams {
         ws,
@@ -1738,11 +1751,12 @@ async fn connect(
         );
     }
 
+    let mut dynamic_channels = DrdynvcClient::new()
+        .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(NoopGraphicsPipelineHandler), None));
     if use_display_control {
-        connector.attach_static_channel(
-            DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        );
+        dynamic_channels = dynamic_channels.with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
     }
+    connector.attach_static_channel(dynamic_channels);
 
     let kerberos_config = url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str())
         .ok()
