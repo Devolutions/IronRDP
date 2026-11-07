@@ -17,12 +17,12 @@
 )]
 
 mod adapter;
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 mod iddcx;
 mod monitor;
 mod remote;
 mod swapchain;
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 mod wdf;
 
 pub use adapter::IronRdpIddAdapter;
@@ -201,5 +201,5 @@ fn iddcx_callback_table() -> IddCxCallbackTable {
     }
 }
 
-#[cfg(all(test, ironrdp_idd_link))]
+#[cfg(test)]
 mod adapter_tests;

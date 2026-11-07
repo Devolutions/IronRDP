@@ -43,6 +43,11 @@ internal static class Program
                 versionString = FileVersionInfo.GetVersionInfo(ServiceExecutablePath).FileVersion;
             }
 
+            if (string.IsNullOrWhiteSpace(versionString))
+            {
+                versionString = ReadCratePackageVersion();
+            }
+
             if (string.IsNullOrWhiteSpace(versionString) || !Version.TryParse(versionString, out var version))
             {
                 throw new Exception($"{MsiVersionEnvVar} is not specified or invalid");
@@ -118,11 +123,7 @@ internal static class Program
         var candidate = Path.GetFullPath(defaultPath);
         if (!System.IO.File.Exists(candidate))
         {
-#if DEBUG
             return null;
-#else
-            throw new FileNotFoundException($"default artifact path does not exist for {varName}", candidate);
-#endif
         }
 
         return candidate;
@@ -147,6 +148,38 @@ internal static class Program
         }
 
         return fullPath;
+    }
+
+    private static string ReadCratePackageVersion()
+    {
+        for (DirectoryInfo? directory = new(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            var manifestPath = Path.Combine(directory.FullName, "crates", "ironrdp-termsrv", "Cargo.toml");
+            if (!System.IO.File.Exists(manifestPath))
+            {
+                continue;
+            }
+
+            var inPackageSection = false;
+            foreach (var line in System.IO.File.ReadLines(manifestPath))
+            {
+                var value = line.Trim();
+                if (value.StartsWith("[", StringComparison.Ordinal))
+                {
+                    inPackageSection = value == "[package]";
+                    continue;
+                }
+
+                if (inPackageSection && value.StartsWith("version =", StringComparison.Ordinal))
+                {
+                    return value.Substring("version =".Length).Trim().Trim('"');
+                }
+            }
+
+            throw new InvalidDataException($"package version was not found in {manifestPath}");
+        }
+
+        throw new FileNotFoundException("could not locate the ironrdp-termsrv Cargo.toml");
     }
 
     private static Version NormalizeInstallerVersion(Version input)
@@ -180,22 +213,6 @@ internal static class Program
         var serviceFile = new File(ServiceExecutablePath)
         {
             TargetFileName = Includes.SERVICE_EXECUTABLE_NAME,
-            ServiceInstaller = new ServiceInstaller
-            {
-                Type = SvcType.ownProcess,
-                Interactive = false,
-                Vital = true,
-                Name = Includes.SERVICE_NAME,
-                DisplayName = Includes.SERVICE_DISPLAY_NAME,
-                Description = Includes.SERVICE_DESCRIPTION,
-                FirstFailureActionType = FailureActionType.restart,
-                SecondFailureActionType = FailureActionType.restart,
-                ThirdFailureActionType = FailureActionType.restart,
-                RestartServiceDelayInSeconds = 60,
-                ResetPeriodInDays = 1,
-                RemoveOn = SvcEvent.Uninstall,
-                StopOn = SvcEvent.InstallUninstall,
-            },
         };
 
         payload.Add(serviceFile);

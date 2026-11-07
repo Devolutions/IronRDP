@@ -1,22 +1,20 @@
-#[cfg(ironrdp_idd_link)]
-use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use ironrdp_wtsprotocol_ipc::display::DISPLAY_REQUEST_DIRECTORY;
 use ironrdp_wtsprotocol_ipc::display::DisplaySize;
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_2DREGION, DISPLAYCONFIG_RATIONAL, DISPLAYCONFIG_ROTATION_IDENTITY,
 };
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use windows::Win32::Foundation::POINT;
 
 use crate::{IDDCX_ADAPTER, NTSTATUS, STATUS_SUCCESS};
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use crate::{IDDCX_MONITOR, ntstatus_to_u32};
 
 #[derive(Debug, Clone, Default)]
@@ -55,7 +53,7 @@ static ADAPTER_RUNTIME_STATE: OnceLock<Mutex<AdapterRuntimeState>> = OnceLock::n
 // The INF disables host sharing, so each process binds to one OS-owned device session.
 static DEVICE_SESSION_ID: AtomicU32 = AtomicU32::new(0);
 static DEVICE_ACTIVE: AtomicBool = AtomicBool::new(false);
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 static DISPLAY_CONFIG_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 
 fn adapter_runtime_state() -> &'static Mutex<AdapterRuntimeState> {
@@ -143,7 +141,7 @@ pub(crate) fn bind_device_session(session_id: u32) -> bool {
     }
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) fn set_device_active(active: bool) {
     let mut state = adapter_runtime_state()
         .lock()
@@ -156,7 +154,7 @@ pub(crate) fn set_device_active(active: bool) {
     *state = AdapterRuntimeState::default();
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) fn note_adapter_created(adapter: IDDCX_ADAPTER) {
     let mut state = adapter_runtime_state()
         .lock()
@@ -164,7 +162,7 @@ pub(crate) fn note_adapter_created(adapter: IDDCX_ADAPTER) {
     state.adapter_raw = adapter as usize;
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) fn adapter_is_active(adapter: IDDCX_ADAPTER) -> bool {
     let state = adapter_runtime_state()
         .lock()
@@ -172,19 +170,34 @@ pub(crate) fn adapter_is_active(adapter: IDDCX_ADAPTER) -> bool {
     DEVICE_ACTIVE.load(Ordering::Acquire) && state.adapter_raw == adapter as usize
 }
 
-pub(crate) fn load_runtime_config() -> RuntimeConfig {
+fn default_runtime_config() -> RuntimeConfig {
     let session_id = DEVICE_SESSION_ID.load(Ordering::Acquire);
     let active = DEVICE_ACTIVE.load(Ordering::Acquire);
-    let mut config = RuntimeConfig {
+    RuntimeConfig {
         session_id: (session_id != 0).then_some(session_id),
         wddm_idd_enabled: active && session_id != 0,
         driver_loaded: active && session_id != 0,
         ..RuntimeConfig::default()
-    };
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn load_runtime_config() -> RuntimeConfig {
+    default_runtime_config()
+}
+
+#[cfg(not(test))]
+pub(crate) fn load_runtime_config() -> RuntimeConfig {
+    let mut config = default_runtime_config();
     let Ok(content) = std::fs::read_to_string(crate::IDD_RUNTIME_STATE_FILE) else {
         return config;
     };
 
+    apply_runtime_config(&mut config, &content);
+    config
+}
+
+fn apply_runtime_config(config: &mut RuntimeConfig, content: &str) {
     let mut values = HashMap::new();
     for line in content.lines() {
         let trimmed = line.trim();
@@ -205,7 +218,6 @@ pub(crate) fn load_runtime_config() -> RuntimeConfig {
         .map(PathBuf::from);
     config.hardware_id = values.get("hardware_id").cloned();
     config.active_video_source = values.get("active_video_source").cloned();
-    config
 }
 
 pub(crate) fn runtime_dump_dir() -> Option<PathBuf> {
@@ -231,7 +243,7 @@ pub(crate) fn swapchain_dump_runtime() -> Result<RuntimeConfig, String> {
     Ok(config)
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 unsafe extern "system" fn display_timer_tick(timer: crate::wdf::WDFTIMER) {
     // WDF drains this callback before cleaning up its monitor parent or adapter ancestor.
     // Native display calls must stay here, never in a detached thread or a power callback.
@@ -240,7 +252,7 @@ unsafe extern "system" fn display_timer_tick(timer: crate::wdf::WDFTIMER) {
     maybe_request_display_config_update(timer);
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 fn maybe_request_display_config_update(timer: crate::wdf::WDFTIMER) {
     let source = "display_timer";
     let _update_guard = match DISPLAY_CONFIG_UPDATE_LOCK.try_lock() {
@@ -405,7 +417,7 @@ pub(crate) fn requested_display_size() -> Option<DisplaySize> {
         .display_config_request_size
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) fn note_adapter_init_finished(adapter: IDDCX_ADAPTER) -> NTSTATUS {
     {
         let mut state = match adapter_runtime_state().lock() {
@@ -450,7 +462,7 @@ pub(crate) fn note_adapter_init_finished(adapter: IDDCX_ADAPTER) -> NTSTATUS {
     STATUS_SUCCESS
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) fn note_monitor_arrival(
     adapter: IDDCX_ADAPTER,
     monitor: IDDCX_MONITOR,
@@ -501,7 +513,7 @@ pub(crate) fn note_monitor_arrival(
     STATUS_SUCCESS
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) fn note_monitor_departure(monitor: IDDCX_MONITOR) {
     let mut state = adapter_runtime_state()
         .lock()
@@ -657,6 +669,37 @@ pub fn set_display_config(_adapter: IDDCX_ADAPTER, paths: &[crate::adapter::IDDC
 
     maybe_log_session_ready(&config, &mut state);
     STATUS_SUCCESS
+}
+#[cfg(test)]
+mod tests {
+    use super::{RuntimeConfig, apply_runtime_config, load_runtime_config};
+
+    #[test]
+    fn runtime_config_parser_uses_explicit_text_and_ignores_malformed_lines() {
+        // oracle: a malformed line or comment cannot replace runtime configuration values.
+        let mut config = RuntimeConfig::default();
+        apply_runtime_config(
+            &mut config,
+            "# fixture\n dump_dir = C:\\fixture\\dumps \nnot-a-key-value\nhardware_id=IronRdpIdd\nactive_video_source=custom\n",
+        );
+
+        assert_eq!(
+            config.dump_dir.as_deref(),
+            Some(std::path::Path::new(r"C:\fixture\dumps"))
+        );
+        assert_eq!(config.hardware_id.as_deref(), Some("IronRdpIdd"));
+        assert_eq!(config.active_video_source.as_deref(), Some("custom"));
+    }
+
+    #[test]
+    fn test_runtime_config_loader_does_not_read_host_machine_state() {
+        // oracle: unit tests must not inherit machine-specific C:\ProgramData runtime configuration.
+        let config = load_runtime_config();
+
+        assert_eq!(config.dump_dir, None);
+        assert_eq!(config.hardware_id, None);
+        assert_eq!(config.active_video_source, None);
+    }
 }
 
 pub fn handle_session_transition(_adapter: IDDCX_ADAPTER, is_remote: bool) {

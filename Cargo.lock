@@ -1335,8 +1335,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
- "der_derive 0.7.3",
- "flagset",
  "zeroize",
 ]
 
@@ -1347,7 +1345,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a996a108feb8b427a6e12fcf6af4aa83409b79d72c15337d7741368131ee004"
 dependencies = [
  "const-oid 0.10.2",
- "der_derive 0.8.0",
+ "der_derive",
  "flagset",
  "pem-rfc7468",
  "zeroize",
@@ -1365,17 +1363,6 @@ dependencies = [
  "num-bigint",
  "num-traits",
  "rusticata-macros 4.1.0",
-]
-
-[[package]]
-name = "der_derive"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -2672,7 +2659,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
- "x509-cert 0.3.0",
+ "x509-cert",
 ]
 
 [[package]]
@@ -2905,7 +2892,7 @@ dependencies = [
  "tracing",
  "url",
  "windows",
- "x509-cert 0.3.0",
+ "x509-cert",
  "zeroize",
 ]
 
@@ -3238,7 +3225,7 @@ dependencies = [
  "pkcs1 0.7.5",
  "sha1 0.11.0",
  "tap",
- "x509-cert 0.3.0",
+ "x509-cert",
 ]
 
 [[package]]
@@ -3643,7 +3630,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "visibility",
- "x509-cert 0.3.0",
+ "x509-cert",
  "zstd-safe",
 ]
 
@@ -3712,7 +3699,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows",
- "x509-cert 0.2.5",
+ "x509-cert",
 ]
 
 [[package]]
@@ -3852,7 +3839,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
- "x509-cert 0.3.0",
+ "x509-cert",
 ]
 
 [[package]]
@@ -3965,7 +3952,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "x509-cert 0.3.0",
+ "x509-cert",
 ]
 
 [[package]]
@@ -8387,18 +8374,6 @@ dependencies = [
  "curve25519-dalek",
  "rand_core 0.10.1",
  "zeroize",
-]
-
-[[package]]
-name = "x509-cert"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
-dependencies = [
- "const-oid 0.9.6",
- "der 0.7.10",
- "spki 0.7.3",
- "tls_codec",
 ]
 
 [[package]]

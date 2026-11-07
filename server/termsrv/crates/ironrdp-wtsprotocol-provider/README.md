@@ -81,40 +81,6 @@ Malformed or unreadable policy fails the query rather than removing restrictions
 [published application aliases]: #published-remoteapp-applications
 [Windows publication properties]: https://learn.microsoft.com/windows/win32/termserv/win32-tspublishedapplication
 
-## Virtual channel bridge handler API
-
-The provider retains a process-wide bridge handler registration API:
-
-- `set_virtual_channel_bridge_handler(...)`
-- `VirtualChannelBridgeHandler`
-- `VirtualChannelBridgeEndpoint`
-- `VirtualChannelBridgeTx`
-
-The API defines these notifications:
-
-1. `on_channel_opened(...)` with an endpoint descriptor and writable bridge tx.
-2. `on_channel_data(...)` for incoming payload bytes.
-3. `on_channel_closed(...)` when the channel closes.
-
-Registration alone does not create a native transport, and `CreateVirtualChannel` does not currently issue these notifications.
-
-## Default named-pipe bridge (env-based)
-
-If no custom bridge handler is registered, the provider can install a default named-pipe bridge automatically when this environment variable is set in the provider process:
-
-- `IRONRDP_WTS_VC_BRIDGE_PIPE_PREFIX`
-
-The handler supports:
-
-- One named-pipe worker is created per recognized channel endpoint.
-- Pipe path format: `\\.\pipe\<prefix>.<svc|dvc>.<sanitized-channel-name>`
-- Payload framing in both directions: little-endian `u32` length prefix + raw payload bytes.
-- Provider → pipe: forwards payloads passed to `on_channel_data`.
-- Pipe → provider: reads framed payloads and sends them through `VirtualChannelBridgeTx`.
-
-Setting this variable does not enable native virtual channels.
-The NOW broker uses its own connection-local transport, not this legacy handler.
-
 ## Protocol manager CLSID
 
 `{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}`
@@ -134,5 +100,5 @@ Backup, restore, install, uninstall, registration verification, and runtime smok
 
 [configuration package]: ./SIDEBYSIDE_SETUP.md#optional-configuration-package-prepare-without-installing
 
-The [MSI prototype](../../package/CevicheServiceWindowsManaged/README.md) is not a supported startup path: it registers an SCM service, but the companion does not implement SCM service hosting.
+The [MSI prototype](../../package/msi/README.md) is not a supported startup path: it registers an SCM service, but the companion does not implement SCM service hosting.
 Use the [companion deployment instructions] instead.

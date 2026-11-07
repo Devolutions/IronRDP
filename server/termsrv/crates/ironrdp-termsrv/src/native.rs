@@ -971,7 +971,7 @@ mod tests {
         assert!(!is_current());
     }
 
-    // oracle: regression oversized static FIRST without LAST must be rejected before reassembly, even without a consumer.
+    // oracle: mutant oversized static FIRST without LAST is accepted before reassembly.
     #[test]
     fn static_reassembly_rejects_an_oversized_initial_fragment_without_a_consumer() {
         let native = NativeChannels::default();
@@ -983,7 +983,7 @@ mod tests {
         );
     }
 
-    // oracle: regression a message begun for a replaced static consumer must never reach its successor.
+    // oracle: mutant a message begun for a replaced static consumer reaches its successor.
     #[test]
     fn static_reassembly_discards_a_replaced_consumers_message() {
         let native = NativeChannels::default();
@@ -1012,7 +1012,7 @@ mod tests {
         assert_eq!(second_queue.try_recv().unwrap().payload, b"fresh");
     }
 
-    // oracle: regression closing a consumer during reassembly discards its remainder without poisoning a fresh message.
+    // oracle: mutant a closed consumer's remainder poisons a fresh message.
     #[test]
     fn static_reassembly_discards_a_closed_consumers_message() {
         let native = NativeChannels::default();
@@ -1041,7 +1041,7 @@ mod tests {
         assert_eq!(queue.try_recv().unwrap().payload, b"fresh");
     }
 
-    // oracle: regression a newly attached consumer must not receive a message begun before it registered.
+    // oracle: mutant a newly attached consumer receives a message begun before it registered.
     #[test]
     fn static_reassembly_does_not_replay_a_message_begun_without_a_consumer() {
         let native = NativeChannels::default();
@@ -1056,7 +1056,7 @@ mod tests {
         assert!(matches!(queue.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
     }
 
-    // oracle: regression discarded fragments remain subject to protocol length validation.
+    // oracle: mutant discarded fragments bypass protocol length validation.
     #[test]
     fn static_reassembly_validates_the_remainder_of_a_discarded_message() {
         let native = NativeChannels::default();
@@ -1073,7 +1073,7 @@ mod tests {
         );
     }
 
-    // oracle: regression the native static boundary accepts a complete 16 MiB + 64 KiB message, independent of DVC limits.
+    // oracle: mutant the native static boundary rejects a complete 16 MiB + 64 KiB message.
     #[test]
     fn static_reassembly_accepts_the_native_limit_in_transport_sized_fragments() {
         const LENGTH: usize = 16 * 1024 * 1024 + 64 * 1024;
@@ -1649,7 +1649,7 @@ mod tests {
         opened.unwrap();
     }
 
-    // oracle: regression webauthn.dll opens a new channel for each API call, so a closed channel that kept its instance fails later calls.
+    // oracle: mutant a closed WebAuthn channel retains its instance and breaks the next API call.
     #[tokio::test]
     async fn closed_webauthn_channels_free_their_instances() {
         let instances = DYNAMIC_CHANNELS
@@ -1691,7 +1691,7 @@ mod tests {
         }
     }
 
-    // oracle: regression TermService requests dynamic endpoints that it serves itself, such as AUDIO_PLAYBACK_DVC, during logon.
+    // oracle: mutant TermService refuses a dynamic endpoint served by its own provider.
     #[tokio::test]
     async fn opening_an_unlisted_dynamic_channel_is_refused_without_asking_the_client() {
         let (native, _connection, mut events) = connected();
@@ -2017,7 +2017,7 @@ mod tests {
         timeout(Duration::from_secs(1), first).await.unwrap().unwrap();
     }
 
-    // oracle: regression replacing a consumer must not admit another queued write until its predecessor is discarded.
+    // oracle: mutant replacing a consumer admits a queued write before discarding its predecessor.
     #[tokio::test]
     async fn a_queued_static_write_keeps_its_permit_across_consumer_replacement() {
         let mut fixture = static_fixture(0);

@@ -18,7 +18,6 @@ iddcx-experimental-layout = []
 [lib]
 crate-type = ["cdylib"]
 doctest = false
-test = false
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-wtsprotocol-ipc = { version = "0.1.0", path = "../ironrdp-wtsprotocol-ipc" }
@@ -37,9 +36,6 @@ windows = { version = "0.62", features = [
     "Win32_System_SystemServices",
 ] }
 windows-core = "0.62"
-
-[target.'cfg(windows)'.build-dependencies]
-windows = { version = "0.62", features = ["Win32_Devices_DeviceAndDriverInstallation"] }
 
 [lints]
 workspace = true

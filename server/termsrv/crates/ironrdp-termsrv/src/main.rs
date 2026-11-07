@@ -24,7 +24,9 @@ mod native_pipe;
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("ironrdp-termsrv is only supported on windows");
+    let message = b"ironrdp-termsrv is only supported on windows\n";
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), message);
+    std::process::exit(1);
 }
 
 #[cfg(windows)]
@@ -688,6 +690,17 @@ mod windows_main {
         client_preferences: Option<(u32, u32)>,
     }
 
+    fn request_initial_display_size(state: &mut DisplayState, client_size: DesktopSize) {
+        match DisplaySize::new(client_size.width & !1, client_size.height) {
+            Ok(size) => {
+                state.requested = Some(size);
+                state.requested_at = Some(Instant::now());
+                state.size = client_size;
+            }
+            Err(error) => warn!(%error, "Rejected initial desktop size"),
+        }
+    }
+
     struct StandaloneConnectionObserver(Arc<StdMutex<DisplayState>>);
 
     impl ironrdp_server::ConnectionHandler for StandaloneConnectionObserver {
@@ -768,18 +781,7 @@ mod windows_main {
         async fn request_initial_size(&mut self, client_size: DesktopSize) -> DesktopSize {
             let mut state = self.state.lock().expect("display state poisoned");
             if self.native_channels.is_some() && state.requested.is_none() {
-                match DisplaySize::new(client_size.width & !1, client_size.height) {
-                    Ok(size) => {
-                        let applied = DesktopSize {
-                            width: size.width(),
-                            height: size.height(),
-                        };
-                        state.requested = Some(size);
-                        state.requested_at = Some(Instant::now());
-                        state.size = applied;
-                    }
-                    Err(error) => warn!(%error, "Rejected initial desktop size"),
-                }
+                request_initial_display_size(&mut state, client_size);
             }
             state.size
         }
@@ -885,6 +887,7 @@ mod windows_main {
         cursor_updates: VecDeque<DisplayUpdate>,
         helper_frames_received: u64,
         helper_timeouts: u64,
+        deferred_resize: Option<DesktopSize>,
         /// True once at least one capture helper process has started successfully.
         /// Used to disable prelogon fallback token paths on later restart attempts.
         helper_started_once: bool,
@@ -958,6 +961,7 @@ mod windows_main {
                 cursor_updates: VecDeque::new(),
                 helper_frames_received: 0,
                 helper_timeouts: 0,
+                deferred_resize: None,
                 helper_started_once: false,
                 logon_readiness_session_id: None,
                 logon_readiness_ready: false,
@@ -990,6 +994,16 @@ mod windows_main {
             }
             state.size = actual;
             true
+        }
+
+        fn take_deferred_resize(&mut self) -> Option<DesktopSize> {
+            let actual = self.deferred_resize?;
+            if !self.accept_resized_frame(actual) {
+                return None;
+            }
+
+            self.deferred_resize = None;
+            Some(actual)
         }
 
         fn log_capture_output_source_transition(&mut self, source: CaptureOutputSource) {
@@ -1050,6 +1064,10 @@ mod windows_main {
             // the first frame arrives) can retry without returning Ok(None) — returning Ok(None)
             // would cause the IronRDP server to disconnect the client immediately.
             loop {
+                if let Some(actual) = self.take_deferred_resize() {
+                    return Ok(Some(DisplayUpdate::Resize(actual)));
+                }
+
                 if let Some(update) = self.cursor_updates.pop_front() {
                     return Ok(Some(update));
                 }
@@ -1506,6 +1524,7 @@ mod windows_main {
                 match captured {
                     CapturedFrame::Size(actual) => {
                         if !self.accept_resized_frame(actual) {
+                            self.deferred_resize = Some(actual);
                             sleep(CAPTURE_INTERVAL).await;
                             continue;
                         }
@@ -1519,6 +1538,7 @@ mod windows_main {
                             };
                             if actual != self.desktop_size {
                                 if !self.accept_resized_frame(actual) {
+                                    self.deferred_resize = Some(actual);
                                     sleep(CAPTURE_INTERVAL).await;
                                     continue;
                                 }
@@ -4231,13 +4251,14 @@ mod windows_main {
             pending_wakeup_rx: &mut watch::Receiver<u64>,
         ) -> ServiceEvent {
             match command {
-                ProviderCommand::StartListen { listener_name } => self.start_listen(listener_name).await,
+                ProviderCommand::StartListen { listener_name, port } => self.start_listen(listener_name, port).await,
                 ProviderCommand::StopListen { listener_name } => self.stop_listen(listener_name).await,
                 ProviderCommand::WaitForIncoming {
                     listener_name,
                     timeout_ms,
+                    port,
                 } => {
-                    self.wait_for_incoming(listener_name, timeout_ms, pending_wakeup_rx)
+                    self.wait_for_incoming(listener_name, timeout_ms, port, pending_wakeup_rx)
                         .await
                 }
                 ProviderCommand::AcceptConnection { connection_id } => self.accept_connection(connection_id).await,
@@ -4308,7 +4329,7 @@ mod windows_main {
             }
         }
 
-        async fn start_listen(&self, listener_name: String) -> ServiceEvent {
+        async fn start_listen(&self, listener_name: String, port: Option<u16>) -> ServiceEvent {
             {
                 let guard = self.state.lock().await;
                 if guard.listeners.contains_key(&listener_name) {
@@ -4318,7 +4339,7 @@ mod windows_main {
 
             let (bind_addr, accept_tx) = {
                 let guard = self.state.lock().await;
-                (guard.bind_addr, guard.accepted_tx.clone())
+                (with_listener_port(guard.bind_addr, port), guard.accepted_tx.clone())
             };
 
             let listener = match TcpListener::bind(bind_addr).await {
@@ -4408,6 +4429,7 @@ mod windows_main {
             &self,
             listener_name: String,
             timeout_ms: u32,
+            port: Option<u16>,
             pending_wakeup_rx: &mut watch::Receiver<u64>,
         ) -> ServiceEvent {
             // Auto-start listener on first wait_for_incoming.
@@ -4415,7 +4437,7 @@ mod windows_main {
                 let guard = self.state.lock().await;
                 if !guard.listeners.contains_key(&listener_name) {
                     drop(guard);
-                    let event = self.start_listen(listener_name.clone()).await;
+                    let event = self.start_listen(listener_name.clone(), port).await;
                     match &event {
                         ServiceEvent::ListenerStarted { .. } => {}
                         _ => return event,
@@ -4460,7 +4482,10 @@ mod windows_main {
             };
 
             let Some(credentials) = entry else {
-                return ServiceEvent::NoCredentials { connection_id };
+                return ServiceEvent::ConnectionBroken {
+                    connection_id,
+                    reason: "connection closed".to_owned(),
+                };
             };
 
             let guard = credentials.lock().await;
@@ -5143,8 +5168,8 @@ mod windows_main {
                 .ok_or_else(|| anyhow!("TLS certificate chain is empty"))?;
             let cert = x509_cert::Certificate::from_der(cert).map_err(|source| anyhow!(source))?;
 
-            cert.tbs_certificate
-                .subject_public_key_info
+            cert.tbs_certificate()
+                .subject_public_key_info()
                 .subject_public_key
                 .as_bytes()
                 .ok_or_else(|| anyhow!("subject public key BIT STRING is not aligned"))?
@@ -5694,6 +5719,14 @@ mod windows_main {
         configured
             .parse()
             .with_context(|| format!("failed to parse {LISTEN_ADDR_ENV} as socket address: {configured}"))
+    }
+
+    fn with_listener_port(mut bind_addr: SocketAddr, port: Option<u16>) -> SocketAddr {
+        if let Some(port) = port {
+            bind_addr.set_port(port);
+        }
+
+        bind_addr
     }
 
     fn init_tracing() -> anyhow::Result<()> {
@@ -6981,11 +7014,6 @@ mod windows_main {
                 continue;
             }
 
-            if let Err(error) = authenticate_control_pipe_client(&server) {
-                warn!(%error, pipe = %full_pipe_name, "Rejected unauthorized control-pipe client");
-                continue;
-            }
-
             let mut pending_wakeup_rx = control_plane.pending_wakeup_tx.subscribe();
 
             match handle_client(&mut server, &control_plane, &mut pending_wakeup_rx).await {
@@ -7012,6 +7040,7 @@ mod windows_main {
         pending_wakeup_rx: &mut watch::Receiver<u64>,
     ) -> anyhow::Result<u32> {
         let mut commands_processed: u32 = 0;
+        let mut authenticated = false;
 
         loop {
             let command = match timeout(CONTROL_PIPE_IDLE_TIMEOUT, read_command(pipe)).await {
@@ -7026,6 +7055,11 @@ mod windows_main {
                     return Ok(commands_processed);
                 }
             };
+
+            if !authenticated {
+                authenticate_control_pipe_client(pipe).context("authenticate control-pipe client")?;
+                authenticated = true;
+            }
 
             commands_processed += 1;
             info!(command = ?command, seq = commands_processed, "Processing pipe command");
@@ -7153,6 +7187,81 @@ mod windows_main {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        // oracle: mutant the installed listener port is ignored when the provider selects a custom port.
+        #[test]
+        fn configured_listener_port_replaces_only_the_bind_port() {
+            let bind_addr = "127.0.0.1:4489".parse().expect("valid bind address");
+
+            assert_eq!(
+                with_listener_port(bind_addr, Some(4495)),
+                "127.0.0.1:4495".parse().expect("valid custom bind address")
+            );
+            assert_eq!(
+                with_listener_port(bind_addr, None),
+                "127.0.0.1:4489".parse().expect("valid default bind address")
+            );
+        }
+
+        // oracle: mutant initial width rounding must not erase the size negotiated with the client.
+        #[test]
+        fn initial_odd_width_remains_negotiated_until_resize_is_emitted() {
+            let client_size = DesktopSize {
+                width: 1281,
+                height: 720,
+            };
+            let mut state = DisplayState {
+                size: client_size,
+                input_marker: 0,
+                requested: None,
+                requested_at: None,
+                submitted: None,
+                client_preferences: None,
+            };
+
+            request_initial_display_size(&mut state, client_size);
+
+            assert_eq!(state.size, client_size);
+            assert_eq!(state.requested.map(|size| size.width()), Some(1280));
+        }
+
+        // oracle: mutant delayed resize acceptance must not depend on a changed pixel frame.
+        #[test]
+        fn deferred_resize_is_accepted_after_resize_grace_period() -> anyhow::Result<()> {
+            let target = DisplaySize::new(1600, 900)?;
+            let actual = DesktopSize {
+                width: 1280,
+                height: 720,
+            };
+            let display_state = Arc::new(StdMutex::new(DisplayState {
+                size: DesktopSize {
+                    width: 1600,
+                    height: 900,
+                },
+                input_marker: 0,
+                requested: Some(target),
+                requested_at: Some(Instant::now() - Duration::from_secs(4)),
+                submitted: None,
+                client_preferences: None,
+            }));
+            let mut updates = GdiDisplayUpdates::new(
+                7,
+                Arc::clone(&display_state),
+                DesktopSize {
+                    width: 1600,
+                    height: 900,
+                },
+                InputStreamSlot::default(),
+                Arc::default(),
+                Arc::new(Mutex::new(None)),
+                false,
+            )?;
+            updates.deferred_resize = Some(actual);
+
+            assert_eq!(updates.take_deferred_resize(), Some(actual));
+            assert_eq!(display_state.lock().expect("display state").size, actual);
+            Ok(())
+        }
 
         // oracle: mutant input overload must close once, not create an unbounded queue of shutdown events.
         #[test]
@@ -7401,6 +7510,19 @@ mod windows_main {
 
             assert_eq!(state.allocate_connection_id(), Some(u32::MAX));
             assert_eq!(state.allocate_connection_id(), Some(1));
+        }
+
+        // oracle: mutant closed connections must stop credential polling instead of appearing pending.
+        #[tokio::test]
+        async fn missing_connection_reports_broken_during_credential_lookup() {
+            let (state, _accepted_rx, _broken_rx) =
+                ServiceState::new("127.0.0.1:4489".parse().expect("valid bind address"));
+            let control_plane = ControlPlane::new(state);
+
+            assert!(matches!(
+                control_plane.get_connection_credentials(7).await,
+                ServiceEvent::ConnectionBroken { connection_id: 7, .. }
+            ));
         }
 
         #[test]

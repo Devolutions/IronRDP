@@ -1,3 +1,8 @@
+#![expect(
+    unreachable_pub,
+    reason = "The WDF ABI shim mirrors native public declarations behind a private module"
+)]
+
 /// Minimal WDF UMDF v2 type declarations and function dispatch wrappers.
 ///
 /// UMDF v2 uses a versioned function dispatch table (`WdfFunctions_VVVVV`), exported from
@@ -99,10 +104,7 @@ pub struct WDF_DRIVER_CONFIG {
 }
 
 const _: () = {
-    assert!(
-        core::mem::size_of::<WDF_DRIVER_CONFIG>() == 32,
-        "WDF_DRIVER_CONFIG size mismatch"
-    );
+    assert!(size_of::<WDF_DRIVER_CONFIG>() == 32, "WDF_DRIVER_CONFIG size mismatch");
 };
 
 /// `WDF_OBJECT_ATTRIBUTES` — optional attributes passed to WDF object creation functions.
@@ -138,7 +140,7 @@ pub struct WDF_OBJECT_ATTRIBUTES {
 
 const _: () = {
     assert!(
-        core::mem::size_of::<WDF_OBJECT_ATTRIBUTES>() == 56,
+        size_of::<WDF_OBJECT_ATTRIBUTES>() == 56,
         "WDF_OBJECT_ATTRIBUTES size mismatch",
     );
 };
@@ -147,7 +149,7 @@ impl WDF_OBJECT_ATTRIBUTES {
     /// Inherits execution and synchronization settings from the parent, without a context.
     pub const fn init_no_context() -> Self {
         WDF_OBJECT_ATTRIBUTES {
-            Size: core::mem::size_of::<WDF_OBJECT_ATTRIBUTES>() as u32,
+            Size: size_of::<WDF_OBJECT_ATTRIBUTES>() as u32,
             EvtCleanupCallback: None,
             EvtDestroyCallback: None,
             ExecutionLevel: 1,       // WdfExecutionLevelInheritFromParent
@@ -175,7 +177,7 @@ pub struct WDF_FILEOBJECT_CONFIG {
 impl WDF_FILEOBJECT_CONFIG {
     pub const fn init(evt_device_file_create: Option<PFN_WDF_DEVICE_FILE_CREATE>) -> Self {
         WDF_FILEOBJECT_CONFIG {
-            Size: core::mem::size_of::<WDF_FILEOBJECT_CONFIG>() as u32,
+            Size: size_of::<WDF_FILEOBJECT_CONFIG>() as u32,
             EvtDeviceFileCreate: evt_device_file_create,
             EvtFileClose: None,
             EvtFileCleanup: None,
@@ -212,7 +214,7 @@ pub struct WDF_PNPPOWER_EVENT_CALLBACKS {
 
 const _: () = {
     assert!(
-        core::mem::size_of::<WDF_PNPPOWER_EVENT_CALLBACKS>() == 144,
+        size_of::<WDF_PNPPOWER_EVENT_CALLBACKS>() == 144,
         "WDF_PNPPOWER_EVENT_CALLBACKS size mismatch",
     );
 };
@@ -220,7 +222,7 @@ const _: () = {
 impl WDF_PNPPOWER_EVENT_CALLBACKS {
     pub const fn init() -> Self {
         WDF_PNPPOWER_EVENT_CALLBACKS {
-            Size: core::mem::size_of::<WDF_PNPPOWER_EVENT_CALLBACKS>() as u32,
+            Size: size_of::<WDF_PNPPOWER_EVENT_CALLBACKS>() as u32,
             EvtDeviceD0Entry: None,
             EvtDeviceD0EntryPostInterruptsEnabled: None,
             EvtDeviceD0Exit: None,

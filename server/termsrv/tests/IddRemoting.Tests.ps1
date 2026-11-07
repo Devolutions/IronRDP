@@ -22,6 +22,7 @@ Describe 'IDD remoting callers' {
         @{ ScriptName = 'ensure-rdsh-role.ps1' }
         @{ ScriptName = 'verify-test-signing.ps1' }
     ) {
+        # oracle: mutant a remoting caller drops the caller's credential or leaks its session.
         param($ScriptName)
         & (Join-Path $script:iddScripts $ScriptName) -VmHostname 'fixture.invalid' -Username 'fixture-user' -Password '' -Credential $script:credential | Out-Null
         Should -Invoke New-TestVmSession -Times 1 -ParameterFilter {
@@ -35,6 +36,7 @@ Describe 'IDD remoting callers' {
     }
 
     It 'closes the session when the remote diagnostic collector fails' {
+        # oracle: mutant a remote failure bypasses diagnostic session cleanup.
         Mock Invoke-Command { throw 'Remote collector failed' }
         { & (Join-Path $script:iddScripts 'collect-idd-diagnostics.ps1') -Credential $script:credential } | Should -Throw '*Remote collector failed*'
         Should -Invoke Remove-PSSession -Times 1
@@ -42,6 +44,7 @@ Describe 'IDD remoting callers' {
     }
 
     It 'downloads the remote collector result to the requested path rather than a fixed archive' {
+        # oracle: mutant diagnostics are copied from a fixed path or to a different requested destination.
         Mock Invoke-Command { [pscustomobject]@{ ArchivePath = 'C:\fixture\unique-diagnostics.zip'; Warnings = @() } }
         & (Join-Path $script:iddScripts 'collect-idd-diagnostics.ps1') -Credential $script:credential -LocalOutZip '.\fixture-result.zip' -RemoteDiagRoot 'C:\fixture'
         Should -Invoke Copy-Item -Times 1 -ParameterFilter {
@@ -52,6 +55,7 @@ Describe 'IDD remoting callers' {
     }
 
     It 'isolates each diagnostic collection below the requested remote root' {
+        # oracle: mutant successive collections reuse or escape their caller-owned remote directory.
         $paths = [Collections.Generic.List[string]]::new()
         Mock Invoke-Command -MockWith ({
             param($ArgumentList)
@@ -70,6 +74,7 @@ Describe 'IDD remoting callers' {
     }
 
     It 'returns structured artifact paths only when requested and the download succeeds' {
+        # oracle: mutant pass-through results are missing, malformed, or returned after a failed download.
         Mock Invoke-Command { [pscustomobject]@{ ArchivePath = $ArgumentList[1]; Warnings = @('fixture collector warning') } }
         $result = & (Join-Path $script:iddScripts 'collect-idd-diagnostics.ps1') -Credential $script:credential -LocalOutZip '.\fixture-result.zip' -RemoteDiagRoot 'C:\fixture' -PassThru
         $result.LocalArchivePath | Should -Be ($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath('.\fixture-result.zip'))
@@ -80,6 +85,7 @@ Describe 'IDD remoting callers' {
     }
 
     It 'copies the lifecycle module before asking the target to restart RDS' {
+        # oracle: mutant RDS restart runs before the lifecycle module is installed on the target.
         $script:copied = $false
         Mock Copy-Item { $script:copied = $true }
         Mock Invoke-Command {
@@ -98,6 +104,7 @@ Describe 'IDD remoting callers' {
     }
 
     It 'closes the initial session when reboot readiness reconnect fails' {
+        # oracle: mutant failed readiness reconnect leaves the initial remoting session open.
         Mock Wait-TestVmSession { throw 'WinRM readiness timed out' }
         { & (Join-Path $script:iddScripts 'restart-vm.ps1') -Credential $script:credential -TimeoutSeconds 45 } | Should -Throw '*WinRM readiness timed out*'
         Should -Invoke Remove-PSSession -Times 1
@@ -126,6 +133,7 @@ Describe 'IDD diagnostic payload unit without WinRM' {
     }
 
     It 'reports native and query failures while preserving a usable diagnostic archive' {
+        # oracle: mutant collector failures disappear or prevent the diagnostic archive from being returned.
         Mock pnputil.exe { $global:LASTEXITCODE = 87; 'Invalid parameter' }
         Mock Get-WinEvent { throw 'Event query denied' }
         Mock Get-ChildItem { throw 'Driver store denied' } -ParameterFilter { $Path -like '*DriverStore*' }
@@ -141,6 +149,7 @@ Describe 'IDD diagnostic payload unit without WinRM' {
     }
 
     It 'returns no warnings when all collectors succeed' {
+        # oracle: mutant successful diagnostic collection is reported with spurious warnings.
         $result = & $script:payload -diagPath '.\fixture-diagnostics' -zipPath '.\fixture-diagnostics.zip'
         $result.Warnings.Count | Should -Be 0
     }

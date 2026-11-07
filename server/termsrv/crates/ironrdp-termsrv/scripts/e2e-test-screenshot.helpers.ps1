@@ -66,6 +66,49 @@ function Test-ScreenshotHasMeaningfulContent {
     return $HasNonBlackPixel -and (-not $IsUniform)
 }
 
+function Get-ScreenshotPixelAnalysis {
+    param([Parameter(Mandatory = $true)]$Bitmap)
+    if (($Bitmap.Width -le 0) -or ($Bitmap.Height -le 0)) { throw 'Screenshot dimensions must be positive' }
+
+    $stepX = [Math]::Max([int]($Bitmap.Width / 256), 1)
+    $stepY = [Math]::Max([int]($Bitmap.Height / 256), 1)
+    $sampleCount = 0
+    $hasNonBlackPixel = $false
+    $isUniform = $true
+    $firstPixelSet = $false
+    $firstR = 0
+    $firstG = 0
+    $firstB = 0
+
+    for ($y = 0; $y -lt $Bitmap.Height; $y += $stepY) {
+        for ($x = 0; $x -lt $Bitmap.Width; $x += $stepX) {
+            $pixel = $Bitmap.GetPixel($x, $y)
+            $sampleCount++
+
+            if (-not $firstPixelSet) {
+                $firstR = $pixel.R
+                $firstG = $pixel.G
+                $firstB = $pixel.B
+                $firstPixelSet = $true
+            } elseif ($pixel.R -ne $firstR -or $pixel.G -ne $firstG -or $pixel.B -ne $firstB) {
+                $isUniform = $false
+            }
+
+            if ($pixel.R -ne 0 -or $pixel.G -ne 0 -or $pixel.B -ne 0) {
+                $hasNonBlackPixel = $true
+            }
+        }
+    }
+
+    return @{
+        SampleCount = $sampleCount
+        HasNonBlackPixel = $hasNonBlackPixel
+        IsUniform = $isUniform
+        HasMeaningfulContent = Test-ScreenshotHasMeaningfulContent `
+            -HasNonBlackPixel $hasNonBlackPixel -IsUniform $isUniform
+    }
+}
+
 function Assert-E2EOutput {
     param([hashtable]$Evidence, [bool]$SkipScreenshot)
     if ($Evidence.preflightBlockedConnectionAttempt) { throw 'E2E connection was blocked by preflight' }

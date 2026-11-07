@@ -1,4 +1,3 @@
-# oracle: mutant credential precedence, transport flags, swallowed query errors, leaked sessions, and lost startup modes.
 BeforeDiscovery {
     Import-Module (Join-Path $PSScriptRoot '..\scripts\TestVm.psm1') -Force
 }
@@ -10,6 +9,7 @@ Describe 'Test VM credentials and remoting' {
         }
 
         It 'uses the supplied credential without prompting or replacing its password' {
+            # oracle: mutant a supplied credential is replaced or prompts for another password.
             Mock Read-Host { throw 'Unexpected password prompt' }
             $actual = Resolve-TestVmCredential -Credential $script:credential -Username 'other-user' -Password 'other-password' -PromptPassword
             [object]::ReferenceEquals($actual, $script:credential) | Should -BeTrue
@@ -17,12 +17,14 @@ Describe 'Test VM credentials and remoting' {
         }
 
         It 'uses an explicit password before a prompt or environment value' {
+            # oracle: mutant an environment or prompted password overrides an explicit password.
             Mock Read-Host { throw 'Unexpected password prompt' }
             $actual = Resolve-TestVmCredential -Username 'fixture-user' -Password 'explicit-password' -PromptPassword
             $actual.GetNetworkCredential().Password | Should -Be 'explicit-password'
         }
 
         It 'uses the named environment variable only when no password was supplied' {
+            # oracle: mutant credential resolution ignores the selected environment variable.
             $name = 'IRONRDP_TEST_CREDENTIAL_' + [guid]::NewGuid().ToString('N')
             [Environment]::SetEnvironmentVariable($name, 'environment-password')
             try {
@@ -34,22 +36,26 @@ Describe 'Test VM credentials and remoting' {
         }
 
         It 'prompts before falling back to the environment' {
+            # oracle: mutant a configured fallback is used before the requested prompt.
             Mock Read-Host { ConvertTo-SecureString 'prompt-password' -AsPlainText -Force }
             $actual = Resolve-TestVmCredential -Username 'fixture-user' -PromptPassword
             $actual.GetNetworkCredential().Password | Should -Be 'prompt-password'
         }
 
         It 'rejects a missing password without connecting or prompting' {
+            # oracle: mutant a missing password reaches remoting or an unexpected prompt.
             Mock Read-Host { throw 'Unexpected password prompt' }
             { Resolve-TestVmCredential -Username 'fixture-user' -PasswordEnvVar ('UNSET_' + [guid]::NewGuid().ToString('N')) } |
                 Should -Throw '*Password is required*'
         }
 
         It 'rejects a missing username instead of using an empty identity' {
+            # oracle: mutant an empty username becomes a remoting credential.
             { Resolve-TestVmCredential -Username '' -Password 'fixture-password' } | Should -Throw '*Username is required*'
         }
 
         It 'uses HTTP first without weakening its session options' {
+            # oracle: mutant initial HTTP remoting disables transport protections or uses another host.
             Mock New-PSSessionOption { [pscustomobject]@{} }
             Mock New-PSSession { [pscustomobject]@{ Id = 12 } }
             (New-TestVmSession -Hostname 'fixture.invalid' -Credential $script:credential).Id | Should -Be 12
@@ -58,6 +64,7 @@ Describe 'Test VM credentials and remoting' {
         }
 
         It 'retains the HTTPS fallback policy and never prints the HTTP exception' {
+            # oracle: mutant HTTPS fallback is omitted or exposes the failed HTTP diagnostic.
             Mock New-PSSessionOption { [pscustomobject]@{} }
             Mock New-PSSession {
                 if (-not $UseSSL) { throw 'sensitive-fixture-diagnostic' }
@@ -70,6 +77,7 @@ Describe 'Test VM credentials and remoting' {
         }
 
         It 'closes an unusable reconnected session before retrying' {
+            # oracle: mutant readiness retry leaks a failed remoting session.
             $script:session = New-MockObject -Type System.Management.Automation.Runspaces.PSSession
             Mock New-TestVmSession { $script:session }
             $script:probes = 0
@@ -86,6 +94,7 @@ Describe 'Test VM credentials and remoting' {
         }
 
         It 'bounds reconnect attempts and preserves the caller-owned successful session' {
+            # oracle: mutant reconnect polling runs without a deadline or closes a caller-owned session.
             Mock New-TestVmSession { throw 'Unavailable' }
             Mock Remove-PSSession {}
             $script:now = [datetime]'2026-01-01'
@@ -103,6 +112,7 @@ Describe 'Bounded listener readiness' {
         BeforeEach { Mock Start-Sleep {} }
 
         It 'waits through a temporarily missing listener' {
+            # oracle: mutant transient listener absence aborts readiness before the deadline.
             $script:queries = 0
             Mock Get-NetTCPConnection {
                 $script:queries++
@@ -119,12 +129,14 @@ Describe 'Bounded listener readiness' {
         }
 
         It 'does not turn a listener query failure into absence' {
+            # oracle: mutant an access error is treated as an absent listener and retried.
             Mock Get-NetTCPConnection { throw [UnauthorizedAccessException]::new('Access denied') }
             { Wait-TestVmListener -Port 4489 -TimeoutSeconds 5 } | Should -Throw '*Access denied*'
             Should -Invoke Get-NetTCPConnection -Times 1
         }
 
         It 'rejects a listener owned by another process at the deadline' {
+            # oracle: mutant a different process can satisfy the listener ownership check.
             Mock Get-NetTCPConnection { [pscustomobject]@{ LocalPort = 4489; OwningProcess = 91 } }
             $script:now = [datetime]'2026-01-01'
             Mock Get-Date { $script:now = $script:now.AddSeconds(1); $script:now }
@@ -132,6 +144,7 @@ Describe 'Bounded listener readiness' {
         }
 
         It 'does not ignore unrelated object-not-found query errors' {
+            # oracle: mutant an unrelated provider error is mistaken for normal listener absence.
             Mock Get-NetTCPConnection {
                 throw [System.Management.Automation.ErrorRecord]::new(
                     [InvalidOperationException]::new('Provider not found'), 'MissingProvider', 'ObjectNotFound', $null)
@@ -172,6 +185,7 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'temporarily enables a disabled-but-running service before restoring its startup mode' {
+            # oracle: mutant a disabled running service cannot be started for recovery or stays enabled.
             $script:mode = 'disabled'
             $script:status = 'Stopped'
             Restore-TermServiceLifecycle -StartupType disabled -WasRunning $true
@@ -181,6 +195,7 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'restores the disabled startup mode even when starting fails' {
+            # oracle: mutant a failed TermService start leaves its startup mode changed.
             $script:status = 'Stopped'
             Mock Invoke-TermServiceControl { throw 'Start failed' }
             { Restore-TermServiceLifecycle -StartupType disabled -WasRunning $true } | Should -Throw '*Start failed*'
@@ -188,24 +203,28 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'restores the original stopped state instead of leaving a service running' {
+            # oracle: mutant recovery starts a service that was stopped before the operation.
             Restore-TermServiceLifecycle -StartupType auto -WasRunning $false
             $script:mode | Should -Be 'auto'
             $script:status | Should -Be 'Stopped'
         }
 
         It 'restores startup mode even if querying the service during recovery fails' {
+            # oracle: mutant a failed recovery status query prevents startup-mode restoration.
             Mock Get-Service { throw 'Query failed' }
             { Restore-TermServiceLifecycle -StartupType auto -WasRunning $true } | Should -Throw '*Query failed*'
             $script:mode | Should -Be 'auto'
         }
 
         It 'reports both recovery and configuration errors without masking the first failure' {
+            # oracle: mutant startup-mode restoration hides the primary recovery error.
             Mock Get-Service { throw 'Query failed' }
             Mock Set-TermServiceStartupType { throw 'Config failed' }
             { Restore-TermServiceLifecycle -StartupType auto -WasRunning $true } | Should -Throw '*Query failed*Config failed*'
         }
 
         It 'preserves automatic delayed startup in its snapshot' {
+            # oracle: mutant lifecycle snapshot collapses delayed automatic startup to automatic.
             Mock Get-CimInstance { [pscustomobject]@{ StartMode = 'Auto'; State = 'Running'; ProcessId = 77 } }
             Mock Get-ItemProperty { [pscustomobject]@{ DelayedAutoStart = 1 } }
             $state = Get-TermServiceLifecycle
@@ -214,6 +233,7 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'restores service state after a native stop failure' {
+            # oracle: mutant a failed native stop leaves TermService altered.
             Mock Invoke-TermServiceControl { throw 'sc.exe stop failed (exit 5)' }
             { Stop-TermServiceSafely } | Should -Throw '*exit 5*'
             $script:mode | Should -Be 'demand'
@@ -221,6 +241,7 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'returns the original lifecycle and keeps the service disabled for replacement' {
+            # oracle: mutant replacement startup receives no original lifecycle or an enabled service.
             $state = Stop-TermServiceSafely
             $state.StartupType | Should -Be 'demand'
             $state.WasRunning | Should -BeTrue
@@ -229,6 +250,7 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'restores the running state after a stop wait fails' {
+            # oracle: mutant stop timeout leaves a previously running service stopped.
             Mock Wait-TermServiceState { throw [TimeoutException]::new('Stop timeout') } -ParameterFilter { $Status -eq 'Stopped' }
             { Stop-TermServiceSafely } | Should -Throw '*Stop timeout*'
             $script:status | Should -Be 'Running'
@@ -236,18 +258,21 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'restores the requested startup mode after a start wait fails' {
+            # oracle: mutant failed service start leaves the requested startup mode changed.
             Mock Wait-TermServiceState { throw [TimeoutException]::new('Start timeout') }
             { Start-TermServiceSafely -StartupType disabled } | Should -Throw '*Start timeout*'
             $script:mode | Should -Be 'disabled'
         }
 
         It 'reports both native startup and mode restoration failures' {
+            # oracle: mutant startup-mode restoration hides the native startup failure.
             Mock Invoke-TermServiceControl { throw 'Start failed (exit 5)' }
             Mock Set-TermServiceStartupType { throw 'Config failed (exit 6)' } -ParameterFilter { $StartupType -eq 'disabled' }
             { Start-TermServiceSafely -StartupType disabled } | Should -Throw '*Start failed (exit 5)*Config failed (exit 6)*'
         }
 
         It 'restores the original mode when restart startup fails' {
+            # oracle: mutant failed replacement startup leaves the original TermService mode or state changed.
             Mock Get-TermServiceLifecycle { @{ StartupType = 'auto'; WasRunning = $true } }
             Mock Stop-TermServiceSafely { $script:status = 'Stopped'; $script:mode = 'disabled' }
             Mock Start-TermServiceSafely { throw 'Startup failed' }
@@ -257,6 +282,7 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'successfully restarts a disabled-but-running service without changing its startup mode' {
+            # oracle: mutant restart leaves a disabled running service stopped or changes its startup mode.
             $script:mode = 'disabled'
             Mock Get-TermServiceLifecycle { @{ StartupType = 'disabled'; WasRunning = $true } }
             Restart-TermServiceSafely
@@ -265,6 +291,7 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'does not kill a service host shared with another running service' {
+            # oracle: mutant forced recovery kills an svchost that owns another service.
             Mock Get-TermServiceLifecycle { @{ StartupType = 'demand'; WasRunning = $true } }
             Mock Invoke-TermServiceControl {}
             Mock Wait-TermServiceState { throw [TimeoutException]::new('Timed out') }
@@ -279,6 +306,7 @@ Describe 'TermService lifecycle recovery' {
         }
 
         It 'does not kill a replacement service host after a PID change' {
+            # oracle: mutant forced recovery kills a new host after TermService changes its PID.
             Mock Wait-TermServiceState { throw [TimeoutException]::new('Timed out') }
             Mock Get-TermServiceLifecycle { @{ StartupType = 'demand'; WasRunning = $true } }
             Mock Get-CimInstance { @() } -ParameterFilter { $Filter -eq 'ProcessId=77' }
@@ -312,22 +340,26 @@ Describe 'Native TermService command results' {
         }
 
         It 'reports a failed startup mode change instead of silently continuing' {
+            # oracle: mutant native startup-mode failure is reported as successful.
             Mock sc.exe { $global:LASTEXITCODE = 5; 'Access denied' }
             { Set-TermServiceStartupType -StartupType demand } | Should -Throw '*exit 5*'
         }
 
         It 'accepts the native already-stopped result only when explicitly allowed' {
+            # oracle: mutant native stop success-code policy accepts unrelated failure codes.
             Mock sc.exe { $global:LASTEXITCODE = 1062 }
             { Invoke-TermServiceControl -Arguments @('stop', 'TermService') -SuccessExitCodes @(0, 1062) } | Should -Not -Throw
             { Invoke-TermServiceControl -Arguments @('config', 'TermService', 'start=', 'disabled') } | Should -Throw '*exit 1062*'
         }
 
         It 'bounds a service-state wait without swallowing status query errors' {
+            # oracle: mutant service-state wait hides a status-query failure.
             Mock Get-Service { throw 'Service query failed' }
             { Wait-TermServiceState -Status Stopped -TimeoutSeconds 1 } | Should -Throw '*Service query failed*'
         }
 
         It 'times out when the service never reaches the requested state' {
+            # oracle: mutant service-state wait exceeds its deadline for a permanently pending service.
             Mock Get-Service { [pscustomobject]@{ Status = 'StopPending' } }
             Mock Start-Sleep {}
             $script:now = [datetime]'2026-01-01'

@@ -222,6 +222,7 @@ if ($Mode -eq "Install") {
     if (-not [string]::IsNullOrWhiteSpace($BackupDirectory)) {
         $backupArguments.OutputDirectory = $BackupDirectory
     }
+    $backupArguments.ProtocolManagerClsid = $ProtocolManagerClsid
 
     $backupPathOutput = & $backupScript @backupArguments -PassThru
     $resolvedBackupPath = "$backupPathOutput".Trim()
@@ -264,6 +265,10 @@ if ($Mode -eq "Install") {
         & $firewallScript -Mode Verify -PortNumber $PortNumber
     }
 
+    if ($RestartTermService.IsPresent -and $WaitForServiceReadyAfterRestart.IsPresent) {
+        & $waitServiceScript -PortNumber $PortNumber -TimeoutSeconds $ServiceReadyTimeoutSeconds
+    }
+
     if (-not $SkipSmokeTest.IsPresent) {
         $smokeArguments = @{
             ProviderDllPath = $ProviderDllPath
@@ -283,9 +288,7 @@ if ($Mode -eq "Install") {
         & $newRdpFileScript -TargetHost $TargetHost -PortNumber $PortNumber -OutputPath $RdpOutputPath
     }
 
-    if ($RestartTermService.IsPresent -and $WaitForServiceReadyAfterRestart.IsPresent) {
-        & $waitServiceScript -PortNumber $PortNumber -TimeoutSeconds $ServiceReadyTimeoutSeconds
-    } elseif (-not $RestartTermService.IsPresent) {
+    if (-not $RestartTermService.IsPresent) {
         Write-Warning "TermService was not restarted; if this is a first registration, restart service before mstsc testing"
     }
 
@@ -298,10 +301,6 @@ $uninstallArguments = @{
     ListenerName = $ListenerName
     ProtocolManagerClsid = $ProtocolManagerClsid
 }
-if ($RestartTermService.IsPresent) {
-    $uninstallArguments.RestartTermService = $true
-}
-
 & $uninstallScript @uninstallArguments
 
 if (-not $SkipFirewall.IsPresent) {
@@ -318,6 +317,15 @@ if ($RestoreBackupOnRollback.IsPresent) {
     }
 
     & $restoreScript -BackupDirectory $BackupDirectory
+}
+
+if ($RestartTermService.IsPresent) {
+    $testVmModule = Join-Path $scriptRoot 'TestVm.psm1'
+    if (-not (Test-Path -LiteralPath $testVmModule -PathType Leaf)) {
+        $testVmModule = Join-Path $scriptRoot '..\..\..\scripts\TestVm.psm1'
+    }
+    Import-Module $testVmModule -Force -ErrorAction Stop
+    Restart-TermServiceSafely
 }
 
 Write-Host "Rollback flow completed"

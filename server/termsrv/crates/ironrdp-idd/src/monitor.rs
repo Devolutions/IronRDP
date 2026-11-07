@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use ironrdp_wtsprotocol_ipc::display::DisplaySize;
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use windows::Win32::Devices::Display::DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI;
 pub(crate) use windows::Win32::Devices::Display::DISPLAYCONFIG_VIDEO_SIGNAL_INFO;
 use windows::Win32::Devices::Display::{
@@ -13,11 +13,11 @@ use windows::Win32::Devices::Display::{
 };
 use windows::Win32::Foundation::{HANDLE, LUID};
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use crate::iddcx;
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use crate::ntstatus_to_u32;
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use crate::wdf;
 use crate::{
     IDDCX_ADAPTER, IDDCX_MONITOR, IDDCX_SWAPCHAIN, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS, SwapChainProcessor,
@@ -187,10 +187,10 @@ pub(crate) struct IDARG_IN_SETSWAPCHAIN {
     pub(crate) RenderAdapterLuid: LUID,
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) use crate::iddcx::IDARG_OUT_MONITORGETPHYSICALSIZE;
 
-#[cfg(not(ironrdp_idd_link))]
+#[cfg(not(any(test, ironrdp_idd_link)))]
 #[repr(C)]
 pub(crate) struct IDARG_OUT_MONITORGETPHYSICALSIZE {
     pub(crate) PhysicalWidth: u32,
@@ -279,7 +279,7 @@ fn target_modes(size: Option<DisplaySize>, previous: Option<DisplaySize>) -> Vec
     modes
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) fn update_target_modes(
     monitor: IDDCX_MONITOR,
     size: DisplaySize,
@@ -308,7 +308,7 @@ fn write_mode_list<T: Copy>(buffer_input_count: u32, buffer_ptr: *mut T, modes: 
     (total_count, copied_all)
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 fn monitor_container_id(connector_idx: u32) -> windows_core::GUID {
     windows_core::GUID::from_u128(0x3124f0b9_8233_4a6f_9c48_3f779f8ca0a0u128 ^ u128::from(connector_idx))
 }
@@ -321,14 +321,14 @@ pub struct IronRdpIddMonitor {
 
 impl IronRdpIddMonitor {
     pub fn create_and_arrive(adapter: IDDCX_ADAPTER, connector_idx: u32, edid: Option<&[u8]>) -> NTSTATUS {
-        #[cfg(not(ironrdp_idd_link))]
+        #[cfg(not(any(test, ironrdp_idd_link)))]
         {
             let _ = (adapter, edid);
             tracing::info!(connector_idx, "IddCxMonitorArrival (stub)");
             STATUS_NOT_SUPPORTED
         }
 
-        #[cfg(ironrdp_idd_link)]
+        #[cfg(any(test, ironrdp_idd_link))]
         {
             crate::debug_trace(&format!(
                 "Monitor::create_and_arrive: entered connector_idx={} has_edid={}",
@@ -444,13 +444,13 @@ impl IronRdpIddMonitor {
     }
 
     pub fn departure(&self) -> NTSTATUS {
-        #[cfg(not(ironrdp_idd_link))]
+        #[cfg(not(any(test, ironrdp_idd_link)))]
         {
             tracing::info!(connector_idx = self.connector_index, "IddCxMonitorDeparture (stub)");
             STATUS_NOT_SUPPORTED
         }
 
-        #[cfg(ironrdp_idd_link)]
+        #[cfg(any(test, ironrdp_idd_link))]
         {
             crate::remote::note_monitor_departure(self.monitor);
             // SAFETY: `self.monitor` is an IddCx monitor handle returned by `IddCxMonitorCreate`.

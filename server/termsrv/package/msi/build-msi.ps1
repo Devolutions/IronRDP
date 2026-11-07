@@ -60,10 +60,21 @@ try {
         Remove-Item Env:IRDP_CEVICHE_MSI_VERSION -ErrorAction SilentlyContinue
     }
 
-    dotnet build .\CevicheServiceWindowsManaged.csproj -c $Configuration
-    dotnet run --project .\CevicheServiceWindowsManaged.csproj -c $Configuration
-
     $msiPath = Join-Path -Path $packageRoot -ChildPath (Join-Path -Path $Configuration -ChildPath "IronRdpTermSrv.msi")
+    & dotnet build .\IronRdpTermSrv.Installer.csproj -c $Configuration
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet build failed with exit code $LASTEXITCODE"
+    }
+
+    if (Test-Path -LiteralPath $msiPath -PathType Leaf) {
+        Remove-Item -LiteralPath $msiPath -Force
+    }
+
+    & dotnet run --project .\IronRdpTermSrv.Installer.csproj -c $Configuration
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet run failed with exit code $LASTEXITCODE"
+    }
+
     if (Test-Path -LiteralPath $msiPath -PathType Leaf) {
         Write-Host "MSI ready: $msiPath"
     } else {

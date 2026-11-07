@@ -82,7 +82,7 @@ function Get-EvidenceTimestamp {
 }
 
 function Get-FreshEvidenceLines {
-    param($Snapshot, $BaselineEntry, [datetime]$StartUtc)
+    param($Snapshot, $BaselineEntry, [datetime]$StartUtc, [switch]$AllowUntimestamped)
     $result = @{ valid = $false; lines = @(); reason = '' }
     try {
         if (($null -eq $BaselineEntry) -or -not $BaselineEntry.valid) { throw 'Log baseline unavailable' }
@@ -109,7 +109,10 @@ function Get-FreshEvidenceLines {
             foreach ($line in ($text -split '\r?\n')) {
                 $clean = $line -replace '\x1B\[[0-?]*[ -/]*[@-~]', ''
                 $timestamp = Get-EvidenceTimestamp $clean
-                if ($timestamp -ge $StartUtc -and $timestamp -le [datetime]::UtcNow) { $clean }
+                if (($AllowUntimestamped -and $timestamp -eq [datetime]::MinValue) -or
+                    ($timestamp -ge $StartUtc -and $timestamp -le [datetime]::UtcNow)) {
+                    $clean
+                }
             }
         )
         $result.valid = $true
@@ -166,8 +169,12 @@ function Test-EvidenceAccount {
     return $Data.TargetUserName -eq $Account
 }
 
+$evidenceLogPaths = @($LogPaths.stdout, $LogPaths.stderr) + @($LogPaths.provider)
+if (-not [string]::IsNullOrWhiteSpace($iddDebugTracePath) -and $iddDebugTracePath -notin $evidenceLogPaths) {
+    $evidenceLogPaths += $iddDebugTracePath
+}
 $logSnapshots = @{}
-foreach ($path in @($LogPaths.stdout, $LogPaths.stderr) + @($LogPaths.provider)) {
+foreach ($path in $evidenceLogPaths) {
     $logSnapshots[$path] = Read-EvidenceLog $path
 }
 if ($CaptureBaseline) {
@@ -195,7 +202,8 @@ try {
 $freshLogs = @{}
 foreach ($path in $logSnapshots.Keys) {
     $baselineEntry = if ($baselineValid) { $EvidenceBaseline.logs[$path] } else { $null }
-    $freshLogs[$path] = Get-FreshEvidenceLines $logSnapshots[$path] $baselineEntry $securityStartTime
+    $allowUntimestamped = $path -eq $iddDebugTracePath
+    $freshLogs[$path] = Get-FreshEvidenceLines $logSnapshots[$path] $baselineEntry $securityStartTime -AllowUntimestamped:$allowUntimestamped
 }
 
 $connectionId = ''
@@ -266,6 +274,33 @@ if ($baselineValid) {
             $result['evidence_log_errors'] = @($freshLogs.Keys | Where-Object { -not $freshLogs[$_].valid } | ForEach-Object {
                 "$_`: $($freshLogs[$_].reason)"
             }) -join "`n"
+            $result['idd_debug_trace_valid'] = $false
+            $result['idd_debug_trace_lines'] = ''
+            $result['idd_monitor_arrival_marker_count'] = 0
+            $result['idd_display_config_update_request_count'] = 0
+            $result['idd_display_config_update_success_count'] = 0
+            $result['idd_commit_modes_marker_count'] = 0
+            $result['idd_commit_modes_active_path_count'] = 0
+            $result['idd_swapchain_assigned_count'] = 0
+            $result['idd_session_ready_marker_count'] = 0
+            $result['idd_first_frame_marker_count'] = 0
+            if (-not [string]::IsNullOrWhiteSpace($iddDebugTracePath) -and $freshLogs.ContainsKey($iddDebugTracePath)) {
+                $iddTrace = $freshLogs[$iddDebugTracePath]
+                $result['idd_debug_trace_valid'] = $iddTrace.valid
+                if ($iddTrace.valid -and $sessionId) {
+                    $iddLines = @(Select-ConnectionEvidence -Lines $iddTrace.lines -ConnectionId '' -SessionId $sessionId -StartUtc ([datetime]::MinValue))
+                    $iddText = $iddLines -join "`n"
+                    $result['idd_debug_trace_lines'] = $iddText
+                    $result['idd_monitor_arrival_marker_count'] = [regex]::Matches($iddText, 'SESSION_PROOF_IDD_MONITOR_ARRIVED').Count
+                    $result['idd_display_config_update_request_count'] = [regex]::Matches($iddText, 'SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_REQUEST').Count
+                    $result['idd_display_config_update_success_count'] = [regex]::Matches($iddText, 'SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_RESULT[^\r\n]*status=0x00000000').Count
+                    $result['idd_commit_modes_marker_count'] = [regex]::Matches($iddText, 'SESSION_PROOF_IDD_COMMIT_MODES').Count
+                    $result['idd_commit_modes_active_path_count'] = [regex]::Matches($iddText, 'SESSION_PROOF_IDD_COMMIT_MODES[^\r\n]*active_paths=([1-9]\d*)').Count
+                    $result['idd_swapchain_assigned_count'] = [regex]::Matches($iddText, 'SESSION_PROOF_IDD_SWAPCHAIN_ASSIGNED').Count
+                    $result['idd_session_ready_marker_count'] = [regex]::Matches($iddText, 'SESSION_PROOF_IDD_SESSION_READY_FOR_CAPTURE').Count
+                    $result['idd_first_frame_marker_count'] = [regex]::Matches($iddText, 'SESSION_PROOF_IDD_FIRST_FRAME').Count
+                }
+            }
             $result['security_4624_type10_correlated_count'] = 0
             $logOut = $LogPaths.stdout
             $logErr = $LogPaths.stderr

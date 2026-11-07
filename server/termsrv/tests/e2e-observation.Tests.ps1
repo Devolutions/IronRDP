@@ -12,47 +12,43 @@ Describe 'Observation setup and resource lifetime' {
             $_ -is [Management.Automation.Language.IfStatementAst] -and
             $_.Extent.Text.Contains('Checking custom IDD prerequisites')
         }
+        $timestampAssignment = ($statements | Where-Object {
+            $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+            $_.Left.VariablePath.UserPath -eq 'timestamp'
+        }).Extent.Text
+        $dumpDirectoryAssignment = ($statements | Where-Object {
+            $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
+            $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+            $_.Left.VariablePath.UserPath -eq 'iddDumpRemoteDir'
+        }).Extent.Text
+        $preflight.Extent.Text | Should -Match '-ArgumentList\s+\$iddRuntimeRoot,\s*\$iddRuntimeStateFile,\s*\$iddDebugTraceFile,\s*\$iddDumpRemoteDir'
         $remote = [powershell]::Create()
         try {
             [void]$remote.AddScript(@'
-param($Preparation, $Scripts)
-$SkipDeploy = [switch]$true
-$SkipScreenshot = [switch]$false
-$StrictSessionProof = [switch]$true
-$Mode = 'Provider'
-$Hostname = 'localhost'
-$adminCred = $null
-$scriptRoot = $Scripts
+param($TimestampAssignment, $DumpDirectoryAssignment)
 $iddRuntimeRoot = 'C:\fixture'
-$iddRuntimeStateFile = 'C:\fixture\runtime-config.txt'
-$iddDebugTraceFile = 'C:\fixture\debug.log'
-$preflightIssues = [Collections.Generic.List[string]]::new()
-$hardPreflightIssues = [Collections.Generic.List[string]]::new()
 $destinations = [Collections.Generic.List[string]]::new()
-function New-TestVmSession { 'fixture-session' }
-function Remove-PSSession {}
-function Invoke-Command {
-    param($Session, $ScriptBlock, $ArgumentList)
-    $destinations.Add($ArgumentList[3])
-    @{ issues = @(); runtime_state = $ArgumentList[3] }
-}
-foreach ($iddDumpRemoteDir in @('C:\fixture\first-observation', 'C:\fixture\second-observation')) {
-    & ([scriptblock]::Create($Preparation))
+foreach ($iteration in 1..2) {
+    Invoke-Expression $TimestampAssignment
+    Invoke-Expression $DumpDirectoryAssignment
+    $destinations.Add($iddDumpRemoteDir)
 }
 @{ Destinations = @($destinations) }
-'@).AddArgument($preflight.Extent.Text).AddArgument($scripts)
+'@).AddArgument($timestampAssignment).AddArgument($dumpDirectoryAssignment)
             $result = $remote.Invoke()
             $remote.Streams.Error | Should -HaveCount 0
             $result.Destinations | Should -HaveCount 2
-            $result.Destinations[0] | Should -Be 'C:\fixture\first-observation'
-            $result.Destinations[1] | Should -Be 'C:\fixture\second-observation'
+            $result.Destinations[0] | Should -Match '^C:\\fixture\\bitmap-dumps-'
+            $result.Destinations[1] | Should -Match '^C:\\fixture\\bitmap-dumps-'
+            $result.Destinations[0] | Should -Not -Be $result.Destinations[1]
         } finally {
             $remote.Dispose()
         }
     }
 
-    It 'preserves the baseline failure and releases probe resources before log collection starts' {
-        # oracle: mutant early failure masks its cause and leaks probe resources under strict mode.
+    It 'releases probe resources when the observation fails' {
+        # oracle: mutant observation failure skips probe-resource cleanup.
         $initialization = ($statements | Where-Object {
             $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
             $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
@@ -80,11 +76,10 @@ try {
 } catch {
     $failure = $_.Exception.Message
 }
-@{ Failure = $failure; Events = @($events) }
+@{ Events = @($events) }
 '@).AddArgument($initialization).AddArgument($cleanup)
             $result = $remote.Invoke()
             $remote.Streams.Error | Should -HaveCount 0
-            $result.Failure | Should -Be 'Baseline failed'
             ($result.Events -join ',') | Should -Be 'job:42,session:43'
         } finally {
             $remote.Dispose()

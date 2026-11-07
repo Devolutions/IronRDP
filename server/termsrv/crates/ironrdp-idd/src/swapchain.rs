@@ -3,11 +3,11 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::io::Write as _;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use windows::Win32::Foundation::WAIT_TIMEOUT;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, HMODULE, LUID, WAIT_FAILED, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
     ID3D11Resource, ID3D11Texture2D,
@@ -15,24 +15,23 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext,
 };
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIAdapter1, IDXGIFactory5};
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use windows::Win32::Graphics::Dxgi::{IDXGIDevice, IDXGIResource};
 use windows::Win32::System::Threading::{
-    AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, INFINITE, SetEvent,
-    WaitForMultipleObjects,
+    AvRevertMmThreadCharacteristics, AvSetMmThreadCharacteristicsW, CreateEventW, SetEvent, WaitForMultipleObjects,
 };
 use windows::core::w;
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use crate::iddcx;
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 use windows_core::Interface as _;
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 const E_PENDING: windows_core::HRESULT = windows_core::HRESULT(-2147483638);
 
 #[derive(Debug, Clone, Copy)]
@@ -47,23 +46,23 @@ struct SendSwapChain(IDDCX_SWAPCHAIN);
 // SAFETY: swapchain handles are opaque identifiers; they are intended to be used from a swapchain processing thread.
 unsafe impl Send for SendSwapChain {}
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 #[derive(Clone)]
 struct SendD3dDevice(ID3D11Device);
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 // SAFETY: D3D11 devices are free-threaded COM objects; we only use it to obtain the underlying IDXGIDevice pointer.
 unsafe impl Send for SendD3dDevice {}
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 #[derive(Clone)]
 struct SendD3dDeviceContext(ID3D11DeviceContext);
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 // SAFETY: D3D11 immediate contexts are COM objects used on the dedicated swapchain worker thread.
 unsafe impl Send for SendD3dDeviceContext {}
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 impl SendSwapChain {
     #[must_use]
     fn raw(&self) -> IDDCX_SWAPCHAIN {
@@ -71,7 +70,7 @@ impl SendSwapChain {
     }
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 impl SendD3dDevice {
     #[must_use]
     fn device(&self) -> &ID3D11Device {
@@ -79,7 +78,7 @@ impl SendD3dDevice {
     }
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 impl SendD3dDeviceContext {
     #[must_use]
     fn context(&self) -> &ID3D11DeviceContext {
@@ -205,7 +204,7 @@ fn write_bmp_bgra32(path: &std::path::Path, width: usize, height: usize, pixels:
     Ok(())
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 fn maybe_dump_swapchain_surface_bmp(
     d3d_device: &ID3D11Device,
     d3d_context: &ID3D11DeviceContext,
@@ -435,18 +434,18 @@ impl SwapChainProcessor {
         let new_frame_event = self.new_frame_event;
         let terminate_event = SendHandle(self.terminate_event.raw());
         let render_adapter_luid = self.render_adapter_luid;
-        #[cfg(ironrdp_idd_link)]
+        #[cfg(any(test, ironrdp_idd_link))]
         let swapchain = self.swapchain;
-        #[cfg(ironrdp_idd_link)]
+        #[cfg(any(test, ironrdp_idd_link))]
         let d3d_device = SendD3dDevice(self.d3d_device.clone());
-        #[cfg(ironrdp_idd_link)]
+        #[cfg(any(test, ironrdp_idd_link))]
         let d3d_context = SendD3dDeviceContext(self.d3d_context.clone());
 
         let join_handle = thread::spawn(move || {
             let _mmcss = try_enable_mmcss();
             tracing::info!(?render_adapter_luid, "IddCxSwapChain processing thread started");
 
-            #[cfg(ironrdp_idd_link)]
+            #[cfg(any(test, ironrdp_idd_link))]
             {
                 crate::debug_trace(&format!(
                     "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_START swapchain=0x{:X} adapter_luid=0x{:08X}{:08X}",
@@ -596,7 +595,7 @@ impl SwapChainProcessor {
                 tracing::info!("IddCxSwapChain processing thread exiting");
             }
 
-            #[cfg(not(ironrdp_idd_link))]
+            #[cfg(not(any(test, ironrdp_idd_link)))]
             {
                 crate::debug_trace(&format!(
                     "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_START swapchain=stub adapter_luid=0x{:08X}{:08X}",

@@ -1,57 +1,49 @@
-BeforeAll {
+BeforeDiscovery {
     $termsrvRoot = Split-Path -Parent $PSScriptRoot
     Import-Module (Join-Path $termsrvRoot 'scripts\TestVm.psm1') -Force
 }
 
 Describe 'TermService lifecycle recovery' {
-    It 'restores the original startup type and running state' {
-        # oracle: mutant recovery leaves TermService disabled or stopped
-        $state = @{
-            StartupType = 'disabled'
-            Status = 'Stopped'
-        }
-        $setStartupType = { param($value) $state.StartupType = $value }
-        $getStatus = { $state.Status }
-        $startService = { $state.Status = 'Running' }
-        $waitForStatus = {
-            param($status, $timeout)
-            if ($state.Status -ne $status) {
-                throw "unexpected service status $($state.Status)"
+    InModuleScope TestVm {
+        BeforeEach {
+            $script:state = @{
+                StartupType = 'disabled'
+                Status = 'Stopped'
             }
-        }
+            $script:events = [Collections.Generic.List[string]]::new()
 
-        Restore-TermServiceLifecycle -StartupType 'auto' -WasRunning $true `
-            -SetStartupType $setStartupType -GetStatus $getStatus -StartService $startService `
-            -WaitForStatus $waitForStatus
-
-        $state.StartupType | Should -Be 'auto'
-        $state.Status | Should -Be 'Running'
-    }
-
-    It 'restores a previously stopped service without starting it' {
-        # oracle: mutant recovery starts TermService when it was previously stopped
-        $state = @{
-            StartupType = 'disabled'
-            Status = 'Running'
-            StartCount = 0
-        }
-        $setStartupType = { param($value) $state.StartupType = $value }
-        $getStatus = { $state.Status }
-        $startService = { $state.StartCount++ }
-        $stopService = { $state.Status = 'Stopped' }
-        $waitForStatus = {
-            param($status, $timeout)
-            if ($state.Status -ne $status) {
-                throw "unexpected service status $($state.Status)"
+            Mock Get-Service { [pscustomobject]@{ Status = $script:state.Status } }
+            Mock Set-TermServiceStartupType {
+                param($StartupType)
+                $script:state.StartupType = $StartupType
+                $script:events.Add("mode:$StartupType")
             }
+            Mock Invoke-TermServiceControl {
+                param($Arguments)
+                $script:state.Status = if ($Arguments[0] -eq 'start') { 'Running' } else { 'Stopped' }
+                $script:events.Add($Arguments[0])
+            }
+            Mock Wait-TermServiceState {}
         }
 
-        Restore-TermServiceLifecycle -StartupType 'demand' -WasRunning $false `
-            -SetStartupType $setStartupType -GetStatus $getStatus `
-            -StartService $startService -StopService $stopService -WaitForStatus $waitForStatus
+        It 'restores the original startup type and running state through production dependencies' {
+            # oracle: mutant recovery leaves TermService disabled or stopped.
+            Restore-TermServiceLifecycle -StartupType disabled -WasRunning $true
 
-        $state.StartupType | Should -Be 'demand'
-        $state.Status | Should -Be 'Stopped'
-        $state.StartCount | Should -Be 0
+            $script:state.StartupType | Should -Be 'disabled'
+            $script:state.Status | Should -Be 'Running'
+            ($script:events -join ',') | Should -Be 'mode:demand,start,mode:disabled'
+        }
+
+        It 'restores a previously stopped service without starting it' {
+            # oracle: mutant recovery starts TermService when it was previously stopped.
+            $script:state.Status = 'Running'
+
+            Restore-TermServiceLifecycle -StartupType demand -WasRunning $false
+
+            $script:state.StartupType | Should -Be 'demand'
+            $script:state.Status | Should -Be 'Stopped'
+            ($script:events -join ',') | Should -Be 'stop,mode:demand'
+        }
     }
 }

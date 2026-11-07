@@ -67,13 +67,14 @@ Describe 'Fresh server evidence' {
             mode = 'Provider'
             rdpUsernameForAudit = 'test-user'
             iddOpenProbeLogPath = Join-Path $TestDrive 'missing-probe.log'
+            iddDebugTracePath = Join-Path $fixtureDirectory 'idd-debug.log'
         }
         $securityEvents = @()
         Mock Get-WinEvent { $securityEvents } -ParameterFilter { $FilterHashtable.LogName -eq 'Security' }
     }
 
     It 'does not count a Security logon from before the connection window' {
-        # oracle: regression stale E2E proof accepts Security events from before test start.
+        # oracle: mutant stale E2E proof accepts Security events from before test start.
         $start = [datetime]::UtcNow
         $oldLogon = [pscustomobject]@{ Id = 4624; TimeCreated = $start.AddSeconds(-10) }
         $oldLogon | Add-Member ScriptMethod ToXml {
@@ -88,7 +89,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'retains old log text without accepting it as current proof' {
-        # oracle: regression historical E2E connection and session markers satisfy a later run.
+        # oracle: mutant historical E2E connection and session markers satisfy a later run.
         [System.IO.File]::WriteAllText($logPaths.stdout, @'
 2026-01-01T00:00:00Z INFO Registered incoming TCP connection connection_id=7 peer_addr=Some("192.0.2.1:51000")
 2026-01-01T00:00:00Z INFO SESSION_PROOF_TERMSRV_SET_CAPTURE_SESSION_ID_APPLIED connection_id=7 session_id=12
@@ -109,7 +110,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'correlates a fresh socket, provider acknowledgement, companion binding, and Security logon' {
-        # oracle: regression strict E2E proof requires fresh evidence for the tested connection and session.
+        # oracle: mutant strict E2E proof accepts evidence from another connection or session.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $securityEvents = @(New-SecurityFixture)
@@ -127,7 +128,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'rejects a provider acknowledgement for another connection' {
-        # oracle: regression mixed connections cannot jointly satisfy strict E2E proof.
+        # oracle: mutant mixed connections jointly satisfy strict E2E proof.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $providerText = [System.IO.File]::ReadAllText($logPaths.provider[0]).Replace('connection_id=7', 'connection_id=8')
@@ -143,7 +144,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'rejects disagreement between provider and companion session identities' {
-        # oracle: regression mixed sessions cannot jointly satisfy strict E2E proof.
+        # oracle: mutant mixed sessions jointly satisfy strict E2E proof.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $providerText = [System.IO.File]::ReadAllText($logPaths.provider[0]).Replace('session_id=12', 'session_id=13')
@@ -158,7 +159,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'keeps concurrent connections in raw diagnostics but excludes them from selected proof counts' {
-        # oracle: regression concurrent E2E runs cannot supply each other's session or IDD proof.
+        # oracle: mutant concurrent E2E runs supply each other's session or IDD proof.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         Add-ConnectionFixture $logPaths -Connection 8 -Session 13 -Endpoint '192.0.2.1:51001'
@@ -178,7 +179,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'does not infer the tested socket from a sole unrelated fresh connection' {
-        # oracle: regression another run cannot prove a client that never reached the server.
+        # oracle: mutant another run proves a client that never reached the server.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths -Endpoint '192.0.2.1:51001'
         $securityEvents = @(New-SecurityFixture -IpPort '51001')
@@ -192,7 +193,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'requires the actual client endpoint even when fresh markers agree' {
-        # oracle: regression coincident fresh logs do not identify the tested connection.
+        # oracle: mutant coincident fresh logs identify the tested connection.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $securityEvents = @(New-SecurityFixture)
@@ -208,7 +209,7 @@ Describe 'Fresh server evidence' {
         @{ Port = '0' }
         @{ Port = '-' }
     ) {
-        # oracle: regression an unrelated or unidentified Security logon cannot prove the tested socket.
+        # oracle: mutant an unrelated or unidentified Security logon proves the tested socket.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $securityEvents = @(New-SecurityFixture -IpPort $Port)
@@ -223,7 +224,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'uses the target baseline rather than the caller clock for Security freshness' {
-        # oracle: regression a host-clock window cannot admit a Security logon older than the target baseline.
+        # oracle: mutant a host-clock window admits a Security logon older than the target baseline.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $arguments.securityStartTime = [datetime]::UtcNow.AddHours(-1)
@@ -237,7 +238,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'rejects a rewritten prefix even when the log is longer than its baseline' {
-        # oracle: regression offset reuse after log replacement cannot establish fresh E2E evidence.
+        # oracle: mutant offset reuse after log replacement establishes fresh E2E evidence.
         [System.IO.File]::WriteAllText($logPaths.stdout, "old prefix`n")
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         [System.IO.File]::WriteAllText($logPaths.stdout, "new prefix`n")
@@ -253,7 +254,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'does not use a record that began before the baseline' {
-        # oracle: regression appending to an old partial record does not make the record fresh.
+        # oracle: mutant appending to an old partial record makes the record fresh.
         $utc = [datetime]::UtcNow.AddSeconds(1).ToString('o')
         [System.IO.File]::WriteAllText($logPaths.stdout, "$utc INFO Registered incoming TCP connection connection_id=7 ")
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
@@ -271,7 +272,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'preserves correlation through a remoting-style baseline serialization' {
-        # oracle: regression the target baseline must survive the collector's remote invocation boundary.
+        # oracle: mutant baseline serialization loses the target's byte offsets or prefix hashes.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         $baseline = [System.Management.Automation.PSSerializer]::Deserialize(
             [System.Management.Automation.PSSerializer]::Serialize($baseline, 10))
@@ -284,8 +285,30 @@ Describe 'Fresh server evidence' {
         $result.evidence_correlated | Should -BeTrue
     }
 
+    It 'counts only fresh IDD trace markers for the correlated session' {
+        # oracle: mutant stale or cross-session IDD markers satisfy strict graphics proof.
+        [System.IO.File]::WriteAllText($arguments.iddDebugTracePath, "SESSION_PROOF_IDD_MONITOR_ARRIVED session_id=12`n")
+        $baseline = & $collectorPath -iddDebugTracePath $arguments.iddDebugTracePath -CaptureBaseline -LogPaths $logPaths
+        Add-ConnectionFixture $logPaths
+        [System.IO.File]::AppendAllText($arguments.iddDebugTracePath, @'
+SESSION_PROOF_IDD_MONITOR_ARRIVED session_id=12
+SESSION_PROOF_IDD_COMMIT_MODES active_paths=1 session_id=999
+SESSION_PROOF_IDD_FIRST_FRAME session_id=12
+'@ + "`n")
+        $securityEvents = @(New-SecurityFixture)
+
+        $result = & $collectorPath @arguments -EvidenceBaseline $baseline `
+            -ExpectedClientEndpoint '192.0.2.1:51000' -LogPaths $logPaths
+
+        $result.idd_monitor_arrival_marker_count | Should -Be 1
+        $result.idd_commit_modes_marker_count | Should -Be 0
+        $result.idd_first_frame_marker_count | Should -Be 1
+        $result.idd_debug_trace_lines | Should -Match 'session_id=12'
+        $result.idd_debug_trace_lines | Should -Not -Match 'session_id=999'
+    }
+
     It 'retains diagnostics but fails closed when no baseline was supplied' {
-        # oracle: regression fresh-looking log timestamps alone cannot prove a bounded E2E run.
+        # oracle: mutant fresh-looking log timestamps alone prove an unbounded E2E run.
         Add-ConnectionFixture $logPaths
         $securityEvents = @(New-SecurityFixture)
 
@@ -297,7 +320,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'does not accept an old timestamp merely because its record was appended after the baseline' {
-        # oracle: regression delayed historical log writes cannot prove a fresh connection.
+        # oracle: mutant delayed historical log writes prove a fresh connection.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $providerText = [System.IO.File]::ReadAllText($logPaths.provider[0]) -replace '(?m)^\d{13}', '1767225600000'
@@ -313,7 +336,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'rejects log truncation and keeps the remaining diagnostic text' {
-        # oracle: regression truncated shared logs cannot reuse their previous offsets as proof.
+        # oracle: mutant truncated shared logs reuse their previous offsets as proof.
         [System.IO.File]::WriteAllText($logPaths.stdout, ('x' * 4096) + "`n")
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         [System.IO.File]::WriteAllText($logPaths.stdout, '')
@@ -329,7 +352,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'rejects conflicting session acknowledgements for the same connection' {
-        # oracle: regression the last session marker must not hide a conflicting session identity.
+        # oracle: mutant the last session marker hides a conflicting session identity.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $unix = [datetimeoffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -344,7 +367,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'rejects competing provider log identities instead of choosing the newest file' {
-        # oracle: regression multiple provider log candidates must not be combined into session proof.
+        # oracle: mutant multiple provider log candidates are combined into session proof.
         $alternate = Join-Path $fixtureDirectory 'provider-alternate.log'
         $logPaths.provider += $alternate
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
@@ -362,7 +385,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'does not borrow IDD callbacks from another connection' {
-        # oracle: regression unrelated IDD success cannot satisfy the selected connection's proof counts.
+        # oracle: mutant unrelated IDD success satisfies the selected connection's proof counts.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $providerLines = [System.IO.File]::ReadAllLines($logPaths.provider[0]) | Where-Object { $_ -notmatch 'IDD_ON_DRIVER_LOAD|VIDEO_HANDLE_SELECTED' }
@@ -380,7 +403,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'does not correlate another domain with the configured account name' {
-        # oracle: regression a matching account leaf is not proof for a different configured domain.
+        # oracle: mutant a matching account leaf proves a different configured domain.
         $baseline = & $collectorPath -CaptureBaseline -LogPaths $logPaths
         Add-ConnectionFixture $logPaths
         $arguments.rdpUsernameForAudit = 'TEST-DOMAIN\test-user'
@@ -395,7 +418,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'captures the baseline through the serialized script block without running diagnostics' {
-        # oracle: regression the pre-connect baseline must be usable by the remote collector caller.
+        # oracle: mutant the remote collector caller cannot use the pre-connect baseline.
         $scriptBlock = [scriptblock]::Create([System.IO.File]::ReadAllText($collectorPath))
         $captureArguments = @($null, $null, $null, $null, $null, $null, $null, $null, $null, $null, $true, $logPaths)
 
@@ -410,7 +433,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'reads active shared logs without clearing or locking out their writer' {
-        # oracle: regression E2E baselines must not require clearing shared logs or stopping their writers.
+        # oracle: mutant baseline capture clears shared logs or blocks their writers.
         [System.IO.File]::WriteAllText($logPaths.stdout, "old text`n")
         $writer = [System.IO.File]::Open($logPaths.stdout, 'Open', 'ReadWrite', 'ReadWrite')
         try {
@@ -429,7 +452,7 @@ Describe 'Fresh server evidence' {
     }
 
     It 'fails closed if another provider candidate was unreadable at baseline' {
-        # oracle: regression unavailable logs cannot rule out competing connection or session identities.
+        # oracle: mutant unavailable logs allow proof despite competing connection or session identities.
         $alternate = Join-Path $fixtureDirectory 'unreadable-provider.log'
         $logPaths.provider += $alternate
         Mock Test-Path { throw 'Access denied' } -ParameterFilter { $LiteralPath -eq $alternate }

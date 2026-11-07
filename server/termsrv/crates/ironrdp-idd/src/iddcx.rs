@@ -1,7 +1,6 @@
 use crate::wdf::{WDF_OBJECT_ATTRIBUTES, WDFDEVICE, WDFDEVICE_INIT};
 use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, IDDCX_SWAPCHAIN, NTSTATUS};
 use core::ffi::c_void;
-use core::mem::size_of;
 use windows::Win32::Devices::Display::{DISPLAYCONFIG_2DREGION, DISPLAYCONFIG_RATIONAL, DISPLAYCONFIG_ROTATION};
 use windows::Win32::Foundation::{LUID, POINT};
 use windows_core::HRESULT;
@@ -562,7 +561,7 @@ pub(crate) static ENDPOINT_MANUFACTURER_UTF16: [u16; 12] = [68, 101, 118, 111, 1
 /// `IDDCX_MINIMUM_VERSION_REQUIRED = 3` and runtime-checking the actual class-extension version
 /// before using 1.4-only DDIs.
 #[unsafe(no_mangle)]
-pub static IddMinimumVersionRequired: u32 = 3;
+pub(crate) static IddMinimumVersionRequired: u32 = 3;
 
 /// Calls `IddCxDeviceInitConfig` through the IddCx 1.2 dispatch table.
 ///

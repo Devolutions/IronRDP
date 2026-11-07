@@ -108,13 +108,51 @@ Describe 'E2E safety options' {
 }
 
 Describe 'Screenshot content validation' {
-    It 'rejects a uniform nonblack image' {
-        # oracle: mutant uniform nonblack image is accepted as meaningful content
-        Test-ScreenshotHasMeaningfulContent -HasNonBlackPixel $true -IsUniform $true | Should -BeFalse
+    BeforeAll { Add-Type -AssemblyName System.Drawing }
+
+    It 'rejects a black image based on its actual pixels' {
+        # oracle: mutant black screenshot passes the pixel-content classifier.
+        $bitmap = [System.Drawing.Bitmap]::new(2, 2)
+        try {
+            $analysis = Get-ScreenshotPixelAnalysis -Bitmap $bitmap
+            $analysis.HasNonBlackPixel | Should -BeFalse
+            $analysis.IsUniform | Should -BeTrue
+            $analysis.HasMeaningfulContent | Should -BeFalse
+        } finally {
+            $bitmap.Dispose()
+        }
     }
 
-    It 'accepts a varying image with nonblack content' {
-        # oracle: mutant varying nonblack image is rejected as meaningless content
-        Test-ScreenshotHasMeaningfulContent -HasNonBlackPixel $true -IsUniform $false | Should -BeTrue
+    It 'rejects a uniform nonblack image based on its actual pixels' {
+        # oracle: mutant uniform nonblack screenshot passes the pixel-content classifier.
+        $bitmap = [System.Drawing.Bitmap]::new(2, 2)
+        try {
+            for ($y = 0; $y -lt $bitmap.Height; $y++) {
+                for ($x = 0; $x -lt $bitmap.Width; $x++) {
+                    $bitmap.SetPixel($x, $y, [System.Drawing.Color]::White)
+                }
+            }
+            $analysis = Get-ScreenshotPixelAnalysis -Bitmap $bitmap
+            $analysis.HasNonBlackPixel | Should -BeTrue
+            $analysis.IsUniform | Should -BeTrue
+            $analysis.HasMeaningfulContent | Should -BeFalse
+        } finally {
+            $bitmap.Dispose()
+        }
+    }
+
+    It 'accepts a varying nonblack image based on its actual pixels' {
+        # oracle: mutant meaningful screenshot is rejected by the pixel-content classifier.
+        $bitmap = [System.Drawing.Bitmap]::new(2, 2)
+        try {
+            $bitmap.SetPixel(0, 0, [System.Drawing.Color]::White)
+            $analysis = Get-ScreenshotPixelAnalysis -Bitmap $bitmap
+            $analysis.SampleCount | Should -Be 4
+            $analysis.HasNonBlackPixel | Should -BeTrue
+            $analysis.IsUniform | Should -BeFalse
+            $analysis.HasMeaningfulContent | Should -BeTrue
+        } finally {
+            $bitmap.Dispose()
+        }
     }
 }

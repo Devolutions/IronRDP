@@ -1,23 +1,23 @@
 use crate::monitor::DISPLAYCONFIG_VIDEO_SIGNAL_INFO;
 use crate::{IDDCX_ADAPTER, IDDCX_MONITOR, NTSTATUS, STATUS_NOT_SUPPORTED, STATUS_SUCCESS, ntstatus_to_u32};
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 const IDDCX_ADAPTER_FLAGS_USE_SMALLEST_MODE: u32 = 1;
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 const IDDCX_ADAPTER_FLAGS_REMOTE_SESSION_DRIVER: u32 = 4;
 const IDDCX_ADAPTER_FLAGS_REMOTE_ALL_TARGET_MODES_MONITOR_COMPATIBLE: u32 = 0x80;
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 const IDDCX_TRANSMISSION_TYPE_WIRED_OTHER: u32 = 0x0000_0003;
 const STATUS_INVALID_PARAMETER: NTSTATUS = crate::ntstatus_from_u32(0xC000_000D);
 const STATUS_OBJECT_NAME_COLLISION: NTSTATUS = crate::ntstatus_from_u32(0xC000_0035);
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 const GUID_DEVINTERFACE_IRONRDP_IDD_VIDEO: windows_core::GUID =
     windows_core::GUID::from_u128(0x1ea642e3_6a78_4f4b_9a19_2eb4f0f33b82);
 
 const IDDCX_PATH_FLAGS_CHANGED: u32 = 1;
 const IDDCX_PATH_FLAGS_ACTIVE: u32 = 2;
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 fn enable_video_device_interface(device: crate::wdf::WDFDEVICE, source: &str) {
     crate::debug_trace(&format!(
         "{source}: enabling custom video device interface guid={GUID_DEVINTERFACE_IRONRDP_IDD_VIDEO:?}"
@@ -36,7 +36,7 @@ fn enable_video_device_interface(device: crate::wdf::WDFDEVICE, source: &str) {
     ));
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 fn complete_adapter_initialization(adapter: IDDCX_ADAPTER, adapter_init_status: NTSTATUS, source: &str) -> NTSTATUS {
     crate::debug_trace(&format!(
         "{source}: AdapterInitStatus=0x{:08X}",
@@ -120,14 +120,14 @@ pub(crate) extern "system" fn adapter_init_finished(
     adapter: IDDCX_ADAPTER,
     args: *const IDARG_IN_ADAPTER_INIT_FINISHED,
 ) -> NTSTATUS {
-    #[cfg(not(ironrdp_idd_link))]
+    #[cfg(not(any(test, ironrdp_idd_link)))]
     {
         let _ = (adapter, args);
         tracing::info!("EvtIddCxAdapterInitFinished (stub)");
         STATUS_SUCCESS
     }
 
-    #[cfg(ironrdp_idd_link)]
+    #[cfg(any(test, ironrdp_idd_link))]
     {
         crate::debug_trace("EvtIddCxAdapterInitFinished: entered");
         tracing::info!("SESSION_PROOF_IDD_ADAPTER_INIT_ENTERED");
@@ -231,14 +231,12 @@ pub(crate) extern "system" fn adapter_commit_modes(
 
 // ──────────────── EvtDriverDeviceAdd — real IddCx device initialization ──────────────────────
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
     use crate::iddcx::{
         ENDPOINT_FRIENDLY_NAME_UTF16, ENDPOINT_MANUFACTURER_UTF16, ENDPOINT_MODEL_NAME_UTF16, IDARG_IN_ADAPTER_INIT,
         IDARG_OUT_ADAPTER_INIT, IDDCX_ADAPTER_CAPS, IDDCX_ENDPOINT_DIAGNOSTIC_INFO, IDDCX_ENDPOINT_VERSION,
     };
-    use core::mem::size_of;
-
     let hardware_version = IDDCX_ENDPOINT_VERSION {
         Size: size_of::<IDDCX_ENDPOINT_VERSION>() as u32,
         MajorVer: 1,
@@ -340,7 +338,7 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
     STATUS_SUCCESS
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) unsafe extern "system" fn device_d0_entry(
     device: crate::wdf::WDFDEVICE,
     previous_state: crate::wdf::WDF_POWER_DEVICE_STATE,
@@ -364,7 +362,7 @@ pub(crate) unsafe extern "system" fn device_d0_entry(
     status
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) unsafe extern "system" fn device_d0_exit(
     _device: crate::wdf::WDFDEVICE,
     _target_state: crate::wdf::WDF_POWER_DEVICE_STATE,
@@ -375,7 +373,7 @@ pub(crate) unsafe extern "system" fn device_d0_exit(
     STATUS_SUCCESS
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) unsafe extern "system" fn device_file_create(
     device: crate::wdf::WDFDEVICE,
     request: crate::wdf::WDFREQUEST,
@@ -386,12 +384,12 @@ pub(crate) unsafe extern "system" fn device_file_create(
     unsafe { crate::wdf::request_complete(request, STATUS_SUCCESS) };
 }
 
-#[cfg(ironrdp_idd_link)]
+#[cfg(any(test, ironrdp_idd_link))]
 pub(crate) unsafe extern "system" fn device_add(
     _driver: crate::wdf::WDFDRIVER,
     device_init: *mut crate::wdf::WDFDEVICE_INIT,
 ) -> NTSTATUS {
-    use core::mem::{size_of, transmute};
+    use core::mem::transmute;
 
     use windows::Win32::Foundation::ERROR_ALREADY_EXISTS;
 
@@ -423,25 +421,28 @@ pub(crate) unsafe extern "system" fn device_add(
     // Assign mandatory callbacks by transmuting typed fn pointers → Option<unsafe extern "system" fn()>.
     // SAFETY: all function pointer types share the same calling convention and pointer size.
     config.EvtIddCxAdapterInitFinished =
-        Some(unsafe { transmute::<_, unsafe extern "system" fn()>(adapter_init_finished as usize) });
+        Some(unsafe { transmute::<_, unsafe extern "system" fn()>(adapter_init_finished as *const () as usize) });
     config.EvtIddCxAdapterCommitModes =
-        Some(unsafe { transmute::<_, unsafe extern "system" fn()>(adapter_commit_modes as usize) });
+        Some(unsafe { transmute::<_, unsafe extern "system" fn()>(adapter_commit_modes as *const () as usize) });
     config.EvtIddCxParseMonitorDescription = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::parse_monitor_description as usize)
+        transmute::<_, unsafe extern "system" fn()>(crate::monitor::parse_monitor_description as *const () as usize)
     });
     config.EvtIddCxMonitorGetDefaultDescriptionModes = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_get_default_description_modes as usize)
+        transmute::<_, unsafe extern "system" fn()>(
+            crate::monitor::monitor_get_default_description_modes as *const () as usize,
+        )
     });
     config.EvtIddCxMonitorQueryTargetModes = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_query_target_modes as usize)
+        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_query_target_modes as *const () as usize)
     });
-    config.EvtIddCxMonitorAssignSwapChain =
-        Some(unsafe { transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_assign_swapchain as usize) });
+    config.EvtIddCxMonitorAssignSwapChain = Some(unsafe {
+        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_assign_swapchain as *const () as usize)
+    });
     config.EvtIddCxMonitorUnassignSwapChain = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_unassign_swapchain as usize)
+        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_unassign_swapchain as *const () as usize)
     });
     config.EvtIddCxMonitorGetPhysicalSize = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_get_physical_size as usize)
+        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_get_physical_size as *const () as usize)
     });
 
     // ── 2. IddCxDeviceInitConfig ─────────────────────────────────────────────────────────────
@@ -536,8 +537,8 @@ pub(crate) unsafe extern "system" fn device_add(
     ] {
         let mut symbolic_link_utf16: Vec<u16> = symbolic_link_name.encode_utf16().collect();
         let symbolic_link = crate::UNICODE_STRING {
-            Length: (symbolic_link_utf16.len() * core::mem::size_of::<u16>()) as u16,
-            MaximumLength: (symbolic_link_utf16.len() * core::mem::size_of::<u16>()) as u16,
+            Length: (symbolic_link_utf16.len() * size_of::<u16>()) as u16,
+            MaximumLength: (symbolic_link_utf16.len() * size_of::<u16>()) as u16,
             Buffer: symbolic_link_utf16.as_mut_ptr(),
         };
 

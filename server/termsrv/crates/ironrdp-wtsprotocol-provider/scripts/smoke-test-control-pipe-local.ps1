@@ -47,21 +47,10 @@ function Invoke-ControlCommand {
         $client.Write($payload, 0, $payload.Length)
         $client.Flush()
 
-        $responseLengthBytes = New-Object byte[] 4
-        [void]$client.Read($responseLengthBytes, 0, 4)
+        $responseLengthBytes = Read-ExactStreamBytes -Stream $client -Count 4
         $responseLength = [BitConverter]::ToUInt32($responseLengthBytes, 0)
 
-        $responseBytes = New-Object byte[] $responseLength
-        $offset = 0
-
-        while ($offset -lt $responseLength) {
-            $read = $client.Read($responseBytes, $offset, $responseLength - $offset)
-            if ($read -le 0) {
-                throw "control pipe closed while reading response"
-            }
-
-            $offset += $read
-        }
+        $responseBytes = Read-ExactStreamBytes -Stream $client -Count $responseLength
 
         $responseJson = [System.Text.Encoding]::UTF8.GetString($responseBytes)
         return ($responseJson | ConvertFrom-Json)
@@ -71,6 +60,29 @@ function Invoke-ControlCommand {
     }
 }
 
+function Read-ExactStreamBytes {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.IO.Stream]$Stream,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$Count
+    )
+
+    $bytes = New-Object byte[] $Count
+    $offset = 0
+    while ($offset -lt $Count) {
+        $read = $Stream.Read($bytes, $offset, $Count - $offset)
+        if ($read -le 0) {
+            throw "control pipe closed while reading response"
+        }
+        $offset += $read
+    }
+
+    return ,$bytes
+}
+
 $results = New-Object System.Collections.Generic.List[object]
 $tcpClient = $null
 
@@ -78,12 +90,14 @@ try {
     $results.Add((Invoke-ControlCommand -Pipe $PipeName -Command @{
                 type = "start_listen"
                 listener_name = $ListenerName
-            }))
+                port = $PortNumber
+    }))
 
     $results.Add((Invoke-ControlCommand -Pipe $PipeName -Command @{
                 type = "wait_for_incoming"
                 listener_name = $ListenerName
                 timeout_ms = 10
+                port = $PortNumber
             }))
 
     $tcpClient = [System.Net.Sockets.TcpClient]::new()
@@ -93,6 +107,7 @@ try {
         type = "wait_for_incoming"
         listener_name = $ListenerName
         timeout_ms = $IncomingTimeoutMs
+        port = $PortNumber
     }
 
     $results.Add($incoming)

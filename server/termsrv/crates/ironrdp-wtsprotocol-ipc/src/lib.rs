@@ -14,6 +14,8 @@ pub const DEFAULT_MAX_FRAME_SIZE: usize = 64 * 1024;
 pub enum ProviderCommand {
     StartListen {
         listener_name: String,
+        #[serde(default)]
+        port: Option<u16>,
     },
     StopListen {
         listener_name: String,
@@ -21,6 +23,8 @@ pub enum ProviderCommand {
     WaitForIncoming {
         listener_name: String,
         timeout_ms: u32,
+        #[serde(default)]
+        port: Option<u16>,
     },
     AcceptConnection {
         connection_id: u32,

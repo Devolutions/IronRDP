@@ -1256,7 +1256,7 @@ if ((-not $SkipScreenshot.IsPresent) -and (-not $preflightBlockedConnectionAttem
     try {
         $evidenceBaseline = Invoke-RemoteCommandWithTimeout -Session $baselineSession -TimeoutSeconds 30 `
             -OperationName 'pre-connect evidence baseline' -ScriptBlock $evidenceCollector `
-            -ArgumentList (@($null) * 10 + @($true))
+            -ArgumentList (@($null) * 5 + @($iddRuntimeStateFile, $iddDebugTraceFile, $iddOpenProbeLogFile, $null, $null, $true))
     }
     finally { Remove-PSSession -Session $baselineSession -ErrorAction SilentlyContinue }
 
@@ -1673,16 +1673,17 @@ Write-Host "`n=== Step 4: Collecting remote logs ===" -ForegroundColor Cyan
                 $iddDebugTraceText = [string]$iddDiagnostics['debug_trace']
                 $iddDeviceInventory = [string]$iddDiagnostics['device_inventory']
                 $iddDriverInventory = [string]$iddDiagnostics['driver_inventory']
+                $iddCorrelatedDebugTraceText = [string]$remoteLogs.idd_debug_trace_lines
                 $providerHardwareIdCustom = (-not [string]::IsNullOrWhiteSpace($iddRuntimeConfigText)) -and ($iddRuntimeConfigText -match '(?m)^hardware_id=IronRdpIdd$')
                 $providerHardwareIdCustom = $providerHardwareIdCustom -and ($providerGetHardwareIdCount -ge 1)
-                $iddMonitorArrivalMarkerCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_MONITOR_ARRIVED').Count
-                $iddDisplayConfigUpdateRequestCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_REQUEST').Count
-                $iddDisplayConfigUpdateSuccessCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_DISPLAY_CONFIG_UPDATE_RESULT[^\r\n]*status=0x00000000').Count
-                $iddCommitModesMarkerCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_COMMIT_MODES').Count
-                $iddCommitModesActivePathCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_COMMIT_MODES[^\r\n]*active_paths=([1-9]\d*)').Count
-                $iddSwapchainAssignedCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_SWAPCHAIN_ASSIGNED').Count
-                $iddSessionReadyMarkerCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_SESSION_READY_FOR_CAPTURE').Count
-                $iddFirstFrameMarkerCount = [regex]::Matches($iddDebugTraceText, 'SESSION_PROOF_IDD_FIRST_FRAME').Count
+                $iddMonitorArrivalMarkerCount = [int]$remoteLogs.idd_monitor_arrival_marker_count
+                $iddDisplayConfigUpdateRequestCount = [int]$remoteLogs.idd_display_config_update_request_count
+                $iddDisplayConfigUpdateSuccessCount = [int]$remoteLogs.idd_display_config_update_success_count
+                $iddCommitModesMarkerCount = [int]$remoteLogs.idd_commit_modes_marker_count
+                $iddCommitModesActivePathCount = [int]$remoteLogs.idd_commit_modes_active_path_count
+                $iddSwapchainAssignedCount = [int]$remoteLogs.idd_swapchain_assigned_count
+                $iddSessionReadyMarkerCount = [int]$remoteLogs.idd_session_ready_marker_count
+                $iddFirstFrameMarkerCount = [int]$remoteLogs.idd_first_frame_marker_count
 
                 if (-not [string]::IsNullOrWhiteSpace($iddRuntimeConfigText)) {
                     $iddRuntimeConfigText | Set-Content (Join-Path $remoteLogDir 'idd-runtime-config.txt')
@@ -1691,6 +1692,9 @@ Write-Host "`n=== Step 4: Collecting remote logs ===" -ForegroundColor Cyan
                     $iddDebugTraceText | Set-Content (Join-Path $remoteLogDir 'idd-debug-trace.log')
                     Write-Host "`n---- IDD debug trace ----" -ForegroundColor Cyan
                     Write-Host $iddDebugTraceText
+                }
+                if (-not [string]::IsNullOrWhiteSpace($iddCorrelatedDebugTraceText)) {
+                    $iddCorrelatedDebugTraceText | Set-Content (Join-Path $remoteLogDir 'idd-debug-trace-current-session.log')
                 }
                 if (-not [string]::IsNullOrWhiteSpace($iddDeviceInventory)) {
                     $iddDeviceInventory | Set-Content (Join-Path $remoteLogDir 'idd-device-inventory.log')
@@ -1918,41 +1922,10 @@ if ($preflightBlockedConnectionAttempt) {
 
         $bitmap = [System.Drawing.Bitmap]::new($OutputPng)
         try {
-            $stepX = [Math]::Max([int]($bitmap.Width / 256), 1)
-            $stepY = [Math]::Max([int]($bitmap.Height / 256), 1)
-
-            $sampleCount = 0
-            $hasNonBlackPixel = $false
-            $isUniform = $true
-
-            $firstPixelSet = $false
-            $firstR = 0
-            $firstG = 0
-            $firstB = 0
-
-            for ($y = 0; $y -lt $bitmap.Height; $y += $stepY) {
-                for ($x = 0; $x -lt $bitmap.Width; $x += $stepX) {
-                    $pixel = $bitmap.GetPixel($x, $y)
-                    $sampleCount++
-
-                    if (-not $firstPixelSet) {
-                        $firstR = $pixel.R
-                        $firstG = $pixel.G
-                        $firstB = $pixel.B
-                        $firstPixelSet = $true
-                    } elseif ($pixel.R -ne $firstR -or $pixel.G -ne $firstG -or $pixel.B -ne $firstB) {
-                        $isUniform = $false
-                    }
-
-                    if ($pixel.R -ne 0 -or $pixel.G -ne 0 -or $pixel.B -ne 0) {
-                        $hasNonBlackPixel = $true
-                    }
-                }
-            }
-
-            $hasMeaningfulContent = Test-ScreenshotHasMeaningfulContent -HasNonBlackPixel $hasNonBlackPixel -IsUniform $isUniform
+            $pixelAnalysis = Get-ScreenshotPixelAnalysis -Bitmap $bitmap
+            $hasMeaningfulContent = $pixelAnalysis.HasMeaningfulContent
             $analysisSucceeded = $true
-            $analysisMessage = "sampled_pixels=$sampleCount uniform_rgb=$isUniform non_black_rgb=$hasNonBlackPixel"
+            $analysisMessage = "sampled_pixels=$($pixelAnalysis.SampleCount) uniform_rgb=$($pixelAnalysis.IsUniform) non_black_rgb=$($pixelAnalysis.HasNonBlackPixel)"
         }
         finally {
             $bitmap.Dispose()

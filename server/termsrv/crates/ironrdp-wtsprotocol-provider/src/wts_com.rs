@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read as _, Write};
+use std::io::Write;
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::os::windows::io::{AsRawHandle as _, IntoRawHandle as _};
 use std::sync::{Arc, OnceLock, mpsc};
@@ -32,9 +32,9 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 };
 use windows::Win32::Foundation::{
     CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, CloseHandle, E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL,
-    E_OUTOFMEMORY as E_OUTOFMEMORY_WIN32, E_POINTER, E_UNEXPECTED, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_NO_DATA, ERROR_NO_MORE_ITEMS, ERROR_NO_TOKEN, ERROR_PATH_NOT_FOUND,
-    ERROR_SEM_TIMEOUT, GetLastError, HANDLE, HANDLE_PTR, HLOCAL, LocalFree, WIN32_ERROR,
+    E_OUTOFMEMORY as E_OUTOFMEMORY_WIN32, E_POINTER, E_UNEXPECTED, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
+    ERROR_NO_MORE_ITEMS, ERROR_NO_TOKEN, ERROR_PATH_NOT_FOUND, ERROR_SEM_TIMEOUT, GetLastError, HANDLE, HANDLE_PTR,
+    HLOCAL, LocalFree, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{
@@ -50,9 +50,9 @@ use windows::Win32::System::Com::{
     IAgileObject_Impl, IClassFactory, IClassFactory_Impl,
 };
 use windows::Win32::System::Memory::{LMEM_FIXED, LocalAlloc};
-use windows::Win32::System::Pipes::{PIPE_READMODE_MESSAGE, PeekNamedPipe, SetNamedPipeHandleState};
+use windows::Win32::System::Pipes::{PIPE_READMODE_MESSAGE, SetNamedPipeHandleState};
 use windows::Win32::System::Registry::{
-    HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE, RegGetValueW,
+    HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE, RegGetValueW,
 };
 use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolConnection, IWRdsProtocolConnection_Impl, IWRdsProtocolConnection_Vtbl,
@@ -811,16 +811,7 @@ pub const IRONRDP_PROTOCOL_MANAGER_CLSID_STR: &str = "{89C7ED1E-25E5-4B15-8F52-A
 static SERVER_LOCK_COUNT: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_OBJECT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-const VIRTUAL_CHANNEL_PIPE_BRIDGE_ENV: &str = "IRONRDP_WTS_VC_BRIDGE_PIPE_PREFIX";
-const VIRTUAL_CHANNEL_PIPE_BRIDGE_QUEUE_SIZE: usize = 200;
-const VIRTUAL_CHANNEL_PIPE_BRIDGE_RECONNECT_DELAY: Duration = Duration::from_millis(500);
-const VIRTUAL_CHANNEL_PIPE_BRIDGE_SEND_TIMEOUT: Duration = Duration::from_millis(100);
 const CONTROL_PIPE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
-const VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE: usize = 1024 * 1024;
-
-type SharedVirtualChannelBridgeHandler = Arc<dyn VirtualChannelBridgeHandler>;
-
-static VIRTUAL_CHANNEL_BRIDGE_HANDLER: OnceLock<Mutex<Option<SharedVirtualChannelBridgeHandler>>> = OnceLock::new();
 
 struct ComInitGuard {
     initialized: bool,
@@ -847,59 +838,6 @@ impl Drop for ComInitGuard {
             unsafe { CoUninitialize() };
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VirtualChannelRouteKind {
-    Unknown,
-    IronRdpStatic,
-    IronRdpDynamicBackbone,
-    IronRdpDynamicEndpoint,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VirtualChannelBridgeEndpoint {
-    pub endpoint_name: String,
-    pub static_channel: bool,
-    pub route_kind: VirtualChannelRouteKind,
-}
-
-#[derive(Clone)]
-pub struct VirtualChannelBridgeTx {
-    endpoint: VirtualChannelBridgeEndpoint,
-    outbound_tx: mpsc::SyncSender<Vec<u8>>,
-}
-
-impl VirtualChannelBridgeTx {
-    pub fn endpoint(&self) -> &VirtualChannelBridgeEndpoint {
-        &self.endpoint
-    }
-
-    pub fn send(&self, payload: Vec<u8>) -> windows_core::Result<()> {
-        self.outbound_tx
-            .send(payload)
-            .map_err(|_| windows_core::Error::new(E_UNEXPECTED, "virtual channel bridge sender is closed"))
-    }
-}
-
-pub trait VirtualChannelBridgeHandler: Send + Sync {
-    fn on_channel_opened(&self, endpoint: &VirtualChannelBridgeEndpoint, tx: VirtualChannelBridgeTx);
-
-    fn on_channel_data(&self, endpoint: &VirtualChannelBridgeEndpoint, data: &[u8]);
-
-    fn on_channel_closed(&self, endpoint: &VirtualChannelBridgeEndpoint);
-}
-
-pub fn set_virtual_channel_bridge_handler(handler: Option<Arc<dyn VirtualChannelBridgeHandler>>) {
-    *virtual_channel_bridge_handler_slot().lock() = handler;
-}
-
-fn virtual_channel_bridge_handler_slot() -> &'static Mutex<Option<SharedVirtualChannelBridgeHandler>> {
-    VIRTUAL_CHANNEL_BRIDGE_HANDLER.get_or_init(|| Mutex::new(None))
-}
-
-fn get_virtual_channel_bridge_handler() -> Option<SharedVirtualChannelBridgeHandler> {
-    virtual_channel_bridge_handler_slot().lock().clone()
 }
 
 #[derive(Debug)]
@@ -946,6 +884,7 @@ impl ProviderControlBridge {
         // to keep retrying rather than returning an error that causes a "Catastrophic failure".
         let Some(event) = self.send_command_retried(&ProviderCommand::StartListen {
             listener_name: listener_name.to_owned(),
+            port: Self::read_listener_port(listener_name)?,
         })?
         else {
             // When running under TermService, the companion service is typically started via a
@@ -972,6 +911,43 @@ impl ProviderControlBridge {
                 format!("unexpected service event on start listen: {other:?}"),
             )),
         }
+    }
+
+    fn read_listener_port(listener_name: &str) -> windows_core::Result<Option<u16>> {
+        let key_path = format!("SYSTEM\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\{listener_name}")
+            .encode_utf16()
+            .chain(core::iter::once(0))
+            .collect::<Vec<_>>();
+        let mut port = 0_u32;
+        let mut bytes = 4_u32;
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                PCWSTR(key_path.as_ptr()),
+                windows::core::w!("PortNumber"),
+                RRF_RT_REG_DWORD | RRF_ZEROONFAILURE,
+                None,
+                Some((&mut port as *mut u32).cast()),
+                Some(&mut bytes),
+            )
+        };
+
+        if status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND {
+            return Ok(None);
+        }
+        if status != WIN32_ERROR(0) {
+            return Err(windows_core::Error::new(
+                E_UNEXPECTED,
+                format!("failed to read listener port from the registry: {status:?}"),
+            ));
+        }
+
+        let port = u16::try_from(port)
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or_else(|| windows_core::Error::new(E_INVALIDARG, "invalid listener port"))?;
+
+        Ok(Some(port))
     }
 
     fn stop_listen(&self, listener_name: &str) -> windows_core::Result<()> {
@@ -1170,6 +1146,12 @@ impl ProviderControlBridge {
                     }
                     continue;
                 }
+                ServiceEvent::ConnectionBroken { connection_id: cid, .. } if cid == connection_id => {
+                    debug_log_line(&format!(
+                        "get_connection_credentials connection closed connection_id={connection_id}"
+                    ));
+                    return Ok(None);
+                }
                 ServiceEvent::Error { message } => {
                     debug_log_line(&format!(
                         "get_connection_credentials service_error connection_id={connection_id} message={message}"
@@ -1219,6 +1201,7 @@ impl ProviderControlBridge {
         let Some(event) = self.send_command_retried(&ProviderCommand::WaitForIncoming {
             listener_name: listener_name.to_owned(),
             timeout_ms,
+            port: Self::read_listener_port(listener_name)?,
         })?
         else {
             return Ok(None);
@@ -1469,404 +1452,7 @@ fn enable_connection_autologon(settings: &mut WRDS_CONNECTION_SETTINGS) {
 }
 
 pub fn create_protocol_manager_com() -> IWRdsProtocolManager {
-    install_default_virtual_channel_bridge_handler_from_env();
     ComProtocolManager::new().into()
-}
-
-fn install_default_virtual_channel_bridge_handler_from_env() {
-    if get_virtual_channel_bridge_handler().is_some() {
-        return;
-    }
-
-    let Some(pipe_prefix) = std::env::var(VIRTUAL_CHANNEL_PIPE_BRIDGE_ENV)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-
-    info!(
-        pipe_prefix = %pipe_prefix,
-        "Installing default virtual channel named-pipe bridge handler"
-    );
-    set_virtual_channel_bridge_handler(Some(Arc::new(NamedPipeBridgeHandler::new(pipe_prefix))));
-}
-
-struct NamedPipeBridgeHandler {
-    pipe_prefix: String,
-    workers: Mutex<HashMap<String, NamedPipeBridgeWorker>>,
-    bridge_txs: Mutex<HashMap<String, VirtualChannelBridgeTx>>,
-}
-
-impl NamedPipeBridgeHandler {
-    fn new(pipe_prefix: String) -> Self {
-        Self {
-            pipe_prefix,
-            workers: Mutex::new(HashMap::new()),
-            bridge_txs: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn restart_worker(
-        &self,
-        endpoint: &VirtualChannelBridgeEndpoint,
-        tx: VirtualChannelBridgeTx,
-    ) -> mpsc::SyncSender<Vec<u8>> {
-        let endpoint_key = bridge_endpoint_key(endpoint);
-        let pipe_path = bridge_pipe_path(&self.pipe_prefix, endpoint);
-        let endpoint_for_worker = endpoint.clone();
-
-        let (to_pipe_tx, to_pipe_rx) = mpsc::sync_channel(VIRTUAL_CHANNEL_PIPE_BRIDGE_QUEUE_SIZE);
-        let (stop_tx, stop_rx) = mpsc::channel();
-
-        let join_handle = thread::spawn(move || {
-            run_named_pipe_bridge_worker(endpoint_for_worker, pipe_path, tx, to_pipe_rx, stop_rx)
-        });
-
-        let mut workers = self.workers.lock();
-        if let Some(previous) = workers.insert(
-            endpoint_key,
-            NamedPipeBridgeWorker {
-                stop_tx,
-                to_pipe_tx: to_pipe_tx.clone(),
-                join_handle,
-            },
-        ) {
-            previous.stop_and_join();
-        }
-
-        to_pipe_tx
-    }
-
-    fn stop_worker(&self, endpoint: &VirtualChannelBridgeEndpoint) {
-        let endpoint_key = bridge_endpoint_key(endpoint);
-        if let Some(worker) = self.workers.lock().remove(&endpoint_key) {
-            worker.stop_and_join();
-        }
-    }
-
-    fn get_bridge_tx(&self, endpoint: &VirtualChannelBridgeEndpoint) -> Option<VirtualChannelBridgeTx> {
-        self.bridge_txs.lock().get(&bridge_endpoint_key(endpoint)).cloned()
-    }
-}
-
-impl VirtualChannelBridgeHandler for NamedPipeBridgeHandler {
-    fn on_channel_opened(&self, endpoint: &VirtualChannelBridgeEndpoint, tx: VirtualChannelBridgeTx) {
-        self.bridge_txs.lock().insert(bridge_endpoint_key(endpoint), tx.clone());
-        let _ = self.restart_worker(endpoint, tx);
-    }
-
-    fn on_channel_data(&self, endpoint: &VirtualChannelBridgeEndpoint, data: &[u8]) {
-        let endpoint_key = bridge_endpoint_key(endpoint);
-        let worker_tx = {
-            let workers = self.workers.lock();
-            workers.get(&endpoint_key).map(|worker| worker.to_pipe_tx.clone())
-        };
-
-        let tx = if let Some(tx) = worker_tx {
-            tx
-        } else {
-            let Some(bridge_tx) = self.get_bridge_tx(endpoint) else {
-                warn!(
-                    endpoint = %endpoint.endpoint_name,
-                    "Named-pipe bridge worker unavailable and bridge tx is not registered"
-                );
-                return;
-            };
-
-            self.restart_worker(endpoint, bridge_tx)
-        };
-
-        let result = tx.send(data.to_vec());
-
-        if result.is_err() {
-            warn!(
-                endpoint = %endpoint.endpoint_name,
-                "Failed to queue payload into named-pipe bridge worker"
-            );
-        }
-    }
-
-    fn on_channel_closed(&self, endpoint: &VirtualChannelBridgeEndpoint) {
-        self.bridge_txs.lock().remove(&bridge_endpoint_key(endpoint));
-        self.stop_worker(endpoint);
-    }
-}
-
-struct NamedPipeBridgeWorker {
-    stop_tx: mpsc::Sender<()>,
-    to_pipe_tx: mpsc::SyncSender<Vec<u8>>,
-    join_handle: thread::JoinHandle<()>,
-}
-
-impl NamedPipeBridgeWorker {
-    fn stop_and_join(self) {
-        if let Err(error) = self.stop_tx.send(()) {
-            warn!(%error, "Failed to stop named-pipe bridge worker");
-        }
-
-        if let Err(error) = self.join_handle.join() {
-            warn!(?error, "Named-pipe bridge worker thread panicked");
-        }
-    }
-}
-
-fn run_named_pipe_bridge_worker(
-    endpoint: VirtualChannelBridgeEndpoint,
-    pipe_path: String,
-    to_channel_tx: VirtualChannelBridgeTx,
-    to_pipe_rx: mpsc::Receiver<Vec<u8>>,
-    stop_rx: mpsc::Receiver<()>,
-) {
-    loop {
-        if stop_rx.try_recv().is_ok() {
-            break;
-        }
-
-        let open_result = OpenOptions::new().read(true).write(true).open(&pipe_path);
-        let mut pipe = match open_result {
-            Ok(pipe) => {
-                info!(endpoint = %endpoint.endpoint_name, pipe = %pipe_path, "Connected named-pipe bridge worker");
-                pipe
-            }
-            Err(error) => {
-                debug!(
-                    endpoint = %endpoint.endpoint_name,
-                    pipe = %pipe_path,
-                    %error,
-                    "Named-pipe bridge worker waiting for server"
-                );
-                thread::sleep(VIRTUAL_CHANNEL_PIPE_BRIDGE_RECONNECT_DELAY);
-                continue;
-            }
-        };
-
-        let mut from_pipe_buffer = Vec::with_capacity(4096);
-
-        loop {
-            if stop_rx.try_recv().is_ok() {
-                return;
-            }
-
-            let mut write_failed = false;
-
-            match to_pipe_rx.recv_timeout(VIRTUAL_CHANNEL_PIPE_BRIDGE_SEND_TIMEOUT) {
-                Ok(payload) => {
-                    if let Err(error) = write_length_prefixed(&mut pipe, &payload) {
-                        warn!(
-                            endpoint = %endpoint.endpoint_name,
-                            pipe = %pipe_path,
-                            %error,
-                            "Named-pipe bridge write failed; reconnecting"
-                        );
-                        write_failed = true;
-                    }
-
-                    if write_failed {
-                        break;
-                    }
-
-                    while let Ok(queued_payload) = to_pipe_rx.try_recv() {
-                        if let Err(error) = write_length_prefixed(&mut pipe, &queued_payload) {
-                            warn!(
-                                endpoint = %endpoint.endpoint_name,
-                                pipe = %pipe_path,
-                                %error,
-                                "Named-pipe bridge write failed while draining queue; reconnecting"
-                            );
-                            write_failed = true;
-                            break;
-                        }
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            }
-
-            if write_failed {
-                break;
-            }
-
-            if let Err(error) =
-                pump_named_pipe_inbound_frames(&mut pipe, &endpoint, &to_channel_tx, &mut from_pipe_buffer)
-            {
-                warn!(
-                    endpoint = %endpoint.endpoint_name,
-                    pipe = %pipe_path,
-                    %error,
-                    "Named-pipe bridge read failed; reconnecting"
-                );
-                break;
-            }
-        }
-    }
-}
-
-fn pump_named_pipe_inbound_frames(
-    pipe: &mut File,
-    endpoint: &VirtualChannelBridgeEndpoint,
-    to_channel_tx: &VirtualChannelBridgeTx,
-    read_buffer: &mut Vec<u8>,
-) -> std::io::Result<()> {
-    let mut chunk = [0u8; 8192];
-
-    loop {
-        let available = named_pipe_available_bytes(pipe)?;
-        if available == 0 {
-            break;
-        }
-
-        let read_len = usize::try_from(available).unwrap_or(usize::MAX).min(chunk.len());
-
-        let read_count = match pipe.read(&mut chunk[..read_len]) {
-            Ok(0) => {
-                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "named pipe closed"));
-            }
-            Ok(count) => count,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-
-        read_buffer.extend_from_slice(&chunk[..read_count]);
-        drain_length_prefixed_pipe_frames(endpoint, to_channel_tx, read_buffer)?;
-    }
-
-    Ok(())
-}
-
-fn named_pipe_available_bytes(pipe: &File) -> std::io::Result<u32> {
-    let mut total_bytes_available = 0u32;
-
-    // SAFETY: `pipe.as_raw_handle()` returns a live OS handle for this file. We only ask
-    // for the available byte count and provide a valid out-pointer.
-    unsafe {
-        PeekNamedPipe(
-            HANDLE(pipe.as_raw_handle()),
-            None,
-            0,
-            None,
-            Some(&mut total_bytes_available),
-            None,
-        )
-    }
-    .map_err(|error| {
-        let kind = if error.code() == HRESULT::from_win32(ERROR_BROKEN_PIPE.0)
-            || error.code() == HRESULT::from_win32(ERROR_NO_DATA.0)
-        {
-            std::io::ErrorKind::BrokenPipe
-        } else {
-            std::io::ErrorKind::Other
-        };
-
-        std::io::Error::new(kind, format!("failed to peek named pipe: {error}"))
-    })?;
-
-    Ok(total_bytes_available)
-}
-
-fn drain_length_prefixed_pipe_frames(
-    endpoint: &VirtualChannelBridgeEndpoint,
-    to_channel_tx: &VirtualChannelBridgeTx,
-    read_buffer: &mut Vec<u8>,
-) -> std::io::Result<()> {
-    let mut frame_offset = 0usize;
-
-    while read_buffer.len().saturating_sub(frame_offset) >= 4 {
-        let frame_len_u32 = u32::from_le_bytes([
-            read_buffer[frame_offset],
-            read_buffer[frame_offset + 1],
-            read_buffer[frame_offset + 2],
-            read_buffer[frame_offset + 3],
-        ]);
-        let frame_len = usize::try_from(frame_len_u32).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "named-pipe bridge frame length does not fit in usize",
-            )
-        })?;
-
-        if frame_len > VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "named-pipe bridge frame length exceeds limit (len={frame_len}, max={VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE})"
-                ),
-            ));
-        }
-
-        let frame_total_len = 4usize + frame_len;
-        if read_buffer.len().saturating_sub(frame_offset) < frame_total_len {
-            break;
-        }
-
-        let payload_start = frame_offset + 4;
-        let payload_end = payload_start + frame_len;
-        let payload = read_buffer[payload_start..payload_end].to_vec();
-
-        match to_channel_tx.outbound_tx.try_send(payload) {
-            Ok(()) => {}
-            Err(mpsc::TrySendError::Full(_)) => {
-                warn!(
-                    endpoint = %endpoint.endpoint_name,
-                    "Dropped named-pipe inbound frame because virtual channel outbound queue is full"
-                );
-            }
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "virtual channel bridge sender is closed",
-                ));
-            }
-        }
-
-        frame_offset = payload_end;
-    }
-
-    if frame_offset > 0 {
-        read_buffer.drain(..frame_offset);
-    }
-
-    Ok(())
-}
-
-fn write_length_prefixed(mut writer: impl Write, payload: &[u8]) -> std::io::Result<()> {
-    let len = u32::try_from(payload.len())
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "payload too large"))?;
-    writer.write_all(&len.to_le_bytes())?;
-    writer.write_all(payload)
-}
-
-fn bridge_endpoint_key(endpoint: &VirtualChannelBridgeEndpoint) -> String {
-    let kind = if endpoint.static_channel { "svc" } else { "dvc" };
-    format!("{kind}:{}", endpoint.endpoint_name.to_ascii_lowercase())
-}
-
-fn bridge_pipe_path(pipe_prefix: &str, endpoint: &VirtualChannelBridgeEndpoint) -> String {
-    let normalized_prefix = if pipe_prefix.starts_with(r"\\.\pipe\") {
-        pipe_prefix.to_owned()
-    } else {
-        format!(r"\\.\pipe\{pipe_prefix}")
-    };
-
-    let kind = if endpoint.static_channel { "svc" } else { "dvc" };
-    let channel = sanitize_pipe_segment(&endpoint.endpoint_name);
-
-    format!("{normalized_prefix}.{kind}.{channel}")
-}
-
-fn sanitize_pipe_segment(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
-            out.push(ch.to_ascii_lowercase());
-        } else {
-            out.push('_');
-        }
-    }
-
-    if out.is_empty() { "channel".to_owned() } else { out }
 }
 
 #[implement(IClassFactory)]
@@ -7201,7 +6787,7 @@ mod native_channel_tests {
 
         // oracle: mutant forwarding a static request as a dynamic one makes the companion open the wrong kind of channel.
         assert_eq!(companion.command(), open_command("RDPDR", true));
-        // oracle: regression TermService tolerates E_NOTIMPL for RDPDR and RDPSND at logon; no other code was tried there.
+        // oracle: mutant TermService rejects E_NOTIMPL for RDPDR and RDPSND at logon.
         assert_eq!(error.code(), E_NOTIMPL);
     }
 
@@ -7217,7 +6803,7 @@ mod native_channel_tests {
 
         // oracle: mutant marking every request static makes the companion look for a static channel that a dynamic endpoint never has.
         assert_eq!(companion.command(), open_command("Devolutions::Now::Agent", false));
-        // oracle: regression a refused NOW channel fails with E_UNEXPECTED, as it did before static endpoints were served.
+        // oracle: mutant a refused NOW channel does not fail with E_UNEXPECTED.
         assert_eq!(error.code(), E_UNEXPECTED);
     }
 
@@ -7228,7 +6814,7 @@ mod native_channel_tests {
         // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
         let error = unsafe { connection.CreateVirtualChannel(s!("RDPDR"), true, 0) }.unwrap_err();
 
-        // oracle: regression TermService tolerates E_NOTIMPL for RDPDR and RDPSND at logon; no other code was tried there.
+        // oracle: mutant TermService rejects E_NOTIMPL for RDPDR and RDPSND at logon.
         assert_eq!(error.code(), E_NOTIMPL);
     }
 
@@ -7240,7 +6826,7 @@ mod native_channel_tests {
         // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
         let error = unsafe { connection.CreateVirtualChannel(s!("RDPDR"), true, 0) }.unwrap_err();
 
-        // oracle: regression TermService tolerates E_NOTIMPL for RDPDR and RDPSND at logon; no other code was tried there.
+        // oracle: mutant TermService rejects E_NOTIMPL for RDPDR and RDPSND at logon.
         assert_eq!(error.code(), E_NOTIMPL);
     }
 
@@ -7251,7 +6837,7 @@ mod native_channel_tests {
         // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
         let error = unsafe { connection.CreateVirtualChannel(s!("RDPDR"), true, 0) }.unwrap_err();
 
-        // oracle: regression TermService tolerates E_NOTIMPL for RDPDR and RDPSND at logon; no other code was tried there.
+        // oracle: mutant TermService rejects E_NOTIMPL for RDPDR and RDPSND at logon.
         assert_eq!(error.code(), E_NOTIMPL);
     }
 
@@ -7311,128 +6897,5 @@ mod native_channel_tests {
         let error = unsafe { connection.CreateVirtualChannel(s!("AUDIO_PLAYBACK_DVC"), false, 0) }.unwrap_err();
         assert_eq!(error.code(), E_UNEXPECTED);
         assert_eq!(companion.command(), open_command("AUDIO_PLAYBACK_DVC", false));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::mpsc;
-
-    use super::{
-        VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE, VirtualChannelBridgeEndpoint, VirtualChannelBridgeTx,
-        VirtualChannelRouteKind, bridge_pipe_path, drain_length_prefixed_pipe_frames, sanitize_pipe_segment,
-    };
-
-    #[test]
-    fn native_channel_without_transport_is_not_implemented() {
-        use std::sync::Arc;
-
-        use parking_lot::Mutex;
-        use windows::Win32::Foundation::E_NOTIMPL;
-        use windows::Win32::System::RemoteDesktop::IWRdsProtocolConnection;
-        use windows_core::s;
-
-        let inner = Arc::new(crate::ProtocolConnection::new(
-            1,
-            Arc::new(crate::SessionRegistry::default()),
-        ));
-        let connection: IWRdsProtocolConnection = super::ComProtocolConnection::new(
-            inner,
-            Arc::new(Mutex::new(None)),
-            super::ProviderControlBridge {
-                pipe_name: None,
-                optional_connection: true,
-            },
-        )
-        .into();
-
-        // oracle: mutant a missing provider transport must not fall through to WTS client RPCs.
-        // SAFETY: The COM object and NUL-terminated endpoint are valid for this call.
-        let error = unsafe { connection.CreateVirtualChannel(s!("cliprdr"), true, 0) }.unwrap_err();
-        assert_eq!(error.code(), E_NOTIMPL);
-    }
-
-    #[test]
-    fn sanitize_pipe_segment_normalizes_name() {
-        assert_eq!(sanitize_pipe_segment("ClipRdr"), "cliprdr");
-        assert_eq!(
-            sanitize_pipe_segment("Microsoft::Windows::RDS::Graphics"),
-            "microsoft__windows__rds__graphics"
-        );
-        assert_eq!(sanitize_pipe_segment(""), "channel");
-    }
-
-    #[test]
-    fn bridge_pipe_path_uses_svc_and_dvc_suffixes() {
-        let static_endpoint = VirtualChannelBridgeEndpoint {
-            endpoint_name: "cliprdr".to_owned(),
-            static_channel: true,
-            route_kind: VirtualChannelRouteKind::IronRdpStatic,
-        };
-
-        let dynamic_endpoint = VirtualChannelBridgeEndpoint {
-            endpoint_name: "Microsoft::Windows::RDS::Graphics".to_owned(),
-            static_channel: false,
-            route_kind: VirtualChannelRouteKind::IronRdpDynamicEndpoint,
-        };
-
-        assert_eq!(
-            bridge_pipe_path("IronRdpVcBridge", &static_endpoint),
-            r"\\.\pipe\IronRdpVcBridge.svc.cliprdr"
-        );
-        assert_eq!(
-            bridge_pipe_path(r"\\.\pipe\Bridge", &dynamic_endpoint),
-            r"\\.\pipe\Bridge.dvc.microsoft__windows__rds__graphics"
-        );
-    }
-
-    #[test]
-    fn drain_length_prefixed_frames_forwards_payloads() {
-        let endpoint = VirtualChannelBridgeEndpoint {
-            endpoint_name: "ECHO".to_owned(),
-            static_channel: false,
-            route_kind: VirtualChannelRouteKind::IronRdpDynamicEndpoint,
-        };
-        let (outbound_tx, outbound_rx) = mpsc::sync_channel(4);
-        let bridge_tx = VirtualChannelBridgeTx {
-            endpoint: endpoint.clone(),
-            outbound_tx,
-        };
-
-        let mut framed = Vec::new();
-        framed.extend_from_slice(&(3u32).to_le_bytes());
-        framed.extend_from_slice(b"abc");
-        framed.extend_from_slice(&(2u32).to_le_bytes());
-        framed.extend_from_slice(b"de");
-
-        drain_length_prefixed_pipe_frames(&endpoint, &bridge_tx, &mut framed).expect("framed payload should parse");
-
-        assert!(framed.is_empty());
-        assert_eq!(outbound_rx.try_recv().expect("first payload"), b"abc");
-        assert_eq!(outbound_rx.try_recv().expect("second payload"), b"de");
-    }
-
-    #[test]
-    fn drain_length_prefixed_frames_rejects_oversized_frame() {
-        let endpoint = VirtualChannelBridgeEndpoint {
-            endpoint_name: "ECHO".to_owned(),
-            static_channel: false,
-            route_kind: VirtualChannelRouteKind::IronRdpDynamicEndpoint,
-        };
-        let (outbound_tx, _outbound_rx) = mpsc::sync_channel(1);
-        let bridge_tx = VirtualChannelBridgeTx {
-            endpoint: endpoint.clone(),
-            outbound_tx,
-        };
-
-        let mut framed = Vec::new();
-        let oversized_len =
-            u32::try_from(VIRTUAL_CHANNEL_PIPE_BRIDGE_MAX_FRAME_SIZE).expect("max frame size should fit in u32") + 1;
-        framed.extend_from_slice(&oversized_len.to_le_bytes());
-
-        let error = drain_length_prefixed_pipe_frames(&endpoint, &bridge_tx, &mut framed)
-            .expect_err("oversized frame should fail");
-
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }

@@ -742,7 +742,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression hiding the cursor must not discard an application's native position change.
+    // oracle: mutant hiding the cursor discards an application's native position change.
     #[test]
     fn hidden_cursor_snapshot_retains_position() -> anyhow::Result<()> {
         let bytes = [3, 0xc9, 2, 0x52, 1, 1, 0, 0, 0, 0, 0, 0, 0];
@@ -807,7 +807,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression retained native history belongs to its original connection, not a reconnecting client.
+    // oracle: mutant retained native history is reused by a reconnecting client.
     #[test]
     fn previous_connection_marker_does_not_suppress_initial_position() {
         let mut motion = MotionTracker {

@@ -18,10 +18,19 @@ use crate::{NTSTATUS, UNICODE_STRING};
 
 type Dispatch = unsafe extern "system" fn();
 
-unsafe extern "C" {
-    static mut WdfFunctions_02033: *const Option<Dispatch>;
-    static mut IddFunctions: [Dispatch; 25];
-}
+unsafe extern "system" fn stub_dispatch() {}
+
+#[unsafe(no_mangle)]
+pub(crate) static mut WdfFunctions_02033: *const Option<Dispatch> = ptr::null();
+
+#[unsafe(no_mangle)]
+pub(crate) static mut WdfDriverGlobals: *mut WDF_DRIVER_GLOBALS = ptr::null_mut();
+
+#[unsafe(no_mangle)]
+pub(crate) static mut IddDriverGlobals: *mut IDD_DRIVER_GLOBALS = ptr::null_mut();
+
+#[unsafe(no_mangle)]
+pub(crate) static mut IddFunctions: [Dispatch; 25] = [stub_dispatch; 25];
 
 static FRAMEWORK_LOCK: Mutex<()> = Mutex::new(());
 static LINK_STATUS: AtomicI32 = AtomicI32::new(0);
@@ -146,18 +155,37 @@ fn power_exit_retires_display_without_waiting_for_a_native_update() {
 }
 
 #[test]
-fn failed_adapter_completion_is_not_reported_as_success_after_power_exit() {
-    // oracle: spec EVT_IDD_CX_ADAPTER_INIT_FINISHED §Return value requires an error for a failed operation.
+fn failed_adapter_completion_preserves_the_framework_status_while_active() {
+    // oracle: spec EVT_IDD_CX_ADAPTER_INIT_FINISHED §Return value preserves AdapterInitStatus on failure.
+    assert_eq!(run_device_add(0, 0), (0, true));
     let _lock = FRAMEWORK_LOCK.lock().expect("framework fixture lock");
-    // SAFETY: Power exit does not dereference the device handle.
-    unsafe { crate::adapter::device_d0_exit(ptr::dangling_mut::<c_void>(), 0) };
+    let adapter = ptr::dangling_mut::<c_void>();
+    crate::remote::set_device_active(true);
+    crate::remote::note_adapter_created(adapter);
     let args = crate::adapter::IDARG_IN_ADAPTER_INIT_FINISHED {
         AdapterInitStatus: i32::from_ne_bytes(0xC000_0001_u32.to_ne_bytes()),
     };
 
+    let status = crate::adapter::adapter_init_finished(adapter, &args);
+    crate::remote::set_device_active(false);
+
+    assert_eq!(status, args.AdapterInitStatus);
+}
+
+#[test]
+fn successful_adapter_completion_after_power_exit_reports_inactive_device() {
+    // oracle: mutant completing adapter initialization after power exit must not report success.
+    assert_eq!(run_device_add(0, 0), (0, true));
+    let _lock = FRAMEWORK_LOCK.lock().expect("framework fixture lock");
+    // SAFETY: Power exit does not dereference the adapter handle.
+    unsafe { crate::adapter::device_d0_exit(ptr::dangling_mut::<c_void>(), 0) };
+    let args = crate::adapter::IDARG_IN_ADAPTER_INIT_FINISHED {
+        AdapterInitStatus: crate::STATUS_SUCCESS,
+    };
+
     let status = crate::adapter::adapter_init_finished(ptr::dangling_mut::<c_void>(), &args);
 
-    assert!(status < 0, "failed initialization was reported as successful");
+    assert_eq!(status, crate::ntstatus_from_u32(0xC000_02B6));
 }
 
 #[test]

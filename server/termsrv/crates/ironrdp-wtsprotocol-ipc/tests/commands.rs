@@ -45,3 +45,50 @@ fn open_virtual_channel_keeps_the_static_flag() {
         assert_eq!(decoded, command);
     }
 }
+
+// oracle: mutant a configured listener port is dropped or old StartListen messages stop decoding.
+#[test]
+fn start_listen_accepts_old_messages_and_round_trips_a_configured_port() {
+    let legacy: ProviderCommand =
+        serde_json::from_slice(br#"{"type":"start_listen","listener_name":"IRDP-Tcp"}"#).unwrap();
+    assert_eq!(
+        legacy,
+        ProviderCommand::StartListen {
+            listener_name: "IRDP-Tcp".to_owned(),
+            port: None,
+        }
+    );
+
+    let legacy_wait: ProviderCommand =
+        serde_json::from_slice(br#"{"type":"wait_for_incoming","listener_name":"IRDP-Tcp","timeout_ms":1000}"#)
+            .unwrap();
+    assert_eq!(
+        legacy_wait,
+        ProviderCommand::WaitForIncoming {
+            listener_name: "IRDP-Tcp".to_owned(),
+            timeout_ms: 1000,
+            port: None,
+        }
+    );
+
+    let command = ProviderCommand::StartListen {
+        listener_name: "IRDP-Tcp".to_owned(),
+        port: Some(4495),
+    };
+    let mut frame = Vec::new();
+    write_json_message(&mut frame, &command).unwrap();
+    let decoded: ProviderCommand = read_json_message(&mut frame.as_slice(), DEFAULT_MAX_FRAME_SIZE).unwrap();
+
+    assert_eq!(decoded, command);
+
+    let command = ProviderCommand::WaitForIncoming {
+        listener_name: "IRDP-Tcp".to_owned(),
+        timeout_ms: 1000,
+        port: Some(4495),
+    };
+    let mut frame = Vec::new();
+    write_json_message(&mut frame, &command).unwrap();
+    let decoded: ProviderCommand = read_json_message(&mut frame.as_slice(), DEFAULT_MAX_FRAME_SIZE).unwrap();
+
+    assert_eq!(decoded, command);
+}

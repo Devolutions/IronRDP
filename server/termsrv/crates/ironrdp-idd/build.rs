@@ -1,6 +1,3 @@
-#[cfg(windows)]
-use windows as _;
-
 use std::path::{Path, PathBuf};
 
 fn main() {

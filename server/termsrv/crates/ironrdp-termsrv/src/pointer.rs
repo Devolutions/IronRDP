@@ -719,6 +719,58 @@ mod tests {
     }
 
     #[test]
+    fn pointer_timestamps_remain_monotonic_after_a_previous_frame() -> anyhow::Result<()> {
+        // oracle: property monotonic
+        let frequency = 10_000_000_u64;
+        let previous = 10_000_000;
+        let timestamps = frame_timestamps(
+            frequency,
+            previous,
+            previous,
+            CsReadyFlags::empty(),
+            0,
+            [0, 1_000, 1_000].into_iter(),
+        )?;
+
+        assert!(timestamps[0] > previous);
+        assert!(timestamps.windows(2).all(|pair| pair[0] < pair[1]));
+        Ok(())
+    }
+
+    #[test]
+    fn pointer_timestamps_accept_the_future_limit_and_reject_one_tick_beyond() -> anyhow::Result<()> {
+        // oracle: mutant a pointer frame more than 100 ms ahead of QPC is accepted.
+        let frequency = 10_000_000_u64;
+        let now = 10_000_000;
+        let interval = frequency.div_ceil(10_000);
+        let latest = now + frequency / 10;
+
+        assert_eq!(
+            frame_timestamps(
+                frequency,
+                now,
+                latest - interval,
+                CsReadyFlags::empty(),
+                0,
+                [0].into_iter(),
+            )?,
+            [latest]
+        );
+        assert!(
+            frame_timestamps(
+                frequency,
+                now,
+                latest - interval + 1,
+                CsReadyFlags::empty(),
+                0,
+                [0].into_iter(),
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn disabled_timestamp_injection_ignores_timing_fields() -> anyhow::Result<()> {
         // oracle: MS-RDPEI 2.2.3.2 requires ignoring encodeTime and frameOffset when timestamp injection is disabled.
         assert_eq!(

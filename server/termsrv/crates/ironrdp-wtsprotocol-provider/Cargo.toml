@@ -15,7 +15,6 @@ categories.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 doctest = false
-test = false
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-wtsprotocol-ipc = { path = "../ironrdp-wtsprotocol-ipc", version = "0.1" }
