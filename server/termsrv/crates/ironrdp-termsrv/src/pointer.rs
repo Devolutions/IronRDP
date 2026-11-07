@@ -721,7 +721,7 @@ mod tests {
     #[test]
     fn pointer_timestamps_remain_monotonic_after_a_previous_frame() -> anyhow::Result<()> {
         // oracle: property monotonic
-        let frequency = 10_000_000_u64;
+        let frequency = 10_000_000u64;
         let previous = 10_000_000;
         let timestamps = frame_timestamps(
             frequency,
@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn pointer_timestamps_accept_the_future_limit_and_reject_one_tick_beyond() -> anyhow::Result<()> {
         // oracle: mutant a pointer frame more than 100 ms ahead of QPC is accepted.
-        let frequency = 10_000_000_u64;
+        let frequency = 10_000_000u64;
         let now = 10_000_000;
         let interval = frequency.div_ceil(10_000);
         let latest = now + frequency / 10;
