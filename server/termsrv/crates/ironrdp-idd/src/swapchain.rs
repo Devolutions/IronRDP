@@ -252,6 +252,7 @@ fn maybe_dump_swapchain_surface_bmp(
     // pointer here or we'll under-release the OS-owned surface and eventually corrupt the
     // swapchain lifetime.
     let surface_raw = surface_ptr.cast::<core::ffi::c_void>();
+    // SAFETY: IddCx keeps the borrowed resource alive until the next acquire call.
     let acquired_surface = unsafe { IDXGIResource::from_raw_borrowed(&surface_raw) }
         .ok_or_else(|| "swapchain metadata surface pointer is null".to_owned())?;
     let source_resource: ID3D11Resource = acquired_surface
@@ -262,6 +263,7 @@ fn maybe_dump_swapchain_surface_bmp(
         .map_err(|error| format!("cast acquired surface to ID3D11Texture2D failed: {error}"))?;
 
     let mut source_desc = D3D11_TEXTURE2D_DESC::default();
+    // SAFETY: `source_texture` is a live COM object and `source_desc` is writable.
     unsafe {
         source_texture.GetDesc(&mut source_desc);
     }
@@ -277,9 +279,10 @@ fn maybe_dump_swapchain_surface_bmp(
     staging_desc.BindFlags = 0;
     staging_desc.MiscFlags = 0;
     staging_desc.Usage = D3D11_USAGE_STAGING;
-    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+    staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0.cast_unsigned();
 
     let mut staging_texture = None;
+    // SAFETY: The device is live, the description is initialized, and the output slot is writable.
     unsafe {
         d3d_device
             .CreateTexture2D(&staging_desc, None, Some(&mut staging_texture))
@@ -292,11 +295,13 @@ fn maybe_dump_swapchain_surface_bmp(
         .cast()
         .map_err(|error| format!("cast staging texture to ID3D11Resource failed: {error}"))?;
 
+    // SAFETY: Both resources belong to the same device and remain live for the copy.
     unsafe {
         d3d_context.CopyResource(&staging_resource, &source_resource);
     }
 
     let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+    // SAFETY: The staging resource was created for CPU reads and the output slot is writable.
     unsafe { d3d_context.Map(&staging_resource, 0, D3D11_MAP_READ, 0, Some(&mut mapped)) }
         .map_err(|error| format!("ID3D11DeviceContext::Map failed: {error}"))?;
 
@@ -308,6 +313,7 @@ fn maybe_dump_swapchain_surface_bmp(
         .ok_or_else(|| "packed stride overflow".to_owned())?;
 
     if row_pitch < packed_stride {
+        // SAFETY: The staging resource was successfully mapped above.
         unsafe {
             d3d_context.Unmap(&staging_resource, 0);
         }
@@ -329,13 +335,16 @@ fn maybe_dump_swapchain_surface_bmp(
             .checked_mul(packed_stride)
             .ok_or_else(|| "destination row offset overflow".to_owned())?;
 
-        unsafe {
-            let src = (mapped.pData.cast::<u8>()).add(src_offset);
-            let dst = packed.as_mut_ptr().add(dst_offset);
-            core::ptr::copy_nonoverlapping(src, dst, packed_stride);
-        }
+        let src_base = mapped.pData.cast::<u8>();
+        // SAFETY: The mapped row pitch and height bound `src_offset` and `packed_stride`.
+        let src = unsafe { src_base.add(src_offset) };
+        // SAFETY: `dst_offset` and `packed_stride` are bounded by the allocated packed frame.
+        let dst = unsafe { packed.as_mut_ptr().add(dst_offset) };
+        // SAFETY: The mapped source row and allocated destination row are valid and non-overlapping.
+        unsafe { core::ptr::copy_nonoverlapping(src, dst, packed_stride) };
     }
 
+    // SAFETY: The staging resource was successfully mapped above and is no longer needed.
     unsafe {
         d3d_context.Unmap(&staging_resource, 0);
     }
@@ -450,7 +459,7 @@ impl SwapChainProcessor {
                 crate::debug_trace(&format!(
                     "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_START swapchain=0x{:X} adapter_luid=0x{:08X}{:08X}",
                     swapchain.raw() as usize,
-                    render_adapter_luid.HighPart as u32,
+                    render_adapter_luid.HighPart.cast_unsigned(),
                     render_adapter_luid.LowPart,
                 ));
                 let dxgi_device: IDXGIDevice = match d3d_device.device().cast() {

@@ -1,6 +1,19 @@
+#![expect(
+    clippy::fn_to_numeric_cast_any,
+    reason = "The test fixture installs type-erased callback addresses into native ABI dispatch tables."
+)]
+#![expect(
+    clippy::multiple_unsafe_ops_per_block,
+    reason = "The ABI fixtures group dispatch-table swaps and output writes under their documented pointer-validity invariants."
+)]
+#![expect(
+    clippy::std_instead_of_core,
+    reason = "Concurrency tests require std-only channels, mutexes, and condition variables."
+)]
+
 use core::ffi::c_void;
 use core::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -163,7 +176,7 @@ fn failed_adapter_completion_preserves_the_framework_status_while_active() {
     crate::remote::set_device_active(true);
     crate::remote::note_adapter_created(adapter);
     let args = crate::adapter::IDARG_IN_ADAPTER_INIT_FINISHED {
-        AdapterInitStatus: i32::from_ne_bytes(0xC000_0001_u32.to_ne_bytes()),
+        AdapterInitStatus: i32::from_ne_bytes(0xC000_0001u32.to_ne_bytes()),
     };
 
     let status = crate::adapter::adapter_init_finished(adapter, &args);
@@ -231,7 +244,7 @@ fn power_entry_does_not_wait_for_async_adapter_completion() {
 #[test]
 fn device_startup_requires_an_os_session_binding() {
     // oracle: mutant accepting a device without its OS-owned session permits cross-session display requests.
-    let (status, initialized) = run_device_add(0, i32::from_ne_bytes(0xC000_0225_u32.to_ne_bytes()));
+    let (status, initialized) = run_device_add(0, i32::from_ne_bytes(0xC000_0225u32.to_ne_bytes()));
     assert!(status < 0, "an unbound remote display must not start");
     assert!(!initialized);
 }
@@ -239,7 +252,7 @@ fn device_startup_requires_an_os_session_binding() {
 #[test]
 fn existing_umdf_alias_does_not_abort_device_startup() {
     // oracle: reference UMDF reconnect capture, 2026-10-26: 0x800700B7 collisions precede 0x80070003.
-    let (status, initialized) = run_device_add(i32::from_ne_bytes(0x8007_00B7_u32.to_ne_bytes()), 0);
+    let (status, initialized) = run_device_add(i32::from_ne_bytes(0x8007_00B7u32.to_ne_bytes()), 0);
     assert_eq!(
         status, 0,
         "a retiring device's alias must not prevent the new device from starting"
@@ -250,7 +263,7 @@ fn existing_umdf_alias_does_not_abort_device_startup() {
 #[test]
 fn existing_ntstatus_alias_does_not_abort_device_startup() {
     // oracle: mutant losing the existing STATUS_OBJECT_NAME_COLLISION handling.
-    let (status, initialized) = run_device_add(i32::from_ne_bytes(0xC000_0035_u32.to_ne_bytes()), 0);
+    let (status, initialized) = run_device_add(i32::from_ne_bytes(0xC000_0035u32.to_ne_bytes()), 0);
     assert_eq!(status, 0);
     assert!(initialized);
 }
@@ -266,7 +279,7 @@ fn created_alias_allows_device_startup() {
 #[test]
 fn unrelated_alias_errors_still_abort_device_startup() {
     // oracle: mutant accepting every alias error when making collisions nonfatal.
-    let (status, initialized) = run_device_add(i32::from_ne_bytes(0xC000_0022_u32.to_ne_bytes()), 0);
+    let (status, initialized) = run_device_add(i32::from_ne_bytes(0xC000_0022u32.to_ne_bytes()), 0);
     assert!(status < 0);
     assert!(!initialized);
 }
@@ -373,7 +386,7 @@ unsafe extern "system" fn create_link(
     if LINK_CALLS.fetch_add(1, Ordering::SeqCst) < 2 {
         LINK_STATUS.load(Ordering::SeqCst)
     } else {
-        i32::from_ne_bytes(0x8007_0003_u32.to_ne_bytes())
+        i32::from_ne_bytes(0x8007_0003u32.to_ne_bytes())
     }
 }
 
@@ -452,7 +465,7 @@ unsafe extern "system" fn blocked_display_update(
         .1
         .wait_timeout_while(state, Duration::from_secs(8), |state| !state.1)
         .expect("display call release");
-    i32::from_ne_bytes(0xC000_02B6_u32.to_ne_bytes())
+    i32::from_ne_bytes(0xC000_02B6u32.to_ne_bytes())
 }
 
 unsafe extern "system" fn create_timer(
@@ -494,7 +507,7 @@ unsafe extern "system" fn query_session_property(
         return status;
     }
     if size != 4 {
-        return i32::from_ne_bytes(0xC000_000D_u32.to_ne_bytes());
+        return i32::from_ne_bytes(0xC000_000Du32.to_ne_bytes());
     }
     // SAFETY: WdfDeviceQueryPropertyEx supplies writable output pointers and a four-byte buffer.
     unsafe {

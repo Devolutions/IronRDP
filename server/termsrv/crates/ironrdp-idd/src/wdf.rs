@@ -2,6 +2,10 @@
     unreachable_pub,
     reason = "The WDF ABI shim mirrors native public declarations behind a private module"
 )]
+#![expect(
+    clippy::upper_case_acronyms,
+    reason = "WDF ABI type aliases preserve the names used by Windows headers."
+)]
 
 /// Minimal WDF UMDF v2 type declarations and function dispatch wrappers.
 ///
@@ -149,7 +153,7 @@ impl WDF_OBJECT_ATTRIBUTES {
     /// Inherits execution and synchronization settings from the parent, without a context.
     pub const fn init_no_context() -> Self {
         WDF_OBJECT_ATTRIBUTES {
-            Size: size_of::<WDF_OBJECT_ATTRIBUTES>() as u32,
+            Size: crate::abi_size_u32::<WDF_OBJECT_ATTRIBUTES>(),
             EvtCleanupCallback: None,
             EvtDestroyCallback: None,
             ExecutionLevel: 1,       // WdfExecutionLevelInheritFromParent
@@ -177,7 +181,7 @@ pub struct WDF_FILEOBJECT_CONFIG {
 impl WDF_FILEOBJECT_CONFIG {
     pub const fn init(evt_device_file_create: Option<PFN_WDF_DEVICE_FILE_CREATE>) -> Self {
         WDF_FILEOBJECT_CONFIG {
-            Size: size_of::<WDF_FILEOBJECT_CONFIG>() as u32,
+            Size: crate::abi_size_u32::<WDF_FILEOBJECT_CONFIG>(),
             EvtDeviceFileCreate: evt_device_file_create,
             EvtFileClose: None,
             EvtFileCleanup: None,
@@ -222,7 +226,7 @@ const _: () = {
 impl WDF_PNPPOWER_EVENT_CALLBACKS {
     pub const fn init() -> Self {
         WDF_PNPPOWER_EVENT_CALLBACKS {
-            Size: size_of::<WDF_PNPPOWER_EVENT_CALLBACKS>() as u32,
+            Size: crate::abi_size_u32::<WDF_PNPPOWER_EVENT_CALLBACKS>(),
             EvtDeviceD0Entry: None,
             EvtDeviceD0EntryPostInterruptsEnabled: None,
             EvtDeviceD0Exit: None,
@@ -363,9 +367,23 @@ unsafe extern "C" {
     pub static mut WdfDriverGlobals: *mut WDF_DRIVER_GLOBALS;
 }
 
+/// Reads one entry from the initialized WDF function table.
+///
+/// # Safety
+///
+/// WDF must have initialized the table, and `index` must be a valid table entry.
+unsafe fn function_table_entry(index: usize) -> Option<PFN_WDF_FUNCTION> {
+    // SAFETY: The caller guarantees WDF initialized the function table.
+    let table = unsafe { WDF_FUNCTION_TABLE };
+    // SAFETY: The caller guarantees `index` is a valid table entry.
+    let entry = unsafe { table.add(index) };
+    // SAFETY: WDF initializes every table entry before invoking driver callbacks.
+    unsafe { entry.read() }
+}
+
 pub(crate) unsafe fn timer_create(parent: *mut c_void, callback: PFN_WDF_TIMER) -> (NTSTATUS, WDFTIMER) {
     let config = WDF_TIMER_CONFIG {
-        Size: size_of::<WDF_TIMER_CONFIG>() as u32,
+        Size: crate::abi_size_u32::<WDF_TIMER_CONFIG>(),
         EvtTimerFunc: Some(callback),
         Period: 250,
         AutomaticSerialization: 0,
@@ -383,32 +401,38 @@ pub(crate) unsafe fn timer_create(parent: *mut c_void, callback: PFN_WDF_TIMER) 
         *mut WDFTIMER,
     ) -> NTSTATUS;
     // SAFETY: UMDF 2.33 binds slot 198 with this ABI before invoking driver callbacks.
-    let create = unsafe {
-        core::mem::transmute::<Option<PFN_WDF_FUNCTION>, Create>(*WDF_FUNCTION_TABLE.add(WDF_TIMER_CREATE_TABLE_INDEX))
-    };
+    let entry = unsafe { function_table_entry(WDF_TIMER_CREATE_TABLE_INDEX) };
+    // SAFETY: The WDF timer-create table slot has this ABI.
+    let create = unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, Create>(entry) };
+    // SAFETY: WDF initializes this global before invoking driver callbacks.
+    let globals = unsafe { WdfDriverGlobals };
     // SAFETY: The caller supplies a live parent; configuration and output storage outlive the call.
-    let status = unsafe { create(WdfDriverGlobals, &config, &attributes, &mut timer) };
+    let status = unsafe { create(globals, &config, &attributes, &mut timer) };
     (status, timer)
 }
 
 pub(crate) unsafe fn timer_start(timer: WDFTIMER) {
     type Start = unsafe extern "system" fn(*mut WDF_DRIVER_GLOBALS, WDFTIMER, i64) -> u8;
     // SAFETY: UMDF 2.33 binds slot 199 with this ABI.
-    let start = unsafe {
-        core::mem::transmute::<Option<PFN_WDF_FUNCTION>, Start>(*WDF_FUNCTION_TABLE.add(WDF_TIMER_START_TABLE_INDEX))
-    };
+    let entry = unsafe { function_table_entry(WDF_TIMER_START_TABLE_INDEX) };
+    // SAFETY: The WDF timer-start table slot has this ABI.
+    let start = unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, Start>(entry) };
+    // SAFETY: WDF initializes this global before invoking driver callbacks.
+    let globals = unsafe { WdfDriverGlobals };
     // SAFETY: The caller supplies a live timer; negative due time is relative, in 100-ns units.
-    unsafe { start(WdfDriverGlobals, timer, -2_500_000) };
+    unsafe { start(globals, timer, -2_500_000) };
 }
 
 pub(crate) unsafe fn timer_stop(timer: WDFTIMER) {
     type Stop = unsafe extern "system" fn(*mut WDF_DRIVER_GLOBALS, WDFTIMER, u8) -> u8;
     // SAFETY: UMDF 2.33 binds slot 200 with this ABI.
-    let stop = unsafe {
-        core::mem::transmute::<Option<PFN_WDF_FUNCTION>, Stop>(*WDF_FUNCTION_TABLE.add(WDF_TIMER_STOP_TABLE_INDEX))
-    };
+    let entry = unsafe { function_table_entry(WDF_TIMER_STOP_TABLE_INDEX) };
+    // SAFETY: The WDF timer-stop table slot has this ABI.
+    let stop = unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, Stop>(entry) };
+    // SAFETY: WDF initializes this global before invoking driver callbacks.
+    let globals = unsafe { WdfDriverGlobals };
     // SAFETY: The caller supplies a live timer; Wait=FALSE must not block a power transition.
-    unsafe { stop(WdfDriverGlobals, timer, 0) };
+    unsafe { stop(globals, timer, 0) };
 }
 
 /// Reads the OS-owned remote session through the UMDF 2.33 device-property dispatch.
@@ -417,7 +441,7 @@ pub(crate) unsafe fn timer_stop(timer: WDFTIMER) {
 /// The device must be a live WDFDEVICE supplied by WDF.
 pub(crate) unsafe fn device_session_id(device: WDFDEVICE) -> (NTSTATUS, u32) {
     let mut property = WDF_DEVICE_PROPERTY_DATA {
-        Size: size_of::<WDF_DEVICE_PROPERTY_DATA>() as u32,
+        Size: crate::abi_size_u32::<WDF_DEVICE_PROPERTY_DATA>(),
         PropertyKey: &DEVPKEY_Device_SessionId,
         Lcid: 0,
         Flags: 0,
@@ -426,18 +450,18 @@ pub(crate) unsafe fn device_session_id(device: WDFDEVICE) -> (NTSTATUS, u32) {
     let mut required_size = 0u32;
     let mut property_type = DEVPROPTYPE::default();
     // SAFETY: WDF binds this table before invoking device callbacks; slot 54 has this ABI in UMDF 2.33.
-    let query = unsafe {
-        core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_QUERY_PROPERTY_EX>(
-            *WDF_FUNCTION_TABLE.add(WDF_DEVICE_QUERY_PROPERTY_EX_TABLE_INDEX),
-        )
-    };
+    let entry = unsafe { function_table_entry(WDF_DEVICE_QUERY_PROPERTY_EX_TABLE_INDEX) };
+    // SAFETY: The WDF property-query table slot has this ABI.
+    let query = unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_QUERY_PROPERTY_EX>(entry) };
+    // SAFETY: WDF initializes this global before invoking device callbacks.
+    let globals = unsafe { WdfDriverGlobals };
     // SAFETY: All input and output buffers remain valid for the synchronous query.
     let status = unsafe {
         query(
-            WdfDriverGlobals,
+            globals,
             device,
             &mut property,
-            size_of::<u32>() as u32,
+            crate::abi_size_u32::<u32>(),
             core::ptr::addr_of_mut!(session_id).cast(),
             &mut required_size,
             &mut property_type,
@@ -447,7 +471,7 @@ pub(crate) unsafe fn device_session_id(device: WDFDEVICE) -> (NTSTATUS, u32) {
         return (status, 0);
     }
     if property_type != DEVPROP_TYPE_UINT32
-        || required_size != size_of::<u32>() as u32
+        || required_size != crate::abi_size_u32::<u32>()
         || session_id == 0
         || session_id == u32::MAX
     {
@@ -469,8 +493,8 @@ pub unsafe fn driver_create(
     registry_path: *const UNICODE_STRING,
     config: *const WDF_DRIVER_CONFIG,
 ) -> NTSTATUS {
-    // SAFETY: WDF_FUNCTION_TABLE is populated by the WDF framework before DriverEntry is called.
-    let entry = unsafe { WDF_FUNCTION_TABLE.add(WDF_DRIVER_CREATE_TABLE_INDEX).read() };
+    // SAFETY: WDF initializes this table entry before calling DriverEntry.
+    let entry = unsafe { function_table_entry(WDF_DRIVER_CREATE_TABLE_INDEX) };
     let func: PFN_WDF_DRIVER_CREATE =
         // SAFETY: all WDF function table entries share the same pointer representation.
         unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DRIVER_CREATE>(entry) };
@@ -500,8 +524,8 @@ pub unsafe fn device_create(
     attributes: *const WDF_OBJECT_ATTRIBUTES,
 ) -> (NTSTATUS, WDFDEVICE) {
     let mut device: WDFDEVICE = core::ptr::null_mut();
-    // SAFETY: WDF_FUNCTION_TABLE populated by framework.
-    let entry = unsafe { WDF_FUNCTION_TABLE.add(WDF_DEVICE_CREATE_TABLE_INDEX).read() };
+    // SAFETY: WDF initializes this table entry before invoking device callbacks.
+    let entry = unsafe { function_table_entry(WDF_DEVICE_CREATE_TABLE_INDEX) };
     let func: PFN_WDF_DEVICE_CREATE =
         // SAFETY: all WDF function table entries share the same pointer representation.
         unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_CREATE>(entry) };
@@ -517,12 +541,8 @@ pub unsafe fn device_create_device_interface(
     interface_class_guid: *const GUID,
     reference_string: *const UNICODE_STRING,
 ) -> NTSTATUS {
-    // SAFETY: WDF_FUNCTION_TABLE populated by framework.
-    let entry = unsafe {
-        WDF_FUNCTION_TABLE
-            .add(WDF_DEVICE_CREATE_DEVICE_INTERFACE_TABLE_INDEX)
-            .read()
-    };
+    // SAFETY: WDF initializes this table entry before invoking device callbacks.
+    let entry = unsafe { function_table_entry(WDF_DEVICE_CREATE_DEVICE_INTERFACE_TABLE_INDEX) };
     let func: PFN_WDF_DEVICE_CREATE_DEVICE_INTERFACE =
         // SAFETY: all WDF function table entries share the same pointer representation.
         unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_CREATE_DEVICE_INTERFACE>(entry) };
@@ -538,14 +558,14 @@ pub unsafe fn device_set_device_interface_state(
     reference_string: *const UNICODE_STRING,
     is_interface_enabled: bool,
 ) {
-    let entry = unsafe {
-        WDF_FUNCTION_TABLE
-            .add(WDF_DEVICE_SET_DEVICE_INTERFACE_STATE_TABLE_INDEX)
-            .read()
-    };
+    // SAFETY: WDF initializes this table entry before invoking device callbacks.
+    let entry = unsafe { function_table_entry(WDF_DEVICE_SET_DEVICE_INTERFACE_STATE_TABLE_INDEX) };
+    // SAFETY: This WDF table slot uses the declared device-interface-state ABI.
     let func: PFN_WDF_DEVICE_SET_DEVICE_INTERFACE_STATE =
         unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_SET_DEVICE_INTERFACE_STATE>(entry) };
+    // SAFETY: WDF initializes this global before invoking device callbacks.
     let globals = unsafe { WdfDriverGlobals };
+    // SAFETY: The caller guarantees the device and optional string pointers remain valid for the call.
     unsafe {
         func(
             globals,
@@ -558,12 +578,9 @@ pub unsafe fn device_set_device_interface_state(
 }
 
 pub unsafe fn device_create_symbolic_link(device: WDFDEVICE, symbolic_link_name: *const UNICODE_STRING) -> NTSTATUS {
-    // SAFETY: WDF_FUNCTION_TABLE populated by framework.
-    let entry = unsafe {
-        WDF_FUNCTION_TABLE
-            .add(WDF_DEVICE_CREATE_SYMBOLIC_LINK_TABLE_INDEX)
-            .read()
-    };
+    // SAFETY: WDF initializes this table entry before invoking device callbacks.
+    let entry = unsafe { function_table_entry(WDF_DEVICE_CREATE_SYMBOLIC_LINK_TABLE_INDEX) };
+    // SAFETY: This WDF table slot uses the declared symbolic-link ABI.
     let func: PFN_WDF_DEVICE_CREATE_SYMBOLIC_LINK =
         unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_CREATE_SYMBOLIC_LINK>(entry) };
     // SAFETY: populated by the WDF framework on load.
@@ -577,22 +594,26 @@ pub unsafe fn device_init_set_file_object_config(
     file_object_config: *const WDF_FILEOBJECT_CONFIG,
     file_object_attributes: *const WDF_OBJECT_ATTRIBUTES,
 ) {
-    let entry = unsafe {
-        WDF_FUNCTION_TABLE
-            .add(WDF_DEVICE_INIT_SET_FILE_OBJECT_CONFIG_TABLE_INDEX)
-            .read()
-    };
+    // SAFETY: WDF initializes this table entry before invoking device callbacks.
+    let entry = unsafe { function_table_entry(WDF_DEVICE_INIT_SET_FILE_OBJECT_CONFIG_TABLE_INDEX) };
+    // SAFETY: This WDF table slot uses the declared file-object-config ABI.
     let func: PFN_WDF_DEVICE_INIT_SET_FILE_OBJECT_CONFIG =
         unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_DEVICE_INIT_SET_FILE_OBJECT_CONFIG>(entry) };
+    // SAFETY: WDF initializes this global before invoking device callbacks.
     let globals = unsafe { WdfDriverGlobals };
+    // SAFETY: The caller guarantees the initialization and config pointers remain valid for the call.
     unsafe { func(globals, device_init, file_object_config, file_object_attributes) };
 }
 
 pub unsafe fn request_complete(request: WDFREQUEST, status: NTSTATUS) {
-    let entry = unsafe { WDF_FUNCTION_TABLE.add(WDF_REQUEST_COMPLETE_TABLE_INDEX).read() };
+    // SAFETY: WDF initializes this table entry before invoking device callbacks.
+    let entry = unsafe { function_table_entry(WDF_REQUEST_COMPLETE_TABLE_INDEX) };
+    // SAFETY: This WDF table slot uses the declared request-complete ABI.
     let func: PFN_WDF_REQUEST_COMPLETE =
         unsafe { core::mem::transmute::<Option<PFN_WDF_FUNCTION>, PFN_WDF_REQUEST_COMPLETE>(entry) };
+    // SAFETY: WDF initializes this global before invoking device callbacks.
     let globals = unsafe { WdfDriverGlobals };
+    // SAFETY: The caller guarantees `request` is a live request handle.
     unsafe { func(globals, request, status) };
 }
 
@@ -606,12 +627,8 @@ pub unsafe fn device_init_set_pnp_power_event_callbacks(
     device_init: *mut WDFDEVICE_INIT,
     callbacks: *const WDF_PNPPOWER_EVENT_CALLBACKS,
 ) {
-    // SAFETY: WDF_FUNCTION_TABLE populated by framework.
-    let entry = unsafe {
-        WDF_FUNCTION_TABLE
-            .add(WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS_TABLE_INDEX)
-            .read()
-    };
+    // SAFETY: WDF initializes this table entry before invoking device callbacks.
+    let entry = unsafe { function_table_entry(WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS_TABLE_INDEX) };
     let func: PFN_WDF_DEVICE_INIT_SET_PNPPOWER_EVENT_CALLBACKS =
         // SAFETY: all WDF function table entries share the same pointer representation.
         unsafe {

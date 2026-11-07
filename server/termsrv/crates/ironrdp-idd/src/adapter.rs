@@ -56,7 +56,8 @@ fn complete_adapter_initialization(adapter: IDDCX_ADAPTER, adapter_init_status: 
         return crate::ntstatus_from_u32(0xC000_02B6);
     }
 
-    let status = crate::monitor::IronRdpIddMonitor::create_and_arrive(adapter, 0, None);
+    // SAFETY: IddCx supplies this live adapter handle to its initialization callback.
+    let status = unsafe { crate::monitor::IronRdpIddMonitor::create_and_arrive(adapter, 0, None) };
     crate::debug_trace(&format!(
         "{source}: create_and_arrive status=0x{:08X}",
         ntstatus_to_u32(status)
@@ -242,14 +243,14 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
         IDARG_OUT_ADAPTER_INIT, IDDCX_ADAPTER_CAPS, IDDCX_ENDPOINT_DIAGNOSTIC_INFO, IDDCX_ENDPOINT_VERSION,
     };
     let hardware_version = IDDCX_ENDPOINT_VERSION {
-        Size: size_of::<IDDCX_ENDPOINT_VERSION>() as u32,
+        Size: crate::abi_size_u32::<IDDCX_ENDPOINT_VERSION>(),
         MajorVer: 1,
         MinorVer: 0,
         Build: 0,
         SKU: 0,
     };
     let firmware_version = IDDCX_ENDPOINT_VERSION {
-        Size: size_of::<IDDCX_ENDPOINT_VERSION>() as u32,
+        Size: crate::abi_size_u32::<IDDCX_ENDPOINT_VERSION>(),
         MajorVer: 1,
         MinorVer: 0,
         Build: 0,
@@ -257,7 +258,7 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
     };
 
     let diag = IDDCX_ENDPOINT_DIAGNOSTIC_INFO {
-        Size: size_of::<IDDCX_ENDPOINT_DIAGNOSTIC_INFO>() as u32,
+        Size: crate::abi_size_u32::<IDDCX_ENDPOINT_DIAGNOSTIC_INFO>(),
         TransmissionType: IDDCX_TRANSMISSION_TYPE_WIRED_OTHER,
         pEndPointFriendlyName: ENDPOINT_FRIENDLY_NAME_UTF16.as_ptr(),
         pEndPointModelName: ENDPOINT_MODEL_NAME_UTF16.as_ptr(),
@@ -284,7 +285,7 @@ unsafe fn init_adapter_async(device: crate::wdf::WDFDEVICE) -> NTSTATUS {
     }
 
     let mut caps = IDDCX_ADAPTER_CAPS {
-        Size: size_of::<IDDCX_ADAPTER_CAPS>() as u32,
+        Size: crate::abi_size_u32::<IDDCX_ADAPTER_CAPS>(),
         Flags: flags,
         MaxDisplayPipelineRate: 0,
         MaxMonitorsSupported: 1,
@@ -385,10 +386,15 @@ pub(crate) unsafe extern "system" fn device_file_create(
 ) {
     let _ = (device, file_object);
     crate::debug_trace("EvtDeviceFileCreate: completing open request with STATUS_SUCCESS");
+    // SAFETY: WDF provided this request to the file-create callback.
     unsafe { crate::wdf::request_complete(request, STATUS_SUCCESS) };
 }
 
 #[cfg(any(test, ironrdp_idd_link))]
+#[expect(
+    clippy::fn_to_numeric_cast_any,
+    reason = "IddCx stores type-erased callback addresses in its ABI function-pointer fields."
+)]
 pub(crate) unsafe extern "system" fn device_add(
     _driver: crate::wdf::WDFDRIVER,
     device_init: *mut crate::wdf::WDFDEVICE_INIT,
@@ -411,6 +417,7 @@ pub(crate) unsafe extern "system" fn device_add(
     crate::debug_trace("EvtDriverDeviceAdd: WdfDeviceInitSetPnpPowerEventCallbacks configured");
 
     let file_object_config = crate::wdf::WDF_FILEOBJECT_CONFIG::init(Some(device_file_create));
+    // SAFETY: WDF supplied `device_init` to this callback; the configuration remains live for the call.
     unsafe { crate::wdf::device_init_set_file_object_config(device_init, &file_object_config, core::ptr::null()) };
     crate::debug_trace("EvtDriverDeviceAdd: WdfDeviceInitSetFileObjectConfig configured");
 
@@ -419,34 +426,46 @@ pub(crate) unsafe extern "system" fn device_add(
     // SAFETY: IDD_CX_CLIENT_CONFIG is a POD struct of function pointers — zero-initialization
     // produces all-None (null) entries, which is valid C ABI for unused callbacks.
     let mut config: IDD_CX_CLIENT_CONFIG = unsafe { core::mem::zeroed() };
-    config.Size = size_of::<IDD_CX_CLIENT_CONFIG>() as u32;
+    config.Size = crate::abi_size_u32::<IDD_CX_CLIENT_CONFIG>();
     tracing::info!(idd_client_config_size = config.Size, "Prepared IDD_CX_CLIENT_CONFIG");
 
-    // Assign mandatory callbacks by transmuting typed fn pointers → Option<unsafe extern "system" fn()>.
-    // SAFETY: all function pointer types share the same calling convention and pointer size.
+    // Assign mandatory callbacks by transmuting typed fn pointers to IddCx's erased callback fields.
+    // SAFETY: IddCx invokes these callbacks using their declared signatures and the system ABI.
+    // SAFETY: Function pointer representations use the same address width on this target.
     config.EvtIddCxAdapterInitFinished =
-        Some(unsafe { transmute::<_, unsafe extern "system" fn()>(adapter_init_finished as *const () as usize) });
+        Some(unsafe { transmute::<usize, unsafe extern "system" fn()>(adapter_init_finished as *const () as usize) });
+    // SAFETY: The IddCx callback field erases the exact system-ABI signature of this function.
     config.EvtIddCxAdapterCommitModes =
-        Some(unsafe { transmute::<_, unsafe extern "system" fn()>(adapter_commit_modes as *const () as usize) });
+        Some(unsafe { transmute::<usize, unsafe extern "system" fn()>(adapter_commit_modes as *const () as usize) });
+    // SAFETY: The IddCx callback field erases the exact system-ABI signature of this function.
     config.EvtIddCxParseMonitorDescription = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::parse_monitor_description as *const () as usize)
+        transmute::<usize, unsafe extern "system" fn()>(crate::monitor::parse_monitor_description as *const () as usize)
     });
+    // SAFETY: The IddCx callback field erases the exact system-ABI signature of this function.
     config.EvtIddCxMonitorGetDefaultDescriptionModes = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(
+        transmute::<usize, unsafe extern "system" fn()>(
             crate::monitor::monitor_get_default_description_modes as *const () as usize,
         )
     });
+    // SAFETY: The IddCx callback field erases the exact system-ABI signature of this function.
     config.EvtIddCxMonitorQueryTargetModes = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_query_target_modes as *const () as usize)
+        transmute::<usize, unsafe extern "system" fn()>(
+            crate::monitor::monitor_query_target_modes as *const () as usize,
+        )
     });
+    // SAFETY: The IddCx callback field erases the exact system-ABI signature of this function.
     config.EvtIddCxMonitorAssignSwapChain = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_assign_swapchain as *const () as usize)
+        transmute::<usize, unsafe extern "system" fn()>(crate::monitor::monitor_assign_swapchain as *const () as usize)
     });
+    // SAFETY: The IddCx callback field erases the exact system-ABI signature of this function.
     config.EvtIddCxMonitorUnassignSwapChain = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_unassign_swapchain as *const () as usize)
+        transmute::<usize, unsafe extern "system" fn()>(
+            crate::monitor::monitor_unassign_swapchain as *const () as usize,
+        )
     });
+    // SAFETY: The IddCx callback field erases the exact system-ABI signature of this function.
     config.EvtIddCxMonitorGetPhysicalSize = Some(unsafe {
-        transmute::<_, unsafe extern "system" fn()>(crate::monitor::monitor_get_physical_size as *const () as usize)
+        transmute::<usize, unsafe extern "system" fn()>(crate::monitor::monitor_get_physical_size as *const () as usize)
     });
 
     // ── 2. IddCxDeviceInitConfig ─────────────────────────────────────────────────────────────
@@ -511,6 +530,7 @@ pub(crate) unsafe extern "system" fn device_add(
     }
     crate::debug_trace(&format!("EvtDriverDeviceAdd: bound_session_id={session_id}"));
 
+    // SAFETY: WDF supplied this live device and the GUID remains valid for the call.
     let device_interface_status = unsafe {
         crate::wdf::device_create_device_interface(device, &GUID_DEVINTERFACE_IRONRDP_IDD_VIDEO, core::ptr::null())
     };
@@ -540,9 +560,11 @@ pub(crate) unsafe extern "system" fn device_add(
         r"\Global??\IronRdpIddVideo",
     ] {
         let mut symbolic_link_utf16: Vec<u16> = symbolic_link_name.encode_utf16().collect();
+        let symbolic_link_length = u16::try_from(symbolic_link_utf16.len() * size_of::<u16>())
+            .expect("static symbolic link name fits UNICODE_STRING");
         let symbolic_link = crate::UNICODE_STRING {
-            Length: (symbolic_link_utf16.len() * size_of::<u16>()) as u16,
-            MaximumLength: (symbolic_link_utf16.len() * size_of::<u16>()) as u16,
+            Length: symbolic_link_length,
+            MaximumLength: symbolic_link_length,
             Buffer: symbolic_link_utf16.as_mut_ptr(),
         };
 

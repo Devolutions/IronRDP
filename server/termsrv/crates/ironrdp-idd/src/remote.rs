@@ -322,7 +322,7 @@ fn maybe_request_display_config_update(timer: crate::wdf::WDFTIMER) {
     };
 
     let mut path = crate::iddcx::IDDCX_DISPLAYCONFIGPATH {
-        Size: size_of::<crate::iddcx::IDDCX_DISPLAYCONFIGPATH>() as u32,
+        Size: crate::abi_size_u32::<crate::iddcx::IDDCX_DISPLAYCONFIGPATH>(),
         MonitorObject: monitor,
         Position: POINT { x: 0, y: 0 },
         Resolution: DISPLAYCONFIG_2DREGION {
@@ -339,7 +339,7 @@ fn maybe_request_display_config_update(timer: crate::wdf::WDFTIMER) {
         PhysicalWidthOverride: 0,
         PhysicalHeightOverride: 0,
     };
-    let mut in_args = crate::iddcx::IDARG_IN_ADAPTERDISPLAYCONFIGUPDATE {
+    let in_args = crate::iddcx::IDARG_IN_ADAPTERDISPLAYCONFIGUPDATE {
         PathCount: 1,
         pPaths: &mut path,
     };
@@ -376,7 +376,7 @@ fn maybe_request_display_config_update(timer: crate::wdf::WDFTIMER) {
         status
     } else {
         // SAFETY: The monitor-parented timer keeps both objects ahead of cleanup until this callback returns.
-        unsafe { crate::iddcx::adapter_display_config_update(adapter, &mut in_args) }
+        unsafe { crate::iddcx::adapter_display_config_update(adapter, &in_args) }
     };
 
     {
@@ -674,37 +674,6 @@ pub fn set_display_config(_adapter: IDDCX_ADAPTER, paths: &[crate::adapter::IDDC
     maybe_log_session_ready(&config, &mut state);
     STATUS_SUCCESS
 }
-#[cfg(test)]
-mod tests {
-    use super::{RuntimeConfig, apply_runtime_config, load_runtime_config};
-
-    #[test]
-    fn runtime_config_parser_uses_explicit_text_and_ignores_malformed_lines() {
-        // oracle: a malformed line or comment cannot replace runtime configuration values.
-        let mut config = RuntimeConfig::default();
-        apply_runtime_config(
-            &mut config,
-            "# fixture\n dump_dir = C:\\fixture\\dumps \nnot-a-key-value\nhardware_id=IronRdpIdd\nactive_video_source=custom\n",
-        );
-
-        assert_eq!(
-            config.dump_dir.as_deref(),
-            Some(std::path::Path::new(r"C:\fixture\dumps"))
-        );
-        assert_eq!(config.hardware_id.as_deref(), Some("IronRdpIdd"));
-        assert_eq!(config.active_video_source.as_deref(), Some("custom"));
-    }
-
-    #[test]
-    fn test_runtime_config_loader_does_not_read_host_machine_state() {
-        // oracle: unit tests must not inherit machine-specific C:\ProgramData runtime configuration.
-        let config = load_runtime_config();
-
-        assert_eq!(config.dump_dir, None);
-        assert_eq!(config.hardware_id, None);
-        assert_eq!(config.active_video_source, None);
-    }
-}
 
 pub fn handle_session_transition(_adapter: IDDCX_ADAPTER, is_remote: bool) {
     let config = load_runtime_config();
@@ -737,5 +706,36 @@ pub fn handle_session_transition(_adapter: IDDCX_ADAPTER, is_remote: bool) {
         if !is_remote {
             reset_display_config_state(&config, &mut state, "session_inactive");
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::{RuntimeConfig, apply_runtime_config, load_runtime_config};
+
+    #[test]
+    fn runtime_config_parser_uses_explicit_text_and_ignores_malformed_lines() {
+        // oracle: a malformed line or comment cannot replace runtime configuration values.
+        let mut config = RuntimeConfig::default();
+        apply_runtime_config(
+            &mut config,
+            "# fixture\n dump_dir = C:\\fixture\\dumps \nnot-a-key-value\nhardware_id=IronRdpIdd\nactive_video_source=custom\n",
+        );
+
+        assert_eq!(
+            config.dump_dir.as_deref(),
+            Some(std::path::Path::new(r"C:\fixture\dumps"))
+        );
+        assert_eq!(config.hardware_id.as_deref(), Some("IronRdpIdd"));
+        assert_eq!(config.active_video_source.as_deref(), Some("custom"));
+    }
+
+    #[test]
+    fn test_runtime_config_loader_does_not_read_host_machine_state() {
+        // oracle: unit tests must not inherit machine-specific C:\ProgramData runtime configuration.
+        let config = load_runtime_config();
+
+        assert_eq!(config.dump_dir, None);
+        assert_eq!(config.hardware_id, None);
+        assert_eq!(config.active_video_source, None);
     }
 }

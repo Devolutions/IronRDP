@@ -36,6 +36,16 @@ use windows_core::BOOL;
 
 pub type NTSTATUS = i32;
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The assertion guarantees each native ABI size fits its 32-bit Size field."
+)]
+pub(crate) const fn abi_size_u32<T>() -> u32 {
+    let size = size_of::<T>();
+    assert!(size <= 0xFFFF_FFFFusize);
+    size as u32
+}
+
 pub const STATUS_SUCCESS: NTSTATUS = 0;
 
 pub const fn ntstatus_from_u32(value: u32) -> NTSTATUS {
@@ -115,12 +125,11 @@ pub extern "system" fn DriverEntry(
 ) -> NTSTATUS {
     #[cfg(ironrdp_idd_link)]
     {
-        use core::mem::size_of;
         debug_trace("DriverEntry: entered");
         debug_trace("SESSION_PROOF_IDD_DRIVER_ENTRY");
         tracing::info!("SESSION_PROOF_IDD_DRIVER_ENTRY");
         let config = wdf::WDF_DRIVER_CONFIG {
-            Size: size_of::<wdf::WDF_DRIVER_CONFIG>() as u32,
+            Size: abi_size_u32::<wdf::WDF_DRIVER_CONFIG>(),
             EvtDriverDeviceAdd: Some(adapter::device_add),
             EvtDriverUnload: None,
             DriverInitFlags: 0,

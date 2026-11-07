@@ -39,6 +39,7 @@ const NO_PREFERRED_MODE: u32 = 0xFFFF_FFFF;
 const IDDCX_MONITOR_MODE_ORIGIN_MONITORDESCRIPTOR: u32 = 1;
 const IDDCX_MONITOR_MODE_ORIGIN_DRIVER: u32 = 2;
 const IDDCX_MONITOR_DESCRIPTION_TYPE_EDID: u32 = 1;
+const STATUS_INVALID_PARAMETER: NTSTATUS = crate::ntstatus_from_u32(0xC000_000D);
 
 #[derive(Clone, Copy)]
 struct SampleMode {
@@ -324,7 +325,12 @@ pub struct IronRdpIddMonitor {
 }
 
 impl IronRdpIddMonitor {
-    pub fn create_and_arrive(adapter: IDDCX_ADAPTER, connector_idx: u32, edid: Option<&[u8]>) -> NTSTATUS {
+    /// Creates and arrives a monitor on an IddCx adapter.
+    ///
+    /// # Safety
+    ///
+    /// `adapter` must be a live `IDDCX_ADAPTER` handle for the duration of this call.
+    pub unsafe fn create_and_arrive(adapter: IDDCX_ADAPTER, connector_idx: u32, edid: Option<&[u8]>) -> NTSTATUS {
         #[expect(
             clippy::cfg_not_test,
             reason = "The no-link monitor callback is a safe fallback; unit tests exercise the IddCx-backed path."
@@ -343,23 +349,28 @@ impl IronRdpIddMonitor {
                 connector_idx,
                 edid.is_some_and(|bytes| !bytes.is_empty())
             ));
-            let (description_type, description_size, description_ptr) = match edid {
-                Some(bytes) if !bytes.is_empty() => (
-                    IDDCX_MONITOR_DESCRIPTION_TYPE_EDID,
-                    bytes.len() as u32,
-                    bytes.as_ptr() as *mut c_void,
-                ),
-                _ => (IDDCX_MONITOR_DESCRIPTION_TYPE_EDID, 0, core::ptr::null_mut()),
+            let description_size = match edid {
+                Some(bytes) => match u32::try_from(bytes.len()) {
+                    Ok(size) => size,
+                    Err(_) => return STATUS_INVALID_PARAMETER,
+                },
+                None => 0,
+            };
+            let mut edid_bytes = edid.unwrap_or_default().to_vec();
+            let description_ptr = if edid_bytes.is_empty() {
+                core::ptr::null_mut()
+            } else {
+                edid_bytes.as_mut_ptr().cast::<c_void>()
             };
 
             let mut monitor_info = iddcx::IDDCX_MONITOR_INFO {
-                Size: size_of::<iddcx::IDDCX_MONITOR_INFO>() as u32,
-                MonitorType: DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI.0 as u32,
+                Size: crate::abi_size_u32::<iddcx::IDDCX_MONITOR_INFO>(),
+                MonitorType: DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI.0.cast_unsigned(),
                 ConnectorIndex: connector_idx,
                 _pad: 0,
                 MonitorDescription: iddcx::IDDCX_MONITOR_DESCRIPTION {
-                    Size: size_of::<iddcx::IDDCX_MONITOR_DESCRIPTION>() as u32,
-                    Type: description_type,
+                    Size: crate::abi_size_u32::<iddcx::IDDCX_MONITOR_DESCRIPTION>(),
+                    Type: IDDCX_MONITOR_DESCRIPTION_TYPE_EDID,
                     DataSize: description_size,
                     pData: description_ptr,
                 },

@@ -301,10 +301,14 @@ pub(crate) unsafe fn adapter_display_config_update(
     adapter: IDDCX_ADAPTER,
     in_args: *const IDARG_IN_ADAPTERDISPLAYCONFIGUPDATE,
 ) -> NTSTATUS {
+    // SAFETY: IddCx initializes its function table before invoking driver callbacks.
     let raw = unsafe { IddFunctions[IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE_TABLE_INDEX] };
+    // SAFETY: The table slot has this ABI in the IddCx 1.4 headers.
     let func: PFN_IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE =
         unsafe { core::mem::transmute::<PFN_IDD_CX, PFN_IDDCX_ADAPTER_DISPLAY_CONFIG_UPDATE>(raw) };
+    // SAFETY: IddCx initializes this global before invoking driver callbacks.
     let globals = unsafe { IddDriverGlobals };
+    // SAFETY: The caller guarantees the adapter and input structure remain valid for the call.
     unsafe { func(globals, adapter, in_args) }
 }
 
@@ -427,7 +431,7 @@ pub(crate) struct IDDCX_ENDPOINT_DIAGNOSTIC_INFO {
     /// `IDDCX_FEATURE_IMPLEMENTATION_NONE = 1`
     pub GammaSupport: u32,
     // 4 bytes trailing padding (struct alignment = 8).
-    pub(crate) _pad: u32,
+    pub _pad: u32,
 }
 
 const _: () = {
@@ -459,11 +463,11 @@ pub(crate) struct IDDCX_ADAPTER_CAPS {
     pub MaxDisplayPipelineRate: u64,
     pub MaxMonitorsSupported: u32,
     // 4-byte padding for IDDCX_ENDPOINT_DIAGNOSTIC_INFO alignment.
-    pub(crate) _pad: u32,
+    pub _pad: u32,
     pub EndPointDiagnostics: IDDCX_ENDPOINT_DIAGNOSTIC_INFO,
     pub StaticDesktopReencodeFrameCount: u32,
     // 4 bytes trailing padding (struct alignment = 8).
-    pub(crate) _pad2: u32,
+    pub _pad2: u32,
 }
 
 const _: () = {
