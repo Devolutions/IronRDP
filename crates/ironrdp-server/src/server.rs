@@ -21,7 +21,7 @@ use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_core::{Encode as _, WriteBuf, decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout};
-use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
+use ironrdp_displaycontrol::server::DisplayControlServer;
 use ironrdp_dvc as dvc;
 #[cfg(feature = "usb")]
 use ironrdp_dvc::DynamicChannelId;
@@ -1062,39 +1062,21 @@ impl dvc::DvcProcessor for AInputHandler {
 
 impl dvc::DvcServerProcessor for AInputHandler {}
 
-struct DisplayControlBackend {
-    display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
-    monitor_count: u32,
-}
-
-impl DisplayControlBackend {
-    fn new(display: Arc<Mutex<Box<dyn RdpServerDisplay>>>, monitor_count: u32) -> Self {
-        Self { display, monitor_count }
-    }
-}
-
-impl DisplayControlHandler for DisplayControlBackend {
-    fn monitor_layout(&self, layout: DisplayControlMonitorLayout) {
-        let display = Arc::clone(&self.display);
-        task::spawn_blocking(move || display.blocking_lock().request_layout(layout));
-    }
-
-    fn capabilities(&self) -> PduResult<DisplayControlCapabilities> {
-        // `DisplayControlCapabilities::new` only rejects `monitor_count > 1024`; 0 passes its
-        // validation (0 * 3840 * 2400 does not overflow) but would advertise a server that
-        // supports no monitors, so it is folded into the same out-of-range fallback below.
-        let monitor_count = if self.monitor_count == 0 {
-            warn!("RdpServerDisplay::monitor_count() returned 0, falling back to 1");
-            1
-        } else {
-            self.monitor_count
-        };
-        let capabilities = DisplayControlCapabilities::new(monitor_count, 3840, 2400).unwrap_or_else(|e| {
-            warn!(monitor_count, error = %e, "RdpServerDisplay::monitor_count() out of range, falling back to 1");
-            DisplayControlCapabilities::single_monitor()
-        });
-        Ok(capabilities)
-    }
+/// The Display Control capabilities advertised for a display that honors `monitor_count` monitors.
+fn display_control_capabilities(monitor_count: u32) -> DisplayControlCapabilities {
+    // `DisplayControlCapabilities::new` only rejects `monitor_count > 1024`; 0 passes its
+    // validation (0 * 3840 * 2400 does not overflow) but would advertise a server that
+    // supports no monitors, so it is folded into the same out-of-range fallback below.
+    let monitor_count = if monitor_count == 0 {
+        warn!("RdpServerDisplay::monitor_count() returned 0, falling back to 1");
+        1
+    } else {
+        monitor_count
+    };
+    DisplayControlCapabilities::new(monitor_count, 3840, 2400).unwrap_or_else(|error| {
+        warn!(monitor_count, %error, "RdpServerDisplay::monitor_count() out of range, falling back to 1");
+        DisplayControlCapabilities::single_monitor()
+    })
 }
 
 #[cfg(feature = "usb")]
@@ -3174,8 +3156,7 @@ impl RdpServer {
             }
         };
         let dvc = if let Some(monitor_count) = display_control_monitors {
-            let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display), monitor_count);
-            dvc.with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)))
+            dvc.with_dynamic_channel(DisplayControlServer::new(display_control_capabilities(monitor_count)))
         } else {
             dvc
         };
@@ -5420,7 +5401,12 @@ impl RdpServer {
             return Ok(RunState::Continue);
         }
 
-        let messages = match drdynvc.process_tunnel(payload) {
+        let messages = drdynvc.process_tunnel(payload);
+        // UNTESTED: layouts received over the UDP tunnel reach the display through this call, as the
+        // TCP path's do through its own. Without it they wait until the next DRDYNVC frame over TCP.
+        // When changing the tunnel path, check that it still takes the layouts after processing.
+        self.request_display_layouts(conn).await;
+        let messages = match messages {
             Ok(messages) => messages,
             Err(error) => {
                 warn!(%error, "Failed to process UDP tunnel payload, dropping it");
@@ -6343,6 +6329,7 @@ impl RdpServer {
                             udp_transport,
                         )
                         .await?;
+                        self.request_display_layouts(conn).await;
                         self.replay_early_tunnel_payloads(conn, writer, user_channel_id, udp_transport)
                             .await?;
                     } else {
@@ -6370,6 +6357,25 @@ impl RdpServer {
         }
 
         Ok(false)
+    }
+
+    /// Hands the display the monitor layouts the client sent over the Display Control channel.
+    async fn request_display_layouts(&mut self, conn: &mut ConnectionState) {
+        let layouts = conn
+            .get_svc_processor::<dvc::DrdynvcServer>()
+            .and_then(|drdynvc| {
+                let id = drdynvc.get_channel_id_by_type::<DisplayControlServer>()?;
+                drdynvc.dvc_by_id_mut::<DisplayControlServer>(id)
+            })
+            .map(|mut display_control| display_control.processor_mut().take_monitor_layouts())
+            .unwrap_or_default();
+        if layouts.is_empty() {
+            return;
+        }
+        let mut display = self.display.lock().await;
+        for layout in layouts {
+            display.request_layout(layout);
+        }
     }
 
     async fn handle_input_event(&mut self, input: InputEventPdu) {
@@ -8105,6 +8111,124 @@ mod tests {
 
         handler.close(1);
         assert!(!active.load(Ordering::Acquire));
+    }
+
+    // oracle: spec MS-RDPEDISP §3.1.5.2 has the server apply each layout; take_monitor_layouts() keeps arrival order.
+    #[tokio::test]
+    async fn display_control_layouts_reach_the_display_in_order() {
+        use ironrdp_displaycontrol::pdu::{DisplayControlPdu, MonitorLayoutEntry};
+        use ironrdp_dvc::pdu::{
+            CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DataPdu, DrdynvcClientPdu,
+            DrdynvcDataPdu,
+        };
+
+        const IO_CHANNEL_ID: u16 = 1003;
+        const DRDYNVC_CHANNEL_ID: u16 = 1004;
+        const USER_CHANNEL_ID: u16 = 1007;
+
+        struct RecordingDisplay(Arc<StdMutex<Vec<DisplayControlMonitorLayout>>>);
+
+        #[async_trait::async_trait]
+        impl RdpServerDisplay for RecordingDisplay {
+            async fn size(&mut self) -> DesktopSize {
+                DesktopSize {
+                    width: 800,
+                    height: 600,
+                }
+            }
+
+            async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+                pending().await
+            }
+
+            fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
+                self.0.lock().unwrap().push(layout);
+            }
+        }
+
+        let requested = Arc::new(StdMutex::new(Vec::new()));
+        let mut server = RdpServer::builder()
+            .with_addr(([127, 0, 0, 1], 0))
+            .with_no_security()
+            .with_no_input()
+            .with_display_handler(RecordingDisplay(Arc::clone(&requested)))
+            .build();
+        let mut conn = ConnectionState::default();
+        conn.static_channels.insert(
+            dvc::DrdynvcServer::new()
+                .with_dynamic_channel(DisplayControlServer::new(DisplayControlCapabilities::single_monitor())),
+        );
+        conn.static_channels
+            .attach_channel_id(core::any::TypeId::of::<dvc::DrdynvcServer>(), DRDYNVC_CHANNEL_ID);
+        conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap().start().unwrap();
+        let mut writer = cliprdr_error_tests::CapturingWriter::default();
+        let mut send = async |server: &mut RdpServer, conn: &mut ConnectionState, pdu: DrdynvcClientPdu| {
+            let frame = ironrdp_svc::client_encode_svc_messages(
+                vec![SvcMessage::from(pdu)],
+                DRDYNVC_CHANNEL_ID,
+                USER_CHANNEL_ID,
+            )
+            .unwrap();
+            server
+                .handle_x224(conn, &mut writer, IO_CHANNEL_ID, USER_CHANNEL_ID, None, &frame, None)
+                .await
+                .unwrap()
+        };
+
+        send(
+            &mut server,
+            &mut conn,
+            DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
+        )
+        .await;
+        let channel_id = conn
+            .get_svc_processor::<dvc::DrdynvcServer>()
+            .unwrap()
+            .get_channel_id_by_type::<DisplayControlServer>()
+            .unwrap();
+        send(
+            &mut server,
+            &mut conn,
+            DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, CreationStatus::OK)),
+        )
+        .await;
+
+        let layout =
+            |width| DisplayControlMonitorLayout::new(&[MonitorLayoutEntry::new_primary(width, 768).unwrap()]).unwrap();
+        let (first, second) = (layout(1024), layout(1280));
+        for layout in [&first, &second] {
+            let data = encode_vec(&DisplayControlPdu::MonitorLayout(layout.clone())).unwrap();
+            send(
+                &mut server,
+                &mut conn,
+                DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(channel_id, data))),
+            )
+            .await;
+        }
+
+        assert_eq!(*requested.lock().unwrap(), [first, second]);
+    }
+
+    // oracle: spec MS-RDPEDISP §2.2.2.1, MaxNumMonitors is the number of monitors the server supports.
+    #[test]
+    fn display_control_advertises_the_display_monitor_count() {
+        for monitor_count in [1, 1024] {
+            assert_eq!(
+                display_control_capabilities(monitor_count).max_num_monitors(),
+                monitor_count
+            );
+        }
+    }
+
+    // oracle: mutant advertising no monitors, or a count DisplayControlCapabilities::new rejects.
+    #[test]
+    fn display_control_falls_back_to_a_single_monitor() {
+        for monitor_count in [0, 1025] {
+            assert_eq!(
+                display_control_capabilities(monitor_count),
+                DisplayControlCapabilities::single_monitor()
+            );
+        }
     }
 
     struct PendingDisplay;
