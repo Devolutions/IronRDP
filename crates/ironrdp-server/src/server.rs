@@ -388,7 +388,8 @@ pub trait ConnectionHandler: Send {
     /// [`RdpServer::serve`] logs such an error at INFO, whatever its cause: a
     /// refused logon, a client that closes the connection, or a server fault.
     /// To alert on the errors that matter to the application, inspect `error`
-    /// here.
+    /// here. An error that does not end the connection, such as a failed
+    /// clipboard event, is logged where it occurs, at its own level.
     fn on_disconnected(
         &mut self,
         peer: SocketAddr,

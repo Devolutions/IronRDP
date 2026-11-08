@@ -4832,7 +4832,7 @@ impl ServerLog {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, message)| message.starts_with("Connection error") || message.starts_with("Connection ended"))
+            .filter(|(_, message)| message.starts_with("Connection ended"))
             .cloned()
             .collect()
     }
@@ -4866,31 +4866,7 @@ where
     }));
     tokio::time::timeout(Duration::from_secs(15), test)
         .await
-        .expect("the connection ends and the server stops")
-}
-
-/// A server with TLS security only, and the display sender to keep alive for
-/// the test.
-fn tls_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
-    let acceptor = test_tls_identity()
-        .make_acceptor()
-        .expect("failed to build TLS acceptor");
-    let (display_tx, display_rx) = mpsc::unbounded_channel();
-    let mut server = RdpServer::builder()
-        .with_addr(([127, 0, 0, 1], 0))
-        .with_tls(acceptor)
-        .with_input_handler(TestInputHandler)
-        .with_display_handler(TestDisplay {
-            rx: Arc::new(Mutex::new(display_rx)),
-            offers_display_control: false,
-        })
-        .build();
-    server.set_credentials(Some(server::Credentials {
-        username: HYBRID_USER.into(),
-        password: HYBRID_PASSWORD.into(),
-        domain: None,
-    }));
-    (server, display_tx)
+        .expect("the server logs \"Connection ended\" and stops; check the message that `connection_ends` matches")
 }
 
 /// The client configuration of [`hybrid_client_config`], with a wrong password.
@@ -4904,8 +4880,9 @@ fn wrong_password_client_config() -> connector::Config {
     }
 }
 
+/// Asserts that the server logged the connection's end once, below ERROR.
 fn assert_not_logged_as_an_error(log: &[(tracing::Level, String)]) {
-    assert!(!log.is_empty());
+    assert_eq!(log.len(), 1, "{log:?}");
     for (level, message) in log {
         assert_ne!(*level, tracing::Level::ERROR, "{message}");
     }
@@ -4931,7 +4908,24 @@ async fn a_refused_credssp_logon_is_not_logged_as_an_error() {
 // oracle: regression #2392
 #[tokio::test]
 async fn a_refused_tls_logon_is_not_logged_as_an_error() {
-    let (server, _display_tx) = tls_server();
+    let acceptor = test_tls_identity()
+        .make_acceptor()
+        .expect("failed to build TLS acceptor");
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
     let log = connection_end_log(server, |addr| async move {
         let config = connector::Config {
             enable_credssp: false,
@@ -4995,4 +4989,49 @@ async fn a_client_that_closes_its_session_is_not_logged_as_an_error() {
     })
     .await;
     assert_not_logged_as_an_error(&log);
+}
+
+// oracle: regression #2392
+// The `ConnectionHandler::on_disconnected` doc: the error reaches the handler.
+#[tokio::test]
+async fn a_server_fault_is_not_logged_as_an_error_and_reaches_on_disconnected() {
+    struct ErrorRecorder(Arc<StdMutex<Vec<bool>>>);
+
+    impl server::ConnectionHandler for ErrorRecorder {
+        fn on_disconnected(
+            &mut self,
+            _peer: SocketAddr,
+            _duration: Duration,
+            error: Option<&server::ServerError>,
+        ) -> server::PostConnectionAction {
+            self.0.lock().unwrap().push(error.is_some());
+            server::PostConnectionAction::Continue
+        }
+    }
+
+    let errors = Arc::new(StdMutex::new(Vec::new()));
+    let identity = test_tls_identity();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(identity.make_acceptor().unwrap(), identity.pub_key)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(FailingDisplay { error_info: None })
+        .with_connection_handler(Some(Box::new(ErrorRecorder(Arc::clone(&errors)))))
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: HYBRID_USER.into(),
+        password: HYBRID_PASSWORD.into(),
+        domain: None,
+    }));
+    let log = connection_end_log(server, |addr| async move {
+        let _ = connect_client_with(
+            addr,
+            |client_addr| connector::ClientConnector::new(hybrid_client_config(), client_addr),
+            |stream| stream,
+        )
+        .await;
+    })
+    .await;
+    assert_not_logged_as_an_error(&log);
+    assert_eq!(*errors.lock().unwrap(), [true]);
 }
