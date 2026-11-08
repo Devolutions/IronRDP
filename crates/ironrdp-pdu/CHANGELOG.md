@@ -6,6 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.11.0...ironrdp-pdu-v0.11.1)] - 2026-11-08
+
+### <!-- 0 -->Security
+
+- Withhold licensing secrets from Debug output ([#2344](https://github.com/Devolutions/IronRDP/issues/2344)) ([5c4dcfa7b1](https://github.com/Devolutions/IronRDP/commit/5c4dcfa7b1160a64ec0578f71c947b3bce5982ef)) 
+
+  The licensing PDUs derived Debug, so a log at the debug or trace level
+  printed the premaster secret, the MAC salt and license keys, the client
+  and server randoms, the encrypted HWID, the platform challenge and its
+  response, and the license itself, as the server sent it, byte by byte;
+  also the user and machine names the client announces. Such a log can't
+  be handed to anyone.
+  
+  Those fields now print as their length only (`<48 bytes withheld>`), in
+  Debug implementations of their own. The server certificate's material
+  (chain, modulus, signature) is public but prints the same way, for a
+  different reason: a derived Debug writes its kilobytes as a decimal list
+  that buries the rest of the exchange, while the lengths tell the key
+  size and the chain's shape. What tells an exchange apart stays: the
+  security and license headers (message type, flags, version, size), the
+  product and scope, the public exponent, error codes and state
+  transitions. The connector also logs the Server License Request, the
+  client's reply to it, and the error message that ends an exchange
+  without one at the debug level, as it already did the later PDUs, so
+  that a debug log shows the whole exchange.
+
+### <!-- 4 -->Bug Fixes
+
+- Read the DWT variant from REGION flags ([#2085](https://github.com/Devolutions/IronRDP/issues/2085)) ([43d75cd48e](https://github.com/Devolutions/IronRDP/commit/43d75cd48e8f2dee6ffa6388346dc53790fc7bb8)) 
+
+  The Progressive decoder chose the DWT variant from bit 0 of the
+  RFX_PROGRESSIVE_CONTEXT flags. MS-RDPEGFX 2.2.4.2.1.4 defines that bit
+  as RFX_SUBBAND_DIFFING; the variant is bit 0 of each
+  RFX_PROGRESSIVE_REGION's flags (RFX_DWT_REDUCE_EXTRAPOLATE,
+  2.2.4.2.1.5). Tiles decoded correctly only while a server set both bits
+  to the same value.
+  
+  Each REGION now selects its own variant. The decoder kept the CONTEXT
+  value only for this choice, so its per-surface fallback and the
+  MissingBlock("CONTEXT") error are removed; CONTEXT is optional per
+  2.2.4.2.1.4. A stream without CONTEXT for an unseen codec context now
+  decodes instead of failing.
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.10.0...ironrdp-pdu-v0.11.0)] - 2026-10-27
 
 ### <!-- 0 -->Security

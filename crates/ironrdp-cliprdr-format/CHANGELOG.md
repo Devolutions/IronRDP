@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-format-v0.3.0...ironrdp-cliprdr-format-v0.3.1)] - 2026-11-08
+
+### <!-- 4 -->Bug Fixes
+
+- Decode standard CF_DIB bitfields ([#2374](https://github.com/Devolutions/IronRDP/issues/2374)) ([4134dc272f](https://github.com/Devolutions/IronRDP/commit/4134dc272f6baa2fad86cd0301bdf1a7ce895847)) 
+
+  Windows commonly supplies 32-bit `CF_DIB` clipboard images with
+  `BI_BITFIELDS` compression and standard BGR masks. Rejecting that layout
+  prevents clipboard image pastes.
+  
+  Validate and skip the three masks before decoding pixels, and include
+  them in the validated logical length. Keep non-standard masks and 24-bit
+  bitfields unsupported, and preserve RGB and DIBV5 decoding.
+
+
+
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-format-v0.2.0...ironrdp-cliprdr-format-v0.3.0)] - 2026-10-23
 
 ### <!-- 1 -->Features
