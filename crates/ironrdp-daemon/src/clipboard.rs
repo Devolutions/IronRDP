@@ -753,9 +753,10 @@ impl CliprdrBackend for AgentCliprdrBackend {
     }
 
     fn on_outgoing_locks_cleared(&mut self, clip_data_ids: &[LockDataId]) {
-        // `initiate_file_copy` (a new `clipboard-set-files`) releases outgoing locks immediately
-        // rather than waiting for the expiry timeout, but an active fetch bound to one of those
-        // locks needs the same abort `on_outgoing_locks_expired` already gives the timeout path:
+        // `initiate_file_copy` (a new `clipboard-set-files`) releases idle outgoing locks
+        // immediately, and a lock a fetch was still using once that fetch goes quiet, rather
+        // than waiting for the expiry timeout. A fetch bound to one of those locks needs the
+        // same abort `on_outgoing_locks_expired` gives a remote clipboard change:
         // otherwise it keeps issuing FileContentsRequests against a data_id whose lock no longer
         // exists, against a remote clipboard that has changed underneath it.
         self.abort_fetch_for_released_lock(clip_data_ids, "released");

@@ -6,14 +6,17 @@
 //! Behavior assertions use the public API (returned PDUs, backend callbacks);
 //! bookkeeping assertions (internal lock counts) use the `__test` feature gate.
 
+use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
+use ironrdp_cliprdr::backend::CliprdrBackend;
+use ironrdp_cliprdr::pdu::FileContentsResponse;
 use ironrdp_cliprdr::pdu::{
     Capabilities, ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags,
     ClipboardPdu, ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileDescriptor, FormatList,
     LockDataId, PackedFileList,
 };
-use ironrdp_cliprdr::{Cliprdr, CliprdrClient, CliprdrState, LockState};
+use ironrdp_cliprdr::{Cliprdr, CliprdrClient, CliprdrState};
 use ironrdp_core::Encode as _;
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
@@ -81,7 +84,20 @@ fn text_format_list_buf() -> Vec<u8> {
 
 /// Helper: set up a CliprdrClient in Ready state with CAN_LOCK_CLIPDATA.
 fn ready_locking_client() -> CliprdrClient {
-    let mut cliprdr = CliprdrClient::new(Box::new(LockingBackend::new()));
+    into_ready_locking_client(CliprdrClient::new(Box::new(LockingBackend::new())))
+}
+
+/// Helper: like [`ready_locking_client`], with the given backend and lock timeouts.
+fn ready_locking_client_with_timeouts(
+    backend: Box<dyn CliprdrBackend>,
+    inactivity_timeout: Duration,
+    max_lifetime: Duration,
+) -> CliprdrClient {
+    into_ready_locking_client(Cliprdr::with_lock_timeouts(backend, inactivity_timeout, max_lifetime))
+}
+
+/// Helper: put `cliprdr` in Ready state with locking and file streams negotiated.
+fn into_ready_locking_client(mut cliprdr: CliprdrClient) -> CliprdrClient {
     *cliprdr.__test_state_mut() = CliprdrState::Ready;
     *cliprdr.__test_capabilities_mut() = Capabilities::new(
         ClipboardProtocolVersion::V2,
@@ -151,11 +167,8 @@ fn lock_expired_on_new_format_list() {
     let expired_ids = Arc::new(Mutex::new(Vec::new()));
     let backend = CallbackTrackingBackend::with_expired_tracking(Arc::clone(&cleared_ids), Arc::clone(&expired_ids));
 
-    let mut cliprdr: CliprdrClient = Cliprdr::with_lock_timeouts(
-        Box::new(backend),
-        core::time::Duration::from_secs(60),
-        core::time::Duration::from_secs(600),
-    );
+    let mut cliprdr: CliprdrClient =
+        Cliprdr::with_lock_timeouts(Box::new(backend), Duration::from_secs(60), Duration::from_secs(600));
     *cliprdr.__test_state_mut() = CliprdrState::Ready;
     *cliprdr.__test_capabilities_mut() = Capabilities::new(
         ClipboardProtocolVersion::V2,
@@ -521,11 +534,8 @@ fn all_locks_expired_on_text_format_list() {
     let expired_ids = Arc::new(Mutex::new(Vec::new()));
     let backend = CallbackTrackingBackend::with_expired_tracking(Arc::clone(&cleared_ids), Arc::clone(&expired_ids));
 
-    let mut cliprdr: CliprdrClient = Cliprdr::with_lock_timeouts(
-        Box::new(backend),
-        core::time::Duration::from_secs(60),
-        core::time::Duration::from_secs(600),
-    );
+    let mut cliprdr: CliprdrClient =
+        Cliprdr::with_lock_timeouts(Box::new(backend), Duration::from_secs(60), Duration::from_secs(600));
     *cliprdr.__test_state_mut() = CliprdrState::Ready;
     *cliprdr.__test_capabilities_mut() = Capabilities::new(
         ClipboardProtocolVersion::V2,
@@ -574,8 +584,8 @@ fn on_outgoing_locks_cleared_callback_invoked() {
 
     let mut cliprdr: CliprdrClient = Cliprdr::with_lock_timeouts(
         Box::new(backend),
-        core::time::Duration::from_millis(20), // inactivity: 20ms
-        core::time::Duration::from_secs(10),   // max: 10s
+        Duration::from_millis(20), // inactivity: 20ms
+        Duration::from_secs(10),   // max: 10s
     );
     *cliprdr.__test_state_mut() = CliprdrState::Ready;
     *cliprdr.__test_capabilities_mut() = Capabilities::new(
@@ -628,11 +638,8 @@ fn on_outgoing_locks_expired_callback_invoked() {
     let expired_ids = Arc::new(Mutex::new(Vec::new()));
     let backend = CallbackTrackingBackend::with_expired_tracking(Arc::clone(&cleared_ids), Arc::clone(&expired_ids));
 
-    let mut cliprdr: CliprdrClient = Cliprdr::with_lock_timeouts(
-        Box::new(backend),
-        core::time::Duration::from_millis(20),
-        core::time::Duration::from_secs(10),
-    );
+    let mut cliprdr: CliprdrClient =
+        Cliprdr::with_lock_timeouts(Box::new(backend), Duration::from_millis(20), Duration::from_secs(10));
     *cliprdr.__test_state_mut() = CliprdrState::Ready;
     *cliprdr.__test_capabilities_mut() = Capabilities::new(
         ClipboardProtocolVersion::V2,
@@ -716,95 +723,178 @@ fn initiate_file_copy_releases_outgoing_download_locks() {
     );
 }
 
-/// A lock a download is still using survives a local file copy: releasing it would make
-/// the remote drop the files mid-transfer, which is what the lock is for. Only the lock
-/// nothing has used is unlocked.
-#[test]
-fn initiate_file_copy_keeps_a_lock_a_download_is_using() {
-    let mut cliprdr = ready_locking_client();
-    let idle = process_file_format_list(&mut cliprdr);
-    let busy = process_file_format_list(&mut cliprdr);
-
-    // A FileContentsRequest went out under `busy` just now.
-    let lock = cliprdr.__test_outgoing_locks_mut().get_mut(&busy).unwrap();
-    lock.used = true;
-    lock.last_used_at_ms = lock.created_at_ms;
-
-    let messages: Vec<SvcMessage> = cliprdr
-        .initiate_file_copy(vec![FileDescriptor::new("upload.txt")])
-        .unwrap()
-        .into();
-
-    assert_eq!(messages.len(), 2, "expected 1 Unlock PDU + 1 FormatList");
-    decode_pdu!(messages[0] => _b0, pdu0);
-    assert!(
-        matches!(&pdu0, ClipboardPdu::UnlockData(id) if id.0 == idle),
-        "only the idle lock is unlocked, got {pdu0:?}"
-    );
-    decode_pdu!(messages[1] => _b1, pdu1);
-    assert!(
-        matches!(&pdu1, ClipboardPdu::FormatList(_)),
-        "expected FormatList, got {pdu1:?}"
-    );
-
-    let kept = cliprdr
-        .__test_outgoing_locks()
-        .get(&busy)
-        .expect("the busy lock is kept");
-    assert!(kept.kept_past_local_copy);
-    assert!(matches!(kept.state, LockState::Expired { .. }));
-    assert!(!cliprdr.__test_outgoing_locks().contains_key(&idle));
-    assert_eq!(
-        cliprdr.__test_current_lock_id(),
-        None,
-        "new requests don't attach the kept lock"
-    );
-
-    // While the download keeps using it, the timeout sweep leaves it alone.
-    let messages: Vec<SvcMessage> = cliprdr.drive_timeouts().unwrap().into();
-    assert!(messages.is_empty(), "a kept lock in use is not unlocked");
-    assert!(cliprdr.__test_outgoing_locks().contains_key(&busy));
+/// A client downloading a one-file remote list, with a SIZE request (stream 1) outstanding
+/// under the list's lock, and a mock clock at 0.
+struct Download {
+    cliprdr: CliprdrClient,
+    lock: u32,
+    cleared: Arc<Mutex<Vec<Vec<LockDataId>>>>,
+    expired: Arc<Mutex<Vec<Vec<LockDataId>>>>,
 }
 
-/// A lock kept past a local file copy is released once its download goes quiet, by the
-/// shorter of the kept-lock grace and the configured inactivity timeout.
+impl Download {
+    /// Uses the default 60 s inactivity timeout, so a release sooner comes from the short
+    /// timeout for locks kept past a local copy.
+    fn start() -> Self {
+        let cleared = Arc::new(Mutex::new(Vec::new()));
+        let expired = Arc::new(Mutex::new(Vec::new()));
+        let backend = CallbackTrackingBackend::with_expired_tracking(Arc::clone(&cleared), Arc::clone(&expired));
+        let mut cliprdr = ready_locking_client_with_timeouts(
+            Box::new(backend),
+            Duration::from_secs(60),
+            Duration::from_secs(2 * 3600),
+        );
+        set_remote_file_list(&mut cliprdr, vec![FileDescriptor::new("a.txt")]);
+        let lock = cliprdr
+            .__test_current_lock_id()
+            .expect("a file Format List must create a lock when CAN_LOCK_CLIPDATA is negotiated");
+        let request = FileContentsRequest {
+            stream_id: 1,
+            index: 0,
+            flags: FileContentsFlags::SIZE,
+            position: 0,
+            requested_size: 8,
+            data_id: Some(lock),
+        };
+        cliprdr.request_file_contents(request).unwrap();
+        Self {
+            cliprdr,
+            lock,
+            cleared,
+            expired,
+        }
+    }
+
+    fn advance_ms(&mut self, ms: u64) {
+        self.cliprdr
+            .downcast_backend::<CallbackTrackingBackend>()
+            .unwrap()
+            .advance_ms(ms);
+    }
+
+    /// The remote answers the outstanding SIZE request.
+    fn respond(&mut self) {
+        let pdu = ClipboardPdu::FileContentsResponse(FileContentsResponse::new_size_response(1, 1024));
+        self.cliprdr.process(&ironrdp_core::encode_vec(&pdu).unwrap()).unwrap();
+    }
+
+    /// The local side copies a file, taking clipboard ownership.
+    fn copy_local_file(&mut self) -> Vec<SvcMessage> {
+        self.cliprdr
+            .initiate_file_copy(vec![FileDescriptor::new("upload.txt")])
+            .unwrap()
+            .into()
+    }
+
+    fn drive_timeouts(&mut self) -> Vec<SvcMessage> {
+        self.cliprdr.drive_timeouts().unwrap().into()
+    }
+}
+
+/// The clipDataIds of the Unlock PDUs among `messages`, in order.
+fn unlocked_ids(messages: &[SvcMessage]) -> Vec<u32> {
+    messages
+        .iter()
+        .filter_map(|message| {
+            decode_pdu!(message => _bytes, pdu);
+            match pdu {
+                ClipboardPdu::UnlockData(id) => Some(id.0),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// A lock with a FileContentsRequest still outstanding survives a local file copy, however
+/// long the request has been waiting, because releasing it would make the remote drop the
+/// File Stream data the request is reading.
+/// The backend is not told the lock expired, because a backend aborts the download on that
+/// callback.
+#[test]
+fn initiate_file_copy_keeps_a_lock_with_an_outstanding_request() {
+    let mut download = Download::start();
+    download.advance_ms(30_000);
+
+    let messages = download.copy_local_file();
+
+    // oracle: spec MS-RDPECLIP §2.2.4.1
+    assert_eq!(
+        unlocked_ids(&messages),
+        Vec::<u32>::new(),
+        "the lock in use is not unlocked"
+    );
+    assert_eq!(messages.len(), 1, "only the FormatList goes out");
+    // oracle: mutant reporting a kept lock expired, which makes the daemon backend abort the download
+    assert!(download.expired.lock().unwrap().is_empty());
+
+    // Quiet well past the kept-lock timeout, but the request is still outstanding.
+    download.advance_ms(20_000);
+    let messages = download.drive_timeouts();
+
+    // oracle: spec MS-RDPECLIP §2.2.4.1
+    assert_eq!(
+        unlocked_ids(&messages),
+        Vec::<u32>::new(),
+        "the sweep keeps a kept lock while a request under it is outstanding"
+    );
+    assert!(download.cleared.lock().unwrap().is_empty());
+}
+
+/// A lock whose download just received a response, with nothing outstanding, survives a
+/// local file copy, because the download's next request may follow.
+/// It is released once it has gone quiet for longer than that gap, measured from the
+/// response.
+// oracle: mutant measuring quiet from the request instead of the response, keeping the lock for the full inactivity timeout, or not reporting it cleared
 #[test]
 fn a_kept_lock_is_released_once_its_download_goes_quiet() {
-    let mut cliprdr: CliprdrClient = Cliprdr::with_lock_timeouts(
-        Box::new(LockingBackend::new()),
-        core::time::Duration::ZERO,
-        core::time::Duration::from_secs(600),
-    );
-    *cliprdr.__test_state_mut() = CliprdrState::Ready;
-    *cliprdr.__test_capabilities_mut() = Capabilities::new(
-        ClipboardProtocolVersion::V2,
-        ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
-            | ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
-            | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED,
-    );
-    let busy = process_file_format_list(&mut cliprdr);
-    let lock = cliprdr.__test_outgoing_locks_mut().get_mut(&busy).unwrap();
-    lock.used = true;
-    lock.last_used_at_ms = lock.created_at_ms;
+    let mut download = Download::start();
+    download.advance_ms(8_000);
+    download.respond();
+    download.advance_ms(1_000);
 
-    let messages: Vec<SvcMessage> = cliprdr
-        .initiate_file_copy(vec![FileDescriptor::new("upload.txt")])
-        .unwrap()
-        .into();
+    let messages = download.copy_local_file();
+
+    // oracle: spec MS-RDPECLIP §2.2.4.1
     assert_eq!(
-        messages.len(),
-        1,
-        "the busy lock is kept, so only the FormatList goes out"
+        unlocked_ids(&messages),
+        Vec::<u32>::new(),
+        "the lock in use is not unlocked"
     );
+    assert!(download.expired.lock().unwrap().is_empty());
 
-    let messages: Vec<SvcMessage> = cliprdr.drive_timeouts().unwrap().into();
-    assert_eq!(messages.len(), 1);
-    decode_pdu!(messages[0] => _b0, pdu0);
+    // 6 s after the response (14 s after the request): still within the gap.
+    download.advance_ms(5_000);
+    let messages = download.drive_timeouts();
+    assert_eq!(unlocked_ids(&messages), Vec::<u32>::new());
+    assert!(download.cleared.lock().unwrap().is_empty());
+
+    // 12 s after the response: the download has gone quiet.
+    download.advance_ms(6_000);
+    let messages = download.drive_timeouts();
+    assert_eq!(unlocked_ids(&messages), vec![download.lock]);
+    assert_eq!(*download.cleared.lock().unwrap(), vec![vec![LockDataId(download.lock)]]);
+}
+
+/// A lock whose download finished longer ago than the gap between two requests is not in
+/// use, so a local file copy unlocks it before the FormatList.
+// oracle: mutant keeping every lock that was ever used, or keeping a lock past a finished download
+#[test]
+fn initiate_file_copy_unlocks_a_lock_whose_download_finished() {
+    let mut download = Download::start();
+    download.respond();
+    download.advance_ms(11_000);
+
+    let messages = download.copy_local_file();
+
+    assert_eq!(messages.len(), 2, "expected 1 Unlock PDU + 1 FormatList");
+    assert_eq!(unlocked_ids(&messages[..1]), vec![download.lock]);
+    decode_pdu!(messages[1] => _bytes, last_pdu);
     assert!(
-        matches!(&pdu0, ClipboardPdu::UnlockData(id) if id.0 == busy),
-        "got {pdu0:?}"
+        matches!(last_pdu, ClipboardPdu::FormatList(_)),
+        "FormatList must come after the Unlock PDU, got {last_pdu:?}"
     );
-    assert!(cliprdr.__test_outgoing_locks().is_empty());
+    assert_eq!(*download.cleared.lock().unwrap(), vec![vec![LockDataId(download.lock)]]);
+    assert!(download.expired.lock().unwrap().is_empty());
 }
 
 /// With no outgoing locks held, `initiate_file_copy` sends only the `FormatList`
