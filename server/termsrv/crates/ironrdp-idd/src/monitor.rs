@@ -648,11 +648,11 @@ pub(crate) extern "system" fn monitor_assign_swapchain(
     monitor: IDDCX_MONITOR,
     in_args: *const IDARG_IN_SETSWAPCHAIN,
 ) -> NTSTATUS {
-    tracing::info!("EvtIddCxMonitorAssignSwapChain");
+    tracing::trace!("EvtIddCxMonitorAssignSwapChain");
     crate::remote::note_swapchain_assignment(crate::remote::runtime_session_id());
 
     if in_args.is_null() {
-        tracing::warn!("monitor_assign_swapchain called with null args");
+        tracing::warn!("Monitor assignment called with null arguments");
         return STATUS_NOT_SUPPORTED;
     }
 
@@ -662,7 +662,7 @@ pub(crate) extern "system" fn monitor_assign_swapchain(
     let processor = match SwapChainProcessor::new(args.hSwapChain, args.RenderAdapterLuid, args.hNextSurfaceAvailable) {
         Ok(processor) => processor,
         Err(error) => {
-            tracing::warn!(?error, "failed to create SwapChainProcessor");
+            tracing::warn!(?error, "Failed to create SwapChainProcessor");
             return STATUS_NOT_SUPPORTED;
         }
     };
@@ -713,7 +713,7 @@ pub(crate) extern "system" fn monitor_get_physical_size(
 }
 
 pub(crate) extern "system" fn monitor_unassign_swapchain(monitor: IDDCX_MONITOR) -> NTSTATUS {
-    tracing::info!("EvtIddCxMonitorUnassignSwapChain");
+    tracing::trace!("EvtIddCxMonitorUnassignSwapChain");
     crate::remote::note_swapchain_unassignment(crate::remote::runtime_session_id());
 
     let _ = stop_swapchain_for_monitor(monitor);

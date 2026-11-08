@@ -52,7 +52,8 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Memory::{LMEM_FIXED, LocalAlloc};
 use windows::Win32::System::Pipes::{PIPE_READMODE_MESSAGE, SetNamedPipeHandleState};
 use windows::Win32::System::Registry::{
-    HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE, RegGetValueW,
+    HKEY_LOCAL_MACHINE, REG_ROUTINE_FLAGS, RRF_RT_REG_DWORD, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ, RRF_ZEROONFAILURE,
+    RegGetValueW,
 };
 use windows::Win32::System::RemoteDesktop::{
     IWRdsProtocolConnection, IWRdsProtocolConnection_Impl, IWRdsProtocolConnection_Vtbl,
@@ -637,21 +638,6 @@ fn update_idd_runtime_state(updates: &[(&str, String)], source: &str) {
     }
 }
 
-fn command_kind(command: &ProviderCommand) -> &'static str {
-    match command {
-        ProviderCommand::StartListen { .. } => "start_listen",
-        ProviderCommand::StopListen { .. } => "stop_listen",
-        ProviderCommand::WaitForIncoming { .. } => "wait_for_incoming",
-        ProviderCommand::AcceptConnection { .. } => "accept_connection",
-        ProviderCommand::CloseConnection { .. } => "close_connection",
-        ProviderCommand::GetConnectionCredentials { .. } => "get_connection_credentials",
-        ProviderCommand::GetRemoteAppSettings { .. } => "get_remote_app_settings",
-        ProviderCommand::SetCaptureSessionId { .. } => "set_capture_session_id",
-        ProviderCommand::NotifyIddDriverLoaded { .. } => "notify_idd_driver_loaded",
-        ProviderCommand::OpenVirtualChannel { .. } => "open_virtual_channel",
-    }
-}
-
 /// Ensures the WUDFRd (UMDF kernel reflector) service is running.
 ///
 /// WUDFRd is required for UMDF IDD drivers to load. It auto-stops when idle,
@@ -785,23 +771,6 @@ fn ensure_wudfrd_running_via_sc_exe() {
                 "ensure_wudfrd_running_via_sc_exe: failed to spawn sc.exe: {error}"
             ));
         }
-    }
-}
-
-fn event_kind(event: &ServiceEvent) -> &'static str {
-    match event {
-        ServiceEvent::Ack => "ack",
-        ServiceEvent::ListenerStarted { .. } => "listener_started",
-        ServiceEvent::ListenerStopped { .. } => "listener_stopped",
-        ServiceEvent::IncomingConnection { .. } => "incoming_connection",
-        ServiceEvent::NoIncoming => "no_incoming",
-        ServiceEvent::ConnectionReady { .. } => "connection_ready",
-        ServiceEvent::RemoteAppSettings { .. } => "remote_app_settings",
-        ServiceEvent::ConnectionBroken { .. } => "connection_broken",
-        ServiceEvent::ConnectionCredentials { .. } => "connection_credentials",
-        ServiceEvent::NoCredentials { .. } => "no_credentials",
-        ServiceEvent::VirtualChannelReady { .. } => "virtual_channel_ready",
-        ServiceEvent::Error { .. } => "error",
     }
 }
 
@@ -1267,7 +1236,7 @@ impl ProviderControlBridge {
             debug_log_line(&format!(
                 "ProviderControlBridge::send_command open pipe={} command={}{}",
                 full_pipe_name,
-                command_kind(command),
+                command.kind(),
                 if attempt > 0 {
                     format!(" retry={attempt}")
                 } else {
@@ -1292,7 +1261,7 @@ impl ProviderControlBridge {
                     debug!(
                         %error,
                         pipe = %full_pipe_name,
-                        command = command_kind(command),
+                        command = command.kind(),
                         "Companion control pipe not available yet; deferring provider IPC"
                     );
                     return Ok(None);
@@ -1301,7 +1270,7 @@ impl ProviderControlBridge {
                     debug_log_line(&format!(
                         "ProviderControlBridge::send_command pipe_busy pipe={} command={} attempt={}",
                         full_pipe_name,
-                        command_kind(command),
+                        command.kind(),
                         attempt
                     ));
                     last_error = Some(error);
@@ -1311,7 +1280,7 @@ impl ProviderControlBridge {
                     debug_log_line(&format!(
                         "ProviderControlBridge::send_command open_failed pipe={} command={} error={}",
                         full_pipe_name,
-                        command_kind(command),
+                        command.kind(),
                         error
                     ));
                     return Err(io_error_to_windows_error(error, "failed to connect to control pipe"));
@@ -1348,7 +1317,7 @@ impl ProviderControlBridge {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     debug_log_line(&format!(
                         "ProviderControlBridge::send_command timed_out command={} timeout_ms={}",
-                        command_kind(command),
+                        command.kind(),
                         response_timeout.as_millis()
                     ));
                     return Err(windows_core::Error::new(
@@ -1366,8 +1335,8 @@ impl ProviderControlBridge {
 
             debug_log_line(&format!(
                 "ProviderControlBridge::send_command ok command={} event={}",
-                command_kind(command),
-                event_kind(&event)
+                command.kind(),
+                event.kind()
             ));
 
             return Ok(Some(event));
@@ -1649,7 +1618,7 @@ impl IWRdsProtocolManager_Impl for ComProtocolManager_Impl {
     }
 
     fn NotifyServiceStateChange(&self, _ptsservicestatechange: *const WTS_SERVICE_STATE) -> windows_core::Result<()> {
-        info!("Received service state change notification");
+        debug!("Received service state change notification");
         Ok(())
     }
 
@@ -1669,7 +1638,7 @@ impl IWRdsProtocolManager_Impl for ComProtocolManager_Impl {
     }
 
     fn NotifySettingsChange(&self, _pwrdssettings: *const WRDS_SETTINGS) -> windows_core::Result<()> {
-        info!("Received protocol settings change notification");
+        debug!("Received protocol settings change notification");
         Ok(())
     }
 
@@ -1779,7 +1748,7 @@ impl IWRdsProtocolListener_Impl for ComProtocolListener_Impl {
                 "IWRdsProtocolListener::StartListen already_started listener_name={}",
                 self.listener_name
             ));
-            info!("Protocol listener already started");
+            debug!("Protocol listener already started");
             return Ok(());
         }
 
@@ -2454,10 +2423,7 @@ fn env_var_truthy(name: &str) -> bool {
 fn provider_override_env_var(name: &str) -> Result<String, std::env::VarError> {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => Ok(value),
-        Err(std::env::VarError::NotPresent) => read_termservice_environment_var(name)
-            .or_else(|| read_machine_environment_var(name))
-            .ok_or(std::env::VarError::NotPresent),
-        Ok(_) => read_termservice_environment_var(name)
+        Ok(_) | Err(std::env::VarError::NotPresent) => read_termservice_environment_var(name)
             .or_else(|| read_machine_environment_var(name))
             .ok_or(std::env::VarError::NotPresent),
         Err(error) => Err(error),
@@ -2465,47 +2431,13 @@ fn provider_override_env_var(name: &str) -> Result<String, std::env::VarError> {
 }
 
 fn read_termservice_environment_var(name: &str) -> Option<String> {
-    let mut bytes = 0u32;
-    let flags = RRF_RT_REG_MULTI_SZ | RRF_ZEROONFAILURE;
-
-    let query_status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            windows::core::w!("SYSTEM\\CurrentControlSet\\Services\\TermService"),
-            windows::core::w!("Environment"),
-            flags,
-            None,
-            None,
-            Some(&mut bytes),
-        )
-    };
-
-    if query_status != WIN32_ERROR(0) || bytes < 2 {
-        return None;
-    }
-
-    let mut wide = vec![0u16; usize::try_from(bytes).ok()?.div_ceil(size_of::<u16>())];
-    let read_status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            windows::core::w!("SYSTEM\\CurrentControlSet\\Services\\TermService"),
-            windows::core::w!("Environment"),
-            flags,
-            None,
-            Some(wide.as_mut_ptr().cast()),
-            Some(&mut bytes),
-        )
-    };
-
-    if read_status != WIN32_ERROR(0) {
-        debug_log_line(&format!(
-            "read_termservice_environment_var name={name} RegGetValueW failed status={read_status:?}",
-        ));
-        return None;
-    }
-
-    let used_len = usize::try_from(bytes).ok()?.div_ceil(size_of::<u16>());
-    for entry in wide[..used_len].split(|ch| *ch == 0) {
+    let wide = read_registry_environment_value(
+        name,
+        windows::core::w!("SYSTEM\\CurrentControlSet\\Services\\TermService"),
+        windows::core::w!("Environment"),
+        RRF_RT_REG_MULTI_SZ | RRF_ZEROONFAILURE,
+    )?;
+    for entry in wide.split(|ch| *ch == 0) {
         if entry.is_empty() {
             continue;
         }
@@ -2525,14 +2457,34 @@ fn read_termservice_environment_var(name: &str) -> Option<String> {
 
 fn read_machine_environment_var(name: &str) -> Option<String> {
     let value_name: Vec<u16> = name.encode_utf16().chain(core::iter::once(0)).collect();
-    let mut bytes = 0u32;
-    let flags = RRF_RT_REG_SZ | RRF_ZEROONFAILURE;
+    let wide = read_registry_environment_value(
+        name,
+        windows::core::w!("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"),
+        PCWSTR(value_name.as_ptr()),
+        RRF_RT_REG_SZ | RRF_ZEROONFAILURE,
+    )?;
+    let value = String::from_utf16_lossy(&wide);
+    let trimmed = value.trim_end_matches('\0').trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
 
+fn read_registry_environment_value(
+    name: &str,
+    subkey: PCWSTR,
+    value_name: PCWSTR,
+    flags: REG_ROUTINE_FLAGS,
+) -> Option<Vec<u16>> {
+    let mut bytes = 0u32;
+    // SAFETY: the registry path and value name are valid NUL-terminated strings, and `bytes` is a writable size output.
     let query_status = unsafe {
         RegGetValueW(
             HKEY_LOCAL_MACHINE,
-            windows::core::w!("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"),
-            PCWSTR(value_name.as_ptr()),
+            subkey,
+            value_name,
             flags,
             None,
             None,
@@ -2545,11 +2497,12 @@ fn read_machine_environment_var(name: &str) -> Option<String> {
     }
 
     let mut wide = vec![0u16; usize::try_from(bytes).ok()?.div_ceil(size_of::<u16>())];
+    // SAFETY: `wide` is sized from the preceding query and `bytes` is a writable byte-count output.
     let read_status = unsafe {
         RegGetValueW(
             HKEY_LOCAL_MACHINE,
-            windows::core::w!("SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"),
-            PCWSTR(value_name.as_ptr()),
+            subkey,
+            value_name,
             flags,
             None,
             Some(wide.as_mut_ptr().cast()),
@@ -2559,19 +2512,14 @@ fn read_machine_environment_var(name: &str) -> Option<String> {
 
     if read_status != WIN32_ERROR(0) {
         debug_log_line(&format!(
-            "read_machine_environment_var name={name} RegGetValueW failed status={read_status:?}",
+            "read_registry_environment_value name={name} RegGetValueW failed status={read_status:?}",
         ));
         return None;
     }
 
     let used_len = usize::try_from(bytes).ok()?.div_ceil(size_of::<u16>());
-    let value = String::from_utf16_lossy(&wide[..used_len]);
-    let trimmed = value.trim_end_matches('\0').trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_owned())
-    }
+    wide.truncate(used_len);
+    Some(wide)
 }
 
 fn provider_fast_reconnect_mode() -> u32 {

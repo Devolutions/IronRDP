@@ -2,6 +2,7 @@ use std::io::{self, Read, Write};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
 pub mod display;
 
@@ -71,6 +72,23 @@ pub enum ProviderCommand {
     },
 }
 
+impl ProviderCommand {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::StartListen { .. } => "start_listen",
+            Self::StopListen { .. } => "stop_listen",
+            Self::WaitForIncoming { .. } => "wait_for_incoming",
+            Self::AcceptConnection { .. } => "accept_connection",
+            Self::CloseConnection { .. } => "close_connection",
+            Self::GetConnectionCredentials { .. } => "get_connection_credentials",
+            Self::GetRemoteAppSettings { .. } => "get_remote_app_settings",
+            Self::SetCaptureSessionId { .. } => "set_capture_session_id",
+            Self::NotifyIddDriverLoaded { .. } => "notify_idd_driver_loaded",
+            Self::OpenVirtualChannel { .. } => "open_virtual_channel",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServiceEvent {
@@ -122,6 +140,25 @@ pub enum ServiceEvent {
     Error {
         message: String,
     },
+}
+
+impl ServiceEvent {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Ack => "ack",
+            Self::ListenerStarted { .. } => "listener_started",
+            Self::ListenerStopped { .. } => "listener_stopped",
+            Self::IncomingConnection { .. } => "incoming_connection",
+            Self::NoIncoming => "no_incoming",
+            Self::ConnectionReady { .. } => "connection_ready",
+            Self::RemoteAppSettings { .. } => "remote_app_settings",
+            Self::ConnectionBroken { .. } => "connection_broken",
+            Self::ConnectionCredentials { .. } => "connection_credentials",
+            Self::NoCredentials { .. } => "no_credentials",
+            Self::VirtualChannelReady { .. } => "virtual_channel_ready",
+            Self::Error { .. } => "error",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -195,6 +232,48 @@ pub fn read_frame(reader: &mut impl Read, max_frame_size: usize) -> io::Result<V
     reader.read_exact(&mut payload)?;
 
     Ok(payload)
+}
+
+pub async fn read_async_frame(
+    reader: &mut (dyn AsyncRead + Unpin + Send),
+    max_frame_size: usize,
+) -> io::Result<Vec<u8>> {
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf).await?;
+
+    let frame_len_u32 = u32::from_le_bytes(len_buf);
+    let frame_len = usize::try_from(frame_len_u32)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame length does not fit in usize"))?;
+
+    if frame_len > max_frame_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame length exceeds maximum",
+        ));
+    }
+
+    let mut payload = vec![0u8; frame_len];
+    reader.read_exact(&mut payload).await?;
+    Ok(payload)
+}
+
+pub async fn write_async_frame(
+    writer: &mut (dyn AsyncWrite + Unpin + Send),
+    payload: &[u8],
+    max_frame_size: usize,
+) -> io::Result<()> {
+    if payload.len() > max_frame_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "frame length exceeds maximum",
+        ));
+    }
+
+    let payload_len =
+        u32::try_from(payload.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "payload too large"))?;
+
+    writer.write_all(&payload_len.to_le_bytes()).await?;
+    writer.write_all(payload).await
 }
 
 pub fn write_json_message<T: Serialize>(writer: &mut impl Write, message: &T) -> io::Result<()> {

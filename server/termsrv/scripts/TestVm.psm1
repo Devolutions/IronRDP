@@ -45,7 +45,7 @@ function New-TestVmSession {
     } catch {
         Write-Warning "WinRM over HTTP failed for $Hostname; trying WinRM over HTTPS (5986)"
         $remaining = [Math]::Max(1, [int]($deadline - (Get-Date)).TotalMilliseconds)
-        $options = New-PSSessionOption -SkipCACheck -SkipCNCheck -SkipRevocationCheck -OpenTimeout $remaining -OperationTimeout $remaining
+        $options = New-PSSessionOption -OpenTimeout $remaining -OperationTimeout $remaining
         return New-PSSession -ComputerName $Hostname -Credential $Credential -UseSSL -Port 5986 -SessionOption $options -ErrorAction Stop
     }
 }

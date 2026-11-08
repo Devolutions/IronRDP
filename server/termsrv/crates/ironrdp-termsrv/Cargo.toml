@@ -13,7 +13,7 @@ categories.workspace = true
 [target.'cfg(windows)'.dependencies]
 anyhow = "1"
 async-trait = "0.1"
-rustls-cng = "0.7"
+rustls-cng = "0.7" # CNG key handles implement rustls signing keys.
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls = "0.26"
 tracing = { version = "0.1", features = ["log"] }

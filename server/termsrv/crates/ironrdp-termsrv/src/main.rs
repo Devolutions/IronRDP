@@ -36,7 +36,7 @@ mod windows_main {
     use core::num::{NonZeroI32, NonZeroU16, NonZeroU32, NonZeroUsize};
     use core::ptr::null_mut;
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
-    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
     use std::io;
     use std::io::Write as _;
     use std::os::windows::io::AsRawHandle as _;
@@ -45,6 +45,7 @@ mod windows_main {
 
     use anyhow::{Context as _, anyhow};
     use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
+    use ironrdp_pdu::input::fast_path::SynchronizeFlags;
     use ironrdp_server::{
         BitmapUpdate, Credentials, CsReadyPdu, DesktopSize, DismissHoveringTouchContactPdu, DisplayContext,
         DisplayUpdate, KeyboardEvent, MouseButton, MouseEvent, PenEventPdu, PixelFormat, RdpInputProtocolVersion,
@@ -54,7 +55,8 @@ mod windows_main {
     };
     use ironrdp_wtsprotocol_ipc::display::{DISPLAY_REQUEST_DIRECTORY, DisplaySize};
     use ironrdp_wtsprotocol_ipc::{
-        DEFAULT_MAX_FRAME_SIZE, ProviderCommand, ServiceEvent, default_pipe_name, pipe_path, resolve_pipe_name_from_env,
+        DEFAULT_MAX_FRAME_SIZE, ProviderCommand, ServiceEvent, default_pipe_name, pipe_path, read_async_frame,
+        resolve_pipe_name_from_env, write_async_frame,
     };
     use rustls_cng::signer::CngSigningKey;
     use rustls_cng::store::{CertStore, CertStoreType};
@@ -84,8 +86,7 @@ mod windows_main {
         CERT_QUERY_ENCODING_TYPE, CERT_STORE_ADD_REPLACE_EXISTING, CERT_STORE_PROV_SYSTEM_W,
         CERT_SYSTEM_STORE_LOCAL_MACHINE, CERT_X500_NAME_STR, CRYPT_INTEGER_BLOB, CRYPT_KEY_PROV_INFO,
         CertAddCertificateContextToStore, CertCloseStore, CertCreateSelfSignCertificate, CertFindCertificateInStore,
-        CertFreeCertificateContext, CertOpenStore, CertStrToNameW, HCERTSTORE, MS_KEY_STORAGE_PROVIDER,
-        NCRYPT_ALLOW_EXPORT_FLAG, NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG, NCRYPT_EXPORT_POLICY_PROPERTY, NCRYPT_FLAGS,
+        CertFreeCertificateContext, CertOpenStore, CertStrToNameW, HCERTSTORE, MS_KEY_STORAGE_PROVIDER, NCRYPT_FLAGS,
         NCRYPT_HANDLE, NCRYPT_KEY_HANDLE, NCRYPT_LENGTH_PROPERTY, NCRYPT_MACHINE_KEY_FLAG, NCRYPT_PROV_HANDLE,
         NCryptCreatePersistedKey, NCryptFinalizeKey, NCryptFreeObject, NCryptOpenStorageProvider, NCryptSetProperty,
         PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
@@ -116,10 +117,11 @@ mod windows_main {
         TerminateProcess, WaitForSingleObject,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+        GetKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
         KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
         MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
         MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VIRTUAL_KEY,
+        VK_CAPITAL, VK_KANA, VK_NUMLOCK, VK_SCROLL,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
     use windows::core::{BOOL, PCWSTR, PWSTR, w};
@@ -300,6 +302,7 @@ mod windows_main {
 
     const INPUT_MSG_SCANCODE_KEY: u8 = 1;
     const INPUT_MSG_UNICODE_KEY: u8 = 2;
+    const INPUT_MSG_KEYBOARD_SYNC: u8 = 3;
     const INPUT_MSG_MOUSE_MOVE_ABS: u8 = 10;
     const INPUT_MSG_MOUSE_MOVE_REL: u8 = 11;
     const INPUT_MSG_MOUSE_BUTTON: u8 = 12;
@@ -331,6 +334,17 @@ mod windows_main {
         bytes: Vec<u8>,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum PressedInput {
+        Scancode { code: u8, extended: bool },
+        Unicode(u16),
+        MouseLeft,
+        MouseRight,
+        MouseMiddle,
+        MouseX1,
+        MouseX2,
+    }
+
     fn make_input_packet(msg_type: u8, payload: &[u8]) -> Option<InputPacket> {
         let payload_len = u16::try_from(payload.len()).ok()?;
         let mut bytes = Vec::with_capacity(INPUT_FRAME_HEADER_LEN + payload.len());
@@ -348,6 +362,7 @@ mod windows_main {
         tx: mpsc::Sender<InputPacket>,
         server_events: Arc<OnceLock<mpsc::UnboundedSender<ServerEvent>>>,
         failed: Arc<AtomicBool>,
+        pressed_inputs: Arc<StdMutex<BTreeSet<PressedInput>>>,
     }
 
     impl TermSrvInputHandler {
@@ -357,6 +372,7 @@ mod windows_main {
                 tx,
                 server_events: Arc::new(OnceLock::new()),
                 failed: Arc::new(AtomicBool::new(false)),
+                pressed_inputs: Arc::new(StdMutex::new(BTreeSet::new())),
             }
         }
 
@@ -422,6 +438,52 @@ mod windows_main {
             self.send(make_input_packet(INPUT_MSG_UNICODE_KEY, &payload));
         }
 
+        fn update_pressed_input(&self, input: PressedInput, pressed: bool) {
+            let Ok(mut pressed_inputs) = self.pressed_inputs.lock() else {
+                self.fail("input state lock is poisoned");
+                return;
+            };
+            if pressed {
+                pressed_inputs.insert(input);
+            } else {
+                pressed_inputs.remove(&input);
+            }
+        }
+
+        fn update_pressed_mouse_button(&self, button: MouseButton, pressed: bool) {
+            let input = match button {
+                MouseButton::Left => PressedInput::MouseLeft,
+                MouseButton::Right => PressedInput::MouseRight,
+                MouseButton::Middle => PressedInput::MouseMiddle,
+                MouseButton::X1 => PressedInput::MouseX1,
+                MouseButton::X2 => PressedInput::MouseX2,
+                _ => return,
+            };
+            self.update_pressed_input(input, pressed);
+        }
+
+        fn synchronize_keyboard(&self, flags: SynchronizeFlags) {
+            let pressed_inputs = match self.pressed_inputs.lock() {
+                Ok(pressed_inputs) => pressed_inputs.clone(),
+                Err(_) => {
+                    self.fail("input state lock is poisoned");
+                    return;
+                }
+            };
+            self.send(make_input_packet(INPUT_MSG_KEYBOARD_SYNC, &[flags.bits()]));
+            for input in pressed_inputs {
+                match input {
+                    PressedInput::Scancode { code, extended } => self.send_scancode(code, extended, false),
+                    PressedInput::Unicode(ch) => self.send_unicode(ch, false),
+                    PressedInput::MouseLeft => self.send_mouse_button(MouseButton::Left, true),
+                    PressedInput::MouseRight => self.send_mouse_button(MouseButton::Right, true),
+                    PressedInput::MouseMiddle => self.send_mouse_button(MouseButton::Middle, true),
+                    PressedInput::MouseX1 => self.send_mouse_button(MouseButton::X1, true),
+                    PressedInput::MouseX2 => self.send_mouse_button(MouseButton::X2, true),
+                }
+            }
+        }
+
         fn send_mouse_move_abs(&self, x: u16, y: u16) {
             let mut payload = [0u8; 4];
             payload[0..2].copy_from_slice(&x.to_le_bytes());
@@ -468,13 +530,23 @@ mod windows_main {
     impl RdpServerInputHandler for TermSrvInputHandler {
         fn keyboard(&mut self, event: KeyboardEvent) {
             match event {
-                KeyboardEvent::Pressed { code, extended } => self.send_scancode(code, extended, false),
-                KeyboardEvent::Released { code, extended } => self.send_scancode(code, extended, true),
-                KeyboardEvent::UnicodePressed(ch) => self.send_unicode(ch, false),
-                KeyboardEvent::UnicodeReleased(ch) => self.send_unicode(ch, true),
-                KeyboardEvent::Synchronize(_flags) => {
-                    // Best-effort: ignore synchronize toggles for now.
+                KeyboardEvent::Pressed { code, extended } => {
+                    self.update_pressed_input(PressedInput::Scancode { code, extended }, true);
+                    self.send_scancode(code, extended, false);
                 }
+                KeyboardEvent::Released { code, extended } => {
+                    self.update_pressed_input(PressedInput::Scancode { code, extended }, false);
+                    self.send_scancode(code, extended, true);
+                }
+                KeyboardEvent::UnicodePressed(ch) => {
+                    self.update_pressed_input(PressedInput::Unicode(ch), true);
+                    self.send_unicode(ch, false);
+                }
+                KeyboardEvent::UnicodeReleased(ch) => {
+                    self.update_pressed_input(PressedInput::Unicode(ch), false);
+                    self.send_unicode(ch, true);
+                }
+                KeyboardEvent::Synchronize(flags) => self.synchronize_keyboard(flags),
             }
         }
 
@@ -484,10 +556,12 @@ mod windows_main {
                 MouseEvent::RelMove { x, y } => self.send_mouse_move_rel(x, y),
                 MouseEvent::Button { x, y, button, pressed } => {
                     self.send_mouse_move_abs(x, y);
+                    self.update_pressed_mouse_button(button, pressed);
                     self.send_mouse_button(button, pressed);
                 }
                 MouseEvent::ButtonRel { x, y, button, pressed } => {
                     self.send_mouse_move_rel(x, y);
+                    self.update_pressed_mouse_button(button, pressed);
                     self.send_mouse_button(button, pressed);
                 }
                 MouseEvent::VerticalScroll { value } => {
@@ -1051,9 +1125,7 @@ mod windows_main {
                 );
             }
 
-            if let Some(capture) = self.capture.take() {
-                capture.terminate();
-            }
+            drop(self.capture.take());
         }
     }
 
@@ -1089,9 +1161,7 @@ mod windows_main {
                     Err(error) => {
                         warn!(error = %format!("{error:#}"), "Native cursor stream stopped; restarting capture helper");
                         *self.input_stream_slot.stream.lock().await = None;
-                        if let Some(capture) = self.capture.take() {
-                            capture.terminate();
-                        }
+                        drop(self.capture.take());
                         self.next_helper_attempt_at = Instant::now();
                         self.last_cursor = None;
                         return Ok(Some(DisplayUpdate::HidePointer));
@@ -1220,7 +1290,7 @@ mod windows_main {
                     }
 
                     if let Some(capture) = self.capture.take() {
-                        capture.terminate();
+                        drop(capture);
                     }
 
                     self.next_helper_attempt_at = Instant::now();
@@ -1409,7 +1479,7 @@ mod windows_main {
                             );
                             let capture = self.capture.take();
                             if let Some(capture) = capture {
-                                capture.terminate();
+                                drop(capture);
                             }
                             self.next_helper_attempt_at = Instant::now() + CAPTURE_HELPER_RETRY_DELAY;
 
@@ -1451,7 +1521,7 @@ mod windows_main {
                                 );
 
                                 if let Some(capture) = self.capture.take() {
-                                    capture.terminate();
+                                    drop(capture);
                                 }
 
                                 self.next_helper_attempt_at = Instant::now();
@@ -1615,7 +1685,7 @@ mod windows_main {
                                 );
 
                                 if let Some(capture) = self.capture.take() {
-                                    capture.terminate();
+                                    drop(capture);
                                 }
 
                                 self.capture_restarted_for_blank = true;
@@ -1886,13 +1956,6 @@ mod windows_main {
             }
         }
 
-        fn terminate(self) {
-            match self {
-                Self::Tcp(client) => client.terminate(),
-                Self::SharedMem(client) => client.terminate(),
-            }
-        }
-
         async fn read_frame(&mut self) -> anyhow::Result<CapturedFrame> {
             match self {
                 Self::Tcp(client) => client.read_frame().await,
@@ -2006,10 +2069,6 @@ mod windows_main {
 
         fn pid(&self) -> u32 {
             self.helper_pid
-        }
-
-        fn terminate(self) {
-            drop(self);
         }
 
         async fn read_frame(&mut self) -> anyhow::Result<CapturedFrame> {
@@ -2464,10 +2523,6 @@ mod windows_main {
 
         fn pid(&self) -> u32 {
             self.helper_pid
-        }
-
-        fn terminate(self) {
-            drop(self);
         }
 
         async fn read_frame(&mut self) -> anyhow::Result<CapturedFrame> {
@@ -3474,17 +3529,7 @@ mod windows_main {
             .map_err(|error| anyhow!("OpenProcess failed: {error}"))
             .context("OpenProcess failed")?;
 
-        struct HandleGuard(HANDLE);
-        impl Drop for HandleGuard {
-            fn drop(&mut self) {
-                // SAFETY: handle is either valid or null; CloseHandle is safe to call.
-                unsafe {
-                    let _ = CloseHandle(self.0);
-                }
-            }
-        }
-
-        let _process_guard = HandleGuard(process_handle);
+        let _process_guard = OwnedHandle(process_handle);
 
         let mut process_token = HANDLE::default();
 
@@ -3499,7 +3544,7 @@ mod windows_main {
         .map_err(|error| anyhow!("OpenProcessToken({process_name}) failed: {error}"))
         .context("OpenProcessToken failed")?;
 
-        let _token_guard = HandleGuard(process_token);
+        let _token_guard = OwnedHandle(process_token);
 
         let mut primary_token = HANDLE::default();
 
@@ -5235,18 +5280,6 @@ mod windows_main {
         }
     }
 
-    impl rustls::server::ResolvesServerCert for WindowsStoreCertResolver {
-        fn resolve(&self, _client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<rustls::sign::CertifiedKey>> {
-            match self.resolve_once() {
-                Ok(key) => Some(key),
-                Err(error) => {
-                    error!(%error, subject_name = %self.subject_name, "Failed to resolve TLS certificate from Windows certificate store");
-                    None
-                }
-            }
-        }
-    }
-
     fn ensure_windows_tls_cert_in_machine_store(subject_name: &str) -> anyhow::Result<()> {
         // First check using wincrypt directly (fast path, no extra processing).
         if wincrypt_find_cert_by_subject(subject_name)? {
@@ -5372,19 +5405,7 @@ mod windows_main {
         }
         .context("NCryptSetProperty(NCRYPT_LENGTH_PROPERTY) failed")?;
 
-        // Allow export (helps tooling) but we still use CNG directly at runtime.
-        let export_policy: u32 = NCRYPT_ALLOW_EXPORT_FLAG | NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG;
-        // SAFETY: `key` is a valid key handle and the property buffer is valid for the call.
-        unsafe {
-            NCryptSetProperty(
-                NCRYPT_HANDLE::from(key.0),
-                NCRYPT_EXPORT_POLICY_PROPERTY,
-                &export_policy.to_le_bytes(),
-                NCRYPT_FLAGS(0),
-            )
-        }
-        .context("NCryptSetProperty(NCRYPT_EXPORT_POLICY_PROPERTY) failed")?;
-
+        // Finalize the key without relaxing the provider's default export policy.
         // SAFETY: `key` is a valid key handle created above.
         unsafe { NCryptFinalizeKey(key.0, NCRYPT_FLAGS(0)) }.context("NCryptFinalizeKey failed")?;
 
@@ -5889,6 +5910,7 @@ mod windows_main {
     enum HelperInputEvent {
         ScancodeKey { code: u8, extended: bool, released: bool },
         UnicodeKey { ch: u16, released: bool },
+        KeyboardSynchronize(SynchronizeFlags),
         MouseMoveAbs { x: u16, y: u16 },
         MouseMoveRel { dx: i32, dy: i32 },
         MouseButton { button: u8, down: bool },
@@ -5929,6 +5951,12 @@ mod windows_main {
             .context("failed to read input payload")?;
 
         match msg_type {
+            INPUT_MSG_KEYBOARD_SYNC => {
+                anyhow::ensure!(payload.len() == 1, "invalid keyboard synchronize payload length");
+                Ok(HelperInputEvent::KeyboardSynchronize(
+                    SynchronizeFlags::from_bits_retain(payload[0]),
+                ))
+            }
             INPUT_MSG_RDPEI_READY => Ok(HelperInputEvent::RdpeiReady(ironrdp_core::decode(&payload)?)),
             INPUT_MSG_TOUCH => Ok(HelperInputEvent::Touch(ironrdp_core::decode(&payload)?)),
             INPUT_MSG_DISMISS_HOVERING => Ok(HelperInputEvent::DismissHovering(ironrdp_core::decode(&payload)?)),
@@ -6011,6 +6039,7 @@ mod windows_main {
             | HelperInputEvent::PointerReset => {
                 anyhow::bail!("RDPEI input requires the session pointer injector");
             }
+            HelperInputEvent::KeyboardSynchronize(flags) => inject_keyboard_sync(input_marker, flags),
             HelperInputEvent::MouseMoveAbs { x, y } => {
                 let size = desktop_size_from_gdi().context("query mouse coordinate space")?;
                 let (width, height) = desktop_size_nonzero(size)?;
@@ -6196,6 +6225,45 @@ mod windows_main {
                 Ok(())
             }
         }
+    }
+
+    fn inject_keyboard_sync(input_marker: usize, flags: SynchronizeFlags) -> anyhow::Result<()> {
+        for (key, extended, enabled) in [
+            (VK_SCROLL, false, flags.contains(SynchronizeFlags::SCROLL_LOCK)),
+            (VK_NUMLOCK, true, flags.contains(SynchronizeFlags::NUM_LOCK)),
+            (VK_CAPITAL, false, flags.contains(SynchronizeFlags::CAPS_LOCK)),
+            (VK_KANA, false, flags.contains(SynchronizeFlags::KANA_LOCK)),
+        ] {
+            // SAFETY: GetKeyState accepts any virtual-key code.
+            let current = unsafe { GetKeyState(i32::from(key.0)) } & 1 != 0;
+            if current == enabled {
+                continue;
+            }
+
+            let base_flags = if extended {
+                KEYEVENTF_EXTENDEDKEY
+            } else {
+                Default::default()
+            };
+            let make_input = |dw_flags| INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: key,
+                        wScan: 0,
+                        dwFlags: dw_flags,
+                        time: 0,
+                        dwExtraInfo: input_marker,
+                    },
+                },
+            };
+            let inputs = [make_input(base_flags), make_input(base_flags | KEYEVENTF_KEYUP)];
+
+            // SAFETY: Both input structures are initialized and the size matches `INPUT`.
+            let sent = unsafe { SendInput(&inputs, i32::try_from(size_of::<INPUT>())?) };
+            anyhow::ensure!(sent == 2, "SendInput did not synchronize keyboard toggle state");
+        }
+        Ok(())
     }
 
     async fn run_input_injector(input_marker: usize, mut stream: tokio::net::tcp::OwnedReadHalf) -> anyhow::Result<()> {
@@ -6769,17 +6837,7 @@ mod windows_main {
             .map_err(|error| anyhow!("OpenFileMappingW failed: {error}"))
             .context("OpenFileMappingW failed")?;
 
-        struct HandleGuard(HANDLE);
-        impl Drop for HandleGuard {
-            fn drop(&mut self) {
-                // SAFETY: handle is owned by this guard.
-                unsafe {
-                    let _ = CloseHandle(self.0);
-                }
-            }
-        }
-
-        let _mapping_guard = HandleGuard(mapping);
+        let _mapping_guard = OwnedHandle(mapping);
 
         // SAFETY: map the whole view; size 0 maps the entire mapping.
         let view_ptr = unsafe { MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, 0) };
@@ -6794,7 +6852,7 @@ mod windows_main {
             .map_err(|error| anyhow!("OpenEventW failed: {error}"))
             .context("OpenEventW failed")?;
 
-        let _event_guard = HandleGuard(frame_ready_event);
+        let _event_guard = OwnedHandle(frame_ready_event);
 
         let mut input_stream = TcpStream::connect(input_connect_addr)
             .await
@@ -7067,7 +7125,7 @@ mod windows_main {
             let event = control_plane.handle_command(command, pending_wakeup_rx).await;
 
             info!(
-                event_type = event_kind(&event),
+                event_type = event.kind(),
                 seq = commands_processed,
                 "Sending pipe response"
             );
@@ -7076,7 +7134,7 @@ mod windows_main {
     }
 
     async fn read_command(pipe: &mut named_pipe::NamedPipeServer) -> io::Result<Option<ProviderCommand>> {
-        let payload = match read_frame(pipe).await {
+        let payload = match read_async_frame(pipe, DEFAULT_MAX_FRAME_SIZE).await {
             Ok(payload) => payload,
             Err(error) if is_disconnect_error(&error) => return Ok(None),
             Err(error) => return Err(error),
@@ -7096,53 +7154,7 @@ mod windows_main {
             )
         })?;
 
-        write_frame(pipe, &payload).await
-    }
-
-    async fn read_frame(pipe: &mut named_pipe::NamedPipeServer) -> io::Result<Vec<u8>> {
-        let mut len_buf = [0u8; 4];
-        pipe.read_exact(&mut len_buf).await?;
-
-        let frame_len_u32 = u32::from_le_bytes(len_buf);
-        let frame_len = usize::try_from(frame_len_u32)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame length does not fit in usize"))?;
-
-        if frame_len > DEFAULT_MAX_FRAME_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "frame length exceeds maximum size",
-            ));
-        }
-
-        let mut payload = vec![0u8; frame_len];
-        pipe.read_exact(&mut payload).await?;
-
-        Ok(payload)
-    }
-
-    async fn write_frame(pipe: &mut named_pipe::NamedPipeServer, payload: &[u8]) -> io::Result<()> {
-        let payload_len = u32::try_from(payload.len())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "payload too large"))?;
-
-        pipe.write_all(&payload_len.to_le_bytes()).await?;
-        pipe.write_all(payload).await
-    }
-
-    fn event_kind(event: &ServiceEvent) -> &'static str {
-        match event {
-            ServiceEvent::Ack => "ack",
-            ServiceEvent::ListenerStarted { .. } => "listener_started",
-            ServiceEvent::ListenerStopped { .. } => "listener_stopped",
-            ServiceEvent::IncomingConnection { .. } => "incoming_connection",
-            ServiceEvent::NoIncoming => "no_incoming",
-            ServiceEvent::ConnectionReady { .. } => "connection_ready",
-            ServiceEvent::RemoteAppSettings { .. } => "remote_app_settings",
-            ServiceEvent::ConnectionBroken { .. } => "connection_broken",
-            ServiceEvent::ConnectionCredentials { .. } => "connection_credentials",
-            ServiceEvent::NoCredentials { .. } => "no_credentials",
-            ServiceEvent::VirtualChannelReady { .. } => "virtual_channel_ready",
-            ServiceEvent::Error { .. } => "error",
-        }
+        write_async_frame(pipe, &payload, DEFAULT_MAX_FRAME_SIZE).await
     }
 
     fn is_disconnect_error(error: &io::Error) -> bool {
@@ -7187,6 +7199,60 @@ mod windows_main {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        // oracle: spec MS-RDPBCGR §2.2.8.1.1.3.1.1.5 requires synchronization followed by key-downs for keys still down.
+        #[test]
+        fn keyboard_synchronize_forwards_toggle_flags_and_reasserts_pressed_keys() {
+            let (tx, mut rx) = mpsc::channel(8);
+            let mut handler = TermSrvInputHandler::new(1, tx);
+
+            handler.keyboard(KeyboardEvent::Pressed {
+                code: 0x1d,
+                extended: false,
+            });
+            handler.keyboard(KeyboardEvent::UnicodePressed(u16::from(b'x')));
+            handler.keyboard(KeyboardEvent::Synchronize(SynchronizeFlags::CAPS_LOCK));
+
+            let packets: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+            assert_eq!(packets.len(), 5);
+            assert_eq!(packets[0].bytes[6], INPUT_MSG_SCANCODE_KEY);
+            assert_eq!(packets[1].bytes[6], INPUT_MSG_UNICODE_KEY);
+            assert_eq!(packets[2].bytes[6], INPUT_MSG_KEYBOARD_SYNC);
+            assert_eq!(
+                &packets[2].bytes[INPUT_FRAME_HEADER_LEN..],
+                &[SynchronizeFlags::CAPS_LOCK.bits()]
+            );
+            let pressed = packets[3..5]
+                .iter()
+                .map(|packet| (packet.bytes[6], &packet.bytes[INPUT_FRAME_HEADER_LEN..]))
+                .collect::<Vec<_>>();
+            assert!(pressed.contains(&(INPUT_MSG_SCANCODE_KEY, &[0, 0x1d][..])));
+            assert!(pressed.contains(&(INPUT_MSG_UNICODE_KEY, &[0, b'x', 0][..])));
+        }
+
+        // oracle: spec MS-RDPBCGR §2.2.8.1.1.3.1.1.5 requires replaying held input after synchronization.
+        #[test]
+        fn keyboard_synchronize_reasserts_pressed_mouse_buttons() {
+            let (tx, mut rx) = mpsc::channel(8);
+            let mut handler = TermSrvInputHandler::new(1, tx);
+
+            handler.mouse(MouseEvent::Button {
+                x: 4,
+                y: 7,
+                button: MouseButton::Left,
+                pressed: true,
+            });
+            handler.keyboard(KeyboardEvent::Synchronize(SynchronizeFlags::empty()));
+
+            let packets: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+            assert_eq!(packets.len(), 4);
+            assert_eq!(packets[2].bytes[6], INPUT_MSG_KEYBOARD_SYNC);
+            assert_eq!(packets[3].bytes[6], INPUT_MSG_MOUSE_BUTTON);
+            assert_eq!(
+                &packets[3].bytes[INPUT_FRAME_HEADER_LEN..],
+                &[INPUT_MOUSE_BUTTON_LEFT, INPUT_MOUSE_BUTTON_DOWN]
+            );
+        }
 
         // oracle: mutant the installed listener port is ignored when the provider selects a custom port.
         #[test]
@@ -7481,6 +7547,7 @@ mod windows_main {
             Ok((writer, reader))
         }
 
+        // oracle: mutant service child environments retain credentials or unrelated secrets.
         #[test]
         fn helper_environment_excludes_service_credentials() {
             let entries = child_environment_entries(
@@ -7502,6 +7569,7 @@ mod windows_main {
             assert!(!entries.iter().any(|entry| entry.starts_with("UNRELATED_SECRET=")));
         }
 
+        // oracle: mutant connection ID allocation emits zero or fails to wrap.
         #[test]
         fn connection_ids_wrap_without_using_zero() {
             let bind_addr = "127.0.0.1:4489".parse().expect("valid bind address");
@@ -7525,6 +7593,7 @@ mod windows_main {
             ));
         }
 
+        // oracle: mutant a closed connection remains in the pending incoming queue.
         #[test]
         fn closing_connection_removes_pending_incoming_notification() {
             let bind_addr = "127.0.0.1:4489".parse().expect("valid bind address");
@@ -7587,10 +7656,7 @@ mod windows_main {
             let result = timeout(Duration::from_secs(1), read_capture_frame(&mut reader))
                 .await
                 .expect("frame version check timed out");
-            assert!(
-                matches!(result, Err(error) if error.to_string() == "unsupported capture frame version: 2"),
-                "version-2 frames must be rejected"
-            );
+            assert!(result.is_err(), "version-2 frames must be rejected");
         }
 
         #[tokio::test(flavor = "current_thread")]

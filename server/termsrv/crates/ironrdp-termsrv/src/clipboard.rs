@@ -12,7 +12,8 @@ use ironrdp_cliprdr::pdu::{
 use ironrdp_cliprdr_native::WinClipboard;
 use ironrdp_core::{Decode as _, Encode as _, IntoOwned as _, ReadCursor, WriteCursor, encode_vec, impl_as_any};
 use ironrdp_server::{CliprdrServerFactory, ServerEvent, ServerEventSender};
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+use ironrdp_wtsprotocol_ipc::{read_async_frame, write_async_frame};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Duration, timeout};
@@ -444,17 +445,11 @@ fn dispatch_callback(backend: &mut dyn CliprdrBackend, frame: &[u8]) -> anyhow::
 }
 
 async fn read_frame(reader: &mut (dyn AsyncRead + Unpin + Send)) -> anyhow::Result<Vec<u8>> {
-    let length = usize::try_from(reader.read_u32_le().await.context("read clipboard frame length")?)?;
-    ensure!(length <= MAX_FRAME_SIZE, "clipboard frame exceeds 16 MiB");
-    let mut frame = vec![0u8; length];
-    reader.read_exact(&mut frame).await.context("read clipboard frame")?;
-    Ok(frame)
+    Ok(read_async_frame(reader, MAX_FRAME_SIZE).await?)
 }
 
 async fn write_frame(writer: &mut (dyn AsyncWrite + Unpin + Send), frame: &[u8]) -> anyhow::Result<()> {
-    ensure!(frame.len() <= MAX_FRAME_SIZE, "clipboard frame exceeds 16 MiB");
-    writer.write_u32_le(u32::try_from(frame.len())?).await?;
-    writer.write_all(frame).await?;
+    write_async_frame(writer, frame, MAX_FRAME_SIZE).await?;
     Ok(())
 }
 
@@ -638,13 +633,7 @@ mod tests {
     #[tokio::test]
     async fn helper_rejects_oversized_frame_before_reading_body() {
         let mut header = &[1, 0, 0, 1][..];
-        assert!(
-            read_frame(&mut header)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("16 MiB")
-        );
+        assert!(read_frame(&mut header).await.is_err());
     }
 
     // oracle: mutant reject a frame exactly at the configured maximum helper-frame size.

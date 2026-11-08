@@ -99,6 +99,3 @@ Its ZIP still requires the configured checkout and DLL paths on the server; it d
 Backup, restore, install, uninstall, registration verification, and runtime smoke checks remain separate scripts.
 
 [configuration package]: ./SIDEBYSIDE_SETUP.md#optional-configuration-package-prepare-without-installing
-
-The [MSI prototype](../../package/msi/README.md) is not a supported startup path: it registers an SCM service, but the companion does not implement SCM service hosting.
-Use the [companion deployment instructions] instead.

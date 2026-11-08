@@ -1,6 +1,7 @@
 use ironrdp_wtsprotocol_ipc::display::DisplaySize;
 use serde as _;
 use serde_json as _;
+use tokio as _;
 
 // oracle: spec MS-RDPEDISP §3.1.5.2; a layout request changes its remote session.
 #[test]

@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use tracing::info;
-
 use crate::listener::ProtocolListener;
 use crate::session_registry::SessionRegistry;
 
@@ -24,7 +22,6 @@ impl ProtocolManager {
     }
 
     pub fn create_listener(&self) -> ProtocolListener {
-        info!("Creating protocol listener");
         ProtocolListener::new(Arc::clone(&self.sessions))
     }
 

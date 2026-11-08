@@ -918,7 +918,7 @@ mod tests {
 
     #[tokio::test]
     async fn dynamic_write_guard_tracks_the_processor_and_retains_its_permit() {
-        // oracle: ServerEvent::DynamicChannelWithCompletion requires processor-scoped validity and a retained permit.
+        // oracle: mutant allowing a dynamic write after its processor is replaced keeps stale output valid.
         let (sender, mut events) = mpsc::unbounded_channel();
         let (processor, _incoming) = NativeDvc::new(NOW_CHANNEL, MAX_MESSAGE_SIZE, None, None);
         let outstanding_write = Arc::new(Semaphore::new(1));
@@ -953,7 +953,7 @@ mod tests {
 
     #[tokio::test]
     async fn dynamic_close_guard_cannot_target_a_replacement_processor() {
-        // oracle: ServerEvent::CloseDynamicChannel requires validity tied to the originating processor lifetime.
+        // oracle: mutant allowing a close event to target a replacement processor lets stale state close a new channel.
         let (sender, mut events) = mpsc::unbounded_channel();
         let (processor, _incoming) = NativeDvc::new(NOW_CHANNEL, MAX_MESSAGE_SIZE, None, None);
         drop(ChannelGuard {

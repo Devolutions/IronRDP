@@ -10,8 +10,6 @@ It registers a side-by-side WTS protocol listener so IronRDP can drive authentic
 - [`crates/ironrdp-wtsprotocol-provider`](crates/ironrdp-wtsprotocol-provider/README.md): In-process COM protocol provider (`IWRdsProtocolManager`, `IWRdsProtocolListener`, and `IWRdsProtocolConnection`) loaded by `TermService`.
 - [`crates/ironrdp-wtsprotocol-ipc`](crates/ironrdp-wtsprotocol-ipc): Shared control-pipe and display-configuration messages between the provider, companion, and display driver.
 - [`crates/ironrdp-idd`](crates/ironrdp-idd/README.md): UMDF Indirect Display Driver (IddCx) used for remote session display attachment and dynamic resizing.
-- [`package/msi`](package/msi/README.md): WixSharp MSI prototype.
-  It registers an SCM service, but the companion does not implement SCM service hosting; use the [scheduled-task deployment](crates/ironrdp-termsrv/README.md#deploy-to-a-test-vm-psremoting) instead.
 
 ## Test VM
 

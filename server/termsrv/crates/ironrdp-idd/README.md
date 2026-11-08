@@ -13,7 +13,7 @@ This crate is intentionally *safe-by-default* for normal workspace builds:
 - `IRONRDP_IDD_LINK=1`
   - Enables IddCx stub linking (`iddcxstub` + `d3d11`/`dxgi`) from [build.rs](build.rs).
   - Also enables a compile-time cfg (`ironrdp_idd_link`) for code that calls into the IddCx function table.
-  - This typically requires the WDK import libraries to be available to the MSVC toolchain.
+  - This requires the WDK import libraries to be available to the MSVC toolchain.
 
 - `IRONRDP_IDDCX_LIB_DIR=C:\path\to\folder\containing\iddcxstub.lib`
   - Optional override used by [build.rs](build.rs) when `IRONRDP_IDD_LINK=1` is set.
@@ -25,13 +25,13 @@ This crate is intentionally *safe-by-default* for normal workspace builds:
   - Optional override for selecting a specific `WdfDriverStubUm.lib` version under `<root>\Lib\wdf\umdf\<arch>\<version>`.
   - Defaults to `2.33` to match the WDF dispatch symbol used by the crate.
 
-- `IRONRDP_WDF_USE_LOCAL_STUB=1`
-  - Optional switch to force use of bundled [WdfDriverStubUm.lib](WdfDriverStubUm.lib) instead of WDK-discovered stubs.
-  - By default (`0`/unset), [build.rs](build.rs) prefers WDK stubs and falls back to the bundled copy only when needed.
+- `IRONRDP_WDF_UMDF_LIB_DIR=C:\path\to\folder\containing\WdfDriverStubUm.lib`
+  - Optional override for the WDK UMDF stub library directory.
 
 - `IRONRDP_WDF_STUB_BUILD_NUMBER=26100`
   - Optional override for the bind-info build number patch applied to the selected WDF stub.
   - The selected WDF stub is linked through a patched copy in `OUT_DIR` to avoid pre-release WDK bind-info rejection.
+  - `IRONRDP_IDD_LINK=1` requires this WDK library; normal `cargo check` and Clippy builds do not.
 
 - Feature `iddcx-experimental-layout`
   - Enables an **experimental** `repr(C)` layout for `IDARG_IN_SETSWAPCHAIN` used by the monitor swapchain callbacks.
@@ -84,7 +84,8 @@ All scripts live in [server/termsrv/crates/ironrdp-idd/scripts](scripts).
 
 Run from the repository root with `RDP_USERNAME` and `RDP_PASSWORD` supplied through the environment.
 The scripts default to `IT-HELP-TERMSRV` and use HTTPS remoting on port 5986 when HTTP authentication is unavailable.
-The lab HTTPS fallback skips certificate validation without changing local TrustedHosts or certificate stores.
+HTTPS remoting validates the server certificate.
+Configure a trusted certificate on the VM before using this fallback.
 
 ```powershell
 .\server\termsrv\crates\ironrdp-idd\scripts\ensure-rdsh-role.ps1 -AttemptInstall

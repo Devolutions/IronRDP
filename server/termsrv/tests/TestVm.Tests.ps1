@@ -63,8 +63,8 @@ Describe 'Test VM credentials and remoting' {
             Should -Invoke New-PSSessionOption -Times 0 -ParameterFilter { $SkipCACheck -or $SkipCNCheck -or $SkipRevocationCheck }
         }
 
-        It 'retains the HTTPS fallback policy and never prints the HTTP exception' {
-            # oracle: mutant HTTPS fallback is omitted or exposes the failed HTTP diagnostic.
+        It 'validates the HTTPS fallback certificate and never prints the HTTP exception' {
+            # oracle: mutant HTTPS fallback disables certificate validation or exposes the failed HTTP diagnostic.
             Mock New-PSSessionOption { [pscustomobject]@{} }
             Mock New-PSSession {
                 if (-not $UseSSL) { throw 'sensitive-fixture-diagnostic' }
@@ -73,7 +73,7 @@ Describe 'Test VM credentials and remoting' {
             $messages = @(New-TestVmSession -Hostname 'fixture.invalid' -Credential $script:credential 3>&1)
             ($messages | Out-String) | Should -Not -Match 'sensitive-fixture-diagnostic'
             Should -Invoke New-PSSession -Times 1 -ParameterFilter { $UseSSL -and $Port -eq 5986 }
-            Should -Invoke New-PSSessionOption -Times 1 -ParameterFilter { $SkipCACheck -and $SkipCNCheck -and $SkipRevocationCheck }
+            Should -Invoke New-PSSessionOption -Times 1 -ParameterFilter { -not $SkipCACheck -and -not $SkipCNCheck -and -not $SkipRevocationCheck }
         }
 
         It 'closes an unusable reconnected session before retrying' {

@@ -468,7 +468,7 @@ impl SwapChainProcessor {
                         crate::debug_trace(&format!(
                             "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_ERROR stage=cast_dxgi_device error={error}"
                         ));
-                        tracing::warn!(?error, "failed to cast D3D11 device to IDXGIDevice");
+                        tracing::warn!(?error, "Failed to cast D3D11 device to IDXGIDevice");
                         return;
                     }
                 };
@@ -537,7 +537,7 @@ impl SwapChainProcessor {
                             "SESSION_PROOF_IDD_SWAPCHAIN_THREAD_ERROR stage=wait unexpected_result=0x{:08X}",
                             wait.0
                         ));
-                        tracing::warn!(?wait, "unexpected WaitForMultipleObjects result in swapchain thread");
+                        tracing::warn!(?wait, "Unexpected WaitForMultipleObjects result in swapchain thread");
                         break;
                     }
 
@@ -639,7 +639,7 @@ impl SwapChainProcessor {
                         break;
                     }
 
-                    tracing::warn!(?wait, "unexpected WaitForMultipleObjects result in swapchain thread");
+                    tracing::warn!(?wait, "Unexpected WaitForMultipleObjects result in swapchain thread");
                     break;
                 }
 
