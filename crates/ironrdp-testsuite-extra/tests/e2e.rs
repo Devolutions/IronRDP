@@ -4799,8 +4799,8 @@ async fn strict_validation_rejects_an_unreported_target_certificate() {
     assert!(!follows_redirection_under_strict_validation(false).await);
 }
 
-/// Level and message of the `ironrdp_server::server` events logged while it is
-/// the default subscriber of the test's thread.
+/// Level and message of the "Connection ended" events that `ironrdp_server::server`
+/// logs while it is the default subscriber of the test's thread.
 #[derive(Clone, Default)]
 struct ServerLog(Arc<StdMutex<Vec<(tracing::Level, String)>>>);
 
@@ -4821,20 +4821,9 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ServerLog {
         }
         let mut message = Message(String::new());
         event.record(&mut message);
-        self.0.lock().unwrap().push((*event.metadata().level(), message.0));
-    }
-}
-
-impl ServerLog {
-    /// The events the server logged when a connection ended with an error.
-    fn connection_ends(&self) -> Vec<(tracing::Level, String)> {
-        self.0
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(_, message)| message.starts_with("Connection ended"))
-            .cloned()
-            .collect()
+        if message.0.starts_with("Connection ended") {
+            self.0.lock().unwrap().push((*event.metadata().level(), message.0));
+        }
     }
 }
 
@@ -4857,16 +4846,16 @@ where
         let server_task = tokio::task::spawn_local(async move { server.run().await });
         let addr = handle.local_addr().await.unwrap().unwrap();
         client(addr).await;
-        while log.connection_ends().is_empty() {
+        while log.0.lock().unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         handle.quit("test done").unwrap();
         server_task.await.unwrap().unwrap();
-        log.connection_ends()
+        log.0.lock().unwrap().clone()
     }));
     tokio::time::timeout(Duration::from_secs(15), test)
         .await
-        .expect("the server logs \"Connection ended\" and stops; check the message that `connection_ends` matches")
+        .expect("the server logs \"Connection ended\" and stops; check the message that `ServerLog` matches")
 }
 
 /// The client configuration of [`hybrid_client_config`], with a wrong password.
@@ -4991,8 +4980,7 @@ async fn a_client_that_closes_its_session_is_not_logged_as_an_error() {
     assert_not_logged_as_an_error(&log);
 }
 
-// oracle: regression #2392
-// The `ConnectionHandler::on_disconnected` doc: the error reaches the handler.
+// oracle: mutant (serve logs a connection-ending server fault at ERROR, or does not pass its error to on_disconnected)
 #[tokio::test]
 async fn a_server_fault_is_not_logged_as_an_error_and_reaches_on_disconnected() {
     struct ErrorRecorder(Arc<StdMutex<Vec<bool>>>);
