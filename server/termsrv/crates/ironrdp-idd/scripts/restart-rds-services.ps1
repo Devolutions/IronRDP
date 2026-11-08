@@ -2,7 +2,7 @@
 param(
     [Parameter()]
     [Alias('ComputerName')]
-    [string]$VmHostname = "IT-HELP-TERMSRV",
+    [string]$VmHostname = $env:IRONRDP_TEST_VM_HOSTNAME,
 
     [Parameter()]
     [string]$Username = $env:RDP_USERNAME,
@@ -23,7 +23,7 @@ param(
     [string]$TaskName = 'IronRdpTermSrvSystem',
 
     [Parameter()]
-    [string]$RemoteRoot = 'C:\IronRDPDeploy',
+    [string]$RemoteRoot = $(if ($env:IRONRDP_DEPLOY_ROOT) { $env:IRONRDP_DEPLOY_ROOT } else { 'C:\IronRDPDeploy' }),
 
     [Parameter()]
     [switch]$SkipTermService,

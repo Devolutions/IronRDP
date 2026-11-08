@@ -1,13 +1,13 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$DriverPath = "target\release\ironrdp_idd.dll",
+    [string]$DriverPath = '',
 
     [Parameter()]
     [string]$InfPath = "server\termsrv\crates\ironrdp-idd\IronRdpIdd.inf",
 
     [Parameter()]
-    [string]$OutputDirectory = "target\termsrv\idd",
+    [string]$OutputDirectory = '',
 
     [Parameter()]
     [string]$CertSubject = "CN=Test Code Signing Certificate",
@@ -16,11 +16,15 @@ param(
     [string]$CertsUrl = 'https://raw.githubusercontent.com/Devolutions/psign/2a7a928a7db8479ca4c96273579aac8c85f60a09/tests/fixtures/devolutions-authenticode',
 
     [Parameter()]
+    [string]$TestCertificatesDirectory = '',
+
+    [Parameter()]
     [string]$CodeSignCertPassword = 'CodeSign123!'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot '..\..\..\scripts\TestVm.psm1') -Force
 
 function Resolve-WindowsKitTool {
     param(
@@ -63,10 +67,18 @@ function Resolve-WindowsKitTool {
 }
 
 $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..\..')).Path
+$cargoTargetDirectory = Get-CargoBuildOutputDirectory -WorkspaceRoot $workspaceRoot
+if ([string]::IsNullOrWhiteSpace($DriverPath)) {
+    $DriverPath = Join-Path $cargoTargetDirectory 'release\ironrdp_idd.dll'
+}
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Join-Path $cargoTargetDirectory 'termsrv\idd'
+}
 
-$driverFullPath = (Resolve-Path (Join-Path $workspaceRoot $DriverPath)).Path
+$driverPathToResolve = if ([System.IO.Path]::IsPathRooted($DriverPath)) { $DriverPath } else { Join-Path $workspaceRoot $DriverPath }
+$driverFullPath = (Resolve-Path $driverPathToResolve).Path
 $infFullPath = (Resolve-Path (Join-Path $workspaceRoot $InfPath)).Path
-$outputDir = Join-Path $workspaceRoot $OutputDirectory
+$outputDir = if ([System.IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $workspaceRoot $OutputDirectory }
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 $stagedDriverPath = Join-Path $outputDir 'IronRdpIdd.dll'
 $stagedInfPath = Join-Path $outputDir 'IronRdpIdd.inf'
@@ -81,7 +93,8 @@ if (-not $inf2cat) {
 }
 
 $catPath = Join-Path $outputDir 'IronRdpIdd.cat'
-$certificates = & (Join-Path $PSScriptRoot 'get-test-certificates.ps1') -CertsUrl $CertsUrl -CodeSignCertPassword $CodeSignCertPassword
+$certificates = & (Join-Path $PSScriptRoot 'get-test-certificates.ps1') -CertsUrl $CertsUrl `
+    -CodeSignCertPassword $CodeSignCertPassword -CertificateDirectory $TestCertificatesDirectory
 $signer = [Security.Cryptography.X509Certificates.X509Certificate2]::new($certificates.SignerCertificate)
 try {
     if ($signer.Subject -ne $CertSubject) {

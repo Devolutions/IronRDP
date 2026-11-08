@@ -52,6 +52,26 @@ function Invoke-E2EAgentCommand {
     }
 }
 
+function Invoke-E2EAgentCertificateTrust {
+    param(
+        [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$AgentPath,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$Endpoint,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$Fingerprint,
+        [Parameter(Mandatory = $true)][ValidateNotNullOrEmpty()][string]$KnownCertificatesPath
+    )
+
+    $normalizedFingerprint = $Fingerprint -replace '[:\s]', ''
+    if ($normalizedFingerprint -notmatch '^[0-9a-fA-F]{64}$') {
+        throw 'Server certificate fingerprint must contain 64 hexadecimal digits'
+    }
+
+    Invoke-E2EAgentCommand -AgentPath $AgentPath -Arguments @(
+        'cert', 'trust', $Endpoint, $normalizedFingerprint
+    ) -Environment @{
+        IRONRDP_AGENT_KNOWN_CERTIFICATES = $KnownCertificatesPath
+    } -TimeoutSeconds 30
+}
+
 function Invoke-E2EAgentScreenshot {
     param(
         [string]$AgentPath,
@@ -64,11 +84,16 @@ function Invoke-E2EAgentScreenshot {
         [ValidateRange(1, 600)][int]$TimeoutSeconds = 60,
         [ValidateRange(1, 600)][int]$NoGraphicsTimeoutSeconds = 20,
         [ValidateRange(0, 600)][int]$AfterFirstGraphicsSeconds = 20,
+        [string]$KnownCertificatesPath = '',
         [scriptblock]$ConnectionObserver,
         [scriptblock]$CommandRunner = {
             param($Arguments, $RemainingSeconds)
+            $environment = @{ RDP_USERNAME = $Username; RDP_PASSWORD = $Password }
+            if (-not [string]::IsNullOrWhiteSpace($KnownCertificatesPath)) {
+                $environment.IRONRDP_AGENT_KNOWN_CERTIFICATES = $KnownCertificatesPath
+            }
             Invoke-E2EAgentCommand -AgentPath $AgentPath -Arguments $Arguments `
-                -Environment @{ RDP_USERNAME = $Username; RDP_PASSWORD = $Password } `
+                -Environment $environment `
                 -TimeoutSeconds $RemainingSeconds
         }
     )

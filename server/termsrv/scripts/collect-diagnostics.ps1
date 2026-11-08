@@ -1,15 +1,15 @@
 [CmdletBinding()]
 param(
     [Alias('ComputerName')]
-    [string]$Hostname = 'IT-HELP-TERMSRV',
+    [string]$Hostname = $env:IRONRDP_TEST_VM_HOSTNAME,
     [pscredential]$Credential,
     [string]$Username = $env:RDP_USERNAME,
     [string]$PasswordEnvVar = 'RDP_PASSWORD',
     [string]$ListenerName = 'IRDP-Tcp',
     [ValidateRange(1, 65535)][int]$Port = 4489,
-    [string]$ProviderDllPath = 'C:\IronRDPDeploy\provider\ironrdp_wtsprotocol_provider.dll',
+    [string]$ProviderDllPath = '',
     [datetime]$Since = (Get-Date).AddHours(-1),
-    [string]$RemoteRoot = 'C:\IronRDPDeploy\diagnostics',
+    [string]$RemoteRoot = '',
     [string]$OutputDirectory = ''
 )
 
@@ -19,6 +19,17 @@ Import-Module (Join-Path $PSScriptRoot 'TestVm.psm1') -Force
 . (Join-Path $PSScriptRoot 'diagnostics.helpers.ps1')
 $credential = Resolve-TestVmCredential -Credential $Credential -Username $Username `
     -PasswordEnvVar $PasswordEnvVar -Hostname $Hostname
+$deploymentRoot = if ($env:IRONRDP_DEPLOY_ROOT) { $env:IRONRDP_DEPLOY_ROOT } else { 'C:\IronRDPDeploy' }
+$RemoteRoot = if ([string]::IsNullOrWhiteSpace($RemoteRoot)) {
+    Join-Path $deploymentRoot 'diagnostics'
+} else {
+    $RemoteRoot
+}
+$ProviderDllPath = if ([string]::IsNullOrWhiteSpace($ProviderDllPath)) {
+    Join-Path $deploymentRoot 'provider\ironrdp_wtsprotocol_provider.dll'
+} else {
+    $ProviderDllPath
+}
 $productRoot = Split-Path -Parent $PSScriptRoot
 $workspaceRoot = (Resolve-Path (Join-Path $productRoot '..\..')).Path
 $runId = [guid]::NewGuid().ToString('N')

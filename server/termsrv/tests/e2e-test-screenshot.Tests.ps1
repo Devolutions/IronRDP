@@ -102,7 +102,7 @@ Describe 'E2E safety options' {
         {
             Assert-E2ESafetyOptions -EnableFreshSessionCleanup $true `
                 -AggressiveFreshSessionCleanup $true -FreshSessionCleanupSessionId 8 `
-                -AllowHyperVPowerCycle $true -HyperVVmName 'IT-HELP-TERMSRV'
+                -AllowHyperVPowerCycle $true -HyperVVmName 'MyTestVm'
         } | Should -Not -Throw
     }
 }

@@ -2,7 +2,7 @@
 param(
     [Parameter()]
     [Alias('ComputerName')]
-    [string]$VmHostname = "IT-HELP-TERMSRV",
+    [string]$VmHostname = $env:IRONRDP_TEST_VM_HOSTNAME,
 
     [Parameter()]
     [string]$Username = $env:RDP_USERNAME,
@@ -20,19 +20,22 @@ param(
     [string]$PasswordEnvVar = 'RDP_PASSWORD',
 
     [Parameter()]
-    [string]$DriverDll = "target\termsrv\idd\IronRdpIdd.dll",
+    [string]$DriverDll = '',
 
     [Parameter()]
-    [string]$InfPath = "target\termsrv\idd\IronRdpIdd.inf",
+    [string]$InfPath = '',
 
     [Parameter()]
-    [string]$CatPath = "target\termsrv\idd\IronRdpIdd.cat",
+    [string]$CatPath = '',
 
     [Parameter()]
-    [string]$RemotePath = "C:\Program Files\IronRDP\idd",
+    [string]$RemotePath = $(if ($env:IRONRDP_IDD_REMOTE_PATH) { $env:IRONRDP_IDD_REMOTE_PATH } else { 'C:\Program Files\IronRDP\idd' }),
 
     [Parameter()]
     [string]$TestCertsUrl = 'https://raw.githubusercontent.com/Devolutions/psign/2a7a928a7db8479ca4c96273579aac8c85f60a09/tests/fixtures/devolutions-authenticode',
+
+    [Parameter()]
+    [string]$TestCertificatesDirectory = '',
 
     [Parameter()]
     [string]$CodeSignCertPassword = 'CodeSign123!'
@@ -45,12 +48,26 @@ Import-Module (Join-Path $PSScriptRoot '..\..\..\scripts\TestVm.psm1') -Force
 $credential = Resolve-TestVmCredential -Credential $Credential -Username $Username -Password $Password -PromptPassword:$PromptPassword -PasswordEnvVar $PasswordEnvVar -Hostname $VmHostname
 
 $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..\..')).Path
+$cargoTargetDirectory = Get-CargoBuildOutputDirectory -WorkspaceRoot $workspaceRoot
+if ([string]::IsNullOrWhiteSpace($DriverDll)) {
+    $DriverDll = Join-Path $cargoTargetDirectory 'termsrv\idd\IronRdpIdd.dll'
+}
+if ([string]::IsNullOrWhiteSpace($InfPath)) {
+    $InfPath = Join-Path $cargoTargetDirectory 'termsrv\idd\IronRdpIdd.inf'
+}
+if ([string]::IsNullOrWhiteSpace($CatPath)) {
+    $CatPath = Join-Path $cargoTargetDirectory 'termsrv\idd\IronRdpIdd.cat'
+}
 
-$driverDllFull = (Resolve-Path (Join-Path $workspaceRoot $DriverDll)).Path
-$infFull = (Resolve-Path (Join-Path $workspaceRoot $InfPath)).Path
-$catFull = (Resolve-Path (Join-Path $workspaceRoot $CatPath)).Path
+$driverDllPathToResolve = if ([System.IO.Path]::IsPathRooted($DriverDll)) { $DriverDll } else { Join-Path $workspaceRoot $DriverDll }
+$infPathToResolve = if ([System.IO.Path]::IsPathRooted($InfPath)) { $InfPath } else { Join-Path $workspaceRoot $InfPath }
+$catPathToResolve = if ([System.IO.Path]::IsPathRooted($CatPath)) { $CatPath } else { Join-Path $workspaceRoot $CatPath }
+$driverDllFull = (Resolve-Path $driverDllPathToResolve).Path
+$infFull = (Resolve-Path $infPathToResolve).Path
+$catFull = (Resolve-Path $catPathToResolve).Path
 
-$certificates = & (Join-Path $PSScriptRoot 'get-test-certificates.ps1') -CertsUrl $TestCertsUrl -CodeSignCertPassword $CodeSignCertPassword
+$certificates = & (Join-Path $PSScriptRoot 'get-test-certificates.ps1') -CertsUrl $TestCertsUrl `
+    -CodeSignCertPassword $CodeSignCertPassword -CertificateDirectory $TestCertificatesDirectory
 
 $session = New-TestVmSession -Hostname $VmHostname -Credential $credential
 try {

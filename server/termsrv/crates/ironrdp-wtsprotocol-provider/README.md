@@ -22,7 +22,7 @@ For VM bring-up, follow the [companion deployment instructions] and [IDD setup i
 The [side-by-side guide](./SIDEBYSIDE_SETUP.md) covers provider registration and recovery, not a complete server deployment.
 
 [companion deployment instructions]: ../ironrdp-termsrv/README.md#deploy-to-a-test-vm-psremoting
-[IDD setup instructions]: ../ironrdp-idd/README.md#set-up-it-help-termsrv
+[IDD setup instructions]: ../ironrdp-idd/README.md#set-up-a-test-vm
 
 ## Session lifetime
 

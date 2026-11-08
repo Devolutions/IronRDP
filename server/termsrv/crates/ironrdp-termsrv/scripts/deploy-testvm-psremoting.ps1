@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$Hostname = 'IT-HELP-TERMSRV',
+    [string]$Hostname = $env:IRONRDP_TEST_VM_HOSTNAME,
 
     [Parameter()]
     [string]$Username = $env:RDP_USERNAME,
@@ -31,7 +31,13 @@ param(
     [string]$RdpDomain = '',
 
     [Parameter()]
-    [string]$RemoteRoot = 'C:\IronRDPDeploy',
+    [string]$RemoteRoot = $(if ($env:IRONRDP_DEPLOY_ROOT) { $env:IRONRDP_DEPLOY_ROOT } else { 'C:\IronRDPDeploy' }),
+
+    [Parameter()]
+    [string]$IddRemotePath = $(if ($env:IRONRDP_IDD_REMOTE_PATH) { $env:IRONRDP_IDD_REMOTE_PATH } else { 'C:\Program Files\IronRDP\idd' }),
+
+    [Parameter()]
+    [string]$TestCertificatesDirectory = '',
 
     [Parameter()]
     [string]$TaskName = 'IronRdpTermSrvSystem',
@@ -147,10 +153,33 @@ function Resolve-RdpIdentityParts {
 }
 
 $workspaceRoot = Resolve-WorkspaceRoot
+$cargoTargetDirectory = Get-CargoBuildOutputDirectory -WorkspaceRoot $workspaceRoot
 $profileDir = if ($Configuration -eq 'Release') { 'release' } else { 'debug' }
-$exeLocal = Join-Path $workspaceRoot "target\$profileDir\ironrdp-termsrv.exe"
-$providerDllLocal = Join-Path $workspaceRoot "target\$profileDir\ironrdp_wtsprotocol_provider.dll"
-$iddDllLocal = Join-Path $workspaceRoot "target\$profileDir\ironrdp_idd.dll"
+$exeLocal = Join-Path $cargoTargetDirectory "$profileDir\ironrdp-termsrv.exe"
+$providerDllLocal = Join-Path $cargoTargetDirectory "$profileDir\ironrdp_wtsprotocol_provider.dll"
+$iddDllLocal = Join-Path $cargoTargetDirectory "$profileDir\ironrdp_idd.dll"
+
+if (-not $Password -and -not [string]::IsNullOrWhiteSpace($PasswordPlainText)) {
+    Write-Warning '-PasswordPlainText is passed as plaintext; prefer -Password or the configured environment variable.'
+    $Password = ConvertTo-SecureString $PasswordPlainText -AsPlainText -Force
+}
+
+if ($InstallIdd.IsPresent) {
+    $null = Get-Command psign-tool -ErrorAction Stop
+    $kitRoot = if ($env:IRONRDP_WINDOWS_KITS_ROOT) {
+        $env:IRONRDP_WINDOWS_KITS_ROOT
+    } else {
+        'C:\Program Files (x86)\Windows Kits\10'
+    }
+    $findWdkTools = Join-Path $workspaceRoot 'server\termsrv\crates\ironrdp-idd\scripts\find-wdk-tools.ps1'
+    $wdkTools = & $findWdkTools -WindowsKitsRoot $kitRoot | ConvertFrom-Json
+    if (@($wdkTools.Inf2Cat).Count -eq 0) {
+        throw "Inf2Cat.exe not found under '$kitRoot'; install the Windows Driver Kit"
+    }
+    if (@($wdkTools.IddCxLib).Count -eq 0 -and @($wdkTools.IddCxStubLib).Count -eq 0) {
+        throw "IddCx import libraries not found under '$kitRoot'; install the Windows Driver Kit"
+    }
+}
 
 if (-not $SkipBuild.IsPresent) {
     Push-Location $workspaceRoot
@@ -210,9 +239,10 @@ if ($InstallIdd.IsPresent) {
     }
 
     $iddSignScript = Join-Path $workspaceRoot 'server\termsrv\crates\ironrdp-idd\scripts\sign-driver.ps1'
-    & $iddSignScript -DriverPath "target\$profileDir\ironrdp_idd.dll"
+    $iddArtifactRoot = Join-Path $cargoTargetDirectory 'termsrv\idd'
+    & $iddSignScript -DriverPath $iddDllLocal -OutputDirectory $iddArtifactRoot `
+        -TestCertificatesDirectory $TestCertificatesDirectory
 
-    $iddArtifactRoot = Join-Path $workspaceRoot 'target\termsrv\idd'
     foreach ($artifactName in 'IronRdpIdd.dll', 'IronRdpIdd.inf', 'IronRdpIdd.cat') {
         $artifactPath = Join-Path $iddArtifactRoot $artifactName
         if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
@@ -222,7 +252,7 @@ if ($InstallIdd.IsPresent) {
 }
 
 $cred = if ($Password) {
-    Resolve-TestVmCredential -Credential ([pscredential]::new($Username, $Password))
+    Resolve-TestVmCredential -Credential ([pscredential]::new($Username, $Password)) -Hostname $Hostname
 } else {
     Resolve-TestVmCredential -Username $Username -Password $PasswordPlainText `
         -PromptPassword:$PromptPassword -PasswordEnvVar $PasswordEnvVar -Hostname $Hostname
@@ -289,7 +319,7 @@ try {
     } -ArgumentList $remoteTestVmModule
 
     Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $RdpPasswordPath, $LogOut, $LogErr, $StopTimeoutSeconds, $ModulePath, $OwnedExePaths)
+        param($TaskName, $RdpPasswordPath, $LogOut, $LogErr, $StopTimeoutSeconds, $ModulePath, $OwnedExePaths, $DeployRoot)
         $ErrorActionPreference = 'Stop'
         Import-Module $ModulePath -Force
         $null = Stop-TermServiceSafely -TimeoutSeconds $StopTimeoutSeconds -Force
@@ -324,10 +354,10 @@ try {
         Remove-Item -LiteralPath $LogOut -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $LogErr -Force -ErrorAction SilentlyContinue
         # Clear all known DLL debug log paths so each run has a fresh provider log.
-        Remove-Item -LiteralPath 'C:\IronRDPDeploy\logs\wts-provider-debug.log' -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $DeployRoot 'logs\wts-provider-debug.log') -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath 'C:\Windows\Temp\wts-provider-debug.log' -Force -ErrorAction SilentlyContinue
 
-    } -ArgumentList $TaskName, $rdpPasswordRemote, $logOut, $logErr, $TermServiceStopTimeoutSeconds, $remoteTestVmModule, @($exeRemote, $exeRemoteNext)
+    } -ArgumentList $TaskName, $rdpPasswordRemote, $logOut, $logErr, $TermServiceStopTimeoutSeconds, $remoteTestVmModule, @($exeRemote, $exeRemoteNext), $RemoteRoot
 
     if ($InstallIdd.IsPresent) {
         # UNTESTED: Local tests do not exercise PSRemoting reconnect after reboot or target-side IDD loading.
@@ -337,7 +367,8 @@ try {
         $iddRestartScript = Join-Path $iddScriptsRoot 'restart-vm.ps1'
         $iddInstallScript = Join-Path $iddScriptsRoot 'install-idd-remote.ps1'
 
-        $iddDeployment = & $iddDeployScript -VmHostname $Hostname -Credential $cred
+        $iddDeployment = & $iddDeployScript -VmHostname $Hostname -Credential $cred `
+            -TestCertificatesDirectory $TestCertificatesDirectory
         if ($iddDeployment.RebootRequired) {
             Write-Host "Rebooting $Hostname to apply test-signing policy..." -ForegroundColor Yellow
             & $iddRestartScript -VmHostname $Hostname -Credential $cred
@@ -346,7 +377,8 @@ try {
             $session = New-TestVmSession -Hostname $Hostname -Credential $cred
         }
 
-        & $iddInstallScript -VmHostname $Hostname -Credential $cred
+        & $iddInstallScript -VmHostname $Hostname -Credential $cred -RemotePath $IddRemotePath `
+            -TestCertificatesDirectory $TestCertificatesDirectory
     }
 
     if ($WtsProvider.IsPresent) {
@@ -396,11 +428,11 @@ try {
         Copy-Item -ToSession $session -Path $providerScriptsRemote -Destination $providerRemoteDir -Force
 
         Invoke-Command -Session $session -ScriptBlock {
-            param($ProviderDir, $DllPath, $Listener, $Port)
+            param($ProviderDir, $DllPath, $Listener, $Port, $DeployRoot)
 
             $installScript = Join-Path $ProviderDir 'install-side-by-side.ps1'
-            & $installScript -ProviderDllPath $DllPath -ListenerName $Listener -PortNumber $Port
-        } -ArgumentList $providerRemoteDir, $providerDllRemote, $ListenerName, $portNumber
+            & $installScript -ProviderDllPath $DllPath -ListenerName $Listener -PortNumber $Port -RemoteRoot $DeployRoot
+        } -ArgumentList $providerRemoteDir, $providerDllRemote, $ListenerName, $portNumber, $RemoteRoot
     }
 
     $copyAttempts = 0
@@ -447,6 +479,9 @@ param(
 
     [Parameter(Mandatory = $true)]
     [string]$LogErr,
+
+    [Parameter(Mandatory = $true)]
+    [string]$DeployRoot,
 
     [Parameter(Mandatory = $true)]
     [string]$ListenerAddr,
@@ -497,6 +532,7 @@ if ($Clipboard.IsPresent) {
     $env:IRONRDP_WTS_CLIPBOARD = '1'
 }
 $env:IRONRDP_WTS_AUTO_SEND_SAS = if ($AutoSendSas.IsPresent) { '1' } else { '0' }
+$env:IRONRDP_WTS_DEPLOY_ROOT = $DeployRoot
 $env:IRONRDP_LOG = 'info'
 $env:RUST_BACKTRACE = '1'
 
@@ -602,7 +638,7 @@ finally {
     } -ArgumentList ([int]($ListenerAddr.Split(':')[-1]))
 
     $companion = Invoke-Command -Session $session -ScriptBlock {
-        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $Clipboard, $RemoteApp, $AutoSendSas, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain)
+        param($TaskName, $ExePath, $RunnerPath, $SecretPath, $LogOut, $LogErr, $DeployRoot, $ListenerAddr, $CaptureIpc, $AutoListen, $WtsProvider, $Clipboard, $RemoteApp, $AutoSendSas, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain)
 
         $arguments = @(
             '-NoProfile',
@@ -611,6 +647,7 @@ finally {
             '-ExePath', $ExePath,
             '-LogOut', $LogOut,
             '-LogErr', $LogErr,
+            '-DeployRoot', $DeployRoot,
             '-ListenerAddr', $ListenerAddr,
             '-CaptureIpc', $CaptureIpc
         )
@@ -717,7 +754,7 @@ finally {
             LogErr = $LogErr
             Pid = $proc.ProcessId
         }
-    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $Clipboard.IsPresent, $RemoteApp.IsPresent, $AutoSendSas.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain
+    } -ArgumentList $TaskName, $exeRemote, $runnerRemote, $rdpPasswordRemote, $logOut, $logErr, $RemoteRoot, $ListenerAddr, $CaptureIpc, $AutoListen.IsPresent, $WtsProvider.IsPresent, $Clipboard.IsPresent, $RemoteApp.IsPresent, $AutoSendSas.IsPresent, $CaptureSessionId, $DumpBitmapUpdatesDir, $RdpUsername, $RdpDomain
     $companion | Format-List
 
     Invoke-Command -Session $session -ScriptBlock {

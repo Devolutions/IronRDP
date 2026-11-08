@@ -25,12 +25,17 @@ param(
     [Parameter(Position = 8)]$EvidenceBaseline,
     [Parameter(Position = 9)][string]$ExpectedClientEndpoint,
     [Parameter(Position = 10)][switch]$CaptureBaseline,
-    [Parameter(Position = 11)][hashtable]$LogPaths = @{
-        stdout = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log'
-        stderr = 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log'
-        provider = @('C:\IronRDPDeploy\logs\wts-provider-debug.log', 'C:\Windows\Temp\wts-provider-debug.log')
-    }
+    [Parameter(Position = 11)][hashtable]$LogPaths,
+    [Parameter(Position = 12)][string]$RemoteRoot = $(if ($env:IRONRDP_DEPLOY_ROOT) { $env:IRONRDP_DEPLOY_ROOT } else { 'C:\IronRDPDeploy' })
 )
+
+if ($null -eq $LogPaths) {
+    $LogPaths = @{
+        stdout = Join-Path $RemoteRoot 'logs\ironrdp-termsrv.log'
+        stderr = Join-Path $RemoteRoot 'logs\ironrdp-termsrv.err.log'
+        provider = @((Join-Path $RemoteRoot 'logs\wts-provider-debug.log'), 'C:\Windows\Temp\wts-provider-debug.log')
+    }
+}
 
 function Read-EvidenceLog {
     param([string]$Path)

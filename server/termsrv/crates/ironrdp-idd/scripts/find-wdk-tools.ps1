@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$WindowsKitsRoot = "C:\Program Files (x86)\Windows Kits\10"
+    [string]$WindowsKitsRoot = $(if ($env:IRONRDP_WINDOWS_KITS_ROOT) { $env:IRONRDP_WINDOWS_KITS_ROOT } else { 'C:\Program Files (x86)\Windows Kits\10' })
 )
 
 Set-StrictMode -Version Latest

@@ -32,7 +32,7 @@ param(
 
     # Where to write capture artifacts on the VM.
     [Parameter()]
-    [string]$RemoteDir = 'C:\IronRDPDeploy\session-probe',
+    [string]$RemoteDir = $(Join-Path $(if ($env:IRONRDP_DEPLOY_ROOT) { $env:IRONRDP_DEPLOY_ROOT } else { 'C:\IronRDPDeploy' }) 'session-probe'),
 
     # Where to copy the PNG on this machine.
     [Parameter()]

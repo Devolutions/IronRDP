@@ -6,6 +6,10 @@ param(
 
     [Parameter()]
     [ValidateNotNullOrEmpty()]
+    [string]$RemoteRoot = $(if ($env:IRONRDP_DEPLOY_ROOT) { $env:IRONRDP_DEPLOY_ROOT } else { 'C:\IronRDPDeploy' }),
+
+    [Parameter()]
+    [ValidateNotNullOrEmpty()]
     [string]$ListenerName = "IRDP-Tcp",
 
     [Parameter()]
@@ -133,7 +137,8 @@ Set-ItemProperty -Path $inprocServer32 -Name "ThreadingModel" -Type String -Valu
 # TermService runs inside svchost.exe; per-service env vars are set via the Environment
 # REG_MULTI_SZ value under the service's registry key.
 $termServiceRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\TermService"
-$debugLogPath = "C:\IronRDPDeploy\logs\wts-provider-debug.log"
+$debugLogPath = Join-Path $RemoteRoot 'logs\wts-provider-debug.log'
+New-Item -ItemType Directory -Path (Split-Path -Parent $debugLogPath) -Force | Out-Null
 $debugEnvEntry = "IRONRDP_WTS_PROVIDER_DEBUG_LOG=$debugLogPath"
 try {
     $existingValue = $null

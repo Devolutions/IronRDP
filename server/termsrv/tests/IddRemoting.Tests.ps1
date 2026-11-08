@@ -1,9 +1,19 @@
 # oracle: mutant lost credentials, leaked sessions, omitted remote dependencies, and colliding diagnostic output.
 BeforeAll {
+    $script:previousTestVmHostname = $env:IRONRDP_TEST_VM_HOSTNAME
+    $env:IRONRDP_TEST_VM_HOSTNAME = 'fixture.invalid'
     $script:modulePath = Join-Path $PSScriptRoot '..\scripts\TestVm.psm1'
     $script:iddScripts = Join-Path $PSScriptRoot '..\crates\ironrdp-idd\scripts'
     Import-Module $script:modulePath -Force
     $script:credential = [pscredential]::new('fixture-user', (ConvertTo-SecureString 'fixture-password' -AsPlainText -Force))
+}
+
+AfterAll {
+    if ($null -eq $script:previousTestVmHostname) {
+        Remove-Item Env:IRONRDP_TEST_VM_HOSTNAME -ErrorAction SilentlyContinue
+    } else {
+        $env:IRONRDP_TEST_VM_HOSTNAME = $script:previousTestVmHostname
+    }
 }
 
 Describe 'IDD remoting callers' {

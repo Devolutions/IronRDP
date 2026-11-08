@@ -13,14 +13,22 @@ It registers a side-by-side WTS protocol listener so IronRDP can drive authentic
 
 ## Test VM
 
-With `RDP_USERNAME` and `RDP_PASSWORD` in the environment, deploy the companion, provider, and signed display driver to `IT-HELP-TERMSRV` from the repository root:
+Use Windows with PowerShell 5.1 or 7, a Rust MSVC toolchain, and a Windows test VM with PSRemoting enabled.
+Set `IRONRDP_TEST_VM_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD` for the target before running deployment commands from the repository root.
+The deployment account must be an administrator on the target.
 
 ```powershell
+$env:IRONRDP_TEST_VM_HOSTNAME = 'rdp-test.example.com'
 .\server\termsrv\crates\ironrdp-termsrv\scripts\deploy-testvm-psremoting.ps1 -WtsProvider -InstallIdd
 ```
 
-This stops TermService and may reboot the VM to enable test signing.
-The target needs the RDS Session Host role; the build host needs the [driver signing prerequisites][driver-setup].
+The deployment stops TermService and may reboot the VM to enable test signing.
+The target needs the RDS Session Host role.
+Installing the optional IDD also requires the Windows Driver Kit and `psign-tool` on the build host; see the [driver setup guide][driver-setup].
+Set `IRONRDP_DEPLOY_ROOT` or pass `-RemoteRoot` to change the remote deployment directory.
+Set `IRONRDP_IDD_REMOTE_PATH` or pass `-IddRemotePath` to change the remote IDD package directory.
+Cargo output paths honor the `CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET` environment variables.
+The pinned public signing fixtures download on first use; pass `-TestCertificatesDirectory` to use a local directory containing `authenticode-test-ca.crt` and `authenticode-test-cert.pfx`.
 Omit `-InstallIdd` when updating only the companion and provider.
 The signing key stays local, and only the target trusts the public test certificates.
 See [deployment options][deployment] for deferred startup and standalone mode.
@@ -31,6 +39,8 @@ Observe a connection through an isolated `ironrdp-agent` endpoint:
 .\server\termsrv\crates\ironrdp-termsrv\scripts\e2e-test-screenshot.ps1 -Mode Provider -SkipDeploy -StrictSessionProof
 ```
 
+The E2E command uses the same hostname and credential environment variables.
+It pins the target certificate only in a temporary local agent store and removes that store after the run.
 The harness stops only its own client endpoint.
 `-SkipDeploy` reuses installed binaries but still prepares IDD runtime state and a fresh graphics dump directory.
 Session logoff/reset and Hyper-V power cycling require explicit opt-ins and exact targets.
@@ -61,6 +71,6 @@ Invoke-Pester -Path .\server\termsrv\tests
 These tests do not deploy to or change the test VM.
 They cover local orchestration and failure paths, not live driver loading, native service timing, or session capture.
 
-[driver-setup]: crates/ironrdp-idd/README.md#set-up-it-help-termsrv
+[driver-setup]: crates/ironrdp-idd/README.md#set-up-a-test-vm
 [deployment]: crates/ironrdp-termsrv/README.md#deploy-to-a-test-vm-psremoting
 [capture]: crates/ironrdp-termsrv/scripts/capture-irdp-session-screenshot.ps1

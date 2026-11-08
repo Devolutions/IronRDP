@@ -181,11 +181,22 @@ mod windows_main {
     const AUTO_LISTEN_ENV: &str = "IRONRDP_WTS_AUTO_LISTEN";
     const AUTO_LISTEN_NAME_ENV: &str = "IRONRDP_WTS_AUTO_LISTENER_NAME";
     const AUTO_SEND_SAS_ENV: &str = "IRONRDP_WTS_AUTO_SEND_SAS";
+    const DEPLOY_ROOT_ENV: &str = "IRONRDP_WTS_DEPLOY_ROOT";
     const TLS_CERT_SUBJECT_FIND: &str = "IronRDP TermSrv";
     const TLS_KEY_NAME: &str = "IronRdpTermSrvTlsKey";
     const RDP_USERNAME_ENV: &str = "IRONRDP_RDP_USERNAME";
     const RDP_PASSWORD_ENV: &str = "IRONRDP_RDP_PASSWORD";
     const RDP_DOMAIN_ENV: &str = "IRONRDP_RDP_DOMAIN";
+
+    fn deployment_log_directory() -> std::path::PathBuf {
+        deployment_log_directory_for_root(std::env::var_os(DEPLOY_ROOT_ENV))
+    }
+
+    fn deployment_log_directory_for_root(root: Option<std::ffi::OsString>) -> std::path::PathBuf {
+        root.map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\IronRDPDeploy"))
+            .join("logs")
+    }
 
     pub(super) fn security_attributes(sddl: PCWSTR) -> anyhow::Result<(SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR)> {
         let mut sd = PSECURITY_DESCRIPTOR::default();
@@ -1797,7 +1808,7 @@ mod windows_main {
     }
 
     fn child_environment_entries(variables: impl IntoIterator<Item = (String, String)>, token: &str) -> Vec<String> {
-        const ALLOWED_VARIABLES: [&str; 9] = [
+        const ALLOWED_VARIABLES: [&str; 10] = [
             "SystemRoot",
             "WINDIR",
             "TEMP",
@@ -1807,6 +1818,7 @@ mod windows_main {
             AUTO_SEND_SAS_ENV,
             DUMP_BITMAP_UPDATES_DIR_ENV,
             CAPTURE_IPC_ENV,
+            DEPLOY_ROOT_ENV,
         ];
 
         let mut entries: Vec<String> = variables
@@ -5501,9 +5513,9 @@ mod windows_main {
             // In capture helper mode, redirect tracing to a per-PID log file so we
             // get diagnostics even when stderr is unavailable (spawned with no console).
             let pid = std::process::id();
-            let diag_dir = "C:\\IronRDPDeploy\\logs";
-            let _ = std::fs::create_dir_all(diag_dir);
-            let diag_path = format!("{diag_dir}\\capture-helper-{pid}.log");
+            let diag_dir = deployment_log_directory();
+            let _ = std::fs::create_dir_all(&diag_dir);
+            let diag_path = diag_dir.join(format!("capture-helper-{pid}.log"));
             match std::fs::File::create(&diag_path) {
                 Ok(file) => {
                     let env_filter = EnvFilter::builder()
@@ -7186,11 +7198,9 @@ mod windows_main {
                 "Capture helper process started\nPID: {pid}\nArgs: {args:?}\nTime: {:?}\n",
                 std::time::SystemTime::now()
             );
-            let _ = std::fs::create_dir_all("C:\\IronRDPDeploy\\logs");
-            let _ = std::fs::write(
-                format!("C:\\IronRDPDeploy\\logs\\capture-helper-early-{pid}.txt"),
-                &diag,
-            );
+            let diag_dir = deployment_log_directory();
+            let _ = std::fs::create_dir_all(&diag_dir);
+            let _ = std::fs::write(diag_dir.join(format!("capture-helper-early-{pid}.txt")), &diag);
         }
 
         main_impl();
@@ -7553,6 +7563,7 @@ mod windows_main {
             let entries = child_environment_entries(
                 [
                     ("SystemRoot".to_owned(), r"C:\Windows".to_owned()),
+                    (DEPLOY_ROOT_ENV.to_owned(), r"D:\IronRDP".to_owned()),
                     (RDP_USERNAME_ENV.to_owned(), "alice".to_owned()),
                     (RDP_PASSWORD_ENV.to_owned(), "secret".to_owned()),
                     (RDP_DOMAIN_ENV.to_owned(), "CORP".to_owned()),
@@ -7562,11 +7573,29 @@ mod windows_main {
             );
 
             assert!(entries.iter().any(|entry| entry == r"SystemRoot=C:\Windows"));
+            assert!(
+                entries
+                    .iter()
+                    .any(|entry| entry == r"IRONRDP_WTS_DEPLOY_ROOT=D:\IronRDP")
+            );
             assert!(entries.iter().any(|entry| entry.starts_with(CAPTURE_HELPER_TOKEN_ENV)));
             assert!(!entries.iter().any(|entry| entry.starts_with(RDP_USERNAME_ENV)));
             assert!(!entries.iter().any(|entry| entry.starts_with(RDP_PASSWORD_ENV)));
             assert!(!entries.iter().any(|entry| entry.starts_with(RDP_DOMAIN_ENV)));
             assert!(!entries.iter().any(|entry| entry.starts_with("UNRELATED_SECRET=")));
+        }
+
+        // oracle: configured deployment roots own helper logs, while unset roots retain the documented default.
+        #[test]
+        fn deployment_logs_use_the_configured_root() {
+            assert_eq!(
+                deployment_log_directory_for_root(Some(std::ffi::OsString::from(r"D:\IronRDP"))),
+                std::path::PathBuf::from(r"D:\IronRDP\logs")
+            );
+            assert_eq!(
+                deployment_log_directory_for_root(None),
+                std::path::PathBuf::from(r"C:\IronRDPDeploy\logs")
+            );
         }
 
         // oracle: mutant connection ID allocation emits zero or fails to wrap.

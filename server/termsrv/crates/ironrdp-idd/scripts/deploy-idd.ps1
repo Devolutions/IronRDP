@@ -2,7 +2,7 @@
 param(
     [Parameter()]
     [Alias('ComputerName')]
-    [string]$VmHostname = "IT-HELP-TERMSRV",
+    [string]$VmHostname = $env:IRONRDP_TEST_VM_HOSTNAME,
 
     [Parameter()]
     [string]$Username = $env:RDP_USERNAME,
@@ -20,7 +20,10 @@ param(
     [string]$PasswordEnvVar = 'RDP_PASSWORD',
 
     [Parameter()]
-    [string]$CertsUrl = 'https://raw.githubusercontent.com/Devolutions/psign/2a7a928a7db8479ca4c96273579aac8c85f60a09/tests/fixtures/devolutions-authenticode'
+    [string]$CertsUrl = 'https://raw.githubusercontent.com/Devolutions/psign/2a7a928a7db8479ca4c96273579aac8c85f60a09/tests/fixtures/devolutions-authenticode',
+
+    [Parameter()]
+    [string]$TestCertificatesDirectory = ''
 )
 
 Set-StrictMode -Version Latest
@@ -29,7 +32,8 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..\..\..\scripts\TestVm.psm1') -Force
 $credential = Resolve-TestVmCredential -Credential $Credential -Username $Username -Password $Password -PromptPassword:$PromptPassword -PasswordEnvVar $PasswordEnvVar -Hostname $VmHostname
 
-$certificates = & (Join-Path $PSScriptRoot 'get-test-certificates.ps1') -CertsUrl $CertsUrl
+$certificates = & (Join-Path $PSScriptRoot 'get-test-certificates.ps1') -CertsUrl $CertsUrl `
+    -CertificateDirectory $TestCertificatesDirectory
 $session = New-TestVmSession -Hostname $VmHostname -Credential $credential
 try {
     $remotePath = 'C:\ProgramData\IronRDP\TestSigning'

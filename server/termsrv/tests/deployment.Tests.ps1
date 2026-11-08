@@ -8,10 +8,14 @@ Describe 'Unified provider deployment' {
     BeforeEach {
         $remoteRoot = Join-Path $TestDrive 'remote'
         $events = [Collections.Generic.List[string]]::new()
+        $runnerArguments = [Collections.Generic.List[string]]::new()
         Mock Import-Module {}
         Mock New-TestVmSession { New-MockObject -Type System.Management.Automation.Runspaces.PSSession }
         Mock Remove-PSSession {}
-        Mock Invoke-Command { & $ScriptBlock @ArgumentList }
+        Mock Invoke-Command {
+            $RemoteRoot = $null
+            & $ScriptBlock @ArgumentList
+        }
         Mock Start-Sleep {}
         Mock Remove-Item {}
         Mock Test-Path { [IO.File]::Exists($LiteralPath) -or [IO.Directory]::Exists($LiteralPath) }
@@ -20,7 +24,10 @@ Describe 'Unified provider deployment' {
         Mock Stop-TermServiceSafely ({ $events.Add('stop'); @{ StartupType = 'auto'; WasRunning = $true } }.GetNewClosure())
         Mock Restore-TermServiceLifecycle ({ param($StartupType, $WasRunning); $events.Add("restore:$StartupType/$WasRunning") }.GetNewClosure())
         Mock Get-ScheduledTask {}
-        Mock Register-ScheduledTask {}
+        Mock Register-ScheduledTask ({
+            param($Action)
+            $runnerArguments.Add([string]$Action.Arguments)
+        }.GetNewClosure())
         Mock Start-ScheduledTask ({ $events.Add('companion') }.GetNewClosure())
         Mock Stop-Process {}
         Mock Get-CimInstance ({
@@ -61,6 +68,33 @@ Describe 'Unified provider deployment' {
         @($events | Where-Object { $_ -notlike 'copy-module:*' }) -join ',' | Should -Be 'stop,provider,companion,start,listener:4242'
         $events | Should -Contain "copy-module:$(Join-Path $remoteRoot 'provider')"
         Should -Invoke Install-FixtureProvider -Times 1 -ParameterFilter { $ListenerName -eq 'IRDP-Tcp' -and $PortNumber -eq 4489 }
+    }
+
+    It 'passes the configured deployment root to the companion process' {
+        # oracle: custom deployment roots must reach the process that writes runtime logs.
+        & $deployScript @arguments
+
+        $runnerArguments.Count | Should -Be 1
+        $pattern = '-DeployRoot\s+"?{0}"?(?:\s|$)' -f [regex]::Escape($remoteRoot)
+        $runnerArguments[0] | Should -Match $pattern
+    }
+
+    It 'converts the legacy plaintext password parameter to a remoting credential' {
+        # oracle: the documented compatibility parameter must authenticate with its supplied password.
+        $seenCredentials = [Collections.Generic.List[pscredential]]::new()
+        Mock New-TestVmSession {
+            $seenCredentials.Add($Credential)
+            New-MockObject -Type System.Management.Automation.Runspaces.PSSession
+        }
+        $caseArguments = $arguments.Clone()
+        $caseArguments.Remove('Password')
+        $caseArguments.PasswordPlainText = 'legacy-fixture-password'
+
+        & $deployScript @caseArguments
+
+        $seenCredentials | Should -Not -BeNullOrEmpty
+        $seenCredentials[0].UserName | Should -Be 'fixture'
+        $seenCredentials[0].GetNetworkCredential().Password | Should -Be 'legacy-fixture-password'
     }
 
     It 'still installs the provider when startup is intentionally deferred' {

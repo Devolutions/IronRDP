@@ -5,7 +5,17 @@ BeforeDiscovery {
 Describe 'Test VM credentials and remoting' {
     InModuleScope TestVm {
         BeforeAll {
+            $script:previousHostname = $env:IRONRDP_TEST_VM_HOSTNAME
+            $env:IRONRDP_TEST_VM_HOSTNAME = 'fixture.invalid'
             $script:credential = [pscredential]::new('fixture-user', (ConvertTo-SecureString 'fixture-password' -AsPlainText -Force))
+        }
+
+        AfterAll {
+            if ($null -eq $script:previousHostname) {
+                Remove-Item Env:IRONRDP_TEST_VM_HOSTNAME -ErrorAction SilentlyContinue
+            } else {
+                $env:IRONRDP_TEST_VM_HOSTNAME = $script:previousHostname
+            }
         }
 
         It 'uses the supplied credential without prompting or replacing its password' {
@@ -52,6 +62,52 @@ Describe 'Test VM credentials and remoting' {
         It 'rejects a missing username instead of using an empty identity' {
             # oracle: mutant an empty username becomes a remoting credential.
             { Resolve-TestVmCredential -Username '' -Password 'fixture-password' } | Should -Throw '*Username is required*'
+        }
+
+        It 'requires an explicit test VM hostname instead of silently targeting the lab VM' {
+            # oracle: a caller must identify the target rather than inherit a machine-specific default.
+            $previous = $env:IRONRDP_TEST_VM_HOSTNAME
+            Remove-Item Env:IRONRDP_TEST_VM_HOSTNAME -ErrorAction SilentlyContinue
+            try {
+                { Resolve-TestVmCredential -Username 'fixture-user' -Password 'fixture-password' } |
+                    Should -Throw
+            } finally {
+                if ($null -ne $previous) { $env:IRONRDP_TEST_VM_HOSTNAME = $previous }
+            }
+        }
+
+        It 'uses the Cargo metadata target directory instead of assuming a repository target folder' {
+            # oracle: Cargo metadata reports the active target directory, including CARGO_TARGET_DIR overrides.
+            $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+            $previous = $env:CARGO_TARGET_DIR
+            $expected = Join-Path $TestDrive 'cargo target'
+            $env:CARGO_TARGET_DIR = $expected
+            try {
+                Get-CargoTargetDirectory -WorkspaceRoot $workspaceRoot | Should -Be ([IO.Path]::GetFullPath($expected))
+            } finally {
+                if ($null -eq $previous) {
+                    Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue
+                } else {
+                    $env:CARGO_TARGET_DIR = $previous
+                }
+            }
+        }
+
+        It 'includes an environment-selected Cargo build target in artifact paths' {
+            # oracle: Cargo places artifacts for CARGO_BUILD_TARGET beneath a target-specific directory.
+            $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+            $previous = $env:CARGO_BUILD_TARGET
+            $env:CARGO_BUILD_TARGET = 'x86_64-pc-windows-msvc'
+            try {
+                $expected = Join-Path (Get-CargoTargetDirectory -WorkspaceRoot $workspaceRoot) $env:CARGO_BUILD_TARGET
+                Get-CargoBuildOutputDirectory -WorkspaceRoot $workspaceRoot | Should -Be $expected
+            } finally {
+                if ($null -eq $previous) {
+                    Remove-Item Env:CARGO_BUILD_TARGET -ErrorAction SilentlyContinue
+                } else {
+                    $env:CARGO_BUILD_TARGET = $previous
+                }
+            }
         }
 
         It 'uses HTTP first without weakening its session options' {

@@ -34,7 +34,7 @@
     .\e2e-test-screenshot.ps1 -Mode Standalone
     .\e2e-test-screenshot.ps1 -Mode Provider
     .\e2e-test-screenshot.ps1 -Mode Provider -StrictSessionProof
-    .\e2e-test-screenshot.ps1 -Mode Provider -AllowHyperVPowerCycle -HyperVVmName IT-HELP-TERMSRV
+    .\e2e-test-screenshot.ps1 -Mode Provider -AllowHyperVPowerCycle -HyperVVmName MyTestVm
 #>
 [CmdletBinding()]
 param(
@@ -44,7 +44,16 @@ param(
 
     [Parameter()]
     [Alias('ComputerName')]
-    [string]$Hostname = 'IT-HELP-TERMSRV',
+    [string]$Hostname = $env:IRONRDP_TEST_VM_HOSTNAME,
+
+    [Parameter()]
+    [string]$RemoteRoot = $(if ($env:IRONRDP_DEPLOY_ROOT) { $env:IRONRDP_DEPLOY_ROOT } else { 'C:\IronRDPDeploy' }),
+
+    [Parameter()]
+    [string]$IddRemotePath = $(if ($env:IRONRDP_IDD_REMOTE_PATH) { $env:IRONRDP_IDD_REMOTE_PATH } else { 'C:\Program Files\IronRDP\idd' }),
+
+    [Parameter()]
+    [string]$TestCertificatesDirectory = '',
 
     [Parameter()]
     [Alias('ServerPort')]
@@ -426,6 +435,7 @@ $RdpUsername = [string]$resolvedRdpIdentity.Username
 $RdpDomain = [string]$resolvedRdpIdentity.Domain
 
 $workspaceRoot = (Resolve-Path (Join-Path $scriptRoot '..\..\..\..\..')).Path
+$cargoTargetDirectory = Get-CargoBuildOutputDirectory -WorkspaceRoot $workspaceRoot
 $artifactsDir = Join-Path $workspaceRoot 'artifacts'
 New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null
 
@@ -442,7 +452,9 @@ if ([string]::IsNullOrWhiteSpace($OutputPng)) {
     $OutputPng = Join-Path $artifactsDir "screenshot-$timestamp.png"
 }
 
-$dumpRemoteDir = "C:\IronRDPDeploy\bitmap-dumps-$timestamp"
+$RemoteRoot = if ([string]::IsNullOrWhiteSpace($RemoteRoot)) { 'C:\IronRDPDeploy' } else { $RemoteRoot }
+$IddRemotePath = if ([string]::IsNullOrWhiteSpace($IddRemotePath)) { 'C:\Program Files\IronRDP\idd' } else { $IddRemotePath }
+$dumpRemoteDir = Join-Path $RemoteRoot "bitmap-dumps-$timestamp"
 $dumpLocalDir = Join-Path $artifactsDir "bitmap-dumps-$timestamp"
 $iddRuntimeRoot = 'C:\ProgramData\IronRDP\Idd'
 $iddRuntimeStateFile = Join-Path $iddRuntimeRoot 'runtime-config.txt'
@@ -575,7 +587,7 @@ if (-not $SkipBuild.IsPresent) {
     Write-Host "`n=== Step 1: Build skipped ===" -ForegroundColor Yellow
 }
 
-$screenshotExe = Join-Path $workspaceRoot "target\$profileDir\ironrdp-agent.exe"
+$screenshotExe = Join-Path $cargoTargetDirectory "$profileDir\ironrdp-agent.exe"
 if (-not $SkipScreenshot.IsPresent -and -not (Test-Path -LiteralPath $screenshotExe)) {
     throw "ironrdp-agent.exe not found: $screenshotExe"
 }
@@ -594,6 +606,9 @@ if (-not $SkipDeploy.IsPresent) {
         RdpDomain        = $RdpDomain
         RdpPasswordEnvVar = $RdpPasswordEnvVar
         Configuration    = $Configuration
+        RemoteRoot       = $RemoteRoot
+        IddRemotePath    = $IddRemotePath
+        TestCertificatesDirectory = $TestCertificatesDirectory
         SkipBuild        = $SkipBuild.IsPresent
         InstallIdd       = $InstallIdd.IsPresent
         ListenerAddr     = "0.0.0.0:$Port"
@@ -638,7 +653,7 @@ if (-not $SkipDeploy.IsPresent) {
                 $diagnosticSession = $null
                 try {
                     $diagnosticSession = New-TestVmSession -Hostname $Hostname -Credential $adminCred
-                    Invoke-Command -Session $diagnosticSession -FilePath (Join-Path $scriptRoot 'e2e-provider-diagnostics.ps1') -ArgumentList $Port
+                    Invoke-Command -Session $diagnosticSession -FilePath (Join-Path $scriptRoot 'e2e-provider-diagnostics.ps1') -ArgumentList $Port, $RemoteRoot
                 } catch {
                     Write-Warning "Deployment diagnostics failed: $($_.Exception.Message)"
                 } finally {
@@ -668,7 +683,7 @@ if ($Mode -eq 'Provider' -and -not $SkipScreenshot.IsPresent) {
 
     $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
     try {
-        $preflight = Invoke-Command -Session $session -ScriptBlock ([scriptblock]::Create((Get-Content -LiteralPath (Join-Path $scriptRoot 'e2e-idd-preflight.ps1') -Raw))) -ArgumentList $iddRuntimeRoot, $iddRuntimeStateFile, $iddDebugTraceFile, $iddDumpRemoteDir, 'C:\Program Files\IronRDP\idd\IronRdpIdd.inf'
+        $preflight = Invoke-Command -Session $session -ScriptBlock ([scriptblock]::Create((Get-Content -LiteralPath (Join-Path $scriptRoot 'e2e-idd-preflight.ps1') -Raw))) -ArgumentList $iddRuntimeRoot, $iddRuntimeStateFile, $iddDebugTraceFile, $iddDumpRemoteDir, (Join-Path $IddRemotePath 'IronRdpIdd.inf')
 
         $preflightIssues.Clear()
         $hardPreflightIssues.Clear()
@@ -1244,8 +1259,6 @@ if ((-not $SkipScreenshot.IsPresent) -and (-not $preflightBlockedConnectionAttem
         }
     }
 
-    $screenshotLog = Join-Path $artifactsDir "screenshot-$timestamp.log"
-
     $resolvedOutputPng = [System.IO.Path]::GetFullPath($OutputPng)
     $outputDirectory = [System.IO.Path]::GetDirectoryName($resolvedOutputPng)
     $outputBaseName = [System.IO.Path]::GetFileNameWithoutExtension($resolvedOutputPng)
@@ -1253,10 +1266,25 @@ if ((-not $SkipScreenshot.IsPresent) -and (-not $preflightBlockedConnectionAttem
     $screenshotTempPng = Join-Path $outputDirectory "$outputBaseName-$([guid]::NewGuid().ToString('N')).tmp.png"
 
     $baselineSession = New-TestVmSession -Hostname $Hostname -Credential $adminCred
+    $screenshotLog = Join-Path $artifactsDir "screenshot-$timestamp.log"
+    $agentKnownCertificates = Join-Path $artifactsDir "agent-known-certificates-$timestamp"
     try {
+        $serverFingerprint = Invoke-Command -Session $baselineSession -ScriptBlock {
+            $certificates = @(Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop |
+                Where-Object { $_.Subject -eq 'CN=IronRDP TermSrv' -and $_.HasPrivateKey })
+            if ($certificates.Count -ne 1) {
+                throw "Expected one private-key certificate for CN=IronRDP TermSrv; found $($certificates.Count)"
+            }
+            $hasher = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                [BitConverter]::ToString($hasher.ComputeHash($certificates[0].RawData)).Replace('-', '').ToLowerInvariant()
+            } finally {
+                $hasher.Dispose()
+            }
+        }
         $evidenceBaseline = Invoke-RemoteCommandWithTimeout -Session $baselineSession -TimeoutSeconds 30 `
             -OperationName 'pre-connect evidence baseline' -ScriptBlock $evidenceCollector `
-            -ArgumentList (@($null) * 5 + @($iddRuntimeStateFile, $iddDebugTraceFile, $iddOpenProbeLogFile, $null, $null, $true))
+            -ArgumentList (@($null) * 5 + @($iddRuntimeStateFile, $iddDebugTraceFile, $iddOpenProbeLogFile, $null, $null, $true, $null, $RemoteRoot))
     }
     finally { Remove-PSSession -Session $baselineSession -ErrorAction SilentlyContinue }
 
@@ -1264,11 +1292,22 @@ if ((-not $SkipScreenshot.IsPresent) -and (-not $preflightBlockedConnectionAttem
         param($Endpoint)
         Get-E2EAgentClientEndpoint -Endpoint $Endpoint -AgentPath $screenshotExe -Hostname $Hostname -Port $Port
     }
-    $clientResult = Invoke-E2EAgentScreenshot -AgentPath $screenshotExe -Server "${Hostname}:$Port" `
-        -Username $RdpUsername -Password $rdpPasswordEffective -Domain $RdpDomain `
-        -OutputPath $screenshotTempPng -LogPath $screenshotLog -TimeoutSeconds $effectiveScreenshotTimeoutSeconds `
-        -NoGraphicsTimeoutSeconds $NoGraphicsTimeoutSeconds -AfterFirstGraphicsSeconds $AfterFirstGraphicsSeconds `
-        -ConnectionObserver $observer
+    try {
+        $trustResult = Invoke-E2EAgentCertificateTrust -AgentPath $screenshotExe -Endpoint "${Hostname}:$Port" `
+            -Fingerprint $serverFingerprint -KnownCertificatesPath $agentKnownCertificates
+        Add-Content -LiteralPath $screenshotLog -Value $trustResult.Output
+        if ($trustResult.ExitCode -ne 0) {
+            throw "Could not pin the TermSrv certificate for ${Hostname}:$Port`: $($trustResult.Output)"
+        }
+        $clientResult = Invoke-E2EAgentScreenshot -AgentPath $screenshotExe -Server "${Hostname}:$Port" `
+            -Username $RdpUsername -Password $rdpPasswordEffective -Domain $RdpDomain `
+            -OutputPath $screenshotTempPng -LogPath $screenshotLog -TimeoutSeconds $effectiveScreenshotTimeoutSeconds `
+            -NoGraphicsTimeoutSeconds $NoGraphicsTimeoutSeconds -AfterFirstGraphicsSeconds $AfterFirstGraphicsSeconds `
+            -KnownCertificatesPath $agentKnownCertificates -ConnectionObserver $observer
+    }
+    finally {
+        Remove-Item -LiteralPath $agentKnownCertificates -Force -ErrorAction SilentlyContinue
+    }
     $exitCode = $clientResult.ExitCode
     $testedClientEndpoint = $clientResult.ClientEndpoint
     Write-Host "Screenshot client exited with code: $exitCode"
@@ -1303,7 +1342,7 @@ Write-Host "`n=== Step 4: Collecting remote logs ===" -ForegroundColor Cyan
         try {
             $session = New-TestVmSession -Hostname $Hostname -Credential $adminCred
             $remoteLogs = Invoke-RemoteCommandWithTimeout -Session $session -TimeoutSeconds 90 -OperationName 'remote log collection' `
-                -ScriptBlock $evidenceCollector -ArgumentList @($Port, $testStartTime, $Mode, $dumpRemoteDir, $auditIdentity, $iddRuntimeStateFile, $iddDebugTraceFile, $iddOpenProbeLogFile, $evidenceBaseline, $testedClientEndpoint)
+                -ScriptBlock $evidenceCollector -ArgumentList @($Port, $testStartTime, $Mode, $dumpRemoteDir, $auditIdentity, $iddRuntimeStateFile, $iddDebugTraceFile, $iddOpenProbeLogFile, $evidenceBaseline, $testedClientEndpoint, $false, $null, $RemoteRoot)
             break
         }
         catch {
@@ -1504,7 +1543,10 @@ Write-Host "`n=== Step 4: Collecting remote logs ===" -ForegroundColor Cyan
             $helperLogSession = $null
             try {
                 $helperLogSession = New-TestVmSession -Hostname $Hostname -Credential $adminCred
-                foreach ($pattern in @('C:\IronRDPDeploy\logs\capture-helper-*.log', 'C:\IronRDPDeploy\logs\capture-helper-early-*.txt')) {
+                foreach ($pattern in @(
+                    (Join-Path $RemoteRoot 'logs\capture-helper-*.log'),
+                    (Join-Path $RemoteRoot 'logs\capture-helper-early-*.txt')
+                )) {
                     Copy-Item -FromSession $helperLogSession -Path $pattern -Destination $remoteLogDir -Force -ErrorAction SilentlyContinue
                 }
             }

@@ -69,23 +69,26 @@ Driver Store packages cannot be force-deleted while installed on a device; the i
 All scripts live in [server/termsrv/crates/ironrdp-idd/scripts](scripts).
 
 - [deploy-idd.ps1](scripts/deploy-idd.ps1): enable test signing + install Devolutions test certificates on the target VM.
-- [sign-driver.ps1](scripts/sign-driver.ps1): stage the DLL, INF, and signed catalog under `target\termsrv\idd` (requires Windows SDK/WDK tools).
+- [sign-driver.ps1](scripts/sign-driver.ps1): stage the DLL, INF, and signed catalog under Cargo's target directory in `termsrv\idd` (requires Windows SDK/WDK tools).
 - [install-idd-remote.ps1](scripts/install-idd-remote.ps1): copy `IronRdpIdd.dll` + INF/CAT to the VM and install via `pnputil`.
 - [restart-rds-services.ps1](scripts/restart-rds-services.ps1): restart the deployment-owned companion before `TermService`.
-  Pass the deployment's `-RemoteRoot` and `-TaskName` if they differ from `C:\IronRDPDeploy` and `IronRdpTermSrvSystem`.
+  Pass the deployment's `-RemoteRoot` and `-TaskName` when they differ from the configured defaults.
 - [restart-vm.ps1](scripts/restart-vm.ps1): reboot the VM and wait for WinRM to come back (use after enabling test signing).
 - [collect-idd-diagnostics.ps1](scripts/collect-idd-diagnostics.ps1): collect driver/device + event log diagnostics into a zip.
 - [ensure-rdsh-role.ps1](scripts/ensure-rdsh-role.ps1): check (and optionally install) the `RDS-RD-Server` role on Windows Server.
 - [find-wdk-tools.ps1](scripts/find-wdk-tools.ps1): locate `iddcx.h`, `iddcxstub.lib`, and WDK/SDK signing tools on the machine.
 
-## Set up IT-HELP-TERMSRV
+Set `IRONRDP_WINDOWS_KITS_ROOT` when the Windows Kits directory is outside its default location.
 
-Run from the repository root with `RDP_USERNAME` and `RDP_PASSWORD` supplied through the environment.
-The scripts default to `IT-HELP-TERMSRV` and use HTTPS remoting on port 5986 when HTTP authentication is unavailable.
+## Set up a test VM
+
+Run from the repository root with `IRONRDP_TEST_VM_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD` supplied through the environment.
+The remoting helper tries HTTP first, then HTTPS on port 5986 when HTTP authentication fails.
 HTTPS remoting validates the server certificate.
 Configure a trusted certificate on the VM before using this fallback.
 
 ```powershell
+$env:IRONRDP_TEST_VM_HOSTNAME = 'rdp-test.example.com'
 .\server\termsrv\crates\ironrdp-idd\scripts\ensure-rdsh-role.ps1 -AttemptInstall
 .\server\termsrv\crates\ironrdp-termsrv\scripts\deploy-testvm-psremoting.ps1 -WtsProvider -InstallIdd
 ```
@@ -100,6 +103,7 @@ Test signing requires a compatible boot policy; a Secure Boot policy that blocks
 
 Signing uses the public test-only fixtures pinned to commit `2a7a928a7db8479ca4c96273579aac8c85f60a09` in [Devolutions/psign][psign-fixtures].
 The helper caches them under `%LOCALAPPDATA%\IronRDP\TestSigning` and exports a public signer certificate.
+For an offline setup, pass `-TestCertificatesDirectory` to the deployment command with a writable directory containing `authenticode-test-ca.crt` and `authenticode-test-cert.pfx`.
 `psign-tool` 0.8.0 needs a persisted key provider, so the signing script temporarily imports the PFX into `CurrentUser\My` and removes the imported certificate and key afterward.
 It preserves a pre-existing personal-store certificate and never imports local trust anchors.
 WDK Inf2Cat generates the driver catalog; `psign-tool` signs the DLL and catalog, then verifies both signatures with an explicit CA anchor and checks DLL catalog membership.

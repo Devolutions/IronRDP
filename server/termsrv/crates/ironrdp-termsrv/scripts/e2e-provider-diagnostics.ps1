@@ -1,4 +1,4 @@
-param([int]$Port)
+param([int]$Port, [string]$RemoteRoot = $(if ($env:IRONRDP_DEPLOY_ROOT) { $env:IRONRDP_DEPLOY_ROOT } else { 'C:\IronRDPDeploy' }))
                         $providerProbe = $null
                         try {
                             $providerClsid = [guid]'{89C7ED1E-25E5-4B15-8F52-AE6DF4A5CEAF}'
@@ -27,16 +27,19 @@ param([int]$Port)
                             catch {
                             }
                             Write-Host '---- ironrdp-termsrv.log (tail) ----' -ForegroundColor Yellow
-                            if (Test-Path -LiteralPath 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log' -PathType Leaf) {
-                                Get-Content -LiteralPath 'C:\IronRDPDeploy\logs\ironrdp-termsrv.log' -Tail 120 -ErrorAction SilentlyContinue
+                            $stdoutLog = Join-Path $RemoteRoot 'logs\ironrdp-termsrv.log'
+                            if (Test-Path -LiteralPath $stdoutLog -PathType Leaf) {
+                                Get-Content -LiteralPath $stdoutLog -Tail 120 -ErrorAction SilentlyContinue
                             }
                             Write-Host '---- ironrdp-termsrv.err.log (tail) ----' -ForegroundColor Yellow
-                            if (Test-Path -LiteralPath 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log' -PathType Leaf) {
-                                Get-Content -LiteralPath 'C:\IronRDPDeploy\logs\ironrdp-termsrv.err.log' -Tail 120 -ErrorAction SilentlyContinue
+                            $stderrLog = Join-Path $RemoteRoot 'logs\ironrdp-termsrv.err.log'
+                            if (Test-Path -LiteralPath $stderrLog -PathType Leaf) {
+                                Get-Content -LiteralPath $stderrLog -Tail 120 -ErrorAction SilentlyContinue
                             }
                             Write-Host '---- wts-provider-debug.log (tail) ----' -ForegroundColor Yellow
-                            if (Test-Path -LiteralPath 'C:\IronRDPDeploy\logs\wts-provider-debug.log' -PathType Leaf) {
-                                Get-Content -LiteralPath 'C:\IronRDPDeploy\logs\wts-provider-debug.log' -Tail 120 -ErrorAction SilentlyContinue
+                            $providerLog = Join-Path $RemoteRoot 'logs\wts-provider-debug.log'
+                            if (Test-Path -LiteralPath $providerLog -PathType Leaf) {
+                                Get-Content -LiteralPath $providerLog -Tail 120 -ErrorAction SilentlyContinue
                             }
                             else {
                                 Write-Host '<missing>'

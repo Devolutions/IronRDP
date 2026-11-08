@@ -8,9 +8,12 @@ function Resolve-TestVmCredential {
         [string]$Password = '',
         [switch]$PromptPassword,
         [string]$PasswordEnvVar = 'RDP_PASSWORD',
-        [string]$Hostname = 'IT-HELP-TERMSRV'
+        [string]$Hostname = $env:IRONRDP_TEST_VM_HOSTNAME
     )
 
+    if ([string]::IsNullOrWhiteSpace($Hostname)) {
+        throw 'Hostname is required (pass -Hostname or set IRONRDP_TEST_VM_HOSTNAME)'
+    }
     if ($null -ne $Credential) { return $Credential }
     if ([string]::IsNullOrWhiteSpace($Username)) {
         throw 'Username is required (pass -Username, pass -Credential, or set RDP_USERNAME)'
@@ -27,6 +30,46 @@ function Resolve-TestVmCredential {
         $secure = ConvertTo-SecureString $Password -AsPlainText -Force
     }
     [pscredential]::new($Username, $secure)
+}
+
+function Get-CargoTargetDirectory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$WorkspaceRoot)
+
+    $manifestPath = Join-Path $WorkspaceRoot 'Cargo.toml'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Cargo manifest not found: $manifestPath"
+    }
+
+    $cargo = Get-Command cargo -ErrorAction Stop
+    $metadataOutput = & $cargo.Source metadata --no-deps --format-version 1 --manifest-path $manifestPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "cargo metadata failed (exit $LASTEXITCODE)"
+    }
+
+    try {
+        $metadata = ($metadataOutput -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "cargo metadata returned invalid JSON: $($_.Exception.Message)"
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$metadata.target_directory)) {
+        throw 'cargo metadata did not report a target directory'
+    }
+
+    [System.IO.Path]::GetFullPath([string]$metadata.target_directory)
+}
+
+function Get-CargoBuildOutputDirectory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$WorkspaceRoot)
+
+    $targetDirectory = Get-CargoTargetDirectory -WorkspaceRoot $WorkspaceRoot
+    if (-not [string]::IsNullOrWhiteSpace($env:CARGO_BUILD_TARGET)) {
+        return Join-Path $targetDirectory $env:CARGO_BUILD_TARGET
+    }
+
+    $targetDirectory
 }
 
 function New-TestVmSession {
@@ -276,6 +319,6 @@ function Restart-TermServiceSafely {
     }
 }
 
-Export-ModuleMember -Function Resolve-TestVmCredential, New-TestVmSession, Wait-TestVmSession, Wait-TestVmListener,
+Export-ModuleMember -Function Resolve-TestVmCredential, Get-CargoTargetDirectory, Get-CargoBuildOutputDirectory, New-TestVmSession, Wait-TestVmSession, Wait-TestVmListener,
     Get-TermServiceLifecycle, Wait-TermServiceState, Restore-TermServiceLifecycle, Stop-TermServiceSafely,
     Start-TermServiceSafely, Restart-TermServiceSafely

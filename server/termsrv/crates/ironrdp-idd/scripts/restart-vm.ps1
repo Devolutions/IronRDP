@@ -2,7 +2,7 @@
 param(
     [Parameter()]
     [Alias('ComputerName')]
-    [string]$VmHostname = "IT-HELP-TERMSRV",
+    [string]$VmHostname = $env:IRONRDP_TEST_VM_HOSTNAME,
 
     [Parameter()]
     [string]$Username = $env:RDP_USERNAME,

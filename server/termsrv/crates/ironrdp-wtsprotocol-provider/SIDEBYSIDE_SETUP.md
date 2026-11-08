@@ -14,9 +14,12 @@ Keep the built-in listener on port 3389 and use a separate listener, such as `IR
 
 ```powershell
 cargo build -p ironrdp-wtsprotocol-provider --release --locked
+$modulePath = '.\server\termsrv\scripts\TestVm.psm1'
+Import-Module $modulePath -Force
+$targetDirectory = Get-CargoBuildOutputDirectory -WorkspaceRoot (Get-Location).Path
+$providerDllPath = Join-Path $targetDirectory 'release\ironrdp_wtsprotocol_provider.dll'
 ```
 
-The expected artifact is `target\release\ironrdp_wtsprotocol_provider.dll`.
 Before registration, back up the listener and provider registry keys:
 
 ```powershell
@@ -31,7 +34,7 @@ By default, backups are saved under `artifacts\wtsprotocol-backup-<timestamp>` a
 
 ```powershell
 .\server\termsrv\crates\ironrdp-wtsprotocol-provider\scripts\install-side-by-side.ps1 `
-    -ProviderDllPath .\target\release\ironrdp_wtsprotocol_provider.dll `
+    -ProviderDllPath $providerDllPath `
     -ListenerName IRDP-Tcp `
     -PortNumber 4489
 ```
@@ -50,7 +53,7 @@ Use `-Mode Verify` to check it without changing it.
 
 ```powershell
 .\server\termsrv\crates\ironrdp-wtsprotocol-provider\scripts\verify-side-by-side.ps1 `
-    -ProviderDllPath .\target\release\ironrdp_wtsprotocol_provider.dll `
+    -ProviderDllPath $providerDllPath `
     -ListenerName IRDP-Tcp `
     -PortNumber 4489
 ```
@@ -61,11 +64,11 @@ For PSRemoting deployments, run the [service restart helper] from the build host
 
 ## Connect and diagnose
 
-Connect from the build host with `ironrdp-agent`.
+Set `IRONRDP_TEST_VM_HOSTNAME`, then connect from the build host with `ironrdp-agent`.
 Supply `RDP_USERNAME` and `RDP_PASSWORD` through the environment.
 
 ```powershell
-ironrdp-agent connect --server IT-HELP-TERMSRV:4489 --no-prompt
+ironrdp-agent connect --server "$($env:IRONRDP_TEST_VM_HOSTNAME):4489" --no-prompt
 ironrdp-agent status
 ```
 
@@ -76,7 +79,7 @@ To collect local provider state on the VM:
 .\server\termsrv\crates\ironrdp-wtsprotocol-provider\scripts\collect-side-by-side-diagnostics.ps1 `
     -ListenerName IRDP-Tcp `
     -PortNumber 4489 `
-    -ProviderDllPath .\target\release\ironrdp_wtsprotocol_provider.dll
+    -ProviderDllPath $providerDllPath
 ```
 
 This writes a diagnostics folder under `artifacts\wtsprotocol-diagnostics-<timestamp>`.
@@ -111,7 +114,7 @@ See the [provider status] for implementation coverage; do not replace the built-
 Keep plaintext credential fallback disabled; use CredSSP/SSPI/Kerberos-first flow.
 
 [companion deployment instructions]: ../ironrdp-termsrv/README.md#deploy-to-a-test-vm-psremoting
-[IDD setup instructions]: ../ironrdp-idd/README.md#set-up-it-help-termsrv
+[IDD setup instructions]: ../ironrdp-idd/README.md#set-up-a-test-vm
 [provider CLSID]: ./README.md#protocol-manager-clsid
 [service restart helper]: ../ironrdp-idd/scripts/restart-rds-services.ps1
 [test-vm-tooling]: ../../README.md#test-vm

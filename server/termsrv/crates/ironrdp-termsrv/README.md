@@ -74,7 +74,7 @@ Rotation and per-monitor scaling are not applied.
 
 For the test VM, pass `-WtsProvider -InstallIdd` to build and sign the IDD package locally, provision target-only certificate trust, enable test signing, reboot if required, and install the driver.
 Only the public CA and publisher certificates are copied to the target; the signing PFX stays on the build host.
-For signing prerequisites and manual installation, see the [IDD setup instructions](../ironrdp-idd/README.md#set-up-it-help-termsrv).
+For signing prerequisites and manual installation, see the [IDD setup instructions](../ironrdp-idd/README.md#set-up-a-test-vm).
 The installer protects `C:\ProgramData\IronRDPDisplay` so only SYSTEM and administrators can publish session-specific requests; the driver service accounts can read them.
 The driver registers requested target modes before changing the Windows display configuration.
 TCP and shared-memory capture report the actual desktop size, triggering RDP reactivation and capture-helper replacement.
@@ -222,7 +222,7 @@ Notes:
 - Provider mode needs the deployment credentials only for remoting; it does not save a server-side RDP password.
 - Standalone mode writes the configured RDP password to a restricted file on the VM, uses it once to start `ironrdp-termsrv`, then deletes it.
   The scheduled task definition never contains the password.
-- The default host is `IT-HELP-TERMSRV`; both remoting and RDP use the environment-supplied identity.
+- Set `IRONRDP_TEST_VM_HOSTNAME` to select the target; both remoting and RDP use the environment-supplied identity.
 - To use separate credentials, override `-Username`, `-RdpUsername`, `-PasswordEnvVar`, and `-RdpPasswordEnvVar`.
   Avoid plaintext password arguments in shell history.
 - The startup task persists.
@@ -239,15 +239,15 @@ It reads `RDP_USERNAME` and `RDP_PASSWORD` directly, without password files or c
 Native Windows RDP uses port 3389; the IronRDP side-by-side provider uses port 4489.
 
 ```powershell
-ironrdp-agent connect --server IT-HELP-TERMSRV:3389 --no-prompt
+ironrdp-agent connect --server "$($env:IRONRDP_TEST_VM_HOSTNAME):3389" --no-prompt
 ironrdp-agent status
 ```
 
-Use `--server IT-HELP-TERMSRV:4489` for the custom provider.
+Use `--server "$($env:IRONRDP_TEST_VM_HOSTNAME):4489"` for the custom provider.
 Connections are asynchronous; inspect `status` before requesting a screenshot.
 If TLS validation fails, verify the reported SHA-256 certificate fingerprint over authenticated PSRemoting before using `ironrdp-agent cert trust HOST:PORT SHA256`.
 Pin the server certificate rather than disabling daemon-wide TLS checks.
-For driver prerequisites and target-only signing trust, follow the [IDD setup instructions](../ironrdp-idd/README.md#set-up-it-help-termsrv).
+For driver prerequisites and target-only signing trust, follow the [IDD setup instructions](../ironrdp-idd/README.md#set-up-a-test-vm).
 
 ## Local control-plane smoke test (no TermDD required)
 

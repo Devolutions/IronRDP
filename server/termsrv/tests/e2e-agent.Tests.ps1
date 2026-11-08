@@ -2,6 +2,80 @@ BeforeAll {
     . (Join-Path $PSScriptRoot '..\crates\ironrdp-termsrv\scripts\e2e-agent.helpers.ps1')
 }
 
+Describe 'Scoped server certificate trust' {
+    BeforeEach {
+        $script:agentCall = $null
+        Mock Invoke-E2EAgentCommand {
+            $script:agentCall = @{
+                AgentPath = $AgentPath
+                Arguments = $Arguments
+                Environment = $Environment
+            }
+            [pscustomobject]@{ ExitCode = 0; Output = 'trusted fixture' }
+        }
+    }
+
+    It 'pins the authenticated endpoint in an isolated known-certificate store' {
+        # oracle: the trust command must bind a verified fingerprint to only the requested endpoint and store.
+        $result = Invoke-E2EAgentCertificateTrust -AgentPath 'agent.exe' -Endpoint 'server.example:4489' `
+            -Fingerprint ('ab' * 32) -KnownCertificatesPath 'C:\fixture\known-certificates'
+
+        $result.ExitCode | Should -Be 0
+        $script:agentCall.Arguments | Should -Be @('cert', 'trust', 'server.example:4489', ('ab' * 32))
+        $script:agentCall.Environment.IRONRDP_AGENT_KNOWN_CERTIFICATES | Should -Be 'C:\fixture\known-certificates'
+        Should -Invoke Invoke-E2EAgentCommand -Times 1
+    }
+
+    It 'rejects a malformed fingerprint before invoking the client' {
+        # oracle: cert trust accepts only SHA-256 fingerprints of 32 bytes.
+        {
+            Invoke-E2EAgentCertificateTrust -AgentPath 'agent.exe' -Endpoint 'server.example:4489' `
+                -Fingerprint 'not-a-fingerprint' -KnownCertificatesPath 'C:\fixture\known-certificates'
+        } | Should -Throw
+        Should -Invoke Invoke-E2EAgentCommand -Times 0
+    }
+
+    It 'rejects an empty certificate store path instead of using the persistent default' {
+        # oracle: the trust command must update only the caller-selected isolated store.
+        {
+            Invoke-E2EAgentCertificateTrust -AgentPath 'agent.exe' -Endpoint 'server.example:4489' `
+                -Fingerprint ('ab' * 32) -KnownCertificatesPath ''
+        } | Should -Throw
+        Should -Invoke Invoke-E2EAgentCommand -Times 0
+    }
+}
+
+Describe 'Pinned certificate use' {
+    It 'uses the isolated certificate store for every agent command in the screenshot session' {
+        # oracle: the client must consult the same temporary store that the authenticated trust command updated.
+        $script:agentEnvironments = [Collections.Generic.List[hashtable]]::new()
+        Mock Invoke-E2EAgentCommand {
+            $script:agentEnvironments.Add($Environment)
+            $output = 'ok'
+            if ($Arguments -contains 'status') {
+                $output = 'state: Connected'
+            }
+            if ($Arguments -contains 'screenshot') {
+                $screenshotIndex = [Array]::IndexOf($Arguments, 'screenshot')
+                Set-Content -LiteralPath $Arguments[$screenshotIndex + 1] -Value 'fixture frame'
+            }
+            [pscustomobject]@{ ExitCode = 0; Output = $output }
+        }
+
+        $knownCertificatesPath = 'C:\fixture\known-certificates'
+        $result = Invoke-E2EAgentScreenshot -AgentPath 'agent.exe' -Server 'server.example:4489' `
+            -Username 'fixture-user' -Password 'fixture-password' -OutputPath (Join-Path $TestDrive 'pinned.png') `
+            -LogPath (Join-Path $TestDrive 'pinned.log') -AfterFirstGraphicsSeconds 0 `
+            -KnownCertificatesPath $knownCertificatesPath
+
+        $result.ExitCode | Should -Be 0
+        $script:agentEnvironments | Should -Not -BeNullOrEmpty
+        foreach ($environment in $script:agentEnvironments) {
+            $environment.IRONRDP_AGENT_KNOWN_CERTIFICATES | Should -Be $knownCertificatesPath
+        }
+    }
+}
+
 Describe 'Owned RDP observation' {
     It 'bounds the native command when a child retains redirected output' {
         # oracle: mutant inherited output handles prevent a command from honoring its timeout.
