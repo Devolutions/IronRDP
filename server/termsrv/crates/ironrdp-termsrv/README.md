@@ -239,11 +239,11 @@ It reads `RDP_USERNAME` and `RDP_PASSWORD` directly, without password files or c
 Native Windows RDP uses port 3389; the IronRDP side-by-side provider uses port 4489.
 
 ```powershell
-.\server\termsrv\crates\ironrdp-termsrv\scripts\connect-agent.ps1
+ironrdp-agent connect --server IT-HELP-TERMSRV:3389 --no-prompt
 ironrdp-agent status
 ```
 
-Use `-Port 4489` for the custom provider.
+Use `--server IT-HELP-TERMSRV:4489` for the custom provider.
 Connections are asynchronous; inspect `status` before requesting a screenshot.
 If TLS validation fails, verify the reported SHA-256 certificate fingerprint over authenticated PSRemoting before using `ironrdp-agent cert trust HOST:PORT SHA256`.
 Pin the server certificate rather than disabling daemon-wide TLS checks.

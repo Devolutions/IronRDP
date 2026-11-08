@@ -17,14 +17,9 @@ Describe 'IDD remoting callers' {
         Mock Start-Sleep {}
     }
 
-    It 'forwards credentials and releases the session for <ScriptName>' -TestCases @(
-        @{ ScriptName = 'check-windows-edition.ps1' }
-        @{ ScriptName = 'ensure-rdsh-role.ps1' }
-        @{ ScriptName = 'verify-test-signing.ps1' }
-    ) {
+    It 'forwards credentials and releases the session when checking the RDS role' {
         # oracle: mutant a remoting caller drops the caller's credential or leaks its session.
-        param($ScriptName)
-        & (Join-Path $script:iddScripts $ScriptName) -VmHostname 'fixture.invalid' -Username 'fixture-user' -Password '' -Credential $script:credential | Out-Null
+        & (Join-Path $script:iddScripts 'ensure-rdsh-role.ps1') -VmHostname 'fixture.invalid' -Username 'fixture-user' -Password '' -Credential $script:credential | Out-Null
         Should -Invoke New-TestVmSession -Times 1 -ParameterFilter {
             $Hostname -eq 'fixture.invalid' -and $Credential.UserName -eq 'fixture-user' -and
             $Credential.GetNetworkCredential().Password -eq 'fixture-password'

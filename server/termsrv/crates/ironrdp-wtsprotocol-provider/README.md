@@ -89,13 +89,3 @@ The install scripts use this CLSID by default and wire it into both:
 
 - `HKLM\SOFTWARE\Classes\CLSID\{...}\InprocServer32`
 - `HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\<Listener>\LoadableProtocol_Object`
-
-## Side-by-side rollout
-
-See [SIDEBYSIDE_SETUP.md](./SIDEBYSIDE_SETUP.md).
-
-The optional [configuration package] contains `package.json`, a command guide, and an `.rdp` file, not an installer.
-Its ZIP still requires the configured checkout and DLL paths on the server; it does not bundle deployment dependencies.
-Backup, restore, install, uninstall, registration verification, and runtime smoke checks remain separate scripts.
-
-[configuration package]: ./SIDEBYSIDE_SETUP.md#optional-configuration-package-prepare-without-installing

@@ -69,7 +69,6 @@ Driver Store packages cannot be force-deleted while installed on a device; the i
 All scripts live in [server/termsrv/crates/ironrdp-idd/scripts](scripts).
 
 - [deploy-idd.ps1](scripts/deploy-idd.ps1): enable test signing + install Devolutions test certificates on the target VM.
-- [verify-test-signing.ps1](scripts/verify-test-signing.ps1): verify `bcdedit` test signing is enabled on the VM.
 - [sign-driver.ps1](scripts/sign-driver.ps1): stage the DLL, INF, and signed catalog under `target\termsrv\idd` (requires Windows SDK/WDK tools).
 - [install-idd-remote.ps1](scripts/install-idd-remote.ps1): copy `IronRdpIdd.dll` + INF/CAT to the VM and install via `pnputil`.
 - [restart-rds-services.ps1](scripts/restart-rds-services.ps1): restart the deployment-owned companion before `TermService`.
@@ -77,7 +76,6 @@ All scripts live in [server/termsrv/crates/ironrdp-idd/scripts](scripts).
 - [restart-vm.ps1](scripts/restart-vm.ps1): reboot the VM and wait for WinRM to come back (use after enabling test signing).
 - [collect-idd-diagnostics.ps1](scripts/collect-idd-diagnostics.ps1): collect driver/device + event log diagnostics into a zip.
 - [ensure-rdsh-role.ps1](scripts/ensure-rdsh-role.ps1): check (and optionally install) the `RDS-RD-Server` role on Windows Server.
-- [check-windows-edition.ps1](scripts/check-windows-edition.ps1): check Windows edition suitability for 3rd party protocol providers.
 - [find-wdk-tools.ps1](scripts/find-wdk-tools.ps1): locate `iddcx.h`, `iddcxstub.lib`, and WDK/SDK signing tools on the machine.
 
 ## Set up IT-HELP-TERMSRV
@@ -94,7 +92,7 @@ Configure a trusted certificate on the VM before using this fallback.
 
 The deployment command builds and signs locally, provisions target trust, reboots when test-signing configuration changes, and installs the driver before starting the companion and TermService.
 Role installation may require a separate reboot.
-The individual signing, installation, verification, and recovery scripts remain available for diagnosis.
+The individual signing, installation, diagnostics, and recovery scripts remain available.
 
 Install the WDK and `psign-tool` on the build machine first.
 For an extracted WDK, set `IRONRDP_WINDOWS_KITS_ROOT` to its `c` directory before building and signing.
