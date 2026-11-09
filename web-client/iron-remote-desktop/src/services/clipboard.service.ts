@@ -135,9 +135,7 @@ export class ClipboardService {
                 }
             } catch {
                 const isWebKit =
-                    typeof navigator.userAgent === 'string' &&
-                    /AppleWebKit\//.test(navigator.userAgent) &&
-                    !/Chrome|Chromium|Android/.test(navigator.userAgent);
+                    /AppleWebKit\//.test(navigator.userAgent) && !/Chrome|Chromium|Android/.test(navigator.userAgent);
                 if (isWebKit) {
                     // WebKit does not support the "clipboard-read" PermissionName and shows a native
                     // floating "Paste" confirmation menu whenever navigator.clipboard.read() is called,
