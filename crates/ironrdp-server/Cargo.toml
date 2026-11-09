@@ -49,7 +49,7 @@ ironrdp-nscodec = { path = "../ironrdp-nscodec", version = "0.4", optional = tru
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.11" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.10" } # public
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.9" } # public
-ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.10" } # public
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.11" } # public
 ironrdp-echo = { path = "../ironrdp-echo", version = "0.6" } # public
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.10" } # public
 ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.12", features = ["reqwest"] }
