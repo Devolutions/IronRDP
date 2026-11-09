@@ -24,6 +24,16 @@ Custom logic for your RDP server can be added by implementing these traits:
  - `RdpServerInputHandler` - callbacks used when the server receives input events from a client
  - `RdpServerDisplay`      - notifies the server of display updates
 
+## Client session configuration
+
+`ConnectionHandler::on_client_info` observes the client's Client Info flags before capability exchange.
+`ConnectionHandler::on_client_session_config` receives those flags with the keyboard settings, performance flags, IME file name, and initial desktop size offered for capability exchange.
+The desktop size is the display handler's initial size by default.
+With `RdpServerBuilder::with_honor_client_desktop_size` enabled, it reflects a valid client request from GCC Client Core Data, clamped to the configured maximum.
+These callbacks do not authenticate the client, and returning an error stops connection setup.
+Callback errors close the transport without sending an access-denied PDU.
+`ConnectionHandler::on_connection_info` later reports the keyboard subtype, function-key count, performance flags, and other metadata after the connection is established.
+
 ## Runtime control
 
 Clone `RdpServer::handle()` before running the server to control it from another task.
@@ -53,6 +63,23 @@ Split larger batches at order boundaries before submitting them.
 Fields requiring extended Window List support are rejected when the client negotiated only basic support.
 The embedder remains responsible for RAIL channel messages and for respecting the reported icon-cache limits.
 
+## Runtime dynamic channels
+
+Send `ServerEvent::CreateDynamicChannel` through `RdpServer::event_sender()` to create a channel after the client joins DRDYNVC and answers its capability negotiation.
+The factory receives the reserved channel ID and returns a `DvcServerProcessor`.
+Peer acceptance invokes the processor's `start` callback.
+If DRDYNVC is unavailable or not ready, the request is discarded without calling the factory.
+
+Retain the reserved ID and send `ServerEvent::CloseDynamicChannel { channel_id, is_current }` to release the processor and notify the peer when appropriate.
+Close also cancels creation awaiting peer acceptance; a late response cannot start the canceled processor.
+Unknown and already-closed IDs have no effect.
+Keep a cancellation guard that sends Close if the caller stops waiting for acceptance, and stop background work when the processor is dropped.
+The nonblocking `is_current` predicate must identify the originating connection or processor lifetime, remain valid during pending creation, and become false before a replacement connection can use the same ID.
+It runs during event dispatch before the channel is removed; false discards the event without callbacks or wire output.
+
+Submit only for the active connection: `run` and `serve` discard channel events while idle and at connection boundaries, but draining cannot reject old producers submitting afterward.
+The queue is unbounded and has no dispatch deadline, so bound outstanding requests in the producer and keep factories nonblocking.
+
 ## Echo RTT probes (feature `echo`)
 
 Enable the `echo` feature to use the ECHO dynamic virtual channel (`MS-RDPEECO`) and measure round-trip time.
@@ -69,7 +96,8 @@ local
 	.run_until(async move {
 		let server_task = tokio::task::spawn_local(async move { server.run().await });
 
-		{
+		// The server drops a request while the client does not have the channel open.
+		if echo.is_channel_open() {
 			echo.send_request(b"ping".to_vec())?;
 
 			for measurement in echo.take_measurements() {
@@ -97,6 +125,39 @@ local
 Register a `DynamicChannelFactory` with `RdpServerBuilder::with_dynamic_channel_factory` to add dynamic-channel processors.
 Each factory runs for every connection, in registration order, after the built-in channels are registered and before DRDYNVC negotiation.
 The processors created by a factory belong to that connection and are dropped when it ends.
+
+## Clipboard dispatch completion
+
+Send `ServerEvent::ClipboardWithCompletion(message, sender)` through `RdpServer::event_sender()` and await its oneshot receiver before submitting another clipboard event.
+Completion means event handling finished, including any transport write; it does not mean the peer accepted clipboard data.
+A refused request, a backend-reported clipboard error, or a missing clipboard channel can complete without writing data and does not disconnect the session.
+A closed receiver means dispatch failed or the event was discarded, not that no bytes were sent.
+Dropping the receiver does not cancel the event.
+
+The event queue is unbounded, so bound each payload and await completion to limit queued clipboard data.
+Submit only for an active session; idle and stale-session events are discarded.
+There is no dispatch deadline, and a stalled transport write delays completion.
+Use `ServerEvent::Clipboard` when no completion notification is needed.
+
+## Dynamic-channel writes
+
+Send a validated `ironrdp_dvc::DvcMessageBatch` through `ServerEvent::DynamicChannelWithCompletion` for an already-open dynamic channel.
+Build complete messages with `ironrdp_dvc::encode_dvc_messages` before `DvcMessageBatch::try_new` so DVC fragmentation and message boundaries follow the protocol.
+Batch validation checks data-PDU type and channel ID, not fragment sizes or sequencing; manually constructed PDUs remain the producer's responsibility.
+Dispatch revalidates every batch and rejects control PDUs, including Create and Close responses.
+The server writes the batch over the joined DRDYNVC static channel; unavailable channels and channels migrated to a sideband transport are rejected.
+Acquire a permit from a shared bounded semaphore before allocating each batch, and cap batch sizes because the server does not impose a byte budget.
+The event retains its permit until dispatch or discard.
+Provide an `is_current` predicate tied to the producer's connection or processor generation so a late event cannot target a reused channel ID.
+The server relies on this predicate for connection identity; a predicate that always returns true does not protect against stale writes.
+The predicate runs while server-state and writer locks are held, so it must not block or wait on work that needs either lock.
+Dispatch checks cancellation and producer validity before channel lookup and again after waiting for the writer lock.
+Once transmission starts, producer cancellation does not interrupt the write.
+Await the completion receiver before submitting another batch.
+Completion confirms the entire transport write, not peer processing.
+A closed receiver means failure or discard, not permission to retry: some bytes may already have been sent.
+Submit only for an active session; idle and stale-session events are discarded.
+There is no dispatch deadline, and a slow write holds server state and the shared writer until it finishes or fails.
 
 ## Static-channel writes
 

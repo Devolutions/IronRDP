@@ -1455,8 +1455,8 @@ dependencies = [
 
 [[package]]
 name = "diplomat"
-version = "0.16.1"
-source = "git+https://github.com/Devolutions/diplomat?tag=0.16.1-devo.2#002db80cd71327de9553ea01d4d54552d8df05e7"
+version = "0.17.0"
+source = "git+https://github.com/Devolutions/diplomat?tag=0.17.0-devo.1#b1d544ff8c035dea6db0d5f2a98f395b0fd3b293"
 dependencies = [
  "diplomat_core",
  "proc-macro2",
@@ -1466,13 +1466,13 @@ dependencies = [
 
 [[package]]
 name = "diplomat-runtime"
-version = "0.16.0"
-source = "git+https://github.com/Devolutions/diplomat?tag=0.16.1-devo.2#002db80cd71327de9553ea01d4d54552d8df05e7"
+version = "0.16.1"
+source = "git+https://github.com/Devolutions/diplomat?tag=0.17.0-devo.1#b1d544ff8c035dea6db0d5f2a98f395b0fd3b293"
 
 [[package]]
 name = "diplomat_core"
-version = "0.16.1"
-source = "git+https://github.com/Devolutions/diplomat?tag=0.16.1-devo.2#002db80cd71327de9553ea01d4d54552d8df05e7"
+version = "0.17.0"
+source = "git+https://github.com/Devolutions/diplomat?tag=0.17.0-devo.1#b1d544ff8c035dea6db0d5f2a98f395b0fd3b293"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3355,6 +3355,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpei-native"
+version = "0.0.0"
+dependencies = [
+ "futures-timer",
+ "ironrdp-error 0.2.1",
+ "ironrdp-rdpei",
+ "tracing",
+ "windows",
+]
+
+[[package]]
 name = "ironrdp-rdpel"
 version = "0.0.2"
 dependencies = [
@@ -3752,6 +3763,8 @@ dependencies = [
  "ironrdp-rdpdr-native",
  "ironrdp-rdpeai",
  "ironrdp-rdpeci",
+ "ironrdp-rdpei",
+ "ironrdp-rdpei-native",
  "ironrdp-rdpemt",
  "ironrdp-rdpet",
  "ironrdp-rdpeudp",
@@ -4146,9 +4159,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.34"
+version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "lru-slab"
@@ -8419,9 +8432,9 @@ dependencies = [
 
 [[package]]
 name = "yuv"
-version = "0.8.19"
+version = "0.8.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a295923535c00a4e72a50a0a1130097f93160b39892dd4d2d006b1e2b90d6bf9"
+checksum = "3d109d1eacc7b034329873d2d848039b365c65ab7d751b19ee84e4921c62c607"
 dependencies = [
  "num-traits",
 ]

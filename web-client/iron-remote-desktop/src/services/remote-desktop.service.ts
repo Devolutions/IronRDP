@@ -43,6 +43,9 @@ export class RemoteDesktopService {
 
     sessionStartedObservable: Observable<null> = new Observable();
 
+    /// Published when the session ends: shut down, or its run() returned.
+    sessionEndedObservable: Observable<null> = new Observable();
+
     resizeObservable: Observable<ResizeEvent> = new Observable();
 
     session?: Session;
@@ -147,8 +150,12 @@ export class RemoteDesktopService {
     }
 
     shutdown() {
+        // Forgotten before it's shut down, so nothing started asynchronously (a clipboard read) reaches it afterwards.
+        const session = this.session;
+        this.session = undefined;
+        this.sessionEndedObservable.publish(null);
         this.fileTransferProvider?.dispose();
-        this.session?.shutdown();
+        session?.shutdown();
     }
 
     mouseButtonState(event: MouseEvent, isDown: boolean, preventDefault: boolean) {
@@ -228,6 +235,10 @@ export class RemoteDesktopService {
                 loggingService.info('Starting the session.');
                 return await session.run();
             } finally {
+                if (this.session === session) {
+                    this.session = undefined;
+                    this.sessionEndedObservable.publish(null);
+                }
                 this.setVisibility(false);
             }
         };

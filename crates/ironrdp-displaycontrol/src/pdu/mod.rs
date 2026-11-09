@@ -141,7 +141,7 @@ impl From<DisplayControlMonitorLayout> for DisplayControlPdu {
 ///     0 <= max_monitor_area_factor_b <= MAX_MONITOR_AREA_FACTOR
 ///
 /// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/8989a211-984e-4ecc-80f3-60694fc4b476
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DisplayControlCapabilities {
     max_num_monitors: u32,
     max_monitor_area_factor_a: u32,

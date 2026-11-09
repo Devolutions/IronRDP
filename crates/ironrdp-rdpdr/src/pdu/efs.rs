@@ -1139,6 +1139,9 @@ impl Devices {
         self.push(DeviceAnnounceHeader::new_smartcard(device_id));
     }
 
+    /// Announces a file system device the server shares under `name`, as `\\tsclient\<name>` on Windows.
+    ///
+    /// The name goes as 8-bit characters, null-terminated, as [`DeviceAnnounceHeader::device_data`] describes.
     pub fn add_drive(&mut self, device_id: u32, name: String) {
         self.push(DeviceAnnounceHeader::new_drive(device_id, name));
     }
@@ -1325,14 +1328,33 @@ impl DeviceAnnounceHeader {
     }
 
     fn new_drive(device_id: u32, name: String) -> Self {
+        // MS-RDPEFS 2.2.3.1 asks for the name in DeviceData as a Unicode string with DRIVE_CAPABILITY_VERSION_02,
+        // which this client advertises, but Windows 11 and Windows Server 2022 and 2025 read the field as 8-bit
+        // characters: a UTF-16 name shows as its first letter. FreeRDP's client writes the name as 8-bit characters too.
+        let device_data = {
+            let char_count = name.chars().count();
+            let mut out: Vec<u8> = name
+                .chars()
+                .enumerate()
+                .map(|(i, c)| match c {
+                    // Windows refuses an 8-bit name with a character MS-RDPEFS 2.2.1.3 forbids in a device name, or
+                    // a colon before its end; FreeRDP replaces them too. A NUL would end the name early.
+                    '<' | '>' | '"' | '/' | '\\' | '|' | '\0' => b'_',
+                    ':' if i + 1 != char_count => b'_',
+                    // A character outside ASCII has no 8-bit form here.
+                    _ => u8::try_from(c).ok().filter(u8::is_ascii).unwrap_or(b'_'),
+                })
+                .collect();
+            out.push(0 /* NUL terminator */);
+            out
+        };
+
         Self {
             device_type: DeviceType::Filesystem,
             device_id,
-            // With DRIVE_CAPABILITY_VERSION_02, DeviceData contains the complete
-            // null-terminated Unicode name. The field remains mandatory even
-            // though the server ignores it when DeviceDataLength is nonzero.
+            // PreferredDosName remains mandatory even though the server ignores it when DeviceDataLength is nonzero.
             preferred_dos_name: PreferredDosName::for_drive(&name),
-            device_data: utf16le_with_nul(&name),
+            device_data,
         }
     }
 
@@ -1538,8 +1560,14 @@ impl DeviceAnnounceHeader {
         &self.preferred_dos_name.0
     }
 
-    /// Device-type-specific announce data (e.g. the null-terminated UTF-16LE drive
-    /// name for [`DeviceType::Filesystem`]); opaque to this crate.
+    /// Device-type-specific announce data, which this crate does not decode.
+    ///
+    /// For [`DeviceType::Filesystem`], the full drive name, null-terminated, as 8-bit characters.
+    /// [2.2.3.1] Client Device List Announce (DR_DEVICELIST_ANNOUNCE) asks for a null-terminated Unicode string, but
+    /// Windows reads the field as 8-bit characters, so a UTF-16 name shows as its first letter.
+    /// Characters outside ASCII, a NUL, and the characters a device name may not contain become `_`.
+    ///
+    /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d8b2bc1c-0207-4c15-abe3-62eaa2afcaf1
     pub fn device_data(&self) -> &[u8] {
         &self.device_data
     }

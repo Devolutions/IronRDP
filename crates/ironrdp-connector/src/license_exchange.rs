@@ -64,12 +64,46 @@ pub struct LicenseExchangeSequence {
     pub domain: Option<String>,
     pub hardware_id: [u32; 4],
     pub license_cache: Arc<dyn LicenseCache>,
+    pub rng: Arc<dyn LicenseRng>,
 }
 
 // Use RefUnwindSafe so that types that embed LicenseCache remain UnwindSafe
 pub trait LicenseCache: Sync + Send + Debug + RefUnwindSafe {
     fn get_license(&self, license_info: LicenseInformation) -> ConnectorResult<Option<Vec<u8>>>;
     fn store_license(&self, license_info: LicenseInformation) -> ConnectorResult<()>;
+}
+
+/// Source of the random values a client sends in answer to a Server License Request.
+///
+/// A caller can supply them because randomness read inside [`Sequence::step`] makes the sans-I/O machine
+/// non-deterministic.
+/// An implementation outside of tests must be cryptographically secure, as [2.2.2.2] Client New License Request
+/// (CLIENT_NEW_LICENSE_REQUEST) requires.
+///
+/// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/c57e4890-9049-421e-9fe8-9a6f9519675a
+pub trait LicenseRng: Sync + Send + Debug + RefUnwindSafe {
+    /// Fills the client random and the premaster secret.
+    fn fill_secrets(
+        &self,
+        client_random: &mut [u8; server_license::RANDOM_NUMBER_SIZE],
+        premaster_secret: &mut [u8; server_license::PREMASTER_SECRET_SIZE],
+    );
+}
+
+/// Default [`LicenseRng`], backed by `rand::rng()`.
+#[derive(Debug)]
+pub(crate) struct DefaultLicenseRng;
+
+impl LicenseRng for DefaultLicenseRng {
+    fn fill_secrets(
+        &self,
+        client_random: &mut [u8; server_license::RANDOM_NUMBER_SIZE],
+        premaster_secret: &mut [u8; server_license::PREMASTER_SECRET_SIZE],
+    ) {
+        let mut rng = rand::rng();
+        rng.fill_bytes(client_random);
+        rng.fill_bytes(premaster_secret);
+    }
 }
 
 #[derive(Debug)]
@@ -100,6 +134,7 @@ impl LicenseExchangeSequence {
             domain,
             hardware_id,
             license_cache,
+            rng: Arc::new(DefaultLicenseRng),
         }
     }
 }
@@ -142,12 +177,10 @@ impl Sequence for LicenseExchangeSequence {
 
                 match license_pdu {
                     LicensePdu::ServerLicenseRequest(license_request) => {
-                        let mut rng = rand::rng();
+                        debug!(message = ?license_request, "Received");
                         let mut client_random = [0u8; server_license::RANDOM_NUMBER_SIZE];
-                        rng.fill_bytes(&mut client_random);
-
                         let mut premaster_secret = [0u8; server_license::PREMASTER_SECRET_SIZE];
-                        rng.fill_bytes(&mut premaster_secret);
+                        self.rng.fill_secrets(&mut client_random, &mut premaster_secret);
 
                         let license_info = license_request
                             .scope_list
@@ -176,7 +209,7 @@ impl Sequence for LicenseExchangeSequence {
                             ) {
                                 Ok((client_license_info, encryption_data)) => {
                                     trace!(?encryption_data, "Successfully generated Client License Info");
-                                    trace!(message = ?client_license_info, "Send");
+                                    debug!(message = ?client_license_info, "Send");
 
                                     let written = encode_send_data_request::<LicensePdu>(
                                         send_data_indication_ctx.initiator_id,
@@ -207,7 +240,7 @@ impl Sequence for LicenseExchangeSequence {
                             ) {
                                 Ok((new_license_request, encryption_data)) => {
                                     trace!(?encryption_data, "Successfully generated Client New License Request");
-                                    trace!(message = ?new_license_request, "Send");
+                                    debug!(message = ?new_license_request, "Send");
 
                                     let written = encode_send_data_request::<LicensePdu>(
                                         send_data_indication_ctx.initiator_id,
@@ -255,6 +288,7 @@ impl Sequence for LicenseExchangeSequence {
                                 ServerLicenseError::from(error_message)
                             ));
                         }
+                        debug!(message = ?error_message, "Received");
                         info!("Server did not initiate license exchange");
                         (Written::Nothing, LicenseExchangeState::LicenseExchanged)
                     }
