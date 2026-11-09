@@ -150,14 +150,14 @@ Acquire a permit from a shared bounded semaphore before allocating each batch, a
 The event retains its permit until dispatch or discard.
 Provide an `is_current` predicate tied to the producer's connection or processor generation so a late event cannot target a reused channel ID.
 The server relies on this predicate for connection identity; a predicate that always returns true does not protect against stale writes.
-The predicate runs while server-state and writer locks are held, so it must not block or wait on work that needs either lock.
-Dispatch checks cancellation and producer validity before channel lookup and again after waiting for the writer lock.
+The predicate runs at dispatch with server state held, and again when the batch's turn to be written comes, so it must not block or wait on work that needs server state.
+Dispatch checks cancellation and producer validity before channel lookup, and the writer checks them again right before it writes the batch.
 Once transmission starts, producer cancellation does not interrupt the write.
 Await the completion receiver before submitting another batch.
 Completion confirms the entire transport write, not peer processing.
 A closed receiver means failure or discard, not permission to retry: some bytes may already have been sent.
 Submit only for an active session; idle and stale-session events are discarded.
-There is no dispatch deadline, and a slow write holds server state and the shared writer until it finishes or fails.
+There is no dispatch deadline; dispatch queues the batch on the connection's outbound queue, which is written in order, so a slow write delays session output queued after it until it finishes or fails.
 
 ## Static-channel writes
 
@@ -174,11 +174,11 @@ There is no dispatch deadline; if the event loop is not being driven, queued pay
 Acquire the event's owned permit from a shared, bounded Tokio semaphore before allocating the payload, cap each payload's size, and await completion before submitting another PDU.
 The event retains its permit until written or discarded, even when the producer drops its completion receiver.
 These limits belong to the producer; the server does not impose a byte budget.
-The entire PDU holds the shared writer lock while dispatch also holds server state, so a large payload or slow transport stalls other session output, inbound PDU handling (including frame acknowledgments), and auto-reconnect cookie updates until its write finishes or fails.
+Dispatch queues the entire PDU on the connection's outbound queue, which is written in order, so a large payload or slow transport delays session output queued after it until its write finishes or fails.
 
 Dropping the completion receiver or making `is_current` return `false` cancels a write that has not started.
 Shared generation state in `is_current` lets a different owner invalidate data without owning the completion receiver.
-Keep `is_current` nonblocking; it is checked again with the server-state and shared-writer locks held, so waiting on work that needs either lock can deadlock the session.
+Keep `is_current` nonblocking; it is checked at dispatch with server state held, and again when the PDU's turn to be written comes, so waiting on work that needs server state can deadlock the session.
 Cancellation does not remove a queued event or immediately release its permit.
 Once transmission starts, producer cancellation does not interrupt it or release its permit early.
 Unjoined channels and events left over from a previous connection are discarded.
