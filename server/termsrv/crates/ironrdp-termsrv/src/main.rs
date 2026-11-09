@@ -7223,7 +7223,7 @@ mod windows_main {
             handler.keyboard(KeyboardEvent::UnicodePressed(u16::from(b'x')));
             handler.keyboard(KeyboardEvent::Synchronize(SynchronizeFlags::CAPS_LOCK));
 
-            let packets: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+            let packets: Vec<_> = core::iter::from_fn(|| rx.try_recv().ok()).collect();
             assert_eq!(packets.len(), 5);
             assert_eq!(packets[0].bytes[6], INPUT_MSG_SCANCODE_KEY);
             assert_eq!(packets[1].bytes[6], INPUT_MSG_UNICODE_KEY);
@@ -7254,7 +7254,7 @@ mod windows_main {
             });
             handler.keyboard(KeyboardEvent::Synchronize(SynchronizeFlags::empty()));
 
-            let packets: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+            let packets: Vec<_> = core::iter::from_fn(|| rx.try_recv().ok()).collect();
             assert_eq!(packets.len(), 4);
             assert_eq!(packets[2].bytes[6], INPUT_MSG_KEYBOARD_SYNC);
             assert_eq!(packets[3].bytes[6], INPUT_MSG_MOUSE_BUTTON);
