@@ -421,22 +421,22 @@ fn filesystem_drive_announce_encodes_the_name_as_8_bit_characters_and_a_valid_do
     assert_eq!(&encoded[16..24], b"share \0\0");
 
     let device_data = drive_device_data(&encoded);
-    // oracle: regression #2075 - Windows reads the name in DeviceData as 8-bit characters, null-terminated.
+    // oracle: regression #2075 - Windows reads the name in DeviceData as 8-bit characters, so ASCII goes as its bytes.
     assert_eq!(&device_data[..5], b"share");
-    assert_eq!(device_data.last(), Some(&0));
     // oracle: mutant the space dropped, or replaced with '_' as FreeRDP's drive_register_drive_path does.
-    assert_eq!(&device_data[..6], b"share ");
+    assert_eq!(device_data[5], b' ');
     // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c -
-    // drive_register_drive_path copies the UTF-8 name byte for byte into DeviceData, so U+1F4C1 goes as F0 9F 93 81
-    // (a mutant writes it as UTF-16 or '_').
+    // drive_register_drive_path copies every byte of the UTF-8 name other than : < > " / \ | and space unchanged and
+    // ends DeviceData with a NUL, so U+1F4C1 goes as F0 9F 93 81 (a mutant writes it as UTF-16 or '_').
     assert_eq!(&device_data[6..], b"\xF0\x9F\x93\x81\0");
 }
 
 #[test]
 fn filesystem_drive_announce_writes_a_name_outside_ascii_as_utf8() {
     // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c -
-    // drive_register_drive_path copies the UTF-8 name byte for byte into DeviceData; Windows Server 2025 accepts that
-    // drive and lists it as "їжачок on <client>", and refuses the same name sent as UTF-16 with STATUS_UNSUCCESSFUL.
+    // drive_register_drive_path copies every byte of the UTF-8 name other than : < > " / \ | and space unchanged into
+    // DeviceData; Windows Server 2025 accepts that drive and lists it as "їжачок on <client>", and refuses the same
+    // name sent as UTF-16 with STATUS_UNSUCCESSFUL.
     let encoded = encoded_drive_announce("\u{457}\u{436}\u{430}\u{447}\u{43e}\u{43a}"); // "їжачок"
     // oracle: mutant the name replaced with underscores, which Windows lists as "______", or written as UTF-16.
     assert_eq!(
@@ -454,19 +454,19 @@ fn filesystem_drive_announce_writes_a_name_outside_ascii_as_utf8() {
 }
 
 #[test]
-fn filesystem_drive_announce_keeps_any_name_null_terminated_and_free_of_forbidden_characters() {
+fn filesystem_drive_announce_replaces_only_the_bytes_a_drive_name_may_not_carry_and_keeps_the_rest() {
     use proptest::prelude::*;
 
     proptest!(|(name in any::<String>())| {
-        assert_drive_name_invariants(&name);
+        assert_drive_name_bytes(&name);
     });
 }
 
-/// Checks the DeviceData a drive named `name` is announced with.
+/// Checks, byte by byte, the DeviceData a drive named `name` is announced with.
 ///
 /// A function rather than a block in the `proptest!` closure because the macro stringifies its body, and the `§` in
 /// the oracle markers below would then be a non-ASCII literal that `clippy::non_ascii_literal` rejects.
-fn assert_drive_name_invariants(name: &str) {
+fn assert_drive_name_bytes(name: &str) {
     let encoded = encoded_drive_announce(name);
     let device_data = drive_device_data(&encoded);
     let (terminator, body) = device_data
@@ -474,18 +474,35 @@ fn assert_drive_name_invariants(name: &str) {
         .expect("DeviceData holds at least the NUL terminator");
     // oracle: spec MS-RDPEFS §2.2.3.1 - the drive name in DeviceData is null-terminated.
     assert_eq!(*terminator, 0);
-    assert!(!body.contains(&0));
-    // oracle: spec MS-RDPEFS §2.2.1.3 - a device name may not contain <, >, ", /, \ or |, nor a colon before its end.
-    assert!(!body.iter().any(|b| b"<>\"/\\|".contains(b)));
-    if let Some((_, before_last)) = body.split_last() {
-        assert!(!before_last.contains(&b':'));
-    }
     // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c -
-    // drive_register_drive_path copies the UTF-8 name byte for byte, so the characters outside ASCII arrive as their
-    // UTF-8 bytes, in order (a mutant drops or re-encodes them).
-    let outside_ascii: String = name.chars().filter(|c| !c.is_ascii()).collect();
-    let passed: Vec<u8> = body.iter().copied().filter(|b| !b.is_ascii()).collect();
-    assert_eq!(passed, outside_ascii.into_bytes());
+    // drive_register_drive_path writes one DeviceData byte for each byte of the name (a mutant drops, re-encodes or
+    // adds characters).
+    assert_eq!(body.len(), name.len());
+    for (i, (&sent, &original)) in body.iter().zip(name.as_bytes()).enumerate() {
+        if b"<>\"/\\|".contains(&original) {
+            // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c
+            // - drive_register_drive_path writes '_' in DeviceData for <, >, ", /, \ and |, the characters
+            // MS-RDPEFS §2.2.1.3 forbids in a device name.
+            assert_eq!(sent, b'_', "byte {i} of {name:?}");
+        } else if original == 0 {
+            // oracle: mutant a NUL inside the name kept, which ends DeviceData early for a server reading up to the
+            // first NUL. A FreeRDP drive path is a C string and never holds one, so no reference decides this.
+            assert_eq!(sent, b'_', "byte {i} of {name:?}");
+        } else if original == b':' && i + 1 != name.len() {
+            // oracle: mutant a colon kept before the end of the name, where MS-RDPEFS §2.2.1.3 allows a colon in a
+            // device name only as its last character.
+            assert_eq!(sent, b'_', "byte {i} of {name:?}");
+        } else if original == b' ' || original == b':' {
+            // oracle: mutant a space, or a colon that ends the name, replaced. FreeRDP's drive_register_drive_path
+            // replaces both with '_'; this implementation keeps them, so FreeRDP does not decide these bytes.
+            assert_eq!(sent, original, "byte {i} of {name:?}");
+        } else {
+            // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c
+            // - drive_register_drive_path copies every other byte of the UTF-8 name unchanged, so a character outside
+            // ASCII arrives as its UTF-8 bytes (a mutant drops, re-encodes or replaces it).
+            assert_eq!(sent, original, "byte {i} of {name:?}");
+        }
+    }
 }
 
 #[test]
