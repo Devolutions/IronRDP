@@ -2380,7 +2380,7 @@ impl ConnectionState {
                     return self.handle_io_channel_data(data);
                 }
                 if Some(data.channel_id) == context.message_channel_id {
-                    return Ok(self.handle_message_channel_data(data, context.now_ms));
+                    return Ok(self.handle_message_channel_data(context.now_ms, data));
                 }
                 let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) else {
                     warn!(channel_id = data.channel_id, "Unexpected channel received");
@@ -2392,10 +2392,10 @@ impl ConnectionState {
                 let mut outputs = Vec::new();
                 if self.get_channel_id_by_type::<dvc::DrdynvcServer>() == Some(data.channel_id) {
                     outputs.extend(self.encode_drdynvc_output(
-                        messages,
-                        data.channel_id,
                         context.user_channel_id,
                         context.udp_available,
+                        data.channel_id,
+                        messages,
                     )?);
                     outputs.extend(self.take_dvc_events());
                     if self
@@ -2404,9 +2404,9 @@ impl ConnectionState {
                     {
                         while let Some(payload) = self.early_tunnel_payloads.pop_front() {
                             outputs.extend(self.process_udp_payload(
-                                &payload,
                                 context.user_channel_id,
                                 context.udp_available,
+                                &payload,
                             )?);
                         }
                     }
@@ -2431,10 +2431,10 @@ impl ConnectionState {
 
     fn encode_drdynvc_output(
         &mut self,
-        messages: Vec<ironrdp_svc::SvcMessage>,
-        channel_id: u16,
         user_channel_id: u16,
         udp_available: bool,
+        channel_id: u16,
+        messages: Vec<ironrdp_svc::SvcMessage>,
     ) -> ServerResult<Vec<ConnectionOutput>> {
         let mut outputs = Vec::new();
         let mut tcp = Vec::new();
@@ -2467,9 +2467,9 @@ impl ConnectionState {
 
     fn process_udp_payload(
         &mut self,
-        payload: &[u8],
         user_channel_id: u16,
         udp_available: bool,
+        payload: &[u8],
     ) -> ServerResult<Vec<ConnectionOutput>> {
         let (Some(channel_id), Some(drdynvc)) = (
             self.get_channel_id_by_type::<dvc::DrdynvcServer>(),
@@ -2496,14 +2496,14 @@ impl ConnectionState {
                 return Ok(self.take_dvc_events());
             }
         };
-        let mut outputs = self.encode_drdynvc_output(messages, channel_id, user_channel_id, udp_available)?;
+        let mut outputs = self.encode_drdynvc_output(user_channel_id, udp_available, channel_id, messages)?;
         outputs.extend(self.take_dvc_events());
         Ok(outputs)
     }
 
     /// Records a client Auto-Detect Response, whether it came on the MCS
     /// message channel or in a sub-header on the UDP tunnel.
-    fn record_autodetect_response(&mut self, response: &rdp::autodetect::AutoDetectResponse, now_ms: u64) {
+    fn record_autodetect_response(&mut self, now_ms: u64, response: &rdp::autodetect::AutoDetectResponse) {
         let Some(ad) = self.autodetect.as_mut() else {
             return;
         };
@@ -2560,11 +2560,11 @@ impl ConnectionState {
         }
     }
 
-    fn handle_message_channel_data(&mut self, data: SendDataRequest<'_>, now_ms: u64) -> Vec<ConnectionOutput> {
+    fn handle_message_channel_data(&mut self, now_ms: u64, data: SendDataRequest<'_>) -> Vec<ConnectionOutput> {
         let mut outputs = Vec::new();
         match decode::<rdp::message_channel::ClientMessageChannelPdu>(data.user_data.as_ref()) {
             Ok(rdp::message_channel::ClientMessageChannelPdu::AutoDetectResponse(pdu)) => {
-                self.record_autodetect_response(&pdu.response, now_ms);
+                self.record_autodetect_response(now_ms, &pdu.response);
             }
             Ok(rdp::message_channel::ClientMessageChannelPdu::MultitransportResponse(pdu)) => {
                 // A failure code is not a decode error: the client is correctly reporting
@@ -5647,7 +5647,7 @@ impl RdpServer {
     /// [`ConnectionState::handle_message_channel_data`].
     fn record_tunnel_sub_headers(conn: &mut ConnectionState, sub_headers: &[ironrdp_rdpemt::TunnelSubHeader]) {
         for response in sub_headers.iter().filter_map(autodetect_response_from_sub_header) {
-            conn.record_autodetect_response(&response, monotonic_now_ms());
+            conn.record_autodetect_response(monotonic_now_ms(), &response);
         }
     }
 
@@ -5875,7 +5875,7 @@ impl RdpServer {
                     if message.data.is_empty() {
                         continue;
                     }
-                    ConnectionIteration::outputs(conn.process_udp_payload(&message.data, user_channel_id, current_udp_transport.is_some())?)
+                    ConnectionIteration::outputs(conn.process_udp_payload(user_channel_id, current_udp_transport.is_some(), &message.data)?)
                 }
                 _ = cliprdr_interval.tick() => {
                     self.drive_cliprdr_timeouts(conn, &mut writer, user_channel_id).await?;
@@ -7301,16 +7301,16 @@ mod preempt_tests {
         };
 
         // Soft-Sync not negotiated: MS-RDPEDYC forbids migration whatever the response.
-        conn.handle_message_channel_data(response(&MultitransportResponsePdu::success(1)), 0);
+        conn.handle_message_channel_data(0, response(&MultitransportResponsePdu::success(1)));
         assert!(!conn.udp_migration_allowed);
 
         // Negotiated, but the client could not bring UDP up.
         conn.soft_sync_negotiated = true;
-        conn.handle_message_channel_data(response(&MultitransportResponsePdu::abort(1)), 0);
+        conn.handle_message_channel_data(0, response(&MultitransportResponsePdu::abort(1)));
         assert!(!conn.udp_migration_allowed);
 
         // Negotiated, and the success arrives after finalization.
-        conn.handle_message_channel_data(response(&MultitransportResponsePdu::success(1)), 0);
+        conn.handle_message_channel_data(0, response(&MultitransportResponsePdu::success(1)));
         assert!(conn.udp_migration_allowed);
     }
 
@@ -7330,18 +7330,18 @@ mod preempt_tests {
                 };
 
                 // The protocol reports cancellation even when no task is pending.
-                let outputs = conn.handle_message_channel_data(response(&MultitransportResponsePdu::abort(1)), 0);
+                let outputs = conn.handle_message_channel_data(0, response(&MultitransportResponsePdu::abort(1)));
                 assert!(matches!(outputs.as_slice(), [ConnectionOutput::CancelUdpAccept]));
 
                 let accept = task::spawn_local(core::future::pending::<()>());
                 conn.pending_udp_accept_abort = Some(accept.abort_handle());
 
                 // Success leaves the accept running.
-                conn.handle_message_channel_data(response(&MultitransportResponsePdu::success(1)), 0);
+                conn.handle_message_channel_data(0, response(&MultitransportResponsePdu::success(1)));
                 task::yield_now().await;
                 assert!(!accept.is_finished());
 
-                let outputs = conn.handle_message_channel_data(response(&MultitransportResponsePdu::abort(1)), 0);
+                let outputs = conn.handle_message_channel_data(0, response(&MultitransportResponsePdu::abort(1)));
                 assert!(matches!(outputs.as_slice(), [ConnectionOutput::CancelUdpAccept]));
                 assert!(!accept.is_finished(), "protocol processing must not abort a task");
                 let mut server = RdpServer::builder()
