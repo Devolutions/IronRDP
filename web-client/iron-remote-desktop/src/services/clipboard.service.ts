@@ -1,9 +1,6 @@
 import type { RemoteDesktopService } from './remote-desktop.service';
-import { isComponentDestroyed } from '../lib/stores/componentLifecycleStore';
-import { get } from 'svelte/store';
 import type { ClipboardData } from '../interfaces/ClipboardData';
 import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
-import { runWhenFocusedQueue } from '../lib/stores/runWhenFocusedStore';
 import { ClipboardApiSupported } from '../enums/ClipboardApiSupported';
 import { IronErrorKind } from '../interfaces/Error';
 
@@ -32,6 +29,13 @@ export class ClipboardService {
     // Used to prevent the monitoring loop from clobbering an active file upload's
     // FormatList with a text/image clipboard update.
     private monitoringSuppressed: boolean = false;
+    // The monitoring loop and the clipboard write waiting for focus belong to this component: a page can hold several,
+    // and one being destroyed must not stop the others.
+    private disposed: boolean = false;
+    private monitoringActive: boolean = false;
+    private monitorTimer?: ReturnType<typeof setTimeout>;
+    // Only the latest remote clipboard content is written once the window has the focus again.
+    private pendingFocus: (() => Promise<void> | void) | null = null;
 
     constructor(remoteDesktopService: RemoteDesktopService, module: RemoteDesktopModule) {
         this.remoteDesktopService = remoteDesktopService;
@@ -53,6 +57,24 @@ export class ClipboardService {
      */
     resumeMonitoring(): void {
         this.monitoringSuppressed = false;
+    }
+
+    /**
+     * Stops the monitoring loop and drops the clipboard write waiting for focus, until the next session starts.
+     */
+    stopMonitoring(): void {
+        this.monitoringActive = false;
+        clearTimeout(this.monitorTimer);
+        this.monitorTimer = undefined;
+        this.pendingFocus = null;
+    }
+
+    /**
+     * For when the component is destroyed: nothing is read from or written to the clipboard anymore.
+     */
+    dispose(): void {
+        this.disposed = true;
+        this.stopMonitoring();
     }
 
     async initClipboard() {
@@ -130,6 +152,12 @@ export class ClipboardService {
             return;
         }
 
+        // Destroyed while the checks above were waiting.
+        if (this.disposed) {
+            return;
+        }
+
+        this.remoteDesktopService.sessionEndedObservable.subscribe(() => this.stopMonitoring());
         this.remoteDesktopService.setOnForceClipboardUpdate(this.onForceClipboardUpdate.bind(this));
 
         if (this.ClipboardApiSupported === ClipboardApiSupported.Full) {
@@ -138,6 +166,7 @@ export class ClipboardService {
 
                 // Start the clipboard monitoring loop after session has been started
                 this.remoteDesktopService.sessionStartedObservable.subscribe((_) => {
+                    this.monitoringActive = !this.disposed;
                     this.scheduleOnMonitorClipboardUpdate();
                 });
             } else {
@@ -217,14 +246,37 @@ export class ClipboardService {
     }
 
     private scheduleOnMonitorClipboardUpdate() {
-        setTimeout(this.onMonitorClipboard.bind(this), CLIPBOARD_MONITORING_INTERVAL_MS);
+        clearTimeout(this.monitorTimer);
+        this.monitorTimer =
+            this.monitoringActive && !this.disposed
+                ? setTimeout(() => {
+                      this.monitorTimer = undefined;
+                      this.onMonitorClipboard();
+                  }, CLIPBOARD_MONITORING_INTERVAL_MS)
+                : undefined;
     }
 
-    private runWhenWindowFocused(fn: () => void) {
+    private runWhenWindowFocused(fn: () => Promise<void> | void) {
+        if (this.disposed) {
+            return;
+        }
         if (document.hasFocus()) {
-            fn();
+            Promise.resolve()
+                .then(() => (this.disposed ? undefined : fn()))
+                .catch((err) => console.error('Failed to set client clipboard: ' + err));
         } else {
-            runWhenFocusedQueue.enqueue(fn);
+            this.pendingFocus = fn;
+        }
+    }
+
+    /**
+     * Runs the clipboard write that waited for the window to have the focus (the component calls it on focus).
+     */
+    flushFocused(): void {
+        const pending = this.pendingFocus;
+        this.pendingFocus = null;
+        if (pending) {
+            this.runWhenWindowFocused(pending);
         }
     }
 
@@ -253,12 +305,15 @@ export class ClipboardService {
     }
 
     // This callback is required to send initial clipboard state if available.
-    private onForceClipboardUpdate() {
+    private async onForceClipboardUpdate() {
         try {
+            if (this.disposed) {
+                return;
+            }
             if (this.lastSentClipboardData) {
-                this.remoteDesktopService.onClipboardChanged(this.lastSentClipboardData);
+                await this.remoteDesktopService.onClipboardChanged(this.lastSentClipboardData);
             } else {
-                this.remoteDesktopService.onClipboardChangedEmpty();
+                await this.remoteDesktopService.onClipboardChangedEmpty();
             }
         } catch (err) {
             console.error('Failed to send initial clipboard state: ' + err);
@@ -273,12 +328,15 @@ export class ClipboardService {
 
     // This callback is required to update client clipboard state when remote side has changed.
     private onRemoteClipboardChangedAutoMode(data: ClipboardData) {
+        if (this.disposed) {
+            return;
+        }
         try {
             const mime_formats = this.clipboardDataToRecord(data);
             const clipboard_item = new ClipboardItem(mime_formats);
             this.runWhenWindowFocused(() => {
                 this.lastReceivedClipboardData = this.clipboardDataToClipboardItemsRecord(data);
-                navigator.clipboard.write([clipboard_item]);
+                return navigator.clipboard.write([clipboard_item]);
             });
         } catch (err) {
             console.error('Failed to set client clipboard: ' + err);
@@ -289,7 +347,7 @@ export class ClipboardService {
     private async onMonitorClipboard(): Promise<void> {
         let stopped = false;
         try {
-            if (this.monitoringSuppressed) {
+            if (this.disposed || !this.monitoringActive || this.monitoringSuppressed) {
                 return;
             }
 
@@ -357,8 +415,9 @@ export class ClipboardService {
                 values[kind] = value;
             }
 
-            // Clipboard has changed, we need to acknowledge remote side about it.
-            if (!sameValue) {
+            // Clipboard has changed, we need to acknowledge remote side about it (unless the session ended or monitoring
+            // was suppressed while reading it).
+            if (!sameValue && !this.disposed && this.monitoringActive && !this.monitoringSuppressed) {
                 this.lastClientClipboardItems = values;
 
                 const clipboardData = new this.module.ClipboardData();
@@ -405,7 +464,7 @@ export class ClipboardService {
                 this.lastClipboardMonitorLoopError = err;
             }
         } finally {
-            if (!stopped && !get(isComponentDestroyed)) {
+            if (!stopped) {
                 this.scheduleOnMonitorClipboardUpdate();
             }
         }

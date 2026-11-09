@@ -50,6 +50,7 @@ client-dvc-pipe-proxy = ["ironrdp-client?/dvc-pipe-proxy"]
 client-dvc-com-plugin = ["ironrdp-client?/dvc-com-plugin"]
 client-vmconnect = ["ironrdp-client?/vmconnect"]
 client-location = ["ironrdp-client?/location"]
+client-multipoint = ["ironrdp-client?/multipoint"]
 client-w365 = ["ironrdp-client?/w365"]
 client-camera = ["ironrdp-client?/camera"]
 client-video = ["ironrdp-client?/video"]
@@ -90,6 +91,7 @@ ironrdp-vmconnect = { path = "../ironrdp-vmconnect", version = "0.2", optional =
 [dev-dependencies]
 ironrdp-blocking = { path = "../ironrdp-blocking", version = "0.12" }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9" }
+ironrdp-tls = { path = "../ironrdp-tls", version = "0.3", features = ["rustls-verifier"] }
 anyhow = "1"
 async-trait = "0.1"
 image = { version = "0.25", default-features = false, features = ["png"] }

@@ -20,6 +20,7 @@ use ironrdp_pdu::rdp::server_redirection::{ServerRedirectionFlags, ServerRedirec
 use ironrdp_pdu::x224::X224;
 use ironrdp_session::x224::{Processor, ProcessorOutput};
 use ironrdp_svc::StaticChannelSet;
+use rstest::rstest;
 
 use ironrdp_testsuite_core::capsets::SERVER_DEMAND_ACTIVE;
 
@@ -128,6 +129,53 @@ fn demand_active_static_channel_chunk_size(chunk_size: Option<u32>) -> usize {
         } => static_channel_chunk_size,
         state => panic!("expected ConnectionFinalization, got {state:?}"),
     }
+}
+
+fn step_demand_active_with_desktop_size(width: u16, height: u16) -> ironrdp_connector::ConnectorResult<Written> {
+    let mut demand_active = SERVER_DEMAND_ACTIVE.clone();
+    let bitmap = demand_active
+        .pdu
+        .capability_sets
+        .iter_mut()
+        .find_map(|capability_set| match capability_set {
+            CapabilitySet::Bitmap(bitmap) => Some(bitmap),
+            _ => None,
+        })
+        .expect("server demand active should include a bitmap capability");
+    bitmap.desktop_width = width;
+    bitmap.desktop_height = height;
+
+    let mut sequence = ConnectionActivationSequence::new(test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let mut output = WriteBuf::new();
+    let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(demand_active));
+    sequence.step(&frame, None, &mut output)
+}
+
+// oracle: regression #2082 - every non-zero size up to the 32766 virtual desktop limit is still accepted.
+#[rstest]
+#[case::smallest(1, 1)]
+#[case::common(1920, 1080)]
+#[case::largest(32766, 32766)]
+fn demand_active_accepts_server_desktop_size_within_range(#[case] width: u16, #[case] height: u16) {
+    step_demand_active_with_desktop_size(width, height).expect("desktop size within range should be accepted");
+}
+
+// oracle: regression #2082 - a server-announced desktop size drove an unbounded client framebuffer allocation.
+#[rstest]
+#[case::zero_width(0, 768)]
+#[case::zero_height(1024, 0)]
+#[case::width_above_max(32767, 768)]
+#[case::height_above_max(1024, 32767)]
+#[case::both_at_u16_max(u16::MAX, u16::MAX)]
+fn demand_active_rejects_server_desktop_size_out_of_range(#[case] width: u16, #[case] height: u16) {
+    let err =
+        step_demand_active_with_desktop_size(width, height).expect_err("desktop size out of range should be rejected");
+
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("desktop size {width}x{height} is outside the supported range")),
+        "unexpected error: {message}"
+    );
 }
 
 #[test]

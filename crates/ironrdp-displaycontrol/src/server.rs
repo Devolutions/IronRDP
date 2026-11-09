@@ -6,37 +6,36 @@ use tracing::debug;
 use crate::CHANNEL_NAME;
 use crate::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu};
 
-pub trait DisplayControlHandler: Send {
-    fn monitor_layout(&self, layout: DisplayControlMonitorLayout) {
-        debug!(?layout);
-    }
-
-    /// Capabilities advertised to the client when the channel starts.
-    ///
-    /// Defaults to [`DisplayControlCapabilities::single_monitor()`] (one monitor,
-    /// factors `3840`/`2400`, i.e. one 4K-area monitor), so any handler that
-    /// doesn't override this keeps that behavior.
-    /// A handler serving more than one monitor should override this, e.g.
-    /// `DisplayControlCapabilities::new(monitor_count, 3840, 2400)`. Fallible
-    /// because [`DisplayControlCapabilities::new`] validates its arguments
-    /// (MS-RDPEDISP does not bound them, but the wire encoding does); an
-    /// overrider deriving values from runtime display state should propagate
-    /// that error rather than `expect` it, since this is called from
-    /// [`DvcProcessor::start`] and a panic there aborts the connection.
-    fn capabilities(&self) -> PduResult<DisplayControlCapabilities> {
-        Ok(DisplayControlCapabilities::single_monitor())
-    }
-}
-
 /// A server for the Display Control Virtual Channel.
+///
+/// The server advertises the capabilities it was created with when the channel starts
+/// ([\[MS-RDPEDISP\] 3.1.5.1 Sending DISPLAYCONTROL_CAPS_PDU]).
+/// Monitor layouts received from the client are kept until taken with
+/// [`Self::take_monitor_layouts`], so the caller applies them
+/// ([\[MS-RDPEDISP\] 3.1.5.2 Processing DISPLAYCONTROL_MONITOR_LAYOUT_PDU]).
+///
+/// [\[MS-RDPEDISP\] 3.1.5.1 Sending DISPLAYCONTROL_CAPS_PDU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/102ce2ee-81e3-476a-83ae-07987d8aeff8
+/// [\[MS-RDPEDISP\] 3.1.5.2 Processing DISPLAYCONTROL_MONITOR_LAYOUT_PDU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/32525e02-fc5c-4b82-ae87-88a458444902
 pub struct DisplayControlServer {
-    handler: Box<dyn DisplayControlHandler>,
+    capabilities: DisplayControlCapabilities,
+    monitor_layouts: Vec<DisplayControlMonitorLayout>,
 }
 
 impl DisplayControlServer {
-    /// Create a new DisplayControlServer.
-    pub fn new(handler: Box<dyn DisplayControlHandler>) -> Self {
-        Self { handler }
+    /// Creates a server that advertises `capabilities` to the client.
+    pub fn new(capabilities: DisplayControlCapabilities) -> Self {
+        Self {
+            capabilities,
+            monitor_layouts: Vec::new(),
+        }
+    }
+
+    /// Takes the monitor layouts received since the last call, in arrival order.
+    ///
+    /// Each layout is the complete layout the client requested.
+    /// Layouts accumulate until taken, so a caller that processes client data must call this.
+    pub fn take_monitor_layouts(&mut self) -> Vec<DisplayControlMonitorLayout> {
+        core::mem::take(&mut self.monitor_layouts)
     }
 }
 
@@ -48,14 +47,17 @@ impl DvcProcessor for DisplayControlServer {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        let pdu: DisplayControlPdu = self.handler.capabilities()?.into();
+        let pdu: DisplayControlPdu = self.capabilities.into();
 
         Ok(vec![Box::new(pdu)])
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         match decode(payload).map_err(|e| decode_err!(e))? {
-            DisplayControlPdu::MonitorLayout(layout) => self.handler.monitor_layout(layout),
+            DisplayControlPdu::MonitorLayout(layout) => {
+                debug!(?layout, "Received monitor layout");
+                self.monitor_layouts.push(layout);
+            }
             DisplayControlPdu::Caps(caps) => {
                 debug!(?caps);
             }

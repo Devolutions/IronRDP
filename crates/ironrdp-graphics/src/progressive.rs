@@ -1064,7 +1064,7 @@ pub struct SurfaceTiles {
     pub tiles_wide: u16,
     /// Height of the surface in tiles.
     pub tiles_high: u16,
-    /// Whether the associated context uses reduce-extrapolate DWT.
+    /// DWT variant given to tiles that [`Self::get_or_create`] allocates; a first pass sets each tile's own.
     pub use_reduce_extrapolate: bool,
     /// Tile storage, indexed by `y_idx * tiles_wide + x_idx`.
     /// `None` entries haven't received any progressive data yet.
@@ -1287,7 +1287,6 @@ pub struct ProgressiveDecoder {
     references: BTreeMap<SubBandDiffingTileKey, DecDwtQ>,
     frame_tiles: BTreeMap<u16, BTreeSet<(u16, u16)>>,
     frame_active: bool,
-    surface_context_flags: BTreeMap<u16, bool>,
 }
 
 impl ProgressiveDecoder {
@@ -1298,7 +1297,6 @@ impl ProgressiveDecoder {
             references: BTreeMap::new(),
             frame_tiles: BTreeMap::new(),
             frame_active: false,
-            surface_context_flags: BTreeMap::new(),
         }
     }
 
@@ -1338,37 +1336,6 @@ impl ProgressiveDecoder {
 
         let blocks = decode_progressive_stream(bitmap_data)?;
 
-        // Extract the band-layout flag from the CONTEXT block when present.
-        // Per MS-RDPEGFX 2.2.4.2 the SYNC + CONTEXT blocks establish a codec
-        // context once and are not required to be
-        // repeated on subsequent frames that reference the same context.
-        // Real-world servers (xrdp, GNOME Remote Desktop) omit the CONTEXT
-        // block on every frame after the first one that established the
-        // context. The strict requirement rejected each of those frames with
-        // `MissingBlock("CONTEXT")`, freezing the image on the coarse first
-        // pass.
-        //
-        // Fall back to the value the surface's tile grid was created with, then to the last
-        // one this surface described: Windows opens a new codec context id mid-session,
-        // deletes the previous one, and never repeats SYNC + CONTEXT. The retained value is
-        // scoped to its surface and released with it. Only error when no source is available
-        // at all.
-        let signalled = blocks.iter().find_map(|block| match block {
-            ProgressiveBlock::Context(ctx) => Some(ctx.uses_reduce_extrapolate()),
-            _ => None,
-        });
-        if let Some(flag) = signalled {
-            self.surface_context_flags.insert(surface_id, flag);
-        }
-        let use_reduce_extrapolate = signalled
-            .or_else(|| {
-                self.surfaces
-                    .get(&surface_id)
-                    .map(|surface| surface.use_reduce_extrapolate)
-            })
-            .or_else(|| self.surface_context_flags.get(&surface_id).copied())
-            .ok_or(ProgressiveDecodeError::MissingBlock("CONTEXT"))?;
-
         // Direct users of the decoder get one self-contained frame per call.
         // The EGFX client brackets multiple payloads with begin_frame/end_frame.
         if !self.frame_active {
@@ -1380,11 +1347,7 @@ impl ProgressiveDecoder {
         // Every codec context on a surface decodes into the surface's tile grid.
         let surface = match surfaces.entry(surface_id) {
             Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(e) => e.insert(SurfaceTiles::new(
-                surface_width,
-                surface_height,
-                use_reduce_extrapolate,
-            )?),
+            Entry::Vacant(e) => e.insert(SurfaceTiles::new(surface_width, surface_height, false)?),
         };
 
         // If surface dimensions changed, reallocate the tile grid.
@@ -1392,9 +1355,8 @@ impl ProgressiveDecoder {
         let expected_high = surface_height.div_ceil(TILE_DIM);
         let surface_resized = surface.tiles_wide != expected_wide || surface.tiles_high != expected_high;
         if surface_resized {
-            *surface = SurfaceTiles::new(surface_width, surface_height, use_reduce_extrapolate)?;
+            *surface = SurfaceTiles::new(surface_width, surface_height, false)?;
         }
-        surface.use_reduce_extrapolate = use_reduce_extrapolate;
 
         let frame_tiles = all_frame_tiles.entry(surface_id).or_default();
         if surface_resized {
@@ -1423,6 +1385,9 @@ impl ProgressiveDecoder {
                 ProgressiveBlock::Region(r) if in_frame => r,
                 _ => continue,
             };
+
+            // Each REGION names its own DWT variant (MS-RDPEGFX 2.2.4.2.1.5).
+            let use_reduce_extrapolate = region.uses_reduce_extrapolate();
 
             let mut region_tiles = BTreeMap::new();
             for tile_block in &region.tiles {
@@ -1540,7 +1505,6 @@ impl ProgressiveDecoder {
         self.references
             .retain(|(reference_surface_id, _, _), _| *reference_surface_id != surface_id);
         self.frame_tiles.remove(&surface_id);
-        self.surface_context_flags.remove(&surface_id);
     }
 
     /// Reset tile state while retaining surface sub-band references.
@@ -2246,19 +2210,15 @@ mod tests {
     }
 
     #[test]
-    fn decoder_context_fallback_is_scoped_by_surface() {
+    fn decoder_does_not_require_a_context_block() {
+        // MS-RDPEGFX 2.2.4.2.1.4 makes RFX_PROGRESSIVE_CONTEXT optional.
         let mut decoder = ProgressiveDecoder::new();
-        let stream_with_context = minimal_progressive_stream(true);
-        let stream_without_context = minimal_progressive_stream(false);
 
-        assert!(decoder.decode_bitmap(1, 0, 640, 480, &stream_with_context).is_ok());
-        assert!(matches!(
-            decoder.decode_bitmap(2, 0, 640, 480, &stream_without_context),
-            Err(ProgressiveDecodeError::MissingBlock("CONTEXT"))
-        ));
-
-        assert!(decoder.decode_bitmap(2, 0, 640, 480, &stream_with_context).is_ok());
-        assert!(decoder.decode_bitmap(2, 0, 640, 480, &stream_without_context).is_ok());
+        assert!(
+            decoder
+                .decode_bitmap(1, 0, 640, 480, &minimal_progressive_stream(false))
+                .is_ok()
+        );
     }
 
     fn rect(x: u16, y: u16, width: u16, height: u16) -> ironrdp_pdu::codecs::rfx::RfxRectangle {

@@ -54,6 +54,8 @@ pub use ironrdp_rdpdr::backend::{
     RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPort, RdpdrPortKind,
     RdpdrPrinter,
 };
+#[cfg(feature = "core-input")]
+use ironrdp_rdpeci::client::CoreInputClient;
 use ironrdp_rdpei::pdu::{CsReadyFlags, RdpInputProtocolVersion, TouchEventPdu};
 use ironrdp_rdpei::{RdpeiClient, RdpeiInputState};
 #[cfg(feature = "location")]
@@ -329,6 +331,12 @@ pub enum RdpOutputEvent {
     InteractiveEntraAuthCompleted {
         hresult: u32,
     },
+    /// A Windows MultiPoint session changed a volume level or its drive letter mappings, and the
+    /// [`ChannelConfig::multipoint`](crate::config::ChannelConfig::multipoint) settings hold the new values.
+    ///
+    /// Save the settings so that the next connection restores them.
+    #[cfg(feature = "multipoint")]
+    MultipointSettingsChanged,
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -645,6 +653,9 @@ pub enum RdpInputEvent {
         channel_id: u32,
         messages: Vec<SvcMessage>,
     },
+    /// Sends PnP I/O replies completed off the session loop, or closes a PnP I/O channel that violated the protocol.
+    #[cfg(feature = "pnp")]
+    Pnp(ironrdp_rdpepnp::client::UplinkRequest),
     SendStaticChannelData {
         channel_name: ChannelName,
         data: Vec<u8>,
@@ -662,6 +673,12 @@ pub enum RdpInputEvent {
     },
     #[cfg(feature = "location")]
     Location(LocationRequest),
+    /// Inserts text committed by a local input method into the remote edit control that has
+    /// focus, over the MS-RDPETXT text input channels.
+    ///
+    /// Dropped when the channels are closed or no remote edit control has focus.
+    #[cfg(feature = "text-input")]
+    CommitText(String),
     /// Tells the Cloud PC that the user switched from the local desktop back to it.
     #[cfg(feature = "w365")]
     SwitchToCloud,
@@ -695,6 +712,10 @@ pub enum RdpInputEvent {
 impl RdpInputEvent {
     /// Returns whether the event carries input from the local user, as opposed to session control.
     fn is_user_input(&self) -> bool {
+        #[cfg(feature = "text-input")]
+        if matches!(self, Self::CommitText(_)) {
+            return true;
+        }
         matches!(
             self,
             Self::FastPath(_)
@@ -737,12 +758,12 @@ impl SessionStatus {
 #[derive(Clone, Debug)]
 pub struct RdpInputSender {
     input_sender: mpsc::Sender<RdpInputEvent>,
-    /// Unbounded queue for ordered protocol events that must not be dropped (clipboard, USB).
+    /// Unbounded queue for ordered protocol events that must not be dropped (clipboard, USB, PnP).
     #[cfg_attr(
-        not(any(feature = "clipboard", feature = "usb")),
+        not(any(feature = "clipboard", feature = "usb", feature = "pnp")),
         expect(
             dead_code,
-            reason = "ordered events are unavailable without the clipboard or usb feature"
+            reason = "ordered events are unavailable without the clipboard, usb or pnp feature"
         )
     )]
     clipboard_sender: mpsc::UnboundedSender<RdpInputEvent>,
@@ -764,7 +785,7 @@ impl RdpInputSender {
         (sender, receiver)
     }
 
-    fn channel_with_close_signal(
+    pub(crate) fn channel_with_close_signal(
         capacity: usize,
     ) -> (
         Self,
@@ -881,6 +902,21 @@ impl RdpInputSender {
         event: ironrdp_rdpeusb_native::UrbdrcEvent,
     ) -> Result<(), mpsc::error::SendError<RdpInputEvent>> {
         self.clipboard_sender.send(RdpInputEvent::Urbdrc(event))
+    }
+
+    /// Enqueues a PnP I/O reply or channel close independently of ordinary bounded input.
+    ///
+    /// Dropping a reply would leave the server application's request pending forever, and dropping
+    /// a close would leave a channel that violated the protocol open at the server.
+    ///
+    /// Replies answer requests this session loop already read from the server, so a stalled loop
+    /// reads no new requests; custom events are the only messages a backend sends unprompted.
+    #[cfg(feature = "pnp")]
+    pub(crate) fn send_pnp(
+        &self,
+        request: ironrdp_rdpepnp::client::UplinkRequest,
+    ) -> Result<(), mpsc::error::SendError<RdpInputEvent>> {
+        self.clipboard_sender.send(RdpInputEvent::Pnp(request))
     }
 
     /// Requests immediate session cancellation, bypassing the bounded input queue.
@@ -1366,6 +1402,8 @@ impl RdpClient {
                 .then_some(auto_reconnect_cookie.as_ref())
                 .flatten();
             let used_auto_reconnect_cookie = reconnect_cookie.is_some();
+            #[cfg(feature = "telemetry")]
+            let connection_started = Instant::now();
             let (connection_outcome, framed, udp_tunnel) = match &self.config.transport {
                 Transport::Direct => match Box::pin(cancelable_operation(
                     connect_direct(
@@ -1633,6 +1671,8 @@ impl RdpClient {
                 &mut auto_reconnect_cookie,
                 &mut reconnect_attempt,
                 &self.input_event_sender.session_status,
+                #[cfg(feature = "telemetry")]
+                connection_started,
             )
             .await;
             // An iteration that ends the session, by terminating or failing, exits before the session loop delivers
@@ -1978,7 +2018,10 @@ impl RdpdrDevicePolicy {
     const ALLOW_ALL: Self = Self;
 }
 
-#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr", feature = "usb")))]
+#[cfg(all(
+    feature = "gateway",
+    any(feature = "clipboard", feature = "rdpdr", feature = "usb", feature = "pnp")
+))]
 const HTTP_TUNNEL_REDIR_DISABLE_ALL: u32 = 0x4000_0000;
 #[cfg(all(feature = "gateway", feature = "rdpdr"))]
 const HTTP_TUNNEL_REDIR_DISABLE_DRIVE: u32 = 0x0000_0001;
@@ -1988,17 +2031,23 @@ const HTTP_TUNNEL_REDIR_DISABLE_PRINTER: u32 = 0x0000_0002;
 const HTTP_TUNNEL_REDIR_DISABLE_PORT: u32 = 0x0000_0004;
 #[cfg(all(feature = "gateway", feature = "clipboard"))]
 const HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD: u32 = 0x0000_0008;
-/// MS-TSGU `HTTP_TUNNEL_REDIR_DISABLE_PNP`, which also governs RemoteFX USB redirection.
-#[cfg(all(feature = "gateway", feature = "usb"))]
+/// MS-TSGU `HTTP_TUNNEL_REDIR_DISABLE_PNP`, which governs MS-RDPEPNP and RemoteFX USB redirection.
+#[cfg(all(feature = "gateway", any(feature = "usb", feature = "pnp")))]
 const HTTP_TUNNEL_REDIR_DISABLE_PNP: u32 = 0x0000_0010;
 
-#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr", feature = "usb")))]
+#[cfg(all(
+    feature = "gateway",
+    any(feature = "clipboard", feature = "rdpdr", feature = "usb", feature = "pnp")
+))]
 #[derive(Clone, Copy)]
 struct GatewayRedirectionPolicy {
     flags: Option<u32>,
 }
 
-#[cfg(all(feature = "gateway", any(feature = "clipboard", feature = "rdpdr", feature = "usb")))]
+#[cfg(all(
+    feature = "gateway",
+    any(feature = "clipboard", feature = "rdpdr", feature = "usb", feature = "pnp")
+))]
 impl GatewayRedirectionPolicy {
     fn from_flags(flags: Option<u32>) -> Self {
         Self { flags }
@@ -2028,7 +2077,7 @@ impl GatewayRedirectionPolicy {
         if flags.clipboard_disabled {
             mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_CLIPBOARD;
         }
-        #[cfg(feature = "usb")]
+        #[cfg(any(feature = "usb", feature = "pnp"))]
         if flags.pnp_disabled {
             mapped_flags |= HTTP_TUNNEL_REDIR_DISABLE_PNP;
         }
@@ -2055,17 +2104,17 @@ impl GatewayRedirectionPolicy {
         self.disables(HTTP_TUNNEL_REDIR_DISABLE_PORT)
     }
 
-    #[cfg(feature = "usb")]
-    fn disables_usb(self) -> bool {
+    #[cfg(any(feature = "usb", feature = "pnp"))]
+    fn disables_pnp(self) -> bool {
         self.disables(HTTP_TUNNEL_REDIR_DISABLE_PNP)
     }
 
-    #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb"))]
+    #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb", feature = "pnp"))]
     fn flags(self) -> Option<u32> {
         self.flags
     }
 
-    #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb"))]
+    #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb", feature = "pnp"))]
     fn disables_all(self) -> bool {
         self.flags
             .is_some_and(|flags| flags & HTTP_TUNNEL_REDIR_DISABLE_ALL != 0)
@@ -2373,7 +2422,7 @@ fn build_connector(
     cliprdr_factory: CliprdrFactoryRef<'_>,
     rdpdr_factory: RdpdrFactoryRef<'_>,
     rdpdr_policy: RdpdrDevicePolicy,
-    usb_allowed: bool,
+    pnp_allowed: bool,
     enable_udp: bool,
     auto_reconnect_cookie: Option<&ServerAutoReconnect>,
 ) -> ConnectorResult<ironrdp_connector::ClientConnector> {
@@ -2395,10 +2444,10 @@ fn build_connector(
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
     let _ = (rdpdr_factory, rdpdr_policy);
-    #[cfg(not(any(all(windows, feature = "vmconnect"), feature = "entra-auth")))]
+    #[cfg(not(any(all(windows, feature = "vmconnect"), feature = "entra-auth", feature = "multipoint")))]
     let _ = output_event_sender;
-    #[cfg(not(feature = "usb"))]
-    let _ = usb_allowed;
+    #[cfg(not(any(feature = "usb", feature = "pnp")))]
+    let _ = pnp_allowed;
 
     // The client-side compositor (ironrdp-egfx) holds the surface pixel state and
     // the session drains it into the framebuffer, so the graphics pipeline's
@@ -2410,12 +2459,12 @@ fn build_connector(
     struct EgfxHandler;
     impl GraphicsPipelineHandler for EgfxHandler {}
 
-    let h264_decoder = config
+    let h264_decoders = config
         .channels
         .h264_decoder
         .as_ref()
-        .filter(|_| config.connector.support_dyn_vc_gfx_protocol)
-        .map(crate::h264::H264DecoderFactory::create_in_background);
+        .filter(|_| config.connector.support_dyn_vc_gfx_protocol);
+    let h264_decoder = h264_decoders.map(crate::h264::H264DecoderFactory::create_in_background);
 
     let mut drdynvc = ironrdp_dvc::DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
@@ -2426,7 +2475,10 @@ fn build_connector(
             RdpInputProtocolVersion::V300,
         ))
         .with_dynamic_channel({
-            let egfx = GraphicsPipelineClient::new(Box::new(EgfxHandler), h264_decoder);
+            let mut egfx = GraphicsPipelineClient::new(Box::new(EgfxHandler), h264_decoder);
+            if let Some(decoders) = h264_decoders.cloned() {
+                egfx = egfx.with_h264_decoder_factory(Box::new(move || decoders.create()));
+            }
             match &config.channels.egfx_persistent_cache {
                 Some(path) => {
                     debug!(path = %path.display(), "Using a persistent graphics cache");
@@ -2436,9 +2488,36 @@ fn build_connector(
             }
         });
 
+    if config.channels.mouse_cursor {
+        drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpemsc::MouseCursorClient::new());
+    }
+
+    #[cfg(feature = "core-input")]
+    if config.channels.core_input {
+        drdynvc = drdynvc.with_dynamic_channel(CoreInputClient::new());
+    }
+
     #[cfg(feature = "location")]
     if config.channels.location {
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
+    }
+
+    #[cfg(feature = "telemetry")]
+    if config.channels.telemetry {
+        drdynvc = drdynvc.with_dynamic_channel(ironrdp_rdpet::client::TelemetryClient::new());
+    }
+
+    #[cfg(feature = "text-input")]
+    if config.channels.text_input {
+        drdynvc = crate::text_input::attach(drdynvc);
+    }
+
+    #[cfg(feature = "multipoint")]
+    if let Some(settings) = &config.channels.multipoint {
+        let (audio_level, drive_letter) = settings.processors(output_event_sender);
+        drdynvc = drdynvc
+            .with_dynamic_channel(audio_level)
+            .with_dynamic_channel(drive_letter);
     }
 
     #[cfg(feature = "w365")]
@@ -2683,9 +2762,15 @@ fn build_connector(
         .channels
         .usb
         .as_ref()
-        .filter(|usb| usb_allowed && usb.is_enabled())
+        .filter(|usb| pnp_allowed && usb.is_enabled())
     {
         drdynvc = drdynvc.with_listener(crate::urbdrc::urbdrc_listener(usb, input_sender.clone()));
+    }
+
+    // MS-RDPEPNP Plug and Play device redirection.
+    #[cfg(feature = "pnp")]
+    if let Some(pnp) = config.channels.pnp.as_ref().filter(|_| pnp_allowed) {
+        drdynvc = crate::pnp::attach(drdynvc, pnp, input_sender);
     }
 
     // Audio output: one backend for the static RDPSND channel and the AUDIO_PLAYBACK_DVC channels.
@@ -3383,7 +3468,7 @@ where
         udp_peer,
     } = connection_info;
     let (input_sender, output_event_sender) = event_senders;
-    #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb"))]
+    #[cfg(any(feature = "clipboard", feature = "rdpdr", feature = "usb", feature = "pnp"))]
     let gateway_redirection_policy = match tunnel_policy {
         GatewayTunnelPolicy::Http(policy) => GatewayRedirectionPolicy::from_flags(policy.redirection_flags),
         GatewayTunnelPolicy::Rpch(flags) => GatewayRedirectionPolicy::from_rpch_flags(flags),
@@ -3442,20 +3527,28 @@ where
     };
     #[cfg(not(feature = "rdpdr"))]
     let rdpdr_policy = RdpdrDevicePolicy::ALLOW_ALL;
-    #[cfg(feature = "usb")]
-    let usb_allowed = {
-        let allowed = !gateway_redirection_policy.disables_usb();
+    #[cfg(any(feature = "usb", feature = "pnp"))]
+    let pnp_allowed = {
+        let allowed = !gateway_redirection_policy.disables_pnp();
+        #[cfg(feature = "usb")]
         if !allowed && config.channels.usb.is_some() {
             debug!(
                 redirection_flags = ?gateway_redirection_policy.flags(),
                 "Suppressing URBDRC USB redirection due to gateway device-redirection policy"
             );
         }
+        #[cfg(feature = "pnp")]
+        if !allowed && config.channels.pnp.is_some() {
+            debug!(
+                redirection_flags = ?gateway_redirection_policy.flags(),
+                "Suppressing PnP device redirection due to gateway device-redirection policy"
+            );
+        }
         allowed
     };
-    #[cfg(not(feature = "usb"))]
-    let usb_allowed = true;
-    #[cfg(not(any(feature = "clipboard", feature = "rdpdr", feature = "usb")))]
+    #[cfg(not(any(feature = "usb", feature = "pnp")))]
+    let pnp_allowed = true;
+    #[cfg(not(any(feature = "clipboard", feature = "rdpdr", feature = "usb", feature = "pnp")))]
     match tunnel_policy {
         GatewayTunnelPolicy::Http(_policy) => {}
         GatewayTunnelPolicy::Rpch(_flags) => {}
@@ -3470,7 +3563,7 @@ where
         cliprdr_factory,
         rdpdr_factory,
         rdpdr_policy,
-        usb_allowed,
+        pnp_allowed,
         udp_peer.is_some(),
         auto_reconnect_cookie,
     )?;
@@ -4239,6 +4332,30 @@ impl ActiveSessionIteration {
     }
 }
 
+/// Sends input events on the MS-RDPECI core input channel once it is ready, and as fast-path input otherwise.
+fn process_input(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    events: &[FastPathInputEvent],
+) -> SessionResult<ActiveSessionIteration> {
+    #[cfg(feature = "core-input")]
+    if let Some(dvc) = active_stage
+        .get_dvc::<CoreInputClient>()
+        .filter(|dvc| dvc.processor().ready())
+    {
+        let messages = dvc
+            .processor()
+            .encode_input(dvc.channel_id(), events)
+            .map_err(SessionError::pdu)?;
+        let batch = DvcMessageBatch::try_new(dvc.channel_id(), messages).map_err(SessionError::pdu)?;
+        let outputs = active_stage.process_input_pointer(image, events)?.into_iter().collect();
+        return Ok(ActiveSessionIteration::with_outputs(batch, outputs));
+    }
+    Ok(ActiveSessionIteration::outputs(
+        active_stage.process_fastpath_input(image, events)?,
+    ))
+}
+
 /// Completes at `deadline`, or never without one.
 async fn sleep_until_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
@@ -4301,6 +4418,19 @@ fn urbdrc_iteration(
     event: ironrdp_rdpeusb_native::UrbdrcEvent,
 ) -> SessionResult<ActiveSessionIteration> {
     Ok(match crate::urbdrc::process_urbdrc_event(active_stage, event)? {
+        Some((batch, None)) => ActiveSessionIteration::dvc(batch),
+        Some((batch, Some(tunnel))) => ActiveSessionIteration::tunnel(tunnel, (batch, Vec::new())),
+        None => ActiveSessionIteration::outputs(Vec::new()),
+    })
+}
+
+#[cfg(feature = "pnp")]
+fn pnp_iteration(
+    active_stage: &mut ActiveStage,
+    request: ironrdp_rdpepnp::client::UplinkRequest,
+) -> SessionResult<ActiveSessionIteration> {
+    let drdynvc = active_stage.get_svc_processor_mut::<ironrdp_dvc::DrdynvcClient>();
+    Ok(match crate::pnp::process_uplink_request(drdynvc, request)? {
         Some((batch, None)) => ActiveSessionIteration::dvc(batch),
         Some((batch, Some(tunnel))) => ActiveSessionIteration::tunnel(tunnel, (batch, Vec::new())),
         None => ActiveSessionIteration::outputs(Vec::new()),
@@ -4433,6 +4563,7 @@ async fn active_session(
     auto_reconnect_cookie: &mut Option<ServerAutoReconnect>,
     reconnect_attempt: &mut u32,
     session_status: &SessionStatus,
+    #[cfg(feature = "telemetry")] connection_started: Instant,
 ) -> SessionResult<RdpControlFlow> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
     let desktop_size = connection_result.desktop_size;
@@ -4504,10 +4635,12 @@ async fn active_session(
             GracefulDisconnectReason::UserInitiated,
         ));
     }
-    #[cfg(not(any(feature = "clipboard", feature = "usb")))]
+    #[cfg(not(any(feature = "clipboard", feature = "usb", feature = "pnp")))]
     let _ = clipboard_event_receiver;
 
     let mut rdpei_input_state = None;
+    #[cfg(feature = "telemetry")]
+    let mut connection_telemetry = crate::telemetry::ConnectionTelemetry::new(connection_started);
 
     let disconnect_reason = 'outer: loop {
         let resize_deadline = resize_queue.deadline();
@@ -4518,11 +4651,11 @@ async fn active_session(
         let video_deadline: Option<tokio::time::Instant> = None;
         let mut malformed_bitmap_redraw_queued = false;
         let clipboard_event = async {
-            #[cfg(any(feature = "clipboard", feature = "usb"))]
+            #[cfg(any(feature = "clipboard", feature = "usb", feature = "pnp"))]
             {
                 clipboard_event_receiver.recv().await
             }
-            #[cfg(not(any(feature = "clipboard", feature = "usb")))]
+            #[cfg(not(any(feature = "clipboard", feature = "usb", feature = "pnp")))]
             {
                 core::future::pending::<Option<RdpInputEvent>>().await
             }
@@ -4698,7 +4831,7 @@ async fn active_session(
                     }
                 }
                 clipboard_event = clipboard_event => {
-                    #[cfg(any(feature = "clipboard", feature = "usb"))]
+                    #[cfg(any(feature = "clipboard", feature = "usb", feature = "pnp"))]
                     {
                         match clipboard_event {
                             #[cfg(feature = "clipboard")]
@@ -4707,12 +4840,14 @@ async fn active_session(
                             }
                             #[cfg(feature = "usb")]
                             Some(RdpInputEvent::Urbdrc(event)) => urbdrc_iteration(&mut active_stage, event)?,
-                            // Only clipboard and USB events are queued on this channel.
+                            #[cfg(feature = "pnp")]
+                            Some(RdpInputEvent::Pnp(request)) => pnp_iteration(&mut active_stage, request)?,
+                            // Only clipboard, USB and PnP events are queued on this channel.
                             Some(_) => ActiveSessionIteration::outputs(Vec::new()),
                             None => return Err(ironrdp_session::general_err!("clipboard event channel closed")),
                         }
                     }
-                    #[cfg(not(any(feature = "clipboard", feature = "usb")))]
+                    #[cfg(not(any(feature = "clipboard", feature = "usb", feature = "pnp")))]
                     {
                         let _ = clipboard_event;
                         unreachable!("clipboard receive is pending without the clipboard feature")
@@ -4795,10 +4930,10 @@ async fn active_session(
                                 last_mouse_pos = (mouse.x_position, mouse.y_position);
                             }
                         }
-                        ActiveSessionIteration::outputs(match input_batcher.queue(events, tokio::time::Instant::now()) {
-                            Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
-                            None => Vec::new(),
-                        })
+                        match input_batcher.queue(events, tokio::time::Instant::now()) {
+                            Some(events) => process_input(&mut active_stage, &mut image, &events)?,
+                            None => ActiveSessionIteration::outputs(Vec::new()),
+                        }
                     }
                     RdpInputEvent::Touch(event) => {
                         trace!(frames = event.frames.len(), "RDPEI touch event");
@@ -4855,6 +4990,8 @@ async fn active_session(
                             DvcMessageBatch::try_new(channel_id, messages).map_err(SessionError::pdu)?,
                         )
                     }
+                    #[cfg(feature = "pnp")]
+                    RdpInputEvent::Pnp(request) => pnp_iteration(&mut active_stage, request)?,
                     RdpInputEvent::SendStaticChannelData { channel_name, data } => {
                         let outputs = match active_stage.process_svc_messages_by_name(&channel_name, vec![SvcMessage::from(data)]) {
                             Ok(frame) => vec![ActiveStageOutput::ResponseFrame(frame)],
@@ -4923,6 +5060,11 @@ async fn active_session(
                             }
                         }
                     }
+                    #[cfg(feature = "text-input")]
+                    RdpInputEvent::CommitText(text) => match crate::text_input::commit_text(&mut active_stage, &text) {
+                        Some(batch) => ActiveSessionIteration::dvc(batch),
+                        None => ActiveSessionIteration::outputs(Vec::new()),
+                    },
                     #[cfg(feature = "w365")]
                     RdpInputEvent::SwitchToCloud => {
                         let batch = match active_stage.get_dvc::<VdcSwitchClient>() {
@@ -5154,10 +5296,10 @@ async fn active_session(
                     ActiveSessionIteration::outputs(Vec::new())
                 }
                 _ = sleep_until_deadline(input_batch_deadline) => {
-                    ActiveSessionIteration::outputs(match input_batcher.flush(tokio::time::Instant::now()) {
-                        Some(events) => active_stage.process_fastpath_input(&mut image, &events)?,
-                        None => Vec::new(),
-                    })
+                    match input_batcher.flush(tokio::time::Instant::now()) {
+                        Some(events) => process_input(&mut active_stage, &mut image, &events)?,
+                        None => ActiveSessionIteration::outputs(Vec::new()),
+                    }
                 }
                 _ = async { match fake_events_interval.as_mut() {
                 Some(interval) => interval.tick().await,
@@ -5165,7 +5307,7 @@ async fn active_session(
                 }} => {
                 // Anti-idle: synthesize a no-op mouse move if the session has been idle for at least
                 // the configured interval, keeping the connection alive without user interaction.
-                let outputs = if last_input.elapsed() >= fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) {
+                if fake_events_interval.as_ref().map_or(Duration::MAX, |i| i.period()) <= last_input.elapsed() {
                     last_input = tokio::time::Instant::now();
                     let mut events = SmallVec::<[FastPathInputEvent; 2]>::new();
                     events.push(FastPathInputEvent::MouseEvent(MousePdu {
@@ -5175,14 +5317,28 @@ async fn active_session(
                         y_position: last_mouse_pos.1,
                     }));
                     let events = input_batcher.queue_forced(events, tokio::time::Instant::now());
-                    active_stage.process_fastpath_input(&mut image, &events)?
+                    process_input(&mut active_stage, &mut image, &events)?
                 } else {
-                    Vec::new()
-                };
-                ActiveSessionIteration::outputs(outputs)
+                    ActiveSessionIteration::outputs(Vec::new())
+                }
                 }
             }
         };
+
+        #[cfg(feature = "telemetry")]
+        {
+            // The report waits for an iteration without another dynamic channel batch.
+            // UNTESTED: no test drives the session loop; `ConnectionTelemetry::step` tests cover `can_send`.
+            let can_send = iteration
+                .dvc_batch
+                .as_ref()
+                .is_none_or(|batch| batch.messages().is_empty());
+            if let Some(batch) = connection_telemetry.report(&active_stage, can_send) {
+                iteration.dvc_batch = Some(batch);
+                // A tunneled request's reply route does not apply to the telemetry report.
+                iteration.reply_tunnel = None;
+            }
+        }
 
         #[cfg(feature = "video")]
         if crate::video::present(
@@ -5192,6 +5348,14 @@ async fn active_session(
             &mut iteration.dvc_batch,
         )? {
             // A tunneled request's reply route does not apply to the video notifications.
+            iteration.reply_tunnel = None;
+        }
+
+        crate::mouse_cursor::present(&mut active_stage, &mut image, &mut iteration.outputs)?;
+
+        #[cfg(feature = "text-input")]
+        if crate::text_input::flush(&mut active_stage, &mut iteration.outputs, &mut iteration.dvc_batch)? {
+            // Text input replies travel on their own channel, whatever produced the iteration.
             iteration.reply_tunnel = None;
         }
 
@@ -6048,6 +6212,16 @@ pub(crate) fn __test_build_connector(
     )
 }
 
+#[cfg(feature = "__test")]
+pub(crate) fn __test_process_input(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    events: &[FastPathInputEvent],
+) -> SessionResult<(Option<DvcMessageBatch>, Vec<ActiveStageOutput>)> {
+    let iteration = process_input(active_stage, image, events)?;
+    Ok((iteration.dvc_batch, iteration.outputs))
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "rdpdr")]
@@ -6440,40 +6614,42 @@ mod tests {
         assert!(disable_all.disables_all());
     }
 
-    #[cfg(all(feature = "gateway", feature = "usb"))]
+    // oracle: spec MS-TSGU §2.2.5.3.7 (HTTP_TUNNEL_REDIR_DISABLE_PNP, HTTP_TUNNEL_REDIR_DISABLE_ALL)
+    #[cfg(all(feature = "gateway", any(feature = "usb", feature = "pnp")))]
     #[test]
-    fn gateway_redirection_policy_governs_usb_with_pnp() {
-        assert!(!GatewayRedirectionPolicy::from_flags(None).disables_usb());
-        assert!(!GatewayRedirectionPolicy::from_flags(Some(0x8000_0000)).disables_usb());
-        assert!(GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_PNP)).disables_usb());
-        assert!(GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_ALL)).disables_usb());
+    fn gateway_redirection_policy_governs_pnp_and_usb() {
+        assert!(!GatewayRedirectionPolicy::from_flags(None).disables_pnp());
+        assert!(!GatewayRedirectionPolicy::from_flags(Some(0x8000_0000)).disables_pnp());
+        assert!(GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_PNP)).disables_pnp());
+        assert!(GatewayRedirectionPolicy::from_flags(Some(HTTP_TUNNEL_REDIR_DISABLE_ALL)).disables_pnp());
     }
 
-    #[cfg(all(feature = "gateway", feature = "usb"))]
+    // oracle: spec MS-TSGU §2.2.9.2.1.5 (pnpRedirectionDisabled, disableAllRedirection)
+    #[cfg(all(feature = "gateway", any(feature = "usb", feature = "pnp")))]
     #[test]
-    fn rpch_gateway_policy_governs_usb_with_pnp() {
+    fn rpch_gateway_policy_governs_pnp_and_usb() {
         let rpch = |flags| GatewayRedirectionPolicy::from_rpch_flags(flags);
-        assert!(!rpch(ironrdp_mstsgu::GwRpchRedirectionFlags::default()).disables_usb());
+        assert!(!rpch(ironrdp_mstsgu::GwRpchRedirectionFlags::default()).disables_pnp());
         assert!(
             rpch(ironrdp_mstsgu::GwRpchRedirectionFlags {
                 pnp_disabled: true,
                 ..Default::default()
             })
-            .disables_usb()
+            .disables_pnp()
         );
         assert!(
             rpch(ironrdp_mstsgu::GwRpchRedirectionFlags {
                 disable_all: true,
                 ..Default::default()
             })
-            .disables_usb()
+            .disables_pnp()
         );
         assert!(
             !rpch(ironrdp_mstsgu::GwRpchRedirectionFlags {
                 printer_disabled: true,
                 ..Default::default()
             })
-            .disables_usb()
+            .disables_pnp()
         );
     }
 
@@ -6713,6 +6889,9 @@ mod tests {
         );
         assert!(keyboard.is_user_input());
         assert!(RdpInputEvent::DismissHoveringTouchContact { contact_id: 1 }.is_user_input());
+        // oracle: mutant CommitText left out of is_user_input
+        #[cfg(feature = "text-input")]
+        assert!(RdpInputEvent::CommitText("a".to_owned()).is_user_input());
         assert!(!RdpInputEvent::Close.is_user_input());
         assert!(
             !RdpInputEvent::Resize {

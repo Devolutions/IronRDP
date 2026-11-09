@@ -43,11 +43,11 @@ pub use gfx::{EgfxServerMessage, GfxContext, GfxDvcBridge, GfxServerFactory, Gfx
 pub use handler::{KeyboardEvent, MouseButton, MouseEvent, RdpServerInputHandler};
 #[cfg(feature = "helper")]
 pub use helper::TlsIdentityCtx;
-pub use ironrdp_acceptor::{Acceptor, CredentialOrigin, ReceivedCredentials};
+pub use ironrdp_acceptor::{Acceptor, CredentialOrigin, CredsspAuthIdentity, CredsspBackend, ReceivedCredentials};
 pub use ironrdp_pdu::rdp::server_error_info::ErrorInfo;
 pub use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 #[cfg(feature = "usb")]
-pub use ironrdp_rdpeusb::io::{CompletionData, DeviceAnnounce, DeviceText, InternalIoControlPacket};
+pub use ironrdp_rdpeusb::io::{CompletionData, DeviceText, InternalIoControlPacket};
 pub use rdpdr::{NoopRdpdrServerBackend, RdpdrServerBackend, RdpdrServerFactory, RdpdrServerMessage};
 pub use rdpeai::{NoopRdpeaiServerBackend, RdpeaiServerBackend, RdpeaiServerFactory, RdpeaiServerMessage};
 pub use rdpei::{
@@ -62,21 +62,23 @@ pub use server::audio_redirection_wanted;
 pub use server::autodetect_response_from_sub_header;
 #[cfg(all(feature = "__test", feature = "egfx"))]
 pub use server::autodetect_sub_header;
+#[cfg(feature = "__test")]
+pub use server::captured_credssp_identity;
 pub use server::{
     AuthenticatedConnection, AutoReconnectCookieHandle, BoundConnection, ConnectionBinder, ConnectionHandler,
     ConnectionInfo, ConnectionPolicy, ConnectionSource, CredentialDecision, CredentialValidationError,
-    CredentialValidator, Credentials, ErrorInfoDisconnectHandle, ExactMatchCredentialValidator, IncomingConnection,
-    NextConnection, PostConnectionAction, RdpServer, RdpServerOptions, RdpServerSecurity, ServerEvent,
-    ServerEventSender, ServerRedirectionHandle, SessionOutcome, StaticChannelFactory, TransportTls,
-    pick_remotefx_entropy_coder,
+    CredentialValidator, Credentials, DynamicChannelFactory, ErrorInfoDisconnectHandle, ExactMatchCredentialValidator,
+    IncomingConnection, NextConnection, PendingSession, PostConnectionAction, RdpServer, RdpServerHandle,
+    RdpServerOptions, RdpServerSecurity, ServerEvent, ServerEventSender, ServerRedirectionHandle, SessionOutcome,
+    StaticChannelFactory, TransportTls, WindowingOrders, WindowingOrdersStatus, pick_remotefx_entropy_coder,
 };
 #[cfg(feature = "__test")]
-pub use server::{client_max_request_size, pick_remotefx_codec};
+pub use server::{SharedWriter, client_max_request_size, dispatch_static_channel_events, pick_remotefx_codec};
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]
 pub use urbdrc::{
-    CompletionFut, DeviceFactory, PendingHandle, PendingRequest, RdpUsbDeviceAnnounceInfo, UsbDeviceHandle,
-    UsbRedirDevice, UsbRequestCompletion,
+    CompletionFut, DeviceFactory, PendingHandle, PendingRequest, RdpUsbDeviceAnnounceInfo, UsbDeviceAnnounce,
+    UsbDeviceHandle, UsbRedirDevice, UsbRequestCompletion,
 };
 #[cfg(feature = "__bench")]
 pub mod bench {
