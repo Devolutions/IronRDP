@@ -4466,8 +4466,9 @@ dependencies = [
 
 [[package]]
 name = "now-client"
-version = "0.1.0"
-source = "git+https://github.com/Devolutions/now-libraries?rev=587a1ce09d4f48e05cb348baae30aeb6403b96a6#587a1ce09d4f48e05cb348baae30aeb6403b96a6"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a681beac616bfee3920b56183dbb755b9504dbcacf79f1829af36222bf12bcc"
 dependencies = [
  "now-proto-pdu",
  "thiserror 2.0.21",
@@ -4476,8 +4477,9 @@ dependencies = [
 
 [[package]]
 name = "now-proto-pdu"
-version = "0.4.4"
-source = "git+https://github.com/Devolutions/now-libraries?rev=587a1ce09d4f48e05cb348baae30aeb6403b96a6#587a1ce09d4f48e05cb348baae30aeb6403b96a6"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa69fc8f70d8c88ca5e4d3cc30fe32a4a0477cbc529e1d9c35fb6f320e515e9e"
 dependencies = [
  "bitflags 2.13.2",
  "ironrdp-core 0.2.1",
