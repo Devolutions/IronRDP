@@ -51,6 +51,13 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  and wait for termination. The daemon keeps running.
                                  `--server` is a safety check against disconnecting a different
                                  destination, not a way to select among multiple sessions.
+- `session logoff [--timeout-secs N]`
+                                 Log the user off the remote session, ending it on the host instead of
+                                 leaving it disconnected. Requires Devolutions Agent (the NOW agent) in
+                                 the remote session; RDP itself cannot request a logoff. Waits up to N
+                                 seconds (default 60) for the host to end the session, and fails unless
+                                 the host gives a logoff reason; an application with unsaved work can
+                                 block sign-out.
 - `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
                                  Legacy foreground alias for `daemon start --foreground`. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
@@ -137,6 +144,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  The listener defaults to `127.0.0.1`; do not expose unauthenticated SOCKS5 to untrusted networks.
 - `disconnect [--server HOST[:PORT]]`  Alias for `session disconnect`; the optional server
                                  must match the active destination before any disconnect occurs.
+- `logoff [--timeout-secs N]`    Alias for `session logoff`.
 - `status`                       Report connection state, destination, last frame size, and whether
                                  credentials are preloaded (`credentials loaded: true|false`). Query
                                  this first to decide whether you must supply a password.

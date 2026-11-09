@@ -442,6 +442,11 @@ pub enum Request {
     Disconnect,
     /// Disconnect only if the active session belongs to `server` (`host[:port]`).
     DisconnectMatching { server: String },
+    /// Ask the NOW agent inside the remote session to log the user off.
+    ///
+    /// `Ok` means the request was written to the NOW channel. The NOW logoff message has no
+    /// response, so the caller confirms the logoff by observing the end of the RDP session.
+    Logoff,
     /// Shut down the daemon after its reply has been written.
     DaemonStop,
     /// Query the current session status.
@@ -580,6 +585,7 @@ impl fmt::Debug for Request {
             Self::DisconnectMatching { server } => {
                 f.debug_struct("DisconnectMatching").field("server", server).finish()
             }
+            Self::Logoff => f.write_str("Logoff"),
             Self::DaemonStop => f.write_str("DaemonStop"),
             Self::Status => f.write_str("Status"),
             Self::QueryProps { filter } => f.debug_struct("QueryProps").field("filter", filter).finish(),
@@ -2402,6 +2408,7 @@ impl Encode for Request {
                 dst.write_u8(39);
                 write_string(dst, server)?;
             }
+            Self::Logoff => dst.write_u8(41),
             Self::DaemonStop => dst.write_u8(38),
             Self::Status => dst.write_u8(2),
             Self::QueryProps { filter } => {
@@ -2618,6 +2625,7 @@ impl Encode for Request {
                     propertyset::size(properties) + opt_string_size(log_directive.as_deref())
                 }
                 Self::Disconnect
+                | Self::Logoff
                 | Self::DaemonStop
                 | Self::Status
                 | Self::Screenshot
@@ -2703,6 +2711,7 @@ impl Decode<'_> for Request {
             39 => Ok(Self::DisconnectMatching {
                 server: read_string(src)?,
             }),
+            41 => Ok(Self::Logoff),
             38 => Ok(Self::DaemonStop),
             2 => Ok(Self::Status),
             3 => {
@@ -3337,6 +3346,14 @@ mod tests {
         let encoded = encode_vec(&request).expect("encode");
         assert_eq!(encoded[0], 39);
         assert_eq!(decode::<Request>(&encoded).expect("decode"), request);
+    }
+
+    // oracle: mutant a Logoff encoding that writes a different tag or does not round-trip
+    #[test]
+    fn logoff_encodes_as_request_tag_41_and_round_trips() {
+        let encoded = encode_vec(&Request::Logoff).expect("encode");
+        assert_eq!(encoded, [41]);
+        assert_eq!(decode::<Request>(&encoded).expect("decode"), Request::Logoff);
     }
 
     #[test]

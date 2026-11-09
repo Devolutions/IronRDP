@@ -42,6 +42,19 @@ Optionally pass `--server rdp.example.test` to verify the active destination bef
 The existing `ironrdp-agent disconnect` command remains an alias.
 Both disconnect commands wait for the session to end while leaving the daemon running.
 
+A disconnect leaves the user's session running on the host.
+To end it, log the user off instead:
+
+```powershell
+ironrdp-agent session logoff
+```
+
+RDP has no message that asks the host to log the user off, so `session logoff` (alias `logoff`) asks Devolutions Agent (the NOW agent) running inside the remote session to sign out.
+It fails without touching the session when the host does not run Devolutions Agent.
+The command waits up to `--timeout-secs` (default 60) for the host to end the session.
+It succeeds only when the host ends the session with a logoff reason; a session that ends for another reason is an error, because the user's session may still be running.
+An application with unsaved work can hold the sign-out until someone answers it on the remote desktop.
+
 Use `daemon start` to launch it without connecting, or `daemon start --foreground` to keep its logs in your terminal.
 The old `daemon-start` command remains a foreground alias.
 `daemon list` reports the default daemon if running; custom `--endpoint` values are not discoverable and can be queried with `daemon status --endpoint NAME`.
