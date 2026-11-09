@@ -2663,7 +2663,7 @@ impl ConnectionState {
                 rdp::headers::ShareDataPdu::SuppressOutput(pdu) => {
                     let suppress = pdu.desktop_rect.is_none();
                     self.display_suppressed.store(suppress, Ordering::Relaxed);
-                    debug!(suppress, "client suppress-output state changed");
+                    debug!(suppress, "Client suppress-output state changed");
                 }
 
                 // Client asks the server to redraw a rectangle — typical on
@@ -2675,7 +2675,7 @@ impl ConnectionState {
                 // that send only one of the two.)
                 rdp::headers::ShareDataPdu::RefreshRectangle(_) => {
                     if self.display_suppressed.swap(false, Ordering::Relaxed) {
-                        debug!("client RefreshRectangle cleared suppress-output state");
+                        debug!("Client RefreshRectangle cleared suppress-output state");
                     }
                 }
 
@@ -6270,8 +6270,13 @@ impl RdpServer {
             match Action::from_fp_output_header(frame[0]) {
                 Ok(Action::FastPath) => {
                     let input = decode(&frame).map_err(ServerError::decode)?;
-                    self.handle_connection_outputs(ConnectionState::handle_fastpath(input))
-                        .await;
+                    self.execute_connection_outputs(
+                        conn,
+                        writer,
+                        udp_transport,
+                        ConnectionState::handle_fastpath(input),
+                    )
+                    .await?;
                 }
 
                 Ok(Action::X224) => {
@@ -6343,19 +6348,6 @@ impl RdpServer {
                         abort.abort();
                     }
                 }
-                other => {
-                    if self.handle_connection_outputs(vec![other]).await {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-        Ok(false)
-    }
-
-    async fn handle_connection_outputs(&mut self, outputs: Vec<ConnectionOutput>) -> bool {
-        for output in outputs {
-            match output {
                 ConnectionOutput::Keyboard(event) => {
                     self.handler.lock().await.keyboard(event);
                 }
@@ -6367,15 +6359,10 @@ impl RdpServer {
                 }
                 ConnectionOutput::AdvancedMouse(event) => self.handler.lock().await.mouse(event),
                 ConnectionOutput::DisplayLayout(layout) => self.display.lock().await.request_layout(layout),
-                ConnectionOutput::Disconnect => return true,
-                ConnectionOutput::ResponseFrame(_)
-                | ConnectionOutput::TunnelData(_)
-                | ConnectionOutput::CancelUdpAccept => {
-                    unreachable!("transport outputs must be executed by the connection driver");
-                }
+                ConnectionOutput::Disconnect => return Ok(true),
             }
         }
-        false
+        Ok(false)
     }
 
     async fn accept_finalize<S>(
@@ -7327,6 +7314,7 @@ mod preempt_tests {
         assert!(conn.udp_migration_allowed);
     }
 
+    // oracle: mutant aborting the UDP accept while processing the response, or not when executing the cancellation.
     #[tokio::test]
     async fn a_late_multitransport_failure_stops_the_pending_udp_accept() {
         use ironrdp_pdu::rdp::multitransport::MultitransportResponsePdu;
@@ -8203,7 +8191,7 @@ mod tests {
         }
     }
 
-    // oracle: advanced mouse input is delivered by the driver even while legacy mouse input is suppressed.
+    // oracle: mutant applying the legacy mouse suppression to advanced input mouse events.
     #[tokio::test]
     async fn driver_delivers_advanced_input_without_legacy_mouse() {
         struct RecordingInput(Arc<StdMutex<Vec<(u16, u16)>>>);
@@ -8324,19 +8312,23 @@ mod tests {
         assert_eq!(*received, layout);
     }
 
-    // oracle: the PDU entry normalizes input in wire order without calling an input backend or requiring Tokio.
-    #[test]
-    fn pdu_processing_returns_input_and_disconnect_outputs() {
-        use ironrdp_pdu::input::fast_path::KeyboardFlags;
-        use ironrdp_pdu::input::mouse::PointerFlags;
-
-        let context = PduContext {
+    fn tcp_pdu_context() -> PduContext {
+        PduContext {
             io_channel_id: 1003,
             user_channel_id: 1007,
             message_channel_id: None,
             udp_available: false,
             now_ms: 0,
-        };
+        }
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.8.1.2.2.1 and §2.2.8.1.1.3.1.1.3 decide the press, release and move.
+    #[test]
+    fn fast_path_input_becomes_input_outputs_in_wire_order() {
+        use ironrdp_pdu::input::fast_path::KeyboardFlags;
+        use ironrdp_pdu::input::mouse::PointerFlags;
+
+        let context = tcp_pdu_context();
         let mut conn = ConnectionState::default();
         let input = FastPathInput::new(vec![
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 30),
@@ -8366,6 +8358,13 @@ mod tests {
                 }),
             ]
         ));
+    }
+
+    // oracle: mutant ignoring a client Shutdown Request PDU.
+    #[test]
+    fn shutdown_request_becomes_a_disconnect_output() {
+        let context = tcp_pdu_context();
+        let mut conn = ConnectionState::default();
         let encoded = encode_share_data_pdu(rdp::headers::ShareDataPdu::ShutdownRequest, 0, 1003, 1007).unwrap();
         let payload = mcs::decode_send_data_indication(&encoded).unwrap();
         let frame = encode_vec(&X224(SendDataRequest {
