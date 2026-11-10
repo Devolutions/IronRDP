@@ -126,9 +126,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "cc"
-version = "1.10.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86e055fa6e3e40ad6187ba25b6855eeb635d5271f8e0f0e1e9a5826b8d75bea0"
+checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -165,9 +165,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.3"
+version = "1.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
+checksum = "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64"
 dependencies = [
  "cfg-if",
 ]
@@ -245,7 +245,7 @@ checksum = "1b034bd7d5f032402a2479444dcc6f74e36a03f31854d41680fb240ef682a1ac"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -278,7 +278,7 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -304,9 +304,9 @@ checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
 name = "flate2"
-version = "1.1.10"
+version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
+checksum = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4"
 dependencies = [
  "crc32fast",
  "miniz_oxide 0.9.1",
@@ -376,7 +376,7 @@ version = "0.2.0"
 
 [[package]]
 name = "ironrdp-cliprdr"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-cliprdr-format"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ironrdp-core",
  "png",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -413,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "ironrdp-bulk",
  "ironrdp-core",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-egfx"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "bit_field",
  "bitflags",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "arbitrary",
  "bit_field",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "bitflags",
  "getrandom 0.3.4",
@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpel"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "bitflags",
  "ironrdp-core",
@@ -793,7 +793,7 @@ checksum = "e4e98dc3b890f6c23a0f9d3d491a2823d0dea0fa656302a13dd225fa924112a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -982,9 +982,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.9"
+version = "3.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
+checksum = "4ae9ccbea3a7b0b09443036490c8f34a8b1b760fd345e5c0dae0aac718faea79"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1025,7 +1025,7 @@ checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn 3.0.10",
 ]
 
 [[package]]

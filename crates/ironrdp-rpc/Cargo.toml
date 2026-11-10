@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rpc"
-version = "0.2.0"
+version = "0.3.0"
 readme = "README.md"
 description = "Shared local RPC protocol and transport for IronRDP clients"
 edition.workspace = true
