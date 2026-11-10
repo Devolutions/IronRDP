@@ -1659,7 +1659,8 @@ fn decode_tile_blocks(
 }
 
 /// Whether a difference tile in the region has no reference. The sequential path
-/// fails at that tile, before the parallel path would allocate every tile's state.
+/// fails at that tile and drops the state created for it, before the parallel path
+/// would allocate every tile's state.
 #[cfg(feature = "rayon")]
 fn lacks_reference(
     surface_id: u16,
@@ -1682,6 +1683,7 @@ fn lacks_reference(
 ///
 /// INVARIANT: `indices.len() == tile_blocks.len()`, and `indices[i]` is the slot of `tile_blocks[i]` in `surface.tiles`.
 /// INVARIANT: No index appears twice in `indices`, so each tile's state is taken and handed back once.
+/// INVARIANT: Every difference tile in `tile_blocks` has its reference in `references`, so no tile's created state needs dropping.
 #[cfg(feature = "rayon")]
 #[expect(clippy::too_many_arguments, reason = "the region's decode inputs, passed through")]
 fn decode_tile_blocks_parallel(
@@ -1698,25 +1700,24 @@ fn decode_tile_blocks_parallel(
     use rayon::prelude::*;
 
     // Take each tile's state and reference out, decode on the pool, put them back.
-    let mut work: Vec<(Box<TileState>, Option<DecDwtQ>, bool)> = tile_blocks
+    let mut work: Vec<(Box<TileState>, Option<DecDwtQ>)> = tile_blocks
         .iter()
         .zip(indices)
         .map(|(block, &index)| {
             let (x_idx, y_idx) = (block.x_idx(), block.y_idx());
-            let created = surface.tiles[index].is_none();
             let tile_state = surface.tiles[index].take().unwrap_or_else(|| {
                 let mut tile_state = Box::new(TileState::new());
                 tile_state.use_reduce_extrapolate = surface.use_reduce_extrapolate;
                 tile_state
             });
-            (tile_state, references.remove(&(surface_id, x_idx, y_idx)), created)
+            (tile_state, references.remove(&(surface_id, x_idx, y_idx)))
         })
         .collect();
 
     let results: Vec<Result<Vec<DecodedTile>, ProgressiveDecodeError>> = work
         .par_iter_mut()
         .zip(tile_blocks.par_iter())
-        .map(|((tile_state, reference, _), tile_block)| {
+        .map(|((tile_state, reference), tile_block)| {
             decode_tile(
                 tile_state,
                 reference,
@@ -1728,15 +1729,9 @@ fn decode_tile_blocks_parallel(
         })
         .collect();
 
-    for ((tile_state, reference, created), (block, (&index, result))) in work
-        .into_iter()
-        .zip(tile_blocks.iter().zip(indices.iter().zip(&results)))
-    {
+    for ((tile_state, reference), (block, &index)) in work.into_iter().zip(tile_blocks.iter().zip(indices)) {
         let (x_idx, y_idx) = (block.x_idx(), block.y_idx());
-        // A difference tile without a reference leaves no tile state behind.
-        if !(created && matches!(result, Err(ProgressiveDecodeError::MissingTileReference { .. }))) {
-            surface.tiles[index] = Some(tile_state);
-        }
+        surface.tiles[index] = Some(tile_state);
         if let Some(reference) = reference {
             references.insert((surface_id, x_idx, y_idx), reference);
         }
