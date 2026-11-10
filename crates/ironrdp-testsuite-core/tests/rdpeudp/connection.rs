@@ -804,6 +804,66 @@ fn data_is_not_mistaken_for_a_repeated_syn_ack() {
     assert_eq!(client.poll_event(), Some(Event::DataReceived(vec![0x11; 32])));
 }
 
+// ── Peer receive window ──
+
+/// Data-bearing datagrams `sender` puts on the wire at `at`, with nothing
+/// acknowledged in between.
+fn data_packets_sent_unacknowledged(sender: &mut RdpeudpConnection, at: MonotonicInstant) -> usize {
+    let mut count = 0;
+    while let Some(transmit) = sender.poll_transmit(at) {
+        let datagram: V1Datagram = decode(&transmit.contents).expect("decode datagram");
+        if datagram.data.is_some() {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// [MS-RDPEUDP] 3.1.1.7: the receiver advertises how many datagrams it can
+/// accommodate (uReceiveWindowSize) and the sender is bound by it, even when
+/// its own window is larger; datagrams beyond it are discarded.
+#[test]
+fn the_sender_never_exceeds_a_smaller_peer_receive_window() {
+    let mut client_config = default_config(100);
+    // The version 1/2 wire, where the window is the header's uReceiveWindowSize.
+    client_config.offer_version = UdpVersion::V2;
+    client_config.cookie_hash = None;
+    client_config.log_window_size = 4; // the client advertises 16 packets
+    let (mut client, mut server, t) = handshake(client_config, 200);
+    while client.poll_event().is_some() {}
+    while server.poll_event().is_some() {}
+
+    // Small writes, so that the congestion window (counted in bytes) is not
+    // what stops the sender.
+    for _ in 0..64 {
+        server.send(vec![0x5A; 4]).expect("send");
+    }
+
+    assert_eq!(data_packets_sent_unacknowledged(&mut server, later(t, 200)), 16);
+}
+
+/// A receiver advertising a window larger than the sender's own lets more
+/// packets be outstanding: the sender's window follows the peer's
+/// uReceiveWindowSize rather than staying at its local size.
+#[test]
+fn a_larger_peer_receive_window_lets_more_packets_be_outstanding() {
+    let mut client_config = default_config(100);
+    // The version 1/2 wire, where the window is the header's uReceiveWindowSize.
+    client_config.offer_version = UdpVersion::V2;
+    client_config.cookie_hash = None;
+    client_config.log_window_size = 10; // the client advertises 1024 packets
+    let (mut client, mut server, t) = handshake(client_config, 200);
+    while client.poll_event().is_some() {}
+    while server.poll_event().is_some() {}
+
+    // The server's own log_window_size is 6: 64 packets.
+    for _ in 0..128 {
+        server.send(vec![0x5A; 4]).expect("send");
+    }
+
+    assert!(data_packets_sent_unacknowledged(&mut server, later(t, 200)) > 64);
+}
+
 // ── Receive window lifecycle ──
 
 /// Shuttle packets between the two endpoints until neither has more to say.

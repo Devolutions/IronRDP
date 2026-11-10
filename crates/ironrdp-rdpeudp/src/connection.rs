@@ -333,6 +333,10 @@ pub struct RdpeudpConnection {
 
     // ── Data transfer components (initialized on Established) ──
     send_window: Option<SendWindow>,
+    /// The receive window the peer advertised in its handshake datagram
+    /// (uReceiveWindowSize, MS-RDPEUDP wire only), applied to the send window
+    /// once it exists.
+    peer_receive_window: Option<u16>,
     recv_window: Option<RecvWindow>,
     congestion: CongestionControl,
     loss_detector: LossDetector,
@@ -610,6 +614,7 @@ impl RdpeudpConnection {
             "Accepted SYN"
         );
 
+        conn.peer_receive_window = Some(syn_datagram.header.receive_window_size);
         conn.enqueue_syn_ack(remote_isn, negotiated_version, now);
         conn.timers.set(Timer::Idle, now + conn.config.idle_timeout);
 
@@ -623,6 +628,7 @@ impl RdpeudpConnection {
             config,
             params: None,
             send_window: None,
+            peer_receive_window: None,
             recv_window: None,
             congestion: CongestionControl::new(),
             loss_detector: LossDetector::new(),
@@ -695,7 +701,11 @@ impl RdpeudpConnection {
         // would add before pushing any of them, since pushing part of a
         // split chunk set and rejecting the rest would corrupt the byte
         // stream the receiving end reassembles.
-        let max_entries = SEND_BUFFER_WINDOW_MULTIPLE * (1usize << usize::from(self.config.log_window_size));
+        let window = self.send_window.as_ref().map_or_else(
+            || 1usize << usize::from(self.config.log_window_size),
+            SendWindow::max_entries,
+        );
+        let max_entries = SEND_BUFFER_WINDOW_MULTIPLE * window;
         let chunks_needed = data.len().div_ceil(max_payload).max(1);
         if self.send_buffer.len() + chunks_needed > max_entries {
             trace!(
@@ -1242,6 +1252,8 @@ impl RdpeudpConnection {
             .as_ref()
             .ok_or_else(|| RdpeudpError::invalid_packet("handle SYN+ACK", "SYN+ACK missing SynDataEx"))?;
 
+        self.peer_receive_window = Some(datagram.header.receive_window_size);
+
         // 3.1.5.1.1: the version in the SYN+ACK is "the highest version
         // supported by both endpoints", and per 3.1.5.1.3 that is the version
         // both MUST then use. Version 3 selects the MS-RDPEUDP2 framing; 1 and
@@ -1327,6 +1339,8 @@ impl RdpeudpConnection {
         }
 
         debug!("Received final ACK");
+
+        self.peer_receive_window = Some(datagram.header.receive_window_size);
 
         self.sample_handshake_rtt(now);
 
@@ -1429,11 +1443,17 @@ impl RdpeudpConnection {
             "Connection established"
         );
 
-        self.send_window = Some(SendWindow::new(
+        let mut send_window = SendWindow::new(
             local_initial_data_seq,
             local_initial_channel_seq,
             params.log_window_size,
-        ));
+        );
+        // MS-RDPEUDP 3.1.1.7: the peer's uReceiveWindowSize bounds what may
+        // be outstanding. MS-RDPEUDP2 has no such header field.
+        if let (WireFormat::V1 { .. }, Some(packets)) = (&params.wire, self.peer_receive_window) {
+            send_window.set_peer_window(packets);
+        }
+        self.send_window = Some(send_window);
 
         self.recv_window = Some(RecvWindow::new(
             remote_initial_data_seq,
@@ -2339,6 +2359,19 @@ impl RdpeudpConnection {
         if datagram.header.flags.contains(V1Flags::SYN) {
             trace!("Ignored late handshake retransmit");
             return Ok(());
+        }
+
+        // The peer's receive window bounds what may be outstanding (MS-RDPEUDP
+        // 3.1.1.7, uReceiveWindowSize), whatever the local window size.
+        if let Some(send_window) = self.send_window.as_mut()
+            && send_window.max_entries() != usize::from(datagram.header.receive_window_size)
+        {
+            trace!(
+                from = send_window.max_entries(),
+                to = datagram.header.receive_window_size,
+                "Send window follows the peer's receive window"
+            );
+            send_window.set_peer_window(datagram.header.receive_window_size);
         }
 
         let delayed = datagram.header.flags.contains(V1Flags::ACKDELAYED);

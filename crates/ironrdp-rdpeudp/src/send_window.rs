@@ -95,6 +95,10 @@ pub(crate) struct SendWindow {
     max_entries: usize,
 }
 
+/// Largest send window taken from the peer: 1 << 15, the bound the local
+/// window already has (`log_window_size` 0..=15).
+const MAX_PEER_WINDOW: usize = 1 << 15;
+
 impl SendWindow {
     /// Create a new send window.
     ///
@@ -116,6 +120,21 @@ impl SendWindow {
     /// Whether the window has room for another packet.
     pub(crate) fn has_capacity(&self) -> bool {
         self.entries.len() < self.max_entries
+    }
+
+    /// Maximum number of packets in flight.
+    pub(crate) fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    /// Bound the window by the receive window the peer advertises (MS-RDPEUDP
+    /// uReceiveWindowSize, in packets): the sender must not have more packets
+    /// outstanding than the receiver can hold. The value is taken from every
+    /// datagram, so the window follows the peer. Packets already in flight
+    /// beyond a smaller value are not recalled: new ones wait until the window
+    /// drains below it.
+    pub(crate) fn set_peer_window(&mut self, packets: u16) {
+        self.max_entries = usize::from(packets).clamp(1, MAX_PEER_WINDOW);
     }
 
     /// Number of entries currently in the window.
