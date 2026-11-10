@@ -52,6 +52,8 @@ enum InputTarget {
 /// A viewer application driven by the RDP client's native output events.
 pub struct App {
     inner: RpcApp,
+    #[cfg(target_os = "macos")]
+    clipboard: Option<ironrdp_cliprdr_native::MacClipboard>,
 }
 
 /// A viewer application driven by a viewer-hosted RPC daemon.
@@ -108,7 +110,19 @@ impl App {
             initial_window_size,
             remote_app,
         )?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            #[cfg(target_os = "macos")]
+            clipboard: None,
+        })
+    }
+
+    /// Attaches a macOS clipboard bridge owned by the window event loop.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn with_clipboard(mut self, clipboard: ironrdp_cliprdr_native::MacClipboard) -> Self {
+        self.clipboard = Some(clipboard);
+        self
     }
 }
 
@@ -914,7 +928,23 @@ impl ApplicationHandler<ViewerEvent> for RpcApp {
 
 impl ApplicationHandler<RdpOutputEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "macos")]
+        if let Some(clipboard) = &mut self.clipboard {
+            clipboard.poll();
+        }
+
         self.inner.on_about_to_wait(event_loop);
+
+        #[cfg(target_os = "macos")]
+        if self
+            .clipboard
+            .as_ref()
+            .is_some_and(ironrdp_cliprdr_native::MacClipboard::needs_poll)
+        {
+            // Finder's file presenter does not wake the window loop, and
+            // remote format responses arrive on the RDP thread.
+            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(10)));
+        }
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {

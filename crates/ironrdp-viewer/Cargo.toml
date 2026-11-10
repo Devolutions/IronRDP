@@ -63,6 +63,9 @@ semver = "1"
 raw-window-handle = "0.6"
 url = "2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9" }
+
 [target.'cfg(windows)'.dependencies]
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.9" }
 ironrdp-rdpdr-native = { path = "../ironrdp-rdpdr-native", version = "0.9" }
