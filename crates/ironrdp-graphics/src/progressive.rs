@@ -4540,6 +4540,82 @@ mod tests {
         }
     }
 
+    // oracle: mutant decoding a large region that repeats a tile in parallel
+    #[test]
+    fn large_region_repeating_a_tile_decodes_one_tile_at_a_time() {
+        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileFirst, TileUpgrade};
+
+        // Eleven first passes and then an upgrade of the first tile.
+        // Twelve blocks are enough for the parallel path, but the upgrade needs the state its tile's first pass left.
+        let mut first_quant = ComponentCodecQuant::LOSSLESS;
+        first_quant.ll3 = 1;
+        let prog_quant_vals = [
+            ProgressiveCodecQuant {
+                quality: 0,
+                y_quant: first_quant,
+                cb_quant: first_quant,
+                cr_quant: first_quant,
+            },
+            ProgressiveCodecQuant {
+                quality: 1,
+                y_quant: ComponentCodecQuant::LOSSLESS,
+                cb_quant: ComponentCodecQuant::LOSSLESS,
+                cr_quant: ComponentCodecQuant::LOSSLESS,
+            },
+        ];
+        let first_data = encode_full_quality_component(7);
+        let raw_data = [0xFF; 8];
+        let mut region: Vec<ProgressiveTile<'_>> = (0..11u16)
+            .map(|i| {
+                ProgressiveTile::First(TileFirst {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx: i % 4,
+                    y_idx: i / 4,
+                    flags: 0,
+                    quality: 0,
+                    y_data: &first_data,
+                    cb_data: &first_data,
+                    cr_data: &first_data,
+                    tail_data: &[],
+                })
+            })
+            .collect();
+        region.push(ProgressiveTile::Upgrade(TileUpgrade {
+            quant_idx_y: 0,
+            quant_idx_cb: 0,
+            quant_idx_cr: 0,
+            x_idx: 0,
+            y_idx: 0,
+            quality: 1,
+            y_srl_data: &[],
+            y_raw_data: &raw_data,
+            cb_srl_data: &[],
+            cb_raw_data: &raw_data,
+            cr_srl_data: &[],
+            cr_raw_data: &raw_data,
+        }));
+        let mut surface = SurfaceTiles::new(256, 192, false).unwrap();
+
+        let (emitted, result) = collect_tile_blocks(
+            1,
+            &mut surface,
+            &mut BTreeMap::new(),
+            &region,
+            &[ComponentCodecQuant::LOSSLESS],
+            &prog_quant_vals,
+            false,
+        );
+
+        result.expect("region should decode");
+        // The upgrade repaints the first tile, so that tile is emitted twice.
+        let emitted: Vec<(u16, u16)> = emitted.iter().map(|tile| (tile.x_idx, tile.y_idx)).collect();
+        assert_eq!(emitted.len(), 12);
+        assert_eq!(emitted.last(), Some(&(0, 0)));
+        assert_eq!(surface.tiles[0].as_deref().map(|tile| tile.pass), Some(2));
+    }
+
     // oracle: mutant parallel decode diverging from tile-by-tile decode in pixels, tile state or references
     #[cfg(feature = "rayon")]
     #[test]
