@@ -588,6 +588,7 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::Logoff => return ConnectionResponse::Single(logoff(shared).await),
         Request::NowCapabilities => return ConnectionResponse::Single(now_capabilities(shared).await),
         Request::NowRun { command, directory } => {
             return ConnectionResponse::Single(now_run(shared, command, directory).await);
@@ -726,6 +727,17 @@ async fn now_capabilities(shared: &Shared) -> Response {
     };
     match operations.capabilities().await {
         Ok(capabilities) => Response::Ok(Payload::NowCapabilities(capabilities)),
+        Err(error) => Response::Err(error),
+    }
+}
+
+async fn logoff(shared: &Shared) -> Response {
+    let operations = match operations(shared) {
+        Ok(operations) => operations,
+        Err(response) => return response,
+    };
+    match operations.session_logoff().await {
+        Ok(()) => Response::ok(),
         Err(error) => Response::Err(error),
     }
 }

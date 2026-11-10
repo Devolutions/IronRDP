@@ -175,9 +175,10 @@ fn carrier_rejection_recovers_without_disabling_rdpear() {
         vec![svc_frame(20, FIRST, &[0xaa; 10]), svc_frame(20, 0, &[0xbb; 11])],
         vec![svc_frame(20, FIRST, &[0xaa; 10]), svc_frame(20, LAST, &[0xbb; 11])],
         vec![svc_frame(21, FIRST | COMPRESSED, &[0xaa])],
+        // oracle: mutant skipping the cumulative carrier max_message_size check for PACKET_COMPRESSED fragments
         vec![
-            svc_frame(2, FIRST | COMPRESSED, &[0xaa; 10]),
-            svc_frame(2, LAST | COMPRESSED, &[0xbb; 11]),
+            svc_frame(20, FIRST | COMPRESSED, &[0xaa; 10]),
+            svc_frame(20, LAST | COMPRESSED, &[0xbb; 11]),
         ],
     ] {
         let (mut channel, calls) = channel(Some(20));

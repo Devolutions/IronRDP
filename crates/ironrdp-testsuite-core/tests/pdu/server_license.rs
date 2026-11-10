@@ -1,10 +1,14 @@
+use ironrdp_core::{Decode as _, ReadCursor, encode_vec};
 use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 use ironrdp_pdu::rdp::server_license::cert::{CertificateType, ProprietaryCertificate, RsaPublicKey};
 use ironrdp_pdu::rdp::server_license::{
-    ClientLicenseInfo, ClientNewLicenseRequest, LicenseHeader, PreambleFlags, PreambleType, PreambleVersion,
-    ProductInfo, ServerCertificate, ServerLicenseRequest,
+    ClientLicenseInfo, ClientNewLicenseRequest, LicenseHeader, LicensePdu, PreambleFlags, PreambleType,
+    PreambleVersion, ProductInfo, ServerCertificate, ServerLicenseRequest,
 };
 use rstest::rstest;
+
+/// The annotated Client License Information of [MS-RDPELE] 4.3, from its preamble to its MAC.
+const ANNOTATED_LICENSE_INFO: &[u8] = include_bytes!("../../test_data/pdu/rdp/client_license_info.pdu");
 
 /// The zero padding that follows the modulus bytes of a proprietary certificate's public key.
 const MODULUS_PADDING: [u8; 8] = [0; 8];
@@ -92,4 +96,16 @@ fn licensing_accepts_only_moduli_of_at_least_512_bits(
     };
 
     assert_eq!(response.build(&license_request), accepted);
+}
+
+// oracle: spec MS-RDPELE §4.3
+#[test]
+fn client_license_info_reencodes_the_annotated_pdu() {
+    // The sample starts at the preamble, so the TS_SECURITY_HEADER that carries SEC_LICENSE_PKT is added here.
+    let pdu = [&[0x80, 0x00, 0x00, 0x00], ANNOTATED_LICENSE_INFO].concat();
+    let mut cursor = ReadCursor::new(&pdu);
+    let header = LicenseHeader::decode(&mut cursor).unwrap();
+    let license_info = ClientLicenseInfo::decode(header, &mut cursor).unwrap();
+
+    assert_eq!(encode_vec(&LicensePdu::from(license_info)).unwrap(), pdu);
 }

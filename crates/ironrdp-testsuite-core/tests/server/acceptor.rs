@@ -1259,6 +1259,69 @@ fn client_info_flags_survive_reactivation() {
     assert_eq!(result.client_info_flags, flags);
 }
 
+/// The client's GCC blocks with `desktop` and `device` as the `desktopScaleFactor` and `deviceScaleFactor` of its
+/// Client Core Data, and the optional fields that precede them filled in so that they are encoded.
+fn client_blocks_with_scale_factors(desktop: Option<u32>, device: Option<u32>) -> ironrdp_pdu::gcc::ClientGccBlocks {
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    let optional_data = &mut client_blocks.core.optional_data;
+    optional_data.desktop_physical_width = Some(0);
+    optional_data.desktop_physical_height = Some(0);
+    optional_data.desktop_orientation = Some(0);
+    optional_data.desktop_scale_factor = desktop;
+    optional_data.device_scale_factor = device;
+    client_blocks
+}
+
+/// MS-RDPBCGR [2.2.1.3.2] Client Core Data (TS_UD_CS_CORE): `desktopScaleFactor` is valid in 100..=500 and
+/// `deviceScaleFactor` is 100, 140 or 180, and each MUST be ignored when it is out of range, when the other is out of
+/// range, or when the other is absent. Neither half of a pair reaches the acceptor alone: a `deviceScaleFactor` can't
+/// be sent without the `desktopScaleFactor` that precedes it, and the decoder rejects a `desktopScaleFactor` without a
+/// `deviceScaleFactor`.
+///
+/// [2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
+// oracle: spec MS-RDPBCGR §2.2.1.3.2
+#[rstest::rstest]
+#[case::retina_pair(Some(200), Some(100), (Some(200), Some(100)))]
+#[case::lowest_desktop_highest_device(Some(100), Some(180), (Some(100), Some(180)))]
+#[case::highest_desktop(Some(500), Some(140), (Some(500), Some(140)))]
+#[case::invalid_device_drops_both(Some(200), Some(250), (None, None))]
+#[case::desktop_below_range_drops_both(Some(50), Some(140), (None, None))]
+#[case::desktop_above_range_drops_both(Some(501), Some(100), (None, None))]
+#[case::both_absent(None, None, (None, None))]
+fn scale_factors_are_reported_only_as_a_valid_pair(
+    #[case] desktop: Option<u32>,
+    #[case] device: Option<u32>,
+    #[case] expected: (Option<u32>, Option<u32>),
+) {
+    let (_, result, ..) = accepted(
+        client_blocks_with_scale_factors(desktop, device),
+        &CLIENT_INFO_PDU_BUFFER,
+    );
+    assert_eq!((result.desktop_scale_factor, result.device_scale_factor), expected);
+}
+
+/// An MS-RDPBCGR [1.3.1.3] Deactivation-Reactivation Sequence doesn't resend the GCC Client Core Data, so the
+/// reactivated acceptor hands back the scale factors the client sent the first time.
+///
+/// [1.3.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
+// oracle: spec MS-RDPBCGR §1.3.1.3
+#[test]
+fn scale_factors_survive_reactivation() {
+    let client_blocks = client_blocks_with_scale_factors(Some(200), Some(140));
+    let (acceptor, result, user_channel_id, io_channel_id) = accepted(client_blocks, &CLIENT_INFO_PDU_BUFFER);
+
+    let mut acceptor = Acceptor::new_deactivation_reactivation(acceptor, result.static_channels, DESKTOP_SIZE)
+        .expect("rebuild the acceptor for reactivation");
+    let result = result_after_activation(&mut acceptor, user_channel_id, io_channel_id);
+
+    assert!(result.reactivation);
+    assert_eq!(
+        (result.desktop_scale_factor, result.device_scale_factor),
+        (Some(200), Some(140))
+    );
+}
+
 #[derive(Default)]
 struct HandshakeStream {
     incoming: VecDeque<Vec<u8>>,

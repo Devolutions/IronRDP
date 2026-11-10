@@ -748,6 +748,7 @@ impl Daemon {
             } => DaemonResponse::Single(self.connect(properties, log_directive)),
             Request::Disconnect => DaemonResponse::Single(self.disconnect()),
             Request::DisconnectMatching { server } => DaemonResponse::Single(self.disconnect_matching(Some(&server))),
+            Request::Logoff => DaemonResponse::Single(self.logoff().await),
             Request::DaemonStop => DaemonResponse::Single(Response::ok()),
             Request::Status => DaemonResponse::Single(self.status()),
             Request::QueryProps { filter } => DaemonResponse::Single(self.query_props(filter.as_ref())),
@@ -2125,6 +2126,20 @@ impl Daemon {
         }
     }
 
+    async fn logoff(&self) -> Response {
+        let operations = match self.operations() {
+            Ok(operations) => operations,
+            Err(response) => return response,
+        };
+        match operations.session_logoff().await {
+            Ok(()) => {
+                info!("Requested a logoff through the NOW agent");
+                Response::ok()
+            }
+            Err(error) => Response::Err(error),
+        }
+    }
+
     async fn now_run(&self, command: String, directory: Option<String>) -> Response {
         let operations = match self.operations() {
             Ok(operations) => operations,
@@ -2414,6 +2429,9 @@ async fn consume_output(
             }
             RdpOutputEvent::Terminated(Ok(reason)) => {
                 guard.state = ConnState::Disconnected;
+                // `ironrdp-agent session logoff` recognizes a logoff by finding the Set Error Info
+                // description from `ironrdp-pdu` in this message, so it must keep embedding the
+                // reason's description (`terminated_status_embeds_the_host_disconnect_description`).
                 guard.error = Some(format!("{reason:?}"));
                 let rail_changed = guard.rail.fail_pending_launches();
                 info!(?reason, "Session terminated");
@@ -3467,6 +3485,38 @@ mod tests {
             message,
             "[read frame] custom error, caused by: [decode transport] custom error, caused by: connection reset"
         );
+    }
+
+    // oracle: mutant a status message that drops the host's Set Error Info description, which `ironrdp-agent session logoff` relies on
+    #[tokio::test]
+    async fn terminated_status_embeds_the_host_disconnect_description() {
+        use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
+
+        let (daemon, _, live, rail_notify) = active_rail_session(false);
+        let (output_tx, output_rx) = output_channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+        let description = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::LogoffByUser).description();
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::Terminated(Ok(
+                ironrdp_session::GracefulDisconnectReason::Other(description.clone()),
+            )))
+            .await
+            .expect("send graceful termination");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+
+        let Response::Ok(Payload::Status(status)) = daemon.status() else {
+            panic!("expected status response");
+        };
+        assert_eq!(status.state, ConnState::Disconnected);
+        let message = status.message.expect("graceful termination message");
+        assert!(message.contains(&description), "{message}");
     }
 
     #[test]

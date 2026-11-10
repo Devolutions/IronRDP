@@ -78,6 +78,8 @@ enum Command {
     Cert(CertCommand),
     /// Disconnect the current RDP session, optionally checking the server first.
     Disconnect(DisconnectArgs),
+    /// Log the user off the remote session through the NOW agent, ending the session on the host.
+    Logoff(LogoffArgs),
     /// Report the current session status.
     Status,
     /// Query the live session properties.
@@ -266,6 +268,8 @@ enum SessionCommand {
     List,
     /// Disconnect the current RDP session without stopping the daemon.
     Disconnect(DisconnectArgs),
+    /// Log the user off the remote session through the NOW agent, ending the session on the host.
+    Logoff(LogoffArgs),
 }
 
 #[derive(Args, Debug)]
@@ -273,6 +277,13 @@ struct DisconnectArgs {
     /// Disconnect only if the current session belongs to this host[:port].
     #[arg(long)]
     server: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct LogoffArgs {
+    /// Seconds to wait for the host to end the session after the logoff request.
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=3600))]
+    timeout_secs: u64,
 }
 
 #[derive(Args, Debug)]
@@ -1086,6 +1097,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             return match command {
                 SessionCommand::List => list_sessions(&endpoint).await,
                 SessionCommand::Disconnect(args) => disconnect_session(&endpoint, args, cli.backend).await,
+                SessionCommand::Logoff(args) => logoff_session(&endpoint, args).await,
             };
         }
         Command::DaemonChild { bootstrap } => {
@@ -1197,6 +1209,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             return run_sandbox_command(args);
         }
         Command::Disconnect(args) => return disconnect_session(&endpoint, args, cli.backend).await,
+        Command::Logoff(args) => return logoff_session(&endpoint, args).await,
         Command::Status => Request::Status,
         Command::QueryProps(args) => Request::QueryProps {
             filter: args
@@ -1478,6 +1491,12 @@ async fn disconnect_session(endpoint: &Endpoint, args: DisconnectArgs, backend: 
     }
     crate::daemon_lifecycle::disconnect_session(endpoint, args.server).await?;
     println!("session disconnected; daemon remains running");
+    Ok(())
+}
+
+async fn logoff_session(endpoint: &Endpoint, args: LogoffArgs) -> anyhow::Result<()> {
+    crate::daemon_lifecycle::logoff_session(endpoint, core::time::Duration::from_secs(args.timeout_secs)).await?;
+    println!("user logged off; daemon remains running");
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests;
 
+use core::fmt;
 use std::io;
 
 use bitflags::bitflags;
@@ -13,7 +14,7 @@ use sha1::Digest as _;
 use super::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA,
     LicenseEncryptionData, LicenseHeader, PREAMBLE_SIZE, PreambleFlags, PreambleType, PreambleVersion,
-    RANDOM_NUMBER_SIZE, ServerLicenseError, ServerLicenseRequest, UTF8_NULL_TERMINATOR_SIZE,
+    RANDOM_NUMBER_SIZE, ServerLicenseError, ServerLicenseRequest, UTF8_NULL_TERMINATOR_SIZE, Withheld,
 };
 use crate::crypto::rsa::encrypt_with_public_key;
 use crate::utils::{self, CharacterSet};
@@ -45,13 +46,17 @@ bitflags! {
 /// [2.2.2.2] Client New License Request (CLIENT_NEW_LICENSE_REQUEST)
 ///
 /// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/c57e4890-9049-421e-9fe8-9a6f9519675a
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientNewLicenseRequest {
     pub license_header: LicenseHeader,
+    /// INVARIANT: `Debug` output withholds this field.
     pub client_random: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub encrypted_premaster_secret: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub client_username: String,
+    /// INVARIANT: `Debug` output withholds this field.
     pub client_machine_name: String,
 }
 
@@ -251,4 +256,19 @@ pub(crate) fn compute_session_key_blob(master_secret: &[u8], client_random: &[u8
         salted_hash(master_secret, server_random, client_random, b"CCC"),
     ]
     .concat()
+}
+
+impl fmt::Debug for ClientNewLicenseRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientNewLicenseRequest")
+            .field("license_header", &self.license_header)
+            .field("client_random", &Withheld(&self.client_random))
+            .field(
+                "encrypted_premaster_secret",
+                &Withheld(&self.encrypted_premaster_secret),
+            )
+            .field("client_username", &Withheld(self.client_username.as_bytes()))
+            .field("client_machine_name", &Withheld(self.client_machine_name.as_bytes()))
+            .finish()
+    }
 }

@@ -1,10 +1,11 @@
 // FIXME: tests in this module can probably be rewritten to be much shorter using the ironrdp-client crate.
 
-use core::net::SocketAddr;
+use core::error::Error as _;
+use core::net::{Ipv4Addr, SocketAddr};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::task::{Context, Poll};
+use core::task::{Context, Poll, Waker};
 use core::time::Duration;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -18,7 +19,7 @@ use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
 use ironrdp::pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::pdu::rdp::capability_sets::{InputFlags, MajorPlatformType};
-use ironrdp::pdu::rdp::client_info::CompressionType as PduCompressionType;
+use ironrdp::pdu::rdp::client_info::{ClientInfoFlags, CompressionType as PduCompressionType, PerformanceFlags};
 use ironrdp::pdu::rdp::headers::CompressionFlags;
 use ironrdp::pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
 use ironrdp::pdu::rdp::session_info::ServerAutoReconnect;
@@ -28,8 +29,8 @@ use ironrdp::rdpsnd::pdu::AudioFormat;
 use ironrdp::rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServer, RdpsndServerHandler};
 use ironrdp::server::{
     self, Acceptor, DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer,
-    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerResult, StaticChannelFactory,
-    TlsIdentityCtx,
+    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerErrorExt as _, ServerEvent, ServerResult,
+    StaticChannelFactory, TlsIdentityCtx,
 };
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput};
@@ -66,6 +67,144 @@ const RDPDR_CLIENT_ID: u32 = 0x1234;
 const RDPDR_COMPLETION_ID: u32 = 1;
 #[cfg(windows)]
 const RDPDR_READ_LENGTH: u32 = 32 * 1024;
+
+// oracle: mutant quit not queuing ServerEvent::Quit
+#[tokio::test]
+async fn server_handle_quit_stops_the_listener() {
+    let mut server = server_for_handle_tests(None);
+    let handle = server.handle().clone();
+    handle.quit("shutdown requested").unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), server.run())
+        .await
+        .expect("quit must stop the listener")
+        .unwrap();
+}
+
+// oracle: mutant local_addr discarding the event loop's address reply
+#[tokio::test]
+async fn server_handle_local_addr_reports_the_bound_listener() {
+    let mut server = server_for_handle_tests(None);
+    let handle = server.handle().clone();
+    let requests = async {
+        let addr = handle.local_addr().await.unwrap().expect("run binds a listener");
+        assert_eq!(addr.ip(), Ipv4Addr::LOCALHOST);
+        assert_ne!(addr.port(), 0, "the OS must assign an ephemeral port");
+        handle.quit("address received").unwrap();
+    };
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let (result, ()) = tokio::join!(server.run(), requests);
+        result.unwrap();
+    })
+    .await
+    .expect("address query and shutdown must finish");
+}
+
+// oracle: mutant set_credentials not queuing ServerEvent::SetCredentials
+#[tokio::test]
+async fn server_handle_set_credentials_applies_to_the_next_connection() {
+    let (mut server, _display_tx) = hybrid_server();
+    let handle = server.handle().clone();
+    handle
+        .set_credentials(server::Credentials {
+            username: "alice".to_owned(),
+            password: "first password".to_owned(),
+            domain: None,
+        })
+        .unwrap();
+
+    let local = tokio::task::LocalSet::new();
+    let test = Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move { server.run().await });
+        let addr = handle.local_addr().await.unwrap().unwrap();
+        let (mut client, _) = connect_client(addr, |client_addr| {
+            connector::ClientConnector::new(
+                connector::Config {
+                    credentials: connector::Credentials::UsernamePassword {
+                        username: "alice".to_owned(),
+                        password: "first password".to_owned(),
+                    },
+                    ..hybrid_client_config()
+                },
+                client_addr,
+            )
+        })
+        .await;
+
+        assert_eq!(handle.local_addr().await.unwrap(), Some(addr));
+        handle.quit("disconnect authenticated client").unwrap();
+        while client.read_pdu().await.is_ok() {}
+        assert_eq!(handle.local_addr().await.unwrap(), Some(addr));
+        handle.quit("stop idle listener").unwrap();
+        server_task.await.unwrap().unwrap();
+    }));
+    tokio::time::timeout(Duration::from_secs(15), test)
+        .await
+        .expect("credential updates and shutdown must finish");
+}
+
+// oracle: mutant local_addr fabricating an address when none is bound
+#[tokio::test]
+async fn server_handle_local_addr_is_none_for_an_external_source() {
+    let mut server = server_for_handle_tests(None);
+    let handle = server.handle().clone();
+    let (mut source, _) = listener_source(false).await;
+    let requests = async {
+        assert_eq!(handle.local_addr().await.unwrap(), None);
+        handle.quit("no internal listener").unwrap();
+    };
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let (result, ()) = tokio::join!(server.serve(&mut source), requests);
+        result.unwrap();
+    })
+    .await
+    .expect("external source must still service control requests");
+}
+
+// oracle: mutant quit or set_credentials reporting success after the server is dropped
+#[tokio::test]
+async fn server_handle_requests_fail_after_server_is_dropped() {
+    let server = server_for_handle_tests(None);
+    let handle = server.handle().clone();
+    drop(server);
+
+    assert!(handle.quit("server dropped").is_err());
+    assert!(
+        handle
+            .set_credentials(server::Credentials {
+                username: "alice".to_owned(),
+                password: "password".to_owned(),
+                domain: None,
+            })
+            .is_err()
+    );
+    assert!(handle.local_addr().await.is_err());
+}
+
+// oracle: mutant local_addr reporting None for a dropped reply
+#[tokio::test]
+async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
+    let server = server_for_handle_tests(None);
+    let handle = server.handle().clone();
+    let mut query = Box::pin(handle.local_addr());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(query.as_mut().poll(&mut context).is_pending());
+    drop(server);
+
+    assert!(query.await.is_err());
+}
+
+fn server_for_handle_tests(connection_handler: Option<Box<dyn server::ConnectionHandler>>) -> RdpServer {
+    RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_no_security()
+        .with_no_input()
+        .with_no_display()
+        .with_connection_handler(connection_handler)
+        .build()
+}
 
 #[tokio::test]
 async fn test_client_server() {
@@ -196,7 +335,8 @@ async fn largest_fast_path_update(client_max_request_size: u32) -> usize {
                             rewritten,
                         },
                     )
-                    .await;
+                    .await
+                    .expect("finalize connection");
                     let mut stage = ActiveStageBuilder {
                         static_channels: connection_result.static_channels,
                         user_channel_id: connection_result.user_channel_id,
@@ -584,6 +724,8 @@ async fn test_echo_virtual_channel_end_to_end() {
                 .await
                 .expect("echo RTT measurement was not produced");
             assert_eq!(measurement.payload, echo_payload);
+            // oracle: spec MS-RDPEDYC §2.2.2.2
+            assert!(echo_handle.is_channel_open(), "the client accepted the ECHO channel");
 
             (stage, framed)
         },
@@ -623,6 +765,139 @@ async fn a_new_connection_starts_without_the_previous_sessions_events() {
         },
     )
     .await
+}
+
+/// A display that cannot start returns a `ServerErrorKind::ErrorInfo` error, and the client gets that code in a Set
+/// Error Info PDU, so it can tell the user why the session ended instead of reporting a lost connection.
+// oracle: spec MS-RDPBCGR §2.2.5.1.1
+// oracle: regression #2301
+#[tokio::test]
+async fn a_display_that_cannot_start_tells_the_client_why() {
+    let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
+
+    let (reason, close) = Box::pin(run_failing_display_probe(Some(error_info))).await;
+
+    let Some(session::GracefulDisconnectReason::Other(description)) = reason else {
+        panic!("the client did not get the reason, it got {reason:?}");
+    };
+    // oracle: property round-trip
+    assert_eq!(description, error_info.description());
+    // The server closes the TLS session (close_notify) after the reason, as on a normal disconnect.
+    assert!(matches!(close, Some(Ok(0))), "{close:?}");
+}
+
+/// Other display errors close the connection as before, with no Set Error Info PDU.
+// oracle: doc RdpServerDisplay::updates and ServerErrorKind::ErrorInfo
+#[tokio::test]
+async fn a_display_error_without_error_info_sends_no_reason() {
+    let (reason, _) = Box::pin(run_failing_display_probe(None)).await;
+    assert!(reason.is_none(), "{reason:?}");
+}
+
+/// Connects a client to a server whose display fails to start with `error_info`, or with a plain error. Returns the
+/// reason the client got for the end of the session, and, when it got one, the result of the next read on the TLS
+/// stream: `Ok(0)` when the server closed the TLS session with close_notify.
+async fn run_failing_display_probe(
+    error_info: Option<ErrorInfo>,
+) -> (
+    Option<session::GracefulDisconnectReason>,
+    Option<std::io::Result<usize>>,
+) {
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(FailingDisplay { error_info })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+
+        let server_addr = local_addr_of(&ev).await;
+        let (mut framed, connection_result) = connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(default_client_config(), client_addr)
+        })
+        .await;
+        let mut stage = ActiveStageBuilder {
+            static_channels: connection_result.static_channels,
+            user_channel_id: connection_result.user_channel_id,
+            io_channel_id: connection_result.io_channel_id,
+            message_channel_id: connection_result.message_channel_id,
+            share_id: connection_result.share_id,
+            compression_type: connection_result.compression_type,
+            enable_server_pointer: connection_result.enable_server_pointer,
+            pointer_software_rendering: connection_result.pointer_software_rendering,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+        // The server closes the connection right after the display fails. Read until the reason, the end of
+        // the stream, or the deadline.
+        let mut reason = None;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while reason.is_none() {
+            let Ok(read) = tokio::time::timeout_at(deadline, framed.read_pdu()).await else {
+                break;
+            };
+            let Ok((action, frame)) = read else {
+                break;
+            };
+            for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
+                if let ActiveStageOutput::Terminate(terminate) = output {
+                    reason = Some(terminate);
+                }
+            }
+        }
+
+        let close = if reason.is_some() {
+            use tokio::io::AsyncReadExt as _;
+
+            let (mut stream, _) = framed.into_inner();
+            let mut buf = [0u8; 1];
+            tokio::time::timeout_at(deadline, stream.read(&mut buf)).await.ok()
+        } else {
+            None
+        };
+
+        server_task.abort();
+        (reason, close)
+    }))
+    .await
+}
+
+struct FailingDisplay {
+    error_info: Option<ErrorInfo>,
+}
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for FailingDisplay {
+    async fn size(&mut self) -> DesktopSize {
+        DesktopSize {
+            width: DESKTOP_WIDTH,
+            height: DESKTOP_HEIGHT,
+        }
+    }
+
+    async fn updates(&mut self, _: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+        Err(match self.error_info {
+            Some(error_info) => server::ServerError::new("display", server::ServerErrorKind::ErrorInfo(error_info)),
+            None => server::ServerError::new("display", server::ServerErrorKind::Reason("capture failed".to_owned())),
+        })
+    }
 }
 
 #[tokio::test]
@@ -2886,7 +3161,9 @@ async fn connect_client(
     server_addr: SocketAddr,
     make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
 ) -> (Framed<TokioStream<TlsStream<TcpStream>>>, connector::ConnectionResult) {
-    connect_client_with(server_addr, make_connector, |stream| stream).await
+    connect_client_with(server_addr, make_connector, |stream| stream)
+        .await
+        .expect("finalize connection")
 }
 
 /// Connects like [`connect_client`], with the TLS stream wrapped by `wrap`.
@@ -2894,41 +3171,237 @@ async fn connect_client_with<S>(
     server_addr: SocketAddr,
     make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
     wrap: impl FnOnce(TlsStream<TcpStream>) -> S,
-) -> (Framed<TokioStream<S>>, connector::ConnectionResult)
+) -> connector::ConnectorResult<(Framed<TokioStream<S>>, connector::ConnectionResult)>
 where
     S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
 {
-    let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
-    let client_addr = tcp_stream.local_addr().expect("local_addr");
-    let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
-    let mut connector = make_connector(client_addr);
-    let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
+    // Boxed, so the futures of the tests that connect stay under `clippy::large_futures`.
+    let client = Box::pin(UpgradedClient::connect(server_addr, make_connector)).await;
+    Box::pin(client.finalize_result(wrap)).await
+}
+
+/// A client that has done X.224 and the TLS upgrade, and not yet the rest of
+/// the connection sequence.
+struct UpgradedClient {
+    client_addr: SocketAddr,
+    connector: connector::ClientConnector,
+    upgraded: ironrdp_async::Upgraded,
+    stream: TlsStream<TcpStream>,
+    server_public_key: Vec<u8>,
+}
+
+#[tokio::test]
+async fn pending_session_exposes_delegated_identity_before_session_start() {
+    // oracle: spec MS-CSSP §2.2.1.2.1, §3.1.5
+    // oracle: mutant dropping or corrupting the delegated identity in pending-session construction or access.
+    let identity = test_tls_identity();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(identity.make_acceptor().unwrap(), identity.pub_key)
+        .with_no_input()
+        .with_no_display()
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: "alice".to_owned(),
+        password: "secret".to_owned(),
+        domain: Some("CORP".to_owned()),
+    }));
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    let server_handshake = async {
+        let (stream, _) = listener.accept().await.unwrap();
+        let pending = server.run_connection_handshake(stream).await.unwrap();
+        assert_eq!(
+            pending.captured_identity(),
+            Some(&server::CredsspAuthIdentity {
+                username: connector::sspi::Username::new("ALICE", Some("CORP")).unwrap(),
+                password: "secret".to_owned().into(),
+            })
+        );
+        drop(pending);
+    };
+    let client_handshake = async {
+        let client = Box::pin(UpgradedClient::connect(server_addr, |client_addr| {
+            connector::ClientConnector::new(
+                connector::Config {
+                    credentials: connector::Credentials::UsernamePassword {
+                        username: "ALICE".to_owned(),
+                        password: "secret".to_owned(),
+                    },
+                    domain: Some("CORP".to_owned()),
+                    ..default_client_config()
+                },
+                client_addr,
+            )
+        }))
+        .await;
+        let mut framed = ironrdp_tokio::TokioFramed::new(client.stream);
+        let result = Box::pin(ironrdp_async::connect_finalize(
+            client.upgraded,
+            client.connector,
+            &mut framed,
+            &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+            "localhost".into(),
+            client.server_public_key,
+            None,
+        ))
+        .await;
+        assert!(
+            result.is_err(),
+            "dropping the pending session must prevent session finalization"
+        );
+    };
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        Box::pin(async {
+            tokio::join!(server_handshake, client_handshake);
+        }),
+    )
+    .await
+    .expect("managed-TLS CredSSP handshake completed");
+}
+
+#[tokio::test]
+async fn hybrid_ex_handshake_preserves_early_authorization_across_validator_change() {
+    // oracle: RdpServer::run_connection_handshake rustdoc describes this policy snapshot.
+    // oracle: MS-RDPBCGR §3.3.5.10.2 requires HYBRID_EX early authorization.
+    // oracle: mutant revalidating HYBRID_EX credentials during `run_connection_session` after early authorization succeeded.
+    let identity = test_tls_identity();
+    let accepted_creds = server::Credentials {
+        username: "alice".to_owned(),
+        password: "secret".to_owned(),
+        domain: Some("CORP".to_owned()),
+    };
+    let rejected_creds = server::Credentials {
+        username: "bob".to_owned(),
+        password: "other".to_owned(),
+        domain: Some("CORP".to_owned()),
+    };
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_hybrid(identity.make_acceptor().unwrap(), identity.pub_key)
+        .with_no_input()
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        })
+        .with_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+            accepted_creds.clone(),
+        ))))
+        .build();
+    server.set_credentials(Some(accepted_creds));
+    let ev = server.event_sender().clone();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    let server_flow = async {
+        let (stream, _) = listener.accept().await.unwrap();
+        let pending = server.run_connection_handshake(stream).await.unwrap();
+        server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+            rejected_creds,
+        ))));
+        Box::pin(server.run_connection_session(pending)).await.unwrap();
+    };
+    let client_flow = async {
+        let (mut framed, _connection_result) = Box::pin(connect_client_with(
+            server_addr,
+            |client_addr| {
+                connector::ClientConnector::new(
+                    connector::Config {
+                        credentials: connector::Credentials::UsernamePassword {
+                            username: "alice".to_owned(),
+                            password: "secret".to_owned(),
+                        },
+                        domain: Some("CORP".to_owned()),
+                        ..default_client_config()
+                    },
+                    client_addr,
+                )
+            },
+            |stream| stream,
+        ))
         .await
-        .expect("begin connection");
-    let initial_stream = framed.into_inner_no_leftover();
-    let (upgraded_stream, tls_cert) = ironrdp_tls::upgrade_with_certificate_validation(
-        initial_stream,
-        "localhost",
-        ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
+        .expect("HYBRID_EX session finalized despite validator change after handshake");
+        ev.send(ServerEvent::Quit("bye".into())).unwrap();
+        let _ = framed.read_pdu().await;
+    };
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        Box::pin(async {
+            tokio::join!(server_flow, client_flow);
+        }),
     )
     .await
-    .expect("TLS upgrade");
-    let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
-    let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert).expect("extract server public key");
-    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(wrap(upgraded_stream));
-    let connection_result = ironrdp_async::connect_finalize(
-        upgraded,
-        connector,
-        &mut upgraded_framed,
-        &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
-        "localhost".into(),
-        server_public_key.to_owned(),
-        None,
-    )
-    .await
-    .and_then(connector::ConnectionOutcome::into_connected)
-    .expect("finalize connection");
-    (upgraded_framed, connection_result)
+    .expect("HYBRID_EX staged session completed");
+}
+
+impl UpgradedClient {
+    /// Connects to `server_addr` up to the TLS upgrade. `make_connector` receives
+    /// the client's local address.
+    async fn connect(
+        server_addr: SocketAddr,
+        make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
+    ) -> Self {
+        let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+        let client_addr = tcp_stream.local_addr().expect("local_addr");
+        let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
+        let mut connector = make_connector(client_addr);
+        let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
+            .await
+            .expect("begin connection");
+        let initial_stream = framed.into_inner_no_leftover();
+        let (stream, tls_cert) = ironrdp_tls::upgrade_with_certificate_validation(
+            initial_stream,
+            "localhost",
+            ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
+        )
+        .await
+        .expect("TLS upgrade");
+        let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
+        let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert)
+            .expect("extract server public key")
+            .to_owned();
+        Self {
+            client_addr,
+            connector,
+            upgraded,
+            stream,
+            server_public_key,
+        }
+    }
+
+    /// Completes the connection sequence, over the TLS stream wrapped by `wrap`.
+    async fn finalize<S>(
+        self,
+        wrap: impl FnOnce(TlsStream<TcpStream>) -> S,
+    ) -> (Framed<TokioStream<S>>, connector::ConnectionResult)
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        self.finalize_result(wrap).await.expect("finalize connection")
+    }
+
+    async fn finalize_result<S>(
+        self,
+        wrap: impl FnOnce(TlsStream<TcpStream>) -> S,
+    ) -> connector::ConnectorResult<(Framed<TokioStream<S>>, connector::ConnectionResult)>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(wrap(self.stream));
+        let connection_result = ironrdp_async::connect_finalize(
+            self.upgraded,
+            self.connector,
+            &mut upgraded_framed,
+            &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+            "localhost".into(),
+            self.server_public_key,
+            None,
+        )
+        .await
+        .and_then(connector::ConnectionOutcome::into_connected)?;
+        Ok((upgraded_framed, connection_result))
+    }
 }
 
 /// Counts how often each `ConnectionHandler` hook reached the handler.
@@ -2939,6 +3412,11 @@ struct HookCounts {
     accept: AtomicUsize,
     info: AtomicUsize,
     disconnected: AtomicUsize,
+    /// The peer of each `on_accept`, the `ConnectionInfo::peer_addr` of each
+    /// `on_connection_info`, and the peer of each `on_disconnected`, in call order.
+    accept_peers: StdMutex<Vec<SocketAddr>>,
+    info_peers: StdMutex<Vec<Option<SocketAddr>>>,
+    disconnected_peers: StdMutex<Vec<SocketAddr>>,
 }
 
 impl HookCounts {
@@ -2952,32 +3430,45 @@ impl HookCounts {
 
     /// Poll until `done` holds for the counts, or a generous deadline passes.
     async fn wait_until(&self, done: impl Fn((usize, usize, usize)) -> bool) -> (usize, usize, usize) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !done(self.get()) && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        poll_until(|| done(self.get())).await;
         self.get()
     }
+}
+
+/// Poll `done` every 20 ms until it holds or a generous 5 s deadline passes;
+/// returns whether it held.
+async fn poll_until(mut done: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        if deadline <= Instant::now() {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    true
 }
 
 struct HookRecorder(Arc<HookCounts>);
 
 impl server::ConnectionHandler for HookRecorder {
-    fn on_accept(&mut self, _peer: SocketAddr) -> bool {
+    fn on_accept(&mut self, peer: SocketAddr) -> bool {
+        self.0.accept_peers.lock().unwrap().push(peer);
         self.0.accept.fetch_add(1, Ordering::SeqCst);
         true
     }
 
-    fn on_connection_info(&mut self, _info: &server::ConnectionInfo) {
+    fn on_connection_info(&mut self, info: &server::ConnectionInfo) {
+        self.0.info_peers.lock().unwrap().push(info.peer_addr);
         self.0.info.fetch_add(1, Ordering::SeqCst);
     }
 
     fn on_disconnected(
         &mut self,
-        _peer: SocketAddr,
+        peer: SocketAddr,
         _duration: Duration,
         _error: Option<&server::ServerError>,
     ) -> server::PostConnectionAction {
+        self.0.disconnected_peers.lock().unwrap().push(peer);
         self.0.disconnected.fetch_add(1, Ordering::SeqCst);
         server::PostConnectionAction::Continue
     }
@@ -2989,12 +3480,31 @@ impl server::ConnectionHandler for HookRecorder {
 fn hook_recording_server(
     policy: server::ConnectionPolicy,
 ) -> (RdpServer, Arc<HookCounts>, UnboundedSender<DisplayUpdate>) {
+    let counts = Arc::new(HookCounts::default());
+    let (server, display_tx) = handler_server(Box::new(HookRecorder(Arc::clone(&counts))), policy);
+    (server, counts, display_tx)
+}
+
+/// A TLS server under `policy` with `handler` as its connection handler. Keep
+/// the returned display sender alive for the test: once it drops, the display
+/// stream ends and the server closes the session.
+fn handler_server(
+    handler: Box<dyn server::ConnectionHandler>,
+    policy: server::ConnectionPolicy,
+) -> (RdpServer, UnboundedSender<DisplayUpdate>) {
+    handler_server_with_desktop_limit(handler, policy, None)
+}
+
+fn handler_server_with_desktop_limit(
+    handler: Box<dyn server::ConnectionHandler>,
+    policy: server::ConnectionPolicy,
+    desktop_limit: Option<DesktopSize>,
+) -> (RdpServer, UnboundedSender<DisplayUpdate>) {
     let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
     let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
     let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
     let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
 
-    let counts = Arc::new(HookCounts::default());
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let mut server = RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
@@ -3004,15 +3514,16 @@ fn hook_recording_server(
             rx: Arc::new(Mutex::new(display_rx)),
             offers_display_control: true,
         })
-        .with_connection_handler(Some(Box::new(HookRecorder(Arc::clone(&counts)))))
+        .with_connection_handler(Some(handler))
         .with_connection_policy(policy)
+        .with_honor_client_desktop_size(desktop_limit)
         .build();
     server.set_credentials(Some(server::Credentials {
         username: USERNAME.into(),
         password: PASSWORD.into(),
         domain: None,
     }));
-    (server, counts, display_tx)
+    (server, display_tx)
 }
 
 async fn local_addr_of(ev: &UnboundedSender<ServerEvent>) -> SocketAddr {
@@ -3049,6 +3560,401 @@ async fn hooks_reaching_handler_under(policy: server::ConnectionPolicy) -> (bool
             (accept >= 1, info >= 1)
         })
         .await
+}
+
+/// `(desktop, device)` scale factors as `ConnectionInfo` reports them.
+type ScaleFactors = (Option<u32>, Option<u32>);
+
+/// Records the scale factors `on_connection_info` reports.
+struct ScaleRecorder(Arc<StdMutex<Option<ScaleFactors>>>);
+
+impl server::ConnectionHandler for ScaleRecorder {
+    fn on_connection_info(&mut self, info: &server::ConnectionInfo) {
+        *self.0.lock().unwrap() = Some((info.desktop_scale_factor, info.device_scale_factor));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClientSessionConfig {
+    flags: ClientInfoFlags,
+    performance_flags: PerformanceFlags,
+    keyboard_layout: u32,
+    keyboard_type: gcc::KeyboardType,
+    keyboard_subtype: u32,
+    keyboard_functional_keys_count: u32,
+    ime_file_name: String,
+    desktop_size: Option<(u16, u16)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionSetupEvent {
+    ClientInfo(ClientInfoFlags),
+    ClientSessionConfig(ClientSessionConfig),
+    ConnectionInfo(ClientSessionConfig),
+}
+
+struct SessionConfigRecorder(Arc<StdMutex<Vec<SessionSetupEvent>>>);
+
+impl server::ConnectionHandler for SessionConfigRecorder {
+    fn on_client_info(&mut self, flags: ClientInfoFlags) -> ServerResult<()> {
+        self.0.lock().unwrap().push(SessionSetupEvent::ClientInfo(flags));
+        Ok(())
+    }
+
+    fn on_client_session_config(
+        &mut self,
+        flags: ClientInfoFlags,
+        performance_flags: PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> ServerResult<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(SessionSetupEvent::ClientSessionConfig(ClientSessionConfig {
+                flags,
+                performance_flags,
+                keyboard_layout,
+                keyboard_type,
+                keyboard_subtype,
+                keyboard_functional_keys_count,
+                ime_file_name: ime_file_name.to_owned(),
+                desktop_size: Some((desktop_size.width, desktop_size.height)),
+            }));
+        Ok(())
+    }
+
+    fn on_connection_info(&mut self, info: &server::ConnectionInfo) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(SessionSetupEvent::ConnectionInfo(ClientSessionConfig {
+                flags: info.client_info_flags,
+                performance_flags: info.performance_flags,
+                keyboard_layout: info.keyboard_layout,
+                keyboard_type: info.keyboard_type,
+                keyboard_subtype: info.keyboard_subtype,
+                keyboard_functional_keys_count: info.keyboard_functional_keys_count,
+                ime_file_name: info.ime_file_name.clone(),
+                desktop_size: None,
+            }));
+    }
+}
+
+/// A real client sends settings before capability exchange, and the server reports them through setup callbacks.
+async fn client_session_config_reported(desktop_limit: Option<DesktopSize>) -> Vec<SessionSetupEvent> {
+    let seen = Arc::new(StdMutex::new(Vec::new()));
+    let (mut server, _display_tx) = handler_server_with_desktop_limit(
+        Box::new(SessionConfigRecorder(Arc::clone(&seen))),
+        server::ConnectionPolicy::Queue,
+        desktop_limit,
+    );
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+
+            let server_addr = local_addr_of(&ev).await;
+            let (client, _) = connect_client(server_addr, |client_addr| {
+                let mut config = default_client_config();
+                config.desktop_size = DesktopSize {
+                    width: 1280,
+                    height: 720,
+                };
+                config.enable_audio_playback = false;
+                config.keyboard_layout = 0x0409;
+                config.keyboard_type = gcc::KeyboardType::JAPANESE;
+                config.keyboard_subtype = 0x1234_5678;
+                config.keyboard_functional_keys_count = 13;
+                config.ime_file_name = "test-ime.dll".to_owned();
+                config.performance_flags = PerformanceFlags::DISABLE_WALLPAPER | PerformanceFlags::DISABLE_THEMING;
+                connector::ClientConnector::new(config, client_addr)
+            })
+            .await;
+
+            assert!(
+                poll_until(|| seen.lock().unwrap().len() == 3).await,
+                "client session callbacks did not complete"
+            );
+            drop(client);
+            server_task.abort();
+            seen.lock().unwrap().clone()
+        })
+        .await
+}
+
+#[tokio::test]
+async fn server_forwards_client_session_configuration_before_connection_info() {
+    let events = Box::pin(client_session_config_reported(None)).await;
+    // oracle: mutant omitted or reordered setup callbacks before connection info
+    assert_eq!(events.len(), 3);
+
+    let SessionSetupEvent::ClientInfo(flags) = &events[0] else {
+        panic!("Client Info callback must run first");
+    };
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (Info Packet flags)
+    assert!(flags.contains(ClientInfoFlags::NO_AUDIO_PLAYBACK));
+
+    // oracle: spec MS-RDPBCGR §§ 2.2.1.3.2 and 2.2.1.11.1.1.1 (Client Core Data and Extended Info Packet fields)
+    let expected = ClientSessionConfig {
+        flags: *flags,
+        performance_flags: PerformanceFlags::DISABLE_WALLPAPER | PerformanceFlags::DISABLE_THEMING,
+        keyboard_layout: 0x0409,
+        keyboard_type: gcc::KeyboardType::JAPANESE,
+        keyboard_subtype: 0x1234_5678,
+        keyboard_functional_keys_count: 13,
+        ime_file_name: "test-ime.dll".to_owned(),
+        desktop_size: Some((DESKTOP_WIDTH, DESKTOP_HEIGHT)),
+    };
+    assert_eq!(events[1], SessionSetupEvent::ClientSessionConfig(expected.clone()));
+
+    let expected_connection_info = ClientSessionConfig {
+        desktop_size: None,
+        ..expected
+    };
+    assert_eq!(events[2], SessionSetupEvent::ConnectionInfo(expected_connection_info));
+}
+
+// oracle: mutant forwarding the display size instead of the adopted or clamped GCC desktop request
+#[rstest::rstest]
+#[case::adopted(1920, 1080, 1280, 720)]
+#[case::clamped(1100, 600, 1100, 600)]
+#[tokio::test]
+async fn client_session_config_reports_honored_desktop_size(
+    #[case] max_width: u16,
+    #[case] max_height: u16,
+    #[case] expected_width: u16,
+    #[case] expected_height: u16,
+) {
+    let events = Box::pin(client_session_config_reported(Some(DesktopSize {
+        width: max_width,
+        height: max_height,
+    })))
+    .await;
+    let SessionSetupEvent::ClientSessionConfig(config) = &events[1] else {
+        panic!("missing session configuration callback");
+    };
+    assert_eq!(config.desktop_size, Some((expected_width, expected_height)));
+}
+
+fn assert_handler_cause(error: connector::ConnectorError) {
+    assert!(
+        error
+            .source()
+            .is_some_and(|source| source.to_string().contains("rejected"))
+    );
+}
+
+// oracle: mutant early Client Info callback errors must not be discarded
+#[tokio::test]
+async fn client_info_handler_errors_reach_connection_setup() {
+    let mut server = server_for_handle_tests(Some(Box::new(RejectClientInfo(Arc::new(AtomicBool::new(false))))));
+    let error = ironrdp::acceptor::ConnectionSetupHandler::handle_client_info(&mut server, ClientInfoFlags::empty())
+        .await
+        .unwrap_err();
+    assert_handler_cause(error);
+}
+
+// oracle: mutant session configuration callback errors must not be discarded
+#[tokio::test]
+async fn client_session_config_handler_errors_reach_connection_setup() {
+    let mut server = server_for_handle_tests(Some(Box::new(RejectClientSessionConfig(Arc::new(AtomicBool::new(
+        false,
+    ))))));
+    let error = ironrdp::acceptor::ConnectionSetupHandler::handle_client_session_config(
+        &mut server,
+        ClientInfoFlags::empty(),
+        PerformanceFlags::empty(),
+        0,
+        gcc::KeyboardType::IBM_ENHANCED,
+        0,
+        0,
+        "",
+        DesktopSize {
+            width: DESKTOP_WIDTH,
+            height: DESKTOP_HEIGHT,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_handler_cause(error);
+}
+
+struct RejectClientInfo(Arc<AtomicBool>);
+
+impl server::ConnectionHandler for RejectClientInfo {
+    fn on_client_info(&mut self, _flags: ClientInfoFlags) -> ServerResult<()> {
+        self.0.store(true, Ordering::SeqCst);
+        Err(server::ServerError::reason("test client info", "rejected"))
+    }
+}
+
+struct RejectClientSessionConfig(Arc<AtomicBool>);
+
+impl server::ConnectionHandler for RejectClientSessionConfig {
+    fn on_client_session_config(
+        &mut self,
+        _flags: ClientInfoFlags,
+        _performance_flags: PerformanceFlags,
+        _keyboard_layout: u32,
+        _keyboard_type: gcc::KeyboardType,
+        _keyboard_subtype: u32,
+        _keyboard_functional_keys_count: u32,
+        _ime_file_name: &str,
+        _desktop_size: DesktopSize,
+    ) -> ServerResult<()> {
+        self.0.store(true, Ordering::SeqCst);
+        Err(server::ServerError::reason("test session config", "rejected"))
+    }
+}
+
+async fn connection_fails_for_handler(handler: Box<dyn server::ConnectionHandler>) -> bool {
+    let (mut server, _display_tx) = handler_server(handler, server::ConnectionPolicy::Queue);
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let server_addr = local_addr_of(&ev).await;
+            let result = connect_client_with(
+                server_addr,
+                |client_addr| connector::ClientConnector::new(default_client_config(), client_addr),
+                |stream| stream,
+            )
+            .await;
+            server_task.abort();
+            result.is_err()
+        })
+        .await
+}
+
+// oracle: mutant discarded Client Info callback rejection lets connection setup succeed
+#[tokio::test]
+async fn client_info_callback_rejection_stops_real_connection_setup() {
+    let callback_called = Arc::new(AtomicBool::new(false));
+    let connection_failed = Box::pin(connection_fails_for_handler(Box::new(RejectClientInfo(Arc::clone(
+        &callback_called,
+    )))))
+    .await;
+
+    assert!(
+        callback_called.load(Ordering::SeqCst),
+        "server did not invoke the rejecting callback"
+    );
+    assert!(
+        connection_failed,
+        "client connection succeeded despite callback rejection"
+    );
+}
+
+// oracle: mutant discarded session configuration callback rejection lets connection setup succeed
+#[tokio::test]
+async fn client_session_config_callback_rejection_stops_real_connection_setup() {
+    let callback_called = Arc::new(AtomicBool::new(false));
+    let connection_failed = Box::pin(connection_fails_for_handler(Box::new(RejectClientSessionConfig(
+        Arc::clone(&callback_called),
+    ))))
+    .await;
+
+    assert!(
+        callback_called.load(Ordering::SeqCst),
+        "server did not invoke the rejecting callback"
+    );
+    assert!(
+        connection_failed,
+        "client connection succeeded despite callback rejection"
+    );
+}
+
+/// Connect a real client announcing `desktop_scale_factor` (and
+/// `device_scale_factor`, when given) and report the `(desktop, device)` scale
+/// factors `on_connection_info` received.
+async fn scale_factors_reported_for(desktop_scale_factor: u32, device_scale_factor: Option<u32>) -> ScaleFactors {
+    let seen = Arc::new(StdMutex::new(None));
+    let (mut server, _display_tx) = handler_server(
+        Box::new(ScaleRecorder(Arc::clone(&seen))),
+        server::ConnectionPolicy::Queue,
+    );
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+
+            let server_addr = local_addr_of(&ev).await;
+            let (client, _) = connect_client(server_addr, |client_addr| {
+                let mut config = default_client_config();
+                config.desktop_scale_factor = desktop_scale_factor;
+                config.device_scale_factor = device_scale_factor;
+                connector::ClientConnector::new(config, client_addr)
+            })
+            .await;
+
+            assert!(
+                poll_until(|| seen.lock().unwrap().is_some()).await,
+                "on_connection_info never fired"
+            );
+            drop(client);
+            server_task.abort();
+            seen.lock().unwrap().expect("checked above")
+        })
+        .await
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.3.2 (a desktopScaleFactor in 100..=500 with a deviceScaleFactor of 100/140/180 is reported)
+#[tokio::test]
+async fn connection_info_reports_the_client_scale_factors() {
+    // A 2x client on a 140% device: both values are chosen here, so neither
+    // depends on the connector's defaults.
+    assert_eq!(
+        Box::pin(scale_factors_reported_for(200, Some(140))).await,
+        (Some(200), Some(140))
+    );
+}
+
+// oracle: reference crates/ironrdp-server/src/server.rs ConnectionInfo::new docs (fields the constructor leaves unset can be set on the result)
+#[test]
+fn connection_info_scale_factors_can_be_set_downstream() {
+    // An executable example of the documented pattern: ConnectionInfo is
+    // non_exhaustive, so a downstream ConnectionHandler test builds the
+    // 2x-client case from new() and sets the fields it needs.
+    let mut info = server::ConnectionInfo::new(0, gcc::KeyboardType::IBM_ENHANCED, String::new());
+    assert_eq!((info.desktop_scale_factor, info.device_scale_factor), (None, None));
+    info.desktop_scale_factor = Some(200);
+    info.device_scale_factor = Some(100);
+}
+
+// oracle: mutant new ConnectionInfo fields retain neutral defaults
+#[test]
+fn connection_info_new_defaults_client_session_fields() {
+    let info = server::ConnectionInfo::new(0, gcc::KeyboardType::IBM_ENHANCED, String::new());
+    assert_eq!(info.keyboard_subtype, 0);
+    assert_eq!(info.keyboard_functional_keys_count, 0);
+    assert_eq!(info.performance_flags, PerformanceFlags::empty());
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.3.2 (values outside 100..=500 / 100|140|180 MUST be ignored)
+#[tokio::test]
+async fn connection_info_ignores_out_of_range_scale_factors() {
+    // A desktop scale of 0 is out of range. The connector then sends a device
+    // scale of 0 too (it pairs an invalid desktop scale with Some(0)), so the
+    // wire carries (0, 0); a connector change there would alter this input.
+    // Both are outside the specified ranges, so both must read as unset.
+    assert_eq!(Box::pin(scale_factors_reported_for(0, None)).await, (None, None));
 }
 
 // A client must not send PTRFLAGS_HWHEEL to a server that does not set TS_INPUT_FLAG_MOUSE_HWHEEL.
@@ -3138,6 +4044,17 @@ async fn connection_handler_sees_every_hook_across_a_preemption() {
             (2, 2, 1),
             "after the takeover: both accepted, both reported connection info, the evicted one disconnected"
         );
+        // Each session's connection info names its own peer, also the newcomer's, whose `on_accept` ran while the
+        // first session was live.
+        // oracle: regression #2332
+        let accepted: Vec<_> = counts.accept_peers.lock().unwrap().iter().copied().map(Some).collect();
+        assert_eq!(*counts.info_peers.lock().unwrap(), accepted);
+        assert_ne!(accepted[0], accepted[1]);
+        // The evicted session's `on_disconnected` names the peer that the same session's hooks named.
+        assert_eq!(
+            counts.disconnected_peers.lock().unwrap().as_slice(),
+            [accepted[0].unwrap()]
+        );
 
         // And the evicted client's transport is closed, not left open.
         let evicted = tokio::time::timeout(Duration::from_secs(5), async {
@@ -3147,6 +4064,109 @@ async fn connection_handler_sees_every_hook_across_a_preemption() {
         assert!(evicted.is_ok(), "the evicted client's connection must be closed");
 
         drop(second);
+        server_task.abort();
+    }))
+    .await;
+}
+
+// oracle: regression #2332
+/// Under `Preempt`, the server accepts newcomers while a client is still in its
+/// connection sequence, so a newcomer's `on_accept` can come before that client's
+/// `on_connection_info`. `ConnectionInfo::peer_addr` still names the client.
+#[tokio::test]
+async fn connection_info_names_its_own_peer_after_a_later_on_accept() {
+    let (mut server, counts, _display_tx) = hook_recording_server(server::ConnectionPolicy::Preempt);
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+        let server_addr = local_addr_of(&ev).await;
+
+        // The client stops after the TLS upgrade.
+        let client = UpgradedClient::connect(server_addr, |client_addr| {
+            connector::ClientConnector::new(default_client_config(), client_addr)
+        })
+        .await;
+        let client_addr = client.client_addr;
+
+        let newcomer = TcpStream::connect(server_addr).await.expect("TCP connect");
+        let newcomer_addr = newcomer.local_addr().expect("local_addr");
+        assert_eq!(
+            counts.wait_until(|(accept, _, _)| 2 <= accept).await,
+            (2, 0, 0),
+            "the newcomer's on_accept ran before the client's on_connection_info"
+        );
+
+        let _client = client.finalize(|stream| stream).await;
+        assert_eq!(
+            counts.wait_until(|(_, info, _)| 1 <= info).await,
+            (2, 1, 0),
+            "the client's on_connection_info ran"
+        );
+
+        assert_eq!(*counts.accept_peers.lock().unwrap(), [client_addr, newcomer_addr]);
+        assert_eq!(*counts.info_peers.lock().unwrap(), [Some(client_addr)]);
+
+        drop(newcomer);
+        server_task.abort();
+    }))
+    .await;
+}
+
+// oracle: mutant a peer address left by a dropped `serve_connection` reaching the next `run_connection`
+/// `run_connection` gets a stream and no address, so its `ConnectionInfo` has no
+/// peer, also when it runs after a `serve_connection` that was dropped mid-session.
+#[tokio::test]
+async fn connection_info_has_no_peer_for_run_connection_after_a_dropped_serve_connection() {
+    let (mut server, counts, _display_tx) = hook_recording_server(server::ConnectionPolicy::Queue);
+    let (mut source, server_addr) = listener_source(true).await;
+    let (drop_tx, drop_rx) = oneshot::channel::<()>();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            use server::ConnectionSource as _;
+
+            let Ok(Some(first)) = source.accept().await else {
+                return;
+            };
+            tokio::select! {
+                _ = server.serve_connection(server::NextConnection::Incoming(first), &mut source) => {}
+                _ = drop_rx => {}
+            }
+            let Ok(Some(second)) = source.accept().await else {
+                return;
+            };
+            let _ = Box::pin(server.run_connection(second.stream)).await;
+        });
+        let connect = || {
+            connect_client(server_addr, |client_addr| {
+                connector::ClientConnector::new(default_client_config(), client_addr)
+            })
+        };
+
+        let (_first, _) = connect().await;
+        assert_eq!(
+            counts.wait_until(|(_, info, _)| 1 <= info).await.1,
+            1,
+            "the first client's on_connection_info ran"
+        );
+        drop_tx.send(()).expect("the server task waits for the signal");
+
+        let (_second, _) = connect().await;
+        assert_eq!(
+            counts.wait_until(|(_, info, _)| 2 <= info).await.1,
+            2,
+            "the second client's on_connection_info ran"
+        );
+
+        let info_peers = counts.info_peers.lock().unwrap().clone();
+        assert!(info_peers[0].is_some(), "serve_connection gave the first client's peer");
+        assert_eq!(info_peers[1], None);
+
         server_task.abort();
     }))
     .await;
@@ -3227,7 +4247,7 @@ async fn the_default_under_hybrid_lets_an_authenticated_newcomer_take_over() {
 /// A [`server::ConnectionSource`] over a TCP listener, standing in for an
 /// embedder's own accept loop. With `report_peer` false it gives no peer
 /// address, as a Unix socket or an AF_VSOCK listener would.
-struct ListenerSource {
+pub(super) struct ListenerSource {
     listener: TcpListener,
     report_peer: bool,
     /// The tag given to the next connection; 1 for the first.
@@ -3248,7 +4268,7 @@ impl server::ConnectionSource for ListenerSource {
     }
 }
 
-async fn listener_source(report_peer: bool) -> (ListenerSource, SocketAddr) {
+pub(super) async fn listener_source(report_peer: bool) -> (ListenerSource, SocketAddr) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
     (
@@ -3301,7 +4321,7 @@ const HYBRID_PASSWORD: &str = "password";
 /// that security is `Preempt`, and the display sender to keep alive for the
 /// test: once it drops, the display stream ends and the server closes the
 /// session.
-fn hybrid_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
+pub(super) fn hybrid_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
     let identity = test_tls_identity();
     let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
 
@@ -3324,7 +4344,7 @@ fn hybrid_server() -> (RdpServer, UnboundedSender<DisplayUpdate>) {
 }
 
 /// The client configuration that logs in to [`hybrid_server`].
-fn hybrid_client_config() -> connector::Config {
+pub(super) fn hybrid_client_config() -> connector::Config {
     connector::Config {
         credentials: connector::Credentials::UsernamePassword {
             username: HYBRID_USER.into(),

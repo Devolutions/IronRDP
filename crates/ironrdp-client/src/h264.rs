@@ -17,7 +17,7 @@ use tracing::warn;
 /// that never return.
 const BACKGROUND_START_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Creates an H.264 decoder for the graphics pipeline and for each video presentation.
+/// Creates an H.264 decoder for each graphics surface and for each video presentation.
 ///
 /// The graphics pipeline takes YUV planes from decoders that return them
 /// ([`H264Decoder::supports_yuv420`]) and converts them with its own color transform, which

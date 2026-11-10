@@ -94,7 +94,7 @@ pub enum RedirectedDriveError {
     ReservedDeviceId,
     /// RDPDR requires a nonempty user-visible drive name.
     EmptyDisplayName,
-    /// An embedded NUL would truncate the RDPDR Unicode device name.
+    /// The RDPDR device name is null-terminated, so it cannot contain a NUL.
     EmbeddedNul,
     /// The root is not an absolute, normalized path on a logical volume.
     InvalidRootPath,

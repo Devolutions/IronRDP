@@ -487,7 +487,7 @@ impl ChunkProcessor {
                 in: cursor
             ));
         }
-        if !header.flags.contains(ChannelControlFlags::PACKET_COMPRESSED) && expected_length < received_length {
+        if expected_length < received_length {
             self.clear_sequence();
             return Err(ironrdp_core::invalid_field_err!(
                 "length",
