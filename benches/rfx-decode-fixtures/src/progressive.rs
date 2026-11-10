@@ -1,9 +1,9 @@
 use ironrdp::graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp::graphics::progressive::encode_first_pass;
 use ironrdp::pdu::codecs::rfx::progressive::{
-    ComponentCodecQuant, FLAG_DWT_REDUCE_EXTRAPOLATE, ProgressiveBlock, ProgressiveContextPdu,
-    ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu, ProgressiveRegion, ProgressiveSyncPdu, ProgressiveTile,
-    TileSimple, encode_progressive_stream,
+    CONTEXT_FLAG_SUBBAND_DIFFING, ComponentCodecQuant, FLAG_DWT_REDUCE_EXTRAPOLATE, ProgressiveBlock,
+    ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu, ProgressiveRegion, ProgressiveSyncPdu,
+    ProgressiveTile, TileSimple, encode_progressive_stream,
 };
 use ironrdp::pdu::codecs::rfx::{Quant, RfxRectangle};
 
@@ -153,7 +153,7 @@ pub fn progressive_fixture(pattern: Pattern, width: u16, height: u16) -> Progres
         ProgressiveBlock::Context(ProgressiveContextPdu {
             context_id: 0,
             tile_size: u16::try_from(TILE).expect("tile size fits"),
-            flags: FLAG_DWT_REDUCE_EXTRAPOLATE,
+            flags: CONTEXT_FLAG_SUBBAND_DIFFING,
         }),
     ])
     .expect("encode context");
