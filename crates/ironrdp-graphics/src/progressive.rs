@@ -1678,6 +1678,10 @@ fn lacks_reference(
     })
 }
 
+/// Decodes a region's tile blocks on rayon's pool, handing the decoded tiles to `emit` in block order.
+///
+/// INVARIANT: `indices.len() == tile_blocks.len()`, and `indices[i]` is the slot of `tile_blocks[i]` in `surface.tiles`.
+/// INVARIANT: No index appears twice in `indices`, so each tile's state is taken and handed back once.
 #[cfg(feature = "rayon")]
 #[expect(clippy::too_many_arguments, reason = "the region's decode inputs, passed through")]
 fn decode_tile_blocks_parallel(
