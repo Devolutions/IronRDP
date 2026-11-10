@@ -16,10 +16,12 @@ pub fn corpus(sh: &Shell, command: &str) -> anyhow::Result<()> {
 }
 
 /// Runs the native RemoteFX decode benchmark.
-pub fn rfx_decode(sh: &Shell, args: Vec<String>) -> anyhow::Result<()> {
+/// With `rayon`, Progressive regions' tiles are decoded on rayon's pool.
+pub fn rfx_decode(sh: &Shell, rayon: bool, args: Vec<String>) -> anyhow::Result<()> {
     let _s = Section::new("BENCH-RFX-DECODE");
 
-    cmd!(sh, "{CARGO} bench -p benches --bench rfx-decode --")
+    let features: &[&str] = if rayon { &["--features", "rayon"] } else { &[] };
+    cmd!(sh, "{CARGO} bench -p benches --bench rfx-decode {features...} --")
         .args(args)
         .run()?;
 

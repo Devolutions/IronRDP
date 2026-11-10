@@ -452,6 +452,7 @@ dependencies = [
  "bytesize",
  "criterion",
  "ironrdp",
+ "ironrdp-graphics",
  "pico-args",
  "rfx-decode-fixtures",
  "tokio",
