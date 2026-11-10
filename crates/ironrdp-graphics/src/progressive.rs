@@ -4246,11 +4246,17 @@ mod tests {
                 false,
             );
 
-            assert!(matches!(
-                result,
-                Err(ProgressiveDecodeError::MissingTileReference { x_idx: 0, y_idx: 0 })
-            ));
-            assert!(surface.tiles.iter().all(Option::is_none));
+            assert!(
+                matches!(
+                    result,
+                    Err(ProgressiveDecodeError::MissingTileReference { x_idx: 0, y_idx: 0 })
+                ),
+                "{tile_count} tiles: {result:?}"
+            );
+            assert!(
+                surface.tiles.iter().all(Option::is_none),
+                "{tile_count} tiles: tile state left behind"
+            );
         }
     }
 
@@ -4493,40 +4499,47 @@ mod tests {
         let firsts: Vec<_> = (0..12).map(|i| tile_data(i * 7 - 40)).collect();
         let raws: Vec<[u8; 8]> = (0..12u8).map(|i| [i.wrapping_mul(37) | 1; 8]).collect();
 
+        // Each region builds on the state the ones before it left.
         let regions = [
-            simple(&originals, |_| false),
-            simple(&updates, |i| i % 2 == 0),
-            blocks(&firsts, |i, x_idx, y_idx, [y_data, cb_data, cr_data]| {
-                ProgressiveTile::First(TileFirst {
-                    quant_idx_y: 0,
-                    quant_idx_cb: 0,
-                    quant_idx_cr: 0,
-                    x_idx,
-                    y_idx,
-                    flags: if i % 3 == 0 { TILE_FLAG_DIFFERENCE } else { 0 },
-                    quality: 0,
-                    y_data,
-                    cb_data,
-                    cr_data,
-                    tail_data: &[],
-                })
-            }),
-            blocks(&raws, |_, x_idx, y_idx, raw_data| {
-                ProgressiveTile::Upgrade(TileUpgrade {
-                    quant_idx_y: 0,
-                    quant_idx_cb: 0,
-                    quant_idx_cr: 0,
-                    x_idx,
-                    y_idx,
-                    quality: 1,
-                    y_srl_data: &[],
-                    y_raw_data: raw_data,
-                    cb_srl_data: &[],
-                    cb_raw_data: raw_data,
-                    cr_srl_data: &[],
-                    cr_raw_data: raw_data,
-                })
-            }),
+            ("original tiles", simple(&originals, |_| false)),
+            ("difference and original tiles", simple(&updates, |i| i % 2 == 0)),
+            (
+                "first passes",
+                blocks(&firsts, |i, x_idx, y_idx, [y_data, cb_data, cr_data]| {
+                    ProgressiveTile::First(TileFirst {
+                        quant_idx_y: 0,
+                        quant_idx_cb: 0,
+                        quant_idx_cr: 0,
+                        x_idx,
+                        y_idx,
+                        flags: if i % 3 == 0 { TILE_FLAG_DIFFERENCE } else { 0 },
+                        quality: 0,
+                        y_data,
+                        cb_data,
+                        cr_data,
+                        tail_data: &[],
+                    })
+                }),
+            ),
+            (
+                "upgrades",
+                blocks(&raws, |_, x_idx, y_idx, raw_data| {
+                    ProgressiveTile::Upgrade(TileUpgrade {
+                        quant_idx_y: 0,
+                        quant_idx_cb: 0,
+                        quant_idx_cr: 0,
+                        x_idx,
+                        y_idx,
+                        quality: 1,
+                        y_srl_data: &[],
+                        y_raw_data: raw_data,
+                        cb_srl_data: &[],
+                        cb_raw_data: raw_data,
+                        cr_srl_data: &[],
+                        cr_raw_data: raw_data,
+                    })
+                }),
+            ),
         ];
 
         let mut whole_surface = SurfaceTiles::new(TILES_WIDE * 64, TILES_HIGH * 64, false).unwrap();
@@ -4534,7 +4547,7 @@ mod tests {
         let mut single_surface = SurfaceTiles::new(TILES_WIDE * 64, TILES_HIGH * 64, false).unwrap();
         let mut single_references = BTreeMap::new();
 
-        for region in &regions {
+        for (name, region) in &regions {
             let (whole, result) = collect_tile_blocks(
                 1,
                 &mut whole_surface,
@@ -4544,7 +4557,7 @@ mod tests {
                 &prog_quant_vals,
                 false,
             );
-            result.expect("whole region should decode");
+            result.unwrap_or_else(|error| panic!("{name}: whole region should decode: {error:?}"));
             let single: Vec<DecodedTile> = region
                 .chunks(1)
                 .flat_map(|block| {
@@ -4557,28 +4570,34 @@ mod tests {
                         &prog_quant_vals,
                         false,
                     );
-                    result.expect("single tile should decode");
+                    result.unwrap_or_else(|error| panic!("{name}: single tile should decode: {error:?}"));
                     tiles
                 })
                 .collect();
 
-            assert_eq!(whole.len(), 12);
-            assert_eq!(whole.len(), single.len());
+            assert_eq!(whole.len(), 12, "{name}");
+            assert_eq!(whole.len(), single.len(), "{name}");
             for (whole, single) in whole.iter().zip(&single) {
-                assert_eq!((whole.x_idx, whole.y_idx), (single.x_idx, single.y_idx));
-                assert!(whole.pixels == single.pixels, "tile pixels differ");
+                assert_eq!((whole.x_idx, whole.y_idx), (single.x_idx, single.y_idx), "{name}");
+                assert!(whole.pixels == single.pixels, "{name}: tile pixels differ");
             }
 
             for (whole, single) in whole_surface.tiles.iter().zip(&single_surface.tiles) {
                 let (whole, single) = (whole.as_deref().unwrap(), single.as_deref().unwrap());
-                assert!(whole.coefficients == single.coefficients, "tile coefficients differ");
-                assert!(whole.sign == single.sign, "tile signs differ");
-                assert_eq!(whole.pass, single.pass);
-                assert_eq!(whole.is_difference, single.is_difference);
-                assert_eq!(whole.quality, single.quality);
+                assert!(
+                    whole.coefficients == single.coefficients,
+                    "{name}: tile coefficients differ"
+                );
+                assert!(whole.sign == single.sign, "{name}: tile signs differ");
+                assert_eq!(whole.pass, single.pass, "{name}");
+                assert_eq!(whole.is_difference, single.is_difference, "{name}");
+                assert_eq!(whole.quality, single.quality, "{name}");
             }
-            assert!(whole_references == single_references, "sub-band references differ");
-            assert_eq!(whole_references.len(), 12);
+            assert!(
+                whole_references == single_references,
+                "{name}: sub-band references differ"
+            );
+            assert_eq!(whole_references.len(), 12, "{name}");
         }
 
         fn simple(data: &[[Vec<u8>; 3]], difference: fn(u16) -> bool) -> Vec<ProgressiveTile<'_>> {
