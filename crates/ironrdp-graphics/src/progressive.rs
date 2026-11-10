@@ -1635,7 +1635,8 @@ fn decode_tile_blocks(
             .get_or_create(x_idx, y_idx)
             .ok_or(ProgressiveDecodeError::TileOutOfBounds { x_idx, y_idx })?;
         let key = (surface_id, x_idx, y_idx);
-        let mut reference = references.remove(&key);
+        // The reference stays in the map, so a new one overwrites it in place.
+        let mut reference = references.get(&key).copied();
         let result = decode_tile(
             tile_state,
             &mut reference,
