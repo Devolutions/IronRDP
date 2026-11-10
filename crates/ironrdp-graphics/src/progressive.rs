@@ -1599,7 +1599,7 @@ fn decode_tile_blocks(
     mut emit: impl FnMut(DecodedTile),
 ) -> Result<(), ProgressiveDecodeError> {
     #[cfg(feature = "rayon")]
-    if tile_blocks.len() >= PARALLEL_MIN_TILES && !lacks_reference(surface_id, references, tile_blocks) {
+    if PARALLEL_MIN_TILES <= tile_blocks.len() && !lacks_reference(surface_id, references, tile_blocks) {
         let indices: Option<Vec<usize>> = tile_blocks
             .iter()
             .map(|block| {
