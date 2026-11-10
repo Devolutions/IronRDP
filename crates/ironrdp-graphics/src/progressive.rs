@@ -4212,6 +4212,7 @@ mod tests {
         (tiles, result)
     }
 
+    // oracle: mutant creating a tile's state before finding it has no reference
     #[test]
     fn difference_tiles_without_references_leave_no_tile_state() {
         use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileSimple};
@@ -4441,12 +4442,14 @@ mod tests {
         assert!(references.get(&(1, 0, 0)) == Some(&reference), "the reference changed");
     }
 
+    // oracle: mutant parallel decode diverging from tile-by-tile decode in pixels, tile state or references
+    #[cfg(feature = "rayon")]
     #[test]
     fn large_region_decodes_the_same_as_tile_by_tile() {
         use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileFirst, TileSimple, TileUpgrade};
 
         // A 4x3-tile surface: a region naming all 12 tiles takes the parallel
-        // path when rayon is enabled, and one tile at a time never does.
+        // path, and one tile at a time never does.
         const TILES_WIDE: u16 = 4;
         const TILES_HIGH: u16 = 3;
         let quant_vals = [ComponentCodecQuant::LOSSLESS];
