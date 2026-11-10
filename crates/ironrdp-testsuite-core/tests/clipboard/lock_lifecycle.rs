@@ -700,21 +700,11 @@ fn initiate_file_copy_releases_outgoing_download_locks() {
     // Wire order: an Unlock for each held lock, THEN our FormatList last.
     assert_eq!(messages.len(), 3, "expected 2 Unlock PDUs + 1 FormatList");
 
-    decode_pdu!(messages[0] => _b0, pdu0);
-    let id0 = match pdu0 {
-        ClipboardPdu::UnlockData(id) => id.0,
-        other => panic!("expected UnlockData first, got {other:?}"),
-    };
-    decode_pdu!(messages[1] => _b1, pdu1);
-    let id1 = match pdu1 {
-        ClipboardPdu::UnlockData(id) => id.0,
-        other => panic!("expected UnlockData second, got {other:?}"),
-    };
-    let mut unlocked = [id0, id1];
+    let mut unlocked = unlocked_ids(&messages[..2]);
     unlocked.sort_unstable();
-    let mut expected = [lock1, lock2];
+    let mut expected = vec![lock1, lock2];
     expected.sort_unstable();
-    assert_eq!(unlocked, expected, "both download locks must be unlocked");
+    assert_eq!(unlocked, expected, "both download locks must be unlocked first");
 
     decode_pdu!(messages[2] => _b2, last_pdu);
     assert!(
@@ -838,6 +828,35 @@ fn initiate_file_copy_keeps_a_lock_with_an_outstanding_request() {
         "the sweep keeps a kept lock while a request under it is outstanding"
     );
     assert!(download.cleared.lock().unwrap().is_empty());
+}
+
+/// An outstanding request cannot hold a kept lock indefinitely: the stale request sweep
+/// drops the request after the transfer timeout (60 s by default), and the lock is released
+/// on the next sweep, well before the maximum lock lifetime.
+// oracle: mutant exempting kept locks' requests from the stale sweep, or keeping the lock after the synthetic error
+#[test]
+fn a_kept_lock_is_released_once_its_outstanding_request_times_out() {
+    let mut download = Download::start();
+    download.advance_ms(30_000);
+    let messages = download.copy_local_file();
+    assert_eq!(unlocked_ids(&messages), Vec::<u32>::new(), "the lock in use is kept");
+
+    // 59 s after the request: it is still outstanding, so the lock stays.
+    download.advance_ms(29_000);
+    let messages = download.drive_timeouts();
+    assert_eq!(unlocked_ids(&messages), Vec::<u32>::new());
+    assert!(download.cleared.lock().unwrap().is_empty());
+
+    // 60 s after the request: the sweep drops it, and with nothing outstanding the lock,
+    // quiet since the request, is released.
+    download.advance_ms(1_000);
+    let mut unlocked = unlocked_ids(&download.drive_timeouts());
+    unlocked.extend(unlocked_ids(&download.drive_timeouts()));
+
+    // oracle: spec MS-RDPECLIP §2.2.4.1
+    assert_eq!(unlocked, vec![download.lock]);
+    assert_eq!(*download.cleared.lock().unwrap(), vec![vec![LockDataId(download.lock)]]);
+    assert!(download.expired.lock().unwrap().is_empty());
 }
 
 /// A lock whose download just received a response, with nothing outstanding, survives a
