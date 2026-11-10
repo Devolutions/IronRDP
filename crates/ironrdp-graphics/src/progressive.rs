@@ -4222,26 +4222,15 @@ mod tests {
     // oracle: mutant creating a tile's state before finding it has no reference
     #[test]
     fn difference_tiles_without_references_leave_no_tile_state() {
-        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileSimple};
-
         let data = encode_full_quality_component(7);
         for tile_count in [1, 12] {
-            let region: Vec<ProgressiveTile<'_>> = (0..tile_count)
-                .map(|i| {
-                    ProgressiveTile::Simple(TileSimple {
-                        quant_idx_y: 0,
-                        quant_idx_cb: 0,
-                        quant_idx_cr: 0,
-                        x_idx: i % 4,
-                        y_idx: i / 4,
-                        flags: TILE_FLAG_DIFFERENCE,
-                        y_data: &data,
-                        cb_data: &data,
-                        cr_data: &data,
-                        tail_data: &[],
-                    })
-                })
-                .collect();
+            let region: Vec<_> = failing_region(&data, |_, tile| ironrdp_pdu::codecs::rfx::progressive::TileSimple {
+                flags: TILE_FLAG_DIFFERENCE,
+                ..tile
+            })
+            .into_iter()
+            .take(tile_count)
+            .collect();
             let mut surface = SurfaceTiles::new(256, 192, false).unwrap();
             let (_, result) = collect_tile_blocks(
                 1,
@@ -4409,9 +4398,7 @@ mod tests {
     // oracle: mutant collecting every decoded tile before handing any to emit
     #[test]
     fn sequential_decode_emits_each_tile_before_decoding_the_next() {
-        // A region that repeats a tile is decoded one tile at a time; handing each tile
-        // over as it decodes lets the caller replace the earlier copy instead of holding
-        // every copy until the region ends.
+        // The second tile fails; the first has already been handed over by then.
         let data = encode_full_quality_component(7);
         let region: Vec<_> = failing_region(&data, |i, tile| {
             if i == 1 {
