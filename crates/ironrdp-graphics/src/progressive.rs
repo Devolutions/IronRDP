@@ -1649,7 +1649,7 @@ fn decode_tile_blocks(
         if created && matches!(result, Err(ProgressiveDecodeError::MissingTileReference { .. })) {
             surface.tiles[index] = None;
         }
-        if let Some(reference) = reference {
+        if let (Ok(_), Some(reference)) = (&result, reference) {
             references.insert(key, reference);
         }
         // A repeated tile replaces its earlier copy in the caller only if each is handed over as it decodes.
