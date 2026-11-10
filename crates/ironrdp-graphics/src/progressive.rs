@@ -3414,6 +3414,18 @@ mod tests {
         quant_prog_vals: Vec<ProgressiveCodecQuant>,
         tile: ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>,
     ) -> Vec<u8> {
+        progressive_region_stream(include_context, quant_vals, quant_prog_vals, 64, 64, vec![tile])
+    }
+
+    /// A stream holding one frame of one region, whose single rectangle is `width` by `height` at the origin.
+    fn progressive_region_stream(
+        include_context: bool,
+        quant_vals: Vec<ComponentCodecQuant>,
+        quant_prog_vals: Vec<ProgressiveCodecQuant>,
+        width: u16,
+        height: u16,
+        tiles: Vec<ironrdp_pdu::codecs::rfx::progressive::ProgressiveTile<'_>>,
+    ) -> Vec<u8> {
         use ironrdp_pdu::codecs::rfx::RfxRectangle;
         use ironrdp_pdu::codecs::rfx::progressive::{
             ProgressiveBlock, ProgressiveContextPdu, ProgressiveFrameBeginPdu, ProgressiveFrameEndPdu,
@@ -3439,13 +3451,13 @@ mod tests {
                 rects: vec![RfxRectangle {
                     x: 0,
                     y: 0,
-                    width: 64,
-                    height: 64,
+                    width,
+                    height,
                 }],
                 quant_vals,
                 quant_prog_vals,
                 flags: 0,
-                tiles: vec![tile],
+                tiles,
             }),
             ProgressiveBlock::FrameEnd(ProgressiveFrameEndPdu),
         ]);
@@ -4462,6 +4474,70 @@ mod tests {
         let (_, result) = collect_tile_blocks(1, &mut surface, &mut references, &truncated, &quant_vals, &[], false);
         assert!(result.is_err(), "truncated tile should fail");
         assert!(references.get(&(1, 0, 0)) == Some(&reference), "the reference changed");
+    }
+
+    // oracle: mutant losing a tile, or handing back another tile's pixels, between a large region's decode and its updates
+    #[test]
+    fn decode_bitmap_returns_every_tile_of_a_large_region() {
+        use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileSimple};
+
+        // A 4x3-tile surface: the region names all 12 tiles, which takes the parallel path when rayon is enabled.
+        // Each tile has its own colour, and is expected to come back as it does when it is sent alone.
+        let components = |i: u16| {
+            let i = i16::try_from(i).unwrap();
+            [i * 9 - 50, i * 4 - 20, 30 - i * 5]
+        };
+        let data: Vec<[Vec<u8>; 3]> = (0..12)
+            .map(|i| components(i).map(encode_full_quality_component))
+            .collect();
+        let tiles = (0..12u16)
+            .zip(&data)
+            .map(|(i, [y_data, cb_data, cr_data])| {
+                ProgressiveTile::Simple(TileSimple {
+                    quant_idx_y: 0,
+                    quant_idx_cb: 0,
+                    quant_idx_cr: 0,
+                    x_idx: i % 4,
+                    y_idx: i / 4,
+                    flags: 0,
+                    y_data,
+                    cb_data,
+                    cr_data,
+                    tail_data: &[],
+                })
+            })
+            .collect();
+        let stream = progressive_region_stream(true, vec![ComponentCodecQuant::LOSSLESS], vec![], 256, 192, tiles);
+
+        let updates = ProgressiveDecoder::new()
+            .decode_bitmap(1, 7, 256, 192, &stream)
+            .expect("region should decode");
+
+        assert_eq!(updates.len(), 12);
+        for i in 0..12u16 {
+            let alone = ProgressiveDecoder::new()
+                .decode_bitmap(1, 7, 64, 64, &simple_tile_stream(0, components(i), true))
+                .expect("single tile should decode")
+                .pop()
+                .expect("single tile should produce an update");
+            let update = updates
+                .iter()
+                .find(|update| (update.x_idx, update.y_idx) == (i % 4, i / 4))
+                .unwrap_or_else(|| panic!("tile {i} has no update"));
+            assert!(update.pixels == alone.pixels, "tile {i}: pixels differ");
+            // The region's rectangle covers the surface, so each tile is visible in full at its own place.
+            let (left, top) = (i % 4 * 64, i / 4 * 64);
+            assert_eq!(
+                update.update_rectangles,
+                [ExclusiveRectangle {
+                    left,
+                    top,
+                    right: left + 64,
+                    bottom: top + 64,
+                }],
+                "tile {i}"
+            );
+        }
     }
 
     // oracle: mutant parallel decode diverging from tile-by-tile decode in pixels, tile state or references
