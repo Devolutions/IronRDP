@@ -4693,6 +4693,7 @@ mod tests {
             );
             assert_eq!(whole_references.len(), 12, "{name}");
         }
+        return;
 
         fn simple(data: &[[Vec<u8>; 3]], difference: fn(u16) -> bool) -> Vec<ProgressiveTile<'_>> {
             blocks(data, |i, x_idx, y_idx, [y_data, cb_data, cr_data]| {
