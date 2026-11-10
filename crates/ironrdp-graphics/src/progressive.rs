@@ -4412,6 +4412,31 @@ mod tests {
         assert_eq!(emitted, [(0, 0)]);
     }
 
+    // oracle: mutant taking the reference out of the map and writing it back only after a successful decode
+    #[test]
+    fn failed_tile_keeps_its_reference() {
+        let data = encode_full_quality_component(7);
+        let original: Vec<_> = failing_region(&data, |_, tile| tile).into_iter().take(1).collect();
+        let truncated: Vec<_> = failing_region(&data, |_, tile| ironrdp_pdu::codecs::rfx::progressive::TileSimple {
+            cr_data: &[],
+            ..tile
+        })
+        .into_iter()
+        .take(1)
+        .collect();
+        let mut surface = SurfaceTiles::new(256, 192, false).unwrap();
+        let mut references = BTreeMap::new();
+        let quant_vals = [ComponentCodecQuant::LOSSLESS];
+
+        let (_, result) = collect_tile_blocks(1, &mut surface, &mut references, &original, &quant_vals, &[], false);
+        result.expect("original tile should decode");
+        let reference = references[&(1, 0, 0)];
+
+        let (_, result) = collect_tile_blocks(1, &mut surface, &mut references, &truncated, &quant_vals, &[], false);
+        assert!(result.is_err(), "truncated tile should fail");
+        assert!(references.get(&(1, 0, 0)) == Some(&reference), "the reference changed");
+    }
+
     #[test]
     fn large_region_decodes_the_same_as_tile_by_tile() {
         use ironrdp_pdu::codecs::rfx::progressive::{ProgressiveTile, TileFirst, TileSimple, TileUpgrade};
