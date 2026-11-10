@@ -59,6 +59,15 @@ impl FixedCircularBuffer {
 
         Ok(())
     }
+
+    /// The byte `distance` positions before the write position.
+    ///
+    /// INVARIANT: `0 < distance <= self.buffer.len()`. The callers are the compressor's history,
+    /// which only asks for positions it computed itself, so this is checked in debug builds only.
+    pub(crate) fn byte_back(&self, distance: usize) -> u8 {
+        debug_assert!(0 < distance && distance <= self.buffer.len());
+        self.buffer[(self.position + self.buffer.len() - distance) % self.buffer.len()]
+    }
 }
 
 impl io::Write for FixedCircularBuffer {

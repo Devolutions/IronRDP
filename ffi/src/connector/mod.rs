@@ -7,10 +7,12 @@ pub mod state;
 pub mod ffi {
     use core::fmt::Write as _;
 
-    use diplomat_runtime::DiplomatWriteable;
+    use diplomat_runtime::DiplomatWrite;
     use ironrdp::connector::Sequence as _;
     use ironrdp::displaycontrol::client::DisplayControlClient;
     use ironrdp::dvc::DvcClientProcessor;
+    use ironrdp::rdpei::RdpeiClient;
+    use ironrdp::rdpei::pdu::{CsReadyFlags, RdpInputProtocolVersion};
     use ironrdp_dvc_pipe_proxy::DvcNamedPipeProxy;
     use tracing::info;
 
@@ -23,20 +25,9 @@ pub mod ffi {
     use crate::error::ValueConsumedError;
     use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
     use crate::pdu::ffi::WriteBuf;
+    use crate::utils::monotonic_now;
 
-    /// Reads a monotonic clock for `Sequence::step`'s `received_at`. Epoch is the
-    /// first call; only differences are meaningful. This binding targets native
-    /// .NET hosts only, never `wasm32-unknown-unknown`, so `std::time::Instant`
-    /// is sufficient here (compare `ironrdp-blocking`'s identical helper, which
-    /// makes the same assumption for the same reason).
-    fn monotonic_now() -> ironrdp::connector::MonotonicInstant {
-        static EPOCH: std::sync::LazyLock<std::time::Instant> = std::sync::LazyLock::new(std::time::Instant::now);
-        ironrdp::connector::MonotonicInstant::from_millis(
-            u64::try_from(EPOCH.elapsed().as_millis()).unwrap_or(u64::MAX),
-        )
-    }
-
-    #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
+    #[diplomat::opaque_mut] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
 
     // Basic Impl for ClientConnector
@@ -66,6 +57,12 @@ pub mod ffi {
 
         // FIXME: We need to create opaque for ironrdp::rdpdr::Rdpdr
         /// Must use
+        ///
+        /// Announces a smartcard device. On Windows, calls are passed through to the local
+        /// WinSCard service; elsewhere every call fails with `SCARD_E_NO_SERVICE`.
+        ///
+        /// Some WinSCard calls complete asynchronously: call `ActiveStage::poll_rdpdr_deferred`
+        /// periodically to send their results to the server.
         pub fn with_static_channel_rdpdr(
             &mut self,
             computer_name: &str,
@@ -74,12 +71,24 @@ pub mod ffi {
             let Some(connector) = self.0.take() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            self.0 = Some(
-                connector.with_static_channel(
-                    ironrdp::rdpdr::Rdpdr::new(Box::new(ironrdp::rdpdr::NoopRdpdrBackend {}), computer_name.to_owned())
-                        .with_smartcard(smart_card_device_id),
-                ),
+
+            #[cfg(windows)]
+            let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(
+                ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(Vec::new())
+                    .map_err(|error| {
+                        crate::error::GenericError(
+                            anyhow::Error::new(error).context("invalid RDPDR backend configuration"),
+                        )
+                    })?
+                    .with_smartcard(true)
+                    .build(),
             );
+            #[cfg(not(windows))]
+            let backend: Box<dyn ironrdp::rdpdr::RdpdrBackend> = Box::new(ironrdp::rdpdr::NoopRdpdrBackend);
+
+            self.0 = Some(connector.with_static_channel(
+                ironrdp::rdpdr::Rdpdr::new(backend, computer_name.to_owned()).with_smartcard(smart_card_device_id),
+            ));
 
             Ok(())
         }
@@ -112,6 +121,32 @@ pub mod ffi {
                 info!(display_control_capabilities = ?c, "DisplayControl capabilities received");
                 Ok(Vec::new())
             }))
+        }
+
+        /// Attaches the MS-RDPEI dynamic channel so the client can send touch frames.
+        ///
+        /// `max_touch_contacts` is the `maxTouchContacts` advertised in `RDPINPUT_CS_READY_PDU`
+        /// ([MS-RDPEI] 2.2.3.2 "Client Ready PDU") and is the limit to give `TouchFrameBuilder`.
+        /// `show_touch_visuals` asks the server to draw its touch visuals.
+        /// Protocol version 2 is advertised, which covers touch and pen frames; multipen injection is
+        /// not requested, so pen frames use `deviceId` 0.
+        ///
+        /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
+        pub fn with_dynamic_channel_rdpei(
+            &mut self,
+            max_touch_contacts: u16,
+            show_touch_visuals: bool,
+        ) -> Result<(), Box<IronRdpError>> {
+            let flags = if show_touch_visuals {
+                CsReadyFlags::SHOW_TOUCH_VISUALS
+            } else {
+                CsReadyFlags::empty()
+            };
+            self.with_dvc(RdpeiClient::new(
+                max_touch_contacts,
+                flags,
+                RdpInputProtocolVersion::V200,
+            ))
         }
 
         pub fn with_dynamic_channel_pipe_proxy(
@@ -235,7 +270,7 @@ pub mod ffi {
             Ok(())
         }
 
-        pub fn next_pdu_hint(&self) -> Result<Option<Box<PduHint<'_>>>, Box<IronRdpError>> {
+        pub fn next_pdu_hint<'a>(&'a self) -> Result<Option<Box<PduHint<'a>>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
@@ -243,7 +278,8 @@ pub mod ffi {
             Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
         }
 
-        pub fn get_dyn_state(&self) -> Result<Box<DynState<'_>>, Box<IronRdpError>> {
+        #[diplomat::attr(auto, getter = "dyn_state")]
+        pub fn get_dyn_state<'a>(&'a self) -> Result<Box<DynState<'a>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
@@ -276,7 +312,8 @@ pub mod ffi {
     pub struct DynState<'a>(pub &'a dyn ironrdp::connector::State);
 
     impl<'a> DynState<'a> {
-        pub fn get_name(&'a self, writeable: &'a mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+        #[diplomat::attr(auto, getter = "name")]
+        pub fn get_name(&'a self, writeable: &'a mut DiplomatWrite) -> Result<(), Box<IronRdpError>> {
             let name = self.0.name();
             write!(writeable, "{name}")?;
             Ok(())

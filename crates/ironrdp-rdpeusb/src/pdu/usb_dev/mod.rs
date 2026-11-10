@@ -111,16 +111,10 @@ impl RegisterRequestCallback {
         let request_completion = match src.read_u32() {
             0x0 => None,
             _ => {
+                // The server allocates this ID in its own interface space and only uses it to
+                // receive completions, so any value is valid: Windows Server picks one below 4.
                 ensure_size!(in: src, size: InterfaceId::FIXED_PART_SIZE);
-                match src.read_u32() {
-                    0x0..=0x3 => {
-                        return Err(invalid_field_err!(
-                            "RequestCompletion",
-                            "conflict with default interfaces"
-                        , in: src));
-                    }
-                    value => Some(InterfaceId::try_from(value)?),
-                }
+                Some(InterfaceId::try_from(src.read_u32())?)
             }
         };
         Ok(Self {

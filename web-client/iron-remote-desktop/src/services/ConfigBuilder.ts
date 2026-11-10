@@ -21,6 +21,7 @@ export class ConfigBuilder {
     private password: string = '';
     private destination: string = '';
     private proxyAddress: string = '';
+    private webSocketProtocols: string[] = [];
     private serverDomain: string = '';
     private authToken: string = '';
     private desktopSize?: DesktopSize;
@@ -72,6 +73,17 @@ export class ConfigBuilder {
      */
     withProxyAddress(proxyAddress: string): ConfigBuilder {
         this.proxyAddress = proxyAddress;
+        return this;
+    }
+
+    /**
+     * Optional parameter
+     *
+     * @param protocols - The WebSocket subprotocols offered during the opening handshake
+     * @returns The builder instance for method chaining
+     */
+    withWebSocketProtocols(protocols: readonly string[]): ConfigBuilder {
+        this.webSocketProtocols = [...protocols];
         return this;
     }
 
@@ -141,6 +153,7 @@ export class ConfigBuilder {
         const configOptions = {
             destination: this.destination,
             serverDomain: this.serverDomain,
+            webSocketProtocols: this.webSocketProtocols,
             extensions: this.extensions,
             desktopSize: this.desktopSize,
         };

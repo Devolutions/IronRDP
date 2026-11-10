@@ -2,7 +2,8 @@ use std::borrow::Cow;
 
 use ironrdp_connector::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, Credentials, DesktopSize, MultitransportResult, Sequence as _, Written,
+    ClientConnector, ClientConnectorState, ConnectionOutcome, Credentials, DesktopSize, MultitransportResult,
+    Sequence as _, Written,
 };
 use ironrdp_core::{WriteBuf, decode, encode_vec};
 use ironrdp_pdu::gcc;
@@ -15,9 +16,11 @@ use ironrdp_pdu::rdp::headers::{
 };
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::rdp::server_redirection::{ServerRedirectionFlags, ServerRedirectionPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_session::x224::{Processor, ProcessorOutput};
 use ironrdp_svc::StaticChannelSet;
+use rstest::rstest;
 
 use ironrdp_testsuite_core::capsets::SERVER_DEMAND_ACTIVE;
 
@@ -34,6 +37,11 @@ fn test_config() -> ironrdp_connector::Config {
         },
         monitor_layout: None,
         desktop_scale_factor: 0,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
         enable_tls: true,
         enable_credssp: false,
         enable_standard_rdp_security: false,
@@ -65,6 +73,7 @@ fn test_config() -> ironrdp_connector::Config {
         pointer_software_rendering: false,
         multitransport_flags: None,
         support_dyn_vc_gfx_protocol: false,
+        rdp_version: gcc::RdpVersion::V5_PLUS,
         performance_flags: Default::default(),
         timezone_info: Default::default(),
         alternate_shell: String::new(),
@@ -120,6 +129,53 @@ fn demand_active_static_channel_chunk_size(chunk_size: Option<u32>) -> usize {
         } => static_channel_chunk_size,
         state => panic!("expected ConnectionFinalization, got {state:?}"),
     }
+}
+
+fn step_demand_active_with_desktop_size(width: u16, height: u16) -> ironrdp_connector::ConnectorResult<Written> {
+    let mut demand_active = SERVER_DEMAND_ACTIVE.clone();
+    let bitmap = demand_active
+        .pdu
+        .capability_sets
+        .iter_mut()
+        .find_map(|capability_set| match capability_set {
+            CapabilitySet::Bitmap(bitmap) => Some(bitmap),
+            _ => None,
+        })
+        .expect("server demand active should include a bitmap capability");
+    bitmap.desktop_width = width;
+    bitmap.desktop_height = height;
+
+    let mut sequence = ConnectionActivationSequence::new(test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let mut output = WriteBuf::new();
+    let frame = encode_server_share_control(ShareControlPdu::ServerDemandActive(demand_active));
+    sequence.step(&frame, None, &mut output)
+}
+
+// oracle: regression #2082 - every non-zero size up to the 32766 virtual desktop limit is still accepted.
+#[rstest]
+#[case::smallest(1, 1)]
+#[case::common(1920, 1080)]
+#[case::largest(32766, 32766)]
+fn demand_active_accepts_server_desktop_size_within_range(#[case] width: u16, #[case] height: u16) {
+    step_demand_active_with_desktop_size(width, height).expect("desktop size within range should be accepted");
+}
+
+// oracle: regression #2082 - a server-announced desktop size drove an unbounded client framebuffer allocation.
+#[rstest]
+#[case::zero_width(0, 768)]
+#[case::zero_height(1024, 0)]
+#[case::width_above_max(32767, 768)]
+#[case::height_above_max(1024, 32767)]
+#[case::both_at_u16_max(u16::MAX, u16::MAX)]
+fn demand_active_rejects_server_desktop_size_out_of_range(#[case] width: u16, #[case] height: u16) {
+    let err =
+        step_demand_active_with_desktop_size(width, height).expect_err("desktop size out of range should be rejected");
+
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("desktop size {width}x{height} is outside the supported range")),
+        "unexpected error: {message}"
+    );
 }
 
 #[test]
@@ -419,7 +475,7 @@ fn active_processor_surfaces_multitransport_request_on_message_channel() {
     );
 
     let outputs = processor
-        .process(&frame, &mut None)
+        .process(&frame, &mut None, None)
         .expect("active processor should surface multitransport request");
 
     assert!(matches!(
@@ -708,4 +764,115 @@ fn demand_active_user_data_does_not_decode_as_multitransport_request() {
         decode::<MultitransportRequestPdu>(&user_data).is_err(),
         "a Demand Active must not be mistaken for a multitransport request"
     );
+}
+
+fn server_redirection() -> ServerRedirectionPdu {
+    ServerRedirectionPdu {
+        session_id: 4,
+        target_fqdn: Some("target.example.com".to_owned()),
+        load_balance_info: Some(b"Cookie: msts=3640205228.15629.0000\r\n".to_vec()),
+        ..ServerRedirectionPdu::default()
+    }
+}
+
+/// A server may redirect the client instead of activating it ([MS-RDPBCGR] 3.2.5.13.1): the connector ends in
+/// `Redirected` rather than failing on an unexpected PDU.
+// oracle: spec MS-RDPBCGR §3.2.5.13.1
+#[test]
+fn server_redirection_during_capabilities_exchange_ends_the_connection_sequence() {
+    let config = test_config();
+    let mut connector = ClientConnector::new(config.clone(), "127.0.0.1:3389".parse().unwrap());
+    connector.state = ClientConnectorState::CapabilitiesExchange {
+        connection_activation: ConnectionActivationSequence::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID),
+    };
+
+    let frame = encode_server_share_control(ShareControlPdu::ServerRedirect(server_redirection()));
+    let written = connector.step(&frame, None, &mut WriteBuf::new()).unwrap();
+
+    assert_eq!(written, Written::Nothing);
+    let Some(ConnectionOutcome::Redirected(redirection)) = connector.state.take_outcome() else {
+        panic!("expected a redirection outcome");
+    };
+    assert_eq!(redirection.session_id, 4);
+    assert_eq!(redirection.target_fqdn.as_deref(), Some("target.example.com"));
+}
+
+/// `LB_NOREDIRECT` marks the PDU as informational only ([MS-RDPBCGR] 2.2.13.1).
+// oracle: spec MS-RDPBCGR §2.2.13.1
+#[test]
+fn informational_server_redirection_does_not_interrupt_activation() {
+    let mut sequence = ConnectionActivationSequence::new(test_config(), IO_CHANNEL_ID, USER_CHANNEL_ID);
+    let informational = ServerRedirectionPdu {
+        flags: ServerRedirectionFlags::NO_REDIRECT,
+        ..server_redirection()
+    };
+
+    let frame = encode_server_share_control(ShareControlPdu::ServerRedirect(informational));
+    sequence.step(&frame, None, &mut WriteBuf::new()).unwrap();
+
+    assert!(matches!(
+        sequence.connection_activation_state(),
+        ConnectionActivationState::CapabilitiesExchange
+    ));
+}
+
+// oracle: spec MS-RDPBCGR §3.2.5.13.1
+#[test]
+fn active_processor_surfaces_server_redirection() {
+    let frame = encode_server_share_control(ShareControlPdu::ServerRedirect(server_redirection()));
+    let mut processor = Processor::new(
+        StaticChannelSet::new(),
+        USER_CHANNEL_ID,
+        IO_CHANNEL_ID,
+        Some(MESSAGE_CHANNEL_ID),
+        SHARE_ID,
+    );
+
+    let outputs = processor.process(&frame, &mut None, None).unwrap();
+
+    assert!(matches!(
+        outputs.as_slice(),
+        [ProcessorOutput::ServerRedirection(redirection)] if redirection.session_id == 4
+    ));
+}
+
+/// An informational Enhanced Security Server Redirection PDU uses Share Control framing, so a PDU concatenated after it
+/// in the same Send Data Indication is still processed.
+// oracle: spec MS-RDPBCGR §2.2.13.3.1
+#[test]
+fn active_processor_processes_the_pdu_after_an_informational_server_redirection() {
+    let mut user_data = encode_vec(&ShareControlHeader {
+        share_control_pdu: ShareControlPdu::ServerRedirect(ServerRedirectionPdu {
+            flags: ServerRedirectionFlags::NO_REDIRECT,
+            ..server_redirection()
+        }),
+        pdu_source: USER_CHANNEL_ID,
+        share_id: SHARE_ID,
+    })
+    .unwrap();
+    user_data.extend(
+        encode_vec(&ShareControlHeader {
+            share_control_pdu: ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll),
+            pdu_source: USER_CHANNEL_ID,
+            share_id: SHARE_ID,
+        })
+        .unwrap(),
+    );
+    let frame = encode_vec(&X224(McsMessage::SendDataIndication(SendDataIndication {
+        initiator_id: USER_CHANNEL_ID,
+        channel_id: IO_CHANNEL_ID,
+        user_data: Cow::Owned(user_data),
+    })))
+    .unwrap();
+    let mut processor = Processor::new(
+        StaticChannelSet::new(),
+        USER_CHANNEL_ID,
+        IO_CHANNEL_ID,
+        Some(MESSAGE_CHANNEL_ID),
+        SHARE_ID,
+    );
+
+    let outputs = processor.process(&frame, &mut None, None).unwrap();
+
+    assert!(matches!(outputs.as_slice(), [ProcessorOutput::DeactivateAll]));
 }

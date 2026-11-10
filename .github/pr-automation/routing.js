@@ -1,8 +1,28 @@
 "use strict";
 
-// Persisted routes and aggregates use this canonical reviewer order.
-const REVIEWER_ORDER = Object.freeze(["protocol", "skeptical", "code-compressor"]);
+const { AI_COUNTS, reviewCount } = require("./review-count");
+
+// Persisted routes and aggregates use this canonical reviewer order. It is also the matrix order, so
+// required and correctness reviewers start first when more than three specialists are selected.
+const REVIEWER_ORDER = Object.freeze([
+  "protocol", "skeptical", "intent-drift", "intent-review", "test", "dependency", "code-compressor",
+  "rust-style",
+]);
 const REVIEWER_IDS = new Set(REVIEWER_ORDER);
+// Findings each specialist may report. The narrow conditional specialists get a smaller budget, so
+// the maximum-shaped general review still fits the runtime's model message limit.
+const SPECIALIST_FINDING_LIMITS = Object.freeze({
+  protocol: 20,
+  skeptical: 20,
+  "intent-drift": 10,
+  "intent-review": 10,
+  test: 10,
+  dependency: 10,
+  "code-compressor": 20,
+  "rust-style": 10,
+});
+const MAXIMUM_CANDIDATES = REVIEWER_ORDER.reduce(
+  (total, reviewer) => total + SPECIALIST_FINDING_LIMITS[reviewer], 0);
 const RISKS = new Set(["low", "medium", "high", "unknown"]);
 
 function normalizeReviewerIds(value) {
@@ -51,13 +71,16 @@ function labelsOf(labels) {
 // Suspected overlap is approximate and must not suppress code review.
 function reviewPolicyEligible({ labels, legitimacyStopped } = {}) {
   const present = labelsOf(labels);
-  if (present.has("ai-reviewed/2") ||
+  const count = reviewCount(present);
+  if (count === undefined || count === AI_COUNTS.at(-1) ||
       present.has("triage/legitimacy") || legitimacyStopped === true) return false;
   return true;
 }
 
 module.exports = {
+  MAXIMUM_CANDIDATES,
   REVIEWER_ORDER,
+  SPECIALIST_FINDING_LIMITS,
   normalizeReviewerIds,
   resolveReviewerRoute,
   reviewPolicyEligible,

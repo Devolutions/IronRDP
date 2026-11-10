@@ -5,8 +5,7 @@ use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::sspi::network_client::NetworkClient;
 use ironrdp_connector::{
-    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, Sequence as _,
-    ServerName, State as _, general_err,
+    ClientConnector, ConnectionOutcome, ConnectorError, ConnectorResult, Sequence as _, ServerName, State as _,
 };
 use ironrdp_core::WriteBuf;
 use tracing::{debug, info, instrument, trace};
@@ -59,7 +58,7 @@ pub fn connect_finalize<S>(
     server_name: ServerName,
     server_public_key: Vec<u8>,
     kerberos_config: Option<KerberosConfig>,
-) -> ConnectorResult<ConnectionResult>
+) -> ConnectorResult<ConnectionOutcome>
 where
     S: Read + Write,
 {
@@ -81,7 +80,7 @@ where
 
     debug!("Remaining of connection sequence");
 
-    let result = loop {
+    let outcome = loop {
         if connector.should_perform_multitransport() {
             // Auto-skip multitransport bootstrapping: this driver does not own
             // UDP transport setup, so it declines on the application's behalf
@@ -101,14 +100,19 @@ where
 
         single_sequence_step(framed, &mut connector, &mut buf)?;
 
-        if let ClientConnectorState::Connected { result } = connector.state {
-            break result;
+        if let Some(outcome) = connector.state.take_outcome() {
+            break outcome;
         }
     };
 
-    info!("Connected with success");
+    match &outcome {
+        ConnectionOutcome::Connected(_) => info!("Connected with success"),
+        ConnectionOutcome::Redirected(redirection) => {
+            info!(session_id = redirection.session_id, "Server redirected the connection");
+        }
+    }
 
-    Ok(result)
+    Ok(outcome)
 }
 
 fn resolve_generator(
@@ -148,19 +152,8 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let selected_protocol = match connector.state {
-        ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
-        _ => return Err(general_err!("invalid connector state for CredSSP sequence")),
-    };
-
-    let (mut sequence, mut ts_request) = CredsspSequence::init(
-        connector.config.credentials.clone(),
-        connector.config.domain.as_deref(),
-        selected_protocol,
-        server_name,
-        server_public_key,
-        kerberos_config,
-    )?;
+    let (mut sequence, mut ts_request) =
+        CredsspSequence::init_for_connector(connector, server_name, server_public_key, kerberos_config)?;
 
     loop {
         let client_state = {
@@ -202,7 +195,7 @@ where
         }
     }
 
-    connector.mark_credssp_as_done();
+    connector.complete_credssp(sequence)?;
 
     Ok(())
 }

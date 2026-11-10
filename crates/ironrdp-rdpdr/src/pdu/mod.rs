@@ -10,14 +10,17 @@ use self::efs::{
     ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveLockControlResponse,
     ClientDriveNotifyChangeDirectoryResponse, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
     ClientDriveQuerySecurityResponse, ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse,
-    ClientDriveSetSecurityResponse, ClientNameRequest, CoreCapability, CoreCapabilityKind, DeviceCloseResponse,
-    DeviceControlResponse, DeviceCreateResponse, DeviceFlushBuffersResponse, DeviceIoRequest, DeviceIoResponse,
-    DeviceReadResponse, DeviceWriteResponse, FileInformationClassLevel, FileSystemInformationClassLevel, MajorFunction,
-    MinorFunction, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    ClientDriveSetSecurityResponse, ClientDriveSetVolumeInformationResponse, ClientNameRequest, CoreCapability,
+    CoreCapabilityKind, DeviceCloseResponse, DeviceControlResponse, DeviceCreateResponse, DeviceFlushBuffersResponse,
+    DeviceIoRequest, DeviceIoResponse, DeviceReadResponse, DeviceWriteResponse, FileInformationClassLevel,
+    FileSystemInformationClassLevel, MajorFunction, MinorFunction, ServerDeviceAnnounceResponse, VersionAndIdPdu,
+    VersionAndIdPduKind,
 };
 
 pub mod efs;
+pub mod epc;
 pub mod esc;
+pub mod esp;
 
 /// All available RDPDR PDUs.
 pub enum RdpdrPdu {
@@ -364,6 +367,64 @@ impl Encode for RdpdrPdu {
 }
 
 impl SvcEncode for RdpdrPdu {}
+
+/// Device I/O completions the client sends that [`RdpdrPdu`] has no variant for.
+pub(crate) enum DeviceIoCompletion {
+    /// A [2.2.1.5] Device I/O Response (DR_DEVICE_IOCOMPLETION) with no reply body after the
+    /// header, for requests with no response layout of their own, such as one whose MajorFunction
+    /// or MinorFunction is not described by MS-RDPEFS.
+    ///
+    /// [2.2.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/1c412a84-0776-4984-b35c-3f0445fcae65
+    Bare(DeviceIoResponse),
+    /// A Device I/O Response followed by five zero bytes, for a request kind whose own
+    /// response layout is not implemented. Five bytes cover the fixed part of every
+    /// MS-RDPEFS completion body (a 32-bit length and a padding byte, or five bytes of
+    /// padding), so a receiver that parses the body for the request kind reads an empty one.
+    Padded(DeviceIoResponse),
+    SetVolumeInformation(ClientDriveSetVolumeInformationResponse),
+}
+
+impl DeviceIoCompletion {
+    const PADDED_BODY_SIZE: usize = 4 /* Length */ + 1 /* Padding */;
+}
+
+impl Encode for DeviceIoCompletion {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        SharedHeader {
+            component: Component::RdpdrCtypCore,
+            packet_id: PacketId::CoreDeviceIoCompletion,
+        }
+        .encode(dst)?;
+        match self {
+            Self::Bare(response) => response.encode(dst),
+            Self::Padded(response) => {
+                response.encode(dst)?;
+                ensure_size!(in: dst, size: Self::PADDED_BODY_SIZE);
+                dst.write_array([0; Self::PADDED_BODY_SIZE]);
+                Ok(())
+            }
+            Self::SetVolumeInformation(response) => response.encode(dst),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Bare(_) | Self::Padded(_) => "DR_DEVICE_IOCOMPLETION",
+            Self::SetVolumeInformation(response) => response.name(),
+        }
+    }
+
+    fn size(&self) -> usize {
+        SharedHeader::SIZE
+            + match self {
+                Self::Bare(response) => response.size(),
+                Self::Padded(response) => response.size() + Self::PADDED_BODY_SIZE,
+                Self::SetVolumeInformation(response) => response.size(),
+            }
+    }
+}
+
+impl SvcEncode for DeviceIoCompletion {}
 
 impl fmt::Debug for RdpdrPdu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -4,7 +4,7 @@ pub mod ffi {
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::pdu::ffi::SecurityProtocol;
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct ClientConnectorState(pub Option<ironrdp::connector::ClientConnectorState>);
 
     pub enum ClientConnectorStateType {
@@ -23,9 +23,12 @@ pub mod ffi {
         CapabilitiesExchange,
         ConnectionFinalization,
         Connected,
+        /// The server sent a Server Redirection PDU instead of completing the connection.
+        Redirected,
     }
 
     impl ClientConnectorState {
+        #[diplomat::attr(auto, getter = "enum_type")]
         pub fn get_enum_type(&self) -> Result<ClientConnectorStateType, Box<IronRdpError>> {
             let res = match &self
                 .0
@@ -71,6 +74,7 @@ pub mod ffi {
                     ClientConnectorStateType::ConnectionFinalization
                 }
                 ironrdp::connector::ClientConnectorState::Connected { .. } => ClientConnectorStateType::Connected,
+                ironrdp::connector::ClientConnectorState::Redirected { .. } => ClientConnectorStateType::Redirected,
                 &_ => return Err("Unknown ClientConnectorStateType".into()),
             };
 
@@ -177,6 +181,23 @@ pub mod ffi {
                     Ok(Box::new(crate::connector::result::ffi::ConnectionResult(Some(result))))
                 }
                 _ => Err(IncorrectEnumTypeError::on_variant("Connected")
+                    .of_enum("ClientConnectorState")
+                    .into()),
+            }
+        }
+
+        pub fn get_redirected_result(
+            &mut self,
+        ) -> Result<Box<crate::connector::result::ffi::ServerRedirection>, Box<IronRdpError>> {
+            match self
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
+            {
+                ironrdp::connector::ClientConnectorState::Redirected { redirection } => {
+                    Ok(Box::new(crate::connector::result::ffi::ServerRedirection(*redirection)))
+                }
+                _ => Err(IncorrectEnumTypeError::on_variant("Redirected")
                     .of_enum("ClientConnectorState")
                     .into()),
             }

@@ -1,4 +1,5 @@
-use ironrdp_core::{Encode as _, ReadCursor, decode, decode_cursor, encode_vec};
+use ironrdp_core::{Encode as _, EncodeErrorKind, ReadCursor, decode, decode_cursor, encode_vec};
+use ironrdp_egfx::pdu::{Avc444BitmapStream, Encoding};
 use ironrdp_testsuite_core::gfx::*;
 use ironrdp_testsuite_core::graphics_messages::*;
 
@@ -420,8 +421,8 @@ fn buffer_length_is_correct_for_cache_import_reply() {
 }
 
 #[test]
-fn from_buffer_consume_correctly_parses_incorrect_len_avc_444_message() {
-    let buffer = AVC_444_MESSAGE_INCORRECT_LEN.as_ref();
+fn from_buffer_consume_correctly_parses_chroma_only_avc_444_message() {
+    let buffer = AVC_444_CHROMA_MESSAGE.as_ref();
 
     let mut cursor = ReadCursor::new(buffer);
     assert_eq!(*AVC_444_BITMAP, decode_cursor(&mut cursor).unwrap());
@@ -429,8 +430,8 @@ fn from_buffer_consume_correctly_parses_incorrect_len_avc_444_message() {
 }
 
 #[test]
-fn from_buffer_consume_correctly_parses_avc_444_message() {
-    let buffer = AVC_444_MESSAGE_CORRECT_LEN.as_ref();
+fn from_buffer_consume_correctly_parses_chroma_only_avc_444_message_with_len() {
+    let buffer = AVC_444_CHROMA_MESSAGE_WITH_LEN.as_ref();
 
     let mut cursor = ReadCursor::new(buffer);
     assert_eq!(*AVC_444_BITMAP, decode_cursor(&mut cursor).unwrap());
@@ -438,9 +439,52 @@ fn from_buffer_consume_correctly_parses_avc_444_message() {
 }
 
 #[test]
-fn to_buffer_consume_correctly_serializes_avc_444_message() {
+fn to_buffer_consume_correctly_serializes_chroma_only_avc_444_message() {
     let buffer = encode_vec(&*AVC_444_BITMAP).unwrap();
-    let expected = AVC_444_MESSAGE_CORRECT_LEN.as_ref();
+    let expected = AVC_444_CHROMA_MESSAGE.as_ref();
 
     assert_eq!(expected, buffer.as_slice());
+}
+
+#[test]
+fn to_buffer_avc_444_fails_on_a_second_sub_stream_unless_the_encoding_is_luma_and_chroma() {
+    for encoding in [Encoding::LUMA, Encoding::CHROMA] {
+        let stream = Avc444BitmapStream {
+            encoding,
+            stream2: Some(AVC_444_BITMAP.stream1.clone()),
+            ..AVC_444_BITMAP.clone()
+        };
+
+        match encode_vec(&stream) {
+            Err(e) if matches!(e.kind(), EncodeErrorKind::InvalidField { field: "stream2", .. }) => (),
+            res => panic!("Expected the invalid field error for {encoding:?}, got: {res:?}"),
+        }
+    }
+}
+
+#[test]
+fn to_buffer_avc_444_fails_on_luma_and_chroma_without_a_second_sub_stream() {
+    let stream = Avc444BitmapStream {
+        encoding: Encoding::LUMA_AND_CHROMA,
+        ..AVC_444_BITMAP.clone()
+    };
+
+    match encode_vec(&stream) {
+        Err(e) if matches!(e.kind(), EncodeErrorKind::InvalidField { field: "stream2", .. }) => (),
+        res => panic!("Expected the invalid field error, got: {res:?}"),
+    }
+}
+
+#[test]
+fn avc_444_with_both_sub_streams_round_trips_for_luma_and_chroma() {
+    let stream = Avc444BitmapStream {
+        encoding: Encoding::LUMA_AND_CHROMA,
+        stream2: Some(AVC_444_BITMAP.stream1.clone()),
+        ..AVC_444_BITMAP.clone()
+    };
+
+    let buffer = encode_vec(&stream).unwrap();
+
+    assert_eq!(buffer.len(), stream.size());
+    assert_eq!(stream, decode(buffer.as_slice()).unwrap());
 }

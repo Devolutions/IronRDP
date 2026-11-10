@@ -11,13 +11,19 @@
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod nix;
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+mod printer_cache;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use nix::{backend, printer};
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+pub use printer_cache::FileRdpdrPrinterCacheStore;
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::{
-    RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks, RedirectedDrive,
-    RedirectedDriveError, WindowsRdpdrBackend, WindowsRdpdrBackendFactory,
+    FIRST_NAMED_DRIVE_DEVICE_ID, LogicalDrive, LogicalDriveChange, LogicalDriveSelection, LogicalDriveSet,
+    LogicalDriveWatcher, PortSelection, RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks,
+    RedirectedDrive, RedirectedDriveError, RedirectedDriveFactoryError, WindowsPortRedirection,
+    WindowsPrinterRedirection, WindowsPrinterSelection, WindowsRdpdrBackend, WindowsRdpdrBackendFactory,
 };

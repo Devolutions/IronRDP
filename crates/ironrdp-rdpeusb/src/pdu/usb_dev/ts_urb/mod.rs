@@ -20,6 +20,10 @@ use crate::pdu::utils::{ConfigHandle, FrameNumber, PipeHandle, USBD_TRANSFER_DIR
 
 pub mod utils;
 
+/// Windows submits control requests without a data stage, including OUT ones such as a HID
+/// `SET_IDLE`, as `TRANSFER_IN_REQUEST`s whose transfer flags keep the OUT direction. The direction
+/// of control requests is not checked in a `TRANSFER_IN_REQUEST`, so that they decode and encode
+/// back as they are; the transfer flags tell it.
 macro_rules! ensure_transfer_flag {
     ($direction:expr, $transfer_flags:expr, $ts_urb_name:expr) => {
         let flag_in = ($transfer_flags & USBD_TRANSFER_DIRECTION_IN) == USBD_TRANSFER_DIRECTION_IN;
@@ -136,15 +140,10 @@ impl TsUrbInKind {
             UrbFunction::URB_FUNCTION_GET_CURRENT_FRAME_NUMBER => {
                 Self::GetCurFrameNum(TsUrbGetCurrFrameNum::decode(&mut src)?)
             }
-            UrbFunction::URB_FUNCTION_CONTROL_TRANSFER => {
-                let urb = TsUrbControlTransfer::decode(&mut src)?;
-                ensure_transfer_flag!(TransferDirection::In, urb.transfer_flags, "TS_URB_CONTROL_TRANSFER");
-                Self::CtlTransfer(urb)
-            }
+            // Control requests may be OUT requests without a data stage (see `ensure_transfer_flag`).
+            UrbFunction::URB_FUNCTION_CONTROL_TRANSFER => Self::CtlTransfer(TsUrbControlTransfer::decode(&mut src)?),
             UrbFunction::URB_FUNCTION_CONTROL_TRANSFER_EX => {
-                let urb = TsUrbControlTransferEx::decode(&mut src)?;
-                ensure_transfer_flag!(TransferDirection::In, urb.transfer_flags, "TS_URB_CONTROL_TRANSFER_EX");
-                Self::CtlTransferEx(urb)
+                Self::CtlTransferEx(TsUrbControlTransferEx::decode(&mut src)?)
             }
             UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER
             | UrbFunction::URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER_USING_CHAINED_MDL => {
@@ -190,13 +189,7 @@ impl TsUrbInKind {
             | UrbFunction::URB_FUNCTION_CLASS_INTERFACE
             | UrbFunction::URB_FUNCTION_CLASS_ENDPOINT
             | UrbFunction::URB_FUNCTION_CLASS_OTHER => {
-                let urb = TsUrbControlVendorClassRequest::decode(&mut src)?;
-                ensure_transfer_flag!(
-                    TransferDirection::In,
-                    urb.transfer_flags,
-                    "TS_URB_CONTROL_VENDOR_OR_CLASS_REQUEST"
-                );
-                Self::VendorClassReq(urb)
+                Self::VendorClassReq(TsUrbControlVendorClassRequest::decode(&mut src)?)
             }
             UrbFunction::URB_FUNCTION_GET_CONFIGURATION => {
                 Self::CtlGetConfig(TsUrbControlGetConfigRequest::decode(&mut src)?)
@@ -297,10 +290,8 @@ impl Encode for TsUrbInKind {
             SelectIface(urb) => urb.encode(dst),
             PipeReq(urb) => urb.encode(dst),
             GetCurFrameNum(urb) => urb.encode(dst),
-            CtlTransfer(urb) => {
-                ensure_transfer_flag!(TransferDirection::In, urb.transfer_flags, "TS_URB_CONTROL_TRANSFER");
-                urb.encode(dst)
-            }
+            // Control requests may be OUT requests without a data stage (see `ensure_transfer_flag`).
+            CtlTransfer(urb) => urb.encode(dst),
             BulkInterruptTransfer(urb) => {
                 ensure_transfer_flag!(
                     TransferDirection::In,
@@ -316,21 +307,11 @@ impl Encode for TsUrbInKind {
             CtlDescReq(urb) => urb.encode(dst),
             CtlFeatReq(urb) => urb.encode(dst),
             CtlGetStatus(urb) => urb.encode(dst),
-            VendorClassReq(urb) => {
-                ensure_transfer_flag!(
-                    TransferDirection::In,
-                    urb.transfer_flags,
-                    "TS_URB_CONTROL_VENDOR_OR_CLASS_REQUEST"
-                );
-                urb.encode(dst)
-            }
+            VendorClassReq(urb) => urb.encode(dst),
             CtlGetConfig(urb) => urb.encode(dst),
             CtlGetIface(urb) => urb.encode(dst),
             OsFeatDescReq(urb) => urb.encode(dst),
-            CtlTransferEx(urb) => {
-                ensure_transfer_flag!(TransferDirection::In, urb.transfer_flags, "TS_URB_CONTROL_TRANSFER_EX");
-                urb.encode(dst)
-            }
+            CtlTransferEx(urb) => urb.encode(dst),
         }
     }
 

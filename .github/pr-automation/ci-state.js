@@ -16,16 +16,27 @@ function exactHeadCiGeneration(run, expectedSha) {
   return run?.name === "CI" && run?.head_sha === expectedSha ? generation(run) : null;
 }
 
-// The triggering `workflow_run` event is authoritative for its own generation because the run
-// listing can lag behind it. A newer generation in the listing still wins.
+function statusRank(status) {
+  switch (status) {
+    case "completed": return 3;
+    case "in_progress": return 2;
+    // `requested` is a workflow_run event action; `queued` is the corresponding run status.
+    case "queued":
+    case "requested": return 1;
+    default: return 0;
+  }
+}
+
+// The triggering `workflow_run` event can be ahead of the listing. For the same generation,
+// retain whichever source reports the more advanced GitHub workflow status. A newer generation
+// in the listing still wins regardless of status.
 function latestExactHeadCiRun(runs, expectedSha, observedRun = null) {
   const observed = exactHeadCiGeneration(observedRun, expectedSha);
-  const candidates = (runs || []).filter((run) => {
-    const current = exactHeadCiGeneration(run, expectedSha);
-    return current && !(observed && compareGenerations(current, observed) === 0);
-  });
+  const candidates = (runs || []).filter((run) => exactHeadCiGeneration(run, expectedSha));
   if (observed) candidates.push(observedRun);
-  return candidates.sort((left, right) => compareGenerations(generation(right), generation(left)))[0] ?? null;
+  return candidates.sort((left, right) =>
+    compareGenerations(generation(right), generation(left)) ||
+    statusRank(right.status) - statusRank(left.status))[0] ?? null;
 }
 
 // Re-lists only while the listing is behind: no candidate, a candidate older than the expected

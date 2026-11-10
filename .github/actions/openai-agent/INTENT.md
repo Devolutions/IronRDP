@@ -47,7 +47,7 @@ An omitted choice index is accepted only for a single-choice chunk, and one comp
 Every accepted stream carries a terminal finish reason so cleanly truncated responses are retried rather than accepted.
 After that terminal reason, the conventional `choices: []` usage-only tail is preserved unchanged.
 The only accepted nonempty tail is one choice with an empty delta and an omitted, null, or matching finish reason, which maintains compatibility with providers that include usage metadata there.
-Every other nonempty post-finish tail remains a structural violation.
+Every other nonempty post-finish tail remains a structural violation, even when its only keys carry empty or null text.
 Missing optional reasoning or usage metadata makes diagnostics incomplete but does not invalidate otherwise acceptable text.
 
 Tool calls execute only after the complete stream has arrived, the provider reports a tool-call finish, every envelope is structurally valid, and the whole batch fits the remaining tool budget.
@@ -57,9 +57,11 @@ No tool from an incomplete or malformed batch executes.
 
 One model turn is one logical model call regardless of its number of HTTP attempts.
 The action retries only transient provider failures and never retries invalid configuration, rejected credentials, exhausted quota, invalid model output, or exhausted local limits.
+A structurally malformed stream, including unparsable server-sent-event data and a rejected post-finish tail, is a transient provider failure rather than invalid model output.
+JSON, schema, and semantic rejections of a structurally valid response remain output repairs, never request retries.
 The configured request-retry limit applies after the initial HTTP attempt.
 Retries reuse the unchanged message history and discard every fragment from the failed attempt.
-An interrupted streamed body is safe to retry because no partial assistant message or tool call has been committed.
+An interrupted or malformed streamed body is safe to retry because no partial assistant message or tool call has been committed.
 
 For retryable responses, the action honors a valid provider `Retry-After` value and otherwise uses bounded exponential backoff with jitter.
 Retry delays and repeated attempts consume the same stage deadline.
@@ -119,8 +121,11 @@ Expose these bounded diagnostics:
 - Token usage and whether it is complete.
 - Accumulated turn and tool-call counts, including on failure.
 - Every rejected output attempt with its validation layer, sanitized reason, and sanitized validator detail.
-- The first stream structural violation as a closed static value with no provider data.
+- The first stream structural violation as a closed static value with no provider data, and the violation of each HTTP attempt so recovered malformed streams stay visible.
 - Ignored empty post-finish choices, repeated terminal-choice subsets, and the first rejected post-finish shape as closed, content-free values.
+- Whether a rejected post-finish tail carried text or only empty or null text keys.
+
+Terminal failure logs report only the structural violation that caused the failure.
 
 Diagnostics and logs never expose credentials, prompts, repository evidence, tool arguments, tool results, reasoning, model content, or raw provider errors.
 Stream structural diagnostics use only a closed static vocabulary.

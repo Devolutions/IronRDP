@@ -1,25 +1,28 @@
-use std::sync::{Arc, mpsc};
+use core::future::ready;
+use std::sync::{Arc, Mutex};
 
 use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{PduResult, pdu_other_err};
 use ironrdp_svc::SvcMessage;
+use tokio::sync::mpsc;
 use tracing::{debug, error};
 
-use crate::worker::{OnWriteDvcMessage, WorkerCtx, run_worker};
+use crate::worker::{OnWriteDvcMessage, WorkerCtx, WriteDvcFuture, run_worker};
 
 const IO_MPSC_CHANNEL_SIZE: usize = 100;
 
 struct WorkerControlCtx {
-    to_pipe_tx: mpsc::SyncSender<Vec<u8>>,
+    to_pipe_tx: mpsc::Sender<Vec<u8>>,
     abort_event: Arc<tokio::sync::Notify>,
+    thread: std::thread::JoinHandle<()>,
 }
 
 /// A proxy DVC pipe client that forwards DVC messages to/from a named pipe server.
 pub struct DvcNamedPipeProxy {
     channel_name: String,
     named_pipe_name: String,
-    dvc_write_callback: Option<OnWriteDvcMessage>,
+    dvc_write_callback: OnWriteDvcMessage,
     worker: Option<WorkerControlCtx>,
 }
 
@@ -32,11 +35,41 @@ impl DvcNamedPipeProxy {
     where
         F: Fn(u32, Vec<SvcMessage>) -> PduResult<()> + Send + 'static,
     {
+        Self::new_async(channel_name, named_pipe_name, move |channel_id, messages| {
+            ready(dvc_write_callback(channel_id, messages))
+        })
+    }
+
+    /// Creates a proxy whose write callback can await transport capacity without losing stream bytes.
+    ///
+    /// Callback failure stops the worker; dropping the proxy cancels a pending callback.
+    pub fn new_async<F, Fut>(channel_name: &str, named_pipe_name: &str, dvc_write_callback: F) -> Self
+    where
+        F: Fn(u32, Vec<SvcMessage>) -> Fut + Send + 'static,
+        Fut: Future<Output = PduResult<()>> + Send + 'static,
+    {
         Self {
             channel_name: channel_name.to_owned(),
             named_pipe_name: named_pipe_name.to_owned(),
-            dvc_write_callback: Some(Box::new(dvc_write_callback)),
+            dvc_write_callback: Arc::new(Mutex::new(move |channel_id, messages| -> WriteDvcFuture {
+                Box::pin(dvc_write_callback(channel_id, messages))
+            })),
             worker: None,
+        }
+    }
+
+    fn stop_worker(&mut self) {
+        if let Some(ctx) = self.worker.take() {
+            debug!(
+                channel_name = %self.channel_name,
+                pipe_name = %self.named_pipe_name,
+                "Stopping DVC named pipe proxy worker"
+            );
+            ctx.abort_event.notify_one();
+            // Runtime teardown waits for filesystem operations before the pipe path is reused.
+            if let Err(error) = ctx.thread.join() {
+                error!(?error, "DVC pipe proxy worker thread panicked");
+            }
         }
     }
 }
@@ -51,12 +84,11 @@ impl DvcProcessor for DvcNamedPipeProxy {
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         debug!(%self.channel_name, %self.named_pipe_name, "Starting DVC named pipe proxy");
 
-        let on_write_dvc = self
-            .dvc_write_callback
-            .take()
-            .expect("DvcProcessor::start called multiple times");
+        // A server that closed the channel can open it again with the same proxy.
+        self.stop_worker();
+        let on_write_dvc = Arc::clone(&self.dvc_write_callback);
 
-        let (to_pipe_tx, to_pipe_rx) = mpsc::sync_channel(IO_MPSC_CHANNEL_SIZE);
+        let (to_pipe_tx, to_pipe_rx) = mpsc::channel(IO_MPSC_CHANNEL_SIZE);
 
         let abort_event = Arc::new(tokio::sync::Notify::new());
 
@@ -75,46 +107,38 @@ impl DvcProcessor for DvcNamedPipeProxy {
         #[cfg(target_os = "windows")]
         let worker = run_worker::<crate::platform::windows::WindowsPipe>(ctx);
 
-        if let Err(worker_error) = worker {
+        let thread = worker.map_err(|error| {
             error!(
                 channel_name = %self.channel_name,
                 pipe_name = %self.named_pipe_name,
-                %worker_error,
+                %error,
                 "Failed to start DVC pipe proxy worker thread"
             );
-            return Err(pdu_other_err!("start DVC pipe proxy worker: {worker_error}"));
-        }
+            pdu_other_err!("start DVC pipe proxy worker: {error}")
+        })?;
 
         self.worker = Some(WorkerControlCtx {
             to_pipe_tx,
             abort_event,
+            thread,
         });
 
         Ok(vec![])
     }
 
+    fn close(&mut self, _channel_id: u32) {
+        self.stop_worker();
+    }
+
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         if let Some(worker) = &self.worker {
-            // TODO(@pacmancoder): Whatever buffer size we use here, we will hit buffer limit
-            // eventually and fail if we are not send it in a blocking manner.
-            //
-            // Architecturally, blocking whole IronRDP/async runtime is not ideal (even if we know
-            // that proxy worker is running on a separate thread and there should be no risk of
-            // deadlock).
-            //
-            // Therefore it is only a temporary solution until we have a better design for DVC
-            // channels which could block. However its the only way to stop the DVC message flow
-            // from the host.
-            //
-            // During testing, blocking here don't seem to affect performance in any noticeable
-            // way - there is no visible main RDP functionality slowdown during large IO
-            // stream transfer.
-            let result = worker.to_pipe_tx.send(payload.to_vec());
-            if let Err(error) = result {
-                match error {
-                    mpsc::SendError(_) => {
-                        return Err(pdu_other_err!("DVC pipe proxy channel is closed"));
-                    }
+            match worker.to_pipe_tx.try_send(payload.to_vec()) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    return Err(pdu_other_err!("DVC pipe proxy outbound queue is full"));
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    return Err(pdu_other_err!("DVC pipe proxy channel is closed"));
                 }
             }
         } else {
@@ -129,15 +153,6 @@ impl DvcClientProcessor for DvcNamedPipeProxy {}
 
 impl Drop for DvcNamedPipeProxy {
     fn drop(&mut self) {
-        if let Some(ctx) = &self.worker {
-            debug!(
-                channel_name = %self.channel_name,
-                pipe_name = %self.named_pipe_name,
-                "Dropping DVC named pipe proxy"
-            );
-            // Signal the worker thread to abort.
-            ctx.abort_event.notify_one();
-        }
-        self.worker = None;
+        self.stop_worker();
     }
 }

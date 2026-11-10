@@ -1,10 +1,10 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 
-use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step};
+use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step_read};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
-use ironrdp_connector::{ConnectorResult, ServerName, custom_err, general_err};
+use ironrdp_connector::{ServerName, custom_err, general_err};
 use ironrdp_core::WriteBuf;
 use tracing::{debug, instrument, trace};
 
@@ -12,13 +12,21 @@ mod channel_connection;
 mod connection;
 pub mod credssp;
 mod finalization;
+#[cfg(windows)]
+mod native_credssp;
 mod util;
 
-pub use ironrdp_connector::DesktopSize;
+pub use ironrdp_connector::sspi::{AuthIdentity as CredsspAuthIdentity, UsernameParts};
+pub use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize};
 use ironrdp_pdu::nego;
+use ironrdp_pdu::rdp::client_info::ClientInfoFlags;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-pub use self::connection::{Acceptor, AcceptorResult, AcceptorState, MultitransportSecurityRng};
+pub use self::connection::{
+    Acceptor, AcceptorResult, AcceptorState, CredentialOrigin, MultitransportSecurityRng, ReceivedCredentials,
+    RemoteAppCapabilities,
+};
+pub use self::credssp::CredsspBackend;
 pub use self::finalization::{FinalizationSequence, FinalizationState};
 use crate::credssp::resolve_generator;
 
@@ -28,6 +36,65 @@ where
 {
     ShouldUpgrade(S::InnerStream),
     Continue(Framed<S>),
+}
+
+/// Async hooks that complete authenticated connection setup at protocol-safe points.
+///
+/// Credential handling runs before HYBRID_EX reports success.
+/// For TLS and plain HYBRID, it runs after channel joins and ClientInfo.
+/// Capability setup runs after the operational desktop size is known but before capability exchange.
+#[async_trait::async_trait(?Send)]
+pub trait ConnectionSetupHandler {
+    async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> ConnectorResult<()>;
+
+    /// Observes Client Info before capability setup, without establishing an authenticated identity.
+    async fn handle_client_info(&mut self, flags: ClientInfoFlags) -> ConnectorResult<()> {
+        let _ = flags;
+        Ok(())
+    }
+
+    /// Observes Client Info and Client Core Data session settings before capability setup.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards Client Info and GCC Client Core Data fields together"
+    )]
+    async fn handle_client_session_config(
+        &mut self,
+        flags: ClientInfoFlags,
+        performance_flags: ironrdp_pdu::rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> ConnectorResult<()> {
+        let _ = (
+            flags,
+            performance_flags,
+            keyboard_layout,
+            keyboard_type,
+            keyboard_subtype,
+            keyboard_functional_keys_count,
+            ime_file_name,
+            desktop_size,
+        );
+        Ok(())
+    }
+
+    async fn prepare_capability_exchange(&mut self, desktop_size: DesktopSize) -> ConnectorResult<()> {
+        let _ = desktop_size;
+        Ok(())
+    }
+}
+
+struct NoopConnectionSetupHandler;
+
+#[async_trait::async_trait(?Send)]
+impl ConnectionSetupHandler for NoopConnectionSetupHandler {
+    async fn handle_credentials(&mut self, _credentials: Option<ReceivedCredentials>) -> ConnectorResult<()> {
+        Ok(())
+    }
 }
 
 pub async fn accept_begin<S>(mut framed: Framed<S>, acceptor: &mut Acceptor) -> ConnectorResult<BeginResult<S>>
@@ -47,7 +114,7 @@ where
             return Ok(result);
         }
 
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        acceptor_step(&mut framed, acceptor, &mut buf).await?;
     }
 }
 
@@ -63,17 +130,44 @@ where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
 {
-    let mut buf = WriteBuf::new();
+    accept_credssp_with(
+        framed,
+        acceptor,
+        network_client,
+        client_computer_name,
+        public_key,
+        kerberos_config,
+        &mut NoopConnectionSetupHandler,
+    )
+    .await
+}
 
+/// Runs CredSSP and invokes `credentials_handler` before HYBRID_EX reports success.
+///
+/// Plain HYBRID defers credential handling to [`accept_finalize_with`] after channel joins.
+pub async fn accept_credssp_with<S, N, H>(
+    framed: &mut Framed<S>,
+    acceptor: &mut Acceptor,
+    network_client: &mut N,
+    client_computer_name: ServerName,
+    public_key: Vec<u8>,
+    kerberos_config: Option<KerberosServerConfig>,
+    credentials_handler: &mut H,
+) -> ConnectorResult<()>
+where
+    S: FramedRead + FramedWrite,
+    N: NetworkClient,
+    H: ConnectionSetupHandler,
+{
     if acceptor.should_perform_credssp() {
         perform_credssp_step(
             framed,
             acceptor,
             network_client,
-            &mut buf,
             client_computer_name,
             public_key,
             kerberos_config,
+            credentials_handler,
         )
         .await
     } else {
@@ -88,7 +182,20 @@ pub async fn accept_finalize<S>(
 where
     S: FramedRead + FramedWrite,
 {
-    accept_finalize_with_multitransport(framed, acceptor, |_, _| async {}).await
+    accept_finalize_with(framed, acceptor, &mut NoopConnectionSetupHandler).await
+}
+
+/// Finalizes the RDP handshake and invokes `credentials_handler` before capability exchange.
+pub async fn accept_finalize_with<S, H>(
+    framed: Framed<S>,
+    acceptor: &mut Acceptor,
+    credentials_handler: &mut H,
+) -> ConnectorResult<(Framed<S>, AcceptorResult)>
+where
+    S: FramedRead + FramedWrite,
+    H: ConnectionSetupHandler,
+{
+    accept_finalize_with_handlers(framed, acceptor, credentials_handler, |_, _| async {}).await
 }
 
 /// Completes the connection sequence, notifying `multitransport_handler` each
@@ -114,13 +221,40 @@ where
 /// after `multitransport_request()` returned `Some`, which the two methods'
 /// own contract does not allow.
 pub async fn accept_finalize_with_multitransport<S, H>(
-    mut framed: Framed<S>,
+    framed: Framed<S>,
     acceptor: &mut Acceptor,
-    mut multitransport_handler: H,
+    multitransport_handler: H,
 ) -> ConnectorResult<(Framed<S>, AcceptorResult)>
 where
     S: FramedRead + FramedWrite,
     H: AsyncFnMut(ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu, bool),
+{
+    accept_finalize_with_handlers(
+        framed,
+        acceptor,
+        &mut NoopConnectionSetupHandler,
+        multitransport_handler,
+    )
+    .await
+}
+
+/// Finalizes the handshake with both connection-setup and multitransport handlers.
+///
+/// The handlers follow the timing described by [`accept_finalize_with`] and [`accept_finalize_with_multitransport`].
+///
+/// # Panics
+///
+/// Panics if [`Acceptor::multitransport_soft_sync_negotiated`] returns `None` for an existing multitransport request.
+pub async fn accept_finalize_with_handlers<S, H, M>(
+    mut framed: Framed<S>,
+    acceptor: &mut Acceptor,
+    credentials_handler: &mut H,
+    mut multitransport_handler: M,
+) -> ConnectorResult<(Framed<S>, AcceptorResult)>
+where
+    S: FramedRead + FramedWrite,
+    H: ConnectionSetupHandler,
+    M: AsyncFnMut(ironrdp_pdu::rdp::multitransport::MultitransportRequestPdu, bool),
 {
     let mut buf = WriteBuf::new();
     // `multitransport_request()` borrows rather than consumes (the field it
@@ -135,14 +269,58 @@ where
     // this the first loop iteration of that fresh call would treat the
     // carried-over request as newly sent and notify the handler again.
     let mut notified = acceptor.multitransport_request().is_some();
+    let mut client_info_notified = acceptor.is_reactivation();
 
     loop {
         if let Some(result) = acceptor.get_result() {
             return Ok((framed, result));
         }
 
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
-
+        acceptor_step(&mut framed, acceptor, &mut buf).await?;
+        if !client_info_notified && let Some(flags) = acceptor.client_info_flags() {
+            credentials_handler.handle_client_info(flags).await?;
+            credentials_handler
+                .handle_client_session_config(
+                    flags,
+                    acceptor.performance_flags(),
+                    acceptor.keyboard_layout(),
+                    acceptor.keyboard_type(),
+                    acceptor.keyboard_subtype(),
+                    acceptor.keyboard_functional_keys_count(),
+                    acceptor.ime_file_name(),
+                    acceptor.desktop_size(),
+                )
+                .await?;
+            client_info_notified = true;
+        }
+        if acceptor.credentials_need_handling() {
+            if let Err(error) = credentials_handler
+                .handle_credentials(acceptor.received_credentials().cloned())
+                .await
+            {
+                buf.clear();
+                let written = acceptor.encode_access_denied(&mut buf)?;
+                if written != 0 {
+                    send_rejection(&mut framed, &buf[..written]).await;
+                }
+                return Err(error);
+            }
+            acceptor.mark_credentials_handled();
+        }
+        if !acceptor.is_reactivation()
+            && !acceptor.is_auto_reconnect_attempt()
+            && acceptor.is_ready_for_capability_exchange()
+            && let Err(error) = credentials_handler
+                .prepare_capability_exchange(acceptor.desktop_size())
+                .await
+        {
+            buf.clear();
+            let written = acceptor.encode_access_denied(&mut buf)?;
+            if written != 0 {
+                send_rejection(&mut framed, &buf[..written]).await;
+            }
+            return Err(error);
+        }
         if !notified && let Some(request) = acceptor.multitransport_request() {
             let request = request.clone();
             let soft_sync = acceptor
@@ -154,21 +332,79 @@ where
     }
 }
 
+/// Runs one acceptor step and sends what it writes, also when the step fails.
+///
+/// A failing step can write a PDU that tells the client why the server ends the connection: the [2.2.1.2.2] RDP
+/// Negotiation Failure when no security protocol is common, or the [2.2.5.1.1] Set Error Info PDU when the Client Info
+/// PDU carries credentials other than the expected ones.
+///
+/// [2.2.1.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/1b3920e7-0116-4345-bc45-f2c4ad012761
+/// [2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
+async fn acceptor_step<S>(framed: &mut Framed<S>, acceptor: &mut Acceptor, buf: &mut WriteBuf) -> ConnectorResult<()>
+where
+    S: FramedRead + FramedWrite,
+{
+    match single_sequence_step_read(framed, acceptor, buf).await {
+        Ok(written) => {
+            if let Some(response_len) = written.size() {
+                debug_assert_eq!(buf.filled_len(), response_len);
+                trace!(response_len, "Send response");
+                framed
+                    .write_all(&buf[..response_len])
+                    .await
+                    .map_err(|e| custom_err!("write all", e))?;
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if 0 < buf.filled_len() {
+                // A failing step writes one whole PDU or nothing, so the client never receives a truncated frame.
+                // Only debug builds check this, so a new error path that writes output needs a test driving it here.
+                debug_assert!(
+                    ironrdp_pdu::find_size(buf.filled())
+                        .ok()
+                        .flatten()
+                        .is_some_and(|pdu| pdu.length == buf.filled_len()),
+                    "a failing step wrote something other than one whole PDU"
+                );
+                send_rejection(framed, buf.filled()).await;
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Sends a PDU that tells the client why the server ends the connection.
+///
+/// A failed send is only logged, because the caller's error says why the connection ends and the write error would
+/// hide it.
+async fn send_rejection<S>(framed: &mut Framed<S>, pdu: &[u8])
+where
+    S: FramedWrite,
+{
+    trace!(pdu_len = pdu.len(), "Send rejection");
+    if let Err(error) = framed.write_all(pdu).await {
+        debug!(%error, "Failed to send the rejection");
+    }
+}
+
 #[instrument(level = "trace", skip_all, ret)]
-async fn perform_credssp_step<S, N>(
+async fn perform_credssp_step<S, N, H>(
     framed: &mut Framed<S>,
     acceptor: &mut Acceptor,
     network_client: &mut N,
-    buf: &mut WriteBuf,
     client_computer_name: ServerName,
     public_key: Vec<u8>,
     kerberos_config: Option<KerberosServerConfig>,
+    credentials_handler: &mut H,
 ) -> ConnectorResult<()>
 where
     S: FramedRead + FramedWrite,
     N: NetworkClient,
+    H: ConnectionSetupHandler,
 {
     assert!(acceptor.should_perform_credssp());
+    let mut buf = WriteBuf::new();
     let AcceptorState::Credssp { protocol, .. } = acceptor.state else {
         unreachable!()
     };
@@ -177,12 +413,26 @@ where
         framed,
         acceptor,
         network_client,
-        buf,
+        &mut buf,
         client_computer_name,
         public_key,
         kerberos_config,
     )
     .await;
+
+    let result = match result {
+        Ok(()) if protocol.intersects(nego::SecurityProtocol::HYBRID_EX) => match credentials_handler
+            .handle_credentials(acceptor.received_credentials().cloned())
+            .await
+        {
+            Ok(()) => {
+                acceptor.mark_credentials_handled();
+                Ok(())
+            }
+            Err(error) => Err(error),
+        },
+        result => result,
+    };
 
     if protocol.intersects(nego::SecurityProtocol::HYBRID_EX) {
         trace!(?result, "HYBRID_EX");
@@ -195,7 +445,7 @@ where
 
         buf.clear();
         result
-            .to_buffer(&mut *buf)
+            .to_buffer(&mut buf)
             .map_err(|e| ironrdp_connector::custom_err!("to_buffer", e))?;
         let response = &buf[..result.buffer_len()];
         framed
@@ -223,11 +473,26 @@ where
         S: FramedRead + FramedWrite,
         N: NetworkClient,
     {
+        match acceptor.credssp_backend {
+            CredsspBackend::Rust => {}
+            #[cfg(windows)]
+            CredsspBackend::Windows => {
+                let credentials = native_credssp::accept(framed, &public_key).await?;
+                acceptor.set_received_credssp_credentials(credentials);
+                return Ok(());
+            }
+        }
+
         let creds = acceptor
             .creds
             .as_ref()
             .ok_or_else(|| general_err!("no credentials while doing credssp"))?;
-        let username = Username::new(&creds.username, None).map_err(|e| custom_err!("invalid username", e))?;
+        let username = if creds.domain.is_none() && creds.username.contains(['\\', '@']) {
+            Username::parse(&creds.username)
+        } else {
+            Username::new(&creds.username, creds.domain.as_deref())
+        }
+        .map_err(|e| custom_err!("invalid username", e))?;
         let identity = AuthIdentity {
             username,
             password: creds.password.clone().into(),
@@ -264,7 +529,10 @@ where
             }; // drop generator
 
             buf.clear();
-            let written = sequence.handle_process_result(result, buf)?;
+            let (written, delegated_credentials) = sequence.handle_process_result(result, buf)?;
+            if let Some(credentials) = delegated_credentials {
+                acceptor.set_received_credssp_credentials(credentials);
+            }
 
             if let Some(response_len) = written.size() {
                 let response = &buf[..response_len];

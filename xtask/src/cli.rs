@@ -10,10 +10,17 @@ FLAGS:
 
 TASKS:
   bootstrap               Install all requirements for development
+  bench corpus-fetch      Fetch and verify the pinned benchmark capture corpus
+  bench corpus-list       List pinned benchmark capture corpus metadata
+  bench rfx-decode [--filter <REGEX>] [--save-baseline <NAME>] [--baseline <NAME>]
+                          Run the native RemoteFX decode benchmark
+  bench rfx-decode-wasm [--simd]
+                          Build the RemoteFX decode benchmark for WASM and run it under Node
   check fmt               Check formatting
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
   check dependencies      Check dependency-graph invariants between crates
+  check captures          Reject tracked packet capture files
   check test-settings --base <REV> --head <REV>
                           Prevent removal of protected Cargo test settings
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
@@ -28,6 +35,9 @@ TASKS:
   clean                   Clean workspace
   pr check-message [--event-file <PATH>]
                           Validate a pull request title and body from a GitHub event
+  release check-public-deps [--fix]
+                          Require a breaking release for released crates whose public
+                          dependencies take one, applying the bumps with --fix
   fuzz corpus-fetch       Fetch fuzzing corpus from Azure storage
   fuzz corpus-min [--target <NAME>]
                           Minify fuzzing corpus for a specific target (or all if unspecified)
@@ -85,10 +95,13 @@ impl core::str::FromStr for ListFormat {
 pub enum Action {
     ShowHelp,
     Bootstrap,
+    BenchCorpusFetch,
+    BenchCorpusList,
     CheckFmt,
     CheckLints,
     CheckLocks,
     CheckDependencies,
+    CheckCaptures,
     CheckTestSettings {
         base: String,
         head: String,
@@ -108,6 +121,9 @@ pub enum Action {
     PrCheckMessage {
         event_file: Option<std::path::PathBuf>,
     },
+    ReleaseCheckPublicDeps {
+        fix: bool,
+    },
     FuzzCorpusFetch,
     FuzzCorpusMin {
         target: Option<String>,
@@ -123,6 +139,14 @@ pub enum Action {
     FuzzRun {
         duration: Option<u32>,
         target: Option<String>,
+    },
+    BenchRfxDecode {
+        filter: Option<String>,
+        save_baseline: Option<String>,
+        baseline: Option<String>,
+    },
+    BenchRfxDecodeWasm {
+        simd: bool,
     },
     WasmCheck,
     WasmInstall,
@@ -147,11 +171,26 @@ pub fn parse_args() -> anyhow::Result<Args> {
     } else {
         match args.subcommand()?.as_deref() {
             Some("bootstrap") => Action::Bootstrap,
+            Some("bench") => match args.subcommand()?.as_deref() {
+                Some("corpus-fetch") => Action::BenchCorpusFetch,
+                Some("corpus-list") => Action::BenchCorpusList,
+                Some("rfx-decode") => Action::BenchRfxDecode {
+                    filter: args.opt_value_from_str("--filter")?,
+                    save_baseline: args.opt_value_from_str("--save-baseline")?,
+                    baseline: args.opt_value_from_str("--baseline")?,
+                },
+                Some("rfx-decode-wasm") => Action::BenchRfxDecodeWasm {
+                    simd: args.contains("--simd"),
+                },
+                Some(unknown) => anyhow::bail!("unknown bench action: {unknown}"),
+                None => Action::ShowHelp,
+            },
             Some("check") => match args.subcommand()?.as_deref() {
                 Some("fmt") => Action::CheckFmt,
                 Some("lints") => Action::CheckLints,
                 Some("locks") => Action::CheckLocks,
                 Some("dependencies") => Action::CheckDependencies,
+                Some("captures") => Action::CheckCaptures,
                 Some("test-settings") => Action::CheckTestSettings {
                     base: args.value_from_str("--base")?,
                     head: args.value_from_str("--head")?,
@@ -176,6 +215,13 @@ pub fn parse_args() -> anyhow::Result<Args> {
                     event_file: args.opt_value_from_str("--event-file")?,
                 },
                 Some(unknown) => anyhow::bail!("unknown pr action: {unknown}"),
+                None => Action::ShowHelp,
+            },
+            Some("release") => match args.subcommand()?.as_deref() {
+                Some("check-public-deps") => Action::ReleaseCheckPublicDeps {
+                    fix: args.contains("--fix"),
+                },
+                Some(unknown) => anyhow::bail!("unknown release action: {unknown}"),
                 None => Action::ShowHelp,
             },
             Some("fuzz") => match args.subcommand()?.as_deref() {

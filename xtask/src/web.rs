@@ -1,3 +1,4 @@
+use crate::NPM;
 use std::fs;
 
 use crate::prelude::*;
@@ -7,11 +8,6 @@ const IRON_REMOTE_DESKTOP_RDP_PATH: &str = "./web-client/iron-remote-desktop-rdp
 const IRON_SVELTE_CLIENT_PATH: &str = "./web-client/iron-svelte-client";
 const IRONRDP_WEB_PATH: &str = "./crates/ironrdp-web";
 const IRONRDP_WEB_PACKAGE_JS_PATH: &str = "./crates/ironrdp-web/pkg/ironrdp_web.js";
-
-#[cfg(not(target_os = "windows"))]
-const NPM: &str = "npm";
-#[cfg(target_os = "windows")]
-const NPM: &str = "npm.cmd";
 
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("WEB-INSTALL");
@@ -29,6 +25,14 @@ pub fn check(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("WEB-CHECK");
 
     build(sh, true)?;
+
+    // Exercise the public WASM API in Node with browser objects mocked by the tests.
+    run_cmd_in!(
+        sh,
+        IRONRDP_WEB_PATH,
+        "wasm-pack build --dev --target nodejs --out-dir ../../target/ironrdp-web-tests -- --locked"
+    )?;
+    cmd!(sh, "node --test crates/ironrdp-web/tests/websocket_protocols.cjs").run()?;
 
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run lint")?;

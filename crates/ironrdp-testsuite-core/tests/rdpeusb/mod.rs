@@ -33,6 +33,7 @@ fn simple_device_info() -> DeviceInfo {
             }],
         }),
         speed: UsbConnectionSpeed::Unknown,
+        isochronous: true,
     }
 }
 

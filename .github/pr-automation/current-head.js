@@ -21,11 +21,30 @@ async function readPullRequest({ github, owner, repo, pullNumber }) {
   }
 }
 
-async function assertCurrentHead({ github, owner, repo, pullNumber, expectedHeadSha }) {
-  const data = await readPullRequest({ github, owner, repo, pullNumber });
-  if (data.state !== "open" || data.head?.sha !== expectedHeadSha) {
-    throw new StaleHeadError();
-  }
+function isClosedUnmerged(pull) {
+  return pull.state === "closed" && !pull.merged && !pull.merged_at;
 }
 
-module.exports = { StaleHeadError, assertCurrentHead };
+async function assertCurrentHead({
+  github, owner, repo, pullNumber, expectedHeadSha, allowClosedUnmerged = false,
+}) {
+  const data = await readPullRequest({ github, owner, repo, pullNumber });
+  if ((data.state !== "open" && !(allowClosedUnmerged && isClosedUnmerged(data))) ||
+      data.head?.sha !== expectedHeadSha) {
+    throw new StaleHeadError();
+  }
+  return data;
+}
+
+function isOpenNonDraftAtHead(pull, expectedHeadSha) {
+  return pull?.state === "open" && pull.draft !== true && pull.head?.sha === expectedHeadSha;
+}
+
+async function isOpenNonDraftAtHeadNow({ github, owner, repo, pullNumber, expectedHeadSha }) {
+  const data = await readPullRequest({ github, owner, repo, pullNumber });
+  return isOpenNonDraftAtHead(data, expectedHeadSha);
+}
+
+module.exports = {
+  StaleHeadError, assertCurrentHead, isClosedUnmerged, isOpenNonDraftAtHeadNow,
+};

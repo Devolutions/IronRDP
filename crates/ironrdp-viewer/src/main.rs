@@ -25,8 +25,26 @@ fn main() -> anyhow::Result<()> {
         return run_rpc(cli).context("RPC server");
     }
 
+    if cli.list_usb_devices() {
+        return ironrdp_viewer::cli::print_usb_devices();
+    }
+
+    if cli.list_audio_devices() {
+        print_audio_devices();
+        return Ok(());
+    }
+
     let dump_rdp = cli.dump_rdp().map(ToOwned::to_owned);
+    #[cfg(windows)]
+    let printers = cli.printers().cloned();
+    let named_drives = cli.named_drives().to_vec();
+    #[cfg(windows)]
+    let ports = cli.ports().clone();
     let config = cli.into_config().context("configuration")?;
+    #[cfg(not(windows))]
+    if !named_drives.is_empty() || !config.channels().rdpdr.drives.is_empty() {
+        tracing::warn!("Ignoring drive redirection request; it is only available on Windows");
+    }
 
     if let Some(dump_path) = dump_rdp {
         // Dump the effective, secret-stripped PropertySet observed from the built configuration.
@@ -39,6 +57,7 @@ fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
     let (output_event_sender, mut output_event_receiver) = output_channel(64);
+    let remote_app = config.connector().remote_application_mode;
     let initial_window_size = PhysicalSize::new(
         u32::from(config.connector().desktop_size.width),
         u32::from(config.connector().desktop_size.height),
@@ -46,13 +65,23 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(windows)]
     let enable_smartcard = config.channels().rdpdr.smartcard;
+    #[cfg(windows)]
+    let enable_clipboard = config.channels().clipboard == ironrdp::client::config::ClipboardType::Enable;
+    #[cfg(windows)]
+    let server = config.destination().to_string();
+    #[cfg(windows)]
+    let drives = ironrdp_viewer::drives::ViewerDrives::from_rdpdr_config(&config.channels().rdpdr, named_drives);
     let client = RdpClient::new(config, output_event_sender);
     #[cfg(windows)]
-    let client = attach_windows_rdpdr_backend(client, enable_smartcard)?;
+    let (client, _drive_watcher) =
+        attach_windows_rdpdr_backend(client, enable_smartcard, printers.as_ref(), &ports, &drives, &server)?;
+    // Kept alive, on this thread, until the event loop returns.
+    #[cfg(windows)]
+    let (client, _clipboard) = attach_windows_clipboard(client, enable_clipboard)?;
     let input_event_sender = client.input_sender();
 
-    let mut app =
-        App::new(&event_loop, &input_event_sender, initial_window_size).context("unable to initialize App")?;
+    let mut app = App::new(&event_loop, &input_event_sender, initial_window_size, remote_app)
+        .context("unable to initialize App")?;
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
@@ -155,20 +184,92 @@ fn run_rpc(cli: ViewerConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Attaches the Windows RDPDR backend when smartcard redirection is enabled.
+/// Creates the Windows clipboard backend on this thread, the winit one, when clipboard redirection
+/// is enabled.
 ///
-/// Drive redirection is not yet exposed on the viewer CLI; smartcard-only sessions use an
-/// empty drive list with WinSCard enabled.
+/// The clipboard listens through a hidden window, so it needs a thread with a message loop,
+/// which the RDP thread is not; pasting remote files also needs OLE on a single-threaded
+/// apartment, initialized here before winit creates its window (winit's own `OleInitialize`
+/// then succeeds as a no-op).
 #[cfg(windows)]
-fn attach_windows_rdpdr_backend(client: RdpClient, enable_smartcard: bool) -> anyhow::Result<RdpClient> {
-    if !enable_smartcard {
-        return Ok(client);
+fn attach_windows_clipboard(
+    client: RdpClient,
+    enabled: bool,
+) -> anyhow::Result<(RdpClient, Option<ironrdp_cliprdr_native::WinClipboard>)> {
+    if !enabled {
+        return Ok((client, None));
     }
 
-    let factory = ironrdp_rdpdr_native::WindowsRdpdrBackendFactory::from_drives(Vec::new())
-        .map_err(|error| anyhow::anyhow!("invalid smartcard-only rdpdr configuration: {error}"))?
-        .with_smartcard(true);
-    Ok(client.with_rdpdr_backend_factory(Box::new(factory)))
+    // SAFETY: Called on the main thread before any COM use; it lasts for the process.
+    unsafe { windows::Win32::System::Ole::OleInitialize(None) }.context("unable to initialize OLE")?;
+
+    let clipboard = ironrdp_cliprdr_native::WinClipboard::with_file_transfer(
+        ironrdp_viewer::clipboard::ClientClipboardMessageProxy::new(client.input_sender()),
+        true,
+    )
+    .context("unable to initialize the Windows clipboard")?;
+    let client = client.with_cliprdr_backend_factory(clipboard.backend_factory());
+
+    Ok((client, Some(clipboard)))
+}
+
+/// Attaches the Windows RDPDR backend when drive, smartcard, printer or port redirection is enabled.
+///
+/// Printer redirection announces the selected queues; when none exists, the session continues
+/// without a printer. Server printer settings persist per server in
+/// [`ironrdp_daemon::printer_cache::directory`]. Ports are enumerated when the session connects,
+/// and requested ports that are not present are skipped. With dynamic drives, the returned
+/// watcher announces drives connected during the session until it is dropped.
+#[cfg(windows)]
+fn attach_windows_rdpdr_backend(
+    client: RdpClient,
+    enable_smartcard: bool,
+    printers: Option<&ironrdp_viewer::cli::PrinterOptions>,
+    ports: &ironrdp_viewer::cli::PortOptions,
+    drives: &ironrdp_viewer::drives::ViewerDrives,
+    server: &str,
+) -> anyhow::Result<(RdpClient, Option<ironrdp_rdpdr_native::LogicalDriveWatcher>)> {
+    use ironrdp_rdpdr_native::{PortSelection, WindowsPortRedirection};
+    use ironrdp_viewer::cli::PortChoice;
+
+    if !enable_smartcard && printers.is_none() && !ports.is_enabled() && drives.is_empty() {
+        return Ok((client, None));
+    }
+
+    let selection = |choice: &PortChoice| match choice {
+        PortChoice::None => PortSelection::None,
+        PortChoice::All => PortSelection::All,
+        PortChoice::Named(names) => PortSelection::Named(names.clone()),
+    };
+    let (factory, drive_watcher) = drives
+        .backend_factory(&client.input_sender())
+        .context("invalid rdpdr configuration")?;
+    let factory = factory
+        .with_smartcard(enable_smartcard)
+        .with_printer_redirection(printers.map(windows_printer_redirection).unwrap_or_default())
+        .with_port_redirection(WindowsPortRedirection {
+            serial: selection(&ports.serial),
+            parallel: selection(&ports.parallel),
+        });
+    let factory = ironrdp_daemon::printer_cache::with_store(factory, server);
+    return Ok((client.with_rdpdr_backend_factory(Box::new(factory)), drive_watcher));
+
+    fn windows_printer_redirection(
+        options: &ironrdp_viewer::cli::PrinterOptions,
+    ) -> ironrdp_rdpdr_native::WindowsPrinterRedirection {
+        use ironrdp_rdpdr_native::{WindowsPrinterRedirection, WindowsPrinterSelection};
+        use ironrdp_viewer::cli::PrinterSelection;
+
+        let selection = match &options.selection {
+            PrinterSelection::Default => WindowsPrinterSelection::Default,
+            PrinterSelection::All => WindowsPrinterSelection::All,
+            PrinterSelection::Named(queues) => WindowsPrinterSelection::Named(queues.clone()),
+        };
+        options.drivers.iter().fold(
+            WindowsPrinterRedirection::new(selection).with_default_queue(options.default_queue.clone()),
+            |printers, (queue, driver)| printers.with_driver(queue.clone(), driver.clone()),
+        )
+    }
 }
 
 fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {
@@ -213,4 +314,24 @@ fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {
     };
 
     Ok(())
+}
+
+#[expect(clippy::print_stdout, reason = "--list-audio-devices reports to the terminal")]
+fn print_audio_devices() {
+    use ironrdp::client::audio::{Direction, list_devices};
+
+    for (direction, label) in [
+        (Direction::Output, "Audio output devices"),
+        (Direction::Input, "Audio input devices"),
+    ] {
+        println!("{label}:");
+        for device in list_devices(direction) {
+            let marker = if device.is_default { " (default)" } else { "" };
+            println!(
+                "  {}{marker}
+    {}",
+                device.name, device.id
+            );
+        }
+    }
 }

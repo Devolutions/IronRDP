@@ -1,0 +1,16 @@
+[
+    uuid(50b58809-35a2-430b-adfb-c5498cd8f706),
+    version(1.0)
+]
+interface VoidReferent
+{
+    typedef struct _KERB_RPC_OCTET_STRING {
+        unsigned long length;
+        [size_is(length)] byte* value;
+    } KERB_RPC_OCTET_STRING;
+    typedef struct _KERB_RPC_ENCRYPTION_KEY {
+        void* reserved1;
+        long reserved2;
+        KERB_RPC_OCTET_STRING reserved3;
+    } KERB_RPC_ENCRYPTION_KEY;
+}

@@ -49,9 +49,27 @@ macro_rules! custom_err {
 }
 
 #[path = "../src/rpc_transport.rs"]
+#[expect(
+    dead_code,
+    reason = "session-only IN channel helpers are exercised by the rpch_session target"
+)]
 mod rpc_transport;
 
 use rpc_transport::{RpchRequestHead, drain_body, read_rpch_response_head, write_rpch_request_head};
+
+#[tokio::test]
+async fn response_head_rejects_invalid_http_versions_and_status_codes() {
+    for response in [
+        b"HTTP/2 200 OK\r\n\r\n".as_slice(),
+        b"HTTP/invalid 200 OK\r\n\r\n",
+        b"HTTP/1.1 99 Invalid\r\n\r\n",
+        b"HTTP/1.1 600 Invalid\r\n\r\n",
+    ] {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        server.write_all(response).await.expect("response head");
+        assert!(read_rpch_response_head(&mut client).await.is_err());
+    }
+}
 
 #[tokio::test]
 async fn request_head_contains_rpch_routing_and_authentication_fields() {
@@ -245,8 +263,8 @@ async fn in_authentication_waits_for_continue_before_the_body() {
     let (client, mut server) = tokio::io::duplex(4096);
     let server_task = tokio::spawn(async move {
         let request = read_head(&mut server).await;
-        assert!(request.contains("Content-Length: 131072"));
-        assert!(request.contains("Expect: 100-continue"));
+        assert!(request.contains("Content-Length: 0\r\n"));
+        assert!(!request.contains("Expect:"));
         server
             .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 4\r\n\r\ndeny")
             .await
@@ -264,21 +282,63 @@ async fn in_authentication_waits_for_continue_before_the_body() {
         assert_eq!(body, *b"B1!!");
     });
 
-    let mut request =
-        rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
-            .await
-            .expect("open authentication probe");
+    let mut request = rpc_transport::RpchInRequest::open(
+        client,
+        "gateway.example",
+        "target.example:3389",
+        128 * 1024,
+        None,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("open authentication probe");
+    assert!(!request.body_reserved());
     assert!(request.write_body(b"B1!!").await.is_err());
     assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
     request = request
-        .retry(Some("NTLM token"))
+        .retry(Some("NTLM token"), true)
         .await
         .expect("retry authenticated request");
+    assert!(request.body_reserved());
     assert_eq!(request.receive_response().await.expect("read continue").status, 100);
     request.write_body(b"B1!!").await.expect("write body");
     assert_eq!(request.remaining(), 128 * 1024 - 4);
     assert!(request.write_body(&vec![0; 128 * 1024]).await.is_err());
     request.flush().await.expect("flush body");
+    server_task.await.expect("join server");
+}
+
+#[tokio::test]
+async fn in_authentication_rejects_continue_for_empty_leg() {
+    let (client, mut server) = tokio::io::duplex(4096);
+    let server_task = tokio::spawn(async move {
+        let _ = read_head(&mut server).await;
+        server
+            .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+            .await
+            .expect("write continue response");
+    });
+
+    let mut request = rpc_transport::RpchInRequest::open(
+        client,
+        "gateway.example",
+        "target.example:3389",
+        128 * 1024,
+        None,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("open authentication probe");
+    let error = request
+        .receive_response()
+        .await
+        .expect_err("reject continue without reserved body");
+    assert_eq!(error.kind().to_string(), "decode");
+    assert!(request.write_body(b"B1!!").await.is_err());
     server_task.await.expect("join server");
 }
 
@@ -293,10 +353,18 @@ async fn in_authentication_response_requires_a_bounded_body() {
             server.write_all(response).await.expect("write authentication response");
         });
 
-        let mut request =
-            rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
-                .await
-                .expect("open authentication probe");
+        let mut request = rpc_transport::RpchInRequest::open(
+            client,
+            "gateway.example",
+            "target.example:3389",
+            128 * 1024,
+            None,
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("open authentication probe");
         let error = request
             .receive_response()
             .await
@@ -324,10 +392,18 @@ async fn in_authentication_response_drains_body_at_limit() {
             .expect("write following response");
     });
 
-    let mut request =
-        rpc_transport::RpchInRequest::open(client, "gateway.example", "target.example:3389", 128 * 1024, None)
-            .await
-            .expect("open authentication probe");
+    let mut request = rpc_transport::RpchInRequest::open(
+        client,
+        "gateway.example",
+        "target.example:3389",
+        128 * 1024,
+        None,
+        None,
+        None,
+        true,
+    )
+    .await
+    .expect("open authentication probe");
     assert_eq!(request.receive_response().await.expect("read challenge").status, 401);
     assert_eq!(
         request
@@ -426,4 +502,59 @@ async fn read_head(stream: &mut tokio::io::DuplexStream) -> String {
         }
         assert!(head.len() <= 16 * 1024, "request head exceeds limit");
     }
+}
+
+#[tokio::test]
+async fn response_head_keeps_rpc_error_and_cookie_pairs() {
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    server
+        .write_all(
+            b"HTTP/1.1 503 RPC Error: 6bf, EEInfo: AAAA\r\nContent-Length: 0\r\n\
+              Set-Cookie: RpchLb=node1; Path=/; HttpOnly\r\nSet-Cookie: Affinity=a\r\n\r\n",
+        )
+        .await
+        .expect("write response");
+    let response = read_rpch_response_head(&mut client).await.expect("read response head");
+    assert_eq!(response.status, 503);
+    assert_eq!(response.rpc_error(), Some(0x6bf));
+    assert_eq!(response.set_cookies, ["RpchLb=node1", "Affinity=a"]);
+}
+
+#[tokio::test]
+async fn response_head_without_rpc_error_reason_has_no_code() {
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    server
+        .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .expect("write response");
+    let response = read_rpch_response_head(&mut client).await.expect("read response head");
+    assert_eq!(response.rpc_error(), None);
+}
+
+#[tokio::test]
+async fn response_head_rejects_cookie_without_value() {
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    server
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: invalid\r\n\r\n")
+        .await
+        .expect("write response");
+    let error = read_rpch_response_head(&mut client)
+        .await
+        .expect_err("cookie without a value is malformed");
+    assert_eq!(error.kind().to_string(), "decode");
+}
+
+#[test]
+fn cookie_jar_replaces_by_name_and_bounds_its_size() {
+    let mut jar = rpc_transport::RpchCookieJar::default();
+    assert_eq!(jar.header(), None);
+    jar.update(&["a=1".to_owned(), "b=2".to_owned()])
+        .expect("store cookies");
+    jar.update(&["a=3".to_owned()]).expect("replace cookie");
+    assert_eq!(jar.header().as_deref(), Some("a=3; b=2"));
+
+    let many: Vec<String> = (0..17).map(|index| format!("c{index}=v")).collect();
+    assert!(rpc_transport::RpchCookieJar::default().update(&many).is_err());
+    let large = format!("big={}", "x".repeat(4096));
+    assert!(rpc_transport::RpchCookieJar::default().update(&[large]).is_err());
 }

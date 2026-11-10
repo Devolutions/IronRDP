@@ -1,3 +1,6 @@
+mod client;
+mod contact;
+
 use ironrdp_core::{decode, encode_vec};
 use ironrdp_rdpei::pdu::{
     CsReadyFlags, CsReadyPdu, DismissHoveringTouchContactPdu, PenContact, PenContactFlags, PenEventPdu, PenFrame,

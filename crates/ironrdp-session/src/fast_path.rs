@@ -19,6 +19,8 @@ use tracing::{debug, trace, warn};
 use crate::image::DecodedImage;
 use crate::palette::Palette;
 use crate::pointer::PointerCache;
+#[cfg(feature = "qoiz")]
+use crate::qoiz;
 use crate::{SessionError, SessionErrorExt as _, SessionErrorKind, SessionResult, reason_err, rfx};
 
 /// A bounded category for a failed Fast-Path bulk decompression operation.
@@ -141,7 +143,7 @@ pub struct Processor {
     bitmap_recovery_requested: bool,
     bitmap_recovery_pending: bool,
     #[cfg(feature = "qoiz")]
-    zdctx: zstd_safe::DCtx<'static>,
+    qoiz_decompressor: qoiz::Decompressor,
 }
 
 impl Processor {
@@ -571,12 +573,13 @@ impl Processor {
                 }
             }
             PointerUpdateData::SetPosition(position) => {
-                if self.use_system_pointer || !self.pointer_software_rendering {
-                    processor_updates.push(UpdateKind::PointerPosition {
-                        x: position.x,
-                        y: position.y,
-                    });
-                } else if let Some(rect) = image.move_pointer(position.x, position.y)? {
+                processor_updates.push(UpdateKind::PointerPosition {
+                    x: position.x,
+                    y: position.y,
+                });
+                if self.pointer_software_rendering
+                    && let Some(rect) = image.move_pointer(position.x, position.y)?
+                {
                     processor_updates.push(UpdateKind::Region(rect));
                 }
             }
@@ -674,6 +677,18 @@ impl Processor {
                 }
             }
         };
+
+        if self.pointer_software_rendering
+            && matches!(
+                update,
+                PointerUpdateData::Color(_) | PointerUpdateData::New(_) | PointerUpdateData::Large(_)
+            )
+        {
+            self.use_system_pointer = false;
+            // `Cached` handles this transition inline on a cache hit, while accelerated `Color`, `New`, and `Large` updates emit only `PointerBitmap`.
+            // Insert `PointerHidden` before the redrawn region so software-rendered consumers switch off the system pointer first.
+            processor_updates.insert(0, UpdateKind::PointerHidden);
+        }
 
         Ok(processor_updates)
     }
@@ -795,23 +810,7 @@ impl Processor {
                         }
                         #[cfg(feature = "qoiz")]
                         ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOIZ => {
-                            let compressed = &bits.extended_bitmap_data.data;
-                            let mut input = zstd_safe::InBuffer::around(compressed);
-                            let mut data = vec![0; compressed.len() * 4];
-                            let mut pos = 0;
-                            loop {
-                                let mut output = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
-                                self.zdctx
-                                    .decompress_stream(&mut output, &mut input)
-                                    .map_err(zstd_safe::get_error_name)
-                                    .map_err(|e| reason_err!("zstd", "{}", e))?;
-                                pos = output.pos();
-                                if pos == output.capacity() {
-                                    data.resize(data.capacity() * 2, 0);
-                                } else {
-                                    break;
-                                }
-                            }
+                            let data = self.qoiz_decompressor.decompress(bits.extended_bitmap_data.data)?;
 
                             qoi_apply(image, destination, &data, &mut update_rectangle)?;
                         }
@@ -907,7 +906,7 @@ impl ProcessorBuilder {
             bitmap_recovery_requested: false,
             bitmap_recovery_pending: false,
             #[cfg(feature = "qoiz")]
-            zdctx: zstd_safe::DCtx::default(),
+            qoiz_decompressor: qoiz::Decompressor::default(),
         }
     }
 }

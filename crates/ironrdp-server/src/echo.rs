@@ -36,6 +36,8 @@ impl core::fmt::Display for EchoServerMessage {
 struct EchoHandleState {
     pending: BTreeMap<Vec<u8>, VecDeque<Instant>>,
     measurements: VecDeque<EchoRoundTripMeasurement>,
+    /// The client of the current connection has the ECHO channel open.
+    channel_open: bool,
 }
 
 /// Shared handle for runtime ECHO requests and RTT measurements.
@@ -64,6 +66,20 @@ impl EchoServerHandle {
         self.sender
             .send(ServerEvent::Echo(EchoServerMessage::SendRequest { payload }))
             .map_err(|_error| ServerError::channel("send ECHO request event"))
+    }
+
+    /// True while the client of the current connection has the ECHO dynamic
+    /// channel open: from its [2.2.2.2] DVC Create Response PDU (DYNVC_CREATE_RSP)
+    /// with status OK until [2.2.4] Closing a DVC (DYNVC_CLOSE) or the end of the
+    /// connection. False before the client answers, and when its response has
+    /// another status. The server drops a request sent while this is false.
+    ///
+    /// The handle tracks one connection at a time, as `RdpServer` serves them.
+    ///
+    /// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/8f284ea3-54f3-4c24-8168-8a001c63b581
+    /// [2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/c02dfd21-ccbc-4254-985b-3ef6dd115dec
+    pub fn is_channel_open(&self) -> bool {
+        self.lock_state().channel_open
     }
 
     /// Drains collected RTT measurements.
@@ -101,6 +117,14 @@ impl EchoServerHandle {
         });
     }
 
+    fn on_channel_opened(&self) {
+        self.lock_state().channel_open = true;
+    }
+
+    fn on_channel_closed(&self) {
+        self.lock_state().channel_open = false;
+    }
+
     fn lock_state(&self) -> MutexGuard<'_, EchoHandleState> {
         match self.state.lock() {
             Ok(state) => state,
@@ -136,6 +160,7 @@ impl DvcProcessor for EchoDvcBridge {
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        self.handle.on_channel_opened();
         self.inner.start(channel_id)
     }
 
@@ -146,6 +171,7 @@ impl DvcProcessor for EchoDvcBridge {
     }
 
     fn close(&mut self, channel_id: u32) {
+        self.handle.on_channel_closed();
         self.inner.close(channel_id)
     }
 }

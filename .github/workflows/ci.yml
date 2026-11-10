@@ -8,6 +8,12 @@ on:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
 
+concurrency:
+  # Stacked PRs get two `synchronize` events per push (base and head branch), and a new push makes
+  # the previous run obsolete: keep only the latest run per PR. Other events never share a group.
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 env:
   # Disable incremental compilation. CI builds are often closer to from-scratch builds, as changes
   # are typically bigger than from a local edit-compile cycle.
@@ -68,6 +74,15 @@ jobs:
       - name: typos (check)
         run: cargo xtask check typos -v
 
+      # release-binaries.yml cannot use the shared action (it checks out the release tag), so it
+      # carries a copy that must stay identical.
+      - name: Inlined prune step matches shared action
+        run: |
+          shared="$(yq '.runs.steps[] | select(.name == "Uninstall unpinned Rust toolchains") | .run' .github/actions/prune-rust-toolchains/action.yml)"
+          release="$(yq '.jobs.build.steps[] | select(.name == "Prune Rust toolchains") | .run' .github/workflows/release-binaries.yml)"
+          test -n "$shared"
+          diff -u <(echo "$shared") <(echo "$release")
+
   # TODO: Move this action to a dedicated repository.
   openai-agent:
     name: OpenAI agent action [${{ matrix.os }}]
@@ -101,7 +116,6 @@ jobs:
 
   checks:
     name: Checks [${{ matrix.os }}]
-    needs: [formatting]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -122,8 +136,13 @@ jobs:
       - name: Install build dependencies
         uses: ./.github/actions/install-build-deps
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -149,6 +168,9 @@ jobs:
       - name: Dependencies
         run: cargo xtask check dependencies -v
 
+      - name: Packet captures
+        run: cargo xtask check captures -v
+
       - name: WASM (prepare)
         run: cargo xtask wasm install -v
 
@@ -160,16 +182,19 @@ jobs:
 
   fuzz:
     name: Fuzzing
-    needs: [formatting]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
         with:
           workspaces: fuzz -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -189,14 +214,18 @@ jobs:
 
   web:
     name: Web Client
-    needs: [formatting]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -215,23 +244,13 @@ jobs:
 
   ffi:
     name: FFI
-    needs: [formatting]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2.9.1
-
-      - name: Binary cache
-        uses: actions/cache@v5
-        with:
-          path: ./.cargo/local_root/bin
-          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
-
-      - name: Prepare runner
-        run: cargo xtask ffi install -v
+      - name: Set up the pinned diplomat-tool
+        uses: ./.github/actions/setup-diplomat-tool
 
       - name: Build native library
         run: cargo xtask ffi build -v
@@ -242,9 +261,49 @@ jobs:
       - name: Build .NET projects
         run: cd ./ffi/dotnet && dotnet build
 
+      - name: Run .NET smoke tests
+        run: dotnet run --project ./ffi/dotnet/Devolutions.IronRdp.Tests --no-build
+
+  ffi-bindings-check:
+    name: FFI bindings reproducibility
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up the pinned diplomat-tool
+        uses: ./.github/actions/setup-diplomat-tool
+
+      # The solution is built below, after the regenerated bindings pass the drift check.
+      - name: Regenerate C# bindings
+        run: cargo xtask ffi bindings --skip-dotnet-build -v
+
+      - name: Check generated binding drift
+        shell: pwsh
+        run: |
+          $paths = @(
+            "ffi/dotnet/Devolutions.IronRdp/Generated",
+            "ffi/dotnet-interop-conf.toml"
+          )
+          $changes = git status --porcelain=v1 --untracked-files=all -- $paths
+          if ($changes) {
+            [Console]::Error.WriteLine('FFI bindings are not reproducible. Regenerate them with `cargo xtask ffi install` then `cargo xtask ffi bindings` and commit the result.')
+            $changes
+            git --no-pager diff -- $paths
+            exit 1
+          }
+
+      - name: Build native library
+        run: cargo xtask ffi build -v
+
+      - name: Build IronRdp.sln
+        run: dotnet build ffi/dotnet/IronRdp.sln -c Release
+
+      - name: Run .NET smoke tests
+        run: dotnet run --project ffi/dotnet/Devolutions.IronRdp.Tests -c Release --no-build
+
   feature-matrix-setup:
     name: feature matrix setup
-    needs: [formatting]
     runs-on: ubuntu-latest
     outputs:
       feature-matrix: ${{ steps.setup-matrix.outputs.feature-matrix }}
@@ -252,8 +311,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Setup matrix
         id: setup-matrix
@@ -263,7 +327,7 @@ jobs:
 
   feature-matrix:
     name: feature matrix [${{ matrix.case }}]
-    needs: [formatting, feature-matrix-setup]
+    needs: [feature-matrix-setup]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -276,8 +340,13 @@ jobs:
       - name: Install build dependencies
         uses: ./.github/actions/install-build-deps
 
+      - name: Prune Rust toolchains
+        uses: ./.github/actions/prune-rust-toolchains
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Binary cache
         uses: actions/cache@v5
@@ -297,7 +366,7 @@ jobs:
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, feature-matrix-setup, feature-matrix]
+    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, ffi-bindings-check, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:

@@ -1,0 +1,101 @@
+import "wtypes.idl";
+[
+    uuid(8a22be98-09b6-48cd-a931-ddb657e14c8c),
+    version(1.0)
+]
+interface RdpearOracle
+{
+    typedef struct _KEY {
+        // Public void* is not marshalable. This substitute proves NULL layout only.
+        byte* reserved1;
+        long reserved2;
+        unsigned long length;
+        [size_is(length)] byte* data;
+    } KEY;
+    typedef enum _CALL {
+        Call0 = 0x100,
+        Call1 = 0x101,
+        Call2 = 0x102,
+        Hash = 0x109,
+        Cred = 0x113,
+        NtlmChallenge = 0x201,
+        NtlmNtResponse = 0x202
+    } CALL;
+    typedef struct _REQUEST {
+        CALL CallId;
+        [switch_type(CALL), switch_is(CallId)] union {
+            [case(Call0)] struct { unsigned long version; } Negotiate;
+            [case(Call1)] struct { KEY* key; KEY* armor; hyper* skew; } Auth;
+            [case(Call2)] struct { hyper handle; } Empty;
+        };
+    } REQUEST;
+    typedef REQUEST PICKLE;
+    typedef struct _UNICODE {
+        unsigned short Length;
+        unsigned short MaximumLength;
+        [size_is(MaximumLength/2), length_is(Length/2)] unsigned short* Buffer;
+    } UNICODE;
+    typedef struct _CREDENTIAL {
+        UNICODE PackageName;
+        unsigned long CredentialSize;
+        [size_is(CredentialSize)] byte* Credentials;
+    } CREDENTIAL;
+    typedef struct _CREDENTIAL_ARRAY {
+        unsigned long CredentialCount;
+        [size_is(CredentialCount)] CREDENTIAL Credentials[*];
+    } CREDENTIAL_ARRAY;
+    typedef struct _OUTPUT {
+        CALL CallId;
+        long Status;
+        [switch_type(CALL), switch_is(CallId)] union {
+            [case(Hash)] struct {
+                unsigned long* ChecksumSize;
+                [size_is(, *ChecksumSize)] byte** ChecksumValue;
+            } HashOutput;
+            [case(Cred)] struct {
+                CREDENTIAL_ARRAY* Credentials;
+            } CredOutput;
+        };
+    } OUTPUT;
+    typedef OUTPUT OPICKLE;
+    typedef enum _CRED_TYPE { InvalidCredKey, IUMCredKey, DomainUserCredKey, LocalUserCredKey, ExternallySuppliedCredKey } CRED_TYPE;
+    typedef struct _SECRET {
+        byte reserved1;
+        byte reserved2;
+        byte reserved3;
+        CRED_TYPE reserved4;
+        byte reserved5[20];
+        unsigned long reservedSize;
+        [size_is(reservedSize)] byte* reserved6;
+    } SECRET;
+    typedef struct _NINPUT {
+        CALL CallId;
+        [switch_type(CALL), switch_is(CallId)] union {
+            [case(NtlmChallenge)] struct {
+                SECRET* Credential;
+                UNICODE* UserName;
+                UNICODE* LogonDomainName;
+                UNICODE* ServerName;
+                byte ChallengeToClient[8];
+            } Challenge;
+        };
+    } NINPUT;
+    typedef NINPUT NPICKLE;
+    typedef struct _NOUTPUT {
+        CALL CallId;
+        long Status;
+        [switch_type(CALL), switch_is(CallId)] union {
+            [case(NtlmChallenge)] struct {
+                unsigned short Ntlm3ResponseLength;
+                [size_is(Ntlm3ResponseLength)] byte* Ntlm3Response;
+                byte Lm3Response[24];
+                byte UserSessionKey[16];
+                byte LmSessionKey[8];
+            } Challenge;
+            [case(NtlmNtResponse)] struct {
+                byte NtResponse[24];
+            } NtOutput;
+        };
+    } NOUTPUT;
+    typedef NOUTPUT RPICKLE;
+}

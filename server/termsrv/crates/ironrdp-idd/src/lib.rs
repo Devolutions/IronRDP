@@ -1,0 +1,214 @@
+#![cfg(windows)]
+#![expect(
+    non_snake_case,
+    non_camel_case_types,
+    reason = "WDK and IddCx ABI names follow Windows header casing"
+)]
+#![cfg_attr(
+    not(ironrdp_idd_link),
+    expect(
+        dead_code,
+        reason = "non-WDK builds compile the ABI surface without linking the driver callbacks"
+    )
+)]
+#![expect(
+    clippy::as_conversions,
+    reason = "IddCx and WDF ABI glue converts opaque handles and header-defined integer fields"
+)]
+
+mod adapter;
+#[cfg(any(test, ironrdp_idd_link))]
+mod iddcx;
+mod monitor;
+mod remote;
+mod swapchain;
+#[cfg(any(test, ironrdp_idd_link))]
+mod wdf;
+
+pub use adapter::IronRdpIddAdapter;
+pub use monitor::IronRdpIddMonitor;
+pub use remote::{handle_session_transition, set_display_config};
+pub use swapchain::SwapChainProcessor;
+
+use core::ffi::c_void;
+use windows::Win32::Foundation::HINSTANCE;
+use windows_core::BOOL;
+
+pub type NTSTATUS = i32;
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The assertion guarantees each native ABI size fits its 32-bit Size field."
+)]
+pub(crate) const fn abi_size_u32<T>() -> u32 {
+    let size = size_of::<T>();
+    assert!(size <= 0xFFFF_FFFFusize);
+    size as u32
+}
+
+pub const STATUS_SUCCESS: NTSTATUS = 0;
+
+pub const fn ntstatus_from_u32(value: u32) -> NTSTATUS {
+    i32::from_ne_bytes(value.to_ne_bytes())
+}
+
+pub const fn ntstatus_to_u32(value: NTSTATUS) -> u32 {
+    u32::from_ne_bytes(value.to_ne_bytes())
+}
+
+pub const STATUS_NOT_SUPPORTED: NTSTATUS = ntstatus_from_u32(0xC000_00BB);
+
+pub(crate) const IDD_RUNTIME_ROOT: &str = r"C:\ProgramData\IronRDP\Idd";
+pub(crate) const IDD_RUNTIME_STATE_FILE: &str = r"C:\ProgramData\IronRDP\Idd\runtime-config.txt";
+pub(crate) const IDD_DEBUG_TRACE_FILE: &str = r"C:\ProgramData\IronRDP\Idd\ironrdp-idd-debug.log";
+
+pub(crate) fn debug_trace(message: &str) {
+    use std::fs::{OpenOptions, create_dir_all};
+    use std::io::Write as _;
+    use std::path::PathBuf;
+
+    // SAFETY: Reading the calling thread ID has no preconditions.
+    let thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+    let line = format!("pid={} tid={thread_id} {message}\n", std::process::id());
+    let mut candidates = Vec::with_capacity(4);
+
+    if let Ok(path) = std::env::var("IRONRDP_IDD_DEBUG_TRACE_FILE") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    candidates.push(PathBuf::from(IDD_DEBUG_TRACE_FILE));
+    candidates.push(PathBuf::from(r"C:\Windows\Temp\ironrdp-idd-debug.log"));
+
+    if let Ok(temp_dir) = std::env::var("TEMP") {
+        candidates.push(PathBuf::from(temp_dir).join("ironrdp-idd-debug.log"));
+    }
+
+    for path in candidates {
+        if let Some(parent) = path.parent() {
+            let _ = create_dir_all(parent);
+        }
+
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = file.write_all(line.as_bytes());
+            return;
+        }
+    }
+}
+
+// Opaque stand-ins for WDK types. The real UMDF/KMDF integration will replace these.
+#[repr(C)]
+pub struct DRIVER_OBJECT {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct UNICODE_STRING {
+    pub Length: u16,
+    pub MaximumLength: u16,
+    pub Buffer: *mut u16,
+}
+
+// Opaque IDDCX handles (IddCx types come from WDK headers / import libs).
+pub type IDDCX_ADAPTER = *mut c_void;
+pub type IDDCX_MONITOR = *mut c_void;
+pub type IDDCX_SWAPCHAIN = *mut c_void;
+
+#[unsafe(no_mangle)]
+pub extern "system" fn DllMain(_: HINSTANCE, _: u32, _: *mut c_void) -> BOOL {
+    BOOL(1) // TRUE
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn DriverEntry(
+    driver_object: *mut DRIVER_OBJECT,
+    registry_path: *const UNICODE_STRING,
+) -> NTSTATUS {
+    #[cfg(ironrdp_idd_link)]
+    {
+        debug_trace("DriverEntry: entered");
+        debug_trace("SESSION_PROOF_IDD_DRIVER_ENTRY");
+        tracing::info!("SESSION_PROOF_IDD_DRIVER_ENTRY");
+        let config = wdf::WDF_DRIVER_CONFIG {
+            Size: abi_size_u32::<wdf::WDF_DRIVER_CONFIG>(),
+            EvtDriverDeviceAdd: Some(adapter::device_add),
+            EvtDriverUnload: None,
+            DriverInitFlags: 0,
+            // Pool tag "iIDD" — identifies driver allocations in WDK memory tools.
+            DriverPoolTag: u32::from_ne_bytes(*b"iIDD"),
+        };
+        tracing::info!(
+            config_size = config.Size,
+            device_add_set = config.EvtDriverDeviceAdd.is_some(),
+            "DriverEntry invoking WdfDriverCreate"
+        );
+        // SAFETY: driver_object and registry_path are valid pointers from the WDF kernel reflector.
+        let status = unsafe { wdf::driver_create(driver_object, registry_path, &config) };
+        debug_trace(&format!(
+            "DriverEntry: WdfDriverCreate returned status=0x{:08X}",
+            ntstatus_to_u32(status)
+        ));
+        if status < 0 {
+            tracing::error!(
+                status,
+                status_hex = format_args!("0x{:08X}", ntstatus_to_u32(status)),
+                "WdfDriverCreate failed"
+            );
+        } else {
+            tracing::info!(
+                status,
+                status_hex = format_args!("0x{:08X}", ntstatus_to_u32(status)),
+                "WdfDriverCreate succeeded"
+            );
+        }
+        return status;
+    }
+
+    // Stub path for cargo check / non-WDK builds.
+    let _ = (driver_object, registry_path);
+    // Exercise the callback table to catch type mismatches at compile time.
+    let _ = iddcx_callback_table();
+    tracing::info!("ironrdp-idd DriverEntry called (stub \u{2014} build with IRONRDP_IDD_LINK=1 for real driver)");
+    STATUS_SUCCESS
+}
+
+#[derive(Clone, Copy)]
+struct IddCxCallbackTable {
+    adapter_init_finished:
+        extern "system" fn(IDDCX_ADAPTER, *const adapter::IDARG_IN_ADAPTER_INIT_FINISHED) -> NTSTATUS,
+    adapter_commit_modes: extern "system" fn(IDDCX_ADAPTER, *const adapter::IDARG_IN_COMMITMODES) -> NTSTATUS,
+
+    parse_monitor_description: extern "system" fn(
+        *const monitor::IDARG_IN_PARSEMONITORDESCRIPTION,
+        *mut monitor::IDARG_OUT_PARSEMONITORDESCRIPTION,
+    ) -> NTSTATUS,
+    monitor_get_default_description_modes: extern "system" fn(
+        IDDCX_MONITOR,
+        *const monitor::IDARG_IN_GETDEFAULTDESCRIPTIONMODES,
+        *mut monitor::IDARG_OUT_GETDEFAULTDESCRIPTIONMODES,
+    ) -> NTSTATUS,
+    monitor_query_target_modes: extern "system" fn(
+        IDDCX_MONITOR,
+        *const monitor::IDARG_IN_QUERYTARGETMODES,
+        *mut monitor::IDARG_OUT_QUERYTARGETMODES,
+    ) -> NTSTATUS,
+    monitor_assign_swapchain: extern "system" fn(IDDCX_MONITOR, *const monitor::IDARG_IN_SETSWAPCHAIN) -> NTSTATUS,
+    monitor_unassign_swapchain: extern "system" fn(IDDCX_MONITOR) -> NTSTATUS,
+    monitor_get_physical_size:
+        extern "system" fn(IDDCX_MONITOR, *mut monitor::IDARG_OUT_MONITORGETPHYSICALSIZE) -> NTSTATUS,
+}
+
+fn iddcx_callback_table() -> IddCxCallbackTable {
+    IddCxCallbackTable {
+        adapter_init_finished: adapter::adapter_init_finished,
+        adapter_commit_modes: adapter::adapter_commit_modes,
+        parse_monitor_description: monitor::parse_monitor_description,
+        monitor_get_default_description_modes: monitor::monitor_get_default_description_modes,
+        monitor_query_target_modes: monitor::monitor_query_target_modes,
+        monitor_assign_swapchain: monitor::monitor_assign_swapchain,
+        monitor_unassign_swapchain: monitor::monitor_unassign_swapchain,
+        monitor_get_physical_size: monitor::monitor_get_physical_size,
+    }
+}
+
+#[cfg(test)]
+mod adapter_tests;

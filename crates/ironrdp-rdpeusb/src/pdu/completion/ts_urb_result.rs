@@ -97,9 +97,18 @@ impl TsUrbResult<Raw> {
             return Ok(TsUrbResult { header, payload: None });
         }
 
-        let raw = payload.ok_or_else(|| {
-            invalid_field_err!("TS_URB_RESULT::Payload", "operation-specific result payload is missing")
-        })?;
+        let raw = match payload {
+            Some(raw) => raw,
+            // A failed request has nothing to report: Windows and both IronRDP backends complete it
+            // with a header-only result.
+            None if header.is_error() => return Ok(TsUrbResult { header, payload: None }),
+            None => {
+                return Err(invalid_field_err!(
+                    "TS_URB_RESULT::Payload",
+                    "operation-specific result payload is missing"
+                ));
+            }
+        };
 
         let payload = match expected {
             ExpectedTsUrbResult::SelectConfig => {
@@ -142,8 +151,10 @@ impl Decode<'_> for TsUrbResult<Raw> {
 
 impl TsUrbResult<TsUrbIsochTransferResult> {
     pub(crate) fn into_expected(self, expected: ExpectedTsUrbResult) -> DecodeResult<TsUrbResult<TsUrbResultPayload>> {
+        let failed = self.header.is_error();
         let payload = match (expected, self.payload) {
             (ExpectedTsUrbResult::HeaderOnly, None) => None,
+            (ExpectedTsUrbResult::Isoch, None) if failed => None,
             (ExpectedTsUrbResult::Isoch, Some(payload)) => Some(TsUrbResultPayload::Isoch(payload)),
             _ => {
                 return Err(invalid_field_err!(
@@ -210,6 +221,11 @@ pub struct TsUrbResultHeader {
 
 impl TsUrbResultHeader {
     pub const FIXED_PART_SIZE: usize = size_of::<u16>(/* Padding */) + size_of::<u32>(/* UsbdStatus */);
+
+    /// Whether `usbd_status` reports a failure, which `USBD_ERROR` tests with its high bit.
+    pub fn is_error(&self) -> bool {
+        self.usbd_status & 0x8000_0000 != 0
+    }
 }
 
 impl Decode<'_> for TsUrbResultHeader {
@@ -544,7 +560,7 @@ impl Decode<'_> for TsUsbdInterfaceInfoResult {
         let class = src.read_u8();
         let sub_class = src.read_u8();
         let protocol = src.read_u8();
-        read_padding(&mut src, 1);
+        read_padding!(&mut src, 1);
         let interface_handle = src.read_u32();
         #[expect(clippy::map_with_unused_argument_over_ranges)]
         let pipes = (0..src.read_u32())

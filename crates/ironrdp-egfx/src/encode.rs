@@ -257,10 +257,10 @@ mod tests {
     use super::*;
     use crate::decode::H264Decoder as _;
 
-    /// Round-trip through the reference encoder and the reference decoder,
-    /// crossing the documented format boundary explicitly: the encoder
-    /// produces Annex B (the wire format), the decoder consumes AVC
-    /// length-prefixed input, and `pdu::annex_b_to_avc` is the bridge.
+    /// Round-trip through the reference encoder and the reference decoder.
+    /// The encoder produces Annex B (the wire format). The decoder accepts
+    /// both Annex B and AVC length-prefixed input; this test converts with
+    /// `pdu::annex_b_to_avc` to exercise the AVC path.
     ///
     /// Run with: `cargo test -p ironrdp-egfx --features openh264-bundled`
     #[test]

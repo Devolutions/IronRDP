@@ -1,6 +1,7 @@
 "use strict";
 
 const MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS = 65_536;
+const REVIEW_READY_FOOTER = "Push a commit after addressing these findings. If no code change is needed, you may resolve inline threads and comment `@github-actions review-ready` to request human review.";
 
 const SEVERITY_EMOJI = {
   critical: ":purple_circle:",
@@ -41,7 +42,8 @@ function reviewBody(marker, review, reducedCoverage = [], provenancePrefix) {
   const coverage = reducedCoverage.length === 0
     ? ""
     : `\n\nReduced coverage:${reducedCoverageText(reducedCoverage.map(escapeMarkdown))}.`;
-  return `${marker}\n\n${clean}${escapeMarkdown(review.summary)}${coverage}${findings ? `\n\n${findings}` : ""}`;
+  return `${marker}\n\n${clean}${escapeMarkdown(review.summary)}${coverage}${findings ? `\n\n${findings}` : ""}` +
+    (review.findings.length ? `\n\n${REVIEW_READY_FOOTER}` : "");
 }
 
 function inlineReviewCommentBody(finding, provenancePrefix) {
@@ -50,6 +52,6 @@ function inlineReviewCommentBody(finding, provenancePrefix) {
 }
 
 module.exports = {
-  MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS, escapeMarkdown, findingIndicator,
+  MAXIMUM_GITHUB_REVIEW_BODY_CHARACTERS, REVIEW_READY_FOOTER, escapeMarkdown, findingIndicator,
   inlineReviewCommentBody, reducedCoverageText, reviewBody,
 };
