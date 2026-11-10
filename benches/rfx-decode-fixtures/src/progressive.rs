@@ -14,8 +14,10 @@ use super::{BPP, TILE, TILE_SIZE_BYTES};
 /// The classic RemoteFX encoder scales samples up by 32 (11.5 fixed point), while Progressive samples are unscaled.
 const CLASSIC_SAMPLE_SHIFT: u32 = 5;
 
-/// RemoteFX Progressive bitstreams (MS-RDPEGFX 2.2.4.2) for one full-screen update.
+/// RemoteFX Progressive bitstreams ([2.2.4.2] RFX_PROGRESSIVE_BITMAP_STREAM) for one full-screen update.
 /// Decode `init` once, then reuse `frame` for steady-state measurements.
+///
+/// [2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/0796cf31-578c-4f47-b4d3-4f005eef63d3
 pub struct ProgressiveFixture {
     pub width: u16,
     pub height: u16,

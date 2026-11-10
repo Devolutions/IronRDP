@@ -89,7 +89,7 @@ fn progressive_mean_abs_error(pattern: Pattern, width: u16, height: u16) -> f64 
 // oracle: mutant guard against blank or partially decoded Progressive fixture output.
 // 640x384 RGB MAE at Quant::default() with the reduce-extrapolate DWT:
 // Desktop=1.547150, text=1.917240, gradient=1.448634, photo=3.220082, noise=5.527239.
-// Ceilings round each measured MAE up to the next channel-value unit, as above.
+// Ceilings round each measured MAE up to the next channel-value unit, as above; these are regression gates, not codec accuracy guarantees.
 #[rstest]
 #[case::desktop(Pattern::Desktop, 2.0)]
 #[case::text(Pattern::Text, 2.0)]
