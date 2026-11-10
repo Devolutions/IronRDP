@@ -4337,11 +4337,9 @@ mod tests {
         );
     }
 
-    // oracle: mutant returning a later block's error, or dropping the state of tiles decoded beside a failing one
-    #[test]
-    fn region_with_failing_tiles_returns_the_first_error_in_block_order() {
-        // Tile 3 names a quant index past the table and tile 7 has a truncated payload;
-        // the other ten tiles are valid originals.
+    /// Decodes twelve original tiles, of which tile 3 names a quant index past the table and tile 7 has a truncated payload.
+    /// Returns the result with the tiles left holding state and those left holding a reference.
+    fn decode_region_with_failing_tiles() -> (Result<(), ProgressiveDecodeError>, (Vec<u16>, Vec<u16>)) {
         let data = encode_full_quality_component(7);
         let region = failing_region(&data, |i, tile| match i {
             3 => ironrdp_pdu::codecs::rfx::progressive::TileSimple { quant_idx_y: 5, ..tile },
@@ -4361,20 +4359,38 @@ mod tests {
             false,
         );
 
+        (result, tiles_with_state_and_reference(&surface, &references))
+    }
+
+    // oracle: mutant returning a later block's error, or decoding past the failing tile
+    #[cfg(not(feature = "rayon"))]
+    #[test]
+    fn sequential_region_stops_at_its_first_failing_tile() {
+        let (result, left) = decode_region_with_failing_tiles();
+
         assert!(matches!(
             result,
             Err(ProgressiveDecodeError::InvalidQuantIndex { index: 5, table_len: 1 })
         ));
+        // Tile 3 keeps the state created for it.
+        assert_eq!(left, ((0..4).collect(), (0..3).collect()));
+    }
 
-        // The sequential path stops at tile 3, which keeps the state created for it. The
-        // parallel path decodes every tile: the valid ones advance their state and
-        // reference, and the failing ones keep the state created for them.
-        let expected: (Vec<u16>, Vec<u16>) = if cfg!(feature = "rayon") {
+    // oracle: mutant returning a later block's error, or dropping the state of tiles decoded beside a failing one
+    #[cfg(feature = "rayon")]
+    #[test]
+    fn parallel_region_decodes_the_tiles_beside_a_failing_one() {
+        let (result, left) = decode_region_with_failing_tiles();
+
+        assert!(matches!(
+            result,
+            Err(ProgressiveDecodeError::InvalidQuantIndex { index: 5, table_len: 1 })
+        ));
+        // The valid tiles advance their state and reference, and the failing ones keep the state created for them.
+        assert_eq!(
+            left,
             ((0..12).collect(), (0..12).filter(|&i| i != 3 && i != 7).collect())
-        } else {
-            ((0..4).collect(), (0..3).collect())
-        };
-        assert_eq!(tiles_with_state_and_reference(&surface, &references), expected);
+        );
     }
 
     // oracle: mutant collecting every decoded tile before handing any to emit
