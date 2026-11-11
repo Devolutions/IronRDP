@@ -1663,43 +1663,54 @@ fn decode_tile_blocks_parallel(
 ) -> Result<(), ProgressiveDecodeError> {
     use rayon::prelude::*;
 
-    // Take each tile's state out and copy its reference, decode on the pool, put them back.
-    // A reference is 24 KiB stored inline in the map, so removing and reinserting it moves its neighbours,
-    // while writing over an existing entry does not.
-    let mut work: Vec<(Box<TileState>, Option<DecDwtQ>)> = tile_blocks
+    // Take each tile's state out, decode on the pool with a copy of its reference, put both back.
+    // A reference is 24 KiB stored inline in the map, so each worker copies its own,
+    // and the new one is written over the map's entry: removing and reinserting it would move its neighbours,
+    // and `insert` would move the old one out.
+    let mut tile_states: Vec<Box<TileState>> = indices
         .iter()
-        .zip(indices)
-        .map(|(block, &index)| {
-            let (x_idx, y_idx) = (block.x_idx(), block.y_idx());
-            let tile_state = surface.tiles[index].take().unwrap_or_else(|| {
+        .map(|&index| {
+            surface.tiles[index].take().unwrap_or_else(|| {
                 let mut tile_state = Box::new(TileState::new());
                 tile_state.use_reduce_extrapolate = surface.use_reduce_extrapolate;
                 tile_state
-            });
-            (tile_state, references.get(&(surface_id, x_idx, y_idx)).copied())
+            })
         })
         .collect();
-
-    let results: Vec<Result<Vec<DecodedTile>, ProgressiveDecodeError>> = work
+    let shared_references = &*references;
+    let (results, tile_references): (Vec<_>, Vec<_>) = tile_states
         .par_iter_mut()
         .zip(tile_blocks.par_iter())
-        .map(|((tile_state, reference), tile_block)| {
-            decode_tile(
+        .map(|(tile_state, tile_block)| {
+            let mut reference = shared_references
+                .get(&(surface_id, tile_block.x_idx(), tile_block.y_idx()))
+                .copied();
+            let result = decode_tile(
                 tile_state,
-                reference,
+                &mut reference,
                 tile_block,
                 quant_vals,
                 prog_quant_vals,
                 use_reduce_extrapolate,
-            )
+            );
+            (result, reference)
         })
-        .collect();
+        .unzip();
 
-    for ((tile_state, reference), (block, &index)) in work.into_iter().zip(tile_blocks.iter().zip(indices)) {
-        let (x_idx, y_idx) = (block.x_idx(), block.y_idx());
+    for ((tile_state, reference), (block, &index)) in tile_states
+        .into_iter()
+        .zip(&tile_references)
+        .zip(tile_blocks.iter().zip(indices))
+    {
+        let key = (surface_id, block.x_idx(), block.y_idx());
         surface.tiles[index] = Some(tile_state);
         if let Some(reference) = reference {
-            references.insert((surface_id, x_idx, y_idx), reference);
+            match references.get_mut(&key) {
+                Some(slot) => *slot = *reference,
+                None => {
+                    references.insert(key, *reference);
+                }
+            }
         }
     }
 
@@ -1710,7 +1721,8 @@ fn decode_tile_blocks_parallel(
 }
 
 /// Decodes one tile block into its tile's state. `reference` is the tile's
-/// sub-band-diffing reference, replaced by the new coefficients on success.
+/// sub-band-diffing reference, replaced by the new coefficients when a tile is returned;
+/// an upgrade of a tile without a first pass returns none and leaves it unchanged.
 #[expect(
     clippy::similar_names,
     reason = "q_y/q_cb/q_cr are standard component quant index names"
