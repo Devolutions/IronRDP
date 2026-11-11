@@ -74,21 +74,21 @@ impl TlsIdentityCtx {
     /// The crypto provider is the process-level default if one is installed, otherwise the one
     /// rustls selects from the providers compiled in — which it does only when exactly one is.
     /// With no process-level default, this returns an error rather than letting rustls panic when
-    /// this crate's `aws-lc-rs` and `ring` features are both off or both on. The check reads this
-    /// crate's features, not rustls' own: a graph in which another dependency compiles a provider
-    /// into rustls is refused when this crate's features are off, and when it adds the provider
-    /// this crate's feature did not choose, rustls itself cannot choose. In either case install
-    /// the provider to use as the process-level default, as the error says.
+    /// this crate's `rustls-aws-lc-rs` and `rustls-ring` features are both off or both on. The
+    /// check reads this crate's features, not rustls' own: a graph in which another dependency
+    /// compiles a provider into rustls is refused when this crate's features are off, and when it
+    /// adds the provider this crate's feature did not choose, rustls itself cannot choose. In
+    /// either case install the provider to use as the process-level default, as the error says.
     pub fn make_acceptor(&self) -> ServerResult<TlsAcceptor> {
         if rustls::crypto::CryptoProvider::get_default().is_none()
             && cfg!(any(
-                not(any(feature = "aws-lc-rs", feature = "ring")),
-                all(feature = "aws-lc-rs", feature = "ring")
+                not(any(feature = "rustls-aws-lc-rs", feature = "rustls-ring")),
+                all(feature = "rustls-aws-lc-rs", feature = "rustls-ring")
             ))
         {
             return Err(ServerError::reason(
                 "TLS crypto provider",
-                "no process-level default is installed, and with this crate's `aws-lc-rs` and `ring` features both off or both on rustls cannot choose one: enable exactly one of them, or install the provider to use (including one another dependency compiles into rustls) with `CryptoProvider::install_default`",
+                "no process-level default is installed, and with this crate's `rustls-aws-lc-rs` and `rustls-ring` features both off or both on rustls cannot choose one: enable exactly one of them, or install the provider to use (including one another dependency compiles into rustls) with `CryptoProvider::install_default`",
             ));
         }
 
