@@ -4,10 +4,10 @@
 //! Each path is split into validated components and opened one component at a time relative to a directory descriptor.
 //! Symbolic links and mount points are refused, so no spelling, link or mount inside the share resolves outside it.
 //!
-//! UNTESTED: every filesystem call on a server-supplied path works on a descriptor from `Root::open_at`,
-//! `RelativePath::open_parent` or `RelativePath::open_directory`, never on a joined path string.
-//! A path string is resolved again by the kernel, so a symbolic link swapped in after validation would lead outside the share.
-//! A new operation resolves its parent with `open_parent` and opens with `Root::open_at`, or uses an `*at` system call that does not follow the final component.
+//! UNTESTED: server-supplied paths only reach descriptor-relative operations, never joined path strings.
+//! A joined path can follow a symbolic link swapped in after validation.
+//! When adding an operation, resolve its parent with `open_parent` or use the pinned root for a flat name.
+//! Open with `Root::open_at` or `Root::create_exclusive_file`, or use an `*at` system call that does not follow the final component.
 //!
 //! UNTESTED: `Root::open_at` refuses a descriptor on another mount.
 //! The tests cannot create mounts, so after changing it, check by hand with a bind mount and a tmpfs mounted below a share, with and without `openat2`.
@@ -67,6 +67,23 @@ impl Root {
             return Err(Errno::EXDEV);
         }
         Ok(file)
+    }
+
+    /// Creates a new file directly in the shared directory without following a link.
+    ///
+    /// UNTESTED: exclusive creation refuses a mount point at `name`.
+    /// Otherwise a download could be created outside the pinned directory.
+    /// When changing these flags, check with a mounted filesystem at that name.
+    pub(crate) fn create_exclusive_file(&self, name: &str) -> nix::Result<OwnedFd> {
+        if !is_valid_name(name) {
+            return Err(Errno::EINVAL);
+        }
+        nix::fcntl::openat(
+            self.directory.as_fd(),
+            name,
+            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+            Mode::S_IRUSR | Mode::S_IWUSR,
+        )
     }
 }
 

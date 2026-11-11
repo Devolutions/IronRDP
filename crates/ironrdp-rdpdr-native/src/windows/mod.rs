@@ -1,6 +1,7 @@
 mod backend;
 mod control;
 mod directory;
+mod download;
 mod factory;
 mod file;
 mod file_table;
@@ -17,6 +18,7 @@ mod status;
 mod volume;
 
 pub use backend::WindowsRdpdrBackend;
+pub use download::{WindowsDownloadSink, WindowsDownloadSinkFactory};
 pub use factory::{RedirectedDrive, RedirectedDriveError, RedirectedDriveFactoryError, WindowsRdpdrBackendFactory};
 pub use logical_drives::{
     FIRST_NAMED_DRIVE_DEVICE_ID, LogicalDrive, LogicalDriveChange, LogicalDriveSelection, LogicalDriveSet,

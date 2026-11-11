@@ -1,0 +1,80 @@
+[package]
+name = "ironrdp-cef-server"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+description = "Native CEF browser remoted through an IronRDP server"
+license = "MIT OR Apache-2.0"
+autobins = false
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[workspace]
+resolver = "2"
+
+[features]
+default = []
+runtime = [
+    "dep:cef", "dep:async-trait", "dep:bytes", "dep:clap",
+    "dep:ironrdp-server", "dep:ironrdp-displaycontrol", "dep:ironrdp-rdpdr", "dep:ironrdp-core", "dep:ironrdp-pdu",
+    "dep:tokio", "dep:tokio-rustls", "dep:rcgen", "dep:nix",
+    "dep:tempfile", "dep:tracing", "dep:tracing-subscriber", "dep:windows-sys",
+]
+bundle = ["runtime", "cef/build-util"]
+
+[dependencies]
+anyhow = "1" # public
+ab_glyph = "0.2"
+cef = { git = "https://github.com/tauri-apps/cef-rs", rev = "9aa78c450489eddb828eb982eaee6c104a89d348", default-features = false, features = ["sandbox"], optional = true }
+async-trait = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+clap = { version = "4.6", features = ["derive"], optional = true }
+ironrdp-server = { path = "../../crates/ironrdp-server", optional = true } # public
+ironrdp-displaycontrol = { path = "../../crates/ironrdp-displaycontrol", optional = true }
+ironrdp-rdpdr = { path = "../../crates/ironrdp-rdpdr", optional = true }
+ironrdp-core = { path = "../../crates/ironrdp-core", optional = true }
+ironrdp-pdu = { path = "../../crates/ironrdp-pdu", optional = true }
+tokio = { version = "1", features = ["rt", "sync", "time", "signal", "net", "macros"], optional = true } # public (JoinHandle)
+tokio-rustls = { version = "0.26", optional = true }
+rcgen = { version = "0.14", optional = true }
+tempfile = { version = "3", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["signal"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"], optional = true }
+
+[dev-dependencies]
+ironrdp-svc = { path = "../../crates/ironrdp-svc" }
+
+[[bin]]
+name = "ironrdp-cef-server"
+path = "src/main.rs"
+required-features = ["runtime"]
+test = false
+
+[[bin]]
+name = "ironrdp-cef-helper"
+path = "src/helper.rs"
+required-features = ["runtime"]
+test = false
+
+[[bin]]
+name = "package-cef"
+path = "src/package.rs"
+required-features = ["bundle"]
+test = false
+
+[[bin]]
+name = "rdpdr-policy-fixture"
+path = "testing/rdpdr_policy.rs"
+required-features = ["runtime"]
+test = false
+
+[package.metadata.cef.bundle]
+helper_name = "ironrdp-cef-helper"

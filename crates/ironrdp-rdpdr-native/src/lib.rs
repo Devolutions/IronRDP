@@ -24,6 +24,7 @@ mod windows;
 pub use windows::{
     FIRST_NAMED_DRIVE_DEVICE_ID, LogicalDrive, LogicalDriveChange, LogicalDriveSelection, LogicalDriveSet,
     LogicalDriveWatcher, PortSelection, RdpdrWorkerThreadGuard, RdpdrWorkerThreadGuardResult, RdpdrWorkerThreadHooks,
-    RedirectedDrive, RedirectedDriveError, RedirectedDriveFactoryError, WindowsPortRedirection,
-    WindowsPrinterRedirection, WindowsPrinterSelection, WindowsRdpdrBackend, WindowsRdpdrBackendFactory,
+    RedirectedDrive, RedirectedDriveError, RedirectedDriveFactoryError, WindowsDownloadSink,
+    WindowsDownloadSinkFactory, WindowsPortRedirection, WindowsPrinterRedirection, WindowsPrinterSelection,
+    WindowsRdpdrBackend, WindowsRdpdrBackendFactory,
 };

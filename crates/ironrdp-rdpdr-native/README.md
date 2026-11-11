@@ -28,6 +28,46 @@ A redirected drive root is a volume root (`C:\`) or a directory on one, opened w
 `WindowsRdpdrBackendFactory::with_logical_drives` registers the drive letters (device IDs `1` to `26`) and announces the selected letters mapped when each connection starts, without probing their volumes.
 `LogicalDriveWatcher` reports volumes mounted and removed during a session, from `WM_DEVICECHANGE` broadcasts and a `GetLogicalDrives` poll for network drives; hosts forward its changes as dynamic drive announcements and removals.
 
+## POSIX download sink
+
+Opt in with `backend::NixRdpdrBackend::new_download_sink(directory)` or `backend::NixRdpdrBackendFactory::new(directory).with_download_sink()?.with_drive(1, "DL".to_owned())`.
+The existing unrestricted constructors retain their behavior.
+The factory pins the directory when download mode is enabled and uses that descriptor for every channel, even if its path is later renamed or replaced.
+The direct backend constructor pins the directory for that backend's lifetime.
+Use a dedicated directory not writable by untrusted local processes: identity checks protect cleanup from already-replaced names, but POSIX cannot atomically condition an unlink or source rename on an inode identity.
+
+Create a new flat file with `FILE_CREATE` and write access, optionally requesting `DELETE` for publication or cancellation.
+Reads, listings, directory creation, pre-existing opens, links, device controls, and unrelated metadata mutations are denied.
+File IDs are valid only for the device that created them.
+Writes are limited to 1 MiB per request and a 1 GiB maximum end offset.
+Each factory shares a file-handle budget across its channels and failed cleanups, capped at 1,024 files and, when available, one quarter of the process's soft descriptor limit.
+On a filesystem-only channel, incoming messages larger than a 1 MiB write and its 56-byte RDPDR header are rejected before static-channel reassembly.
+Channels that also configure printers, smartcards, or ports do not have this early bound; use a filesystem-only channel with untrusted servers.
+Flush synchronizes file data.
+Rename requires `DELETE` access and `ReplaceIfExists = false`, uses an atomic non-replacing OS operation, and commits the file.
+Published handles permit metadata queries, flush, and close, but no further writes, renames, or deletion.
+Closing an unpublished file, removing its device, resetting, or dropping the backend attempts to remove incomplete files without removing committed downloads.
+Cleanup failures are logged and reported by close, device removal, and reset.
+A failed create can also leave a file awaiting cleanup if its identity cannot be checked.
+While the factory remains alive, it retains failed cleanup records and retries before a new file, device removal, channel reset, or reconnect.
+Those operations fail until cleanup succeeds or the backend can verify that the owned file was removed locally.
+Cleanup cannot run after process termination and can leave incomplete files.
+
+## Windows download sink
+
+`WindowsDownloadSinkFactory::new(directory)` pins an existing absolute drive-letter directory for the factory's lifetime.
+The directory path cannot contain reparse points, and UNC and verbatim paths are not supported.
+Its device permits exclusive flat-file creation, writes, metadata queries, flush, and non-replacing publication.
+Reads, listings, unrelated mutations, and device controls are denied.
+Its write-size, publication, and early-message limits match the POSIX sink.
+Its factory shares a limit of 1,024 open, creating, or pending-cleanup files across connections.
+
+Use a dedicated directory and files that untrusted local processes cannot modify or hard-link.
+The link-count check before writes and publication is not atomic with the operation.
+An unpublished file is removed on close, reset, or drop when possible; a failed close reports an error.
+While the factory remains alive, failed cleanups retain their handles and are retried before creating a file, resetting, or reconnecting.
+Those operations fail until cleanup succeeds, and process termination can leave incomplete files.
+
 ## Windows printers
 
 `WindowsRdpdrBackendFactory::with_printer_redirection` takes a `WindowsPrinterRedirection`, which selects one of:
@@ -71,4 +111,3 @@ Advertising it would require:
 
 Item 1 belongs in a new portable crate next to `ironrdp-rdpdr`, item 2 and item 4 in this crate behind the Windows target, and item 3 in `ironrdp-rdpdr` and the printer worker.
 The flag can only be advertised once all four are in place, because the server sends XPS data as soon as it accepts it.
-

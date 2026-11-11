@@ -29,6 +29,7 @@ pub(crate) struct Settings {
     pub(crate) overlay: PropertySet,
     pub(crate) skip_certificate_check: bool,
     pub(crate) rdpdr_drives: Vec<RdpdrDriveConfig>,
+    pub(crate) rdpdr_download_dir: Option<PathBuf>,
     pub(crate) smartcard: bool,
 }
 
@@ -37,6 +38,7 @@ impl Settings {
         let options = DaemonOptions::default()
             .with_certificate_check_skipped(self.skip_certificate_check)
             .with_rdpdr_drives(self.rdpdr_drives)
+            .with_rdpdr_download_dir(self.rdpdr_download_dir)
             .with_smartcard(self.smartcard);
         (self.overlay, options)
     }
@@ -50,6 +52,7 @@ impl Settings {
         self.overlay.iter().next().is_none()
             && !self.skip_certificate_check
             && self.rdpdr_drives.is_empty()
+            && self.rdpdr_download_dir.is_none()
             && !self.smartcard
     }
 
@@ -111,6 +114,8 @@ struct StartupConfig {
     overlay: Vec<(String, StartupValue)>,
     skip_certificate_check: bool,
     rdpdr_drives: Vec<(PathBuf, String)>,
+    #[serde(default)]
+    rdpdr_download_dir: Option<PathBuf>,
     smartcard: bool,
 }
 
@@ -142,6 +147,7 @@ impl From<&Settings> for StartupConfig {
                 .map(|drive| (drive.root_path().to_path_buf(), drive.display_name().to_owned()))
                 .collect(),
             smartcard: settings.smartcard,
+            rdpdr_download_dir: settings.rdpdr_download_dir.clone(),
         }
     }
 }
@@ -167,6 +173,7 @@ impl StartupConfig {
             overlay,
             skip_certificate_check: self.skip_certificate_check,
             rdpdr_drives,
+            rdpdr_download_dir: self.rdpdr_download_dir,
             smartcard: self.smartcard,
         })
     }
@@ -734,12 +741,14 @@ mod tests {
         settings.overlay.insert("ClearTextPassword", "example-secret");
         settings.overlay.insert("desktopwidth", 1234i64);
         settings.smartcard = true;
+        settings.rdpdr_download_dir = Some(std::env::current_dir().expect("directory"));
 
         let serialized = serde_json::to_vec(&StartupConfig::from(&settings)).expect("serialize");
         let config: StartupConfig = serde_json::from_slice(&serialized).expect("deserialize");
         let decoded = config.into_settings().expect("restore settings");
         assert_eq!(decoded.overlay, settings.overlay);
         assert!(decoded.smartcard);
+        assert_eq!(decoded.rdpdr_download_dir, settings.rdpdr_download_dir);
         assert!(!decoded.is_default());
     }
 

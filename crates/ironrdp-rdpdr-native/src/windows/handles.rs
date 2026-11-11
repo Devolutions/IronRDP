@@ -74,6 +74,12 @@ impl RootDirectory {
         self.open_relative_directory_with_final_options(path, SYNCHRONOUS_DIRECTORY_CREATE_OPTIONS)
     }
 
+    pub(crate) fn pin_for_downloads(&self) -> Result<FileHandle, OpenDirectoryError> {
+        let access = FILE_TRAVERSE | FILE_ADD_FILE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        self.open_traversal_root_with_access(access)
+            .map(DirectoryHandle::into_file_handle)
+    }
+
     /// Opens an independently-owned directory handle that can receive an
     /// overlapped change-notification request.
     pub(crate) fn open_relative_directory_for_notification(
@@ -279,6 +285,11 @@ pub(crate) struct NativeIoLengthError;
 impl FileHandle {
     pub(crate) fn as_raw(&self) -> HANDLE {
         self.0
+    }
+
+    pub(crate) fn open_child(&self, name: &str, options: FileOpenOptions) -> Result<(Self, usize), OpenFileError> {
+        let mut name = name.encode_utf16().collect::<Vec<_>>();
+        open_file(self.0, &mut name, options)
     }
 
     /// Duplicates this process-local handle for a deferred worker.

@@ -18,6 +18,14 @@ use crate::pdu::esp::PortIoRequest;
 
 /// Device redirection backend interface.
 pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
+    /// Bounds inbound RDPDR messages on a filesystem-only channel before reassembly.
+    ///
+    /// The limit excludes the static-channel header and is ignored when other device types are configured.
+    /// The default leaves messages unbounded.
+    fn max_filesystem_message_size(&self) -> Option<usize> {
+        None
+    }
+
     /// Indicates whether the backend implements the RDPDR security IRPs.
     ///
     /// The channel advertises the corresponding optional capability bits only
