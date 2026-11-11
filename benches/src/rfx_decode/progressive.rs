@@ -15,7 +15,7 @@ pub(crate) fn progressive(c: &mut Criterion) {
     for pattern in Pattern::ALL {
         let fx = progressive_fixture(pattern, w, h);
 
-        // The decoder keeps the codec context, the surface's tile grid and each tile's reference across iterations.
+        // The decoder keeps the surface's tile grid and each tile's reference across iterations.
         // Priming with one frame allocates that state, so every timed decode repaints existing tiles, as a server repainting the screen does.
         let mut decoder = ProgressiveDecoder::new();
         decoder
