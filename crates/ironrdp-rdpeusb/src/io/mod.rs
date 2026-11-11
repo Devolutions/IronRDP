@@ -22,6 +22,7 @@
 //! [`UrbdrcDeviceServerBackend`]: crate::server::UrbdrcDeviceServerBackend
 
 use alloc::{string::String, vec::Vec};
+use ironrdp_core::{Decode as _, ReadCursor, encode_vec};
 use ironrdp_dvc::DvcMessage;
 use ironrdp_pdu::{PduError, PduResult, pdu_other_err};
 
@@ -35,7 +36,7 @@ pub use crate::pdu::{
     utils::{HResult, RequestId},
 };
 use crate::pdu::{
-    completion::ts_urb_result::TsUrbResultPayload,
+    completion::ts_urb_result::{ExpectedTsUrbResult, Raw, TsUrbResultPayload},
     header::{InterfaceId, MessageId},
     sink::{AddDevice, NoAckIsochWriteJitterBufSizeInMs},
     usb_dev::ts_urb::{TsUrbIn, TsUrbOut, utils::TsUrbHeader},
@@ -228,6 +229,20 @@ impl TsUrbInPacket {
             },
         })
     }
+
+    /// Encode this request back into the `TS_URB` the server sent, with `request_id`.
+    ///
+    /// For backends that hand `TS_URB`s to the operating system as they are, such as the Windows
+    /// RemoteFX USB redirection driver.
+    pub fn encode_ts_urb(&self, request_id: u32) -> PduResult<Vec<u8>> {
+        let ts_urb = self.clone().into_ts_urb(request_id)?;
+        encode_vec(&ts_urb).map_err(|e| pdu_other_err!("TS_URB", source: e))
+    }
+
+    /// Decode the `TS_URB_RESULT` that completes this request.
+    pub fn decode_ts_urb_result(&self, src: &[u8]) -> PduResult<TsUrbResult<TsUrbResultPayload>> {
+        decode_ts_urb_result(src, crate::server::expected_result_for_in(&self.kind))
+    }
 }
 
 impl From<TsUrbIn> for TsUrbInPacket {
@@ -264,6 +279,13 @@ pub struct TsUrbOutPacket {
     ///
     /// The function and payload variant must match; conversion to a wire PDU rejects a mismatch.
     pub func: UrbFunction,
+}
+
+fn decode_ts_urb_result(src: &[u8], expected: ExpectedTsUrbResult) -> PduResult<TsUrbResult<TsUrbResultPayload>> {
+    let mut cursor = ReadCursor::new(src);
+    TsUrbResult::<Raw>::decode(&mut cursor)
+        .and_then(|result| result.into_expected(expected))
+        .map_err(|e| pdu_other_err!("TS_URB_RESULT", source: e))
 }
 
 impl From<TsUrbOut> for TsUrbOutPacket {
@@ -326,6 +348,33 @@ impl TsUrbOutPacket {
                 no_ack: self.no_ack,
             },
         })
+    }
+
+    /// Encode this request back into the `TS_URB` the server sent, with `request_id`.
+    ///
+    /// For backends that hand `TS_URB`s to the operating system as they are, such as the Windows
+    /// RemoteFX USB redirection driver.
+    pub fn encode_ts_urb(&self, request_id: u32) -> PduResult<Vec<u8>> {
+        if !self.kind.matches_func(self.func) {
+            return Err(pdu_other_err!("URB function does not match TS_URB payload"));
+        }
+        let ts_urb = TsUrbOut {
+            kind: self.kind.clone(),
+            header: TsUrbHeader {
+                ts_urb_size: self.kind.ts_urb_size()?,
+                func: self.func,
+                req_id: request_id
+                    .try_into()
+                    .map_err(|_| pdu_other_err!("invalid transfer request id"))?,
+                no_ack: self.no_ack,
+            },
+        };
+        encode_vec(&ts_urb).map_err(|e| pdu_other_err!("TS_URB", source: e))
+    }
+
+    /// Decode the `TS_URB_RESULT` that completes this request.
+    pub fn decode_ts_urb_result(&self, src: &[u8]) -> PduResult<TsUrbResult<TsUrbResultPayload>> {
+        decode_ts_urb_result(src, crate::server::expected_result_for_out(&self.kind))
     }
 }
 

@@ -32,6 +32,9 @@ pub fn write_padding(dst: &mut WriteCursor<'_>, mut n: usize) {
 }
 
 /// Moves read cursor, ignoring padding bytes.
+///
+/// This does not check that `n` bytes remain.
+/// Check the remaining length first with `ensure_size!` or `ensure_fixed_part_size!`.
 #[inline]
 pub fn read_padding(src: &mut ReadCursor<'_>, n: usize) {
     src.advance(n);

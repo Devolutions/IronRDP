@@ -3,8 +3,6 @@ name: ironrdp-activex-mstsc-testing
 description: Test IronRDP ActiveX in the real mstsc.exe child launched by MsRdpEx, including the native credential bridge, shell behavior, resize handling, clipboard startup, and bounded UI stress. Use when validating or debugging ironrdpax.dll under native MSTSC. Do not use for MsRdpEx /axhost or generic COM smoke tests.
 ---
 
-# Native MSTSC ActiveX testing
-
 Exercise this exact host path:
 
 ```text

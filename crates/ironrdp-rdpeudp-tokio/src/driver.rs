@@ -1,9 +1,9 @@
 //! Driver task: the async event loop bridging UDP socket ↔ sans-I/O state machine.
 //!
-//! A single `tokio::spawn`'d task owns the `UdpSocket` and `RdpeudpConnection`,
+//! A single `tokio::spawn`'d task owns the datagram I/O endpoint and `RdpeudpConnection`,
 //! running a `select!` loop over three event sources:
 //!
-//! 1. **UDP recv**: incoming datagrams from the network
+//! 1. **Datagram recv**: incoming datagrams from the network
 //! 2. **Write data**: the TLS layer has plaintext to transmit
 //! 3. **Timer**: RDPEUDP2 retransmit / ACK-delay / keep-alive / idle timeouts
 //!
@@ -11,6 +11,7 @@
 //! through `Arc<Mutex<SharedIo>>`.
 
 use crate::clock::Clock;
+use core::net::SocketAddr;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::io;
@@ -24,6 +25,35 @@ use tracing::{debug, info, trace};
 
 use crate::error::{DriverError, DriverErrorExt as _, DriverErrorKind};
 use crate::stream::SharedIo;
+
+pub(crate) trait DatagramIo: Send + Sync + 'static {
+    fn local_addr(&self) -> Option<SocketAddr>;
+    fn peer_addr(&self) -> Option<SocketAddr>;
+    fn send<'a>(&'a self, buf: &'a [u8]) -> impl Future<Output = io::Result<usize>> + Send + 'a;
+    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> impl Future<Output = io::Result<usize>> + Send + 'a;
+}
+
+#[expect(
+    clippy::manual_async_fn,
+    reason = "The driver requires Send futures for tokio::spawn"
+)]
+impl DatagramIo for UdpSocket {
+    fn local_addr(&self) -> Option<SocketAddr> {
+        UdpSocket::local_addr(self).ok()
+    }
+
+    fn peer_addr(&self) -> Option<SocketAddr> {
+        UdpSocket::peer_addr(self).ok()
+    }
+
+    fn send<'a>(&'a self, buf: &'a [u8]) -> impl Future<Output = io::Result<usize>> + Send + 'a {
+        async move { UdpSocket::send(self, buf).await }
+    }
+
+    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> impl Future<Output = io::Result<usize>> + Send + 'a {
+        async move { UdpSocket::recv(self, buf).await }
+    }
+}
 
 /// Maximum UDP datagram size we'll attempt to receive.
 /// RDPEUDP2 typically negotiates 1232-byte MTU, but we budget
@@ -49,8 +79,8 @@ const READ_BUF_HIGH_WATER: usize = 1 << 20;
 // ════════════════════════════════════════════════════════════════════
 
 /// The driver task's internal state.
-pub(crate) struct Driver {
-    socket: UdpSocket,
+pub(crate) struct Driver<S: DatagramIo> {
+    socket: S,
     conn: RdpeudpConnection,
     shared: Arc<Mutex<SharedIo>>,
     /// Notified by the driver when Event::Connected fires.
@@ -68,9 +98,9 @@ pub(crate) struct Driver {
     stream_released: bool,
 }
 
-impl Driver {
+impl<S: DatagramIo> Driver<S> {
     pub(crate) fn new(
-        socket: UdpSocket,
+        socket: S,
         conn: RdpeudpConnection,
         shared: Arc<Mutex<SharedIo>>,
         connected_notify: Arc<Notify>,
@@ -91,8 +121,8 @@ impl Driver {
     /// Run the driver event loop until the connection closes or errors.
     pub(crate) async fn run(mut self) -> Result<(), DriverError> {
         debug!(
-            local_addr = ?self.socket.local_addr().ok(),
-            peer = ?self.socket.peer_addr().ok(),
+            local_addr = ?self.socket.local_addr(),
+            peer = ?self.socket.peer_addr(),
             "UDP driver started"
         );
 
@@ -371,7 +401,7 @@ impl Driver {
     }
 }
 
-impl Drop for Driver {
+impl<S: DatagramIo> Drop for Driver<S> {
     fn drop(&mut self) {
         if self.stream_released {
             return;

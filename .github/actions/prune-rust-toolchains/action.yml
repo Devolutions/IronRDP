@@ -1,0 +1,21 @@
+name: Prune Rust toolchains
+description: >-
+  Keep only the toolchain pinned in rust-toolchain.toml. Swatinem/rust-cache hashes every installed
+  toolchain into its key, so the runner's preinstalled stable (which differs across image rollouts)
+  would otherwise split the cache and cause full rebuilds. Run this before the Rust cache step.
+
+runs:
+  using: composite
+  steps:
+    - name: Uninstall unpinned Rust toolchains
+      shell: bash
+      run: |
+        rustup toolchain install
+        pinned="$(rustup show active-toolchain | tr -d '\r' | cut -d' ' -f1)"
+        rustup default "$pinned"
+        rustup toolchain list --quiet | tr -d '\r' | while read -r toolchain; do
+          if [ "$toolchain" != "$pinned" ]; then
+            rustup toolchain uninstall "$toolchain"
+          fi
+        done
+        rustup toolchain list

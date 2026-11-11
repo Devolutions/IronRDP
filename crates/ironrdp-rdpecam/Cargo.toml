@@ -1,7 +1,6 @@
 [package]
 name = "ironrdp-rdpecam"
-version = "0.0.0"
-publish = false
+version = "0.2.0"
 readme = "README.md"
 description = "Video capture dynamic channel client as described in MS-RDPECAM"
 edition.workspace = true
@@ -18,10 +17,11 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core = { version = "0.2.1", path = "../ironrdp-core", features = ["alloc"] } # public
-ironrdp-dvc = { version = "0.8.0", path = "../ironrdp-dvc" } # public
-ironrdp-pdu = { version = "0.9.0", path = "../ironrdp-pdu", features = ["alloc"] } # public
-ironrdp-svc = { version = "0.8.0", path = "../ironrdp-svc" } # public
+ironrdp-core = { version = "0.3.1", path = "../ironrdp-core", features = ["alloc"] } # public
+ironrdp-dvc = { version = "0.10.0", path = "../ironrdp-dvc" } # public
+ironrdp-pdu = { version = "0.11.0", path = "../ironrdp-pdu", features = ["alloc"] } # public
+ironrdp-svc = { version = "0.10.0", path = "../ironrdp-svc" } # public
+spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }
 tracing = { version = "0.1", features = ["log"] }
 
 [lints]

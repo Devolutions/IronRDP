@@ -4,12 +4,22 @@ use ironrdp_pdu::rdp;
 use ironrdp_pdu::rdp::capability_sets::{
     CapabilitySet, InputFlags, Rail, RailSupportLevel, WindowList, WindowSupportLevel,
 };
-use tracing::{debug, warn};
+use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
+use tracing::{debug, info, warn};
 
 use crate::{
     Config, ConnectionFinalizationSequence, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize,
     MonotonicInstant, Sequence, State, Written, general_err, reason_err,
 };
+
+/// The largest desktop width or height accepted from the server's Bitmap capability set.
+///
+/// The Bitmap capability itself leaves these fields unconstrained, so this reuses the virtual desktop limit of the
+/// [Client Monitor Data], which servers enforce (`ERRINFO_VIRTUALDESKTOPTOOLARGE`). It bounds the framebuffer
+/// clients allocate from the negotiated size.
+///
+/// [Client Monitor Data]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
+const MAX_DESKTOP_DIM: u16 = 32766;
 
 /// Represents the Capability Exchange and Connection Finalization phases
 /// of the connection sequence (section [1.3.1.1]).
@@ -123,7 +133,7 @@ impl Sequence for ConnectionActivationSequence {
     fn next_pdu_hint(&self) -> Option<&dyn ironrdp_pdu::PduHint> {
         match &self.state {
             ConnectionActivationState::Consumed => None,
-            ConnectionActivationState::Finalized { .. } => None,
+            ConnectionActivationState::Finalized { .. } | ConnectionActivationState::Redirected { .. } => None,
             ConnectionActivationState::CapabilitiesExchange => Some(&ironrdp_pdu::X224_HINT),
             ConnectionActivationState::ConnectionFinalization {
                 connection_finalization,
@@ -142,8 +152,29 @@ impl Sequence for ConnectionActivationSequence {
         received_at: Option<MonotonicInstant>,
         output: &mut ironrdp_core::WriteBuf,
     ) -> ConnectorResult<Written> {
+        // The server may redirect the client instead of, or in the middle of, activating it
+        // ([MS-RDPBCGR] 3.2.5.13.1).
+        if matches!(
+            self.state,
+            ConnectionActivationState::CapabilitiesExchange | ConnectionActivationState::ConnectionFinalization { .. }
+        ) && let Some(redirection) = server_redirection(input)?
+        {
+            if redirection.is_informational() {
+                debug!(?redirection, "Ignoring informational Server Redirection PDU");
+            } else {
+                info!(session_id = redirection.session_id, "Server requested a redirection");
+                debug!(?redirection, "Received");
+                self.state = ConnectionActivationState::Redirected {
+                    redirection: Box::new(redirection),
+                };
+            }
+            return Ok(Written::Nothing);
+        }
+
         let (written, next_state) = match mem::take(&mut self.state) {
-            ConnectionActivationState::Consumed | ConnectionActivationState::Finalized { .. } => {
+            ConnectionActivationState::Consumed
+            | ConnectionActivationState::Finalized { .. }
+            | ConnectionActivationState::Redirected { .. } => {
                 return Err(general_err!(
                     "connector sequence state is finalized or consumed (this is a bug)"
                 ));
@@ -292,6 +323,17 @@ impl Sequence for ConnectionActivationSequence {
                         height: self.config.desktop_size.height,
                     });
 
+                if !(1..=MAX_DESKTOP_DIM).contains(&desktop_size.width)
+                    || !(1..=MAX_DESKTOP_DIM).contains(&desktop_size.height)
+                {
+                    return Err(reason_err!(
+                        "ConnectionActivation::CapabilitiesExchange",
+                        "negotiated desktop size {}x{} is outside the supported range",
+                        desktop_size.width,
+                        desktop_size.height
+                    ));
+                }
+
                 let share_id = share_control_ctx.share_id;
 
                 let client_confirm_active = rdp::headers::ShareControlPdu::ClientConfirmActive(
@@ -416,6 +458,13 @@ pub enum ConnectionActivationState {
         /// The server-negotiated Window List support level.
         window_support_level: Option<WindowSupportLevel>,
     },
+    /// The server sent a Server Redirection PDU: the client must close this connection and connect to the target it
+    /// describes ([MS-RDPBCGR] 3.2.5.13.1).
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    Redirected {
+        redirection: Box<ServerRedirectionPdu>,
+    },
 }
 
 impl State for ConnectionActivationState {
@@ -425,11 +474,15 @@ impl State for ConnectionActivationState {
             ConnectionActivationState::CapabilitiesExchange => "CapabilitiesExchange",
             ConnectionActivationState::ConnectionFinalization { .. } => "ConnectionFinalization",
             ConnectionActivationState::Finalized { .. } => "Finalized",
+            ConnectionActivationState::Redirected { .. } => "Redirected",
         }
     }
 
     fn is_terminal(&self) -> bool {
-        matches!(self, ConnectionActivationState::Finalized { .. })
+        matches!(
+            self,
+            ConnectionActivationState::Finalized { .. } | ConnectionActivationState::Redirected { .. }
+        )
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -438,6 +491,16 @@ impl State for ConnectionActivationState {
 }
 
 const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
+
+/// Decodes `input` as a Server Redirection PDU received on the I/O channel, if it is one.
+///
+/// Anything that is not an MCS Send Data Indication is left for the regular decoding path to report.
+fn server_redirection(input: &[u8]) -> ConnectorResult<Option<ServerRedirectionPdu>> {
+    let Ok(ctx) = ironrdp_pdu::mcs::decode_send_data_indication(input) else {
+        return Ok(None);
+    };
+    rdp::server_redirection::decode_server_redirection(ctx.user_data).map_err(ConnectorError::decode)
+}
 
 fn server_window_list(capability_sets: &[CapabilitySet]) -> Option<WindowList> {
     capability_sets.iter().find_map(|capability_set| {
@@ -875,6 +938,11 @@ mod tests {
             },
             monitor_layout: None,
             desktop_scale_factor: 0,
+            desktop_physical_size: None,
+            desktop_orientation: None,
+            device_scale_factor: None,
+            monitor_extended_layout: None,
+            relative_mouse_input: false,
             enable_tls: true,
             enable_credssp: false,
             enable_standard_rdp_security: false,
@@ -906,6 +974,7 @@ mod tests {
             pointer_software_rendering: false,
             multitransport_flags: None,
             support_dyn_vc_gfx_protocol: false,
+            rdp_version: gcc::RdpVersion::V5_PLUS,
             performance_flags: Default::default(),
             timezone_info: Default::default(),
             alternate_shell: String::new(),

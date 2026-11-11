@@ -68,16 +68,21 @@ $state = [pscustomobject]@{
 }
 $state | ConvertTo-Json -Depth 4 | Set-Content -Path $StatePath -Encoding utf8NoBOM
 
+# A failing native command does not throw, so readiness is detected via the exit code.
+# stderr is discarded because "pipe not found" is expected until the daemon is listening.
 $deadline = (Get-Date).AddSeconds(30)
 do {
-    try {
-        Invoke-Agent status | Out-Null
+    Invoke-Agent status 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
         $state | ConvertTo-Json -Compress
         return
     }
-    catch {
-        Start-Sleep -Milliseconds 250
+
+    if ($process.HasExited) {
+        throw "ironrdp-agent daemon exited with code $($process.ExitCode); see $stderrPath"
     }
+
+    Start-Sleep -Milliseconds 250
 } while ((Get-Date) -lt $deadline)
 
 try {

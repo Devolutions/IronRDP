@@ -26,7 +26,9 @@ fn make_processor() -> Processor {
 
 fn process_frame(processor: &mut Processor, frame: &[u8]) -> Vec<ironrdp_session::x224::ProcessorOutput> {
     let mut bulk_decompressor = None;
-    processor.process(frame, &mut bulk_decompressor).expect("process frame")
+    processor
+        .process(frame, &mut bulk_decompressor, None)
+        .expect("process frame")
 }
 
 /// Encode a Heartbeat PDU as a server-to-client SendDataIndication on the MCS

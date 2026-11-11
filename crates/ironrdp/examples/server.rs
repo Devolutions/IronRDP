@@ -15,9 +15,9 @@ use ironrdp::connector::DesktopSize;
 use ironrdp::rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp::rdpsnd::server::{NegotiatedFormat, RdpsndError, RdpsndServerHandler, RdpsndServerMessage};
 use ironrdp::server::{
-    BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, RdpServer,
-    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
-    SoundServerFactory, TlsIdentityCtx,
+    BitmapUpdate, CliprdrServerFactory, Credentials, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent,
+    PixelFormat, RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent,
+    ServerEventSender, SoundServerFactory, TlsIdentityCtx,
 };
 use ironrdp_cliprdr_native::StubCliprdrBackend;
 use rand::prelude::*;
@@ -210,7 +210,7 @@ impl RdpServerDisplay for Handler {
         }
     }
 
-    async fn updates(&mut self) -> ironrdp::server::ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+    async fn updates(&mut self, _: DisplayContext) -> ironrdp::server::ServerResult<Box<dyn RdpServerDisplayUpdates>> {
         Ok(Box::new(DisplayUpdates {}))
     }
 }

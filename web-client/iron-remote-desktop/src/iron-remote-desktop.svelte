@@ -21,8 +21,6 @@
     import { PublicAPI } from './services/PublicAPI';
     import { ScreenScale } from './enums/ScreenScale';
     import type { RemoteDesktopModule } from './interfaces/RemoteDesktopModule';
-    import { isComponentDestroyed } from './lib/stores/componentLifecycleStore';
-    import { runWhenFocusedQueue } from './lib/stores/runWhenFocusedStore';
     import { ClipboardService } from './services/clipboard.service';
 
     let {
@@ -57,6 +55,8 @@
     let publicAPI = new PublicAPI(remoteDesktopService, clipboardService);
 
     let currentScreenScale = ScreenScale.Fit;
+    let destroyed = false;
+    let visibilityTimer: ReturnType<typeof setTimeout> | undefined;
 
     function captureKeys(evt: KeyboardEvent) {
         if (capturingInputs()) {
@@ -143,7 +143,8 @@
             if (val) {
                 //Enforce first scaling and delay the call to scaleSession to ensure Dom is ready.
                 setWrapperStyle('100%', '100%', 'hidden');
-                setTimeout(() => scaleSession(scale), 150);
+                clearTimeout(visibilityTimer);
+                visibilityTimer = setTimeout(() => scaleSession(scale), 150);
             }
         });
     }
@@ -153,6 +154,10 @@
     }
 
     function scaleSession(screenScale: ScreenScale | string) {
+        // A resize callback can come after the component is destroyed (bind:this has cleared its elements then).
+        if (destroyed) {
+            return;
+        }
         resetHostStyle();
         if (isVisible) {
             switch (screenScale) {
@@ -323,14 +328,7 @@
     }
 
     function focusEventHandler() {
-        try {
-            while (runWhenFocusedQueue.length() > 0) {
-                const fn = runWhenFocusedQueue.shift();
-                fn?.();
-            }
-        } catch (err) {
-            console.error('Failed to run the function queued for execution when the window received focus: ' + err);
-        }
+        clipboardService.flushFocused();
     }
 
     function blurEventHandler() {
@@ -344,26 +342,33 @@
     }
 
     onMount(async () => {
-        isComponentDestroyed.set(false);
         loggingService.verbose = verbose === 'true';
         loggingService.info('Dom ready');
         await initcanvas();
+        if (destroyed) {
+            return;
+        }
         try {
             await clipboardService.initClipboard();
         } catch (err) {
             loggingService.error('Clipboard initialization failed: ' + err);
         }
-        dispatchReady();
+        // Not ready if it was destroyed in the meantime: a host would connect a session nothing shows.
+        if (!destroyed) {
+            dispatchReady();
+        }
     });
 
     onDestroy(() => {
+        destroyed = true;
+        clearTimeout(visibilityTimer);
+        clipboardService.dispose();
         window.removeEventListener('resize', resizeHandler);
         window.removeEventListener('keydown', captureKeys, false);
         window.removeEventListener('keyup', captureKeys, false);
         window.removeEventListener('focus', focusEventHandler);
         window.removeEventListener('blur', blurEventHandler);
         document.removeEventListener('visibilitychange', visibilityChangeHandler);
-        isComponentDestroyed.set(true);
     });
 </script>
 

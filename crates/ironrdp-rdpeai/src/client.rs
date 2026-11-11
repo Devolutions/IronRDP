@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{decode, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
-use ironrdp_pdu::{PduResult, decode_err};
+use ironrdp_pdu::{PduResult, decode_err, encode_err, pdu_other_err};
 use ironrdp_rdpsnd::pdu::AudioFormat;
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, info, trace, warn};
@@ -23,6 +23,16 @@ pub type AudioPacketSink = Box<dyn FnMut(Vec<u8>) + Send>;
 pub trait RdpeaiCaptureHandler: Send {
     /// Formats this backend can negotiate as encoding formats, in preferred order.
     fn supported_formats(&self) -> &[AudioFormat];
+
+    /// Chooses the encoding formats to offer in reply to the server's Sound Formats PDU.
+    ///
+    /// The order states the client's preference. The client keeps only the returned formats the
+    /// server offered, and Open and Format Change PDUs index that list. The default returns
+    /// [`supported_formats`](Self::supported_formats).
+    fn choose_formats(&self, server_formats: &[AudioFormat]) -> Vec<AudioFormat> {
+        let _ = server_formats;
+        self.supported_formats().to_vec()
+    }
 
     /// Open capture for `capture_format` and begin delivering fixed-size packets to `sink`.
     ///
@@ -150,25 +160,12 @@ impl RdpeaiClient {
             self.stop_capture();
         }
 
-        let supported = self.handler.supported_formats();
-        // Preserve client preference order among formats the server also offered.
-        let negotiated: Vec<AudioFormat> = supported
-            .iter()
-            .filter(|client_fmt| {
-                server
-                    .formats
-                    .iter()
-                    .any(|server_fmt| client_fmt.matches_for_negotiation(server_fmt))
-            })
-            .cloned()
-            .collect();
+        debug!(server_formats = ?server.formats, "AUDIO_INPUT server formats");
+        let negotiated =
+            ironrdp_rdpsnd::pdu::retain_offered(self.handler.choose_formats(&server.formats), &server.formats);
 
         if negotiated.is_empty() {
-            warn!(
-                server_formats = server.formats.len(),
-                client_formats = supported.len(),
-                "No common AUDIO_INPUT formats"
-            );
+            warn!(server_formats = server.formats.len(), "No common AUDIO_INPUT formats");
         } else {
             info!(count = negotiated.len(), "AUDIO_INPUT formats negotiated");
         }
@@ -257,7 +254,15 @@ impl RdpeaiClient {
             )))]);
         };
 
-        if !self.handler.set_format(&encode_fmt, packet_size) {
+        if self.handler.set_format(&encode_fmt, packet_size) {
+            // Data PDUs reach the server through the uplink queue. Queuing the confirmation there too
+            // keeps it behind the packets encoded in the old format, which the server would
+            // otherwise decode with the new one.
+            match self.queue_behind_data(RdpeaiPdu::FormatChange(FormatChangePdu::new(change.new_format))) {
+                Ok(()) => return Ok(Vec::new()),
+                Err(error) => warn!(%error, "Failed to queue the FormatChange confirmation; replying directly"),
+            }
+        } else {
             warn!(index = change.new_format, "Capture backend rejected format change");
             // Still confirm so the server does not hang Opened with no timeout.
             self.stop_capture();
@@ -266,6 +271,20 @@ impl RdpeaiClient {
         Ok(vec![Box::new(RdpeaiPdu::FormatChange(FormatChangePdu::new(
             change.new_format,
         )))])
+    }
+
+    /// Sends `pdu` through the uplink, after the capture packets already queued there.
+    fn queue_behind_data(&self, pdu: RdpeaiPdu) -> PduResult<()> {
+        let channel_id = self
+            .channel_id
+            .ok_or_else(|| pdu_other_err!("AUDIO_INPUT channel not started"))?;
+        let messages: Vec<DvcMessage> = vec![Box::new(pdu)];
+        let svc = encode_dvc_messages(channel_id, messages, ChannelFlags::empty()).map_err(|e| encode_err!(e))?;
+        let mut uplink = self
+            .uplink
+            .lock()
+            .map_err(|_| pdu_other_err!("AUDIO_INPUT uplink lock poisoned"))?;
+        uplink(channel_id, svc)
     }
 
     fn stop_capture(&mut self) {

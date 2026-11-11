@@ -15,6 +15,7 @@ use ironrdp_egfx::server::{GraphicsPipelineHandler, GraphicsPipelineServer};
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::SvcMessage;
 
+use crate::autodetect::AutoDetectHandles;
 use crate::server::ServerEventSender;
 
 /// Shared handle to a `GraphicsPipelineServer`.
@@ -23,31 +24,48 @@ use crate::server::ServerEventSender;
 /// are synchronous and cannot hold async locks.
 pub type GfxServerHandle = Arc<Mutex<GraphicsPipelineServer>>;
 
+/// What a connection hands to its EGFX backend, passed to the build methods of
+/// [`GfxServerFactory`].
+///
+/// Each connection has its own handles, the same ones it hands to the display
+/// through [`DisplayContext`](crate::DisplayContext).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct GfxContext {
+    /// The connection's auto-detect measurements, for flow control.
+    pub autodetect: AutoDetectHandles,
+}
+
 /// Factory for creating EGFX graphics pipeline handlers.
 ///
 /// Implements `ServerEventSender` so the factory can signal the server event loop
 /// when EGFX frames are ready to be drained and sent.
 pub trait GfxServerFactory: ServerEventSender + Send {
     /// Create a handler for EGFX callbacks (caps negotiation, frame acks).
-    fn build_gfx_handler(&self) -> Box<dyn GraphicsPipelineHandler>;
+    fn build_gfx_handler(&self, ctx: GfxContext) -> Box<dyn GraphicsPipelineHandler>;
 
     /// Create a bridge and shared server handle for proactive frame sending.
     ///
     /// When returning `Some`, the bridge is registered with DrdynvcServer for
-    /// client messages, and the handle is available for direct frame submission.
-    /// Returns `None` by default, falling back to `build_gfx_handler()`.
-    fn build_server_with_handle(&self) -> Option<(GfxDvcBridge, GfxServerHandle)> {
+    /// client messages, and the handle reaches the display through
+    /// [`DisplayContext::gfx_handle`](crate::DisplayContext::gfx_handle) for
+    /// direct frame submission. Returns `None` by default, falling back to
+    /// `build_gfx_handler()`.
+    fn build_server_with_handle(&self, _ctx: GfxContext) -> Option<(GfxDvcBridge, GfxServerHandle)> {
         None
     }
 }
 
 /// Build an EGFX bridge while always retaining a shared server handle.
-pub(crate) fn build_server_and_handle(factory: &dyn GfxServerFactory) -> (GfxDvcBridge, GfxServerHandle) {
-    if let Some((bridge, handle)) = factory.build_server_with_handle() {
+pub(crate) fn build_server_and_handle(
+    factory: &dyn GfxServerFactory,
+    ctx: GfxContext,
+) -> (GfxDvcBridge, GfxServerHandle) {
+    if let Some((bridge, handle)) = factory.build_server_with_handle(ctx.clone()) {
         return (bridge, handle);
     }
 
-    let handler = factory.build_gfx_handler();
+    let handler = factory.build_gfx_handler(ctx);
     let server = Arc::new(Mutex::new(GraphicsPipelineServer::new(handler)));
     (GfxDvcBridge::new(Arc::clone(&server)), server)
 }
@@ -148,14 +166,19 @@ mod tests {
     }
 
     impl GfxServerFactory for LegacyFactory {
-        fn build_gfx_handler(&self) -> Box<dyn GraphicsPipelineHandler> {
+        fn build_gfx_handler(&self, _: GfxContext) -> Box<dyn GraphicsPipelineHandler> {
             Box::new(Handler)
         }
     }
 
     #[test]
     fn legacy_factory_path_retains_clampable_handle() {
-        let (_bridge, handle) = build_server_and_handle(&LegacyFactory);
+        let (_bridge, handle) = build_server_and_handle(
+            &LegacyFactory,
+            GfxContext {
+                autodetect: AutoDetectHandles::default(),
+            },
+        );
         let mut server = handle.lock().expect("GfxServerHandle mutex poisoned");
         server.set_max_frames_in_flight(3);
         assert_eq!(

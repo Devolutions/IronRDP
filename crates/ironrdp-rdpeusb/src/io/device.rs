@@ -67,6 +67,13 @@ pub struct DeviceInfo {
     pub active_config: Option<UsbConfigInfo>,
     /// Backend-observed connection speed. RDPEUSB only carries a high-speed boolean.
     pub speed: UsbConnectionSpeed,
+    /// Whether the backend performs isochronous transfers.
+    ///
+    /// `ADD_DEVICE` advertises a nonzero no-ack isochronous write jitter buffer only when this is
+    /// set, so that a server does not route isochronous traffic to a backend that cannot carry it.
+    ///
+    /// Ref: [MS-RDPEUSB USB_DEVICE_CAPABILITIES] NoAckIsochWriteJitterBufferSizeInMs.
+    pub isochronous: bool,
 }
 
 impl DeviceInfo {
@@ -269,9 +276,12 @@ fn usb_device_caps(info: &DeviceInfo) -> PduResult<UsbDeviceCaps> {
         usbdi_ver: UsbdiVer::V0X600,
         supported_usb_ver: supported_usb_version(info.descriptor.usb_version),
         device_speed: device_speed(info)?,
-        no_ack_isoch_write_jitter_buf_size: NoAckIsochWriteJitterBufSizeInMs::try_from(
-            DEFAULT_NO_ACK_ISOCH_WRITE_JITTER_MS,
-        )
+        // Zero means TS_URB_ISOCH_TRANSFER is not supported.
+        no_ack_isoch_write_jitter_buf_size: NoAckIsochWriteJitterBufSizeInMs::try_from(if info.isochronous {
+            DEFAULT_NO_ACK_ISOCH_WRITE_JITTER_MS
+        } else {
+            0
+        })
         .map_err(|_| pdu_other_err!("default isochronous jitter buffer size is invalid"))?,
     })
 }

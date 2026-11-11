@@ -49,16 +49,17 @@ pub(crate) const RENAME_DESTINATION_DIRECTORY_ACCESS: FILE_ACCESS_RIGHTS = FILE_
 const DIRECTORY_TRAVERSAL_ACCESS: FILE_ACCESS_RIGHTS =
     FILE_ACCESS_RIGHTS(FILE_TRAVERSE.0 | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0);
 
-/// A validated native path for a logical-volume root.
+/// A validated native path for a redirected root directory.
 pub(crate) struct RootDirectory {
     nt_path: Vec<u16>,
 }
 
 impl RootDirectory {
-    /// Validates the native path of a logical-volume root.
+    /// Validates the native path of a logical-volume root (`C:\`) or of a directory below one
+    /// (`C:\Users\name`).
     pub(crate) fn open(path: &Path) -> Result<Self, OpenDirectoryError> {
         Ok(Self {
-            nt_path: volume_root_nt_path(path).ok_or(OpenDirectoryError::InvalidVolumeRoot)?,
+            nt_path: redirected_root_nt_path(path).ok_or(OpenDirectoryError::InvalidVolumeRoot)?,
         })
     }
 
@@ -191,8 +192,12 @@ impl RootDirectory {
         // immediately queries its metadata. MSTSC's root file object carries
         // this access even when the list request omits it; grant it only to
         // independently opened volume roots, never to descendant files.
+        //
+        // `FILE_OPEN_REPARSE_POINT` would drop `OBJ_DONT_REPARSE` for the whole root path, letting
+        // a junction above a directory root be followed, so it never applies to the root.
         let options = FileOpenOptions {
             desired_access: options.desired_access | FILE_READ_ATTRIBUTES.0,
+            create_options: options.create_options & !FILE_OPEN_REPARSE_POINT,
             ..options
         };
         let mut nt_path = self.nt_path.clone();
@@ -1049,7 +1054,7 @@ pub(crate) const FILE_OVERWRITTEN_INFORMATION: usize = 3;
 /// Failure while opening a selected redirected-volume root.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum OpenDirectoryError {
-    /// The selection is not a logical Windows volume root (`C:\`).
+    /// The selection is not an absolute, normalized path on a logical Windows volume (`C:\`).
     InvalidVolumeRoot,
     /// The native open failed without disclosing the host path.
     NtStatus(NTSTATUS),
@@ -1058,7 +1063,7 @@ pub(crate) enum OpenDirectoryError {
 impl fmt::Display for OpenDirectoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidVolumeRoot => f.write_str("redirected drive must be a logical volume root"),
+            Self::InvalidVolumeRoot => f.write_str("redirected drive must be an absolute path on a logical volume"),
             Self::NtStatus(status) => write!(
                 f,
                 "opening redirected-drive root failed with NTSTATUS {:#010X}",
@@ -1070,19 +1075,45 @@ impl fmt::Display for OpenDirectoryError {
 
 impl core::error::Error for OpenDirectoryError {}
 
-fn volume_root_nt_path(path: &Path) -> Option<Vec<u16>> {
-    let path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+/// Builds `\??\C:\dir` from `C:\dir`.
+///
+/// Only drive-letter paths whose components are plain names are accepted, so the native path
+/// names exactly what the Win32 path names: `..`, verbatim (`\\?\`), device, and UNC forms are
+/// rejected, as are stream (`:`) and NUL characters. The root open itself refuses reparse points.
+fn redirected_root_nt_path(path: &Path) -> Option<Vec<u16>> {
+    use std::path::{Component, Prefix};
 
-    let is_logical_volume_root = path.len() == 3
-        && matches!(path[0], 65..=90 | 97..=122)
-        && path[1] == u16::from(b':')
-        && path[2] == u16::from(b'\\');
-    if !is_logical_volume_root {
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return None;
+    };
+    let Prefix::Disk(letter) = prefix.kind() else {
+        return None;
+    };
+    if !letter.is_ascii_alphabetic() || components.next() != Some(Component::RootDir) {
         return None;
     }
 
     let mut nt_path = r"\??\".encode_utf16().collect::<Vec<_>>();
-    nt_path.extend(path);
+    nt_path.extend([u16::from(letter), u16::from(b':'), u16::from(b'\\')]);
+    let mut separator = false;
+    for component in components {
+        let Component::Normal(name) = component else {
+            return None;
+        };
+        if separator {
+            nt_path.push(u16::from(b'\\'));
+        }
+        let start = nt_path.len();
+        nt_path.extend(name.encode_wide());
+        if nt_path[start..]
+            .iter()
+            .any(|unit| *unit == 0 || *unit == u16::from(b':'))
+        {
+            return None;
+        }
+        separator = true;
+    }
     Some(nt_path)
 }
 
@@ -1251,6 +1282,41 @@ mod tests {
     }
 
     #[test]
+    fn redirected_roots_accept_only_normalized_drive_paths() {
+        let nt_path = |path: &str| redirected_root_nt_path(Path::new(path)).map(|path| String::from_utf16_lossy(&path));
+
+        assert_eq!(nt_path(r"C:\").as_deref(), Some(r"\??\C:\"));
+        assert_eq!(nt_path(r"d:\Users\name").as_deref(), Some(r"\??\D:\Users\name"));
+        assert_eq!(nt_path("C:/Users/name/").as_deref(), Some(r"\??\C:\Users\name"));
+        for rejected in [
+            "",
+            "C:",
+            r"C:Users",
+            r"\Users",
+            r"Users\name",
+            r"C:\Users\..\Windows",
+            r"C:\Users\name:stream",
+            r"\\?\C:\Users",
+            r"\\.\C:\Users",
+            r"\\server\share",
+        ] {
+            assert_eq!(nt_path(rejected), None, "{rejected}");
+        }
+    }
+
+    #[test]
+    fn opens_a_directory_below_the_system_volume_root() {
+        let windows_directory = std::env::var("SystemRoot").expect("SystemRoot is set on Windows");
+        let root = RootDirectory::open(Path::new(&windows_directory)).expect("open Windows directory as root");
+
+        assert!(
+            root.open_relative_directory(&RelativePath::parse(r"\System32").expect("valid relative path"))
+                .expect("open child directory")
+                .is_some()
+        );
+    }
+
+    #[test]
     fn opens_the_system_volume_root() {
         let system_drive = std::env::var("SystemDrive").expect("SystemDrive is set on Windows");
         let root = format!(r"{system_drive}\");
@@ -1313,6 +1379,40 @@ mod tests {
             .expect("open kernel32 relative to system root");
 
         assert_eq!(information, FILE_OPENED_INFORMATION);
+    }
+
+    #[test]
+    fn root_open_does_not_follow_an_ancestor_junction_with_open_reparse_point() {
+        let sandbox = std::env::temp_dir().join(format!("ironrdp-root-junction-{}", std::process::id()));
+        let target = sandbox.join("target");
+        std::fs::create_dir_all(target.join("shared")).expect("create junction target");
+        let junction = sandbox.join("junction");
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("run mklink");
+        assert!(status.success(), "create test junction");
+
+        let root = RootDirectory::open(&junction.join("shared")).expect("validate directory root below a junction");
+        let options = FileOpenOptions {
+            desired_access: FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
+            allocation_size: None,
+            file_attributes: FILE_ATTRIBUTE_NORMAL.0,
+            share_access: (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0,
+            create_disposition: FILE_OPEN.0,
+            create_options: FILE_DIRECTORY_FILE.0 | FILE_SYNCHRONOUS_IO_NONALERT.0 | FILE_OPEN_REPARSE_POINT,
+        };
+        let result = root.open_root_file(options);
+
+        std::fs::remove_dir(&junction).expect("remove test junction");
+        std::fs::remove_dir_all(&sandbox).expect("remove test sandbox");
+        assert!(
+            matches!(result, Err(OpenFileError::NtStatus(_))),
+            "the root open must not traverse the ancestor junction"
+        );
     }
 
     #[test]

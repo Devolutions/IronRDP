@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod test;
 
+use core::fmt;
 use std::io::Write as _;
 
 use byteorder::{LittleEndian, WriteBytesExt as _};
@@ -14,7 +15,7 @@ use num_traits::FromPrimitive as _;
 use super::{
     BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType,
     LicenseEncryptionData, LicenseHeader, MAC_SIZE, PLATFORM_ID, PREAMBLE_SIZE, PreambleFlags, PreambleType,
-    PreambleVersion, ServerLicenseError, ServerPlatformChallenge,
+    PreambleVersion, ServerLicenseError, ServerPlatformChallenge, Withheld,
 };
 use crate::crypto::rc4::Rc4;
 
@@ -26,12 +27,15 @@ pub(crate) const CLIENT_HARDWARE_IDENTIFICATION_SIZE: usize = 20;
 /// [2.2.2.5] Client Platform Challenge Response (CLIENT_PLATFORM_CHALLENGE_RESPONSE)
 ///
 /// [2.2.2.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/f53ab87c-d07d-4bf9-a2ac-79542f7b456c
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientPlatformChallengeResponse {
     pub license_header: LicenseHeader,
+    /// INVARIANT: `Debug` output withholds this field.
     pub encrypted_challenge_response_data: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub encrypted_hwid: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub mac_data: Vec<u8>,
 }
 
@@ -201,11 +205,12 @@ impl LicenseDetailLevel {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct PlatformChallengeResponseData {
     pub client_type: ClientType,
     pub license_detail_level: LicenseDetailLevel,
+    /// INVARIANT: `Debug` output withholds this field.
     pub challenge: Vec<u8>,
 }
 
@@ -264,10 +269,11 @@ impl<'de> Decode<'de> for PlatformChallengeResponseData {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ClientHardwareIdentification {
     pub platform_id: u32,
+    /// INVARIANT: `Debug` output withholds this field.
     pub data: Vec<u8>,
 }
 
@@ -304,5 +310,38 @@ impl<'de> Decode<'de> for ClientHardwareIdentification {
         let data = src.read_slice(MAC_SIZE).into();
 
         Ok(Self { platform_id, data })
+    }
+}
+
+impl fmt::Debug for ClientPlatformChallengeResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientPlatformChallengeResponse")
+            .field("license_header", &self.license_header)
+            .field(
+                "encrypted_challenge_response_data",
+                &Withheld(&self.encrypted_challenge_response_data),
+            )
+            .field("encrypted_hwid", &Withheld(&self.encrypted_hwid))
+            .field("mac_data", &Withheld(&self.mac_data))
+            .finish()
+    }
+}
+
+impl fmt::Debug for PlatformChallengeResponseData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlatformChallengeResponseData")
+            .field("client_type", &self.client_type)
+            .field("license_detail_level", &self.license_detail_level)
+            .field("challenge", &Withheld(&self.challenge))
+            .finish()
+    }
+}
+
+impl fmt::Debug for ClientHardwareIdentification {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientHardwareIdentification")
+            .field("platform_id", &self.platform_id)
+            .field("data", &Withheld(&self.data))
+            .finish()
     }
 }

@@ -268,6 +268,7 @@ pub struct TimedRecordingBackend {
     pub clock_ms: Cell<u64>,
     pub responses: Arc<Mutex<Vec<ReceivedResponse>>>,
     pub unlocks: Arc<Mutex<Vec<u32>>>,
+    pub file_requests: Vec<FileContentsRequest>,
 }
 
 impl TimedRecordingBackend {
@@ -276,6 +277,7 @@ impl TimedRecordingBackend {
             clock_ms: Cell::new(0),
             responses,
             unlocks,
+            file_requests: Vec::new(),
         }
     }
 
@@ -290,7 +292,9 @@ impl CliprdrBackend for TimedRecordingBackend {
         "/tmp"
     }
     fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
-        ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+        ClipboardGeneralCapabilityFlags::CAN_LOCK_CLIPDATA
+            | ClipboardGeneralCapabilityFlags::STREAM_FILECLIP_ENABLED
+            | ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES
     }
     fn on_ready(&mut self) {}
     fn on_request_format_list(&mut self) {}
@@ -298,7 +302,9 @@ impl CliprdrBackend for TimedRecordingBackend {
     fn on_remote_copy(&mut self, _: &[ClipboardFormat]) {}
     fn on_format_data_request(&mut self, _: FormatDataRequest) {}
     fn on_format_data_response(&mut self, _: FormatDataResponse<'_>) {}
-    fn on_file_contents_request(&mut self, _: FileContentsRequest) {}
+    fn on_file_contents_request(&mut self, request: FileContentsRequest) {
+        self.file_requests.push(request);
+    }
     fn on_file_contents_response(&mut self, response: FileContentsResponse<'_>) {
         self.responses.lock().unwrap().push(ReceivedResponse {
             stream_id: response.stream_id(),

@@ -41,6 +41,19 @@ const config = new ConfigBuilder()
   .build();
 ```
 
+## RDCleanPath errors
+
+When the proxy rejects the connection, the error's `rdcleanpathDetails()` carries the RDCleanPath `errorCode`.
+`RDCleanPathErrorCode` names the standard codes; codes 16384 to 32767 are specific to the proxy in use.
+
+```ts
+import { RDCleanPathErrorCode } from '@devolutions/iron-remote-desktop-rdp';
+
+if (error.rdcleanpathDetails()?.errorCode === RDCleanPathErrorCode.EXPIRED) {
+  // Ask the user to sign in again
+}
+```
+
 ## Virtual Printer
 
 Register `printJobStreamCallbacks` before connecting to enable the browser-side

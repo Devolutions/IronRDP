@@ -1,8 +1,10 @@
 use std::fs::{self, create_dir_all};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context as _;
 
+use crate::bin_install::{CargoPackageSource, is_pin_satisfied};
+use crate::local_bin;
 use crate::prelude::*;
 
 #[cfg(target_os = "windows")]
@@ -29,7 +31,35 @@ const DOTNET_NATIVE_LIB_PATH: &str = "dependencies/runtimes/osx-x64/native/";
 pub(crate) fn install(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("FFI-INSTALL");
 
+    ensure_pin_matches_ffi_crate(sh)?;
     cargo_install(sh, &DIPLOMAT_TOOL)?;
+
+    Ok(())
+}
+
+fn ensure_pin_matches_ffi_crate(sh: &Shell) -> anyhow::Result<()> {
+    let CargoPackageSource::GitTag { url, tag, .. } = DIPLOMAT_TOOL.source else {
+        anyhow::bail!("diplomat-tool must be pinned to a git tag");
+    };
+
+    let manifest: toml::Table = sh
+        .read_file("ffi/Cargo.toml")
+        .context("read ffi/Cargo.toml")?
+        .parse()
+        .context("parse ffi/Cargo.toml")?;
+    let dependencies = manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .context("ffi/Cargo.toml has no dependencies table")?;
+
+    for dep in ["diplomat", "diplomat-runtime"] {
+        let dependency = dependencies.get(dep).and_then(toml::Value::as_table);
+        anyhow::ensure!(
+            dependency.and_then(|d| d.get("git")).and_then(toml::Value::as_str) == Some(url)
+                && dependency.and_then(|d| d.get("tag")).and_then(toml::Value::as_str) == Some(tag),
+            "ffi/Cargo.toml `{dep}` must use git `{url}` at tag `{tag}`, like diplomat-tool in xtask/src/bin_version.rs"
+        );
+    }
 
     Ok(())
 }
@@ -53,8 +83,8 @@ pub(crate) fn build_dynamic_lib(sh: &Shell, release: bool) -> anyhow::Result<()>
 
     let output_lib_path = profile_dir.join(OUTPUT_LIB_NAME);
 
-    let dotnet_native_lib_dir_path: PathBuf = DOTNET_NATIVE_LIB_PATH.parse()?;
-    let dotnet_native_lib_path = root_dir.join(&dotnet_native_lib_dir_path).join(DOTNET_NATIVE_LIB_NAME);
+    let dotnet_native_lib_dir_path = root_dir.join(DOTNET_NATIVE_LIB_PATH);
+    let dotnet_native_lib_path = dotnet_native_lib_dir_path.join(DOTNET_NATIVE_LIB_NAME);
 
     create_dir_all(&dotnet_native_lib_dir_path)
         .with_context(|| format!("failed to create directory {}", dotnet_native_lib_dir_path.display()))?;
@@ -79,14 +109,22 @@ pub(crate) fn build_dynamic_lib(sh: &Shell, release: bool) -> anyhow::Result<()>
 pub(crate) fn build_bindings(sh: &Shell, skip_dotnet_build: bool) -> anyhow::Result<()> {
     let _s = Section::new("BUILD-BINDINGS");
 
-    if !is_installed(sh, "diplomat-tool") {
-        anyhow::bail!("`diplomat-tool` binary is missing. Please run `cargo xtask ffi install`.");
+    ensure_pin_matches_ffi_crate(sh)?;
+
+    if !is_installed(sh, &DIPLOMAT_TOOL) || !is_pin_satisfied(sh, &DIPLOMAT_TOOL) {
+        anyhow::bail!("`diplomat-tool` is missing or not the pinned version, run `cargo xtask ffi install`");
     }
+
+    // Invoke by absolute path so a stray `diplomat-tool` on PATH cannot shadow the pinned local tool.
+    let diplomat_tool = sh
+        .current_dir()
+        .join(local_bin())
+        .join(DIPLOMAT_TOOL.binary_name)
+        .with_extension(std::env::consts::EXE_EXTENSION);
 
     let dotnet_generated_path = "./dotnet/Devolutions.IronRdp/Generated/";
     let diplomat_config = "./dotnet-interop-conf.toml";
 
-    // Check if diplomat tool is installed
     sh.change_dir("./ffi");
     let cwd = sh.current_dir();
     let generated_code_dir = cwd.join(dotnet_generated_path);
@@ -95,10 +133,10 @@ pub(crate) fn build_bindings(sh: &Shell, skip_dotnet_build: bool) -> anyhow::Res
     }
     remove_cs_files(&generated_code_dir)?;
 
-    sh.cmd("diplomat-tool")
+    sh.cmd(diplomat_tool)
         .arg("dotnet")
         .arg(dotnet_generated_path)
-        .arg("-l")
+        .arg("-c")
         .arg(diplomat_config)
         .run()?;
 

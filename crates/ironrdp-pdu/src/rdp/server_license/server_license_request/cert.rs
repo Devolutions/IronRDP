@@ -1,9 +1,12 @@
+use core::fmt;
+
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
     ensure_size, invalid_field_err, read_padding, write_padding,
 };
 
 use super::{BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA};
+use crate::rdp::server_license::Withheld;
 
 pub const SIGNATURE_ALGORITHM_RSA: u32 = 1;
 pub const PROP_CERT_NO_BLOBS_SIZE: usize = 8;
@@ -28,9 +31,10 @@ pub enum CertificateType {
 /// [2.2.1.4.2] X.509 Certificate Chain (X509 _CERTIFICATE_CHAIN)
 ///
 /// [2.2.1.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/bf2cc9cc-2b01-442e-a288-6ddfa3b80d59
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct X509CertificateChain {
+    /// INVARIANT: `Debug` output withholds this field.
     pub certificate_array: Vec<Vec<u8>>,
 }
 
@@ -104,10 +108,11 @@ impl<'de> Decode<'de> for X509CertificateChain {
 /// [2.2.1.4.3.1.1] Server Proprietary Certificate (PROPRIETARYSERVERCERTIFICATE)
 ///
 /// [2.2.1.4.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a37d449a-73ac-4f00-9b9d-56cefc954634
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ProprietaryCertificate {
     pub public_key: RsaPublicKey,
+    /// INVARIANT: `Debug` output withholds this field.
     pub signature: Vec<u8>,
 }
 
@@ -173,10 +178,11 @@ impl<'de> Decode<'de> for ProprietaryCertificate {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct RsaPublicKey {
     pub public_exponent: u32,
+    /// INVARIANT: `Debug` output withholds this field.
     pub modulus: Vec<u8>,
 }
 
@@ -247,5 +253,42 @@ impl<'de> Decode<'de> for RsaPublicKey {
             public_exponent,
             modulus,
         })
+    }
+}
+
+/// Certificates that stay out of `Debug` output, each shown as its length only.
+struct WithheldList<'a>(&'a [Vec<u8>]);
+
+impl fmt::Debug for WithheldList<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|item| Withheld(item)))
+            .finish()
+    }
+}
+
+impl fmt::Debug for X509CertificateChain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("X509CertificateChain")
+            .field("certificate_array", &WithheldList(&self.certificate_array))
+            .finish()
+    }
+}
+
+impl fmt::Debug for ProprietaryCertificate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProprietaryCertificate")
+            .field("public_key", &self.public_key)
+            .field("signature", &Withheld(&self.signature))
+            .finish()
+    }
+}
+
+impl fmt::Debug for RsaPublicKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RsaPublicKey")
+            .field("public_exponent", &self.public_exponent)
+            .field("modulus", &Withheld(&self.modulus))
+            .finish()
     }
 }

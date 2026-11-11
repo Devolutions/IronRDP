@@ -1,5 +1,5 @@
 use ironrdp_cliprdr_format::bitmap::{
-    dib_to_png, dibv5_to_png, png_to_cf_dib, png_to_cf_dibv5, validate_dib, validate_dibv5,
+    BitmapError, dib_to_png, dibv5_to_png, png_to_cf_dib, png_to_cf_dibv5, validate_dib, validate_dibv5,
 };
 use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html, validate_cf_html};
 use png::{BitDepth, ColorType, Encoder};
@@ -30,6 +30,70 @@ fn dib_to_png_conversion_1() {
     let png = dib_to_png(input).unwrap();
     let converted = png_to_cf_dib(&png).unwrap();
     assert_eq!(converted, input);
+}
+
+const BITFIELDS_DIB: [u8; 68] = [
+    40, 0, 0, 0, // Header size.
+    2, 0, 0, 0, // Width.
+    2, 0, 0, 0, // Height.
+    1, 0, 32, 0, // Planes and bit count.
+    3, 0, 0, 0, // BI_BITFIELDS.
+    16, 0, 0, 0, // Image size.
+    0, 0, 0, 0, 0, 0, 0, 0, // Resolution.
+    0, 0, 0, 0, 0, 0, 0, 0, // Color counts.
+    0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 0, // Red, green, and blue masks.
+    0, 255, 255, 0, 127, 63, 31, 0, // Bottom row.
+    255, 255, 0, 0, 255, 0, 255, 0, // Top row.
+];
+
+// oracle: spec MS-WMF §2.1.1.3 "BitCount Enumeration" and §2.2.2.3 "BitmapInfoHeader Object".
+#[test]
+fn dib_bitfields_preserves_pixels_and_logical_length() {
+    let mut input = BITFIELDS_DIB.to_vec();
+    input.extend_from_slice(&[0xAA, 0xBB]);
+    let png = dib_to_png(&input).unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!((info.width, info.height, info.color_type), (2, 2, ColorType::Rgb));
+    assert_eq!(
+        &pixels[..info.buffer_size()],
+        [0, 255, 255, 255, 0, 255, 255, 255, 0, 31, 63, 127]
+    );
+    assert_eq!(validate_dib(&input).unwrap(), 68);
+}
+
+// oracle: regression Devolutions/IronRDP#1940 requires rejecting non-standard mask orders.
+#[rstest::rstest]
+#[case::red(40)]
+#[case::green(44)]
+#[case::blue(48)]
+fn dib_bitfields_rejects_non_standard_masks(#[case] offset: usize) {
+    let mut input = BITFIELDS_DIB;
+    input[offset..offset + 4].copy_from_slice(&0u32.to_le_bytes());
+
+    assert!(matches!(dib_to_png(&input), Err(BitmapError::Unsupported(_))));
+    assert!(matches!(validate_dib(&input), Err(BitmapError::Unsupported(_))));
+}
+
+// oracle: spec MS-WMF §2.1.1.3 "BitCount Enumeration" requires three DWORD masks and complete pixels.
+#[test]
+fn dib_bitfields_rejects_truncated_masks_and_pixels() {
+    for len in 40..BITFIELDS_DIB.len() {
+        let input = &BITFIELDS_DIB[..len];
+        assert!(matches!(dib_to_png(input), Err(BitmapError::InvalidSize)), "{len}");
+        assert!(matches!(validate_dib(input), Err(BitmapError::InvalidSize)), "{len}");
+    }
+}
+
+// oracle: spec MS-WMF §2.1.1.7 "Compression Enumeration" excludes 24-bit BI_BITFIELDS.
+#[test]
+fn dib_bitfields_rejects_24_bit_pixels() {
+    let mut input = BITFIELDS_DIB;
+    input[14..16].copy_from_slice(&24u16.to_le_bytes());
+
+    assert!(matches!(dib_to_png(&input), Err(BitmapError::Unsupported(_))));
+    assert!(matches!(validate_dib(&input), Err(BitmapError::Unsupported(_))));
 }
 
 #[test]

@@ -1,7 +1,8 @@
 use expect_test::{Expect, expect};
 use ironrdp_rdcleanpath::{
-    DetectionResult, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE, RDCleanPathErr, RDCleanPathMessage, RDCleanPathPdu,
-    VERSION_1,
+    DNS_RESOLUTION_FAILED_ERROR_CODE, DetectionResult, EXPIRED_ERROR_CODE, GENERAL_ERROR_CODE, NEGOTIATION_ERROR_CODE,
+    NOT_YET_VALID_ERROR_CODE, RDCleanPathErr, RDCleanPathMessage, RDCleanPathPdu, REVOKED_ERROR_CODE,
+    TARGET_UNREACHABLE_ERROR_CODE, TLS_HANDSHAKE_FAILED_ERROR_CODE, VERSION_1,
 };
 use rstest::rstest;
 
@@ -291,4 +292,63 @@ fn response_shape_selects_explicit_semantic_variant() {
 )]
 fn error_display(#[case] error: RDCleanPathErr, #[case] expected: Expect) {
     expected.assert_eq(&error.to_string());
+}
+
+fn error_with_code(error_code: u16) -> RDCleanPathErr {
+    RDCleanPathErr {
+        error_code,
+        http_status_code: None,
+        wsa_last_error: None,
+        tls_alert_code: None,
+    }
+}
+
+#[test]
+fn standard_error_code_display() {
+    let descriptions = [
+        EXPIRED_ERROR_CODE,
+        NOT_YET_VALID_ERROR_CODE,
+        REVOKED_ERROR_CODE,
+        TARGET_UNREACHABLE_ERROR_CODE,
+        DNS_RESOLUTION_FAILED_ERROR_CODE,
+        TLS_HANDSHAKE_FAILED_ERROR_CODE,
+    ]
+    .map(|error_code| error_with_code(error_code).to_string())
+    .join("\n");
+
+    // The codes are a wire contract with deployed peers: never change them.
+    expect![["
+        credential expired (code 100)
+        credential not yet valid (code 101)
+        credential revoked (code 102)
+        target unreachable (code 103)
+        DNS resolution failed (code 104)
+        TLS handshake failed (code 105)"]]
+    .assert_eq(&descriptions);
+}
+
+#[test]
+fn unknown_error_code_is_kept_as_general_error() {
+    // The crate does not know what an implementation-specific code means.
+    let error = error_with_code(16384);
+    let pdu = RDCleanPathPdu {
+        error: Some(error.clone()),
+        ..RDCleanPathPdu::default()
+    };
+
+    assert_eq!(pdu.into_message(), Ok(RDCleanPathMessage::GeneralErr(error)));
+}
+
+#[test]
+fn implementation_specific_error_code_display() {
+    let descriptions = [16383, 16384, 32767, 32768]
+        .map(|error_code| error_with_code(error_code).to_string())
+        .join("\n");
+
+    expect![["
+        unknown error (code 16383)
+        implementation-specific error (code 16384)
+        implementation-specific error (code 32767)
+        unknown error (code 32768)"]]
+    .assert_eq(&descriptions);
 }

@@ -588,6 +588,7 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::Logoff => return ConnectionResponse::Single(logoff(shared).await),
         Request::NowCapabilities => return ConnectionResponse::Single(now_capabilities(shared).await),
         Request::NowRun { command, directory } => {
             return ConnectionResponse::Single(now_run(shared, command, directory).await);
@@ -607,7 +608,7 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             data,
             last,
         } => return ConnectionResponse::Single(now_stdin(shared, operation_id, data, last).await),
-        Request::NowDiagnostics => return ConnectionResponse::Single(now_diagnostics(shared).await),
+        Request::NowDiagnostics => return ConnectionResponse::Single(now_diagnostics(shared)),
     };
     ConnectionResponse::Single(response)
 }
@@ -730,6 +731,17 @@ async fn now_capabilities(shared: &Shared) -> Response {
     }
 }
 
+async fn logoff(shared: &Shared) -> Response {
+    let operations = match operations(shared) {
+        Ok(operations) => operations,
+        Err(response) => return response,
+    };
+    match operations.session_logoff().await {
+        Ok(()) => Response::ok(),
+        Err(error) => Response::Err(error),
+    }
+}
+
 async fn now_run(shared: &Shared, command: String, directory: Option<String>) -> Response {
     let operations = match operations(shared) {
         Ok(operations) => operations,
@@ -808,12 +820,12 @@ async fn now_stdin(shared: &Shared, operation_id: u64, data: Vec<u8>, last: bool
         .map_or_else(Response::Err, |_| Response::ok())
 }
 
-async fn now_diagnostics(shared: &Shared) -> Response {
+fn now_diagnostics(shared: &Shared) -> Response {
     let endpoint = match lock(&shared.live).now_endpoint.clone() {
         Some(endpoint) => endpoint,
         None => return unavailable_session(),
     };
-    let (connected, capabilities) = endpoint.diagnostic_snapshot().await;
+    let (connected, capabilities) = endpoint.diagnostic_snapshot();
     Response::Ok(Payload::NowDiagnostics(NowDiagnostics {
         endpoint_allocated: true,
         connected,

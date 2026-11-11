@@ -1,6 +1,7 @@
 [package]
 name = "ironrdp-glutin-renderer"
 version = "0.1.0"
+publish = false
 readme = "README.md"
 description = "`glutin` primitives for OpenGL rendering"
 edition.workspace = true

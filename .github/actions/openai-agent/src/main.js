@@ -83,6 +83,9 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
     const {
       ignoredPostFinishEmptyDeltaChoices,
       ignoredRepeatedTerminalChoices,
+      requestRetryCount,
+      streamStructuralViolation,
+      postFinishShape,
     } = metrics.snapshot();
     core.info(JSON.stringify({
       event: "openai-agent.complete",
@@ -92,14 +95,19 @@ async function main(core, environment = process.env, OpenAIClient = OpenAI) {
       toolCallCount,
       outputRepairCount,
       outputBytes: Buffer.byteLength(result.output, "utf8"),
+      requestRetryCount,
       ignoredPostFinishEmptyDeltaChoices,
       ignoredRepeatedTerminalChoices,
+      ...(streamStructuralViolation === undefined ? {} : { streamStructuralViolation }),
+      ...(postFinishShape === undefined ? {} : { postFinishShape }),
     }));
   } catch (error) {
     const outcome = failure(error, phase);
     const failureReason = outcome.reason;
-    const streamDiagnostics = metrics.snapshot();
-    const { streamStructuralViolation, postFinishShape } = streamDiagnostics;
+    // Report the violation that caused this failure, not one a request retry already recovered.
+    const { streamStructuralViolation, postFinishShape } = error instanceof AgentFailure
+      ? error
+      : {};
     if (error instanceof AgentFailure) {
       turnCount = error.turnCount;
       toolCallCount = error.toolCallCount;

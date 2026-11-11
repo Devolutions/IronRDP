@@ -15,6 +15,38 @@ pub const VERSION_1: u64 = BASE_VERSION + 1;
 pub const GENERAL_ERROR_CODE: u16 = 1;
 pub const NEGOTIATION_ERROR_CODE: u16 = 2;
 
+// Standard reason codes, from 100, say why the proxy rejected the connection in terms any client can explain.
+// Deployed peers rely on these numbers: never renumber or reuse one.
+
+/// The proxy credential (`proxy_auth`) has expired.
+pub const EXPIRED_ERROR_CODE: u16 = 100;
+/// The proxy credential (`proxy_auth`) is not valid yet.
+pub const NOT_YET_VALID_ERROR_CODE: u16 = 101;
+/// The proxy credential (`proxy_auth`) has been revoked.
+pub const REVOKED_ERROR_CODE: u16 = 102;
+/// The proxy could not connect to the target.
+pub const TARGET_UNREACHABLE_ERROR_CODE: u16 = 103;
+/// The proxy could not resolve the target host name.
+pub const DNS_RESOLUTION_FAILED_ERROR_CODE: u16 = 104;
+/// The TLS handshake between the proxy and the target failed.
+pub const TLS_HANDSHAKE_FAILED_ERROR_CODE: u16 = 105;
+
+/// Error codes whose meaning each proxy implementation defines (16384 to 32767).
+///
+/// IronRDP never assigns a standard code in this range.
+/// Two implementations may give the same code different meanings,
+/// so a client interprets these codes only when it knows which proxy it talks to.
+pub const IMPLEMENTATION_SPECIFIC_ERROR_CODES: core::ops::RangeInclusive<u16> = 0x4000..=0x7FFF;
+
+/// The proxy error.
+///
+/// `error_code` is an open value: a receiver treats a code it does not know as a general error.
+/// See the crate documentation for the list of codes.
+///
+/// Do not add fields to this structure.
+/// IronRDP-based peers decode it with der's derived decoder, which rejects an unknown field that follows the last
+/// field it knows, so a peer that predates a new field fails to decode any PDU carrying it.
+/// Use a standard or an implementation-specific error code instead.
 #[derive(Clone, Debug, Eq, PartialEq, der::Sequence)]
 #[asn1(tag_mode = "EXPLICIT")]
 pub struct RDCleanPathErr {
@@ -33,6 +65,13 @@ impl fmt::Display for RDCleanPathErr {
         let error_description = match self.error_code {
             GENERAL_ERROR_CODE => "general error",
             NEGOTIATION_ERROR_CODE => "negotiation error",
+            EXPIRED_ERROR_CODE => "credential expired",
+            NOT_YET_VALID_ERROR_CODE => "credential not yet valid",
+            REVOKED_ERROR_CODE => "credential revoked",
+            TARGET_UNREACHABLE_ERROR_CODE => "target unreachable",
+            DNS_RESOLUTION_FAILED_ERROR_CODE => "DNS resolution failed",
+            TLS_HANDSHAKE_FAILED_ERROR_CODE => "TLS handshake failed",
+            error_code if IMPLEMENTATION_SPECIFIC_ERROR_CODES.contains(&error_code) => "implementation-specific error",
             _ => "unknown error",
         };
         write!(f, "{error_description} (code {})", self.error_code)?;
@@ -160,6 +199,10 @@ impl fmt::Display for RDCleanPathErr {
 
 impl core::error::Error for RDCleanPathErr {}
 
+/// The RDCleanPath PDU.
+///
+/// Do not add fields to this structure: IronRDP-based peers reject an unknown field that follows the last field they
+/// know, and der 0.8 also rejects one between known fields.
 #[derive(Clone, Debug, Eq, PartialEq, der::Sequence)]
 #[asn1(tag_mode = "EXPLICIT")]
 pub struct RDCleanPathPdu {

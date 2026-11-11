@@ -4,7 +4,18 @@
   "required": ["head_sha", "reviewer", "summary", "findings"],
   "properties": {
     "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "reviewer": { "enum": ["protocol", "skeptical", "code-compressor"] },
+    "reviewer": {
+      "enum": [
+        "protocol",
+        "skeptical",
+        "intent-drift",
+        "intent-review",
+        "test",
+        "dependency",
+        "code-compressor",
+        "rust-style"
+      ]
+    },
     "summary": { "type": "string", "minLength": 1, "maxLength": 1000 },
     "findings": {
       "type": "array",
@@ -71,7 +82,7 @@
     {
       "if": {
         "properties": {
-          "reviewer": { "enum": ["skeptical", "code-compressor"] }
+          "reviewer": { "not": { "const": "protocol" } }
         },
         "required": ["reviewer"]
       },
@@ -84,6 +95,19 @@
               }
             }
           }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reviewer": { "enum": ["intent-drift", "intent-review", "test", "dependency", "rust-style"] }
+        },
+        "required": ["reviewer"]
+      },
+      "then": {
+        "properties": {
+          "findings": { "maxItems": 10 }
         }
       }
     }

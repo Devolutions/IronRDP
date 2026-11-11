@@ -15,7 +15,7 @@ use ironrdp_pdu::utils::{
 };
 use tracing::{error, warn};
 
-use super::efs::IoCtlCode;
+use super::efs::{DeviceControlRequest, DeviceControlResponse, IoCtlCode, NtStatus};
 use crate::pdu::esc::ndr::{Decode as _, Encode as _};
 
 /// [2.2.2] TS Server-Generated Structures
@@ -167,6 +167,104 @@ impl ScardCall {
             }
         }
     }
+
+    /// Builds the completion for this call failing with `return_code`.
+    ///
+    /// Per [\[MS-RDPESC\]] section 3.1.4, smart card errors are carried in the `ReturnCode` of the
+    /// structure the server decodes for this IOCTL, while `IoStatus` stays `STATUS_SUCCESS`; per
+    /// section 2.2.3, all other fields of that structure are zero. An IOCTL this crate does not
+    /// decode has no known return structure, so it is completed with `STATUS_UNSUCCESSFUL` and no
+    /// output instead.
+    ///
+    /// [\[MS-RDPESC\]]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0428ca28-b4dc-46a3-97c3-01887fa44a90
+    pub fn error_response(
+        &self,
+        req: DeviceControlRequest<ScardIoCtlCode>,
+        return_code: ReturnCode,
+    ) -> DeviceControlResponse {
+        let io_ctl_code = req.io_control_code;
+        let undefined = CardProtocol::SCARD_PROTOCOL_UNDEFINED;
+
+        let output: Box<dyn rpce::Encode> = match self {
+            ScardCall::EstablishContextCall(_) => {
+                Box::new(EstablishContextReturn::new(return_code, ScardContext::empty()))
+            }
+            ScardCall::ListReaderGroupsCall(_) | ScardCall::ListReadersCall(_) => {
+                let charset = if matches!(
+                    io_ctl_code,
+                    ScardIoCtlCode::ListReadersA | ScardIoCtlCode::ListReaderGroupsA
+                ) {
+                    CharacterSet::Ansi
+                } else {
+                    CharacterSet::Unicode
+                };
+                Box::new(ListReadersReturn::probe(return_code, 0, charset))
+            }
+            // LocateCards_Return has the same layout as GetStatusChange_Return.
+            ScardCall::GetStatusChangeCall(_) | ScardCall::LocateCardsCall(_) | ScardCall::LocateCardsByAtrCall(_) => {
+                Box::new(GetStatusChangeReturn::new(return_code, Vec::new()))
+            }
+            ScardCall::ConnectCall(_) => Box::new(ConnectReturn::new(return_code, ScardHandle::empty(), undefined)),
+            ScardCall::ReconnectCall(_) => Box::new(ReconnectReturn::new(return_code, undefined)),
+            ScardCall::TransmitCall(_) => Box::new(TransmitReturn::recv_probe(return_code, None, 0)),
+            ScardCall::StatusCall(_) => {
+                let charset = if io_ctl_code == ScardIoCtlCode::StatusA {
+                    CharacterSet::Ansi
+                } else {
+                    CharacterSet::Unicode
+                };
+                Box::new(StatusReturn::names_probe(
+                    return_code,
+                    0,
+                    CardState::Unknown,
+                    undefined,
+                    [0; 32],
+                    0,
+                    charset,
+                ))
+            }
+            ScardCall::StateCall(_) => Box::new(StateReturn::atr_probe(return_code, CardState::Unknown, undefined, 0)),
+            ScardCall::ControlCall(_) => Box::new(ControlReturn::out_probe(return_code, 0)),
+            ScardCall::GetAttribCall(_) => Box::new(GetAttribReturn::attr_probe(return_code, 0)),
+            ScardCall::GetTransmitCountCall(_) => Box::new(GetTransmitCountReturn::new(return_code, 0)),
+            ScardCall::GetDeviceTypeIdCall(_) => Box::new(GetDeviceTypeIdReturn::new(return_code, 0)),
+            ScardCall::ReadCacheCall(_) => Box::new(ReadCacheReturn::data_probe(return_code, 0)),
+            ScardCall::GetReaderIconCall(_) => Box::new(GetReaderIconReturn::new(return_code, Vec::new())),
+            ScardCall::AccessStartedEventCall(_)
+            | ScardCall::HCardAndDispositionCall(_)
+            | ScardCall::SetAttribCall(_)
+            | ScardCall::ContextCall(_)
+            | ScardCall::WriteCacheCall(_)
+            | ScardCall::ContextAndStringCall(_)
+            | ScardCall::ContextAndTwoStringCall(_) => Box::new(LongReturn::new(return_code)),
+            // Decoded as unsupported, but MS-RDPESC lists it with a Long_Return.
+            ScardCall::Unsupported if io_ctl_code == ScardIoCtlCode::ReleaseTartedEvent => {
+                Box::new(LongReturn::new(return_code))
+            }
+            // Unreachable today: every other `ScardIoCtlCode` decodes to a known call.
+            ScardCall::Unsupported => return DeviceControlResponse::new(req, NtStatus::UNSUCCESSFUL, None),
+        };
+        complete_call(req, output)
+    }
+}
+
+/// Completes a smart card IOCTL with its encoded `*_Return` structure.
+///
+/// When the structure does not fit the server's output buffer, the IOCTL is completed with
+/// `STATUS_BUFFER_TOO_SMALL` and no output instead, so that the server retries with a larger
+/// buffer ([\[MS-RDPESC\]] section 3.2.5.2).
+///
+/// [\[MS-RDPESC\]]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0428ca28-b4dc-46a3-97c3-01887fa44a90
+pub fn complete_call(
+    req: DeviceControlRequest<ScardIoCtlCode>,
+    output: Box<dyn rpce::Encode>,
+) -> DeviceControlResponse {
+    let fits = u32::try_from(output.size()).is_ok_and(|size| size <= req.output_buffer_length);
+    if fits {
+        DeviceControlResponse::new(req, NtStatus::SUCCESS, Some(output))
+    } else {
+        DeviceControlResponse::new(req, NtStatus::BUFFER_TOO_SMALL, None)
+    }
 }
 
 /// MS-RDPESC `cbContext` / `cbHandle` maximum (`range(0,16)`).
@@ -203,6 +301,11 @@ impl ScardContext {
         let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&value.to_le_bytes());
         Self { len: 4, bytes }
+    }
+
+    /// Creates an empty context (`cbContext` = 0, NULL `pbContext`).
+    pub fn empty() -> Self {
+        Self { len: 0, bytes: [0; 16] }
     }
 
     /// Creates a context from opaque wire bytes (`0..=16`).
@@ -554,6 +657,7 @@ pub struct ScardAccessStartedEventCall;
 
 impl ScardAccessStartedEventCall {
     pub fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        ensure_size!(in: src, size: 4);
         ironrdp_pdu::read_padding!(src, 4); // Unused (4 bytes)
         Ok(Self)
     }
@@ -1352,18 +1456,36 @@ impl GetStatusChangeReturn {
             reader_states,
         })
     }
+
+    /// Reader states put on the wire.
+    ///
+    /// MS-RDPESC 2.2.3 zeroes every field besides `ReturnCode` on failure. Like FreeRDP, the
+    /// states are kept on `SCARD_E_TIMEOUT`, which still reports the current reader states.
+    fn wire_reader_states(&self) -> &[ReaderStateCommonCall] {
+        if matches!(self.return_code, ReturnCode::Success | ReturnCode::Timeout) {
+            &self.reader_states
+        } else {
+            &[]
+        }
+    }
 }
 
 impl rpce::HeaderlessEncode for GetStatusChangeReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-        let reader_states_len =
-            cast_length!("GetStatusChangeReturn", "reader_states", self.reader_states.len(), in: dst)?;
+        let reader_states = self.wire_reader_states();
+        let reader_states_len = cast_length!("GetStatusChangeReturn", "reader_states", reader_states.len(), in: dst)?;
+        if reader_states.is_empty() {
+            // cReaders = 0 and a NULL rgReaderStates pointer.
+            dst.write_u32(0);
+            dst.write_u32(0);
+            return Ok(());
+        }
         let mut index = 0;
         ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
         dst.write_u32(reader_states_len);
-        for reader_state in &self.reader_states {
+        for reader_state in reader_states {
             reader_state.encode(dst)?;
         }
         Ok(())
@@ -1374,10 +1496,15 @@ impl rpce::HeaderlessEncode for GetStatusChangeReturn {
     }
 
     fn size(&self) -> usize {
+        let reader_states = self.wire_reader_states();
         self.return_code.size() // dst.write_u32(self.return_code.into());
         + ndr::ptr_size(true) // ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
-        + 4 // dst.write_u32(reader_states_len);
-        + self.reader_states.iter().map(|_s| ReaderStateCommonCall::size()).sum::<usize>()
+        + if reader_states.is_empty() {
+            0
+        } else {
+            4 // dst.write_u32(reader_states_len);
+            + reader_states.len() * ReaderStateCommonCall::size()
+        }
     }
 }
 
@@ -1479,6 +1606,15 @@ impl ScardHandle {
         let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&value.to_le_bytes());
         Self { context, len: 4, bytes }
+    }
+
+    /// Creates an empty handle in an empty context (`cbHandle` = 0, NULL `pbHandle`).
+    pub fn empty() -> Self {
+        Self {
+            context: ScardContext::empty(),
+            len: 0,
+            bytes: [0; 16],
+        }
     }
 
     /// Creates a handle from opaque wire bytes (`0..=16`).
@@ -2518,25 +2654,42 @@ impl GetReaderIconReturn {
     pub fn new(return_code: ReturnCode, data: Vec<u8>) -> rpce::Pdu<Self> {
         rpce::Pdu(Self { return_code, data })
     }
+
+    /// Icon bytes put on the wire: MS-RDPESC 2.2.3 zeroes every field besides `ReturnCode` on
+    /// failure.
+    fn wire_data(&self) -> &[u8] {
+        if self.return_code == ReturnCode::Success {
+            &self.data
+        } else {
+            &[]
+        }
+    }
 }
 
 impl rpce::HeaderlessEncode for GetReaderIconReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
+        let data = self.wire_data();
         // MS-RDPESC: cbDataLen range(0,4194304)
-        if self.data.len() > Self::MAX_DATA_LEN {
+        if data.len() > Self::MAX_DATA_LEN {
             return Err(invalid_field_err!(
                 "encode",
                 "GetReaderIconReturn cbDataLen out of range",
                 in: dst
             ));
         }
-        let data_len: u32 = cast_length!("GetReaderIconReturn", "data_len", self.data.len(), in: dst)?;
+        let data_len: u32 = cast_length!("GetReaderIconReturn", "data_len", data.len(), in: dst)?;
+        if data.is_empty() {
+            // cbDataLen = 0 and a NULL pbData pointer.
+            dst.write_u32(0);
+            dst.write_u32(0);
+            return Ok(());
+        }
         let mut index = 0;
         ndr::encode_ptr(Some(data_len), &mut index, dst)?;
         dst.write_u32(data_len);
-        dst.write_slice(&self.data);
+        dst.write_slice(data);
         Ok(())
     }
 
@@ -2545,10 +2698,15 @@ impl rpce::HeaderlessEncode for GetReaderIconReturn {
     }
 
     fn size(&self) -> usize {
+        let data = self.wire_data();
         size_of::<u32>() // dst.write_u32(self.return_code.into());
         + ndr::ptr_size(true) // ndr::encode_ptr(Some(data_len), &mut index, dst)?;
-        + size_of::<u32>() // dst.write_u32(data_len);
-        + self.data.len() // dst.write_slice(&self.data);
+        + if data.is_empty() {
+            0
+        } else {
+            size_of::<u32>() // dst.write_u32(data_len);
+            + data.len() // dst.write_slice(data);
+        }
     }
 }
 
