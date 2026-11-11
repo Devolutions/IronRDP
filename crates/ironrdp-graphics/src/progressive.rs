@@ -1663,7 +1663,9 @@ fn decode_tile_blocks_parallel(
 ) -> Result<(), ProgressiveDecodeError> {
     use rayon::prelude::*;
 
-    // Take each tile's state and reference out, decode on the pool, put them back.
+    // Take each tile's state out and copy its reference, decode on the pool, put them back.
+    // A reference is 24 KiB stored inline in the map, so removing and reinserting it moves its neighbours,
+    // while writing over an existing entry does not.
     let mut work: Vec<(Box<TileState>, Option<DecDwtQ>)> = tile_blocks
         .iter()
         .zip(indices)
@@ -1674,7 +1676,7 @@ fn decode_tile_blocks_parallel(
                 tile_state.use_reduce_extrapolate = surface.use_reduce_extrapolate;
                 tile_state
             });
-            (tile_state, references.remove(&(surface_id, x_idx, y_idx)))
+            (tile_state, references.get(&(surface_id, x_idx, y_idx)).copied())
         })
         .collect();
 
