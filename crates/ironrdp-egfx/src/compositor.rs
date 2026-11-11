@@ -357,16 +357,17 @@ impl Compositor {
     /// allocated; subsequent commands targeting them become no-ops (the metadata
     /// tracked by the client is unaffected).
     pub(crate) fn create_surface(&mut self, id: u16, width: u16, height: u16) {
+        // Release first: `BTreeMap::insert` drops any surface already under this id,
+        // so re-creating one must not charge twice for the same slot.
+        // A refused re-creation also drops the previous canvas, so its commands become no-ops.
+        if let Some(previous) = self.surfaces.remove(&id) {
+            self.release(previous.data.len());
+        }
+
         if width == 0 || height == 0 || width > MAX_SURFACE_DIM || height > MAX_SURFACE_DIM {
             return;
         }
         let len = usize::from(width) * usize::from(height) * BYTES_PER_PIXEL;
-
-        // Release first: `BTreeMap::insert` drops any surface already under this id,
-        // so re-creating one must not charge twice for the same slot.
-        if let Some(previous) = self.surfaces.remove(&id) {
-            self.release(previous.data.len());
-        }
 
         if !self.charge(len) {
             return;

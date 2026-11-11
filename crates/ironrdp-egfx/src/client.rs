@@ -3616,6 +3616,30 @@ mod tests {
         assert!(updates.lock().unwrap().is_empty());
     }
 
+    /// Creating a surface again past the compositor's edge limit refuses it, even though the previous one fit.
+    // oracle: mutant keeping a surface's previous canvas when its re-creation is past the edge limit
+    #[test]
+    fn surface_recreated_past_the_edge_limit_does_not_decode_progressive() {
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let mut client = progressive_client();
+        // 20000 is past the compositor's 16384-pixel edge limit.
+        client
+            .handle_pdu(GfxPdu::CreateSurface(crate::pdu::CreateSurfacePdu {
+                surface_id: 1,
+                width: 20000,
+                height: 64,
+                pixel_format: PixelFormat::XRgb,
+            }))
+            .unwrap();
+        client.handler = Box::new(CapturingHandler {
+            updates: Arc::clone(&updates),
+            unhandled: Arc::new(Mutex::new(0)),
+        });
+        assert!(wire_progressive(&mut client, progressive_tile_stream(0, 0, rect(0, 0, 64, 64), 0)).is_ok());
+        assert_eq!(client.dropped_updates(), 0);
+        assert!(updates.lock().unwrap().is_empty());
+    }
+
     /// An update a refused surface skips changes tiles the decoder no longer tracks.
     /// A difference tile sent once the surface is accepted again has no reference.
     // oracle: mutant skipping a refused surface's update without discarding its earlier tile state
