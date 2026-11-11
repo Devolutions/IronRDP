@@ -7,21 +7,791 @@ use ironrdp_core as _;
 use ironrdp_pdu as _;
 use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_rdpdr::pdu::efs::{
-    AnyIoCtlCode, CreateDisposition, CreateOptions, DecodedDeviceControlRequest, DesiredAccess, DeviceCloseRequest,
-    DeviceControlRequest, DeviceCreateRequest, DeviceFlushBuffersRequest, DeviceIoRequest, DeviceReadRequest,
-    DeviceWriteRequest, FileAttributes, FileEndOfFileInformation, FileInformationClass, FileInformationClassLevel,
-    FileSystemInformationClassLevel, LockOperation, MajorFunction, MinorFunction, NtStatus, RdpLockInfo,
-    SecurityInformation, ServerDriveIoRequest, ServerDriveLockControlRequest, ServerDriveNotifyChangeDirectoryRequest,
-    ServerDriveQueryDirectoryRequest, ServerDriveQueryInformationRequest, ServerDriveQuerySecurityRequest,
-    ServerDriveQueryVolumeInformationRequest, ServerDriveSetInformationRequest, ServerDriveSetSecurityRequest,
-    SharedAccess,
+    AnyIoCtlCode, Boolean, CreateDisposition, CreateOptions, DecodedDeviceControlRequest, DesiredAccess,
+    DeviceCloseRequest, DeviceControlRequest, DeviceCreateRequest, DeviceFlushBuffersRequest, DeviceIoRequest,
+    DeviceReadRequest, DeviceWriteRequest, FileAttributes, FileDispositionInformation, FileEndOfFileInformation,
+    FileInformationClass, FileInformationClassLevel, FileRenameInformation, FileSystemInformationClassLevel,
+    LockOperation, MajorFunction, MinorFunction, NtStatus, RdpLockInfo, SecurityInformation, ServerDriveIoRequest,
+    ServerDriveLockControlRequest, ServerDriveNotifyChangeDirectoryRequest, ServerDriveQueryDirectoryRequest,
+    ServerDriveQueryInformationRequest, ServerDriveQuerySecurityRequest, ServerDriveQueryVolumeInformationRequest,
+    ServerDriveSetInformationRequest, ServerDriveSetSecurityRequest, SharedAccess,
 };
-use ironrdp_rdpdr_native::{RedirectedDrive, WindowsRdpdrBackend, WindowsRdpdrBackendFactory};
+use ironrdp_rdpdr_native::{
+    RedirectedDrive, WindowsDownloadSinkFactory, WindowsRdpdrBackend, WindowsRdpdrBackendFactory,
+};
 use ironrdp_svc::SvcMessage;
 use tracing as _;
 use windows as _;
 
 const MAX_STATIC_IO_SIZE: usize = 1_024 * 1_024;
+
+// oracle: mutant permitting a server to read client data through a download-only device.
+#[test]
+fn download_sink_denies_reads() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+
+    let response = backend.handle_drive_io_request(ServerDriveIoRequest::DeviceReadRequest(DeviceReadRequest {
+        device_io_request: request_header(1, MajorFunction::Read),
+        length: 1,
+        offset: 0,
+    }));
+
+    assert!(response.is_ok(), "read request must complete with a refusal");
+    assert_eq!(
+        response_status(&response.expect("completed read")),
+        NtStatus::ACCESS_DENIED
+    );
+}
+
+// oracle: mutant refusing an exclusive download create or opening a pre-existing file.
+#[test]
+fn download_sink_creates_only_new_files() {
+    let fixture = Fixture::new();
+    let existing = fixture.root.join("existing.txt");
+    std::fs::write(&existing, b"private").expect("write protected fixture");
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+
+    let mut create = create_request(r"\new.part", CreateDisposition::FILE_CREATE);
+    create.desired_access =
+        DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE | DesiredAccess::DELETE | DesiredAccess::SYNCHRONIZE;
+    let response = backend.handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create.clone()));
+    assert!(response.is_ok(), "exclusive create must receive a response");
+    let response = response.expect("completed create");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    // oracle: spec MS-RDPEFS §2.2.1.5.1 assigns FILE_SUPERSEDED to a successful FILE_CREATE.
+    let bytes = response[0].encode_unframed_pdu().expect("encode create response");
+    assert_eq!(bytes[20], 0);
+    assert!(fixture.root.join("new.part").is_file());
+
+    create.path = r"\existing.txt".to_owned();
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create))
+        .expect("complete collision");
+    assert_eq!(response_status(&response), NtStatus::OBJECT_NAME_COLLISION);
+    assert_eq!(std::fs::read(existing).expect("read protected fixture"), b"private");
+}
+
+// oracle: mutant dropping writes or ignoring the server-specified file offset.
+#[test]
+fn download_sink_writes_at_the_requested_offset() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 2,
+            write_data: b"abc".to_vec(),
+        }))
+        .expect("complete write");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let bytes = response[0].encode_unframed_pdu().expect("encode write response");
+    assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().expect("write length")), 3);
+    assert_eq!(
+        std::fs::metadata(fixture.root.join("new.part"))
+            .expect("file metadata")
+            .len(),
+        5
+    );
+}
+
+// oracle: spec MS-RDPEFS §2.2.1.4 (each request targets a specific device).
+#[test]
+fn download_sink_rejects_file_ids_for_another_device() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+    let mut write_request = request_header(file_id, MajorFunction::Write);
+    write_request.device_id = 2;
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: write_request,
+            offset: 0,
+            write_data: b"wrong device".to_vec(),
+        }))
+        .expect("complete wrong-device write");
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+
+    let mut close_request = request_header(file_id, MajorFunction::Close);
+    close_request.device_id = 2;
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: close_request,
+        }))
+        .expect("complete wrong-device close");
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"first device".to_vec(),
+        }))
+        .expect("complete valid write");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(
+        std::fs::metadata(fixture.root.join("new.part"))
+            .expect("file metadata")
+            .len(),
+        12
+    );
+}
+
+// oracle: mutant retaining an incomplete transfer after the server closes its handle.
+#[test]
+fn download_sink_removes_incomplete_file_on_close() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request_header(file_id, MajorFunction::Close),
+        }))
+        .expect("complete close");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(!fixture.root.join("new.part").exists());
+}
+
+// oracle: mutant discarding bytes or removing a successfully published download on close.
+#[test]
+fn download_sink_publishes_written_bytes() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+    let write = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"exact download bytes".to_vec(),
+        }))
+        .expect("complete write");
+    assert_eq!(response_status(&write), NtStatus::SUCCESS);
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+            ServerDriveSetInformationRequest {
+                device_io_request: request_header(file_id, MajorFunction::SetInformation),
+                set_buffer: FileInformationClass::Rename(FileRenameInformation {
+                    replace_if_exists: Boolean::False,
+                    file_name: r"\finished.txt".to_owned(),
+                }),
+            },
+        ))
+        .expect("complete publication");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let close = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request_header(file_id, MajorFunction::Close),
+        }))
+        .expect("complete close");
+    assert_eq!(response_status(&close), NtStatus::SUCCESS);
+    assert!(!fixture.root.join("new.part").exists());
+    assert_eq!(
+        std::fs::read(fixture.root.join("finished.txt")).expect("read published download"),
+        b"exact download bytes"
+    );
+}
+
+// oracle: mutant refusing to flush a newly created download.
+#[test]
+fn download_sink_flushes_created_file() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceFlushBuffersRequest(
+            DeviceFlushBuffersRequest {
+                device_io_request: request_header(file_id, MajorFunction::FlushBuffers),
+            },
+        ))
+        .expect("complete flush");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+}
+
+// oracle: mutant retaining an unfinished download and its file ID across channel reset.
+#[test]
+fn download_sink_reset_cleans_and_invalidates_open_files() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+
+    backend.reset().expect("reset download channel");
+    assert!(!fixture.root.join("new.part").exists());
+    backend.restore_drive(1).expect("restore download device");
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"stale".to_vec(),
+        }))
+        .expect("complete stale write");
+    assert_eq!(response_status(&response), NtStatus::INVALID_HANDLE);
+}
+
+// oracle: mutant allowing an oversized filesystem message to be reassembled.
+#[test]
+fn download_sink_bounds_filesystem_message_before_reassembly() {
+    let fixture = Fixture::new();
+    let backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+
+    assert_eq!(backend.max_filesystem_message_size(), Some(1_048_632));
+}
+
+// oracle: mutant exposing unrelated client filesystem or device operations through the download sink.
+#[test]
+fn download_sink_denies_unrelated_device_operations() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let requests = [
+        (
+            "directory query",
+            ServerDriveIoRequest::ServerDriveQueryDirectoryRequest(ServerDriveQueryDirectoryRequest {
+                device_io_request: request_header(0, MajorFunction::DirectoryControl),
+                file_info_class_lvl: FileInformationClassLevel::FILE_NAMES_INFORMATION,
+                initial_query: 1,
+                path: r"\*".to_owned(),
+            }),
+        ),
+        (
+            "directory notification",
+            ServerDriveIoRequest::ServerDriveNotifyChangeDirectoryRequest(ServerDriveNotifyChangeDirectoryRequest {
+                device_io_request: request_header(0, MajorFunction::DirectoryControl),
+                watch_tree: 0,
+                completion_filter: 1,
+            }),
+        ),
+        (
+            "volume query",
+            ServerDriveIoRequest::ServerDriveQueryVolumeInformationRequest(ServerDriveQueryVolumeInformationRequest {
+                device_io_request: request_header(0, MajorFunction::QueryVolumeInformation),
+                fs_info_class_lvl: FileSystemInformationClassLevel::FILE_FS_VOLUME_INFORMATION,
+            }),
+        ),
+        (
+            "device control",
+            ServerDriveIoRequest::DeviceControlRequest(DeviceControlRequest {
+                header: request_header(0, MajorFunction::DeviceControl),
+                output_buffer_length: 2,
+                input_buffer_length: 0,
+                io_control_code: AnyIoCtlCode(0x0009_003c),
+            }),
+        ),
+        (
+            "file lock",
+            ServerDriveIoRequest::ServerDriveLockControlRequest(ServerDriveLockControlRequest {
+                device_io_request: request_header(0, MajorFunction::LockControl),
+                operation: LockOperation::Exclusive,
+                wait: false,
+                locks: vec![RdpLockInfo { length: 1, offset: 0 }],
+            }),
+        ),
+        (
+            "security query",
+            ServerDriveIoRequest::ServerDriveQuerySecurityRequest(ServerDriveQuerySecurityRequest {
+                device_io_request: request_header(0, MajorFunction::QuerySecurity),
+                security_information: SecurityInformation::OWNER,
+            }),
+        ),
+        (
+            "security update",
+            ServerDriveIoRequest::ServerDriveSetSecurityRequest(ServerDriveSetSecurityRequest {
+                device_io_request: request_header(0, MajorFunction::SetSecurity),
+                security_information: SecurityInformation::DACL,
+                security_descriptor: Vec::new(),
+            }),
+        ),
+    ];
+
+    for (name, request) in requests {
+        let response = backend
+            .handle_drive_io_request(request)
+            .unwrap_or_else(|error| panic!("{name} must receive a typed denial: {error}"));
+        assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED, "{name}");
+    }
+}
+
+// oracle: spec MS-FSCC §2.4.47 describes the standard-information fields of the created file.
+#[test]
+fn download_sink_reports_created_file_metadata() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+    let write = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"abc".to_vec(),
+        }))
+        .expect("complete write");
+    assert_eq!(response_status(&write), NtStatus::SUCCESS);
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveQueryInformationRequest(
+            ServerDriveQueryInformationRequest {
+                device_io_request: request_header(file_id, MajorFunction::QueryInformation),
+                file_info_class_lvl: FileInformationClassLevel::FILE_STANDARD_INFORMATION,
+            },
+        ))
+        .expect("complete file query");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let bytes = response[0].encode_unframed_pdu().expect("encode information response");
+    assert_eq!(i64::from_le_bytes(bytes[28..36].try_into().expect("end of file")), 3);
+    assert_eq!(u32::from_le_bytes(bytes[36..40].try_into().expect("link count")), 1);
+    assert_eq!(bytes[41], 0);
+}
+
+// oracle: mutant replacing an existing client file during publication.
+#[test]
+fn download_sink_never_replaces_existing_files() {
+    let fixture = Fixture::new();
+    let existing = fixture.root.join("protected.bin");
+    std::fs::write(&existing, b"private").expect("write protected fixture");
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+
+    for (replace_if_exists, expected) in [
+        (Boolean::True, NtStatus::ACCESS_DENIED),
+        (Boolean::False, NtStatus::OBJECT_NAME_COLLISION),
+    ] {
+        let response = backend
+            .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+                ServerDriveSetInformationRequest {
+                    device_io_request: request_header(file_id, MajorFunction::SetInformation),
+                    set_buffer: FileInformationClass::Rename(FileRenameInformation {
+                        replace_if_exists,
+                        file_name: r"\PROTECTED.bin".to_owned(),
+                    }),
+                },
+            ))
+            .expect("complete publication attempt");
+        assert_eq!(response_status(&response), expected);
+    }
+    assert_eq!(std::fs::read(existing).expect("read protected fixture"), b"private");
+}
+
+// oracle: mutant re-resolving the approved directory path after the factory pins it.
+#[test]
+fn download_sink_keeps_the_approved_directory_pinned() {
+    let fixture = Fixture::new();
+    let factory = WindowsDownloadSinkFactory::new(&fixture.root).expect("pin download directory");
+    let moved = fixture.sandbox.join("moved-root");
+    std::fs::rename(&fixture.root, &moved).expect("move pinned directory");
+    std::fs::create_dir(&fixture.root).expect("create replacement directory");
+    let mut backend = factory.build();
+    backend.restore_drive(1).expect("activate download device");
+
+    create_download(&mut backend, r"\new.part");
+    assert!(moved.join("new.part").is_file());
+    assert!(!fixture.root.join("new.part").exists());
+}
+
+// oracle: mutant interpreting an untrusted name as a traversal, stream, DOS device, or nested path.
+#[test]
+fn download_sink_rejects_non_flat_windows_names() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+
+    for path in [
+        r"\..\outside.bin",
+        r"\nested\child.bin",
+        r"\existing.bin:stream",
+        r"\\server\share",
+        r"\NUL.txt",
+        r"\name. ",
+    ] {
+        let mut request = create_request(path, CreateDisposition::FILE_CREATE);
+        request.desired_access =
+            DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE | DesiredAccess::DELETE | DesiredAccess::SYNCHRONIZE;
+        let response = backend
+            .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(request))
+            .expect("complete unsafe create");
+        assert_ne!(response_status(&response), NtStatus::SUCCESS, "{path}");
+    }
+    assert!(!fixture.sandbox.join("outside.bin").exists());
+}
+
+// oracle: mutant permitting writes beyond the one-MiB request or one-GiB file boundary.
+#[test]
+fn download_sink_enforces_write_boundaries() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+
+    for (offset, data, expected) in [
+        (0, vec![0x5a; 1_048_576], NtStatus::SUCCESS),
+        (0, vec![0x5a; 1_048_577], NtStatus::INVALID_PARAMETER),
+        (1_073_741_824, Vec::new(), NtStatus::SUCCESS),
+        (1_073_741_824, vec![1], NtStatus::INVALID_PARAMETER),
+        (u64::MAX, vec![1], NtStatus::INVALID_PARAMETER),
+    ] {
+        let response = backend
+            .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+                device_io_request: request_header(file_id, MajorFunction::Write),
+                offset,
+                write_data: data,
+            }))
+            .expect("complete bounded write");
+        assert_eq!(response_status(&response), expected, "offset {offset}");
+    }
+    assert_eq!(
+        std::fs::metadata(fixture.root.join("new.part"))
+            .expect("file metadata")
+            .len(),
+        1_048_576
+    );
+}
+
+// oracle: mutant using its internal cleanup permission to publish without server-requested DELETE access.
+#[test]
+fn download_sink_requires_requested_delete_access_to_publish() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let mut create = create_request(r"\new.part", CreateDisposition::FILE_CREATE);
+    create.desired_access = DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE;
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create))
+        .expect("complete create");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let file_id = response_file_id(&response);
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+            ServerDriveSetInformationRequest {
+                device_io_request: request_header(file_id, MajorFunction::SetInformation),
+                set_buffer: FileInformationClass::Rename(FileRenameInformation {
+                    replace_if_exists: Boolean::False,
+                    file_name: r"\finished.txt".to_owned(),
+                }),
+            },
+        ))
+        .expect("complete publication attempt");
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert!(!fixture.root.join("finished.txt").exists());
+}
+
+// oracle: mutant retaining an unfinished transfer after its connection is dropped.
+#[test]
+fn download_sink_drop_cleans_incomplete_files() {
+    let fixture = Fixture::new();
+    let factory = WindowsDownloadSinkFactory::new(&fixture.root).expect("pin download directory");
+    {
+        let mut backend = factory.build();
+        backend.restore_drive(1).expect("activate download device");
+        create_download(&mut backend, r"\new.part");
+        assert!(fixture.root.join("new.part").exists());
+    }
+
+    assert!(!fixture.root.join("new.part").exists());
+}
+
+// oracle: mutant forgetting a failed cleanup and allowing a reconnect before it succeeds.
+#[test]
+fn download_sink_retries_failed_cleanup_before_reconnect() {
+    let fixture = Fixture::new();
+    let factory = WindowsDownloadSinkFactory::new(&fixture.root).expect("pin download directory");
+    let mut backend = factory.build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+    let path = fixture.root.join("new.part");
+    let mut permissions = std::fs::metadata(&path).expect("file metadata").permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&path, permissions.clone()).expect("make cleanup fail");
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request_header(file_id, MajorFunction::Close),
+        }))
+        .expect("complete close");
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+    assert!(path.exists());
+    let mut reconnect = factory.build();
+    assert!(reconnect.restore_drive(1).is_err());
+    let mut create = create_request(r"\other.part", CreateDisposition::FILE_CREATE);
+    create.desired_access = DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE;
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(create))
+        .expect("complete create while cleanup is blocked");
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+    assert!(!fixture.root.join("other.part").exists());
+
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&path, permissions).expect("allow cleanup");
+    reconnect.restore_drive(1).expect("retry cleanup on reconnect");
+    assert!(!path.exists());
+}
+
+// oracle: mutant retaining an unfinished file or its ID after device removal.
+#[test]
+fn download_sink_drive_removal_cleans_open_files() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+
+    backend.remove_drive(1).expect("remove download device");
+    assert!(!fixture.root.join("new.part").exists());
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"stale".to_vec(),
+        }))
+        .expect("complete stale write");
+    assert_eq!(response_status(&response), NtStatus::INVALID_HANDLE);
+    backend.add_drive(1).expect("reactivate download device");
+}
+
+// oracle: mutant writing to or publishing a transfer after another hard link is added.
+#[test]
+fn download_sink_refuses_hard_linked_transfer_files() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+    let path = fixture.root.join("new.part");
+    let alias = fixture.sandbox.join("linked.part");
+    std::fs::hard_link(&path, &alias).expect("link the open download");
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"not allowed".to_vec(),
+        }))
+        .expect("complete linked-file write");
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+            ServerDriveSetInformationRequest {
+                device_io_request: request_header(file_id, MajorFunction::SetInformation),
+                set_buffer: FileInformationClass::Rename(FileRenameInformation {
+                    replace_if_exists: Boolean::False,
+                    file_name: r"\finished.txt".to_owned(),
+                }),
+            },
+        ))
+        .expect("complete linked-file publication");
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request_header(file_id, MajorFunction::Close),
+        }))
+        .expect("close linked transfer");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(!path.exists());
+    assert_eq!(std::fs::read(alias).expect("read hard link"), b"");
+}
+
+// oracle: mutant following a Windows junction when pinning the approved directory.
+#[test]
+fn download_sink_rejects_junction_as_approved_directory() {
+    let fixture = Fixture::new();
+    let junction = fixture.sandbox.join("junction");
+    let result = std::process::Command::new("cmd.exe")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&fixture.root)
+        .output()
+        .expect("run junction setup");
+    assert!(result.status.success(), "junction setup failed: {result:?}");
+
+    assert!(WindowsDownloadSinkFactory::new(&junction).is_err());
+    assert!(WindowsDownloadSinkFactory::new(&junction.join("root")).is_err());
+    std::fs::remove_dir(&junction).expect("remove test junction");
+}
+
+// oracle: mutant applying the open-file budget per connection instead of across the factory.
+#[test]
+fn download_sink_shares_open_file_budget_across_connections() {
+    let fixture = Fixture::new();
+    let factory = WindowsDownloadSinkFactory::new(&fixture.root).expect("pin download directory");
+    let mut first = factory.build();
+    let mut second = factory.build();
+    first.restore_drive(1).expect("activate first device");
+    second.restore_drive(1).expect("activate second device");
+    let mut first_file = None;
+    for index in 0..512 {
+        let id = create_download(&mut first, &format!(r"\first-{index}.part"));
+        first_file.get_or_insert(id);
+        create_download(&mut second, &format!(r"\second-{index}.part"));
+    }
+
+    let mut request = create_request(r"\overflow.part", CreateDisposition::FILE_CREATE);
+    request.desired_access = DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE;
+    let response = second
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(request.clone()))
+        .expect("complete over-budget create");
+    assert_eq!(response_status(&response), NtStatus::INSUFFICIENT_RESOURCES);
+    assert!(!fixture.root.join("overflow.part").exists());
+    let close = first
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request_header(first_file.expect("first file ID"), MajorFunction::Close),
+        }))
+        .expect("close one download");
+    assert_eq!(response_status(&close), NtStatus::SUCCESS);
+    let response = second
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(request))
+        .expect("complete create after close");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+}
+
+// oracle: mutant permitting writes, deletions, or additional renames after publication.
+#[test]
+fn download_sink_keeps_published_files_immutable() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let file_id = create_download(&mut backend, r"\new.part");
+    let write = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"original".to_vec(),
+        }))
+        .expect("complete write");
+    assert_eq!(response_status(&write), NtStatus::SUCCESS);
+    let rename = |name: &str| {
+        ServerDriveIoRequest::ServerDriveSetInformationRequest(ServerDriveSetInformationRequest {
+            device_io_request: request_header(file_id, MajorFunction::SetInformation),
+            set_buffer: FileInformationClass::Rename(FileRenameInformation {
+                replace_if_exists: Boolean::False,
+                file_name: name.to_owned(),
+            }),
+        })
+    };
+    let publication = backend
+        .handle_drive_io_request(rename(r"\finished.txt"))
+        .expect("complete publication");
+    assert_eq!(response_status(&publication), NtStatus::SUCCESS);
+
+    let write = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"modified".to_vec(),
+        }))
+        .expect("complete post-publication write");
+    assert_eq!(response_status(&write), NtStatus::ACCESS_DENIED);
+    let deletion = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+            ServerDriveSetInformationRequest {
+                device_io_request: request_header(file_id, MajorFunction::SetInformation),
+                set_buffer: FileInformationClass::Disposition(FileDispositionInformation { delete_pending: 1 }),
+            },
+        ))
+        .expect("complete post-publication deletion");
+    assert_eq!(response_status(&deletion), NtStatus::ACCESS_DENIED);
+    let rename = backend
+        .handle_drive_io_request(rename(r"\other.txt"))
+        .expect("complete post-publication rename");
+    assert_eq!(response_status(&rename), NtStatus::ACCESS_DENIED);
+    let close = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request_header(file_id, MajorFunction::Close),
+        }))
+        .expect("complete close");
+    assert_eq!(response_status(&close), NtStatus::SUCCESS);
+    assert_eq!(
+        std::fs::read(fixture.root.join("finished.txt")).expect("read published file"),
+        b"original"
+    );
+    assert!(!fixture.root.join("other.txt").exists());
+}
+
+// oracle: mutant creating a file after the client revokes directory creation access.
+#[test]
+fn download_sink_observes_directory_acl_changes() {
+    let fixture = Fixture::new();
+    let mut backend = WindowsDownloadSinkFactory::new(&fixture.root)
+        .expect("pin download directory")
+        .build();
+    backend.restore_drive(1).expect("activate download device");
+    let identity = std::process::Command::new("whoami.exe")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()
+        .expect("query Windows user");
+    assert!(identity.status.success());
+    let identity = String::from_utf8_lossy(&identity.stdout);
+    let identity = identity
+        .split('"')
+        .find(|field| field.starts_with("S-1-"))
+        .expect("Windows user SID");
+    let identity = format!("*{identity}");
+    let denied = std::process::Command::new("icacls.exe")
+        .arg(&fixture.root)
+        .arg("/deny")
+        .arg(format!("{identity}:(WD)"))
+        .output()
+        .expect("deny directory file creation");
+    assert!(denied.status.success(), "icacls deny failed: {denied:?}");
+
+    let mut request = create_request(r"\new.part", CreateDisposition::FILE_CREATE);
+    request.desired_access = DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE;
+    let response = backend.handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(request));
+    let restored = std::process::Command::new("icacls.exe")
+        .arg(&fixture.root)
+        .arg("/remove:d")
+        .arg(&identity)
+        .output()
+        .expect("restore directory ACL");
+    assert!(restored.status.success(), "icacls restore failed: {restored:?}");
+    let response = response.expect("complete create");
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+}
 
 #[test]
 fn filesystem_lifecycle_is_handle_relative_and_bounded() {
@@ -531,6 +1301,17 @@ fn create_request(path: &str, disposition: CreateDisposition) -> DeviceCreateReq
         create_options: CreateOptions::empty(),
         path: path.to_owned(),
     }
+}
+
+fn create_download(backend: &mut impl RdpdrBackend, path: &str) -> u32 {
+    let mut request = create_request(path, CreateDisposition::FILE_CREATE);
+    request.desired_access =
+        DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE | DesiredAccess::DELETE | DesiredAccess::SYNCHRONIZE;
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(request))
+        .expect("complete download create");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    response_file_id(&response)
 }
 
 fn request_header(file_id: u32, major_function: MajorFunction) -> DeviceIoRequest {

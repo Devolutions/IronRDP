@@ -34,7 +34,7 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 
 ## Lifecycle
 
-- `daemon start [--foreground] [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
+- `daemon start [--foreground] [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-download-dir DIRECTORY] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
                                  Start the default daemon in the background and wait for readiness.
                                  `--foreground` runs it in this terminal instead; `daemon-start`
                                  remains a legacy foreground alias.

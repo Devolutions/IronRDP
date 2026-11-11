@@ -15,7 +15,7 @@ use windows::Wdk::Storage::FileSystem::FILE_BASIC_INFORMATION as NativeFileBasic
 use super::backend::{OpenFile, WindowsRdpdrBackend};
 use super::handles::{
     FILE_CREATED_INFORMATION, FILE_OPEN_REPARSE_POINT, FILE_OPENED_INFORMATION, FILE_OVERWRITTEN_INFORMATION,
-    FILE_SUPERSEDED_INFORMATION, FileOpenOptions, RENAME_DESTINATION_DIRECTORY_ACCESS,
+    FILE_SUPERSEDED_INFORMATION, FileHandle, FileOpenOptions, RENAME_DESTINATION_DIRECTORY_ACCESS,
 };
 use super::path::RelativePath;
 use super::security;
@@ -351,10 +351,16 @@ fn query_information_inner_with_status(
     req: &ServerDriveQueryInformationRequest,
 ) -> Result<(NtStatus, FileInformationClass), NtStatus> {
     let file = file_for_request(backend, req.device_io_request.device_id, req.device_io_request.file_id)?;
+    query_handle_information(&file.handle, &req.file_info_class_lvl)
+}
 
-    match req.file_info_class_lvl {
+pub(super) fn query_handle_information(
+    handle: &FileHandle,
+    information_class: &FileInformationClassLevel,
+) -> Result<(NtStatus, FileInformationClass), NtStatus> {
+    match *information_class {
         FileInformationClassLevel::FILE_BASIC_INFORMATION => {
-            let information = file.handle.query_basic_information().map_err(from_ntstatus)?;
+            let information = handle.query_basic_information().map_err(from_ntstatus)?;
             Ok((
                 NtStatus::SUCCESS,
                 FileBasicInformation {
@@ -368,7 +374,7 @@ fn query_information_inner_with_status(
             ))
         }
         FileInformationClassLevel::FILE_STANDARD_INFORMATION => {
-            let information = file.handle.query_standard_information().map_err(from_ntstatus)?;
+            let information = handle.query_standard_information().map_err(from_ntstatus)?;
             Ok((
                 NtStatus::SUCCESS,
                 FileStandardInformation {
@@ -382,7 +388,7 @@ fn query_information_inner_with_status(
             ))
         }
         FileInformationClassLevel::FILE_ATTRIBUTE_TAG_INFORMATION => {
-            let information = file.handle.query_attribute_tag_information().map_err(from_ntstatus)?;
+            let information = handle.query_attribute_tag_information().map_err(from_ntstatus)?;
             Ok((
                 NtStatus::SUCCESS,
                 FileAttributeTagInformation {
@@ -393,7 +399,7 @@ fn query_information_inner_with_status(
             ))
         }
         FileInformationClassLevel::FILE_STREAM_INFORMATION => {
-            let completion = file.handle.query_stream_information().map_err(from_ntstatus)?;
+            let completion = handle.query_stream_information().map_err(from_ntstatus)?;
             Ok((
                 from_ntstatus(completion.status),
                 FileStreamInformation::from_buffer(completion.output).into(),

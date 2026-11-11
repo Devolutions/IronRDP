@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CEF navigation fixture</title>
+<style>
+  html, body { margin: 0; background: #224466; }
+  #page { position: absolute; left: 24px; top: 24px; width: 96px; height: 96px; background: #ffaa00; }
+  #reload { position: absolute; left: 144px; top: 24px; width: 64px; height: 64px; background: #00ff88; }
+  #viewport { position: fixed; right: 0; bottom: 0; width: 32px; height: 32px; background: #123456; }
+</style>
+<body>
+<div id="page"></div><div id="reload"></div><div id="viewport"></div>
+<script>
+  if (performance.getEntriesByType('navigation')[0].type === 'reload') {
+    document.getElementById('reload').style.background = '#ff4488';
+  }
+</script>
+</body>

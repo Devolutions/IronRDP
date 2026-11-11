@@ -111,6 +111,11 @@ struct Args {
     #[clap(long, requires = "rpc")]
     rpc_endpoint: Option<String>,
 
+    /// Existing absolute directory exposed as the download-only RDPDR device DL.
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    #[clap(long, requires = "rpc", value_name = "DIRECTORY")]
+    rdpdr_download_dir: Option<PathBuf>,
+
     #[clap(long, value_parser)]
     gw_endpoint: Option<String>,
     #[clap(long, value_parser)]
@@ -618,6 +623,8 @@ pub struct ViewerConfig {
     dump_rdp: Option<PathBuf>,
     rpc: bool,
     rpc_endpoint: Option<String>,
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    rdpdr_download_dir: Option<PathBuf>,
     printers: Option<PrinterOptions>,
     named_drives: Vec<NamedDrive>,
     ports: PortOptions,
@@ -647,6 +654,8 @@ impl ViewerConfig {
                 dump_rdp: None,
                 rpc: false,
                 rpc_endpoint: None,
+                #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+                rdpdr_download_dir: None,
                 printers: None,
                 named_drives: Vec::new(),
                 ports: PortOptions::default(),
@@ -705,6 +714,8 @@ impl ViewerConfig {
                 dump_rdp: None,
                 rpc: true,
                 rpc_endpoint: args.rpc_endpoint,
+                #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+                rdpdr_download_dir: args.rdpdr_download_dir,
                 printers: None,
                 named_drives: Vec::new(),
                 ports: PortOptions::default(),
@@ -816,6 +827,8 @@ impl ViewerConfig {
             dump_rdp,
             rpc: false,
             rpc_endpoint: None,
+            #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+            rdpdr_download_dir: None,
             printers,
             named_drives,
             ports,
@@ -880,6 +893,12 @@ impl ViewerConfig {
     /// Endpoint explicitly selected for the RPC host.
     pub fn rpc_endpoint(&self) -> Option<&str> {
         self.rpc_endpoint.as_deref()
+    }
+
+    /// Client directory exposed as a download-only RDPDR device by the RPC host.
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    pub fn rdpdr_download_dir(&self) -> Option<&std::path::Path> {
+        self.rdpdr_download_dir.as_deref()
     }
 }
 
