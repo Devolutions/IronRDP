@@ -286,6 +286,7 @@ impl RdpdrDriveConfig {
 pub struct DaemonOptions {
     skip_certificate_check: bool,
     rdpdr_drives: Vec<RdpdrDriveConfig>,
+    rdpdr_download_dir: Option<PathBuf>,
     /// Enables Windows WinSCard smartcard redirection when the connect property is unset.
     smartcard: bool,
 }
@@ -310,6 +311,15 @@ impl DaemonOptions {
     #[must_use]
     pub fn with_rdpdr_drives(mut self, rdpdr_drives: Vec<RdpdrDriveConfig>) -> Self {
         self.rdpdr_drives = rdpdr_drives;
+        self
+    }
+
+    /// Exposes one Windows, macOS, or Linux directory as the download-only RDPDR filesystem device `DL`.
+    ///
+    /// The directory must already exist and its path must be absolute.
+    #[must_use]
+    pub fn with_rdpdr_download_dir(mut self, directory: Option<PathBuf>) -> Self {
+        self.rdpdr_download_dir = directory;
         self
     }
 
@@ -338,8 +348,7 @@ pub struct Daemon {
     /// Whether [`Self::overlay`] contributes any secret (password/token) value, i.e. whether the
     /// caller can omit credentials of its own.
     credentials_loaded: bool,
-    /// Monotonically assigns RAIL ledger generations so observations from a former session cannot be
-    /// mistaken for the active connection.
+    /// Assigns unique session IDs and RAIL ledger generations within this daemon.
     next_rail_generation: Arc<AtomicU64>,
     /// Assigns RAIL launch IDs across every session so they remain unambiguous with their generation.
     next_rail_launch_id: AtomicU64,
@@ -348,6 +357,10 @@ pub struct Daemon {
     smartcard_default: bool,
     #[cfg(windows)]
     rdpdr_backend_factory: Option<WindowsRdpdrBackendFactory>,
+    #[cfg(windows)]
+    download_backend_factory: Option<ironrdp_rdpdr_native::WindowsDownloadSinkFactory>,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    download_backend_factory: Option<ironrdp_rdpdr_native::backend::NixRdpdrBackendFactory>,
     /// Clipboard text, daemon-lifetime so it survives a reconnect. Read and written by
     /// `Request::ClipboardGet` / `Request::ClipboardSet`; read and written by the `CLIPRDR`
     /// backend built fresh for each session (see `crate::clipboard`).
@@ -359,6 +372,8 @@ pub struct Daemon {
 
 /// Per-session state owned by the request handler.
 struct Session {
+    /// The initial RAIL generation also identifies this daemon session.
+    id: u64,
     input_tx: RdpInputSender,
     input_db: Database,
     destination: String,
@@ -660,11 +675,42 @@ impl Daemon {
         }
         let DaemonOptions {
             rdpdr_drives,
+            rdpdr_download_dir,
             smartcard,
             ..
         } = options;
+        #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+        if rdpdr_download_dir.is_some() {
+            anyhow::bail!("rdpdr download directories are only available on Windows, macOS, and Linux");
+        }
+        #[cfg(windows)]
+        let download_backend_factory = rdpdr_download_dir
+            .as_ref()
+            .map(|directory| {
+                ironrdp_rdpdr_native::WindowsDownloadSinkFactory::new(directory)
+                    .context("open rdpdr download directory")
+            })
+            .transpose()?;
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let download_backend_factory = rdpdr_download_dir
+            .map(|directory| {
+                anyhow::ensure!(directory.is_absolute(), "rdpdr download directory must be absolute");
+                let path = directory.to_str().context("rdpdr download directory must be UTF-8")?;
+                Ok::<_, anyhow::Error>(
+                    ironrdp_rdpdr_native::backend::NixRdpdrBackendFactory::new(path.to_owned())
+                        .with_download_sink()
+                        .context("open rdpdr download directory")?
+                        .with_drive(1, "DL".to_owned()),
+                )
+            })
+            .transpose()?;
         // Overlay may pre-enable smartcard via `ironrdp_smartcard` without a dedicated CLI flag.
         let smartcard_default = smartcard || overlay.enable_smartcard().unwrap_or(false);
+        #[cfg(windows)]
+        anyhow::ensure!(
+            download_backend_factory.is_none() || (rdpdr_drives.is_empty() && !smartcard_default),
+            "rdpdr download directory cannot be combined with drives or smartcard redirection"
+        );
         #[cfg(windows)]
         let rdpdr_backend_factory = rdpdr_backend_factory(rdpdr_drives, smartcard_default)?;
         #[cfg(not(windows))]
@@ -688,6 +734,10 @@ impl Daemon {
             smartcard_default,
             #[cfg(windows)]
             rdpdr_backend_factory,
+            #[cfg(windows)]
+            download_backend_factory,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            download_backend_factory,
             clipboard: Arc::new(Mutex::new(crate::clipboard::ClipboardState::default())),
             notification: None,
             shutdown,
@@ -734,10 +784,27 @@ impl Daemon {
     ///
     /// Panics if the daemon or session state mutex is poisoned.
     pub fn current_frame(&self) -> Option<Frame> {
+        self.current_frame_with_session_id().map(|(frame, _)| frame)
+    }
+
+    /// Returns the latest framebuffer and the ID of the session that produced it.
+    ///
+    /// The ID stays the same for a daemon session and differs from other sessions in the same daemon.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the daemon or session state mutex is poisoned.
+    pub fn current_frame_with_session_id(&self) -> Option<(Frame, u64)> {
         let guard = self.state.lock().expect("daemon state poisoned");
-        guard
-            .as_ref()
-            .and_then(|session| session.live.lock().expect("session live state poisoned").frame.clone())
+        guard.as_ref().and_then(|session| {
+            session
+                .live
+                .lock()
+                .expect("session live state poisoned")
+                .frame
+                .clone()
+                .map(|frame| (frame, session.id))
+        })
     }
 
     async fn handle(&self, request: Request) -> DaemonResponse {
@@ -968,6 +1035,23 @@ impl Daemon {
         // mstsc only writes `redirectcomports:i:1` when the user selected ports; it redirects all of them.
         let redirect_ports =
             properties.redirect_com_ports().unwrap_or(false) && properties.enable_rdpdr() != Some(false);
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+        let download_factory = self
+            .download_backend_factory
+            .as_ref()
+            .filter(|_| properties.enable_rdpdr() != Some(false));
+        #[cfg(windows)]
+        if download_factory.is_some()
+            && (smartcard
+                || redirect_printers
+                || redirect_ports
+                || properties.drive_redirection().is_some_and(|drives| !drives.is_empty()))
+        {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                "rdpdr download directory cannot be combined with other device redirection",
+            );
+        }
         #[cfg(windows)]
         let rdpdr_factory = match resolve_rdpdr_factory(
             self.rdpdr_backend_factory.as_ref(),
@@ -1010,7 +1094,7 @@ impl Daemon {
             warn!("Ignoring drive redirection request; it is only available on Windows");
         }
         #[cfg(windows)]
-        let builder = if rdpdr_factory.is_some() {
+        let builder = if download_factory.is_some() || rdpdr_factory.is_some() {
             builder.with_rdpdr(true).with_smartcard(smartcard)
         } else {
             builder.with_smartcard(false)
@@ -1031,6 +1115,12 @@ impl Daemon {
             }
             // Client feature defaults smartcard on; never announce without a WinSCard backend.
             builder.with_smartcard(false)
+        };
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let builder = if download_factory.is_some() {
+            builder.with_rdpdr(true)
+        } else {
+            builder
         };
 
         let missing = builder.missing();
@@ -1073,13 +1163,22 @@ impl Daemon {
 
         let (output_tx, output_rx) = output_channel(16);
         let client = RdpClient::new(config, output_tx);
-        #[cfg(windows)]
-        let client = match rdpdr_factory {
-            Some(factory) => client.with_rdpdr_backend_factory(Box::new(crate::printer_cache::with_store(
-                factory,
-                &printer_cache_server,
-            ))),
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let client = match download_factory {
+            Some(factory) => client.with_rdpdr_backend_factory(Box::new(factory.clone())),
             None => client,
+        };
+        #[cfg(windows)]
+        let client = if let Some(factory) = download_factory {
+            client.with_rdpdr_backend_factory(Box::new(factory.clone()))
+        } else {
+            match rdpdr_factory {
+                Some(factory) => client.with_rdpdr_backend_factory(Box::new(crate::printer_cache::with_store(
+                    factory,
+                    &printer_cache_server,
+                ))),
+                None => client,
+            }
         };
         let input_tx = client.input_sender();
         #[cfg(windows)]
@@ -1122,6 +1221,7 @@ impl Daemon {
         )));
 
         let rail_notify = Arc::new(tokio::sync::Notify::new());
+        let session_id = self.next_rail_generation.fetch_add(1, Ordering::Relaxed);
         let live = Arc::new(Mutex::new(Live {
             properties: live_seed,
             state: ConnState::Connecting,
@@ -1129,11 +1229,7 @@ impl Daemon {
             frame: None,
             pending_pointer_position: None,
             rail_initial_execute: initial_rail_execute.clone(),
-            rail: RailLedger::new(
-                self.next_rail_generation.fetch_add(1, Ordering::Relaxed),
-                1,
-                initial_rail_execute,
-            ),
+            rail: RailLedger::new(session_id, 1, initial_rail_execute),
             certificate_rejection,
         }));
 
@@ -1181,6 +1277,7 @@ impl Daemon {
         info!(%destination, "Started RDP session");
 
         *self.state.lock().expect("daemon state poisoned") = Some(Session {
+            id: session_id,
             input_tx,
             input_db: Database::new(),
             destination,
@@ -2897,6 +2994,7 @@ mod tests {
         }));
         let rail_notify = Arc::new(tokio::sync::Notify::new());
         *daemon.state.lock().expect("daemon state poisoned") = Some(Session {
+            id: 1,
             input_tx,
             input_db: Database::new(),
             destination: "server.example".to_owned(),
@@ -3744,6 +3842,53 @@ mod tests {
         assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "too-long".to_owned()).is_err());
         assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "data/".to_owned()).is_err());
         assert!(RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "Data".to_owned()).is_ok());
+    }
+
+    // oracle: mutant accepting an invalid download destination at daemon startup.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn download_directory_is_validated_at_daemon_startup() {
+        for path in [
+            PathBuf::new(),
+            PathBuf::from("relative"),
+            PathBuf::from("/nonexistent-ircef-download-directory"),
+            PathBuf::from("Cargo.toml"),
+        ] {
+            assert!(
+                Daemon::with_options(
+                    PropertySet::new(),
+                    DaemonOptions::default().with_rdpdr_download_dir(Some(path)),
+                )
+                .is_err()
+            );
+        }
+        let directory = std::env::current_dir().expect("directory");
+        let daemon = Daemon::with_options(
+            PropertySet::new(),
+            DaemonOptions::default().with_rdpdr_download_dir(Some(directory)),
+        )
+        .expect("valid download directory");
+        use ironrdp_client::rdp::RdpdrBackendFactory as _;
+        let product = daemon
+            .download_backend_factory
+            .as_ref()
+            .expect("factory")
+            .build_rdpdr_backend()
+            .expect("backend");
+        assert_eq!(product.initial_drives().len(), 1);
+        assert_eq!(product.initial_drives()[0].name(), "DL");
+    }
+
+    // oracle: mutant rejecting an explicitly configured Windows download directory.
+    #[cfg(windows)]
+    #[test]
+    fn windows_download_directory_can_be_configured_at_daemon_startup() {
+        let directory = std::env::temp_dir();
+        Daemon::with_options(
+            PropertySet::new(),
+            DaemonOptions::default().with_rdpdr_download_dir(Some(directory)),
+        )
+        .expect("valid Windows download directory");
     }
 
     #[cfg(windows)]

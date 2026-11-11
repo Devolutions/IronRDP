@@ -66,6 +66,7 @@ pub struct RpcApp {
     input_database: ironrdp::input::Database,
     last_size: Option<PhysicalSize<u32>>,
     resize_timeout: Option<Instant>,
+    rpc_frame_session_id: Option<u64>,
     /// What the server's RDPEI channel accepts; touch is emulated as mouse input otherwise.
     rdpei_input_state: RdpeiInputState,
     touch_frames: TouchFrameBuilder,
@@ -158,6 +159,7 @@ impl RpcApp {
             input_database,
             last_size: None,
             resize_timeout: None,
+            rpc_frame_session_id: None,
             rdpei_input_state: RdpeiInputState::default(),
             touch_frames: TouchFrameBuilder::new(RDPEI_MAX_TOUCH_CONTACTS),
             mouse_touch: None,
@@ -354,6 +356,9 @@ impl RpcApp {
             InputTarget::Rpc(daemon) => match daemon.try_resize(width, height, scale_factor) {
                 Ok(()) => self.last_size = None,
                 Err(ResizeError::Full) => self.resize_timeout = Some(Instant::now() + Duration::from_millis(10)),
+                Err(ResizeError::NoSession) => {
+                    debug!(width, height, "Deferring resize until a session is available");
+                }
                 Err(error) => {
                     self.last_size = None;
                     warn!(?error, "Unable to resize the RPC-backed RDP session");
@@ -366,7 +371,7 @@ impl RpcApp {
         let InputTarget::Rpc(daemon) = &self.input_target else {
             return;
         };
-        let Some(frame) = daemon.current_frame() else {
+        let Some((frame, session_id)) = daemon.current_frame_with_session_id() else {
             return;
         };
         let (Some(width), Some(height)) = (
@@ -375,7 +380,19 @@ impl RpcApp {
         ) else {
             return;
         };
+        if self.rpc_frame_session_id != Some(session_id) {
+            self.rpc_frame_session_id = Some(session_id);
+            if self.last_size.is_none()
+                && let Some((window, _)) = &self.window
+                && window.inner_size() != PhysicalSize::new(width.get(), height.get())
+            {
+                self.last_size = Some(window.inner_size());
+            }
+        }
         self.update_frame(frame.pixels, width, height);
+        if self.last_size.is_some() && self.resize_timeout.is_none() {
+            self.send_resize_event();
+        }
     }
 
     fn update_frame(&mut self, buffer: Vec<u32>, width: NonZeroU32, height: NonZeroU32) {

@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CEF input fixture</title>
+<style>
+  html, body { margin: 0; background: #ffffff; font: 20px sans-serif; }
+  body { height: 1600px; position: relative; }
+  .marker { position: absolute; width: 64px; height: 64px; top: 24px; }
+  #red { left: 24px; background: #ff0000; }
+  #blue { left: 112px; background: #0000ff; }
+  #green { left: 200px; background: #00ff00; }
+  #click { position: absolute; left: 24px; top: 112px; width: 180px; height: 48px; }
+  #clicked { left: 232px; top: 112px; background: #333333; }
+  #text { position: absolute; left: 24px; top: 192px; width: 300px; height: 40px; }
+  #typed { left: 352px; top: 192px; background: #333333; }
+  #edited { left: 440px; top: 192px; background: #333333; }
+  #focused { left: 528px; top: 192px; background: #333333; }
+  #physical { left: 616px; top: 192px; background: #333333; }
+  #repeat { left: 704px; top: 192px; background: #333333; }
+  #save { position: absolute; left: 24px; top: 272px; width: 180px; height: 48px; }
+  #storage { left: 232px; top: 272px; background: #00ffff; }
+  #indexeddb { left: 800px; background: #333333; }
+  #choice { position: absolute; left: 24px; top: 368px; width: 280px; height: 40px; font-size: 24px; }
+  option { background: #ee00ee; }
+  #chosen { left: 352px; top: 368px; background: #333333; }
+  #bottom { position: absolute; left: 24px; bottom: 0; width: 96px; height: 128px; background: #ff8800; }
+  #viewport { position: fixed; right: 0; bottom: 0; width: 32px; height: 32px; background: #123456; }
+</style>
+<body>
+<div id="red" class="marker"></div><div id="blue" class="marker"></div><div id="green" class="marker"></div>
+<div id="indexeddb" class="marker"></div>
+<button id="click">Change marker</button><div id="clicked" class="marker"></div>
+<input id="text" autocomplete="off"><div id="typed" class="marker"></div><div id="edited" class="marker"></div>
+<div id="focused" class="marker"></div><div id="physical" class="marker"></div><div id="repeat" class="marker"></div>
+<button id="save">Save browser state</button><div id="storage" class="marker"></div>
+<select id="choice"><option value="first">First option</option><option value="second">Second option</option></select>
+<div id="chosen" class="marker"></div><div id="bottom"></div><div id="viewport"></div>
+<script>
+  const marker = (id, color) => document.getElementById(id).style.background = color;
+  const focusMarker = () => marker('focused',
+    document.hasFocus() && document.activeElement.id === 'text' ? '#00ff88' : '#333333');
+  window.addEventListener('focus', focusMarker);
+  window.addEventListener('blur', focusMarker);
+  document.addEventListener('focusin', focusMarker);
+  document.addEventListener('focusout', focusMarker);
+  document.getElementById('click').onclick = () => marker('clicked', '#ffff00');
+  let physicalKeydowns = 0;
+  document.getElementById('text').addEventListener('keydown', event => {
+    if (event.code === 'KeyA') physicalKeydowns++;
+  });
+  document.getElementById('text').oninput = event => {
+    marker('typed', event.target.value === 'IronRDP café 漢字!' ? '#ff00ff' : '#333333');
+    marker('edited', event.target.value === 'IronRDP café 漢字' ? '#00aaff' : '#333333');
+    marker('physical', event.target.value === 'aA' && physicalKeydowns === 2 ? '#00ff88' : '#333333');
+    marker('repeat', event.target.value === 'b' ? '#ff0000' :
+      event.target.value === 'bb' ? '#00ff88' : '#333333');
+  };
+  const stored = () => {
+    const local = localStorage.getItem('cef-test');
+    const cookie = document.cookie.split(';').some(value => value.trim() === 'cef-test=present');
+    marker('storage', local === null && !cookie ? '#00ffff' :
+      local === 'present' && cookie ? '#8844ff' : '#ff0000');
+  };
+  document.getElementById('save').onclick = () => {
+    localStorage.setItem('cef-test', 'present');
+    document.cookie = 'cef-test=present; SameSite=Strict; path=/';
+    stored();
+  };
+  document.getElementById('choice').onchange = event =>
+    marker('chosen', event.target.value === 'second' ? '#ee00ee' : '#333333');
+  const failedDatabase = () => marker('indexeddb', '#ff0000');
+  const database = indexedDB.open('cef-test', 1);
+  database.onerror = failedDatabase;
+  database.onupgradeneeded = () => database.result.createObjectStore('state');
+  database.onsuccess = () => {
+    const connection = database.result;
+    const transaction = connection.transaction('state', 'readwrite');
+    transaction.onabort = failedDatabase;
+    transaction.objectStore('state').put('present', 'marker');
+    transaction.oncomplete = () => {
+      connection.close();
+      const reopened = indexedDB.open('cef-test', 1);
+      reopened.onerror = failedDatabase;
+      reopened.onsuccess = () => {
+        const read = reopened.result.transaction('state').objectStore('state').get('marker');
+        read.onerror = failedDatabase;
+        read.onsuccess = () => {
+          marker('indexeddb', read.result === 'present' ? '#0088ff' : '#ff0000');
+          reopened.result.close();
+        };
+      };
+    };
+  };
+  stored();
+</script>
+</body>

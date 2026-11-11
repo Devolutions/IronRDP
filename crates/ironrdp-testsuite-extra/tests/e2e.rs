@@ -4556,6 +4556,274 @@ impl server::ConnectionHandler for RedirectionRecorder {
     }
 }
 
+// oracle: spec MS-RDPBCGR §1.3.1.4.2 (the server can close after a client shutdown request).
+#[tokio::test]
+async fn client_requested_shutdown_reports_a_graceful_disconnect() {
+    let result = client_session_result(|input, _| input.request_graceful_close()).await;
+    assert!(
+        matches!(result, Ok(session::GracefulDisconnectReason::UserInitiated)),
+        "client-requested shutdown was not reported as graceful: {result:?}"
+    );
+}
+
+// oracle: spec MS-RDPBCGR §1.3.1.4.2 (the server can close after a client shutdown request).
+#[tokio::test]
+async fn queued_close_reports_a_graceful_disconnect() {
+    let result = client_session_result(|input, _| {
+        input.try_send(ironrdp_client::rdp::RdpInputEvent::Close).unwrap();
+    })
+    .await;
+    assert!(
+        matches!(result, Ok(session::GracefulDisconnectReason::UserInitiated)),
+        "queued close was not reported as graceful: {result:?}"
+    );
+}
+
+// oracle: mutant treating an unsolicited transport EOF as a user-requested shutdown.
+#[tokio::test]
+async fn unsolicited_server_disconnect_remains_an_error() {
+    let result = client_session_result(|_, server| server.quit("unexpected disconnect").unwrap()).await;
+    assert!(result.is_err(), "an unsolicited disconnect was reported as graceful");
+}
+
+// oracle: mutant treating an incomplete server PDU as an orderly EOF after a shutdown request.
+#[tokio::test]
+async fn truncated_server_frame_during_shutdown_remains_an_error() {
+    use ironrdp::pdu::mcs::McsMessage;
+    use ironrdp::pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
+    use ironrdp::pdu::x224::X224;
+    use ironrdp_client::config::{ConfigBuilder, Destination};
+    use ironrdp_client::rdp::{RdpClient, RdpOutputEvent};
+    use tokio::io::AsyncWriteExt as _;
+
+    let acceptor = test_tls_identity().make_acceptor().unwrap();
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let local = tokio::task::LocalSet::new();
+    let result = Box::pin(local.run_until(async move {
+        let _display_tx = display_tx;
+        let (server_stream, proxy_stream) = tokio::io::duplex(1024 * 1024);
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server
+                .run_connection_with(server_stream, server::TransportTls::AlreadyDone)
+                .await;
+        });
+        let proxy_task = tokio::task::spawn_local(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut client = ironrdp_tokio::TokioFramed::new(stream);
+            let mut server = ironrdp_tokio::TokioFramed::new(proxy_stream);
+            let (_, request) = client.read_pdu().await.unwrap();
+            server.write_all(&request).await.unwrap();
+            let (_, response) = server.read_pdu().await.unwrap();
+            client.write_all(&response).await.unwrap();
+
+            let client = acceptor.accept(client.into_inner_no_leftover()).await.unwrap();
+            let server = server.into_inner_no_leftover();
+            let (client_read, mut client_write) = tokio::io::split(client);
+            let (server_read, mut server_write) = tokio::io::split(server);
+            let mut client = ironrdp_tokio::TokioFramed::new(client_read);
+            let mut server = ironrdp_tokio::TokioFramed::new(server_read);
+            loop {
+                tokio::select! {
+                    frame = client.read_pdu() => {
+                        let (action, frame) = frame.unwrap();
+                        let shutdown = action == pdu::Action::X224
+                            && matches!(
+                                ironrdp_core::decode::<X224<McsMessage<'_>>>(&frame),
+                                Ok(X224(McsMessage::SendDataRequest(request)))
+                                    if matches!(
+                                        ironrdp_core::decode::<ShareControlHeader>(request.user_data.as_ref()),
+                                        Ok(ShareControlHeader {
+                                            share_control_pdu: ShareControlPdu::Data(header),
+                                            ..
+                                        }) if matches!(header.share_data_pdu, ShareDataPdu::ShutdownRequest)
+                                    )
+                            );
+                        if shutdown {
+                            client_write.write_all(&[3, 0, 0, 8, 2]).await.unwrap();
+                            client_write.shutdown().await.unwrap();
+                            break;
+                        }
+                        server_write.write_all(&frame).await.unwrap();
+                    }
+                    frame = server.read_pdu() => {
+                        let (_, frame) = frame.unwrap();
+                        client_write.write_all(&frame).await.unwrap();
+                    }
+                }
+            }
+        });
+        let config = ConfigBuilder::new()
+            .with_destination(Destination::from_parts("127.0.0.1", address.port()))
+            .with_username(USERNAME)
+            .with_password(PASSWORD)
+            .with_credssp(false)
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .with_clipboard(ironrdp_client::config::ClipboardType::Disable)
+            .build()
+            .unwrap();
+        let (output_tx, mut output_rx) = ironrdp_client::output_channel::output_channel(64);
+        let client = RdpClient::new(config, output_tx);
+        let input = client.input_sender();
+        let client_task = tokio::task::spawn_local(client.run());
+        let result = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match output_rx.recv().await.expect("the client is running") {
+                    RdpOutputEvent::Connected => input.request_graceful_close(),
+                    RdpOutputEvent::Terminated(result) => break result,
+                    RdpOutputEvent::ConnectionFailure(error) => panic!("the client failed to connect: {error:?}"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the client terminates");
+        client_task.await.unwrap();
+        proxy_task.await.unwrap();
+        server_task.await.unwrap();
+        result
+    }))
+    .await;
+    assert!(result.is_err(), "a truncated server frame was reported as graceful");
+}
+
+// oracle: spec MS-RDPBCGR §3.2.7.1 (automatic reconnection follows a network error, not a requested close).
+#[tokio::test]
+async fn client_requested_shutdown_does_not_auto_reconnect() {
+    use ironrdp_client::config::{ConfigBuilder, Destination};
+    use ironrdp_client::rdp::{RdpClient, RdpOutputEvent};
+
+    let result = with_auto_reconnect_server(false, async |address, _, _display_tx| {
+        let config = ConfigBuilder::new()
+            .with_destination(Destination::from_parts("127.0.0.1", address.port()))
+            .with_username(USERNAME)
+            .with_password(PASSWORD)
+            .with_credssp(false)
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .with_clipboard(ironrdp_client::config::ClipboardType::Disable)
+            .build()
+            .expect("client configuration");
+        let (output_tx, mut output_rx) = ironrdp_client::output_channel::output_channel(64);
+        let client = RdpClient::new(config, output_tx).with_auto_reconnect(1);
+        let input = client.input_sender();
+        let client_task = tokio::task::spawn_local(client.run());
+
+        let result = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match output_rx.recv().await {
+                    Some(RdpOutputEvent::Connected) => break,
+                    Some(RdpOutputEvent::ConnectionFailure(error)) => {
+                        return Err(format!("the client failed to connect: {error:?}"));
+                    }
+                    Some(RdpOutputEvent::Terminated(result)) => {
+                        return Err(format!("the client disconnected early: {result:?}"));
+                    }
+                    None => return Err("the client stopped before connecting".to_owned()),
+                    _ => {}
+                }
+            }
+            while !input.auto_reconnect_cookie_available() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            input.request_graceful_close();
+            loop {
+                match output_rx.recv().await {
+                    Some(RdpOutputEvent::AutoReconnecting { .. }) => {
+                        return Err("client-requested shutdown triggered a reconnect".to_owned());
+                    }
+                    Some(RdpOutputEvent::Terminated(result)) => return Ok(result),
+                    None => return Err("the client stopped without a termination event".to_owned()),
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        input.request_close();
+        client_task.await.unwrap();
+        result
+    })
+    .await;
+    let result = result
+        .expect("the client receives a cookie and shuts down")
+        .expect("client-requested shutdown must not reconnect");
+    assert!(
+        matches!(result, Ok(session::GracefulDisconnectReason::UserInitiated)),
+        "client-requested shutdown was not reported as graceful: {result:?}"
+    );
+}
+
+async fn client_session_result(
+    request: impl FnOnce(&ironrdp_client::rdp::RdpInputSender, &server::RdpServerHandle),
+) -> session::SessionResult<session::GracefulDisconnectReason> {
+    use ironrdp_client::config::{ConfigBuilder, Destination};
+    use ironrdp_client::rdp::{RdpClient, RdpOutputEvent};
+
+    let (mut server, display_tx) = hybrid_server();
+    let handle = server.handle().clone();
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let _display_tx = display_tx;
+        let server_task = tokio::task::spawn_local(async move { server.run().await.unwrap() });
+        let address = handle.local_addr().await.unwrap().unwrap();
+        let config = ConfigBuilder::new()
+            .with_destination(Destination::from_parts("127.0.0.1", address.port()))
+            .with_username(HYBRID_USER)
+            .with_password(HYBRID_PASSWORD)
+            .with_client_build(1)
+            .with_client_dir("C:\\")
+            .with_platform(MajorPlatformType::WINDOWS)
+            .with_client_name("client")
+            .with_clipboard(ironrdp_client::config::ClipboardType::Disable)
+            .build()
+            .expect("client configuration");
+        let (output_tx, mut output_rx) = ironrdp_client::output_channel::output_channel(64);
+        let client = RdpClient::new(config, output_tx);
+        let input = client.input_sender();
+        let client_task = tokio::task::spawn_local(client.run());
+
+        let result = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match output_rx.recv().await.expect("the client is running") {
+                    RdpOutputEvent::Connected => {
+                        request(&input, &handle);
+                        break;
+                    }
+                    RdpOutputEvent::ConnectionFailure(error) => {
+                        return Err(format!("the client failed to connect: {error:?}"));
+                    }
+                    RdpOutputEvent::Terminated(result) => {
+                        return Err(format!("the client disconnected early: {result:?}"));
+                    }
+                    _ => {}
+                }
+            }
+            loop {
+                match output_rx.recv().await.expect("the client is running") {
+                    RdpOutputEvent::Terminated(result) => return Ok(result),
+                    RdpOutputEvent::ConnectionFailure(error) => {
+                        return Err(format!("the client failed during shutdown: {error:?}"));
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the client shuts down");
+        client_task.await.unwrap();
+        handle.quit("shutdown test complete").unwrap();
+        server_task.await.unwrap();
+        result.expect("the client connects")
+    }))
+    .await
+}
+
 /// An `RdpClient` follows a Server Redirection PDU received during its session to the target, here the same
 /// server since the PDU carries no port.
 /// The new connection carries the load-balancing information as the X.224 routing token, the session ID in the

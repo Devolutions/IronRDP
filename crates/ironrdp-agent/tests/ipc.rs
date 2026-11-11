@@ -179,6 +179,31 @@ fn background_daemon_receives_overlay() {
     }
 }
 
+// oracle: mutant download-only startup settings lost across background daemon bootstrap.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn background_daemon_accepts_a_download_directory_and_rejects_reconfiguration() {
+    let endpoint = test_endpoint("download");
+    let directory = std::env::temp_dir().join(format!("ir-download-{}", std::process::id()));
+    std::fs::create_dir(&directory).expect("create download directory");
+    let absolute = std::fs::canonicalize(&directory).expect("absolute download directory");
+    let path = absolute.to_str().expect("UTF-8 directory");
+    let result = std::panic::catch_unwind(|| {
+        let start = agent(&endpoint, &["daemon", "start", "--rdpdr-download-dir", path]);
+        assert!(start.status.success(), "{}", String::from_utf8_lossy(&start.stderr));
+        let status = agent(&endpoint, &["daemon", "status"]);
+        assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+        let incompatible = agent(&endpoint, &["daemon", "start", "--rdpdr-download-dir", path]);
+        assert!(!incompatible.status.success());
+        assert!(String::from_utf8_lossy(&incompatible.stderr).contains("startup-only options"));
+    });
+    let _ = agent(&endpoint, &["daemon", "stop"]);
+    std::fs::remove_dir(directory).expect("remove download directory");
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+
 #[test]
 fn background_child_does_not_acknowledge_a_competing_daemon() {
     use ironrdp_rpc::transport::{self, Listener};

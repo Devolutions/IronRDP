@@ -5,6 +5,18 @@ retained framebuffer, input and screenshot handling, session log buffer, NOW end
 NOW operation manager. The local RPC schema and transport are provided directly by
 [`ironrdp-rpc`](https://docs.rs/ironrdp-rpc).
 
+## Download directory
+
+Set `DaemonOptions::with_rdpdr_download_dir(Some(directory))` to announce the download-only filesystem device `DL`.
+The directory must already exist and have an absolute path; on macOS and Linux it must also be UTF-8.
+Windows accepts drive-letter paths without reparse points, not UNC or verbatim paths.
+The daemon pins the directory at startup; session property `ironrdp_rdpdr:i:0` disables the announcement.
+Only new flat files can be written and published without replacement.
+The backend attempts to remove unpublished files on close, reset, or disconnect and logs cleanup failures.
+On Windows, the startup option cannot be combined with unrestricted drives or smartcard redirection.
+Connections exposing `DL` also reject other drive, smartcard, printer, or port redirection.
+See the [native backend policy][download-policy] for limits and local-access requirements.
+
 ## Windows RDPDR options
 
 `DaemonOptions` can configure fixed redirected volumes (`with_rdpdr_drives`) and WinSCard smartcard
@@ -24,3 +36,5 @@ A configured volume named like a drive letter (`C` or `C:`) cannot be combined w
 letters, because both would show the same name in the session.
 
 Smartcard-only sessions use an empty drive list with device ID `0` reserved for the smartcard device.
+
+[download-policy]: ../ironrdp-rdpdr-native/README.md

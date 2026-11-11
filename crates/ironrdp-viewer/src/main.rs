@@ -125,11 +125,16 @@ fn run_rpc(cli: ViewerConfig) -> anyhow::Result<()> {
         .map(|value| transport::endpoint_from_string(value.to_owned()))
         .unwrap_or_else(transport::default_endpoint);
 
+    let options = daemon::DaemonOptions::default();
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    let options = options.with_rdpdr_download_dir(cli.rdpdr_download_dir().map(ToOwned::to_owned));
+    let daemon = Daemon::with_options(PropertySet::new(), options).context("invalid viewer RPC configuration")?;
+
     debug!(%endpoint, "Initialize viewer RPC server");
     let event_loop = EventLoop::<ViewerEvent>::with_user_event().build()?;
     let event_loop_proxy = event_loop.create_proxy();
     let (notification_sender, mut notification_receiver) = mpsc::channel(1);
-    let daemon = Arc::new(Daemon::with_overlay(PropertySet::new()).with_notification(notification_sender));
+    let daemon = Arc::new(daemon.with_notification(notification_sender));
     let frame_wakeup = Arc::new(AtomicBool::new(false));
 
     let runtime = runtime::Builder::new_multi_thread()

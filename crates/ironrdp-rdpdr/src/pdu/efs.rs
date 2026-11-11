@@ -302,6 +302,16 @@ impl CoreCapability {
             .any(|capability| capability.header.cap_type == CapabilityType::Port)
     }
 
+    /// Whether the general capability set supports [Server User Logged On messages].
+    ///
+    /// [Server User Logged On messages]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/2ecd5c18-8c8c-4f5d-97ef-794ce19e91ba
+    pub fn supports_user_logged_on(&self) -> bool {
+        self.capabilities.iter().any(|capability| {
+            matches!(&capability.capability_data, CapabilityData::General(general)
+                if general.extended_pdu.contains(ExtendedPdu::RDPDR_USER_LOGGEDON_PDU))
+        })
+    }
+
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         dst.write_u16(cast_length!(
@@ -1547,7 +1557,8 @@ impl DeviceAnnounceHeader {
         self.preferred_dos_name.0.strip_prefix("PRN")?.parse().ok()
     }
 
-    pub(crate) fn device_type(&self) -> DeviceType {
+    /// Returns the announced device type.
+    pub fn device_type(&self) -> DeviceType {
         self.device_type
     }
 
@@ -5628,6 +5639,16 @@ pub struct ClientDriveSetInformationResponse {
 
 impl ClientDriveSetInformationResponse {
     const NAME: &'static str = "DR_DRIVE_SET_INFORMATION_RSP";
+
+    /// Returns the device and completion identifiers and the operation status.
+    pub fn device_io_reply(&self) -> &DeviceIoResponse {
+        &self.device_io_reply
+    }
+
+    /// Returns the length acknowledged by the client.
+    pub fn length(&self) -> u32 {
+        self.length
+    }
 
     pub fn new(req: &ServerDriveSetInformationRequest, io_status: NtStatus) -> EncodeResult<Self> {
         Ok(Self {

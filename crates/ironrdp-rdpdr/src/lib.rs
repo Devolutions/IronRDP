@@ -1274,6 +1274,17 @@ impl SvcProcessor for Rdpdr {
         Self::NAME
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        if self
+            .device_types
+            .iter()
+            .any(|(_, device_type)| *device_type != DeviceType::Filesystem)
+        {
+            return None;
+        }
+        self.backend.as_ref()?.max_filesystem_message_size()
+    }
+
     fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::WhenRdpDataIsCompressed
     }

@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Redirected download fixture</title>
+<style>
+  body { margin: 24px; font: 20px sans-serif; background: #ffffff; }
+  button { display: block; width: 360px; height: 48px; margin-bottom: 12px; }
+  #ready { position: absolute; left: 420px; top: 24px; width: 64px; height: 64px; background: #22cc88; }
+  #arm-beforeunload { display: none; position: absolute; left: 520px; top: 168px; width: 160px; }
+  #viewport-bottom { position: fixed; right: 16px; bottom: 8px; width: 160px; height: 32px; margin: 0; border: 0; background: #7722ee; }
+</style>
+<a id="ready" href="/download/tab-slow" download="slow.bin" aria-label="Download slow fixture"></a>
+<button onclick="location.href='/download/normal'">Binary attachment</button>
+<button onclick="location.href='/download/empty'">Empty attachment</button>
+<button onclick="location.href='/download/unicode'">Unicode filename</button>
+<button onclick="location.href='/download/redirect'">Redirected attachment</button>
+<button onclick="location.href='/download/unknown'">Unknown-length attachment</button>
+<button onclick="location.href='/download/multi'">Multiple RDPDR chunks</button>
+<button onclick="location.href='/download/slow'">Slow attachment</button>
+<button onclick="location.href='/download/oversized'">Over-limit attachment</button>
+<input type="file" aria-label="Client uploads must remain unavailable">
+<button id="arm-beforeunload">Arm before-unload</button>
+<button id="viewport-bottom" onclick="this.style.background='#44dd11'">Viewport bottom</button>
+<script>
+  if (new URLSearchParams(location.search).has('activity')) {
+    setInterval(() => fetch('/tab-activity').catch(() => {}), 100);
+    const arm = document.getElementById('arm-beforeunload');
+    arm.style.display = 'block';
+    arm.addEventListener('click', () => {
+      window.addEventListener('beforeunload', event => {
+        navigator.sendBeacon('/tab-beforeunload', '');
+        event.preventDefault();
+        event.returnValue = 'Leave this page?';
+      });
+      navigator.sendBeacon('/tab-beforeunload-armed', '');
+    }, { once: true });
+    window.addEventListener('pagehide', () => navigator.sendBeacon('/tab-unloaded', ''));
+  }
+</script>

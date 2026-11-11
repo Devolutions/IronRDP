@@ -1167,6 +1167,7 @@ impl Sequence for Acceptor {
             AcceptorState::MultitransportBootstrapping { .. } => None,
             AcceptorState::CapabilitiesSendServer { .. } => None,
             AcceptorState::MonitorLayoutSend { .. } => None,
+            AcceptorState::CapabilitiesWaitConfirm { .. } if self.reactivation => Some(&pdu::RDP_HINT),
             AcceptorState::CapabilitiesWaitConfirm { .. } => Some(&pdu::X224_HINT),
             AcceptorState::ConnectionFinalization { finalization, .. } => finalization.next_pdu_hint(),
             AcceptorState::Accepted { .. } => None,
@@ -1717,6 +1718,16 @@ impl Sequence for Acceptor {
             }
 
             AcceptorState::CapabilitiesWaitConfirm { ref channels } => {
+                if self.reactivation
+                    && input.first().is_some_and(|header| {
+                        matches!(pdu::Action::from_fp_output_header(*header), Ok(pdu::Action::FastPath))
+                    })
+                {
+                    self.pending_input_events.push(input)?;
+                    self.state = prev_state;
+                    return Ok(Written::Nothing);
+                }
+
                 let message = decode::<X224<mcs::McsMessage<'_>>>(input)
                     .map_err(ConnectorError::decode)
                     .map(|p| p.0);
@@ -1773,6 +1784,21 @@ impl Sequence for Acceptor {
                                 }
                             }
                         };
+
+                        if self.reactivation
+                            && data.channel_id == self.io_channel_id
+                            && matches!(
+                                &capabilities_confirm.share_control_pdu,
+                                ShareControlPdu::Data(rdp::headers::ShareDataHeader {
+                                    share_data_pdu: rdp::headers::ShareDataPdu::Input(_),
+                                    ..
+                                })
+                            )
+                        {
+                            self.pending_input_events.push(input)?;
+                            self.state = prev_state;
+                            return Ok(Written::Nothing);
+                        }
 
                         debug!(message = ?capabilities_confirm, "Received");
 

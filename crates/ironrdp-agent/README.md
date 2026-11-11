@@ -58,7 +58,7 @@ An application with unsaved work can hold the sign-out until someone answers it 
 Use `daemon start` to launch it without connecting, or `daemon start --foreground` to keep its logs in your terminal.
 The old `daemon-start` command remains a foreground alias.
 `daemon list` reports the default daemon if running; custom `--endpoint` values are not discoverable and can be queried with `daemon status --endpoint NAME`.
-An already-running daemon retains its startup settings: stop it before changing `--overlay`, `--rdpdr-drive`, `--smartcard`, or `--skip-certificate-check`.
+An already-running daemon retains its startup settings: stop it before changing `--overlay`, `--rdpdr-drive`, `--rdpdr-download-dir`, `--smartcard`, or `--skip-certificate-check`.
 If another daemon wins a concurrent startup, this launch fails rather than adopting unverified settings; inspect `daemon status` before retrying.
 Use `connect --no-auto-start` to require an existing daemon.
 An explicit `--endpoint NAME` requires `connect --auto-start` to start its own daemon; `--backend active-x` never starts one.
@@ -106,6 +106,22 @@ The RAIL audit commands and terminal `attach` require the daemon backend.
 connection flags. Explicit flags override those process-local values. The native MSTSC bridge uses
 these only when it is explicitly enabled; `RDP_AUTOLOGON` is active only when its value is exactly
 `1`, and requires nonempty username and password values.
+
+## Download directory
+
+Start the daemon with `ironrdp-agent daemon start --rdpdr-download-dir /absolute/download/folder` to expose one existing directory as the download-only RDPDR device `DL`.
+On Windows, supply an absolute drive-letter path without reparse points; UNC and verbatim paths are not supported.
+Use a dedicated directory and files that untrusted local processes cannot modify or hard-link.
+The option does not expose existing files for reading or modification.
+The daemon pins the directory at startup, even if its path is later replaced.
+The server must support exclusive flat-file creation, writes, flush, non-replacing rename, and close.
+Rename commits a completed download; close or disconnect attempts to remove unpublished files, while completed downloads remain.
+Cleanup failures are logged and retried before a new file, channel reset, or reconnect; those operations fail until cleanup succeeds.
+Process termination can leave incomplete files.
+Writes are limited to 1 MiB per request and files to 1 GiB.
+This option neither mounts a remote drive nor enables browser uploads.
+On Windows, it cannot be combined at startup with unrestricted drive or smartcard redirection.
+Connections using it also reject other drive, smartcard, printer, or port redirection.
 
 ## Windows filesystem redirection
 

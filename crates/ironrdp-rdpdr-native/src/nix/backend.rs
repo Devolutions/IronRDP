@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
+use std::sync::{Arc, Mutex};
 
 use ironrdp_core::impl_as_any;
 use ironrdp_pdu::{PduResult, encode_err};
@@ -26,11 +27,21 @@ use super::path::{InvalidPath, RelativePath, Root, io_to_errno};
 use super::printer::{PrintTarget, PrinterSpooler, unsupported_response, write_response};
 use super::wildcard::{contains_wildcards, is_name_in_expression};
 
+#[path = "download.rs"]
+mod download;
+
 /// The most files the server may hold open at once, however high the descriptor limit is.
 const MAX_OPEN_FILES: usize = 1_024;
 
 /// The largest read the server may request, so a single request cannot make the client allocate gigabytes.
 const MAX_READ_LENGTH: usize = 1_024 * 1_024;
+
+const MAX_DOWNLOAD_MESSAGE_SIZE: usize = 4 /* SharedHeader */
+    + 20 /* DeviceIoRequest */
+    + 4 /* Length */
+    + 8 /* Offset */
+    + 20 /* Padding */
+    + download::MAX_WRITE_LENGTH;
 
 #[derive(Debug)]
 pub struct NixRdpdrBackend {
@@ -55,6 +66,7 @@ pub struct NixRdpdrBackend {
     locks: ByteRangeLocks,
     /// Print-job handling for the virtual printer, when one is announced.
     printer: Option<Printer>,
+    download_root: Option<Arc<DownloadRoot>>,
 }
 
 impl Default for NixRdpdrBackend {
@@ -66,6 +78,8 @@ impl Default for NixRdpdrBackend {
 #[derive(Debug)]
 struct OpenFile {
     file: std::fs::File,
+    /// The redirected device that owns this handle.
+    device_id: u32,
     path: RelativePath,
     identity: FileIdentity,
     /// The directories from the shared directory down to the one holding this file, as the server last reached it.
@@ -78,6 +92,125 @@ struct OpenFile {
     delete_on_close: bool,
     /// The enumeration the last initial query-directory request started on this file.
     listing: Option<DirectoryListing>,
+    published: bool,
+}
+
+#[derive(Debug)]
+struct DownloadRoot {
+    directory: Root,
+    max_open_files: usize,
+    files: Mutex<DownloadFiles>,
+}
+
+#[derive(Debug, Default)]
+struct DownloadFiles {
+    /// INVARIANT: counts open files, pending cleanups, and creates in progress without exceeding the root's limit.
+    reserved: usize,
+    pending_cleanup: Vec<PendingDownload>,
+}
+
+#[derive(Debug)]
+struct PendingDownload {
+    file: std::fs::File,
+    path: RelativePath,
+    identity: Option<FileIdentity>,
+}
+
+impl DownloadRoot {
+    fn open(file_base: &str) -> std::io::Result<Self> {
+        Ok(Self {
+            directory: Root::open(file_base).map_err(std::io::Error::from)?,
+            max_open_files: open_file_limit(),
+            files: Mutex::new(DownloadFiles::default()),
+        })
+    }
+
+    fn retry_cleanup(&self) -> nix::Result<()> {
+        self.retry_cleanup_locked(&mut self.files.lock().unwrap())
+    }
+
+    fn retry_cleanup_locked(&self, files: &mut DownloadFiles) -> nix::Result<()> {
+        let before = files.pending_cleanup.len();
+        let mut failure = None;
+        files.pending_cleanup.retain_mut(|file| {
+            let identity = match file.identity {
+                Some(identity) => Ok(identity),
+                None => fstat(file.file.as_fd()).map(|stat| {
+                    let identity = FileIdentity::of(&stat);
+                    file.identity = Some(identity);
+                    identity
+                }),
+            };
+            let result = identity.and_then(|identity| download::remove_owned(&self.directory, &file.path, identity));
+            match result {
+                Ok(()) => false,
+                Err(_) if fstat(file.file.as_fd()).is_ok_and(|stat| stat.st_nlink == 0) => false,
+                Err(error) => {
+                    failure.get_or_insert(error);
+                    true
+                }
+            }
+        });
+        files.reserved = files
+            .reserved
+            .checked_sub(before - files.pending_cleanup.len())
+            .expect("pending cleanups have reserved handles");
+        failure.map_or(Ok(()), Err)
+    }
+
+    fn reserve_file(&self) -> nix::Result<()> {
+        let mut files = self.files.lock().unwrap();
+        self.retry_cleanup_locked(&mut files)?;
+        if self.max_open_files <= files.reserved {
+            return Err(Errno::EMFILE);
+        }
+        files.reserved += 1;
+        Ok(())
+    }
+
+    fn release_file(&self) {
+        let mut files = self.files.lock().unwrap();
+        files.reserved = files.reserved.checked_sub(1).expect("download has a reserved handle");
+    }
+
+    fn retain_created_file(&self, file: OwnedFd, path: RelativePath) {
+        let mut files = self.files.lock().unwrap();
+        files.pending_cleanup.push(PendingDownload {
+            file: file.into(),
+            path,
+            identity: None,
+        });
+        if let Err(error) = self.retry_cleanup_locked(&mut files) {
+            warn!(%error, "Failed to clean up a newly created download");
+        }
+    }
+
+    fn close_file(&self, file: OpenFile) -> nix::Result<()> {
+        let mut files = self.files.lock().unwrap();
+        if !file.published
+            && let Err(error) = download::remove_owned(&self.directory, &file.path, file.identity)
+        {
+            warn!(%error, path = ?file.path, "Failed to clean up an incomplete download");
+            files.pending_cleanup.push(PendingDownload {
+                file: file.file,
+                path: file.path,
+                identity: Some(file.identity),
+            });
+            Err(error)
+        } else {
+            drop(file);
+            files.reserved = files.reserved.checked_sub(1).expect("download has a reserved handle");
+            Ok(())
+        }
+    }
+}
+
+impl Drop for DownloadRoot {
+    fn drop(&mut self) {
+        if let Err(error) = self.retry_cleanup() {
+            warn!(%error, "Failed to clean up incomplete downloads");
+        }
+    }
 }
 
 /// Identifies a file independently of its name, so a rename does not lose track of it.
@@ -176,6 +309,18 @@ struct Printer {
     spooler: PrinterSpooler,
 }
 
+fn open_file_limit() -> usize {
+    match getrlimit(Resource::RLIMIT_NOFILE) {
+        Ok((soft_limit, _)) => usize::try_from(soft_limit / 4)
+            .unwrap_or(usize::MAX)
+            .min(MAX_OPEN_FILES),
+        Err(error) => {
+            warn!(%error, "Failed to read the descriptor limit");
+            MAX_OPEN_FILES
+        }
+    }
+}
+
 impl NixRdpdrBackend {
     /// Creates a backend that serves drive requests from the `file_base` directory.
     ///
@@ -185,29 +330,41 @@ impl NixRdpdrBackend {
             file_id: 0,
             file_base,
             open_files: HashMap::new(),
-            max_open_files: match getrlimit(Resource::RLIMIT_NOFILE) {
-                Ok((soft_limit, _)) => usize::try_from(soft_limit / 4)
-                    .unwrap_or(usize::MAX)
-                    .min(MAX_OPEN_FILES),
-                Err(error) => {
-                    warn!(%error, "Failed to read the descriptor limit");
-                    MAX_OPEN_FILES
-                }
-            },
+            max_open_files: open_file_limit(),
             pending_deletes: HashMap::new(),
             locks: ByteRangeLocks::default(),
             printer: None,
+            download_root: None,
         }
+    }
+
+    /// Opens a download-only directory and pins it for this channel's lifetime.
+    ///
+    /// Only exclusively created flat files can be written, published without replacement, or removed.
+    /// File IDs are valid only for the device that created them.
+    /// Closing an unpublished file, resetting the channel, or dropping the backend attempts to remove that file.
+    /// Cleanup failures are logged, reported by close, reset, and device removal, and can leave incomplete files.
+    /// Publication commits the file and makes its handle immutable to further protocol mutations.
+    /// The pre-reassembly message limit applies only when the channel has no other device types.
+    pub fn new_download_sink(file_base: String) -> std::io::Result<Self> {
+        let root = Arc::new(DownloadRoot::open(&file_base)?);
+        let mut backend = Self::new(file_base);
+        backend.download_root = Some(root);
+        Ok(backend)
     }
 
     /// Closes `file_id`, deleting the file when it is marked for deletion and no other handle holds it.
     ///
-    /// Returns the responses to lock requests that closing the file cancels or lets proceed.
-    fn close_file(&mut self, file_id: u32) -> Vec<SvcMessage> {
+    /// Returns lock responses and any download cleanup error.
+    fn close_file(&mut self, file_id: u32) -> (Vec<SvcMessage>, Option<Errno>) {
         let responses = self.locks.close(file_id);
         let Some(open_file) = self.open_files.remove(&file_id) else {
-            return responses;
+            return (responses, None);
         };
+        if let Some(root) = &self.download_root {
+            self.pending_deletes.remove(&open_file.identity);
+            return (responses, root.close_file(open_file).err());
+        }
         // [MS-FSA] 2.1.5.5 marks a file opened with FILE_DELETE_ON_CLOSE for deletion when that handle closes, but a directory only while it is empty.
         if open_file.delete_on_close {
             match holds_entries(&open_file.file) {
@@ -228,7 +385,7 @@ impl NixRdpdrBackend {
         {
             warn!(%error, "Delete on close error");
         }
-        responses
+        (responses, None)
     }
 
     /// Returns an ID no open file holds, counting up and wrapping around after the last one.
@@ -285,6 +442,7 @@ pub struct NixRdpdrBackendFactory {
     file_base: String,
     drives: Vec<(u32, String)>,
     printer: Option<(String, PrintTarget)>,
+    download_root: Option<Arc<DownloadRoot>>,
 }
 
 impl NixRdpdrBackendFactory {
@@ -293,6 +451,7 @@ impl NixRdpdrBackendFactory {
             file_base,
             drives: Vec::new(),
             printer: None,
+            download_root: None,
         }
     }
 
@@ -300,6 +459,12 @@ impl NixRdpdrBackendFactory {
     pub fn with_drive(mut self, device_id: u32, name: String) -> Self {
         self.drives.push((device_id, name));
         self
+    }
+
+    /// Restricts filesystem requests to new downloads, pinning the directory for all channels.
+    pub fn with_download_sink(mut self) -> std::io::Result<Self> {
+        self.download_root = Some(Arc::new(DownloadRoot::open(&self.file_base)?));
+        Ok(self)
     }
 
     #[must_use]
@@ -327,7 +492,11 @@ impl RdpdrBackendFactory for NixRdpdrBackendFactory {
             }
         }
 
+        if let Some(root) = &self.download_root {
+            root.retry_cleanup()?;
+        }
         let mut backend = NixRdpdrBackend::new(self.file_base.clone());
+        backend.download_root = self.download_root.clone();
         let mut printer = None;
         if let Some((name, target)) = &self.printer {
             if !is_valid_device_name(name) {
@@ -402,13 +571,44 @@ impl core::fmt::Display for NixRdpdrBackendFactoryError {
 impl core::error::Error for NixRdpdrBackendFactoryError {}
 
 impl RdpdrBackend for NixRdpdrBackend {
+    fn max_filesystem_message_size(&self) -> Option<usize> {
+        self.download_root.as_ref()?;
+        Some(MAX_DOWNLOAD_MESSAGE_SIZE)
+    }
+
     fn reset(&mut self) -> PduResult<()> {
         if let Some(printer) = self.printer.as_mut() {
             printer.spooler.reset();
         }
         // The server forgets its handles when the channel restarts, so they are closed as if it had closed them, which releases their locks and lock requests.
         self.close_all_files();
+        if let Some(root) = &self.download_root {
+            root.retry_cleanup()
+                .map_err(|error| ironrdp_pdu::pdu_other_err!("retrying incomplete download cleanup", source: error))?;
+        }
         Ok(())
+    }
+    fn remove_drive(&mut self, device_id: u32) -> PduResult<Vec<SvcMessage>> {
+        if self.download_root.is_none() {
+            return Err(ironrdp_pdu::pdu_other_err!(
+                "dynamic drive removal is not supported by this RDPDR backend"
+            ));
+        }
+        let files = self
+            .open_files
+            .iter()
+            .filter_map(|(&file_id, file)| (file.device_id == device_id).then_some(file_id))
+            .collect::<Vec<_>>();
+        let responses = files
+            .into_iter()
+            .flat_map(|file_id| self.close_file(file_id).0)
+            .collect();
+        self.download_root
+            .as_ref()
+            .expect("download mode")
+            .retry_cleanup()
+            .map_err(|error| ironrdp_pdu::pdu_other_err!("retrying incomplete download cleanup", source: error))?;
+        Ok(responses)
     }
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
         if self
@@ -444,6 +644,9 @@ impl RdpdrBackend for NixRdpdrBackend {
         Ok(Vec::new())
     }
     fn handle_drive_io_request(&mut self, req: ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
+        if self.download_root.is_some() {
+            return download::handle(self, req);
+        }
         debug!("handle_drive_io_request:{:?}", req);
         match req {
             ServerDriveIoRequest::DeviceWriteRequest(req_inner) => write_device(self, req_inner),
@@ -671,11 +874,12 @@ pub(crate) fn lock_control(
 }
 
 pub(crate) fn close_device(backend: &mut NixRdpdrBackend, req_inner: DeviceCloseRequest) -> PduResult<Vec<SvcMessage>> {
-    // A failed delete on close is only logged, and the close still reports success.
-    // [MS-FSA] 2.1.5.5 Server Requests Closing an Open defines no failure status, and Windows does not report a failed delete on close to the caller closing the handle either.
-    let lock_responses = backend.close_file(req_inner.device_io_request.file_id);
+    // [MS-FSA] 2.1.5.5 defines no failure status for close; ordinary drive cleanup errors are logged.
+    // The download-only policy reports a failure when it cannot remove an incomplete file.
+    let (lock_responses, cleanup_error) = backend.close_file(req_inner.device_io_request.file_id);
+    let status = cleanup_error.map_or(NtStatus::SUCCESS, status_from_errno);
     let res = RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
-        device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::SUCCESS),
+        device_io_response: DeviceIoResponse::new(req_inner.device_io_request, status),
     });
     let mut messages = vec![SvcMessage::from(res)];
     messages.extend(lock_responses);
@@ -1374,6 +1578,7 @@ pub(crate) fn create_drive(
                 file_id,
                 OpenFile {
                     file,
+                    device_id: req_inner.device_io_request.device_id,
                     path,
                     identity,
                     ancestors,
@@ -1384,6 +1589,7 @@ pub(crate) fn create_drive(
                     ),
                     delete_on_close: req_inner.create_options.contains(CreateOptions::FILE_DELETE_ON_CLOSE),
                     listing: None,
+                    published: false,
                 },
             );
             make_create_drive_resp(req_inner.device_io_request, req_inner.create_disposition, file_id)

@@ -11,12 +11,15 @@ use ironrdp_dvc::pdu::{
 };
 use ironrdp_echo::server::EchoServer;
 use ironrdp_pdu::gcc::ClientNetworkData;
+use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent, KeyboardFlags};
+use ironrdp_pdu::input::scan_code::KeyboardFlags as ScanCodeFlags;
+use ironrdp_pdu::input::{InputEvent, InputEventPdu, ScanCodePdu};
 use ironrdp_pdu::mcs;
-use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu};
+use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_server::{
-    DesktopSize, DisplayContext, DisplayUpdate, DynamicChannelFactory, RdpServer, RdpServerDisplay,
-    RdpServerDisplayUpdates, ServerResult,
+    DesktopSize, DisplayContext, DisplayUpdate, DynamicChannelFactory, KeyboardEvent, MouseEvent, RdpServer,
+    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerResult,
 };
 use ironrdp_svc::{StaticVirtualChannel, SvcMessage, client_encode_svc_messages, make_channel_definition};
 use ironrdp_tokio::TokioFramed;
@@ -71,6 +74,16 @@ impl RdpServerDisplayUpdates for Updates {
             None => core::future::pending().await,
         }
     }
+}
+
+struct InputRecorder(mpsc::UnboundedSender<KeyboardEvent>);
+
+impl RdpServerInputHandler for InputRecorder {
+    fn keyboard(&mut self, event: KeyboardEvent) {
+        self.0.send(event).expect("input receiver is alive");
+    }
+
+    fn mouse(&mut self, _event: MouseEvent) {}
 }
 
 async fn read_frame(client: &mut TokioFramed<DuplexStream>) -> Vec<u8> {
@@ -176,6 +189,104 @@ async fn factory_channel_remains_registered_across_reactivation() {
             panic!("small ECHO message must fit one chunk");
         };
         assert_eq!(data.into_data(), vec![0x71, 0x82]);
+        client
+            .write_all(
+                &encode_vec(&X224(mcs::DisconnectProviderUltimatum {
+                    reason: mcs::DisconnectReason::UserRequested,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(server.run_connection(server_stream), client);
+    result.unwrap();
+}
+
+// oracle: spec MS-RDPBCGR §3.3.5.8.1.1 and §3.3.5.8.1.2: in-flight keyboard events reach the session.
+#[tokio::test]
+async fn in_flight_keyboard_input_survives_reactivation_before_confirm() {
+    let (display_tx, display_rx) = mpsc::channel(1);
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_no_security()
+        .with_input_handler(InputRecorder(input_tx))
+        .with_display_handler(Display {
+            receiver: Some(display_rx),
+        })
+        .build();
+    let (client, server_stream) = tokio::io::duplex(16 * 1024);
+    let client = async move {
+        let mut client = TokioFramed::new(client);
+        let activation = super::activation::play_client_with_network(&mut client, true, &[], None, None).await;
+        let size = DesktopSize {
+            width: 1024,
+            height: 768,
+        };
+        display_tx.send(DisplayUpdate::Resize(size)).await.unwrap();
+        let deactivate = read_frame(&mut client).await;
+        let deactivate = decode::<X224<mcs::SendDataIndication<'_>>>(&deactivate).unwrap().0;
+        assert!(matches!(
+            decode::<ShareControlHeader>(&deactivate.user_data)
+                .unwrap()
+                .share_control_pdu,
+            ShareControlPdu::ServerDeactivateAll(_)
+        ));
+
+        let pressed = FastPathInput::single(FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0x1e));
+        let slow = ShareDataPdu::Input(InputEventPdu(vec![
+            InputEvent::ScanCode(ScanCodePdu {
+                flags: ScanCodeFlags::DOWN,
+                key_code: 0x30,
+            }),
+            InputEvent::ScanCode(ScanCodePdu {
+                flags: ScanCodeFlags::RELEASE,
+                key_code: 0x30,
+            }),
+        ]));
+        let slow = super::acceptor::encode_send_data_request(
+            activation.user_channel_id,
+            deactivate.channel_id,
+            &super::acceptor::encode_client_share_data(slow),
+        );
+        let released = FastPathInput::single(FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0x1e));
+        // Input already in flight can arrive after the server sends Deactivate All.
+        client.write_all(&encode_vec(&pressed).unwrap()).await.unwrap();
+        client.write_all(&slow).await.unwrap();
+        client.write_all(&encode_vec(&released).unwrap()).await.unwrap();
+        super::activation::reactivate_client_with_capabilities(&mut client, size, Vec::new()).await;
+
+        let mut events = Vec::new();
+        for _ in 0..4 {
+            events.push(
+                tokio::time::timeout(Duration::from_secs(5), input_rx.recv())
+                    .await
+                    .expect("in-flight keyboard event is delivered")
+                    .expect("input receiver remains open"),
+            );
+        }
+        assert!(matches!(
+            events.as_slice(),
+            [
+                KeyboardEvent::Pressed {
+                    code: 0x1e,
+                    extended: false
+                },
+                KeyboardEvent::Pressed {
+                    code: 0x30,
+                    extended: false
+                },
+                KeyboardEvent::Released {
+                    code: 0x30,
+                    extended: false
+                },
+                KeyboardEvent::Released {
+                    code: 0x1e,
+                    extended: false
+                }
+            ]
+        ));
         client
             .write_all(
                 &encode_vec(&X224(mcs::DisconnectProviderUltimatum {

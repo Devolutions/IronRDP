@@ -596,6 +596,69 @@ ClearTextPassword:s:test-pass
 
 const DRIVE_TEST_RDP: &str = "full address:s:rdp.example.com\nusername:s:test-user\nClearTextPassword:s:test-pass\n";
 
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+#[test]
+fn rpc_viewer_accepts_download_only_directory() {
+    let directory = std::env::current_dir().expect("current directory exists");
+    let input = directory.to_str().expect("current directory is UTF-8");
+
+    // oracle: mutant RPC viewer cannot select the download-only client directory.
+    let config = ViewerConfig::parse_from(["ironrdp-viewer", "--rpc", "--rdpdr-download-dir", input])
+        .expect("parse RPC download directory");
+    assert_eq!(config.rdpdr_download_dir(), Some(directory.as_path()));
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+#[test]
+fn download_only_directory_requires_rpc_viewer() {
+    let directory = std::env::current_dir().expect("current directory exists");
+    let input = directory.to_str().expect("current directory is UTF-8");
+
+    // oracle: mutant silently ignoring a download directory outside the supported RPC host.
+    assert!(ViewerConfig::parse_from(["ironrdp-viewer", "--rdpdr-download-dir", input]).is_err());
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+#[test]
+fn rpc_viewer_does_not_redirect_downloads_without_opt_in() {
+    // oracle: mutant exposing a client directory without explicit selection.
+    let config = ViewerConfig::parse_from(["ironrdp-viewer", "--rpc"]).expect("parse RPC viewer");
+    assert_eq!(config.rdpdr_download_dir(), None);
+}
+
+// oracle: mutant combining a restricted download directory with unrestricted startup drives.
+#[cfg(windows)]
+#[test]
+fn windows_download_directory_rejects_unrestricted_startup_drives() {
+    use ironrdp_daemon::daemon::{Daemon, DaemonOptions, RdpdrDriveConfig};
+    use ironrdp_propertyset::PropertySet;
+
+    let drive = RdpdrDriveConfig::new(PathBuf::from(r"C:\"), "System".to_owned()).expect("drive configuration");
+    let options = DaemonOptions::default()
+        .with_rdpdr_download_dir(Some(std::env::temp_dir()))
+        .with_rdpdr_drives(vec![drive]);
+    let result = Daemon::with_options(PropertySet::new(), options);
+    assert!(
+        matches!(result, Err(error) if error.to_string() == "rdpdr download directory cannot be combined with drives or smartcard redirection")
+    );
+}
+
+// oracle: mutant combining a restricted download directory with startup smartcard redirection.
+#[cfg(windows)]
+#[test]
+fn windows_download_directory_rejects_startup_smartcard() {
+    use ironrdp_daemon::daemon::{Daemon, DaemonOptions};
+    use ironrdp_propertyset::PropertySet;
+
+    let options = DaemonOptions::default()
+        .with_rdpdr_download_dir(Some(std::env::temp_dir()))
+        .with_smartcard(true);
+    let result = Daemon::with_options(PropertySet::new(), options);
+    assert!(
+        matches!(result, Err(error) if error.to_string() == "rdpdr download directory cannot be combined with drives or smartcard redirection")
+    );
+}
+
 #[test]
 fn rdp_file_selects_drives_to_redirect() {
     let config = parse_config_from_rdp(

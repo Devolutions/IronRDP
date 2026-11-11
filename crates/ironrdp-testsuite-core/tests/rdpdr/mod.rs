@@ -2088,6 +2088,7 @@ fn decode_io_completion_rejects_set_volume_information() {
 struct TrackingServerBackend {
     accepted: Vec<u32>,
     rejected_device_ids: Vec<u32>,
+    reject_removal: bool,
     removed: Vec<u32>,
     client_name: Option<String>,
     completions: Vec<&'static str>,
@@ -2112,6 +2113,14 @@ impl RdpdrServerBackend for TrackingServerBackend {
 
     fn on_device_remove(&mut self, device_ids: &[u32]) {
         self.removed.extend_from_slice(device_ids);
+    }
+
+    fn try_on_device_remove(&mut self, device_ids: &[u32]) -> PduResult<()> {
+        if self.reject_removal {
+            return Err(ironrdp_pdu::pdu_other_err!("device state cannot be safely removed"));
+        }
+        self.on_device_remove(device_ids);
+        Ok(())
     }
 
     fn on_client_name(&mut self, computer_name: &str) {
@@ -2182,11 +2191,10 @@ impl RdpdrServerBackend for TrackingServerBackend {
     }
 }
 
-/// Drives a fresh [`RdpdrServer`] through the full MS-RDPEFS initialization handshake
-/// (`start()` through `ClientCoreCapabilityResponse`), leaving it in the `Active` state.
+/// Drives a fresh [`RdpdrServer`] through the MS-RDPEFS handshake up to the client capabilities.
 /// Returns the `client_id` the server generated so callers can build further
 /// server-perspective client replies if needed.
-fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
+fn handshake_to_capability_exchange(server: &mut RdpdrServer) -> u32 {
     let started = server.start().unwrap();
     assert_eq!(started.len(), 1);
     let client_id = read_u32(&started[0].encode_unframed_pdu().unwrap()[4..]);
@@ -2207,15 +2215,62 @@ fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
     .unwrap();
     let capability_and_confirm = server.process(&name_request).unwrap();
     assert_eq!(capability_and_confirm.len(), 2);
+    client_id
+}
 
+fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
+    let client_id = handshake_to_capability_exchange(server);
     let capability_response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability {
         capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_drive()],
         kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
     }))
     .unwrap();
-    assert!(server.process(&capability_response).unwrap().is_empty());
+    assert_eq!(server.process(&capability_response).unwrap().len(), 1);
 
     client_id
+}
+
+// oracle: spec MS-RDPEFS §3.3.5.1.5 requires User Logged On immediately after supported client capabilities.
+// https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/2ecd5c18-8c8c-4f5d-97ef-794ce19e91ba
+#[test]
+fn server_sends_user_logged_on_after_supported_client_capabilities() {
+    let mut server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
+    handshake_to_capability_exchange(&mut server);
+    let response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability::new_response(vec![
+        CapabilityMessage::new_general(0),
+        CapabilityMessage::new_drive(),
+    ])))
+    .unwrap();
+    let messages = server.process(&response).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].encode_unframed_pdu().unwrap(),
+        [0x72, 0x44, 0x4c, 0x55] // Component = RDPDR_CTYP_CORE; PacketId = PAKID_CORE_USER_LOGGEDON.
+    );
+}
+
+// oracle: spec MS-RDPEFS §3.3.5.1.5 permits User Logged On only when extendedPDU includes 0x00000004.
+// The field layout is MS-RDPEFS 2.2.2.7.1, General Capability Set.
+// https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501
+#[test]
+fn server_omits_user_logged_on_when_client_does_not_support_it() {
+    let mut server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
+    handshake_to_capability_exchange(&mut server);
+    let mut response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability::new_response(vec![
+        CapabilityMessage::new_general(0),
+    ])))
+    .unwrap();
+    let extended_pdu = 4 /* SharedHeader */
+        + 4 /* NumCapabilities and padding */
+        + 8 /* Header */
+        + 4 /* osType */
+        + 4 /* osVersion */
+        + 2 /* protocolMajorVersion */
+        + 2 /* protocolMinorVersion */
+        + 4 /* ioCode1 */
+        + 4 /* ioCode2 */;
+    response[extended_pdu..extended_pdu + 4 /* extendedPDU */].copy_from_slice(&3u32.to_le_bytes());
+    assert!(server.process(&response).unwrap().is_empty());
 }
 
 /// Extracts the `CompletionId` a `drive_*` method embedded in a sent
@@ -2321,6 +2376,65 @@ fn duplicate_client_announce_reply_while_active_reinitializes() {
     );
 }
 
+// oracle: mutant retaining backend devices after the protocol forgets them.
+#[test]
+fn server_reinitialization_notifies_backend_of_forgotten_devices() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+    let mut devices = Devices::new();
+    devices.add_drive(42, "DL".to_owned());
+    let announce = encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+        device_list: devices.clone_inner(),
+    }))
+    .unwrap();
+    let accepted = server.process(&announce).unwrap();
+    assert_eq!(
+        ntstatus_at(&accepted[0].encode_unframed_pdu().unwrap(), 8),
+        NtStatus::SUCCESS
+    );
+
+    let duplicate = encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+        version_major: 1,
+        version_minor: VERSION_MINOR_RDP51,
+        client_id: 0,
+        kind: VersionAndIdPduKind::ClientAnnounceReply,
+    }))
+    .unwrap();
+    server.process(&duplicate).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().removed,
+        [42]
+    );
+}
+
+// oracle: mutant accepting a new initialization after the backend rejects device cleanup.
+#[test]
+fn server_reinitialization_propagates_backend_failure() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend {
+        reject_removal: true,
+        ..Default::default()
+    }));
+    handshake_to_active(&mut server);
+    let mut devices = Devices::new();
+    devices.add_drive(42, "DL".to_owned());
+    server
+        .process(
+            &encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+                device_list: devices.clone_inner(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let duplicate = encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+        version_major: 1,
+        version_minor: VERSION_MINOR_RDP51,
+        client_id: 0,
+        kind: VersionAndIdPduKind::ClientAnnounceReply,
+    }))
+    .unwrap();
+    assert!(server.process(&duplicate).is_err());
+}
+
 #[test]
 fn device_announce_accepts_and_rejects_per_backend_decision() {
     let mut server = RdpdrServer::new(Box::new(TrackingServerBackend {
@@ -2375,6 +2489,21 @@ fn device_list_remove_notifies_backend() {
         server.downcast_backend::<TrackingServerBackend>().unwrap().removed,
         vec![1]
     );
+}
+
+// oracle: mutant ignoring a backend failure while removing a device.
+#[test]
+fn device_remove_propagates_backend_failure() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend {
+        reject_removal: true,
+        ..Default::default()
+    }));
+    handshake_to_active(&mut server);
+    let remove = encode_vec(&RdpdrPdu::ClientDeviceListRemove(ClientDeviceListRemove {
+        device_list: vec![42],
+    }))
+    .unwrap();
+    assert!(server.process(&remove).is_err());
 }
 
 #[test]

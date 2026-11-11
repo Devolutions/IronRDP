@@ -84,6 +84,10 @@ The RPC host uses the default `ironrdp-agent-<uid>.sock` endpoint on Unix or
 the same `--endpoint` value on the agent. The GUI and agent share one RDP session, including its
 framebuffer and input. Close the viewer window to stop the host.
 
+Add `--rdpdr-download-dir /absolute/download/folder` to expose an existing client folder as the download-only RDPDR device `DL`.
+On Windows, use an absolute drive-letter path without reparse points, not a UNC or verbatim path.
+Untrusted local processes must not be able to modify the folder or hard-link its files; existing files cannot be read or changed through this device.
+
 ## `.rdp` file support
 
 You can load a `.rdp` file with `--rdp-file <PATH>`.

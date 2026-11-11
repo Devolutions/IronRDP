@@ -4,24 +4,1121 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use ironrdp_core::ReadCursor;
-use ironrdp_pdu as _;
-use ironrdp_rdpdr::RdpdrBackend;
+use ironrdp_core::{DecodeError, DecodeErrorKind, ReadCursor, encode_vec};
+use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
+use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::pdu::efs::{
-    Boolean, CreateDisposition, CreateOptions, DesiredAccess, DeviceCloseRequest, DeviceCreateRequest, DeviceIoRequest,
-    DeviceReadRequest, DeviceWriteRequest, FileAttributes, FileDispositionInformation, FileInformationClass,
-    FileInformationClassLevel, FileRenameInformation, FileStandardInformation, LockOperation, MajorFunction,
-    MinorFunction, NtStatus, RdpLockInfo, ServerDriveIoRequest, ServerDriveLockControlRequest,
+    Boolean, CreateDisposition, CreateOptions, DesiredAccess, DeviceCloseRequest, DeviceCreateRequest,
+    DeviceFlushBuffersRequest, DeviceIoRequest, DeviceReadRequest, DeviceWriteRequest, FileAttributes,
+    FileDispositionInformation, FileInformationClass, FileInformationClassLevel, FileRenameInformation,
+    FileStandardInformation, LockOperation, MajorFunction, MinorFunction, NtStatus, RdpLockInfo,
+    ServerDeviceAnnounceResponse, ServerDriveIoRequest, ServerDriveLockControlRequest,
     ServerDriveQueryDirectoryRequest, ServerDriveQueryInformationRequest, ServerDriveSetInformationRequest,
-    SharedAccess,
+    SharedAccess, VersionAndIdPdu, VersionAndIdPduKind,
 };
-use ironrdp_rdpdr_native::backend::NixRdpdrBackend;
-use ironrdp_svc::SvcMessage;
+use ironrdp_rdpdr::{Rdpdr, RdpdrBackend, RdpdrBackendFactory};
+use ironrdp_rdpdr_native::backend::{NixRdpdrBackend, NixRdpdrBackendFactory};
+use ironrdp_rdpdr_native::printer::PrintTarget;
+use ironrdp_svc::{StaticVirtualChannel, SvcMessage, SvcProcessor as _};
 use rstest::rstest;
 use tracing as _;
 
 // The read limit of the Windows drive backend.
 const MAX_READ_LENGTH: u32 = 1_024 * 1_024;
+
+fn download_backend(fixture: &Fixture) -> NixRdpdrBackend {
+    NixRdpdrBackend::new_download_sink(fixture.share.to_str().expect("UTF-8 directory").to_owned())
+        .expect("open download sink")
+}
+
+fn download_backend_with_two_devices(fixture: &Fixture) -> Box<dyn RdpdrBackend> {
+    NixRdpdrBackendFactory::new(fixture.share.to_str().unwrap().to_owned())
+        .with_download_sink()
+        .unwrap()
+        .with_drive(1, "first".to_owned())
+        .with_drive(2, "second".to_owned())
+        .build_rdpdr_backend()
+        .unwrap()
+        .into_parts()
+        .0
+}
+
+fn download_create(backend: &mut dyn RdpdrBackend, path: &str) -> Vec<SvcMessage> {
+    backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerCreateDriveRequest(DeviceCreateRequest {
+            desired_access: DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE
+                | DesiredAccess::DELETE
+                | DesiredAccess::SYNCHRONIZE,
+            create_options: CreateOptions::FILE_NON_DIRECTORY_FILE,
+            ..create_request(path, CreateDisposition::FILE_CREATE)
+        }))
+        .expect("complete download create")
+}
+
+// oracle: spec MS-RDPEFS §2.2.1.4.4 (wire layout); mutant retaining a fragment over the download limit.
+#[test]
+fn download_sink_bounds_inbound_static_channel_reassembly() {
+    use std::error::Error as _;
+
+    const LIMIT: u32 = 1_048_576 + 4 /* SharedHeader */ + 20 /* DeviceIoRequest */ + 32 /* Write header */;
+    let fixture = Fixture::new();
+    let channel = |backend| {
+        StaticVirtualChannel::new(
+            Rdpdr::new(Box::new(backend), "test".to_owned()).with_drives(Some(vec![(1, "DL".to_owned())])),
+        )
+    };
+    let fragment = |length| {
+        let mut bytes = encode_vec(&ChannelPduHeader {
+            length,
+            flags: ChannelControlFlags::FLAG_FIRST,
+        })
+        .unwrap();
+        bytes.push(0);
+        bytes
+    };
+
+    let mut at_limit = channel(download_backend(&fixture));
+    assert!(at_limit.process(&fragment(LIMIT)).unwrap().is_empty());
+    let mut oversized = channel(download_backend(&fixture));
+    let error = oversized.process(&fragment(LIMIT + 1)).expect_err("oversized message");
+    let source = error
+        .source()
+        .and_then(|source| source.downcast_ref::<DecodeError>())
+        .expect("static-channel decode error");
+    assert!(matches!(
+        source.kind(),
+        DecodeErrorKind::InvalidField {
+            field: "length",
+            reason: "static channel message exceeds configured maximum size",
+            ..
+        }
+    ));
+
+    let mut unrestricted = channel(NixRdpdrBackend::new(fixture.share.to_str().unwrap().to_owned()));
+    assert!(unrestricted.process(&fragment(LIMIT + 1)).unwrap().is_empty());
+}
+
+// oracle: spec MS-RDPEFS §2.2.1.1 and §2.2.1.4.4 (wire layout); mutant rejecting an exact-limit write.
+#[test]
+fn download_sink_accepts_an_exact_limit_fragmented_write() {
+    let fixture = Fixture::new();
+    let mut rdpdr = Rdpdr::new(Box::new(download_backend(&fixture)), "test".to_owned())
+        .with_drives(Some(vec![(1, "DL".to_owned())]));
+    let announce = VersionAndIdPdu {
+        version_major: 1,
+        version_minor: 12,
+        client_id: 0x1234,
+        kind: VersionAndIdPduKind::ServerAnnounceRequest,
+    };
+    let responses = rdpdr
+        .process(&encode_vec(&RdpdrPdu::VersionAndIdPdu(announce.clone())).unwrap())
+        .unwrap();
+    let reply = responses[0].encode_unframed_pdu().unwrap();
+    let client_id = u32::from_le_bytes(reply[8..12].try_into().unwrap());
+    rdpdr
+        .process(
+            &encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+                client_id,
+                kind: VersionAndIdPduKind::ServerClientIdConfirm,
+                ..announce
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    rdpdr
+        .process(
+            &encode_vec(&RdpdrPdu::ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse {
+                device_id: 1,
+                result_code: NtStatus::SUCCESS,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+    let backend = rdpdr.downcast_backend_mut::<NixRdpdrBackend>().unwrap();
+    let created = download_create(backend, ".exact.part");
+    let file_id = response_file_id(&created);
+    let data = vec![0xa5; 1_048_576];
+    let mut request = encode_vec(&RdpdrPdu::DeviceIoRequest(request_header(
+        file_id,
+        MajorFunction::Write,
+    )))
+    .unwrap();
+    request.extend_from_slice(&1_048_576u32.to_le_bytes()); // Length
+    request.extend_from_slice(&0u64.to_le_bytes()); // Offset
+    request.extend_from_slice(&[0; 20]); // Padding
+    request.extend_from_slice(&data);
+    assert_eq!(request.len(), 1_048_632);
+
+    let mut channel = StaticVirtualChannel::new(rdpdr);
+    let chunks = request.chunks(1600);
+    let count = chunks.len();
+    for (index, chunk) in chunks.enumerate() {
+        let mut flags = ChannelControlFlags::empty();
+        if index == 0 {
+            flags |= ChannelControlFlags::FLAG_FIRST;
+        }
+        if index + 1 == count {
+            flags |= ChannelControlFlags::FLAG_LAST;
+        }
+        let mut frame = encode_vec(&ChannelPduHeader {
+            length: 1_048_632,
+            flags,
+        })
+        .unwrap();
+        frame.extend_from_slice(chunk);
+        let responses = channel.process(&frame).expect("bounded fragment");
+        if index + 1 == count {
+            assert_eq!(response_status(&responses), NtStatus::SUCCESS);
+        } else {
+            assert!(responses.is_empty());
+        }
+    }
+    assert_eq!(std::fs::read(fixture.share.join(".exact.part")).unwrap(), data);
+}
+
+// oracle: mutant applying the download-only message cap to other configured device types.
+#[test]
+fn mixed_device_channels_keep_their_existing_reassembly_behavior() {
+    let fixture = Fixture::new();
+    let fragment = {
+        let mut bytes = encode_vec(&ChannelPduHeader {
+            length: 16_777_272,
+            flags: ChannelControlFlags::FLAG_FIRST,
+        })
+        .unwrap();
+        bytes.push(0);
+        bytes
+    };
+    let printer_backend = download_backend(&fixture).with_printer(2, PrintTarget::DefaultPrinter);
+    let mut printer = StaticVirtualChannel::new(
+        Rdpdr::new(Box::new(printer_backend), "test".to_owned())
+            .with_drives(Some(vec![(1, "DL".to_owned())]))
+            .with_printer(2, "printer".to_owned()),
+    );
+    assert!(printer.process(&fragment).unwrap().is_empty());
+
+    let mut smartcard = StaticVirtualChannel::new(
+        Rdpdr::new(Box::new(download_backend(&fixture)), "test".to_owned())
+            .with_drives(Some(vec![(1, "DL".to_owned())]))
+            .with_smartcard(0),
+    );
+    assert!(smartcard.process(&fragment).unwrap().is_empty());
+}
+
+// oracle: mutant removing other devices' handles or committed files with a rejected device.
+// Published downloads survive; incomplete files on that device do not.
+#[test]
+fn download_sink_removes_only_the_rejected_devices_incomplete_files() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let partial = download_create(&mut backend, ".first.part");
+    assert_eq!(response_status(&partial), NtStatus::SUCCESS);
+    let published = download_create(&mut backend, ".published.part");
+    assert_eq!(response_status(&published), NtStatus::SUCCESS);
+    let published_id = response_file_id(&published);
+    assert_eq!(
+        response_status(&write(&mut backend, published_id, 0, b"saved")),
+        NtStatus::SUCCESS
+    );
+    assert_eq!(
+        response_status(&set_information(
+            &mut backend,
+            published_id,
+            rename_to("published.txt", false),
+        )),
+        NtStatus::SUCCESS
+    );
+
+    let mut request = create_request(".second.part", CreateDisposition::FILE_CREATE);
+    request.device_io_request.device_id = 2;
+    request.desired_access = DesiredAccess::FILE_WRITE_DATA_OR_FILE_ADD_FILE | DesiredAccess::DELETE;
+    request.create_options = CreateOptions::FILE_NON_DIRECTORY_FILE;
+    let second = create_with(&mut backend, request);
+    assert_eq!(response_status(&second), NtStatus::SUCCESS);
+    let second_id = response_file_id(&second);
+
+    assert!(backend.remove_drive(1).expect("remove drive").is_empty());
+    assert!(!fixture.share.join(".first.part").exists());
+    assert_eq!(std::fs::read(fixture.share.join("published.txt")).unwrap(), b"saved");
+    let mut write_request = request_header(second_id, MajorFunction::Write);
+    write_request.device_id = 2;
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: write_request,
+            offset: 0,
+            write_data: b"other drive".to_vec(),
+        }))
+        .expect("write remaining drive");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(
+        std::fs::read(fixture.share.join(".second.part")).unwrap(),
+        b"other drive"
+    );
+}
+
+// oracle: spec MS-RDPEFS §2.2.1.4 (each request targets a specific device).
+#[test]
+fn download_sink_rejects_writes_with_another_devices_file_id() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend_with_two_devices(&fixture);
+    let created = download_create(backend.as_mut(), ".first.part");
+    let file_id = response_file_id(&created);
+    let mut request = request_header(file_id, MajorFunction::Write);
+    request.device_id = 2;
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request,
+            offset: 0,
+            write_data: b"wrong device".to_vec(),
+        }))
+        .unwrap();
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(std::fs::read(fixture.share.join(".first.part")).unwrap(), b"");
+}
+
+// oracle: spec MS-RDPEFS §2.2.1.4 (each request targets a specific device).
+#[test]
+fn download_sink_rejects_closes_with_another_devices_file_id() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend_with_two_devices(&fixture);
+    let created = download_create(backend.as_mut(), ".first.part");
+    let file_id = response_file_id(&created);
+    let mut request = request_header(file_id, MajorFunction::Close);
+    request.device_id = 2;
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request,
+        }))
+        .unwrap();
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+            device_io_request: request_header(file_id, MajorFunction::Write),
+            offset: 0,
+            write_data: b"first device".to_vec(),
+        }))
+        .unwrap();
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(
+        std::fs::read(fixture.share.join(".first.part")).unwrap(),
+        b"first device"
+    );
+}
+
+// oracle: spec MS-RDPEFS §2.2.1.4 (each request targets a specific device).
+#[test]
+fn download_sink_rejects_queries_with_another_devices_file_id() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend_with_two_devices(&fixture);
+    let created = download_create(backend.as_mut(), ".first.part");
+    let file_id = response_file_id(&created);
+    let mut request = request_header(file_id, MajorFunction::QueryInformation);
+    request.device_id = 2;
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveQueryInformationRequest(
+            ServerDriveQueryInformationRequest {
+                device_io_request: request,
+                file_info_class_lvl: FileInformationClassLevel::FILE_STANDARD_INFORMATION,
+            },
+        ))
+        .unwrap();
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+}
+
+// oracle: spec MS-RDPEFS §2.2.1.4 (each request targets a specific device).
+#[test]
+fn download_sink_rejects_flushes_with_another_devices_file_id() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend_with_two_devices(&fixture);
+    let created = download_create(backend.as_mut(), ".first.part");
+    let file_id = response_file_id(&created);
+    let mut request = request_header(file_id, MajorFunction::FlushBuffers);
+    request.device_id = 2;
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceFlushBuffersRequest(
+            DeviceFlushBuffersRequest {
+                device_io_request: request,
+            },
+        ))
+        .unwrap();
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+}
+
+// oracle: spec MS-RDPEFS §2.2.1.4 (each request targets a specific device).
+#[test]
+fn download_sink_rejects_renames_with_another_devices_file_id() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend_with_two_devices(&fixture);
+    let created = download_create(backend.as_mut(), ".first.part");
+    let file_id = response_file_id(&created);
+    let mut request = request_header(file_id, MajorFunction::SetInformation);
+    request.device_id = 2;
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::ServerDriveSetInformationRequest(
+            ServerDriveSetInformationRequest {
+                device_io_request: request,
+                set_buffer: rename_to("finished.txt", false),
+            },
+        ))
+        .unwrap();
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+    assert!(fixture.share.join(".first.part").exists());
+    assert!(!fixture.share.join("finished.txt").exists());
+}
+
+// oracle: spec MS-RDPEFS §3.1.5.2 (an unknown FileId cannot identify an open device).
+#[test]
+fn download_sink_rejects_closes_for_unowned_file_ids() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+
+    let response = close(&mut backend, u32::MAX);
+
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+}
+
+// oracle: spec MS-RDPEFS §2.2.1.5.1 and §2.2.3.4.1
+#[test]
+fn download_sink_reports_exclusive_create_information() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let response = download_create(&mut backend, ".created.part");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let bytes = response[0].encode_unframed_pdu().unwrap();
+    assert!((20..=21).contains(&bytes.len()));
+    assert_eq!(bytes.get(20).copied().unwrap_or(0), 0);
+}
+
+// oracle: mutant removing a published file or retaining unpublished files after teardown.
+#[test]
+fn download_sink_publishes_exact_bytes_and_preserves_committed_files() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let created = download_create(&mut backend, ".ircef-one.part");
+    assert_eq!(response_status(&created), NtStatus::SUCCESS);
+    let file_id = response_file_id(&created);
+    assert_eq!(
+        response_status(&write(&mut backend, file_id, 0, b"\0download\xff")),
+        NtStatus::SUCCESS
+    );
+    assert_eq!(query_standard_information(&mut backend, file_id).end_of_file, 10);
+    let flushed = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceFlushBuffersRequest(
+            ironrdp_rdpdr::pdu::efs::DeviceFlushBuffersRequest {
+                device_io_request: request_header(file_id, MajorFunction::FlushBuffers),
+            },
+        ))
+        .expect("flush");
+    assert_eq!(response_status(&flushed), NtStatus::SUCCESS);
+    assert_eq!(
+        response_status(&set_information(&mut backend, file_id, rename_to("résumé.bin", false))),
+        NtStatus::SUCCESS
+    );
+    assert_eq!(
+        response_status(&write(&mut backend, file_id, 0, b"overwrite")),
+        NtStatus::ACCESS_DENIED
+    );
+    assert_eq!(
+        response_status(&set_information(&mut backend, file_id, delete_pending(true))),
+        NtStatus::ACCESS_DENIED
+    );
+    assert_eq!(response_status(&close(&mut backend, file_id)), NtStatus::SUCCESS);
+    backend.reset().expect("reset");
+    drop(backend);
+    assert_eq!(
+        std::fs::read(fixture.share.join("résumé.bin")).expect("download"),
+        b"\0download\xff"
+    );
+    assert!(!fixture.share.join(".ircef-one.part").exists());
+}
+
+// oracle: mutant replacing an existing file during publication.
+#[test]
+fn download_sink_collision_and_replace_requests_preserve_existing_files() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let created = download_create(&mut backend, ".ircef-one.part");
+    let file_id = response_file_id(&created);
+    std::fs::write(fixture.share.join("existing"), b"keep").expect("existing destination");
+    assert_eq!(
+        response_status(&set_information(&mut backend, file_id, rename_to("existing", false))),
+        NtStatus::OBJECT_NAME_COLLISION
+    );
+    assert_eq!(
+        response_status(&set_information(&mut backend, file_id, rename_to("existing", true))),
+        NtStatus::ACCESS_DENIED
+    );
+    assert_eq!(
+        response_status(&download_create(&mut backend, "existing")),
+        NtStatus::OBJECT_NAME_COLLISION
+    );
+    assert_eq!(
+        std::fs::read(fixture.share.join("existing")).expect("existing"),
+        b"keep"
+    );
+    drop(backend);
+    assert!(!fixture.share.join(".ircef-one.part").exists());
+}
+
+// oracle: mutant allowing uploads, enumeration, pre-existing mutation, traversal, or links.
+#[test]
+fn download_sink_denies_reads_listings_and_nonexclusive_opens() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let created = download_create(&mut backend, ".ircef-one.part");
+    let file_id = response_file_id(&created);
+    assert_eq!(
+        response_status(&read(&mut backend, file_id, 0, 10)),
+        NtStatus::ACCESS_DENIED
+    );
+    assert_eq!(
+        response_status(&query_directory(&mut backend, file_id, "*", true)),
+        NtStatus::ACCESS_DENIED
+    );
+    for disposition in [
+        CreateDisposition::FILE_OPEN,
+        CreateDisposition::FILE_OPEN_IF,
+        CreateDisposition::FILE_OVERWRITE,
+        CreateDisposition::FILE_OVERWRITE_IF,
+        CreateDisposition::FILE_SUPERSEDE,
+    ] {
+        assert_eq!(
+            response_status(&create_with(
+                &mut backend,
+                DeviceCreateRequest {
+                    desired_access: DesiredAccess::GENERIC_WRITE | DesiredAccess::DELETE,
+                    ..create_request(".ircef-one.part", disposition)
+                }
+            )),
+            NtStatus::ACCESS_DENIED
+        );
+    }
+    for path in ["../escape", r"..\escape", "/absolute", r"sub\file", ""] {
+        assert_ne!(
+            response_status(&download_create(&mut backend, path)),
+            NtStatus::SUCCESS,
+            "{path}"
+        );
+    }
+    std::fs::write(fixture.sandbox.join("sentinel"), b"keep").expect("sentinel");
+    std::os::unix::fs::symlink(fixture.sandbox.join("sentinel"), fixture.share.join("link")).expect("link");
+    assert_ne!(
+        response_status(&download_create(&mut backend, "link")),
+        NtStatus::SUCCESS
+    );
+    assert_eq!(
+        response_status(&set_information(&mut backend, file_id, rename_to("link", false))),
+        NtStatus::OBJECT_NAME_COLLISION
+    );
+    assert_eq!(
+        std::fs::read(fixture.sandbox.join("sentinel")).expect("sentinel"),
+        b"keep"
+    );
+}
+
+// oracle: mutant cleaning another channel's files or following a replaced root path.
+#[test]
+fn download_sink_cleanup_stays_in_the_pinned_directory() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    assert_eq!(
+        response_status(&download_create(&mut backend, ".ircef-reset.part")),
+        NtStatus::SUCCESS
+    );
+    backend.reset().expect("reset");
+    assert!(!fixture.share.join(".ircef-reset.part").exists());
+    assert_eq!(
+        response_status(&download_create(&mut backend, ".ircef-drop.part")),
+        NtStatus::SUCCESS
+    );
+    let pinned = fixture.sandbox.join("moved");
+    std::fs::rename(&fixture.share, &pinned).expect("move root");
+    std::fs::create_dir(&fixture.share).expect("replacement root");
+    std::fs::write(fixture.share.join(".ircef-drop.part"), b"unrelated").expect("unrelated");
+    let created = download_create(&mut backend, ".ircef-pinned.part");
+    assert_eq!(response_status(&created), NtStatus::SUCCESS);
+    let file_id = response_file_id(&created);
+    assert_eq!(
+        response_status(&set_information(&mut backend, file_id, rename_to("pinned", false))),
+        NtStatus::SUCCESS
+    );
+    assert!(pinned.join("pinned").is_file());
+    assert!(!fixture.share.join("pinned").exists());
+    drop(backend);
+    assert!(!pinned.join(".ircef-drop.part").exists());
+    assert_eq!(
+        std::fs::read(fixture.share.join(".ircef-drop.part")).expect("unrelated"),
+        b"unrelated"
+    );
+}
+
+// oracle: mutant reopening a substituted download root when a connection starts.
+#[test]
+fn download_factory_pins_approved_directory_before_connecting() {
+    let fixture = Fixture::new();
+    let factory = NixRdpdrBackendFactory::new(fixture.share.to_str().unwrap().to_owned())
+        .with_download_sink()
+        .unwrap()
+        .with_drive(1, "DL".to_owned());
+    let approved = fixture.sandbox.join("approved");
+    let outside = fixture.sandbox.join("outside");
+    std::fs::rename(&fixture.share, &approved).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &fixture.share).unwrap();
+
+    let (mut backend, _) = factory.build_rdpdr_backend().unwrap().into_parts();
+    let response = download_create(backend.as_mut(), ".ircef-pinned.part");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert!(approved.join(".ircef-pinned.part").exists());
+    assert!(!outside.join(".ircef-pinned.part").exists());
+}
+
+// oracle: mutant applying the open-file limit separately to channels from the same factory.
+#[test]
+fn download_factory_shares_the_file_limit_across_channels() {
+    use nix::sys::resource::{Resource, getrlimit};
+
+    let fixture = Fixture::new();
+    let factory = NixRdpdrBackendFactory::new(fixture.share.to_str().unwrap().to_owned())
+        .with_download_sink()
+        .unwrap()
+        .with_drive(1, "DL".to_owned());
+    let (mut first, _) = factory.build_rdpdr_backend().unwrap().into_parts();
+    let (mut second, _) = factory.build_rdpdr_backend().unwrap().into_parts();
+    let (soft_limit, _) = getrlimit(Resource::RLIMIT_NOFILE).unwrap();
+    let limit = usize::try_from(soft_limit / 4).unwrap_or(usize::MAX).min(1_024);
+    assert!(2 <= limit, "the test needs at least two download handles");
+    let start = std::sync::Barrier::new(2);
+
+    let (first_results, second_results) = std::thread::scope(|scope| {
+        let open = |backend: &mut dyn RdpdrBackend, prefix: &str| {
+            start.wait();
+            (0..=limit)
+                .map(|index| {
+                    let response = download_create(backend, &format!(".{prefix}-{index}.part"));
+                    let status = response_status(&response);
+                    (
+                        status,
+                        (status == NtStatus::SUCCESS).then(|| response_file_id(&response)),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let first_backend = first.as_mut();
+        let second_backend = second.as_mut();
+        let first = scope.spawn(move || open(first_backend, "first"));
+        let second = scope.spawn(move || open(second_backend, "second"));
+        (first.join().unwrap(), second.join().unwrap())
+    });
+
+    let results = first_results.iter().chain(&second_results);
+    let accepted = results
+        .clone()
+        .filter(|(status, _)| *status == NtStatus::SUCCESS)
+        .count();
+    assert!(0 < accepted, "no download was accepted");
+    assert!(
+        accepted <= limit,
+        "{accepted} downloads exceeded the shared limit {limit}"
+    );
+    assert!(
+        results
+            .clone()
+            .all(|(status, _)| *status == NtStatus::SUCCESS || *status == NtStatus::INSUFFICIENT_RESOURCES)
+    );
+
+    let (owner, other, file_id) = if let Some(file_id) = first_results.iter().find_map(|(_, id)| *id) {
+        (first.as_mut(), second.as_mut(), file_id)
+    } else {
+        let file_id = second_results.iter().find_map(|(_, id)| *id).unwrap();
+        (second.as_mut(), first.as_mut(), file_id)
+    };
+    owner
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request_header(file_id, MajorFunction::Close),
+        }))
+        .unwrap();
+    assert_eq!(
+        response_status(&download_create(other, ".after-release.part")),
+        NtStatus::SUCCESS
+    );
+}
+
+// oracle: mutant retaining a shared handle reservation after an exclusive create fails.
+#[test]
+fn download_factory_releases_failed_create_reservations() {
+    let fixture = Fixture::new();
+    let factory = NixRdpdrBackendFactory::new(fixture.share.to_str().unwrap().to_owned())
+        .with_download_sink()
+        .unwrap()
+        .with_drive(1, "DL".to_owned());
+    let (mut backend, _) = factory.build_rdpdr_backend().unwrap().into_parts();
+    assert_eq!(
+        response_status(&download_create(backend.as_mut(), ".occupied.part")),
+        NtStatus::SUCCESS
+    );
+    for _ in 0..1_025 {
+        assert_eq!(
+            response_status(&download_create(backend.as_mut(), ".occupied.part")),
+            NtStatus::OBJECT_NAME_COLLISION
+        );
+    }
+    assert_eq!(
+        response_status(&download_create(backend.as_mut(), ".available.part")),
+        NtStatus::SUCCESS
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn with_fstat_fault(test_name: &str, test: impl FnOnce(&std::path::Path, &std::path::Path)) {
+    const CHILD: &str = "IRONRDP_TEST_FSTAT_CHILD";
+
+    if let Some(share) = std::env::var_os(CHILD) {
+        let share = PathBuf::from(share);
+        let marker = PathBuf::from(std::env::var_os("IRONRDP_TEST_FSTAT_MARKER").unwrap());
+        test(&share, &marker);
+        return;
+    }
+
+    let fixture = Fixture::new();
+    let share = fixture.share.canonicalize().unwrap();
+    let marker = fixture.sandbox.join("fstat-fault");
+    let library = fixture.sandbox.join("fstat-fault.dylib");
+    std::fs::write(&marker, []).unwrap();
+    let compiler = std::process::Command::new("cc")
+        .args(["-std=c11", "-dynamiclib", "-O2"])
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fstat_fault.c"))
+        .arg("-o")
+        .arg(&library)
+        .output()
+        .expect("compile fstat fault library");
+    assert!(
+        compiler.status.success(),
+        "could not compile fstat fault library: {}",
+        String::from_utf8_lossy(&compiler.stderr)
+    );
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test_name, "--nocapture"])
+        .env("DYLD_INSERT_LIBRARIES", &library)
+        .env(CHILD, &share)
+        .env("IRONRDP_TEST_FSTAT_PATH", share.join(".metadata-fault.part"))
+        .env("IRONRDP_TEST_FSTAT_MARKER", marker)
+        .output()
+        .expect("run fstat fault test");
+    assert!(
+        output.status.success(),
+        "fstat fault test failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// oracle: mutant forgetting a file when metadata fails after exclusive creation.
+#[cfg(target_os = "macos")]
+#[test]
+fn download_sink_cleans_up_after_post_create_metadata_failure() {
+    with_fstat_fault(
+        "download_sink_cleans_up_after_post_create_metadata_failure",
+        |share, marker| {
+            let mut backend = NixRdpdrBackend::new_download_sink(share.to_str().unwrap().to_owned()).unwrap();
+
+            assert_ne!(
+                response_status(&download_create(&mut backend, ".metadata-fault.part")),
+                NtStatus::SUCCESS
+            );
+            assert!(
+                !std::fs::read(marker).unwrap().is_empty(),
+                "fstat fault was not reached"
+            );
+            std::fs::remove_file(marker).unwrap();
+            backend.reset().unwrap();
+            assert!(
+                !share.join(".metadata-fault.part").exists(),
+                "failed create left a file"
+            );
+        },
+    );
+}
+
+// oracle: mutant forgetting an unidentifiable file or deleting a replacement after a failed create.
+#[cfg(target_os = "macos")]
+#[test]
+fn download_factory_retains_post_create_cleanup_across_connections() {
+    with_fstat_fault(
+        "download_factory_retains_post_create_cleanup_across_connections",
+        |share, marker| {
+            let factory = NixRdpdrBackendFactory::new(share.to_str().unwrap().to_owned())
+                .with_download_sink()
+                .unwrap()
+                .with_drive(1, "DL".to_owned());
+            let (mut backend, _) = factory.build_rdpdr_backend().unwrap().into_parts();
+            let original = share.join(".metadata-fault.part");
+            let saved = share.join(".metadata-fault.saved");
+
+            assert_ne!(
+                response_status(&download_create(backend.as_mut(), ".metadata-fault.part")),
+                NtStatus::SUCCESS
+            );
+            assert!(
+                !std::fs::read(marker).unwrap().is_empty(),
+                "fstat fault was not reached"
+            );
+            drop(backend);
+            assert!(factory.build_rdpdr_backend().is_err());
+
+            std::fs::rename(&original, &saved).unwrap();
+            std::fs::write(&original, b"unrelated").unwrap();
+            std::fs::remove_file(marker).unwrap();
+            assert!(factory.build_rdpdr_backend().is_err());
+            assert_eq!(std::fs::read(&original).unwrap(), b"unrelated");
+
+            std::fs::remove_file(&original).unwrap();
+            std::fs::rename(&saved, &original).unwrap();
+            let (mut next, _) = factory.build_rdpdr_backend().unwrap().into_parts();
+            assert!(!original.exists());
+            assert_eq!(
+                response_status(&download_create(next.as_mut(), ".next.part")),
+                NtStatus::SUCCESS
+            );
+        },
+    );
+}
+
+// oracle: mutant retaining the reservation after a failed create is cleaned up.
+#[cfg(target_os = "macos")]
+#[test]
+fn download_sink_releases_post_create_failure_reservations() {
+    with_fstat_fault(
+        "download_sink_releases_post_create_failure_reservations",
+        |share, marker| {
+            let mut backend = NixRdpdrBackend::new_download_sink(share.to_str().unwrap().to_owned()).unwrap();
+
+            for _ in 0..1_025 {
+                std::fs::write(marker, []).unwrap();
+                assert_ne!(
+                    response_status(&download_create(&mut backend, ".metadata-fault.part")),
+                    NtStatus::SUCCESS
+                );
+                assert!(
+                    !std::fs::read(marker).unwrap().is_empty(),
+                    "fstat fault was not reached"
+                );
+                std::fs::remove_file(marker).unwrap();
+                backend.reset().unwrap();
+            }
+            assert_eq!(
+                response_status(&download_create(&mut backend, ".next.part")),
+                NtStatus::SUCCESS
+            );
+        },
+    );
+}
+
+// oracle: mutant forgetting an unpublished file or reporting successful cleanup after failure.
+#[test]
+fn download_factory_retries_failed_cleanup_after_reconnect() {
+    let fixture = Fixture::new();
+    let factory = NixRdpdrBackendFactory::new(fixture.share.to_str().unwrap().to_owned())
+        .with_download_sink()
+        .unwrap()
+        .with_drive(1, "DL".to_owned());
+    let (mut backend, _) = factory.build_rdpdr_backend().unwrap().into_parts();
+    let original = fixture.share.join(".ircef-partial.part");
+    let saved = fixture.share.join(".ircef-saved.part");
+    let response = download_create(backend.as_mut(), ".ircef-partial.part");
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let file_id = response_file_id(&response);
+    std::fs::rename(&original, &saved).unwrap();
+    std::fs::write(&original, b"unrelated").unwrap();
+
+    let response = backend
+        .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+            device_io_request: request_header(file_id, MajorFunction::Close),
+        }))
+        .unwrap();
+    assert_ne!(response_status(&response), NtStatus::SUCCESS);
+    drop(backend);
+    assert_eq!(std::fs::read(&original).unwrap(), b"unrelated");
+    assert!(factory.build_rdpdr_backend().is_err());
+    std::fs::remove_file(&original).unwrap();
+    std::fs::rename(&saved, &original).unwrap();
+
+    let _next = factory.build_rdpdr_backend().unwrap();
+    assert!(!original.exists());
+}
+
+// oracle: mutant discarding other pending cleanups when one channel's cleanup succeeds.
+#[test]
+fn download_factory_retains_each_failed_cleanup_across_channels() {
+    let fixture = Fixture::new();
+    let factory = NixRdpdrBackendFactory::new(fixture.share.to_str().unwrap().to_owned())
+        .with_download_sink()
+        .unwrap()
+        .with_drive(1, "DL".to_owned());
+    let (mut first, _) = factory.build_rdpdr_backend().unwrap().into_parts();
+    let (mut second, _) = factory.build_rdpdr_backend().unwrap().into_parts();
+    let first_response = download_create(first.as_mut(), ".first.part");
+    let second_response = download_create(second.as_mut(), ".second.part");
+    assert_eq!(response_status(&first_response), NtStatus::SUCCESS);
+    assert_eq!(response_status(&second_response), NtStatus::SUCCESS);
+    let first_id = response_file_id(&first_response);
+    let second_id = response_file_id(&second_response);
+    for name in ["first", "second"] {
+        std::fs::rename(
+            fixture.share.join(format!(".{name}.part")),
+            fixture.share.join(format!(".{name}.saved")),
+        )
+        .unwrap();
+        std::fs::write(fixture.share.join(format!(".{name}.part")), b"unrelated").unwrap();
+    }
+    for (backend, file_id) in [(first.as_mut(), first_id), (second.as_mut(), second_id)] {
+        backend
+            .handle_drive_io_request(ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+                device_io_request: request_header(file_id, MajorFunction::Close),
+            }))
+            .unwrap();
+    }
+    std::fs::remove_file(fixture.share.join(".first.part")).unwrap();
+    std::fs::rename(fixture.share.join(".first.saved"), fixture.share.join(".first.part")).unwrap();
+
+    assert!(factory.build_rdpdr_backend().is_err());
+    assert!(!fixture.share.join(".first.part").exists());
+    assert_eq!(std::fs::read(fixture.share.join(".second.part")).unwrap(), b"unrelated");
+    std::fs::remove_file(fixture.share.join(".second.part")).unwrap();
+    std::fs::rename(fixture.share.join(".second.saved"), fixture.share.join(".second.part")).unwrap();
+
+    let _next = factory.build_rdpdr_backend().unwrap();
+    assert!(!fixture.share.join(".second.part").exists());
+}
+
+// oracle: mutant allowing more incomplete files while an earlier cleanup cannot succeed.
+#[test]
+fn download_sink_retries_cleanup_before_creating_another_file() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let original = fixture.share.join(".ircef-partial.part");
+    let saved = fixture.share.join(".ircef-saved.part");
+    let created = download_create(&mut backend, ".ircef-partial.part");
+    assert_eq!(response_status(&created), NtStatus::SUCCESS);
+    let file_id = response_file_id(&created);
+    std::fs::rename(&original, &saved).unwrap();
+    std::fs::write(&original, b"unrelated").unwrap();
+    close(&mut backend, file_id);
+
+    let rejected = download_create(&mut backend, ".ircef-next.part");
+    assert_ne!(response_status(&rejected), NtStatus::SUCCESS);
+    assert!(!fixture.share.join(".ircef-next.part").exists());
+    assert_eq!(std::fs::read(&original).unwrap(), b"unrelated");
+
+    std::fs::remove_file(&original).unwrap();
+    std::fs::rename(&saved, &original).unwrap();
+    let accepted = download_create(&mut backend, ".ircef-next.part");
+    assert_eq!(response_status(&accepted), NtStatus::SUCCESS);
+    assert!(!original.exists());
+}
+
+// oracle: mutant reporting a successful reset while a failed download cleanup remains unresolved.
+#[test]
+fn download_sink_reset_reports_and_retries_pending_cleanup() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let original = fixture.share.join(".ircef-partial.part");
+    let saved = fixture.share.join(".ircef-saved.part");
+    let created = download_create(&mut backend, ".ircef-partial.part");
+    let file_id = response_file_id(&created);
+    std::fs::rename(&original, &saved).unwrap();
+    std::fs::write(&original, b"unrelated").unwrap();
+    close(&mut backend, file_id);
+
+    assert!(backend.reset().is_err());
+    assert_eq!(std::fs::read(&original).unwrap(), b"unrelated");
+    std::fs::remove_file(&original).unwrap();
+    std::fs::rename(&saved, &original).unwrap();
+    backend.reset().unwrap();
+    assert!(!original.exists());
+}
+
+// oracle: mutant reporting successful device removal while an incomplete download cannot be cleaned up.
+#[test]
+fn download_sink_device_removal_reports_and_retries_failed_cleanup() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let original = fixture.share.join(".ircef-partial.part");
+    let saved = fixture.share.join(".ircef-saved.part");
+    let created = download_create(&mut backend, ".ircef-partial.part");
+    assert_eq!(response_status(&created), NtStatus::SUCCESS);
+    std::fs::rename(&original, &saved).unwrap();
+    std::fs::write(&original, b"unrelated").unwrap();
+
+    assert!(backend.remove_drive(1).is_err());
+    assert_eq!(std::fs::read(&original).unwrap(), b"unrelated");
+    std::fs::remove_file(&original).unwrap();
+    std::fs::rename(&saved, &original).unwrap();
+    backend.remove_drive(1).unwrap();
+    assert!(!original.exists());
+}
+
+// oracle: mutant retaining a cleanup block after the owned file was removed by the local user.
+#[test]
+fn download_sink_unblocks_after_owned_file_is_removed() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let original = fixture.share.join(".ircef-partial.part");
+    let saved = fixture.share.join(".ircef-saved.part");
+    let created = download_create(&mut backend, ".ircef-partial.part");
+    let file_id = response_file_id(&created);
+    std::fs::rename(&original, &saved).unwrap();
+    std::fs::write(&original, b"unrelated").unwrap();
+    close(&mut backend, file_id);
+    std::fs::remove_file(&saved).unwrap();
+
+    let accepted = download_create(&mut backend, ".ircef-next.part");
+    assert_eq!(response_status(&accepted), NtStatus::SUCCESS);
+    assert_eq!(std::fs::read(&original).unwrap(), b"unrelated");
+}
+
+// oracle: mutant accepting a write over 1 MiB or a file offset beyond 1 GiB.
+#[test]
+fn download_sink_bounds_write_lengths_and_offsets() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    let created = download_create(&mut backend, ".ircef-one.part");
+    let file_id = response_file_id(&created);
+    assert_eq!(
+        response_status(&write(&mut backend, file_id, 0, &vec![0; 1_024 * 1_024 + 1])),
+        NtStatus::INVALID_PARAMETER
+    );
+    assert_eq!(
+        response_status(&write(&mut backend, file_id, u64::MAX, b"x")),
+        NtStatus::INVALID_PARAMETER
+    );
+    assert_eq!(
+        response_status(&write(&mut backend, file_id, 1_024 * 1_024 * 1_024, b"x")),
+        NtStatus::INVALID_PARAMETER
+    );
+    assert_eq!(
+        response_status(&write(&mut backend, file_id, 0, &vec![0; 1_024 * 1_024])),
+        NtStatus::SUCCESS
+    );
+    assert_eq!(
+        std::fs::metadata(fixture.share.join(".ircef-one.part"))
+            .expect("metadata")
+            .len(),
+        1_024 * 1_024
+    );
+}
+
+// oracle: mutant opening an existing special file or link as a writable transfer.
+#[test]
+fn download_sink_refuses_existing_links_directories_and_special_files() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("existing"), b"keep").expect("existing");
+    std::fs::hard_link(fixture.share.join("existing"), fixture.share.join("hardlink")).expect("hard link");
+    std::fs::create_dir(fixture.share.join("directory")).expect("directory");
+    nix::unistd::mkfifo(&fixture.share.join("fifo"), nix::sys::stat::Mode::S_IRWXU).expect("FIFO");
+    let mut backend = download_backend(&fixture);
+    for name in ["existing", "hardlink", "directory", "fifo"] {
+        assert_ne!(
+            response_status(&download_create(&mut backend, name)),
+            NtStatus::SUCCESS,
+            "{name}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(fixture.share.join("existing")).expect("existing"),
+        b"keep"
+    );
+    assert_eq!(
+        response_status(&set_information(&mut backend, 999, delete_pending(true))),
+        NtStatus::NO_SUCH_FILE
+    );
+}
+
+// oracle: mutant deleting a replacement that the channel did not create.
+#[test]
+fn download_sink_cleanup_does_not_remove_a_replacement_file() {
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    assert_eq!(
+        response_status(&download_create(&mut backend, ".ircef-one.part")),
+        NtStatus::SUCCESS
+    );
+    std::fs::rename(fixture.share.join(".ircef-one.part"), fixture.sandbox.join("moved")).expect("move transfer");
+    std::fs::write(fixture.share.join(".ircef-one.part"), b"unrelated").expect("replacement");
+    drop(backend);
+    assert_eq!(
+        std::fs::read(fixture.share.join(".ircef-one.part")).expect("replacement"),
+        b"unrelated"
+    );
+}
+
+// oracle: mutant allowing both racing publishers to replace the same destination.
+#[test]
+fn download_sink_publication_never_replaces_a_racing_destination() {
+    use std::io::Write as _;
+    use std::sync::{Arc, Barrier};
+
+    let fixture = Fixture::new();
+    let mut backend = download_backend(&fixture);
+    for index in 0..32 {
+        let temporary = format!(".ircef-{index}.part");
+        let destination = format!("download-{index}");
+        let created = download_create(&mut backend, &temporary);
+        assert_eq!(response_status(&created), NtStatus::SUCCESS);
+        let file_id = response_file_id(&created);
+        assert_eq!(
+            response_status(&write(&mut backend, file_id, 0, b"remote")),
+            NtStatus::SUCCESS
+        );
+        let barrier = Arc::new(Barrier::new(2));
+        let writer = std::thread::spawn({
+            let barrier = Arc::clone(&barrier);
+            let path = fixture.share.join(&destination);
+            move || {
+                barrier.wait();
+                match std::fs::OpenOptions::new().create_new(true).write(true).open(path) {
+                    Ok(mut file) => {
+                        file.write_all(b"local").expect("write local winner");
+                        true
+                    }
+                    Err(error) => {
+                        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+                        false
+                    }
+                }
+            }
+        });
+        barrier.wait();
+        let status = response_status(&set_information(&mut backend, file_id, rename_to(&destination, false)));
+        let local_won = writer.join().expect("local writer");
+        assert_eq!(
+            status,
+            if local_won {
+                NtStatus::OBJECT_NAME_COLLISION
+            } else {
+                NtStatus::SUCCESS
+            }
+        );
+        close(&mut backend, file_id);
+        assert_eq!(
+            std::fs::read(fixture.share.join(destination)).expect("winner"),
+            if local_won {
+                b"local".as_slice()
+            } else {
+                b"remote".as_slice()
+            }
+        );
+        assert!(!fixture.share.join(temporary).exists());
+    }
+}
 
 // oracle: reference crates/ironrdp-rdpdr-native/src/windows/path.rs
 #[rstest]

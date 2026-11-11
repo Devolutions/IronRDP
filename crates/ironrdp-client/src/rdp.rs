@@ -4704,6 +4704,13 @@ async fn active_session(
                 frame = reader.read_pdu() => {
                     let (action, payload) = match frame {
                         Ok(frame) => frame,
+                        Err(error)
+                            if graceful_shutdown_sent
+                                && error.kind() == io::ErrorKind::UnexpectedEof
+                                && reader.peek().is_empty() =>
+                        {
+                            break 'outer GracefulDisconnectReason::UserInitiated;
+                        }
                         Err(error) if is_transport_read_error(&error) => {
                             return Ok(RdpControlFlow::TransportFailure(
                                 ironrdp_session::custom_err!("read frame", error),
@@ -4979,7 +4986,10 @@ async fn active_session(
                             None => ActiveSessionIteration::outputs(Vec::new()),
                         }
                     }
-                    RdpInputEvent::Close => ActiveSessionIteration::outputs(active_stage.graceful_shutdown()?),
+                    RdpInputEvent::Close => {
+                        graceful_shutdown_sent = true;
+                        ActiveSessionIteration::outputs(active_stage.graceful_shutdown()?)
+                    }
                     #[cfg(feature = "clipboard")]
                     RdpInputEvent::Clipboard(event) => {
                         ActiveSessionIteration::outputs(process_clipboard_message(&mut active_stage, event)?)

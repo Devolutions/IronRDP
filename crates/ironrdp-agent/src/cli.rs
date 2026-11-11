@@ -575,6 +575,10 @@ struct DaemonArgs {
     #[cfg(windows)]
     #[arg(long = "rdpdr-drive", value_name = "NAME=VOLUME_ROOT", value_parser = parse_rdpdr_drive)]
     rdpdr_drives: Vec<ironrdp_daemon::daemon::RdpdrDriveConfig>,
+    /// Existing absolute directory exposed as the download-only RDPDR device DL.
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    #[arg(long, value_name = "DIRECTORY", value_parser = parse_rdpdr_download_dir)]
+    rdpdr_download_dir: Option<PathBuf>,
     /// Enable Windows WinSCard smartcard redirection for every connect (Windows only).
     ///
     /// Equivalent to preloading `ironrdp_smartcard:i:1`. Connect can still disable with
@@ -1447,6 +1451,10 @@ fn daemon_settings(args: DaemonArgs) -> anyhow::Result<crate::daemon_lifecycle::
     let drives = args.rdpdr_drives;
     #[cfg(not(windows))]
     let drives = Vec::new();
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    let download_dir = args.rdpdr_download_dir;
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    let download_dir = None;
     #[cfg(windows)]
     let smartcard = args.smartcard;
     #[cfg(not(windows))]
@@ -1455,8 +1463,18 @@ fn daemon_settings(args: DaemonArgs) -> anyhow::Result<crate::daemon_lifecycle::
         overlay,
         skip_certificate_check: args.skip_certificate_check,
         rdpdr_drives: drives,
+        rdpdr_download_dir: download_dir,
         smartcard,
     })
+}
+
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+fn parse_rdpdr_download_dir(input: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(input);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err("rdpdr download directory must be an existing absolute directory".to_owned());
+    }
+    Ok(path)
 }
 
 async fn run_daemon_foreground(endpoint: Endpoint, args: DaemonArgs) -> anyhow::Result<()> {
@@ -2823,6 +2841,39 @@ mod tests {
         assert!(!should_auto_start(Backend::Daemon, true, false, false));
         assert!(!should_auto_start(Backend::Daemon, false, true, false));
         assert!(!should_auto_start(Backend::ActiveX, false, false, true));
+    }
+
+    // oracle: mutant accepting an invalid or ambiguous download directory.
+    #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn daemon_download_directory_is_explicit_and_unambiguous() {
+        let directory = std::env::current_dir().expect("directory");
+        let path = directory.to_str().expect("UTF-8");
+        let cli = Cli::try_parse_from(["ironrdp-agent", "daemon", "start", "--rdpdr-download-dir", path])
+            .expect("download option");
+        let Some(Command::Daemon(super::DaemonCommand::Start(args))) = cli.command else {
+            panic!("expected daemon start");
+        };
+        let settings = super::daemon_settings(args.daemon).expect("settings");
+        assert_eq!(settings.rdpdr_download_dir.as_ref(), Some(&directory));
+        assert!(Cli::try_parse_from(["ironrdp-agent", "daemon", "start", "--rdpdr-download-dir"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "ironrdp-agent",
+                "daemon",
+                "start",
+                "--rdpdr-download-dir",
+                path,
+                "--rdpdr-download-dir",
+                path,
+            ])
+            .is_err()
+        );
+        for invalid in ["", "relative", "/nonexistent-ircef-download-directory"] {
+            assert!(
+                Cli::try_parse_from(["ironrdp-agent", "daemon", "start", "--rdpdr-download-dir", invalid]).is_err()
+            );
+        }
     }
 
     #[tokio::test]
