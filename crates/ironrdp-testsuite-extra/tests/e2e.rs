@@ -733,6 +733,61 @@ async fn test_echo_virtual_channel_end_to_end() {
     .await
 }
 
+// oracle: mutant `ironrdp-server` not passing its dynamic channel message limit to the DRDYNVC server, passing its
+// static one instead, or bounding the DRDYNVC static channel by its static channel message limit, which ends the
+// session.
+#[tokio::test]
+async fn the_server_closes_a_dynamic_channel_whose_message_exceeds_its_limit() {
+    const LIMIT: usize = 32;
+
+    client_server_with_display(
+        |rx| TestDisplay {
+            rx,
+            offers_display_control: true,
+        },
+        None,
+        default_client_config(),
+        Vec::new(),
+        TestServerOptions {
+            // Below the dynamic limit, which the DRDYNVC static channel must not take, nor the dynamic channels.
+            max_static_channel_message_size: Some(LIMIT / 2),
+            max_dynamic_channel_message_size: Some(LIMIT),
+            ..Default::default()
+        },
+        |connector| connector.with_static_channel(DrdynvcClient::new().with_dynamic_channel(EchoClient::new())),
+        move |mut stage, _activation_factory, mut framed, display_tx, echo_handle| async move {
+            // The client's echo response is the payload: at the limit, it reaches the server.
+            let measurement = drive_echo_round_trip(&mut stage, &mut framed, &echo_handle, &[1; LIMIT]).await;
+            assert!(
+                measurement.is_some(),
+                "the echo response at the limit did not reach the server"
+            );
+
+            let measurement = drive_echo_round_trip(&mut stage, &mut framed, &echo_handle, &[2; LIMIT + 1]).await;
+            assert!(measurement.is_none(), "the oversized echo response reached the server");
+            assert!(!echo_handle.is_channel_open(), "the ECHO channel stayed open");
+
+            // Only the channel closed: the session still delivers a frame.
+            display_tx
+                .send(DisplayUpdate::Bitmap(incompressible_frame(
+                    DESKTOP_WIDTH,
+                    DESKTOP_HEIGHT,
+                )))
+                .unwrap();
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut session_alive = false;
+            while !session_alive && Instant::now() < deadline {
+                session_alive = serve_one_pdu(&mut stage, &mut framed, &mut image).await;
+            }
+            assert!(session_alive, "the session ended");
+
+            (stage, framed)
+        },
+    )
+    .await
+}
+
 /// A previous session's queued events must not reach the next connection.
 ///
 /// A `Disconnect` left over from the last session would otherwise end this one
@@ -952,7 +1007,7 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
         None,
         default_client_config(),
         Vec::new(),
-        None,
+        TestServerOptions::default(),
         move |connector| {
             connector.with_static_channel(
                 DrdynvcClient::new()
@@ -1099,6 +1154,90 @@ async fn rdpdr_static_channel_announces_a_drive_and_completes_an_unsupported_cre
         },
     )
     .await;
+}
+
+// oracle: mutant `ironrdp-server` not passing its static channel message limit to its static channels, or dropping a
+// refused message without ending the session.
+#[tokio::test]
+async fn the_server_refuses_a_static_channel_message_over_its_limit() {
+    let fixture = RdpdrFixtureFactory::new(RdpdrFixtureOperation::UnsupportedCreate);
+    let fixture_state = fixture.state();
+    let ended_with = Arc::new(StdMutex::new(None));
+
+    client_server_with_display(
+        |rx| TestDisplay {
+            rx,
+            offers_display_control: true,
+        },
+        None,
+        default_client_config(),
+        vec![Box::new(fixture)],
+        TestServerOptions {
+            // Below the client's first RDPDR message, its 12-byte announce reply.
+            max_static_channel_message_size: Some(4),
+            // Bounds the DRDYNVC static channel apart from the static limit, so that only RDPDR is over it.
+            max_dynamic_channel_message_size: Some(1 << 20),
+            connection_handler: Some(Box::new(RecordDisconnection(Arc::clone(&ended_with)))),
+            ..Default::default()
+        },
+        |connector| connector.with_static_channel(test_rdpdr_channel()),
+        move |mut stage, _activation_factory, mut framed, display_tx, _echo_handle| async move {
+            let _display_tx = display_tx;
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut session_ended = false;
+            while !session_ended && Instant::now() < deadline {
+                match tokio::time::timeout(Duration::from_millis(150), framed.read_pdu()).await {
+                    Ok(Ok((action, frame))) => {
+                        for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
+                            if let ActiveStageOutput::ResponseFrame(frame) = output {
+                                // The server may already have closed the connection.
+                                let _ = framed.write_all(&frame).await;
+                            }
+                        }
+                    }
+                    Ok(Err(_)) => session_ended = true,
+                    Err(_) => {}
+                }
+            }
+            assert!(
+                matches!(
+                    fixture_state.lock().unwrap().phase,
+                    RdpdrFixturePhase::AwaitClientAnnounce
+                ),
+                "the server took the client's oversized RDPDR message"
+            );
+            assert!(session_ended, "the session went on");
+            poll_until(|| ended_with.lock().unwrap().is_some()).await;
+            let error = ended_with
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("the server reported how the connection ended");
+            assert!(
+                error.contains("exceeds configured maximum size"),
+                "the session ended for another reason: {error}"
+            );
+
+            (stage, framed)
+        },
+    )
+    .await;
+}
+
+/// Records how the server's last connection ended: the error's debug form, or empty without one.
+struct RecordDisconnection(Arc<StdMutex<Option<String>>>);
+
+impl server::ConnectionHandler for RecordDisconnection {
+    fn on_disconnected(
+        &mut self,
+        _peer: SocketAddr,
+        _duration: Duration,
+        error: Option<&server::ServerError>,
+    ) -> server::PostConnectionAction {
+        *self.0.lock().unwrap() = Some(error.map(|error| format!("{error:?}")).unwrap_or_default());
+        server::PostConnectionAction::Continue
+    }
 }
 
 #[cfg(windows)]
@@ -1957,11 +2096,23 @@ async fn client_server_impl<F, Fut, C>(
         stale_events,
         client_config,
         static_channel_factories,
-        server_udp_addr,
+        TestServerOptions {
+            udp_addr: server_udp_addr,
+            ..Default::default()
+        },
         connector_factory,
         clientfn,
     )
     .await;
+}
+
+/// Server settings a test may change from the defaults.
+#[derive(Default)]
+struct TestServerOptions {
+    udp_addr: Option<SocketAddr>,
+    max_static_channel_message_size: Option<usize>,
+    max_dynamic_channel_message_size: Option<usize>,
+    connection_handler: Option<Box<dyn server::ConnectionHandler>>,
 }
 
 async fn client_server_with_display<D, DF, F, Fut, C>(
@@ -1969,7 +2120,7 @@ async fn client_server_with_display<D, DF, F, Fut, C>(
     stale_events: Option<Vec<ServerEvent>>,
     client_config: connector::Config,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
-    server_udp_addr: Option<SocketAddr>,
+    server_options: TestServerOptions,
     connector_factory: C,
     clientfn: F,
 ) where
@@ -2005,9 +2156,16 @@ async fn client_server_with_display<D, DF, F, Fut, C>(
     for factory in static_channel_factories {
         server_builder = server_builder.with_static_channel_factory(factory);
     }
-    if let Some(udp_addr) = server_udp_addr {
+    if let Some(udp_addr) = server_options.udp_addr {
         server_builder = server_builder.with_udp_transport(udp_addr);
     }
+    if let Some(max_message_size) = server_options.max_static_channel_message_size {
+        server_builder = server_builder.with_max_static_channel_message_size(max_message_size);
+    }
+    if let Some(max_message_size) = server_options.max_dynamic_channel_message_size {
+        server_builder = server_builder.with_max_dynamic_channel_message_size(max_message_size);
+    }
+    server_builder = server_builder.with_connection_handler(server_options.connection_handler);
     let mut server = server_builder.build();
     server.set_credentials(Some(server::Credentials {
         username: USERNAME.into(),
