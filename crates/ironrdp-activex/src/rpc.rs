@@ -476,6 +476,10 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             "daemon stop is not supported by ActiveX",
         ),
         Request::Status => status(shared),
+        Request::SessionInfo => Response::typed_error(
+            AgentErrorCategory::Unavailable,
+            "session info is unavailable through ActiveX",
+        ),
         Request::QueryProps { filter } => query_props(shared, filter.as_ref()),
         Request::QueryLogs { substring, last } => query_logs(shared, substring.as_deref(), last),
         Request::Screenshot => screenshot(shared),

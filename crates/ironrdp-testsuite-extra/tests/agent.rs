@@ -15,7 +15,7 @@ use ironrdp_rpc::ipc::{
     NowDiagnostics, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
     OperationInfo, OperationState, Payload, PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump,
     RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response,
-    StatusInfo, UntrustedCertificate,
+    SessionInfo, StatusInfo, UntrustedCertificate,
 };
 use ironrdp_rpc::wire;
 
@@ -53,6 +53,7 @@ fn request_variants_round_trip() {
         },
         Request::Disconnect,
         Request::Status,
+        Request::SessionInfo,
         Request::QueryProps { filter: None },
         Request::QueryProps {
             filter: Some(KeyFilter::Substring("addr".to_owned())),
@@ -327,6 +328,8 @@ fn response_variants_round_trip() {
                 flags: 0,
             }],
         })),
+        Response::Ok(Payload::SessionInfo(SessionInfo::default())),
+        Response::Ok(Payload::SessionInfo(reported_session())),
         Response::Ok(Payload::RailEvents(RailEventDump {
             generation: 9,
             events: vec![
@@ -538,4 +541,52 @@ fn now_endpoint_is_per_session_and_uses_documented_deadlines() {
     assert_eq!(first.dvc_proxy_info().channel_name, DVC_CHANNEL_NAME);
     assert_eq!(INITIAL_ENDPOINT_TIMEOUT.as_secs(), 30);
     assert_eq!(RECONNECT_ENDPOINT_TIMEOUT.as_secs(), 10);
+}
+
+fn reported_session() -> SessionInfo {
+    SessionInfo {
+        remote_session_id: Some(2),
+        logon_complete: true,
+        network: Some(ironrdp_rpc::ipc::NetworkCharacteristicsInfo {
+            base_rtt_ms: Some(3),
+            bandwidth_kbps: None,
+            average_rtt_ms: 4,
+        }),
+        monitors: vec![
+            ironrdp_rpc::ipc::MonitorInfo {
+                left: 0,
+                top: 0,
+                right: 1919,
+                bottom: 1079,
+                primary: true,
+            },
+            ironrdp_rpc::ipc::MonitorInfo {
+                left: -1280,
+                top: 0,
+                right: -1,
+                bottom: 1023,
+                primary: false,
+            },
+        ],
+        logon_error: Some(ironrdp_rpc::ipc::LogonErrorInfo {
+            notification_type: 0xFFFF_FFFE,
+            notification_data: 3,
+        }),
+    }
+}
+
+// oracle: mutant a session info decoder that reads past a short reply, or accepts a monitor count the bytes do not hold
+#[test]
+fn session_info_rejects_every_truncation() {
+    let encoded = encode_vec(&reported_session()).expect("encode session info");
+    assert_eq!(
+        decode::<SessionInfo>(&encoded).expect("decode session info"),
+        reported_session()
+    );
+    for length in 0..encoded.len() {
+        assert!(
+            decode::<SessionInfo>(&encoded[..length]).is_err(),
+            "prefix of {length} bytes"
+        );
+    }
 }
