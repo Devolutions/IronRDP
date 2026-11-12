@@ -1,0 +1,362 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index ec790bfc9..89d9e4bc7 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -570,6 +570,8 @@ source_set("libcef_static") {
+     "libcef/browser/chrome/chrome_browser_main_extra_parts_cef.h",
+     "libcef/browser/isolated_clipboard.cc",
+     "libcef/browser/isolated_clipboard.h",
++    "libcef/browser/remote_devices.cc",
++    "libcef/browser/remote_devices.h",
+     "libcef/browser/chrome/chrome_browser_web_contents_delegate.cc",
+     "libcef/browser/chrome/chrome_browser_web_contents_delegate.h",
+     "libcef/browser/chrome/chrome_content_browser_client_cef.cc",
+@@ -1009,6 +1011,7 @@ source_set("libcef_static") {
+     "//extensions/renderer",
+     "//ipc",
+     "//media",
++    "//media/capture:capture_lib",
+     "//net",
+     "//pdf",
+     "//printing/buildflags",
+diff --git a/libcef/browser/remote_devices.cc b/libcef/browser/remote_devices.cc
+new file mode 100644
+index 000000000..363b35345
+--- /dev/null
++++ b/libcef/browser/remote_devices.cc
+@@ -0,0 +1,219 @@
++// Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
++// reserved. Use of this source code is governed by a BSD-style license that
++// can be found in the LICENSE file.
++
++#include "cef/libcef/browser/remote_devices.h"
++
++#include <optional>
++#include <utility>
++#include <vector>
++
++#include "base/command_line.h"
++#include "base/containers/span.h"
++#include "base/functional/bind.h"
++#include "base/location.h"
++#include "base/time/time.h"
++#include "content/public/browser/browser_task_traits.h"
++#include "content/public/browser/browser_thread.h"
++#include "content/public/browser/remote_webauthn.h"
++#include "media/audio/remote_audio_source.h"
++#include "media/base/media_switches.h"
++#include "media/base/video_types.h"
++#include "media/capture/video/remote_video_capture_device.h"
++
++namespace {
++
++bool RemoteMediaEnabled() {
++  const base::CommandLine& command_line =
++      *base::CommandLine::ForCurrentProcess();
++  return command_line.HasSwitch(switches::kRemoteMediaCapture) &&
++         command_line.HasSwitch(switches::kUseFakeDeviceForMediaStream);
++}
++
++bool UIThreadRunning() {
++  return content::BrowserThread::IsThreadInitialized(
++      content::BrowserThread::UI);
++}
++
++// Runs `task` on the UI thread, inline when already there.
++bool RunOnUIThread(base::OnceClosure task) {
++  if (!UIThreadRunning()) {
++    return false;
++  }
++  if (content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) {
++    std::move(task).Run();
++    return true;
++  }
++  return content::GetUIThreadTaskRunner({})->PostTask(FROM_HERE,
++                                                      std::move(task));
++}
++
++std::optional<media::VideoPixelFormat> ToPixelFormat(int format) {
++  switch (format) {
++    case CEF_REMOTE_CAMERA_I420:
++      return media::PIXEL_FORMAT_I420;
++    case CEF_REMOTE_CAMERA_NV12:
++      return media::PIXEL_FORMAT_NV12;
++    case CEF_REMOTE_CAMERA_YUY2:
++      return media::PIXEL_FORMAT_YUY2;
++    case CEF_REMOTE_CAMERA_BGRA:
++      return media::PIXEL_FORMAT_ARGB;
++    case CEF_REMOTE_CAMERA_MJPEG:
++      return media::PIXEL_FORMAT_MJPEG;
++    default:
++      return std::nullopt;
++  }
++}
++
++void InstallWebAuthnHandler(cef_remote_webauthn_request_fn request,
++                            cef_remote_webauthn_cancel_fn cancel,
++                            void* context) {
++  if (!request) {
++    content::SetRemoteWebAuthnHandler({}, {});
++    return;
++  }
++  content::SetRemoteWebAuthnHandler(
++      base::BindRepeating(
++          [](cef_remote_webauthn_request_fn request, void* context,
++             uint64_t request_id, std::vector<uint8_t> bytes) {
++            request(context, request_id, bytes.data(), bytes.size());
++          },
++          request, context),
++      cancel ? base::BindRepeating(
++                   [](cef_remote_webauthn_cancel_fn cancel, void* context,
++                      uint64_t request_id) { cancel(context, request_id); },
++                   cancel, context)
++             : content::RemoteWebAuthnCancelCallback());
++}
++
++}  // namespace
++
++int cef_remote_media_enabled(void) {
++  return RemoteMediaEnabled() ? 1 : 0;
++}
++
++int cef_remote_camera_get_format(int* width, int* height, float* frame_rate) {
++  if (!RemoteMediaEnabled()) {
++    return 0;
++  }
++  const std::optional<media::VideoCaptureFormat> format =
++      media::RemoteVideoCaptureDevice::RequestedFormat();
++  if (!format) {
++    return 0;
++  }
++  if (width) {
++    *width = format->frame_size.width();
++  }
++  if (height) {
++    *height = format->frame_size.height();
++  }
++  if (frame_rate) {
++    *frame_rate = format->frame_rate;
++  }
++  return 1;
++}
++
++int cef_remote_camera_push_frame(int format,
++                                 int width,
++                                 int height,
++                                 const uint8_t* data,
++                                 size_t size,
++                                 int64_t timestamp_us) {
++  if (!RemoteMediaEnabled()) {
++    return CEF_REMOTE_DEVICE_DISABLED;
++  }
++  const std::optional<media::VideoPixelFormat> pixel_format =
++      ToPixelFormat(format);
++  if (!pixel_format || !data || size == 0) {
++    return CEF_REMOTE_DEVICE_INVALID;
++  }
++  // SAFETY: the caller provides `size` readable bytes at `data`.
++  const auto frame = UNSAFE_BUFFERS(base::span(data, size));
++  switch (media::RemoteVideoCaptureDevice::PushFrame(
++      *pixel_format, width, height, frame, base::Microseconds(timestamp_us))) {
++    case media::RemoteVideoCaptureDevice::kDelivered:
++      return 0;
++    case media::RemoteVideoCaptureDevice::kNoConsumer:
++      return 1;
++    case media::RemoteVideoCaptureDevice::kInvalidArgument:
++      return CEF_REMOTE_DEVICE_INVALID;
++  }
++  return CEF_REMOTE_DEVICE_INVALID;
++}
++
++int cef_remote_microphone_active(void) {
++  return RemoteMediaEnabled() ? media::RemoteAudioSource::ActiveStreams() : 0;
++}
++
++int cef_remote_microphone_push(const int16_t* samples,
++                               size_t frames,
++                               int channels,
++                               int sample_rate) {
++  if (!RemoteMediaEnabled()) {
++    return CEF_REMOTE_DEVICE_DISABLED;
++  }
++  if (!samples || frames == 0 || channels <= 0 ||
++      frames > SIZE_MAX / static_cast<size_t>(channels)) {
++    return CEF_REMOTE_DEVICE_INVALID;
++  }
++  // SAFETY: the caller provides `frames * channels` readable samples.
++  const auto interleaved = UNSAFE_BUFFERS(
++      base::span(samples, frames * static_cast<size_t>(channels)));
++  return media::RemoteAudioSource::Push(interleaved, channels, sample_rate) == 0
++             ? 0
++             : CEF_REMOTE_DEVICE_INVALID;
++}
++
++int cef_remote_webauthn_enabled(void) {
++  return content::IsRemoteWebAuthnEnabled() ? 1 : 0;
++}
++
++int cef_remote_webauthn_set_handler(cef_remote_webauthn_request_fn request,
++                                    cef_remote_webauthn_cancel_fn cancel,
++                                    void* context) {
++  if (!content::IsRemoteWebAuthnEnabled()) {
++    return CEF_REMOTE_DEVICE_DISABLED;
++  }
++  return RunOnUIThread(
++             base::BindOnce(&InstallWebAuthnHandler, request, cancel, context))
++             ? 0
++             : CEF_REMOTE_DEVICE_DISABLED;
++}
++
++int cef_remote_webauthn_respond(uint64_t request_id,
++                                const uint8_t* response,
++                                size_t size) {
++  if (!content::IsRemoteWebAuthnEnabled() || !UIThreadRunning()) {
++    return CEF_REMOTE_DEVICE_DISABLED;
++  }
++  if (!response && size > 0) {
++    return CEF_REMOTE_DEVICE_INVALID;
++  }
++  std::vector<uint8_t> bytes;
++  if (size > 0) {
++    // SAFETY: the caller provides `size` readable bytes at `response`.
++    const auto view = UNSAFE_BUFFERS(base::span(response, size));
++    bytes.assign(view.begin(), view.end());
++  }
++  if (content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) {
++    return content::RespondToRemoteWebAuthnRequest(request_id, std::move(bytes))
++               ? 0
++               : CEF_REMOTE_DEVICE_UNKNOWN;
++  }
++  content::GetUIThreadTaskRunner({})->PostTask(
++      FROM_HERE, base::BindOnce(base::IgnoreResult(
++                                    &content::RespondToRemoteWebAuthnRequest),
++                                request_id, std::move(bytes)));
++  return 0;
++}
++
++int cef_remote_webauthn_set_platform_available(int available) {
++  if (!content::IsRemoteWebAuthnEnabled()) {
++    return CEF_REMOTE_DEVICE_DISABLED;
++  }
++  return RunOnUIThread(base::BindOnce(
++             &content::SetRemoteWebAuthnPlatformAuthenticatorAvailable,
++             available != 0))
++             ? 0
++             : CEF_REMOTE_DEVICE_DISABLED;
++}
+diff --git a/libcef/browser/remote_devices.h b/libcef/browser/remote_devices.h
+new file mode 100644
+index 000000000..c213499a5
+--- /dev/null
++++ b/libcef/browser/remote_devices.h
+@@ -0,0 +1,110 @@
++// Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
++// reserved. Use of this source code is governed by a BSD-style license that
++// can be found in the LICENSE file.
++
++#ifndef CEF_LIBCEF_BROWSER_REMOTE_DEVICES_H_
++#define CEF_LIBCEF_BROWSER_REMOTE_DEVICES_H_
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "cef/include/internal/cef_export.h"
++
++// Devices supplied by the embedder instead of the host, for embedders that
++// forward a remote client's camera, microphone and authenticator, such as
++// remote browser isolation servers.
++//
++// Remote camera and microphone require these browser switches:
++//   --use-fake-device-for-media-stream --remote-media-capture
++//   --enable-features=RunVideoCaptureServiceInBrowserProcess
++//   --disable-features=AudioServiceOutOfProcess
++// Pages then see one camera named "Remote camera" and read microphone audio
++// from cef_remote_microphone_push. Host cameras and microphones are not used.
++//
++// The remote authenticator requires --remote-webauthn. Every Web
++// Authentication request is then sent to the embedder as CTAP2 messages,
++// without browser prompts; host authenticators and hybrid transport are not
++// used.
++
++extern "C" {
++
++// Return values below zero.
++#define CEF_REMOTE_DEVICE_INVALID -1   // Invalid argument.
++#define CEF_REMOTE_DEVICE_DISABLED -2  // Switch absent or CEF not running.
++#define CEF_REMOTE_DEVICE_UNKNOWN -3   // Unknown or finished request.
++
++// Pixel formats for cef_remote_camera_push_frame.
++#define CEF_REMOTE_CAMERA_I420 0
++#define CEF_REMOTE_CAMERA_NV12 1
++#define CEF_REMOTE_CAMERA_YUY2 2
++#define CEF_REMOTE_CAMERA_BGRA 3  // 32-bit, B in the lowest address.
++#define CEF_REMOTE_CAMERA_MJPEG 4
++
++// Returns 1 when the remote camera and microphone are enabled, 0 otherwise.
++CEF_EXPORT int cef_remote_media_enabled(void);
++
++// Returns 1 and the format requested by the capturing page when a page is
++// capturing the remote camera, 0 otherwise. Any output pointer may be null.
++// Thread-safe.
++CEF_EXPORT int cef_remote_camera_get_format(int* width,
++                                            int* height,
++                                            float* frame_rate);
++
++// Delivers one camera frame of |size| bytes with a capture timestamp in
++// microseconds. Planes are tightly packed. Returns 0 when delivered, 1 when no
++// page is capturing, or a negative error. Thread-safe.
++CEF_EXPORT int cef_remote_camera_push_frame(int format,
++                                            int width,
++                                            int height,
++                                            const uint8_t* data,
++                                            size_t size,
++                                            int64_t timestamp_us);
++
++// Returns the number of open microphone streams. Thread-safe.
++CEF_EXPORT int cef_remote_microphone_active(void);
++
++// Appends |frames| frames of interleaved signed 16-bit microphone samples.
++// Supports 1 to 8 channels and 8000 to 192000 Hz. Returns 0 or a negative
++// error. Thread-safe.
++CEF_EXPORT int cef_remote_microphone_push(const int16_t* samples,
++                                          size_t frames,
++                                          int channels,
++                                          int sample_rate);
++
++// Receives a CTAP2 request (command byte, then CBOR) on the browser UI
++// thread. The request bytes are valid only during the call.
++typedef void (*cef_remote_webauthn_request_fn)(void* context,
++                                               uint64_t request_id,
++                                               const uint8_t* request,
++                                               size_t size);
++// Reports on the browser UI thread that |request_id| was cancelled.
++typedef void (*cef_remote_webauthn_cancel_fn)(void* context,
++                                              uint64_t request_id);
++
++// Returns 1 when the remote authenticator is enabled, 0 otherwise.
++CEF_EXPORT int cef_remote_webauthn_enabled(void);
++
++// Installs the authenticator callbacks, or removes them when |request| is
++// null, which fails pending requests. |context| must stay valid until the
++// callbacks are replaced. Takes effect asynchronously on the UI thread unless
++// called there. Returns 0 or a negative error.
++CEF_EXPORT int cef_remote_webauthn_set_handler(
++    cef_remote_webauthn_request_fn request,
++    cef_remote_webauthn_cancel_fn cancel,
++    void* context);
++
++// Completes |request_id| with a CTAP2 response: status byte, then CBOR. A
++// zero |size| fails the request. Callable from any thread; returns 0, or
++// CEF_REMOTE_DEVICE_UNKNOWN when called on the UI thread for an unknown
++// request.
++CEF_EXPORT int cef_remote_webauthn_respond(uint64_t request_id,
++                                           const uint8_t* response,
++                                           size_t size);
++
++// Sets whether pages see a user-verifying platform authenticator. Callable
++// from any thread; returns 0 or a negative error.
++CEF_EXPORT int cef_remote_webauthn_set_platform_available(int available);
++
++}  // extern "C"
++
++#endif  // CEF_LIBCEF_BROWSER_REMOTE_DEVICES_H_

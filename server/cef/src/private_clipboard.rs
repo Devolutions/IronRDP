@@ -3,11 +3,12 @@
 //! Stock CEF does not export these functions; [`PrivateClipboard::load`] fails there.
 //! Every call must run on the CEF UI thread, which is the thread pumping `do_message_loop_work`.
 
-use std::ffi::{CStr, c_int, c_void};
+use std::ffi::c_int;
 
 use anyhow::Context as _;
 
 use crate::clipboard::{MAX_BYTES, Snapshot};
+use crate::patched_runtime::Library;
 
 /// Command-line switch that makes the patched runtime install its in-memory clipboard.
 pub const SWITCH: &str = "isolated-clipboard";
@@ -21,11 +22,13 @@ type Enabled = unsafe extern "C" fn() -> c_int;
 type Generation = unsafe extern "C" fn() -> i64;
 type Read = unsafe extern "C" fn(c_int, *mut u8, usize) -> i64;
 type Write = unsafe extern "C" fn(*const u8, usize, *const u8, usize, *const u8, usize) -> c_int;
+type WriteFiles = unsafe extern "C" fn(*const *const std::ffi::c_char, usize) -> c_int;
 
 pub struct PrivateClipboard {
     generation: Generation,
     read: Read,
     write: Write,
+    write_files: WriteFiles,
     /// Generation of the last snapshot read or written here.
     seen: i64,
 }
@@ -37,12 +40,13 @@ impl PrivateClipboard {
     pub fn load() -> anyhow::Result<Self> {
         let library = Library::open()?;
         // SAFETY: Each name is resolved to the signature the patched runtime declares for it.
-        let (enabled, generation, read, write) = unsafe {
+        let (enabled, generation, read, write, write_files) = unsafe {
             (
                 library.symbol::<Enabled>(c"cef_isolated_clipboard_enabled")?,
                 library.symbol::<Generation>(c"cef_isolated_clipboard_generation")?,
                 library.symbol::<Read>(c"cef_isolated_clipboard_read")?,
                 library.symbol::<Write>(c"cef_isolated_clipboard_write")?,
+                library.symbol::<WriteFiles>(c"cef_isolated_clipboard_write_files")?,
             )
         };
         // SAFETY: The caller runs on the CEF UI thread after initialization.
@@ -54,6 +58,7 @@ impl PrivateClipboard {
             generation,
             read,
             write,
+            write_files,
             seen: 0,
         };
         clipboard.seen = clipboard.current_generation()?;
@@ -127,71 +132,27 @@ impl PrivateClipboard {
         self.seen = self.current_generation()?;
         Ok(())
     }
-}
 
-struct Library(*mut c_void);
-
-impl Library {
-    #[cfg(target_os = "macos")]
-    fn open() -> anyhow::Result<Self> {
-        use std::os::unix::ffi::OsStrExt as _;
-
-        let path = std::env::current_exe()?
-            .parent()
-            .context("browser executable has no directory")?
-            .join("../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework")
-            .canonicalize()
-            .context("failed to locate the CEF framework")?;
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-        // SAFETY: The path is NUL-terminated; RTLD_NOLOAD only returns the framework already loaded by cef-rs.
-        let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_LAZY | libc::RTLD_NOLOAD) };
-        anyhow::ensure!(!handle.is_null(), "the CEF framework is not loaded");
-        Ok(Self(handle))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn open() -> anyhow::Result<Self> {
-        Ok(Self(libc::RTLD_DEFAULT))
-    }
-
-    #[cfg(windows)]
-    fn open() -> anyhow::Result<Self> {
-        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-
-        let name: Vec<u16> = "libcef.dll\0".encode_utf16().collect();
-        // SAFETY: The name is NUL-terminated; the module stays loaded for the life of the process.
-        let handle = unsafe { GetModuleHandleW(name.as_ptr()) };
-        anyhow::ensure!(!handle.is_null(), "libcef.dll is not loaded");
-        Ok(Self(handle))
-    }
-
-    /// # Safety
+    /// Replaces the browser's clipboard with files that pages can paste.
+    #[cfg_attr(
+        not(feature = "device-simulator"),
+        expect(dead_code, reason = "client files arrive with clipboard file transfer")
+    )]
     ///
-    /// `T` must be the function pointer type of the exported symbol.
-    unsafe fn symbol<T: Copy>(&self, name: &CStr) -> anyhow::Result<T> {
-        const { assert!(size_of::<T>() == size_of::<*mut c_void>()) };
-        #[cfg(unix)]
-        // SAFETY: The handle is a loaded image or RTLD_DEFAULT, and the name is NUL-terminated.
-        let address = unsafe { libc::dlsym(self.0, name.as_ptr()) };
-        #[cfg(windows)]
-        // SAFETY: The handle is a loaded module, and the name is NUL-terminated.
-        let address =
-            unsafe { windows_sys::Win32::System::LibraryLoader::GetProcAddress(self.0, name.as_ptr().cast()) }
-                .map_or(std::ptr::null_mut(), |function| function as *mut c_void);
-        anyhow::ensure!(
-            !address.is_null(),
-            "the CEF runtime does not export {}; it needs the private clipboard patch",
-            name.to_string_lossy()
-        );
-        // SAFETY: The caller guarantees `T` matches the symbol, and `T` is pointer-sized.
-        Ok(unsafe { std::mem::transmute_copy::<*mut c_void, T>(&address) })
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl Drop for Library {
-    fn drop(&mut self) {
-        // SAFETY: The handle came from a successful dlopen; cef-rs keeps its own reference.
-        unsafe { libc::dlclose(self.0) };
+    /// Each path must be absolute and readable by the browser, such as a file staged from the client.
+    pub fn write_files(&mut self, paths: &[&std::path::Path]) -> anyhow::Result<()> {
+        let paths = paths
+            .iter()
+            .map(|path| {
+                let path = path.to_str().context("clipboard file path is not UTF-8")?;
+                Ok(std::ffi::CString::new(path)?)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let pointers: Vec<_> = paths.iter().map(|path| path.as_ptr()).collect();
+        // SAFETY: Each pointer is a NUL-terminated string that outlives the call.
+        let status = unsafe { (self.write_files)(pointers.as_ptr(), pointers.len()) };
+        anyhow::ensure!(status == 0, "private clipboard file write failed with {status}");
+        self.seen = self.current_generation()?;
+        Ok(())
     }
 }

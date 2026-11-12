@@ -1,0 +1,1121 @@
+diff --git a/content/browser/webauth/authenticator_common_impl.cc b/content/browser/webauth/authenticator_common_impl.cc
+index 2a61a295d8..4f40ed117f 100644
+--- a/content/browser/webauth/authenticator_common_impl.cc
++++ b/content/browser/webauth/authenticator_common_impl.cc
+@@ -54,6 +54,7 @@
+ #include "content/browser/webauth/authenticator_impl.h"
+ #include "content/browser/webauth/authenticator_request_outcome_enums.h"
+ #include "content/browser/webauth/client_data_json.h"
++#include "content/browser/webauth/remote_authenticator.h"
+ #include "content/browser/webauth/virtual_authenticator.h"
+ #include "content/browser/webauth/virtual_authenticator_manager_impl.h"
+ #include "content/browser/webauth/virtual_fido_discovery_factory.h"
+@@ -365,6 +366,10 @@ std::unique_ptr<device::FidoDiscoveryFactory> MakeDiscoveryFactory(
+     return virtual_authenticator_manager->MakeDiscoveryFactory();
+   }
+ 
++  if (IsRemoteWebAuthnEnabled()) {
++    return MakeRemoteFidoDiscoveryFactory();
++  }
++
+   auto discovery_factory = std::make_unique<device::FidoDiscoveryFactory>();
+ 
+ #if BUILDFLAG(IS_MAC)
+@@ -900,6 +905,14 @@ std::unique_ptr<AuthenticatorRequestClientDelegate>
+ AuthenticatorCommonImpl::MaybeCreateRequestDelegate() {
+   RenderFrameHostImpl* const render_frame_host_impl =
+       static_cast<RenderFrameHostImpl*>(GetRenderFrameHost());
++  if (IsRemoteWebAuthnEnabled() &&
++      !AuthenticatorEnvironment::GetInstance()
++           ->MaybeGetVirtualAuthenticatorManager(
++               render_frame_host_impl->frame_tree_node())) {
++    // The remote client shows its own prompts.
++    DisableUI();
++    return MakeRemoteAuthenticatorRequestDelegate();
++  }
+   std::unique_ptr<AuthenticatorRequestClientDelegate> delegate =
+       GetContentClient()->browser()->GetWebAuthenticationRequestDelegate(
+           render_frame_host_impl);
+@@ -2283,6 +2296,11 @@ void AuthenticatorCommonImpl::ContinueIsUvpaaAfterOverrideCheck(
+     return;
+   }
+ 
++  if (IsRemoteWebAuthnEnabled()) {
++    std::move(callback).Run(IsRemoteWebAuthnPlatformAuthenticatorAvailable());
++    return;
++  }
++
+   // Record IsUVPAA result in a UMA metric, but only if they're not the
+   // WebAuthenticationDelegate override value, so that results from the testing
+   // API and disabling in Guest/Off-The-Record profiles aren't counted.
+@@ -2333,7 +2351,9 @@ void AuthenticatorCommonImpl::
+     return;
+   }
+   // Conditional requests cannot be proxied, signal the feature as unavailable.
+-  if (GetWebAuthnRequestProxyIfActive(caller_origin)) {
++  // The remote authenticator cannot list credentials for autofill either.
++  if (IsRemoteWebAuthnEnabled() ||
++      GetWebAuthnRequestProxyIfActive(caller_origin)) {
+     std::move(callback).Run(false);
+     return;
+   }
+diff --git a/content/browser/webauth/remote_authenticator.cc b/content/browser/webauth/remote_authenticator.cc
+new file mode 100644
+index 0000000000..d946b782b6
+--- /dev/null
++++ b/content/browser/webauth/remote_authenticator.cc
+@@ -0,0 +1,302 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "content/browser/webauth/remote_authenticator.h"
++
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/command_line.h"
++#include "base/containers/flat_map.h"
++#include "base/functional/bind.h"
++#include "base/functional/callback.h"
++#include "base/location.h"
++#include "base/memory/weak_ptr.h"
++#include "base/no_destructor.h"
++#include "base/task/single_thread_task_runner.h"
++#include "build/build_config.h"
++#include "content/public/browser/authenticator_request_client_delegate.h"
++#include "content/public/browser/browser_thread.h"
++#include "device/fido/authenticator_get_assertion_response.h"
++#include "device/fido/authenticator_supported_options.h"
++#include "device/fido/fido_device.h"
++#include "device/fido/fido_device_authenticator.h"
++#include "device/fido/fido_device_discovery.h"
++#include "device/fido/fido_discovery_factory.h"
++#include "device/fido/fido_request_handler_base.h"
++#include "device/fido/public/fido_transport_protocol.h"
++
++namespace content {
++
++const char kRemoteWebAuthnSwitch[] = "remote-webauthn";
++
++namespace {
++
++class RemoteFidoDevice;
++
++struct RemoteWebAuthnState {
++  RemoteWebAuthnRequestCallback request_callback;
++  RemoteWebAuthnCancelCallback cancel_callback;
++  bool platform_authenticator_available = false;
++  uint64_t next_request_id = 1;
++  base::flat_map<uint64_t, base::WeakPtr<RemoteFidoDevice>> pending;
++};
++
++RemoteWebAuthnState& GetState() {
++  DCHECK_CURRENTLY_ON(BrowserThread::UI);
++  static base::NoDestructor<RemoteWebAuthnState> state;
++  return *state;
++}
++
++// Forwards CTAP2 messages to the embedder. Requests stay pending until the
++// embedder responds, the device cancels them, or the device is destroyed when
++// the WebAuthn request ends.
++class RemoteFidoDevice final : public device::FidoDevice {
++ public:
++  explicit RemoteFidoDevice(device::FidoTransportProtocol transport)
++      : transport_(transport) {}
++
++  RemoteFidoDevice(const RemoteFidoDevice&) = delete;
++  RemoteFidoDevice& operator=(const RemoteFidoDevice&) = delete;
++
++  ~RemoteFidoDevice() override {
++    RemoteWebAuthnState& state = GetState();
++    for (const auto& [request_id, request] : requests_) {
++      state.pending.erase(request_id);
++      if (state.cancel_callback) {
++        state.cancel_callback.Run(request_id);
++      }
++    }
++  }
++
++  // Runs the transaction callback, which may destroy this device.
++  void Complete(uint64_t request_id,
++                std::optional<std::vector<uint8_t>> response) {
++    auto it = requests_.find(request_id);
++    if (it == requests_.end()) {
++      return;
++    }
++    DeviceCallback callback = std::move(it->second.callback);
++    requests_.erase(it);
++    GetState().pending.erase(request_id);
++    std::move(callback).Run(std::move(response));
++  }
++
++  // device::FidoDevice:
++  CancelToken DeviceTransact(std::vector<uint8_t> command,
++                             DeviceCallback callback) override {
++    RemoteWebAuthnState& state = GetState();
++    const CancelToken token = next_cancel_token_++;
++    const uint64_t request_id = state.next_request_id++;
++    requests_.emplace(request_id, Request{token, std::move(callback)});
++    state.pending.emplace(request_id, weak_factory_.GetWeakPtr());
++    // FidoDevice requires the callback to never run synchronously.
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&RemoteFidoDevice::Dispatch, weak_factory_.GetWeakPtr(),
++                       request_id, std::move(command)));
++    return token;
++  }
++
++  void Cancel(CancelToken token) override {
++    for (const auto& [request_id, request] : requests_) {
++      if (request.token == token) {
++        RemoteWebAuthnState& state = GetState();
++        if (state.cancel_callback) {
++          state.cancel_callback.Run(request_id);
++        }
++        return;
++      }
++    }
++  }
++
++  std::string GetId() const override { return "remote-webauthn"; }
++
++  std::string GetDisplayName() const override { return "Remote authenticator"; }
++
++  device::FidoTransportProtocol DeviceTransport() const override {
++    return transport_;
++  }
++
++  base::WeakPtr<FidoDevice> GetWeakPtr() override {
++    return weak_factory_.GetWeakPtr();
++  }
++
++ private:
++  struct Request {
++    CancelToken token;
++    DeviceCallback callback;
++  };
++
++  void Dispatch(uint64_t request_id, std::vector<uint8_t> command) {
++    if (!requests_.contains(request_id)) {
++      return;
++    }
++    RemoteWebAuthnState& state = GetState();
++    if (!state.request_callback) {
++      Complete(request_id, std::nullopt);
++      return;
++    }
++    state.request_callback.Run(request_id, std::move(command));
++  }
++
++  const device::FidoTransportProtocol transport_;
++  base::flat_map<uint64_t, Request> requests_;
++  base::WeakPtrFactory<RemoteFidoDevice> weak_factory_{this};
++};
++
++// The remote client decides between its platform and roaming authenticators,
++// so the remote authenticator qualifies for every attachment and has no local
++// credential list to report.
++class RemoteFidoAuthenticator final : public device::FidoDeviceAuthenticator {
++ public:
++  explicit RemoteFidoAuthenticator(std::unique_ptr<RemoteFidoDevice> device)
++      : FidoDeviceAuthenticator(std::move(device)) {}
++
++  const device::AuthenticatorSupportedOptions& Options() const override {
++    options_ = FidoDeviceAuthenticator::Options();
++    options_.is_platform_device =
++        device::AuthenticatorSupportedOptions::PlatformDevice::kBoth;
++    return options_;
++  }
++
++  void GetPlatformCredentialInfoForRequest(
++      const device::CtapGetAssertionRequest& request,
++      const device::CtapGetAssertionOptions& options,
++      GetPlatformCredentialInfoForRequestCallback callback) override {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(
++            std::move(callback),
++            std::vector<device::DiscoverableCredentialMetadata>(),
++            device::FidoRequestHandlerBase::RecognizedCredential::kUnknown));
++  }
++
++ private:
++  mutable device::AuthenticatorSupportedOptions options_;
++};
++
++class RemoteFidoDiscovery final : public device::FidoDeviceDiscovery {
++ public:
++  explicit RemoteFidoDiscovery(device::FidoTransportProtocol transport)
++      : FidoDeviceDiscovery(transport) {}
++
++ protected:
++  void StartInternal() override {
++    AddAuthenticator(std::make_unique<RemoteFidoAuthenticator>(
++        std::make_unique<RemoteFidoDevice>(transport())));
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&RemoteFidoDiscovery::NotifyDiscoveryStarted,
++                                  weak_factory_.GetWeakPtr(),
++                                  /*success=*/true));
++  }
++
++ private:
++  base::WeakPtrFactory<RemoteFidoDiscovery> weak_factory_{this};
++};
++
++class RemoteFidoDiscoveryFactory final : public device::FidoDiscoveryFactory {
++ public:
++  // Creates one discovery for the first of the USB or platform transports
++  // that the request allows, so the client sees each request once.
++  std::vector<std::unique_ptr<device::FidoDiscoveryBase>> Create(
++      device::FidoTransportProtocol transport) override {
++    std::vector<std::unique_ptr<device::FidoDiscoveryBase>> discoveries;
++    if (created_ ||
++        (transport != device::FidoTransportProtocol::kUsbHumanInterfaceDevice &&
++         transport != device::FidoTransportProtocol::kInternal)) {
++      return discoveries;
++    }
++    created_ = true;
++    discoveries.push_back(std::make_unique<RemoteFidoDiscovery>(transport));
++    return discoveries;
++  }
++
++  std::optional<std::unique_ptr<device::FidoDiscoveryBase>>
++  MaybeCreateEnclaveDiscovery() override {
++    return std::nullopt;
++  }
++
++#if BUILDFLAG(IS_WIN)
++  std::unique_ptr<device::FidoDiscoveryBase>
++  MaybeCreateWinWebAuthnApiDiscovery() override {
++    return nullptr;
++  }
++#endif
++
++ private:
++  bool created_ = false;
++};
++
++class RemoteAuthenticatorRequestDelegate final
++    : public AuthenticatorRequestClientDelegate {
++ public:
++  // The remote client performs account selection, so it normally returns a
++  // single assertion. Without browser UI, the first one is used otherwise.
++  void SelectAccount(
++      std::vector<device::AuthenticatorGetAssertionResponse> responses,
++      base::OnceCallback<void(device::AuthenticatorGetAssertionResponse)>
++          callback) override {
++    std::move(callback).Run(std::move(responses.at(0)));
++  }
++};
++
++}  // namespace
++
++bool IsRemoteWebAuthnEnabled() {
++  return base::CommandLine::ForCurrentProcess()->HasSwitch(
++      kRemoteWebAuthnSwitch);
++}
++
++void SetRemoteWebAuthnHandler(RemoteWebAuthnRequestCallback request_callback,
++                              RemoteWebAuthnCancelCallback cancel_callback) {
++  RemoteWebAuthnState& state = GetState();
++  state.request_callback = std::move(request_callback);
++  state.cancel_callback = std::move(cancel_callback);
++  if (state.request_callback) {
++    return;
++  }
++  // Completing a request may destroy devices and change `pending`.
++  const auto pending = state.pending;
++  for (const auto& [request_id, device] : pending) {
++    if (device) {
++      device->Complete(request_id, std::nullopt);
++    }
++  }
++}
++
++bool RespondToRemoteWebAuthnRequest(uint64_t request_id,
++                                    std::vector<uint8_t> response) {
++  RemoteWebAuthnState& state = GetState();
++  auto it = state.pending.find(request_id);
++  if (it == state.pending.end() || !it->second) {
++    return false;
++  }
++  base::WeakPtr<RemoteFidoDevice> device = it->second;
++  device->Complete(request_id, response.empty()
++                                   ? std::nullopt
++                                   : std::make_optional(std::move(response)));
++  return true;
++}
++
++void SetRemoteWebAuthnPlatformAuthenticatorAvailable(bool available) {
++  GetState().platform_authenticator_available = available;
++}
++
++std::unique_ptr<device::FidoDiscoveryFactory> MakeRemoteFidoDiscoveryFactory() {
++  return std::make_unique<RemoteFidoDiscoveryFactory>();
++}
++
++std::unique_ptr<AuthenticatorRequestClientDelegate>
++MakeRemoteAuthenticatorRequestDelegate() {
++  return std::make_unique<RemoteAuthenticatorRequestDelegate>();
++}
++
++bool IsRemoteWebAuthnPlatformAuthenticatorAvailable() {
++  return GetState().platform_authenticator_available;
++}
++
++}  // namespace content
+diff --git a/content/browser/webauth/remote_authenticator.h b/content/browser/webauth/remote_authenticator.h
+new file mode 100644
+index 0000000000..d200909faa
+--- /dev/null
++++ b/content/browser/webauth/remote_authenticator.h
+@@ -0,0 +1,33 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_BROWSER_WEBAUTH_REMOTE_AUTHENTICATOR_H_
++#define CONTENT_BROWSER_WEBAUTH_REMOTE_AUTHENTICATOR_H_
++
++#include <memory>
++
++#include "content/public/browser/remote_webauthn.h"
++
++namespace device {
++class FidoDiscoveryFactory;
++}
++
++namespace content {
++
++class AuthenticatorRequestClientDelegate;
++
++// Discovers only the embedder authenticator installed with
++// SetRemoteWebAuthnHandler().
++std::unique_ptr<device::FidoDiscoveryFactory> MakeRemoteFidoDiscoveryFactory();
++
++// A request delegate without browser UI, which dispatches requests to the
++// embedder authenticator as soon as it is discovered.
++std::unique_ptr<AuthenticatorRequestClientDelegate>
++MakeRemoteAuthenticatorRequestDelegate();
++
++bool IsRemoteWebAuthnPlatformAuthenticatorAvailable();
++
++}  // namespace content
++
++#endif  // CONTENT_BROWSER_WEBAUTH_REMOTE_AUTHENTICATOR_H_
+diff --git a/content/public/browser/BUILD.gn b/content/public/browser/BUILD.gn
+index 790d665707..09828d11e5 100644
+--- a/content/public/browser/BUILD.gn
++++ b/content/public/browser/BUILD.gn
+@@ -760,6 +760,7 @@ source_set("browser_sources") {
+       # Android provides its own native implementation of that API.
+       "authenticator_request_client_delegate.cc",
+       "authenticator_request_client_delegate.h",
++      "remote_webauthn.h",
+     ]
+   }
+ 
+diff --git a/content/public/browser/remote_webauthn.h b/content/public/browser/remote_webauthn.h
+new file mode 100644
+index 0000000000..bba5d75927
+--- /dev/null
++++ b/content/public/browser/remote_webauthn.h
+@@ -0,0 +1,62 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_PUBLIC_BROWSER_REMOTE_WEBAUTHN_H_
++#define CONTENT_PUBLIC_BROWSER_REMOTE_WEBAUTHN_H_
++
++#include <stdint.h>
++
++#include <vector>
++
++#include "base/functional/callback_forward.h"
++#include "content/common/content_export.h"
++
++namespace content {
++
++// Command-line switch that sends every Web Authentication request to one
++// authenticator implemented by the embedder, for example a security key or
++// platform authenticator on a remote desktop client. Browser UI, platform
++// authenticators, security keys attached to this host and hybrid transport are
++// not used.
++CONTENT_EXPORT extern const char kRemoteWebAuthnSwitch[];
++
++// Receives a CTAP2 request: the command byte followed by its CBOR parameters.
++// The embedder answers with RespondToRemoteWebAuthnRequest() using the same
++// `request_id`, possibly after waiting for the user.
++using RemoteWebAuthnRequestCallback =
++    base::RepeatingCallback<void(uint64_t request_id,
++                                 std::vector<uint8_t> request)>;
++// Asks the embedder to abandon `request_id`. The embedder should still answer
++// with CTAP2_ERR_KEEPALIVE_CANCEL, or not at all.
++using RemoteWebAuthnCancelCallback =
++    base::RepeatingCallback<void(uint64_t request_id)>;
++
++// Returns whether the browser runs with kRemoteWebAuthnSwitch.
++CONTENT_EXPORT bool IsRemoteWebAuthnEnabled();
++
++// The functions below must be called on the UI thread.
++
++// Installs the embedder authenticator. Requests made without a handler fail as
++// if no authenticator answered. Passing null callbacks removes the handler and
++// fails pending requests.
++CONTENT_EXPORT void SetRemoteWebAuthnHandler(
++    RemoteWebAuthnRequestCallback request_callback,
++    RemoteWebAuthnCancelCallback cancel_callback);
++
++// Completes `request_id` with a CTAP2 response: the status byte followed by
++// its CBOR payload. An empty response fails the request. Returns false when
++// the request is unknown, for example because it was already cancelled.
++CONTENT_EXPORT bool RespondToRemoteWebAuthnRequest(
++    uint64_t request_id,
++    std::vector<uint8_t> response);
++
++// Sets the value reported by
++// PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(), which
++// is false until set.
++CONTENT_EXPORT void SetRemoteWebAuthnPlatformAuthenticatorAvailable(
++    bool available);
++
++}  // namespace content
++
++#endif  // CONTENT_PUBLIC_BROWSER_REMOTE_WEBAUTHN_H_
+diff --git a/media/audio/BUILD.gn b/media/audio/BUILD.gn
+index 6aa7e5cafa..5bf33bf488 100644
+--- a/media/audio/BUILD.gn
++++ b/media/audio/BUILD.gn
+@@ -120,6 +120,8 @@ source_set("audio") {
+     "fake_audio_manager.h",
+     "fake_audio_output_stream.cc",
+     "fake_audio_output_stream.h",
++    "remote_audio_source.cc",
++    "remote_audio_source.h",
+     "flac_audio_handler.cc",
+     "flac_audio_handler.h",
+     "null_audio_sink.cc",
+diff --git a/media/audio/fake_audio_input_stream.cc b/media/audio/fake_audio_input_stream.cc
+index 929b7d9fde..1cdc226422 100644
+--- a/media/audio/fake_audio_input_stream.cc
++++ b/media/audio/fake_audio_input_stream.cc
+@@ -24,6 +24,7 @@
+ #include "base/threading/thread.h"
+ #include "base/time/time.h"
+ #include "media/audio/audio_manager_base.h"
++#include "media/audio/remote_audio_source.h"
+ #include "media/audio/simple_sources.h"
+ #include "media/base/audio_bus.h"
+ #include "media/base/audio_parameters.h"
+@@ -181,6 +182,11 @@ using AudioSourceCallback = AudioOutputStream::AudioSourceCallback;
+ std::unique_ptr<AudioSourceCallback> FakeAudioInputStream::ChooseSource() {
+   DCHECK(capture_thread_->task_runner()->BelongsToCurrentThread());
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          switches::kRemoteMediaCapture)) {
++    return std::make_unique<RemoteAudioSource>(params_);
++  }
++
+   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+       switches::kUseFileForFakeAudioCapture)) {
+     base::CommandLine::StringType switch_value =
+diff --git a/media/audio/remote_audio_source.cc b/media/audio/remote_audio_source.cc
+new file mode 100644
+index 0000000000..24f561bd22
+--- /dev/null
++++ b/media/audio/remote_audio_source.cc
+@@ -0,0 +1,165 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "media/audio/remote_audio_source.h"
++
++#include <algorithm>
++#include <cmath>
++#include <vector>
++
++#include "base/no_destructor.h"
++#include "base/synchronization/lock.h"
++#include "media/base/audio_bus.h"
++
++namespace media {
++
++namespace {
++
++constexpr int kMaxChannels = 8;
++constexpr int kMinSampleRate = 8000;
++constexpr int kMaxSampleRate = 192000;
++// Readers further behind than this skip ahead, so latency stays bounded when
++// the client produces audio slightly faster than the stream consumes it.
++constexpr double kMaxLatencySeconds = 0.2;
++
++struct SharedAudio {
++  base::Lock lock;
++  int channels = 0;
++  int sample_rate = 0;
++  uint64_t generation = 0;
++  // One second of interleaved samples, indexed by absolute frame modulo
++  // capacity.
++  std::vector<float> ring;
++  int64_t capacity_frames = 0;
++  // Frames pushed since the current format began.
++  int64_t written_frames = 0;
++  int active_streams = 0;
++};
++
++SharedAudio& shared() {
++  static base::NoDestructor<SharedAudio> audio;
++  return *audio;
++}
++
++float SampleAt(const SharedAudio& audio, int64_t frame, int channel) {
++  const int64_t slot = frame % audio.capacity_frames;
++  return audio.ring[static_cast<size_t>(slot * audio.channels + channel)];
++}
++
++// Mixes or duplicates input channels so any input layout fills any output.
++float MappedSample(const SharedAudio& audio,
++                   int64_t frame,
++                   int output_channel,
++                   int output_channels) {
++  if (output_channels == 1 && audio.channels > 1) {
++    float sum = 0;
++    for (int channel = 0; channel < audio.channels; ++channel) {
++      sum += SampleAt(audio, frame, channel);
++    }
++    return sum / audio.channels;
++  }
++  return SampleAt(audio, frame, std::min(output_channel, audio.channels - 1));
++}
++
++}  // namespace
++
++RemoteAudioSource::RemoteAudioSource(const AudioParameters& params)
++    : params_(params) {
++  SharedAudio& audio = shared();
++  base::AutoLock lock(audio.lock);
++  ++audio.active_streams;
++}
++
++RemoteAudioSource::~RemoteAudioSource() {
++  SharedAudio& audio = shared();
++  base::AutoLock lock(audio.lock);
++  --audio.active_streams;
++}
++
++// static
++int RemoteAudioSource::Push(base::span<const int16_t> samples,
++                            int channels,
++                            int sample_rate) {
++  if (channels < 1 || channels > kMaxChannels || sample_rate < kMinSampleRate ||
++      sample_rate > kMaxSampleRate ||
++      samples.size() % static_cast<size_t>(channels) != 0) {
++    return kInvalidArgument;
++  }
++  SharedAudio& audio = shared();
++  base::AutoLock lock(audio.lock);
++  if (audio.channels != channels || audio.sample_rate != sample_rate) {
++    audio.channels = channels;
++    audio.sample_rate = sample_rate;
++    audio.capacity_frames = sample_rate;
++    audio.ring.assign(static_cast<size_t>(sample_rate * channels), 0.0f);
++    audio.written_frames = 0;
++    ++audio.generation;
++  }
++  const size_t frames = samples.size() / static_cast<size_t>(channels);
++  for (size_t frame = 0; frame < frames; ++frame) {
++    const int64_t slot = audio.written_frames % audio.capacity_frames;
++    for (int channel = 0; channel < channels; ++channel) {
++      audio.ring[static_cast<size_t>(slot * channels + channel)] =
++          samples[frame * static_cast<size_t>(channels) +
++                  static_cast<size_t>(channel)] /
++          32768.0f;
++    }
++    ++audio.written_frames;
++  }
++  return 0;
++}
++
++// static
++int RemoteAudioSource::ActiveStreams() {
++  SharedAudio& audio = shared();
++  base::AutoLock lock(audio.lock);
++  return audio.active_streams;
++}
++
++int RemoteAudioSource::OnMoreData(base::TimeDelta delay,
++                                  base::TimeTicks delay_timestamp,
++                                  const AudioGlitchInfo& glitch_info,
++                                  AudioBus* dest) {
++  dest->Zero();
++  SharedAudio& audio = shared();
++  base::AutoLock lock(audio.lock);
++  if (audio.channels == 0) {
++    return dest->frames();
++  }
++  const double written = static_cast<double>(audio.written_frames);
++  if (format_generation_ != audio.generation || position_ < 0) {
++    format_generation_ = audio.generation;
++    position_ = written;
++  }
++  const double max_latency = kMaxLatencySeconds * audio.sample_rate;
++  if (written - position_ > max_latency) {
++    position_ = written - max_latency / 4;
++  }
++
++  const double step =
++      static_cast<double>(audio.sample_rate) / params_.sample_rate();
++  int produced = 0;
++  for (; produced < dest->frames(); ++produced) {
++    const double position = position_ + produced * step;
++    const int64_t frame = static_cast<int64_t>(std::floor(position));
++    // Interpolation reads the next frame, which must already be written.
++    if (frame + 1 >= audio.written_frames) {
++      break;
++    }
++    const float fraction = static_cast<float>(position - frame);
++    for (int channel = 0; channel < dest->channels(); ++channel) {
++      const float first = MappedSample(audio, frame, channel, dest->channels());
++      const float second =
++          MappedSample(audio, frame + 1, channel, dest->channels());
++      dest->channel(channel)[static_cast<size_t>(produced)] =
++          first + (second - first) * fraction;
++    }
++  }
++  position_ += produced * step;
++  return dest->frames();
++}
++
++void RemoteAudioSource::OnError(ErrorType type) {}
++
++}  // namespace media
+diff --git a/media/audio/remote_audio_source.h b/media/audio/remote_audio_source.h
+new file mode 100644
+index 0000000000..422130d8ba
+--- /dev/null
++++ b/media/audio/remote_audio_source.h
+@@ -0,0 +1,62 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef MEDIA_AUDIO_REMOTE_AUDIO_SOURCE_H_
++#define MEDIA_AUDIO_REMOTE_AUDIO_SOURCE_H_
++
++#include <stdint.h>
++
++#include <memory>
++
++#include "base/containers/span.h"
++#include "media/audio/audio_io.h"
++#include "media/base/audio_parameters.h"
++#include "media/base/media_export.h"
++
++namespace media {
++
++// Microphone audio supplied by the embedder, for example from a remote desktop
++// client. Fake audio input streams read it instead of a beep when the browser
++// runs with switches::kRemoteMediaCapture and
++// switches::kUseFakeDeviceForMediaStream. The audio service must run in the
++// browser process so that the embedder and the streams share this state.
++class MEDIA_EXPORT RemoteAudioSource
++    : public AudioOutputStream::AudioSourceCallback {
++ public:
++  // Rejected arguments for Push().
++  static constexpr int kInvalidArgument = -1;
++
++  explicit RemoteAudioSource(const AudioParameters& params);
++  RemoteAudioSource(const RemoteAudioSource&) = delete;
++  RemoteAudioSource& operator=(const RemoteAudioSource&) = delete;
++  ~RemoteAudioSource() override;
++
++  // Appends interleaved signed 16-bit samples for every open stream. A change
++  // of `channels` or `sample_rate` discards audio not yet read. Audio older
++  // than one second is dropped. Returns 0 or kInvalidArgument. Thread-safe.
++  static int Push(base::span<const int16_t> samples,
++                  int channels,
++                  int sample_rate);
++
++  // Returns the number of open streams reading remote audio. Thread-safe.
++  static int ActiveStreams();
++
++  // AudioOutputStream::AudioSourceCallback:
++  int OnMoreData(base::TimeDelta delay,
++                 base::TimeTicks delay_timestamp,
++                 const AudioGlitchInfo& glitch_info,
++                 AudioBus* dest) override;
++  void OnError(ErrorType type) override;
++
++ private:
++  const AudioParameters params_;
++  // Position in input frames since the current format began, or negative
++  // before the first read.
++  double position_ = -1;
++  uint64_t format_generation_ = 0;
++};
++
++}  // namespace media
++
++#endif  // MEDIA_AUDIO_REMOTE_AUDIO_SOURCE_H_
+diff --git a/media/base/media_switches.cc b/media/base/media_switches.cc
+index 9e219d53ca..66ea24765c 100644
+--- a/media/base/media_switches.cc
++++ b/media/base/media_switches.cc
+@@ -231,6 +231,11 @@ const char kUnsafelyAllowProtectedMediaIdentifierForDomain[] =
+ // FakeVideoCaptureDeviceFactory::ParseFakeDevicesConfigFromOptionsString().
+ const char kUseFakeDeviceForMediaStream[] = "use-fake-device-for-media-stream";
+ 
++// With kUseFakeDeviceForMediaStream, replaces the fake camera and microphone
++// with media pushed by the embedder, such as a remote desktop client. Video
++// and audio capture must run in the browser process.
++const char kRemoteMediaCapture[] = "remote-media-capture";
++
+ // Use a fake device for accelerated decoding of MJPEG. This allows, for
+ // example, testing of the communication to the GPU service without requiring
+ // actual accelerator hardware to be present.
+diff --git a/media/base/media_switches.h b/media/base/media_switches.h
+index 5f3c3bdb47..06240614e1 100644
+--- a/media/base/media_switches.h
++++ b/media/base/media_switches.h
+@@ -71,6 +71,7 @@ MEDIA_EXPORT extern const char kReportVp9AsAnUnsupportedMimeType[];
+ MEDIA_EXPORT extern const char
+     kUnsafelyAllowProtectedMediaIdentifierForDomain[];
+ MEDIA_EXPORT extern const char kUseFakeDeviceForMediaStream[];
++MEDIA_EXPORT extern const char kRemoteMediaCapture[];
+ MEDIA_EXPORT extern const char kUseFakeMjpegDecodeAccelerator[];
+ MEDIA_EXPORT extern const char kUseFileForFakeAudioCapture[];
+ MEDIA_EXPORT extern const char kUseFileForFakeVideoCapture[];
+diff --git a/media/capture/BUILD.gn b/media/capture/BUILD.gn
+index 31c10e8ef8..71dd0daf48 100644
+--- a/media/capture/BUILD.gn
++++ b/media/capture/BUILD.gn
+@@ -83,6 +83,8 @@ source_set("capture_device_specific") {
+     "video/fake_video_capture_device_factory.h",
+     "video/mappable_shared_image_utils.cc",
+     "video/mappable_shared_image_utils.h",
++    "video/remote_video_capture_device.cc",
++    "video/remote_video_capture_device.h",
+     "video/video_capture_buffer_handle.cc",
+     "video/video_capture_buffer_handle.h",
+     "video/video_capture_buffer_pool_constants.h",
+diff --git a/media/capture/video/create_video_capture_device_factory.cc b/media/capture/video/create_video_capture_device_factory.cc
+index ed8a138630..efd79df237 100644
+--- a/media/capture/video/create_video_capture_device_factory.cc
++++ b/media/capture/video/create_video_capture_device_factory.cc
+@@ -12,6 +12,7 @@
+ #include "gpu/config/gpu_driver_bug_workarounds.h"
+ #include "media/base/media_switches.h"
+ #include "media/capture/video/fake_video_capture_device_factory.h"
++#include "media/capture/video/remote_video_capture_device.h"
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+ #include "media/capture/video/file_video_capture_device_factory.h"
+@@ -41,6 +42,9 @@ std::unique_ptr<VideoCaptureDeviceFactory>
+ CreateFakeVideoCaptureDeviceFactory() {
+   const base::CommandLine* command_line =
+       base::CommandLine::ForCurrentProcess();
++  if (command_line->HasSwitch(switches::kRemoteMediaCapture)) {
++    return std::make_unique<RemoteVideoCaptureDeviceFactory>();
++  }
+ #if !BUILDFLAG(IS_ANDROID)
+   // Use a File Video Device Factory if the command line flag is present.
+   // Otherwise, use a Fake Video Device Factory. The File Video Device Factory
+diff --git a/media/capture/video/remote_video_capture_device.cc b/media/capture/video/remote_video_capture_device.cc
+new file mode 100644
+index 0000000000..1567aec08e
+--- /dev/null
++++ b/media/capture/video/remote_video_capture_device.cc
+@@ -0,0 +1,190 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "media/capture/video/remote_video_capture_device.h"
++
++#include <utility>
++#include <vector>
++
++#include "base/no_destructor.h"
++#include "base/synchronization/lock.h"
++#include "base/thread_annotations.h"
++#include "build/build_config.h"
++#include "media/base/video_frame.h"
++#include "ui/gfx/color_space.h"
++
++namespace media {
++
++namespace {
++
++constexpr int kMaxDimension = 4096;
++constexpr float kFrameRate = 30.0f;
++
++struct ActiveCapture {
++  base::Lock lock;
++  // The started device, or null. Only that device may clear the capture, so a
++  // late stop of a replaced device cannot detach its successor.
++  raw_ptr<const RemoteVideoCaptureDevice> owner GUARDED_BY(lock) = nullptr;
++  std::unique_ptr<VideoCaptureDevice::Client> client GUARDED_BY(lock);
++  VideoCaptureFormat requested_format GUARDED_BY(lock);
++  base::TimeTicks first_frame_time GUARDED_BY(lock);
++};
++
++ActiveCapture& active_capture() {
++  static base::NoDestructor<ActiveCapture> capture;
++  return *capture;
++}
++
++bool IsSupportedFormat(VideoPixelFormat format) {
++  switch (format) {
++    case PIXEL_FORMAT_I420:
++    case PIXEL_FORMAT_NV12:
++    case PIXEL_FORMAT_YUY2:
++    case PIXEL_FORMAT_ARGB:
++    case PIXEL_FORMAT_MJPEG:
++      return true;
++    default:
++      return false;
++  }
++}
++
++VideoCaptureApi PlatformCaptureApi() {
++#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
++  return VideoCaptureApi::LINUX_V4L2_SINGLE_PLANE;
++#elif BUILDFLAG(IS_MAC)
++  return VideoCaptureApi::MACOSX_AVFOUNDATION;
++#elif BUILDFLAG(IS_WIN)
++  return VideoCaptureApi::WIN_DIRECT_SHOW;
++#else
++  return VideoCaptureApi::UNKNOWN;
++#endif
++}
++
++}  // namespace
++
++RemoteVideoCaptureDevice::RemoteVideoCaptureDevice() = default;
++
++RemoteVideoCaptureDevice::~RemoteVideoCaptureDevice() {
++  StopAndDeAllocate();
++}
++
++// static
++RemoteVideoCaptureDevice::PushResult RemoteVideoCaptureDevice::PushFrame(
++    VideoPixelFormat format,
++    int width,
++    int height,
++    base::span<const uint8_t> data,
++    base::TimeDelta timestamp) {
++  if (!IsSupportedFormat(format) || width <= 0 || height <= 0 ||
++      width > kMaxDimension || height > kMaxDimension || data.empty()) {
++    return kInvalidArgument;
++  }
++  const gfx::Size size(width, height);
++  if (format != PIXEL_FORMAT_MJPEG &&
++      data.size() != VideoFrame::AllocationSize(format, size)) {
++    return kInvalidArgument;
++  }
++
++  ActiveCapture& capture = active_capture();
++  base::AutoLock lock(capture.lock);
++  if (!capture.client) {
++    return kNoConsumer;
++  }
++  const base::TimeTicks now = base::TimeTicks::Now();
++  if (capture.first_frame_time.is_null()) {
++    capture.first_frame_time = now;
++  }
++  const VideoCaptureFormat frame_format(size, kFrameRate, format);
++  // Clients accept frames from any thread as long as calls do not overlap,
++  // which the lock guarantees.
++  capture.client->OnIncomingCapturedData(
++      data, frame_format, gfx::ColorSpace::CreateREC709(),
++      /*clockwise_rotation=*/0, /*flip_y=*/false, now,
++      timestamp.is_zero() ? now - capture.first_frame_time : timestamp,
++      /*capture_begin_timestamp=*/std::nullopt, /*metadata=*/std::nullopt);
++  return kDelivered;
++}
++
++// static
++std::optional<VideoCaptureFormat> RemoteVideoCaptureDevice::RequestedFormat() {
++  ActiveCapture& capture = active_capture();
++  base::AutoLock lock(capture.lock);
++  if (!capture.client) {
++    return std::nullopt;
++  }
++  return capture.requested_format;
++}
++
++void RemoteVideoCaptureDevice::AllocateAndStart(
++    const VideoCaptureParams& params,
++    std::unique_ptr<Client> client) {
++  Client* started_client = client.get();
++  {
++    ActiveCapture& capture = active_capture();
++    base::AutoLock lock(capture.lock);
++    capture.owner = this;
++    capture.client = std::move(client);
++    capture.requested_format = params.requested_format;
++    capture.first_frame_time = base::TimeTicks();
++  }
++  // OnStarted() must not run under the lock, because it may synchronously
++  // reach code that pushes frames.
++  started_client->OnStarted();
++}
++
++void RemoteVideoCaptureDevice::StopAndDeAllocate() {
++  std::unique_ptr<Client> client;
++  {
++    ActiveCapture& capture = active_capture();
++    base::AutoLock lock(capture.lock);
++    if (capture.owner != this) {
++      return;
++    }
++    capture.owner = nullptr;
++    client = std::move(capture.client);
++  }
++}
++
++void RemoteVideoCaptureDevice::InvalidateBuffers() {
++  ActiveCapture& capture = active_capture();
++  base::AutoLock lock(capture.lock);
++  if (capture.owner == this && capture.client) {
++    capture.client->InvalidateBuffers();
++  }
++}
++
++RemoteVideoCaptureDeviceFactory::RemoteVideoCaptureDeviceFactory() = default;
++
++RemoteVideoCaptureDeviceFactory::~RemoteVideoCaptureDeviceFactory() = default;
++
++VideoCaptureErrorOrDevice RemoteVideoCaptureDeviceFactory::CreateDevice(
++    const VideoCaptureDeviceDescriptor& device_descriptor) {
++  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++  if (device_descriptor.device_id != kDeviceId) {
++    return VideoCaptureErrorOrDevice(
++        VideoCaptureError::
++            kVideoCaptureControllerInvalidOrUnsupportedVideoCaptureParametersRequested);
++  }
++  return VideoCaptureErrorOrDevice(
++      std::make_unique<RemoteVideoCaptureDevice>());
++}
++
++void RemoteVideoCaptureDeviceFactory::GetDevicesInfo(
++    GetDevicesInfoCallback callback) {
++  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++  VideoCaptureDeviceInfo info(VideoCaptureDeviceDescriptor(
++      "Remote camera", kDeviceId, /*model_id=*/std::string(),
++      PlatformCaptureApi(), VideoCaptureControlSupport(),
++      VideoCaptureTransportType::OTHER_TRANSPORT,
++      VideoFacingMode::MEDIA_VIDEO_FACING_USER));
++  for (const gfx::Size& size :
++       {gfx::Size(640, 480), gfx::Size(1280, 720), gfx::Size(1920, 1080)}) {
++    info.supported_formats.emplace_back(size, kFrameRate, PIXEL_FORMAT_I420);
++  }
++  std::vector<VideoCaptureDeviceInfo> devices;
++  devices.push_back(std::move(info));
++  std::move(callback).Run(std::move(devices));
++}
++
++}  // namespace media
+diff --git a/media/capture/video/remote_video_capture_device.h b/media/capture/video/remote_video_capture_device.h
+new file mode 100644
+index 0000000000..73cb9bff49
+--- /dev/null
++++ b/media/capture/video/remote_video_capture_device.h
+@@ -0,0 +1,80 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef MEDIA_CAPTURE_VIDEO_REMOTE_VIDEO_CAPTURE_DEVICE_H_
++#define MEDIA_CAPTURE_VIDEO_REMOTE_VIDEO_CAPTURE_DEVICE_H_
++
++#include <stdint.h>
++
++#include <memory>
++
++#include "base/containers/span.h"
++#include "base/threading/thread_checker.h"
++#include "base/time/time.h"
++#include "media/base/video_types.h"
++#include "media/capture/capture_export.h"
++#include "media/capture/video/video_capture_device.h"
++#include "media/capture/video/video_capture_device_factory.h"
++#include "media/capture/video_capture_types.h"
++
++namespace media {
++
++// Camera frames supplied by the embedder, for example from a remote desktop
++// client. Used instead of the fake camera when the browser runs with
++// switches::kRemoteMediaCapture and switches::kUseFakeDeviceForMediaStream.
++// The video capture service must run in the browser process so that the
++// embedder and the device share this state.
++class CAPTURE_EXPORT RemoteVideoCaptureDevice : public VideoCaptureDevice {
++ public:
++  enum PushResult {
++    kDelivered = 0,
++    kNoConsumer = 1,
++    kInvalidArgument = -1,
++  };
++
++  RemoteVideoCaptureDevice();
++  RemoteVideoCaptureDevice(const RemoteVideoCaptureDevice&) = delete;
++  RemoteVideoCaptureDevice& operator=(const RemoteVideoCaptureDevice&) = delete;
++  ~RemoteVideoCaptureDevice() override;
++
++  // Delivers one frame to the capturing page. `format` is one of
++  // PIXEL_FORMAT_I420, PIXEL_FORMAT_NV12, PIXEL_FORMAT_YUY2, PIXEL_FORMAT_ARGB
++  // (BGRA in memory) or PIXEL_FORMAT_MJPEG. Thread-safe.
++  static PushResult PushFrame(VideoPixelFormat format,
++                              int width,
++                              int height,
++                              base::span<const uint8_t> data,
++                              base::TimeDelta timestamp);
++
++  // Returns the format requested by the capturing page, or nullopt when no
++  // page is capturing. Thread-safe.
++  static std::optional<VideoCaptureFormat> RequestedFormat();
++
++  // VideoCaptureDevice:
++  void AllocateAndStart(const VideoCaptureParams& params,
++                        std::unique_ptr<Client> client) override;
++  void StopAndDeAllocate() override;
++  void InvalidateBuffers() override;
++};
++
++class CAPTURE_EXPORT RemoteVideoCaptureDeviceFactory
++    : public VideoCaptureDeviceFactory {
++ public:
++  static constexpr char kDeviceId[] = "remote-camera";
++
++  RemoteVideoCaptureDeviceFactory();
++  ~RemoteVideoCaptureDeviceFactory() override;
++
++  // VideoCaptureDeviceFactory:
++  VideoCaptureErrorOrDevice CreateDevice(
++      const VideoCaptureDeviceDescriptor& device_descriptor) override;
++  void GetDevicesInfo(GetDevicesInfoCallback callback) override;
++
++ private:
++  THREAD_CHECKER(thread_checker_);
++};
++
++}  // namespace media
++
++#endif  // MEDIA_CAPTURE_VIDEO_REMOTE_VIDEO_CAPTURE_DEVICE_H_
+diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -3397,6 +3397,8 @@ source_set("browser") {
+       "webauth/default_authenticator_request_client_delegate.h",
+       "webauth/is_uvpaa.cc",
+       "webauth/is_uvpaa.h",
++      "webauth/remote_authenticator.cc",
++      "webauth/remote_authenticator.h",
+       "webauth/virtual_authenticator.cc",
+       "webauth/virtual_authenticator.h",
+       "webauth/virtual_authenticator_manager_impl.cc",

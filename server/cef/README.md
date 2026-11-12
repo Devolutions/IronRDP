@@ -17,11 +17,19 @@ The pinned `tauri-apps/cef-rs` revision is `9aa78c450489eddb828eb982eaee6c104a89
 Building the native feature downloads a large CEF distribution and compiles its wrapper.
 The default `package-cef` command uses stock CEF.
 The server requires patched CEF even when CLIPRDR redirection is disabled; it rejects stock CEF at browser startup.
-Apply `isolated-clipboard.patch` to the CEF checkout.
-On POSIX, also apply `disable-chromium-shutdown-signals.patch` to Chromium so Rust can own shutdown cleanup.
+The patches are in `server/cef/patches`:
+
+| Patch | Tree | Purpose |
+| --- | --- | --- |
+| `isolated-clipboard.patch` | CEF | Process-private clipboard and its C API, including pasted files |
+| `remote-devices-cef.patch` | CEF, after the clipboard patch | C API for remote camera, microphone, and WebAuthn |
+| `remote-devices-chromium.patch` | Chromium | Embedder-fed capture devices and WebAuthn authenticator |
+| `in-process-audio-shutdown.patch` | Chromium | Stops the in-process audio service before its `AudioManager` |
+| `disable-chromium-shutdown-signals.patch` | Chromium, POSIX only | Lets Rust own shutdown cleanup |
+
 Rebuild and distribute the patched CEF checkout, then set `CEF_PATH` to its distribution root before packaging.
-Both patches are in `server/cef/patches`.
-The custom clipboard build has been validated on macOS ARM64; Linux and Windows remain unverified.
+The packager copies only regular files, so the distribution framework must not use symlinked `Versions` directories.
+The custom build has been validated on macOS ARM64; Linux and Windows remain unverified.
 
 Run commands from the repository root.
 If CMake or Ninja is missing, install them locally on macOS or Linux:
@@ -149,6 +157,23 @@ The macOS ARM64 end-to-end test covers all three formats and confirms that the h
 The private clipboard itself does not use X11 or a desktop clipboard service.
 The Linux runtime selects headless Ozone but has only been tested under Xvfb; private clipboard operation and rendering without Xvfb remain unverified.
 
+## Remote devices
+
+The patched runtime never enumerates host cameras, microphones, or authenticators.
+The server always starts CEF with `remote-media-capture`, which replaces capture devices with one camera and one microphone fed through the CEF C API.
+It also passes `remote-webauthn`, which sends every Web Authentication request to one embedder authenticator as raw CTAP2 and suppresses Chromium's authenticator UI.
+The audio and video capture services run in the browser process so the embedder can feed them.
+Echo cancellation stays in the renderer, and macOS camera frames use shared memory instead of IOSurfaces.
+
+No RDP channel feeds these devices yet.
+Without a feeder, the media permission handler denies camera and microphone requests, and WebAuthn requests fail as if no authenticator answered.
+Desktop capture is always denied, so pages cannot capture the host display.
+Pasted files require absolute paths readable by the browser; CLIPRDR file transfer does not stage them yet.
+
+For tests, build with `--features device-simulator` and pass `--simulate-devices`.
+The simulator streams a green camera image and a 440 Hz tone, answers WebAuthn with a test CTAP2 authenticator, and replaces each client clipboard copy with one staged file.
+Its credentials are not secure; never enable it in a deployment.
+
 ## Redirected downloads
 
 Enable the server with `--downloads` and start the agent daemon with `--rdpdr-download-dir /absolute/download/folder`.
@@ -216,6 +241,20 @@ python3 server/cef/testing/clipboard.py \
 ```
 
 The runner checks text, HTML, and PNG in both directions, unchanged host pasteboard state, and profile cleanup.
+
+Check remote devices with a simulator bundle built against the patched CEF:
+
+```sh
+cargo run --locked --manifest-path server/cef/Cargo.toml \
+  --features bundle,device-simulator --bin package-cef -- artifacts/devices-bundle
+python3 server/cef/testing/devices.py \
+  --server-bin server/cef/artifacts/devices-bundle/ironrdp-cef-server.app/Contents/MacOS/ironrdp-cef-server \
+  --agent target/debug/ironrdp-agent
+```
+
+The runner checks WebAuthn registration, camera pixels, microphone level, desktop-capture denial, a pasted file, and clean shutdown.
+It serves the fixture from `localhost` because WebAuthn rejects IP-address origins.
+Reports and logs are under `server/cef/artifacts/devices-e2e/run-*/`.
 
 Evidence is written under `server/cef/artifacts/e2e/run-*/`: `report.json`, screenshots, agent command/output logs, and per-server logs and certificates.
 On Unix, CEF logs are copied out of the profile on orderly shutdown; on Windows, CEF writes directly to `cef.log` in the artifact directory.
@@ -309,11 +348,11 @@ These observations do not enumerate every child or prove container isolation.
 GPU rendering, remote debugging, native context menus, and external-protocol launches are disabled.
 Downloads are disabled unless explicitly enabled and require the dedicated client device.
 CEF's process-private clipboard is always active; CLIPRDR redirection is opt-in.
-Audio is muted, and no audio RDP backend is installed.
+Audio output is muted, and no audio RDP backend is installed.
 This isolates page clipboard operations from the host pasteboard but does not virtualize the host filesystem, network, keychain, permission prompts, or file pickers.
 On macOS, Chromium can read a [host Chrome brand][chromium-brand] and send an [RLZ request][chromium-rlz] that may include a machine identifier.
 Only HTTP, HTTPS, and `about:blank` navigations are supported; allowed new-window requests become tabs.
-Permission prompts and arbitrary websites are not covered by the fixture.
+Media and WebAuthn permissions are decided without prompts; other permission prompts and arbitrary websites are not covered by the fixture.
 
 The `UNTESTED:` property at the resize bridge is CEF's UI-thread paint ordering across rapid size changes.
 Queued paints carry Rust generations and wrong-size frames are rejected, but CEF does not provide a native resize token for a late paint after dimensions cycle back.
