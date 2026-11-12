@@ -64,6 +64,44 @@ pub(crate) fn crop_transparent(pointer: &DecodedPointer) -> Option<DecodedPointe
     }
 }
 
+/// Largest pointer side a browser draws as a CSS cursor without falling back to its own (see `session.rs`).
+const MAX_CURSOR_SIZE: u16 = 32;
+
+/// A pointer's size and hotspot once scaled down to fit [`MAX_CURSOR_SIZE`].
+pub(crate) struct Scaled {
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    pub(crate) hotspot_x: u16,
+    pub(crate) hotspot_y: u16,
+}
+
+/// The size and hotspot `pointer` is scaled to, or `None` when it already fits [`MAX_CURSOR_SIZE`].
+pub(crate) fn scaled_to_fit(pointer: &DecodedPointer) -> Option<Scaled> {
+    // INVARIANT: 0 < scale <= 1.0
+    // INVARIANT: pointer.width * scale <= MAX_CURSOR_SIZE
+    // INVARIANT: pointer.height * scale <= MAX_CURSOR_SIZE
+    let scale = if pointer.width >= pointer.height && pointer.width > MAX_CURSOR_SIZE {
+        f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.width)
+    } else if pointer.height > MAX_CURSOR_SIZE {
+        f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.height)
+    } else {
+        return None;
+    };
+
+    // Per invariants: Following conversions will never saturate.
+    Some(Scaled {
+        width: f64_to_u16_saturating_cast(f64::from(pointer.width) * scale),
+        height: f64_to_u16_saturating_cast(f64::from(pointer.height) * scale),
+        hotspot_x: f64_to_u16_saturating_cast(f64::from(pointer.hotspot_x) * scale),
+        hotspot_y: f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale),
+    })
+}
+
+#[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn f64_to_u16_saturating_cast(value: f64) -> u16 {
+    value as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

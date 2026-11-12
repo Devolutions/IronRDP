@@ -1012,24 +1012,15 @@ impl iron_remote_desktop::Session for Session {
                         // When changing this code, check that the shadowed `pointer` still covers all three.
                         let cropped = crate::cursor::crop_transparent(&pointer);
                         let pointer = cropped.as_ref().unwrap_or(&pointer);
-                        const MAX_CURSOR_SIZE: u16 = 32;
-                        // INVARIANT: 0 < scale <= 1.0
-                        // INVARIANT: pointer.width * scale <= MAX_CURSOR_SIZE
-                        // INVARIANT: pointer.height * scale <= MAX_CURSOR_SIZE
-                        let scale = if pointer.width >= pointer.height && pointer.width > MAX_CURSOR_SIZE {
-                            Some(f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.width))
-                        } else if pointer.height > MAX_CURSOR_SIZE {
-                            Some(f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.height))
-                        } else {
-                            None
-                        };
+                        let scaled = crate::cursor::scaled_to_fit(pointer);
 
-                        let (png_width, png_height, hotspot_x, hotspot_y, rgba_buffer) = if let Some(scale) = scale {
-                            // Per invariants: Following conversions will never saturate.
-                            let scaled_width = f64_to_u16_saturating_cast(f64::from(pointer.width) * scale);
-                            let scaled_height = f64_to_u16_saturating_cast(f64::from(pointer.height) * scale);
-                            let hotspot_x = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_x) * scale);
-                            let hotspot_y = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale);
+                        let (png_width, png_height, hotspot_x, hotspot_y, rgba_buffer) = if let Some(scaled) = scaled {
+                            let crate::cursor::Scaled {
+                                width: scaled_width,
+                                height: scaled_height,
+                                hotspot_x,
+                                hotspot_y,
+                            } = scaled;
 
                             // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
                             #[expect(clippy::arithmetic_side_effects)]
@@ -2039,11 +2030,6 @@ fn ensure_framebuffer_allocatable(desktop_size: connector::DesktopSize) -> anyho
         .with_context(|| format!("not enough memory for a {width}x{height} desktop framebuffer"))?;
 
     Ok(())
-}
-
-#[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-fn f64_to_u16_saturating_cast(value: f64) -> u16 {
-    value as u16
 }
 
 #[cfg(test)]
