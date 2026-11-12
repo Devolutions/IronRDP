@@ -16,6 +16,7 @@ use crate::clipboard::{Clipboard, Snapshot};
 use crate::download::{Limits, runtime::Downloads};
 use crate::model::{Action, Model};
 use crate::private_clipboard::PrivateClipboard;
+use crate::remote_devices::{RemoteAuthenticator, RemoteMedia};
 use crate::{input, native, platform, rdp};
 
 #[cfg(windows)]
@@ -49,6 +50,10 @@ struct Args {
     /// Redirect clipboard content; the private-clipboard CEF runtime is always required.
     #[arg(long)]
     clipboard: bool,
+    /// Feed a synthetic camera, microphone and authenticator in place of the client's devices.
+    #[cfg(feature = "device-simulator")]
+    #[arg(long)]
+    simulate_devices: bool,
 }
 
 pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::Result<()> {
@@ -137,7 +142,19 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
     #[cfg(not(windows))]
     let cef_log = profile.path().join("cef.log");
     let (downloads, download_worker) = Downloads::new(profile.path(), args.downloads, download_limits)?;
-    let mut engine = match native::Engine::new(main_args, sandbox_info, profile.path(), &cef_log, downloads.clone()) {
+    #[cfg(feature = "device-simulator")]
+    let media_capture = args.simulate_devices;
+    #[cfg(not(feature = "device-simulator"))]
+    let media_capture = false;
+    let engine = native::Engine::new(
+        main_args,
+        sandbox_info,
+        profile.path(),
+        &cef_log,
+        downloads.clone(),
+        media_capture,
+    );
+    let mut engine = match engine {
         Ok(engine) => engine,
         Err(error) => {
             tracing::error!(%error, "CEF browser initialization failed");
@@ -176,6 +193,7 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
     }
     let content = model.content_dimensions();
     let started = private_clipboard(args.clipboard).and_then(|private| {
+        let devices = remote_devices(&args)?;
         engine.create(
             model.active_id(),
             &args.url,
@@ -183,10 +201,10 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
             u16::try_from(content.1)?,
             model.generation(),
         )?;
-        Ok(private)
+        Ok((private, devices))
     });
-    let private = match started {
-        Ok(private) => private,
+    let (private, devices) = match started {
+        Ok(started) => started,
         Err(error) => {
             tracing::error!(%error, "CEF browser startup failed");
             let closed = engine.shutdown();
@@ -240,12 +258,22 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
     };
     let (frames, receiver) = watch::channel(initial);
     let (sender, commands) = mpsc::sync_channel(256);
+    #[cfg(feature = "device-simulator")]
+    let simulated_file = if args.simulate_devices && private.is_some() {
+        let file = profile.path().join("simulated-clipboard.txt");
+        std::fs::write(&file, "remote file ✓").context("failed to stage the simulated clipboard file")?;
+        Some(file)
+    } else {
+        None
+    };
     let clipboard = private.map(|private| {
         let (bridge, incoming) = Clipboard::new();
         ClipboardLink {
             private,
             bridge,
             incoming,
+            #[cfg(feature = "device-simulator")]
+            simulated_file,
         }
     });
     let stop = Arc::new(AtomicBool::new(false));
@@ -268,6 +296,7 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
         clipboard,
     };
     let result = run_browser(&args, &mut model, &mut engine, &mut input, channels, &stop);
+    drop(devices);
     stop.store(true, Ordering::Release);
     input.release_content(&engine);
     downloads.cancel_all();
@@ -334,12 +363,19 @@ struct ClipboardLink {
     private: PrivateClipboard,
     bridge: Clipboard,
     incoming: watch::Receiver<Option<Snapshot>>,
+    /// Pasted in place of every client copy, standing in for CLIPRDR file transfer.
+    #[cfg(feature = "device-simulator")]
+    simulated_file: Option<std::path::PathBuf>,
 }
 
 impl ClipboardLink {
     fn exchange(&mut self) -> anyhow::Result<()> {
         if self.incoming.has_changed()? {
             if let Some(snapshot) = self.incoming.borrow_and_update().as_ref() {
+                #[cfg(feature = "device-simulator")]
+                if let Some(file) = &self.simulated_file {
+                    return self.private.write_files(&[file.as_path()]);
+                }
                 self.private.write(snapshot)?;
             }
         }
@@ -354,6 +390,38 @@ impl ClipboardLink {
 fn private_clipboard(redirect: bool) -> anyhow::Result<Option<PrivateClipboard>> {
     let private = PrivateClipboard::load().context("browser startup requires the private-clipboard CEF runtime")?;
     Ok(redirect.then_some(private))
+}
+
+/// Remote capture devices and authenticator, kept on the CEF UI thread for the browser's lifetime.
+struct RemoteDevices {
+    #[cfg(feature = "device-simulator")]
+    _simulator: Option<crate::device_simulator::DeviceSimulator>,
+    _authenticator: RemoteAuthenticator,
+}
+
+/// Loads the remote devices, which are required to keep pages off host cameras, microphones and authenticators.
+// UNTESTED: without the simulator, no WebAuthn handler is installed, so requests fail rather than reaching host authenticators.
+// Recheck with a plain bundle when changing the authenticator wiring or the WebAuthn switch.
+fn remote_devices(args: &Args) -> anyhow::Result<RemoteDevices> {
+    const REQUIRED: &str = "browser startup requires the remote-device CEF runtime";
+    let media = RemoteMedia::load().context(REQUIRED)?;
+    #[cfg_attr(
+        not(feature = "device-simulator"),
+        expect(unused_mut, reason = "only the simulator installs a handler")
+    )]
+    let mut authenticator = RemoteAuthenticator::load().context(REQUIRED)?;
+    #[cfg(feature = "device-simulator")]
+    let simulator = args
+        .simulate_devices
+        .then(|| crate::device_simulator::DeviceSimulator::start(media, &mut authenticator))
+        .transpose()?;
+    #[cfg(not(feature = "device-simulator"))]
+    let _ = (media, args);
+    Ok(RemoteDevices {
+        #[cfg(feature = "device-simulator")]
+        _simulator: simulator,
+        _authenticator: authenticator,
+    })
 }
 
 fn finish_profile(profile: tempfile::TempDir, cleanup_complete: bool) -> anyhow::Result<()> {

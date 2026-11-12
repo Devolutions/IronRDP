@@ -1,0 +1,108 @@
+diff --git a/content/browser/audio/audio_service.cc b/content/browser/audio/audio_service.cc
+index 6586285f77..2f20ef647e 100644
+--- a/content/browser/audio/audio_service.cc
++++ b/content/browser/audio/audio_service.cc
+@@ -14,6 +14,7 @@
+ #include "base/threading/sequence_local_storage_slot.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
++#include "content/browser/audio/in_process_audio_service.h"
+ #include "content/browser/browser_main_loop.h"
+ #include "content/browser/renderer_host/media/audio_service_listener.h"
+ #include "content/public/browser/audio_service_info.h"
+@@ -77,6 +78,13 @@ void BindStreamFactoryFromAnySequence(
+   GetAudioService().BindStreamFactory(std::move(receiver));
+ }
+ 
++base::SequenceLocalStorageSlot<std::unique_ptr<audio::Service>>&
++InProcessService() {
++  static base::SequenceLocalStorageSlot<std::unique_ptr<audio::Service>>
++      service;
++  return service;
++}
++
+ void LaunchAudioServiceInProcess(
+     mojo::PendingReceiver<audio::mojom::AudioService> receiver) {
+   // NOTE: If BrowserMainLoop is uninitialized, we have no AudioManager. In
+@@ -100,11 +108,9 @@ void LaunchAudioServiceInProcess(
+       base::BindOnce(
+           [](media::AudioManager* audio_manager,
+              mojo::PendingReceiver<audio::mojom::AudioService> receiver) {
+-            static base::SequenceLocalStorageSlot<
+-                std::unique_ptr<audio::Service>>
+-                service;
+-            service.GetOrCreateValue() = audio::CreateEmbeddedService(
+-                audio_manager, std::move(receiver));
++            InProcessService().GetOrCreateValue() =
++                audio::CreateEmbeddedService(audio_manager,
++                                             std::move(receiver));
+           },
+           BrowserMainLoop::GetAudioManager(), std::move(receiver)));
+ }
+@@ -226,6 +232,12 @@ OverrideAudioServiceForTesting(  // IN-TEST
+   return {&g_service_override, service};
+ }
+ 
++void ShutDownInProcessAudioService() {
++  if (audio::Service::GetInProcessTaskRunner()->RunsTasksInCurrentSequence()) {
++    InProcessService().reset();
++  }
++}
++
+ void ResetAudioServiceForTesting() {  // IN-TEST
+   GetAudioServiceRemote().remote().reset();
+   GetAudioServiceListener().ResetForTesting();  // IN-TEST
+diff --git a/content/browser/audio/in_process_audio_service.h b/content/browser/audio/in_process_audio_service.h
+new file mode 100644
+index 0000000000..bf0774f202
+--- /dev/null
++++ b/content/browser/audio/in_process_audio_service.h
+@@ -0,0 +1,17 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_BROWSER_AUDIO_IN_PROCESS_AUDIO_SERVICE_H_
++#define CONTENT_BROWSER_AUDIO_IN_PROCESS_AUDIO_SERVICE_H_
++
++namespace content {
++
++// Destroys the in-process audio service if it runs on the current sequence.
++// The service borrows the browser's AudioManager, so it must go first;
++// otherwise it lives in sequence-local storage until scheduler teardown.
++void ShutDownInProcessAudioService();
++
++}  // namespace content
++
++#endif  // CONTENT_BROWSER_AUDIO_IN_PROCESS_AUDIO_SERVICE_H_
+diff --git a/content/browser/browser_main_loop.cc b/content/browser/browser_main_loop.cc
+index 0559ec1a95..af4ab53406 100644
+--- a/content/browser/browser_main_loop.cc
++++ b/content/browser/browser_main_loop.cc
+@@ -71,6 +71,7 @@
+ #include "components/viz/host/host_frame_sink_manager.h"
+ #include "components/vrp_flags/buildflags.h"
+ #include "content/browser/accessibility/browser_accessibility_state_impl.h"
++#include "content/browser/audio/in_process_audio_service.h"
+ #include "content/browser/browser_thread_impl.h"
+ #include "content/browser/compositor/viz_process_transport_factory.h"
+ #include "content/browser/cpu_performance/cpu_performance.h"
+@@ -1334,6 +1335,7 @@ void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
+   }
+   {
+     TRACE_EVENT0("shutdown", "BrowserMainLoop::Subsystem:AudioMan");
++    ShutDownInProcessAudioService();
+     if (audio_manager_ && !audio_manager_->Shutdown()) {
+       // Intentionally leak AudioManager if shutdown failed.
+       // We might run into various CHECK(s) in AudioManager destructor.
+diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -494,6 +494,7 @@ source_set("browser") {
+     "ai/echo_ai_writer.cc",
+     "ai/echo_ai_writer.h",
+     "audio/audio_service.cc",
++    "audio/in_process_audio_service.h",
+     "background_fetch/background_fetch_context.cc",
+     "background_fetch/background_fetch_context.h",
+     "background_fetch/background_fetch_cross_origin_filter.cc",

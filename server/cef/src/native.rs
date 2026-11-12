@@ -4,6 +4,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::download::runtime::Downloads;
+use crate::remote_devices;
 use anyhow::Context as _;
 use cef::*;
 
@@ -41,6 +42,7 @@ struct Bridge {
     download_callbacks: Rc<RefCell<BTreeMap<u32, DownloadItemCallback>>>,
     browser_downloads: Rc<RefCell<BTreeSet<u32>>>,
     closing: Rc<Cell<bool>>,
+    media_capture: bool,
 }
 
 impl Bridge {
@@ -311,6 +313,26 @@ wrap_context_menu_handler! {
     }
 }
 
+// UNTESTED: without a device feeder, camera and microphone requests are denied.
+// The device suite always runs the simulator, so only desktop-capture denial is checked.
+// Recheck with a plain bundle when changing this policy or the media switches.
+wrap_permission_handler! {
+    struct MediaPolicy { allow: bool }
+    impl PermissionHandler {
+        fn on_request_media_access_permission(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
+                                              _origin: Option<&CefString>, requested: u32,
+                                              callback: Option<&mut MediaAccessCallback>) -> std::ffi::c_int {
+            use cef::sys::cef_media_access_permission_types_t as Types;
+            const DEVICES: u32 =
+                Types::CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE as u32 | Types::CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE as u32;
+            // Screen capture would expose the host display, so only the remote camera and microphone qualify.
+            let allowed = if self.allow && requested & !DEVICES == 0 { requested } else { 0 };
+            if let Some(callback) = callback { callback.cont(allowed); }
+            1
+        }
+    }
+}
+
 wrap_client! {
     struct BrowserClient { bridge: Bridge }
     impl Client {
@@ -323,6 +345,7 @@ wrap_client! {
         fn jsdialog_handler(&self) -> Option<JsdialogHandler> { Some(JsDialogPolicy::new(self.bridge.clone())) }
         fn request_handler(&self) -> Option<RequestHandler> { Some(RequestHandlerImpl::new(self.bridge.clone())) }
         fn context_menu_handler(&self) -> Option<ContextMenuHandler> { Some(ContextMenuPolicy::new()) }
+        fn permission_handler(&self) -> Option<PermissionHandler> { Some(MediaPolicy::new(self.bridge.media_capture)) }
     }
 }
 
@@ -346,12 +369,21 @@ wrap_app! {
                 #[cfg(target_os = "macos")]
                 command.append_switch(Some(&"use-mock-keychain".into()));
                 #[cfg(target_os = "macos")]
+                let disabled = format!("AperitifHelpers,GpuPersistentCache,{}", remote_devices::DISABLE_FEATURES);
+                #[cfg(not(target_os = "macos"))]
+                let disabled = remote_devices::DISABLE_FEATURES.to_owned();
+                command.append_switch_with_value(Some(&"disable-features".into()), Some(&disabled.as_str().into()));
                 command.append_switch_with_value(
-                    Some(&"disable-features".into()),
-                    Some(&"AperitifHelpers,GpuPersistentCache".into()),
+                    Some(&"enable-features".into()),
+                    Some(&remote_devices::ENABLE_FEATURES.into()),
                 );
                 // A patched runtime keeps page copies in process memory; stock CEF ignores the switch.
                 command.append_switch(Some(&crate::private_clipboard::SWITCH.into()));
+                // Pages only reach client-supplied capture devices and authenticators, never host ones.
+                for switch in remote_devices::MEDIA_SWITCHES {
+                    command.append_switch(Some(&switch.into()));
+                }
+                command.append_switch(Some(&remote_devices::WEBAUTHN_SWITCH.into()));
                 #[cfg(target_os = "linux")]
                 command.append_switch_with_value(Some(&"ozone-platform".into()), Some(&"headless".into()));
             }
@@ -377,6 +409,7 @@ pub struct Engine {
     fatal: Rc<RefCell<Option<String>>>,
     downloads: Downloads,
     download_callbacks: Rc<RefCell<BTreeMap<u32, DownloadItemCallback>>>,
+    media_capture: bool,
     #[cfg(target_os = "macos")]
     _loader: cef::library_loader::LibraryLoader,
 }
@@ -392,6 +425,7 @@ impl Engine {
         profile: &std::path::Path,
         log_file: &std::path::Path,
         downloads: Downloads,
+        media_capture: bool,
     ) -> anyhow::Result<Self> {
         #[cfg(target_os = "macos")]
         let loader = cef::library_loader::LibraryLoader::new(&std::env::current_exe()?, false);
@@ -442,6 +476,7 @@ impl Engine {
             fatal: Rc::new(RefCell::new(None)),
             downloads,
             download_callbacks: Rc::new(RefCell::new(BTreeMap::new())),
+            media_capture,
             #[cfg(target_os = "macos")]
             _loader: loader,
         })
@@ -464,6 +499,7 @@ impl Engine {
             download_callbacks: Rc::clone(&self.download_callbacks),
             browser_downloads: Rc::clone(&browser_downloads),
             closing: Rc::clone(&closing),
+            media_capture: self.media_capture,
         };
         let window = WindowInfo {
             windowless_rendering_enabled: 1,

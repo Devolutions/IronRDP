@@ -10,7 +10,12 @@ fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("artifacts/bundle"));
     let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    command.args(["build", "--locked", "--features", "runtime"]);
+    let features = if cfg!(feature = "device-simulator") {
+        "runtime,device-simulator"
+    } else {
+        "runtime"
+    };
+    command.args(["build", "--locked", "--features", features]);
     #[cfg(windows)]
     command.arg("--lib");
     #[cfg(not(windows))]

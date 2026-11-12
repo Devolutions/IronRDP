@@ -6,14 +6,27 @@ pub mod platform;
 
 #[cfg(feature = "runtime")]
 mod app;
+#[cfg(feature = "device-simulator")]
+mod device_simulator;
 #[cfg(feature = "runtime")]
 mod input;
 #[cfg(feature = "runtime")]
 mod native;
 #[cfg(feature = "runtime")]
+mod patched_runtime;
+#[cfg(feature = "runtime")]
 mod private_clipboard;
 #[cfg(feature = "runtime")]
 mod rdp;
+#[cfg(feature = "runtime")]
+#[cfg_attr(
+    not(feature = "device-simulator"),
+    expect(
+        dead_code,
+        reason = "only the simulator feeds devices until the RDP device channels exist"
+    )
+)]
+mod remote_devices;
 
 #[cfg(all(feature = "runtime", not(windows)))]
 pub fn run() -> anyhow::Result<()> {

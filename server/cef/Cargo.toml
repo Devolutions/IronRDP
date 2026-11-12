@@ -23,6 +23,8 @@ runtime = [
     "dep:tempfile", "dep:tracing", "dep:tracing-subscriber", "dep:windows-sys",
 ]
 bundle = ["runtime", "cef/build-util"]
+# Test-only stand-ins for the client's camera, microphone and authenticator.
+device-simulator = ["runtime", "dep:sha2"]
 
 [dependencies]
 anyhow = "1" # public
@@ -41,6 +43,7 @@ ironrdp-pdu = { path = "../../crates/ironrdp-pdu", optional = true }
 tokio = { version = "1", features = ["rt", "sync", "time", "signal", "net", "macros"], optional = true } # public (JoinHandle)
 tokio-rustls = { version = "0.26", optional = true }
 rcgen = { version = "0.14", optional = true }
+sha2 = { version = "0.10", optional = true }
 tempfile = { version = "3", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
