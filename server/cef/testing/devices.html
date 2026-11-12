@@ -1,0 +1,99 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CEF remote devices fixture</title>
+<style>
+  html, body { margin: 0; background: #ffffff; font: 20px sans-serif; }
+  #run { position: absolute; left: 24px; top: 24px; width: 200px; height: 48px; }
+  #paste { position: absolute; left: 24px; top: 112px; width: 300px; height: 40px; }
+  video { position: absolute; left: 400px; top: 24px; width: 320px; height: 240px; }
+</style>
+<body>
+<button id="run">Run</button>
+<input id="paste" autocomplete="off">
+<video id="camera" muted playsinline></video>
+<script>
+  const report = (name, value) =>
+    fetch('/report', {method: 'POST', body: JSON.stringify({name, value})});
+  const attempt = async (name, check) => {
+    try {
+      await report(name, await check());
+    } catch (error) {
+      await report(name, {error: String(error)});
+    }
+  };
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  const camera = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({video: {width: 320, height: 240}});
+    const track = stream.getVideoTracks()[0];
+    const video = document.getElementById('camera');
+    video.srcObject = stream;
+    await video.play();
+    await new Promise(resolve => video.requestVideoFrameCallback(resolve));
+    const canvas = new OffscreenCanvas(video.videoWidth, video.videoHeight);
+    const context = canvas.getContext('2d');
+    context.drawImage(video, 0, 0);
+    const [r, g, b] = context.getImageData(canvas.width >> 1, canvas.height >> 1, 1, 1).data;
+    return {r, g, b, width: video.videoWidth, height: video.videoHeight, label: track.label};
+  };
+
+  const microphone = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false}});
+    const audio = new AudioContext();
+    await audio.resume();
+    const analyser = audio.createAnalyser();
+    audio.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+    let rms = 0;
+    for (let i = 0; i < 40 && rms < 0.1; ++i) {
+      await sleep(100);
+      analyser.getFloatTimeDomainData(samples);
+      rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+    }
+    stream.getTracks().forEach(track => track.stop());
+    return {rms, sampleRate: audio.sampleRate};
+  };
+
+  const screen = async () => {
+    const stream = await navigator.mediaDevices.getDisplayMedia({video: true});
+    stream.getTracks().forEach(track => track.stop());
+    return {granted: true};
+  };
+
+  const webauthn = async () => {
+    const platform = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    const credential = await navigator.credentials.create({publicKey: {
+      rp: {name: 'IronRDP RBI'},
+      user: {id: new Uint8Array(16), name: 'user@example.com', displayName: 'User'},
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      pubKeyCredParams: [{type: 'public-key', alg: -7}],
+      attestation: 'none',
+      timeout: 15000,
+    }});
+    return {
+      platform,
+      type: credential.type,
+      rawIdLength: credential.rawId.byteLength,
+      authenticatorDataLength: credential.response.getAuthenticatorData().byteLength,
+      publicKeyAlgorithm: credential.response.getPublicKeyAlgorithm(),
+    };
+  };
+
+  document.getElementById('run').onclick = async () => {
+    await attempt('webauthn', webauthn);
+    await attempt('camera', camera);
+    await attempt('microphone', microphone);
+    await attempt('screen', screen);
+  };
+
+  document.getElementById('paste').addEventListener('paste', event => {
+    event.preventDefault();
+    const file = event.clipboardData.files[0];
+    attempt('paste', async () => ({
+      types: [...event.clipboardData.types],
+      files: event.clipboardData.files.length,
+      name: file && file.name,
+      text: file && await file.text(),
+    }));
+  });
+</script>
