@@ -2673,6 +2673,23 @@ mod tests {
     }
 
     #[test]
+    fn gcc_blocks_carry_the_configured_keyboard_layout() {
+        // oracle: spec MS-RDPBCGR §2.2.1.3.2
+        let mut config = test_config();
+        config.keyboard_layout = 0x409;
+
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC blocks");
+        assert_eq!(blocks.core.keyboard_layout, 0x409);
+    }
+
+    #[test]
     fn gcc_blocks_advertise_monitor_layout_when_supported() {
         let mut config = Config {
             desktop_size: DesktopSize {

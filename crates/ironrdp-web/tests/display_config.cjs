@@ -116,6 +116,8 @@ async function clientCore(t, extensions, desktopSize) {
     return {
         desktopWidth: core.readUInt16LE(8),
         desktopHeight: core.readUInt16LE(10),
+        keyboardLayout: core.readUInt32LE(16),
+        clientName: core.subarray(24, 56).toString('utf16le').split('\0')[0],
         desktopScale: core.readUInt32LE(226),
         deviceScale: core.readUInt32LE(230),
         colorDepth: wants32Bpp ? 32 : highColorDepth,
@@ -326,3 +328,41 @@ for (const [name, invalid] of [
         assert.equal(core.colorDepth, 24);
     });
 }
+
+test('the keyboard layout is sent in client core data', { timeout: 5000 }, async (t) => {
+    // oracle: spec MS-RDPBCGR §2.2.1.3.2 defines keyboardLayout.
+    const core = await clientCore(t, [['keyboard_layout', 0x409]]);
+    assert.equal(core.keyboardLayout, 0x409);
+});
+
+for (const [name, invalid] of [
+    ['negative', -1],
+    ['fractional', 1033.5],
+    ['NaN', NaN],
+    ['out-of-range', 4294967296],
+    ['non-numeric', '1033'],
+]) {
+    test(`${name} keyboard layout leaves the previous setting unchanged`, { timeout: 5000 }, async (t) => {
+        // oracle: regression #2424 specifies that invalid extensions are ignored.
+        const core = await clientCore(t, [
+            ['keyboard_layout', 0x809],
+            ['keyboard_layout', invalid],
+        ]);
+        assert.equal(core.keyboardLayout, 0x809);
+    });
+}
+
+test('the client name is sent in client core data', { timeout: 5000 }, async (t) => {
+    // oracle: spec MS-RDPBCGR §2.2.1.3.2 defines clientName.
+    const core = await clientCore(t, [['client_name', 'workstation-7']]);
+    assert.equal(core.clientName, 'workstation-7');
+});
+
+test('an empty client name leaves the previous name unchanged', { timeout: 5000 }, async (t) => {
+    // oracle: regression #2424 specifies that an empty name keeps the current one.
+    const core = await clientCore(t, [
+        ['client_name', 'workstation-7'],
+        ['client_name', ''],
+    ]);
+    assert.equal(core.clientName, 'workstation-7');
+});

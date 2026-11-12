@@ -108,6 +108,7 @@ struct SessionBuilderInner {
     color_depth: Option<u32>,
     monitor_layout: Option<MonitorLayout>,
     monitor_layout_callback: Option<js_sys::Function>,
+    keyboard_layout: u32,
 }
 
 impl Default for SessionBuilderInner {
@@ -160,6 +161,7 @@ impl Default for SessionBuilderInner {
             color_depth: None,
             monitor_layout: None,
             monitor_layout_callback: None,
+            keyboard_layout: 0,
         }
     }
 }
@@ -372,6 +374,25 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |monitor_layout_callback: JsValue| {
                 self.0.borrow_mut().monitor_layout_callback = monitor_layout_callback.dyn_into::<js_sys::Function>().ok();
             };
+            |client_name: String| {
+                if !client_name.is_empty() {
+                    self.0.borrow_mut().client_name = client_name;
+                }
+            };
+            |keyboard_layout: f64| {
+                if keyboard_layout.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&keyboard_layout) {
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "the integral layout is validated in the u32 range"
+                    )]
+                    let layout = keyboard_layout as u32;
+                    self.0.borrow_mut().keyboard_layout = layout;
+                } else {
+                    warn!(keyboard_layout, "Invalid keyboard layout; ignored");
+                }
+            };
             // File transfer callbacks - protocol-specific, routed through extension()
             // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
             |files_available_callback: JsValue| {
@@ -547,6 +568,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let enable_server_pointer = self.0.borrow().enable_server_pointer;
         config.enable_server_pointer = enable_server_pointer;
+        config.keyboard_layout = self.0.borrow().keyboard_layout;
 
         if let Some(performance_flags) = self.0.borrow().performance_flags {
             config.performance_flags = performance_flags;
