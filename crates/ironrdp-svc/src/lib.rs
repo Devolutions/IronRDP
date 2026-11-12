@@ -155,6 +155,11 @@ impl StaticVirtualChannel {
         self.channel_processor.channel_name()
     }
 
+    /// Bounds this channel's messages by `max_message_size` unless its processor sets a limit of its own.
+    fn apply_set_max_message_size(&mut self, max_message_size: Option<usize>) {
+        self.chunk_processor.max_message_size = self.channel_processor.max_message_size().or(max_message_size);
+    }
+
     pub fn compression_condition(&self) -> CompressionCondition {
         self.channel_processor.compression_condition()
     }
@@ -312,7 +317,7 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     ///
     /// The limit excludes the channel PDU header and applies to both the advertised
     /// plaintext length and accumulated wire bytes, including compressed messages.
-    /// It is captured when the static channel is constructed.
+    /// It is captured when the static channel is constructed, and again when a static channel set's limit is applied.
     /// The default preserves channels without a configured limit.
     fn max_message_size(&self) -> Option<usize> {
         None
@@ -666,6 +671,8 @@ pub struct StaticChannelSet {
     to_channel_key: BTreeMap<StaticChannelId, StaticChannelKey>,
     next_dynamic_key: u64,
     maximum_chunk_size: usize,
+    /// The message limit of a channel whose processor sets none.
+    max_message_size: Option<usize>,
 }
 
 impl StaticChannelSet {
@@ -677,7 +684,24 @@ impl StaticChannelSet {
             to_channel_key: BTreeMap::new(),
             next_dynamic_key: 0,
             maximum_chunk_size: CHANNEL_CHUNK_LENGTH,
+            max_message_size: None,
         }
+    }
+
+    /// Bounds the messages of each static channel whose processor sets no limit of its own, in the channels already in
+    /// this set and those inserted later.
+    /// A message over the limit, declared or received, makes [`StaticVirtualChannel::process`] fail.
+    pub fn set_max_message_size(&mut self, max_message_size: usize) {
+        self.max_message_size = Some(max_message_size);
+        for channel in self.channels.values_mut() {
+            channel.apply_set_max_message_size(self.max_message_size);
+        }
+    }
+
+    fn new_channel<T: SvcProcessor + 'static>(&self, val: T) -> StaticVirtualChannel {
+        let mut channel = StaticVirtualChannel::new(val);
+        channel.apply_set_max_message_size(self.max_message_size);
+        channel
     }
 
     /// Inserts a [`StaticVirtualChannel`] into this [`StaticChannelSet`].
@@ -690,7 +714,7 @@ impl StaticChannelSet {
             return None;
         }
 
-        self.channels.insert(key, StaticVirtualChannel::new(val))
+        self.channels.insert(key, self.new_channel(val))
     }
 
     /// Inserts a runtime-defined static virtual channel.
@@ -705,7 +729,7 @@ impl StaticChannelSet {
         let next_dynamic_key = self.next_dynamic_key.checked_add(1)?;
         let key = StaticChannelKey::Dynamic(self.next_dynamic_key);
         self.next_dynamic_key = next_dynamic_key;
-        let replaced = self.channels.insert(key, StaticVirtualChannel::new(val));
+        let replaced = self.channels.insert(key, self.new_channel(val));
         debug_assert!(replaced.is_none());
         Some(key)
     }
