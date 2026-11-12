@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CEF clipboard fixture</title>
+<style>
+  html, body { margin: 0; background: #ffffff; font: 20px sans-serif; }
+  .marker { position: absolute; width: 64px; height: 64px; background: #333333; }
+  #paste { position: absolute; left: 24px; top: 24px; width: 300px; height: 40px; }
+  #pasted-text { left: 352px; top: 24px; }
+  #pasted-html { left: 440px; top: 24px; }
+  #pasted-image { left: 528px; top: 24px; }
+  #source { position: absolute; left: 24px; top: 112px; width: 300px; height: 40px; }
+  #copy-text { position: absolute; left: 24px; top: 192px; width: 180px; height: 48px; }
+  #copy-html { position: absolute; left: 232px; top: 192px; width: 180px; height: 48px; }
+  #copy-image { position: absolute; left: 440px; top: 192px; width: 180px; height: 48px; }
+  #copied { left: 648px; top: 192px; }
+</style>
+<body>
+<input id="paste" autocomplete="off"><div id="pasted-text" class="marker"></div>
+<div id="pasted-html" class="marker"></div><div id="pasted-image" class="marker"></div>
+<input id="source" autocomplete="off" value="browser→client ✓">
+<button id="copy-text">Copy text</button><button id="copy-html">Copy HTML</button>
+<button id="copy-image">Copy image</button><div id="copied" class="marker"></div>
+<script>
+  const marker = (id, color) => document.getElementById(id).style.background = color;
+  document.getElementById('paste').addEventListener('paste', event => {
+    event.preventDefault();
+    const data = event.clipboardData;
+    if (data.getData('text/plain') === 'client→browser ✓') marker('pasted-text', '#00ff88');
+    if (data.getData('text/html').includes('<i>client html</i>')) marker('pasted-html', '#ff00ff');
+    const image = [...data.items].find(item => item.type === 'image/png');
+    if (image) {
+      createImageBitmap(image.getAsFile()).then(bitmap => {
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const context = canvas.getContext('2d');
+        context.drawImage(bitmap, 0, 0);
+        const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+        if (bitmap.width === 4 && bitmap.height === 3 && r === 0x12 && g === 0x34 && b === 0x56) {
+          marker('pasted-image', '#ffaa00');
+        }
+      });
+    }
+  });
+  document.getElementById('copy-text').onclick = () => {
+    const source = document.getElementById('source');
+    source.select();
+    marker('copied', document.execCommand('copy') ? '#0088ff' : '#ff0000');
+  };
+  document.getElementById('copy-html').onclick = () => {
+    const copy = event => {
+      event.preventDefault();
+      event.clipboardData.setData('text/plain', 'rich copy');
+      event.clipboardData.setData('text/html', '<b>rich copy</b>');
+    };
+    document.addEventListener('copy', copy, { once: true });
+    marker('copied', document.execCommand('copy') ? '#0088ff' : '#ff0000');
+  };
+  document.getElementById('copy-image').onclick = async () => {
+    try {
+      const canvas = new OffscreenCanvas(5, 2);
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#654321';
+      context.fillRect(0, 0, 5, 2);
+      const blob = await canvas.convertToBlob({ type: 'image/png' });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      marker('copied', '#0088ff');
+    } catch (error) {
+      marker('copied', '#ff0000');
+    }
+  };
+</script>
+</body>

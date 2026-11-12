@@ -12,8 +12,10 @@ use clap::Parser;
 use nix::sys::signal::{SigSet, SigmaskHow, Signal};
 use tokio::sync::watch;
 
+use crate::clipboard::{Clipboard, Snapshot};
 use crate::download::{Limits, runtime::Downloads};
 use crate::model::{Action, Model};
+use crate::private_clipboard::PrivateClipboard;
 use crate::{input, native, platform, rdp};
 
 #[cfg(windows)]
@@ -44,6 +46,9 @@ struct Args {
     download_max_session_bytes: u64,
     #[arg(long, default_value_t = 2)]
     download_max_concurrent: usize,
+    /// Redirect clipboard content; the private-clipboard CEF runtime is always required.
+    #[arg(long)]
+    clipboard: bool,
 }
 
 pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::Result<()> {
@@ -170,27 +175,34 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
         return cleanup;
     }
     let content = model.content_dimensions();
-    if let Err(error) = engine.create(
-        model.active_id(),
-        &args.url,
-        u16::try_from(content.0)?,
-        u16::try_from(content.1)?,
-        model.generation(),
-    ) {
-        tracing::error!(%error, "CEF browser startup failed");
-        let closed = engine.shutdown();
-        if let Err(error) = &closed {
-            tracing::error!(%error, "CEF shutdown failed");
+    let started = private_clipboard(args.clipboard).and_then(|private| {
+        engine.create(
+            model.active_id(),
+            &args.url,
+            u16::try_from(content.0)?,
+            u16::try_from(content.1)?,
+            model.generation(),
+        )?;
+        Ok(private)
+    });
+    let private = match started {
+        Ok(private) => private,
+        Err(error) => {
+            tracing::error!(%error, "CEF browser startup failed");
+            let closed = engine.shutdown();
+            if let Err(error) = &closed {
+                tracing::error!(%error, "CEF shutdown failed");
+            }
+            downloads.stop();
+            let worker = download_worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("download worker panicked during browser startup"));
+            finish_profile(profile, closed.is_ok() && worker.is_ok())?;
+            worker?;
+            closed?;
+            return Err(error);
         }
-        downloads.stop();
-        let worker = download_worker
-            .join()
-            .map_err(|_| anyhow::anyhow!("download worker panicked during browser startup"));
-        finish_profile(profile, closed.is_ok() && worker.is_ok())?;
-        worker?;
-        closed?;
-        return Err(error);
-    }
+    };
     engine.activate(model.active_id());
     let runtime = rdp::Runtime::new();
     #[cfg(unix)]
@@ -228,6 +240,14 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
     };
     let (frames, receiver) = watch::channel(initial);
     let (sender, commands) = mpsc::sync_channel(256);
+    let clipboard = private.map(|private| {
+        let (bridge, incoming) = Clipboard::new();
+        ClipboardLink {
+            private,
+            bridge,
+            incoming,
+        }
+    });
     let stop = Arc::new(AtomicBool::new(false));
     let server = rdp::start(
         runtime,
@@ -236,10 +256,18 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
         sender,
         receiver,
         Arc::clone(&stop),
-        downloads.clone(),
+        rdp::Redirection {
+            downloads: downloads.clone(),
+            clipboard: clipboard.as_ref().map(|link| link.bridge.clone()),
+        },
     );
     let mut input = input::Input::default();
-    let result = run_browser(&args, &mut model, &mut engine, &mut input, &frames, commands, &stop);
+    let channels = Channels {
+        frames: &frames,
+        commands,
+        clipboard,
+    };
+    let result = run_browser(&args, &mut model, &mut engine, &mut input, channels, &stop);
     stop.store(true, Ordering::Release);
     input.release_content(&engine);
     downloads.cancel_all();
@@ -294,6 +322,40 @@ fn verify_cef_log(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Connections between the browser loop and the RDP thread.
+struct Channels<'a> {
+    frames: &'a watch::Sender<rdp::Frame>,
+    commands: mpsc::Receiver<rdp::Command>,
+    clipboard: Option<ClipboardLink>,
+}
+
+/// Browser side of clipboard redirection, owned by the CEF UI thread.
+struct ClipboardLink {
+    private: PrivateClipboard,
+    bridge: Clipboard,
+    incoming: watch::Receiver<Option<Snapshot>>,
+}
+
+impl ClipboardLink {
+    fn exchange(&mut self) -> anyhow::Result<()> {
+        if self.incoming.has_changed()? {
+            if let Some(snapshot) = self.incoming.borrow_and_update().as_ref() {
+                self.private.write(snapshot)?;
+            }
+        }
+        if let Some(snapshot) = self.private.take_change()? {
+            self.bridge.offer(snapshot);
+        }
+        Ok(())
+    }
+}
+
+/// Loads the private clipboard, which is required to keep pages off the host clipboard.
+fn private_clipboard(redirect: bool) -> anyhow::Result<Option<PrivateClipboard>> {
+    let private = PrivateClipboard::load().context("browser startup requires the private-clipboard CEF runtime")?;
+    Ok(redirect.then_some(private))
+}
+
 fn finish_profile(profile: tempfile::TempDir, cleanup_complete: bool) -> anyhow::Result<()> {
     if cleanup_complete {
         #[cfg(not(windows))]
@@ -335,10 +397,14 @@ fn run_browser(
     model: &mut Model,
     engine: &mut native::Engine,
     input: &mut input::Input,
-    frames: &watch::Sender<rdp::Frame>,
-    commands: mpsc::Receiver<rdp::Command>,
+    channels: Channels<'_>,
     stop: &AtomicBool,
 ) -> anyhow::Result<()> {
+    let Channels {
+        frames,
+        commands,
+        mut clipboard,
+    } = channels;
     let mut popup_positions = BTreeMap::new();
     let mut dirty = true;
     let start = Instant::now();
@@ -378,6 +444,9 @@ fn run_browser(
                 perform(model, engine, input, action)?;
             }
             dirty = true;
+        }
+        if let Some(link) = &mut clipboard {
+            link.exchange()?;
         }
         for event in engine.poll()? {
             match event {
