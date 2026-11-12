@@ -389,3 +389,35 @@ fn status_prints_the_frame_number() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(stdout.lines().any(|line| line == "frame: 7"), "{stdout}");
 }
+
+// oracle: mutant a command line without `session info`, or a daemon that reports facts for a session it does not have
+#[test]
+fn session_info_reports_no_active_session() {
+    let endpoint = test_endpoint("session-info");
+    let mut daemon = spawn_daemon(&endpoint);
+
+    let result = std::panic::catch_unwind(|| {
+        wait_for_daemon(&endpoint);
+
+        let output = agent(&endpoint, &["session", "info"]);
+        assert!(!output.status.success());
+        let stderr = String::from_utf8(output.stderr).expect("stderr");
+        assert!(stderr.contains("no active session"), "{stderr}");
+
+        // A JSON caller gets the error as a document on stdout, as the `rail` commands give it.
+        let output = agent(&endpoint, &["session", "info", "--format", "json"]);
+        assert!(!output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("stdout");
+        assert_eq!(
+            stdout.trim_end(),
+            r#"{"category":"unavailable","message":"no active session","type":"error"}"#
+        );
+    });
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}

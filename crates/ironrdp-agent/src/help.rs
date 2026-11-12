@@ -51,6 +51,13 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  and wait for termination. The daemon keeps running.
                                  `--server` is a safety check against disconnecting a different
                                  destination, not a way to select among multiple sessions.
+- `session info [--format human|json]`
+                                 Report what the server sent about the session: the remote session
+                                 ID, whether the logon completed, the network characteristics it
+                                 measured (round-trip times in ms, bandwidth in kbps), its monitor
+                                 layout (inclusive right and bottom, `primary` marked), and the
+                                 last logon error or warning. A fact the server has not sent is
+                                 absent (`null` in JSON), and a redirection clears them all.
 - `session logoff [--timeout-secs N]`
                                  Log the user off the remote session, ending it on the host instead of
                                  leaving it disconnected. Requires Devolutions Agent (the NOW agent) in
