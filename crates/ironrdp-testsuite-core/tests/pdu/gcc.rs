@@ -395,6 +395,17 @@ fn buffer_length_is_correct_for_client_core_data_with_all_optional_fields() {
 }
 
 #[test]
+fn client_name_is_not_cut_inside_a_surrogate_pair() {
+    let mut data = CLIENT_CORE_DATA_WITHOUT_OPTIONAL_FIELDS.clone();
+    data.client_name = format!("{}\u{1F600}", "A".repeat(14));
+
+    let buffer = encode_vec(&data).unwrap();
+    let decoded: ClientCoreData = decode(buffer.as_slice()).unwrap();
+
+    assert_eq!("A".repeat(14), decoded.client_name);
+}
+
+#[test]
 fn client_color_depth_is_color_depth_if_post_beta_color_depth_is_absent() {
     let buffer = CLIENT_CORE_DATA_BUFFER.as_ref();
 

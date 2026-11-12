@@ -101,6 +101,7 @@ struct SessionBuilderInner {
     enable_server_pointer: bool,
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
+    keyboard_layout: u32,
 }
 
 impl Default for SessionBuilderInner {
@@ -147,6 +148,7 @@ impl Default for SessionBuilderInner {
             enable_server_pointer: true,
             legacy_graphics: false,
             outbound_message_size_limit: None,
+            keyboard_layout: 0,
         }
     }
 }
@@ -306,6 +308,20 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     0 // Fallback to no limit for invalid values.
                 };
                 self.0.borrow_mut().outbound_message_size_limit = if limit > 0 { Some(limit) } else { None };
+            };
+            |client_name: String| {
+                if !client_name.is_empty() {
+                    self.0.borrow_mut().client_name = client_name;
+                }
+            };
+            |keyboard_layout: f64| {
+                if keyboard_layout.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&keyboard_layout) {
+                    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let layout = keyboard_layout as u32;
+                    self.0.borrow_mut().keyboard_layout = layout;
+                } else {
+                    warn!(keyboard_layout, "Invalid keyboard layout; ignored");
+                }
             };
             // File transfer callbacks - protocol-specific, routed through extension()
             // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
@@ -478,6 +494,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let enable_server_pointer = self.0.borrow().enable_server_pointer;
         config.enable_server_pointer = enable_server_pointer;
+        config.keyboard_layout = self.0.borrow().keyboard_layout;
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
