@@ -562,6 +562,10 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::WaitFrame { .. } => Response::typed_error(
+            AgentErrorCategory::Unavailable,
+            "frame waits are unavailable through ActiveX",
+        ),
         Request::RailStatus | Request::RailEvents { .. } | Request::RailWait { .. } | Request::RailExecute(_) => {
             Response::typed_error(
                 AgentErrorCategory::Unavailable,
@@ -663,6 +667,7 @@ fn status(shared: &Shared) -> Response {
         message: live.error.clone(),
         credentials_loaded: false,
         untrusted_certificate: None,
+        frame_number: None,
     }))
 }
 

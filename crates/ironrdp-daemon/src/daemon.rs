@@ -485,6 +485,10 @@ struct Live {
     /// Most recent frame (with the cursor already composited in by the session). Replaced on every
     /// graphics update; `None` until the first frame arrives.
     frame: Option<Frame>,
+    /// Number of frames received in this session, which is also the number of the frame in `frame`.
+    frame_number: u64,
+    /// Woken whenever `frame_number` or `state` changes, for [`Daemon::wait_frame`].
+    frame_notify: Arc<tokio::sync::Notify>,
     pending_pointer_position: Option<MousePosition>,
     rail_initial_execute: Option<(u16, String)>,
     rail: RailLedger,
@@ -756,6 +760,10 @@ impl Daemon {
                 DaemonResponse::Single(self.query_logs(substring.as_deref(), last))
             }
             Request::Screenshot => DaemonResponse::Single(self.screenshot()),
+            Request::WaitFrame {
+                after_frame,
+                timeout_ms,
+            } => DaemonResponse::Single(self.wait_frame(after_frame, timeout_ms).await),
             Request::ClipboardGet => DaemonResponse::Single(self.clipboard_get()),
             Request::ClipboardSet { text } => DaemonResponse::Single(self.clipboard_set(text)),
             Request::ClipboardGetImage => DaemonResponse::Single(self.clipboard_get_image()),
@@ -1127,6 +1135,8 @@ impl Daemon {
             state: ConnState::Connecting,
             error: None,
             frame: None,
+            frame_number: 0,
+            frame_notify: Arc::default(),
             pending_pointer_position: None,
             rail_initial_execute: initial_rail_execute.clone(),
             rail: RailLedger::new(
@@ -1276,40 +1286,96 @@ impl Daemon {
                 message: None,
                 credentials_loaded: self.credentials_loaded,
                 untrusted_certificate: None,
+                frame_number: None,
             },
             Some(session) => {
                 let live = session.live.lock().expect("session live state poisoned");
-                let (width, height) = match &live.frame {
-                    Some(frame) => (Some(frame.width), Some(frame.height)),
-                    None => (None, None),
-                };
-                let untrusted_certificate = if live.state == ConnState::Failed {
-                    live.certificate_rejection
-                        .lock()
-                        .expect("certificate rejection poisoned")
-                        .as_ref()
-                        .map(|rejection| {
-                            Box::new(crate::ipc::UntrustedCertificate {
-                                endpoint: rejection.endpoint.clone(),
-                                sha256: rejection.fingerprint.to_string(),
-                                reason: rejection.reason.clone(),
-                            })
-                        })
-                } else {
-                    None
-                };
-                StatusInfo {
-                    state: live.state,
-                    destination: Some(session.destination.clone()),
-                    width,
-                    height,
-                    message: live.error.clone(),
-                    credentials_loaded: self.credentials_loaded,
-                    untrusted_certificate,
-                }
+                self.session_status(&session.destination, &live)
             }
         };
         Response::Ok(Payload::Status(info))
+    }
+
+    fn session_status(&self, destination: &str, live: &Live) -> StatusInfo {
+        let (width, height, frame_number) = match &live.frame {
+            Some(frame) => (Some(frame.width), Some(frame.height), Some(live.frame_number)),
+            None => (None, None, None),
+        };
+        let untrusted_certificate = if live.state == ConnState::Failed {
+            live.certificate_rejection
+                .lock()
+                .expect("certificate rejection poisoned")
+                .as_ref()
+                .map(|rejection| {
+                    Box::new(crate::ipc::UntrustedCertificate {
+                        endpoint: rejection.endpoint.clone(),
+                        sha256: rejection.fingerprint.to_string(),
+                        reason: rejection.reason.clone(),
+                    })
+                })
+        } else {
+            None
+        };
+        StatusInfo {
+            state: live.state,
+            destination: Some(destination.to_owned()),
+            width,
+            height,
+            message: live.error.clone(),
+            credentials_loaded: self.credentials_loaded,
+            untrusted_certificate,
+            frame_number,
+        }
+    }
+
+    /// Replies with the session status once a frame newer than `after_frame` has arrived.
+    ///
+    /// The reply is an error when the session ends or the timeout elapses first, so neither can pass for the frame.
+    async fn wait_frame(&self, after_frame: u64, timeout_ms: u32) -> Response {
+        const MAX_FRAME_WAIT_MS: u32 = 60_000;
+        if MAX_FRAME_WAIT_MS < timeout_ms {
+            return Response::typed_error(
+                crate::ipc::AgentErrorCategory::InvalidRequest,
+                format!("frame wait timeout exceeds {MAX_FRAME_WAIT_MS} ms"),
+            );
+        }
+        let (destination, live, frame_notify) = {
+            let guard = self.state.lock().expect("daemon state poisoned");
+            let Some(session) = guard.as_ref() else {
+                return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+            };
+            let frame_notify = Arc::clone(&session.live.lock().expect("session live state poisoned").frame_notify);
+            (session.destination.clone(), Arc::clone(&session.live), frame_notify)
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(u64::from(timeout_ms));
+        let mut timed_out = timeout_ms == 0;
+        loop {
+            let notified = frame_notify.notified();
+            tokio::pin!(notified);
+            let _ = notified.as_mut().enable();
+            {
+                // A frame that arrives with the session's end or the deadline still counts, so it is checked first.
+                let live = live.lock().expect("session live state poisoned");
+                if after_frame < live.frame_number {
+                    return Response::Ok(Payload::Status(self.session_status(&destination, &live)));
+                }
+                let failure = if matches!(live.state, ConnState::Disconnected | ConnState::Failed) {
+                    Some("session ended")
+                } else if timed_out {
+                    Some("frame wait timed out")
+                } else {
+                    None
+                };
+                if let Some(failure) = failure {
+                    return Response::typed_error(
+                        crate::ipc::AgentErrorCategory::Unavailable,
+                        format!("{failure} at frame {}", live.frame_number),
+                    );
+                }
+            }
+
+            timed_out = tokio::time::timeout_at(deadline, &mut notified).await.is_err();
+        }
     }
 
     fn query_props(&self, filter: Option<&KeyFilter>) -> Response {
@@ -2273,9 +2339,11 @@ async fn consume_output(
     rail_notify: Arc<tokio::sync::Notify>,
     next_rail_generation: Arc<AtomicU64>,
 ) {
+    let frame_notify = Arc::clone(&live.lock().expect("session live state poisoned").frame_notify);
     while let Some(event) = output_rx.recv().await {
         let mut guard = live.lock().expect("session live state poisoned");
         let previous = guard.state;
+        let previous_frame_number = guard.frame_number;
         let rail_changed = match event {
             RdpOutputEvent::Connected => {
                 guard.state = ConnState::Connected;
@@ -2400,6 +2468,7 @@ async fn consume_output(
                     height,
                     pixels: buffer,
                 });
+                guard.frame_number = guard.frame_number.saturating_add(1);
                 guard.state = ConnState::Connected;
                 guard.error = None;
                 if previous != ConnState::Connected {
@@ -2453,9 +2522,13 @@ async fn consume_output(
             // above; the remaining pointer events (default/hidden) carry no live state we track.
             _ => false,
         };
+        let frame_or_state_changed = guard.frame_number != previous_frame_number || guard.state != previous;
         drop(guard);
         if rail_changed {
             rail_notify.notify_waiters();
+        }
+        if frame_or_state_changed {
+            frame_notify.notify_waiters();
         }
         notify(&notification);
     }
@@ -2474,6 +2547,7 @@ async fn consume_output(
     if rail_changed {
         rail_notify.notify_waiters();
     }
+    frame_notify.notify_waiters();
     notify(&notification);
 }
 
@@ -2687,7 +2761,7 @@ mod tests {
     use ironrdp_propertyset::PropertySet;
 
     use super::{
-        BoundedLog, ConnState, Daemon, DaemonOptions, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_RETAINED_EVENTS,
+        BoundedLog, ConnState, Daemon, DaemonOptions, Frame, Live, MAX_PENDING_RAIL_LAUNCHES, MAX_RAIL_RETAINED_EVENTS,
         MAX_UNICODE_TEXT_CHARS, NowEndpoint, OperationManager, RailLedger, RdpdrDriveConfig, Request, ResizeError,
         Scancode, Session, consume_output, enqueue_unicode_text, filetime_to_unix_secs, negotiate_until_session_ends,
         notify, system_time_to_filetime,
@@ -2828,6 +2902,8 @@ mod tests {
             state: ConnState::Connected,
             error: None,
             frame: None,
+            frame_number: 0,
+            frame_notify: Arc::default(),
             pending_pointer_position: None,
             rail_initial_execute: Some((0, "notepad.exe".to_owned())),
             rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
@@ -2890,6 +2966,8 @@ mod tests {
             state: ConnState::Connected,
             error: None,
             frame: None,
+            frame_number: 0,
+            frame_notify: Arc::default(),
             pending_pointer_position: None,
             rail_initial_execute: None,
             rail: RailLedger::new(1, 1, None),
@@ -3485,6 +3563,164 @@ mod tests {
             message,
             "[read frame] custom error, caused by: [decode transport] custom error, caused by: connection reset"
         );
+    }
+
+    fn frame_event() -> ironrdp_client::rdp::RdpOutputEvent {
+        let side = core::num::NonZeroU16::new(2).expect("nonzero frame side");
+        ironrdp_client::rdp::RdpOutputEvent::Image {
+            buffer: vec![0; 4],
+            width: side,
+            height: side,
+        }
+    }
+
+    async fn frame_status(wait: impl Future<Output = Response>) -> crate::ipc::StatusInfo {
+        let response = tokio::time::timeout(Duration::from_secs(1), wait)
+            .await
+            .expect("frame wait returns");
+        let Response::Ok(Payload::Status(status)) = response else {
+            panic!("expected status response");
+        };
+        status
+    }
+
+    async fn frame_wait_error(wait: impl Future<Output = Response>) -> crate::ipc::AgentError {
+        let response = tokio::time::timeout(Duration::from_secs(1), wait)
+            .await
+            .expect("frame wait returns");
+        let Response::Err(error) = response else {
+            panic!("expected error response");
+        };
+        error
+    }
+
+    fn session_at_frame(frame_number: u64) -> (Daemon, Arc<Mutex<Live>>) {
+        let (daemon, _, live, _) = active_rail_session(false);
+        let mut guard = live.lock().expect("session live state poisoned");
+        guard.frame = Some(Frame {
+            width: 2,
+            height: 2,
+            pixels: vec![0; 4],
+        });
+        guard.frame_number = frame_number;
+        drop(guard);
+        (daemon, live)
+    }
+
+    // oracle: mutant an output consumer that stores a frame without counting it or waking frame waiters
+    #[tokio::test]
+    async fn wait_frame_returns_the_next_frame_with_its_number() {
+        let (daemon, _, live, rail_notify) = active_rail_session(false);
+        let (output_tx, output_rx) = output_channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+
+        // Each wait's timeout is far beyond the second `frame_status` allows, so only the frame can end it in time.
+        let mut wait = Box::pin(daemon.wait_frame(0, 60_000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+
+        output_tx.send(frame_event()).await.expect("send frame");
+        let status = frame_status(wait).await;
+        assert_eq!(status.frame_number, Some(1));
+        assert_eq!((status.width, status.height), (Some(2), Some(2)));
+
+        let mut wait = Box::pin(daemon.wait_frame(1, 60_000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+        output_tx.send(frame_event()).await.expect("send second frame");
+        let status = frame_status(wait).await;
+        assert_eq!(status.frame_number, Some(2));
+
+        drop(output_tx);
+        consumer.await.expect("consume output");
+    }
+
+    // oracle: mutant a frame wait that misses a frame that arrived between the caller's status and its wait
+    #[tokio::test]
+    async fn wait_frame_returns_at_once_for_a_frame_that_already_arrived() {
+        let (daemon, live) = session_at_frame(5);
+
+        let status = frame_status(daemon.wait_frame(4, 60_000)).await;
+        assert_eq!(status.frame_number, Some(5));
+
+        let status = frame_status(daemon.wait_frame(4, 0)).await;
+        assert_eq!(status.frame_number, Some(5));
+
+        // The frame still counts when the session has ended since.
+        live.lock().expect("session live state poisoned").state = ConnState::Disconnected;
+        let status = frame_status(daemon.wait_frame(4, 60_000)).await;
+        assert_eq!(status.frame_number, Some(5));
+    }
+
+    // oracle: mutant a frame wait whose timeout reads as success, so a caller takes it for the frame
+    #[tokio::test]
+    async fn wait_frame_fails_when_no_newer_frame_arrives_in_time() {
+        let (daemon, _) = session_at_frame(5);
+
+        let started = tokio::time::Instant::now();
+        let error = frame_wait_error(daemon.wait_frame(5, 50)).await;
+        assert!(Duration::from_millis(50) <= started.elapsed());
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert_eq!(error.message, "frame wait timed out at frame 5");
+
+        let error = frame_wait_error(daemon.wait_frame(5, 0)).await;
+        assert_eq!(error.message, "frame wait timed out at frame 5");
+    }
+
+    // oracle: mutant a frame wait woken only by frames, or one that reports the end of the session as success
+    #[tokio::test]
+    async fn wait_frame_fails_when_the_session_ends() {
+        let (daemon, _, live, rail_notify) = active_rail_session(false);
+        let (output_tx, output_rx) = output_channel(1);
+        let consumer = tokio::spawn(consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::new(AtomicU64::new(2)),
+        ));
+
+        let mut wait = Box::pin(daemon.wait_frame(0, 60_000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+
+        drop(output_tx);
+        let error = frame_wait_error(wait).await;
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert_eq!(error.message, "session ended at frame 0");
+
+        consumer.await.expect("consume output");
+    }
+
+    // oracle: mutant a frame wait with no upper bound on its timeout, or one that waits with no session
+    #[tokio::test]
+    async fn wait_frame_rejects_an_oversized_timeout_and_a_missing_session() {
+        let (daemon, _, _, _) = active_rail_session(false);
+        assert!(matches!(
+            daemon.wait_frame(0, 60_001).await,
+            Response::Err(error) if error.category == AgentErrorCategory::InvalidRequest
+        ));
+
+        let daemon = Daemon::with_overlay(PropertySet::new());
+        assert!(matches!(
+            daemon.wait_frame(0, 1_000).await,
+            Response::Err(error) if error.category == AgentErrorCategory::Unavailable
+        ));
     }
 
     // oracle: mutant a status message that drops the host's Set Error Info description, which `ironrdp-agent session logoff` relies on

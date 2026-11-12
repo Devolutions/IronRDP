@@ -69,6 +69,10 @@ fn request_variants_round_trip() {
             last: None,
         },
         Request::Screenshot,
+        Request::WaitFrame {
+            after_frame: 7,
+            timeout_ms: 1_000,
+        },
         Request::MouseMove { x: 640, y: 480 },
         Request::MouseButton {
             button: MouseButton::Right,
@@ -221,6 +225,7 @@ fn response_variants_round_trip() {
             message: None,
             credentials_loaded: true,
             untrusted_certificate: None,
+            frame_number: None,
         })),
         Response::Ok(Payload::Status(StatusInfo {
             state: ConnState::Connected,
@@ -230,6 +235,7 @@ fn response_variants_round_trip() {
             message: Some("ok".to_owned()),
             credentials_loaded: false,
             untrusted_certificate: None,
+            frame_number: Some(42),
         })),
         Response::Ok(Payload::Status(StatusInfo {
             state: ConnState::Failed,
@@ -243,6 +249,7 @@ fn response_variants_round_trip() {
                 sha256: "ab".repeat(32),
                 reason: "name mismatch".to_owned(),
             })),
+            frame_number: None,
         })),
         Response::Ok(Payload::Properties(PropertyDump {
             entries: vec![

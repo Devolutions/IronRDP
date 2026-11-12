@@ -145,9 +145,17 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
 - `disconnect [--server HOST[:PORT]]`  Alias for `session disconnect`; the optional server
                                  must match the active destination before any disconnect occurs.
 - `logoff [--timeout-secs N]`    Alias for `session logoff`.
-- `status`                       Report connection state, destination, last frame size, and whether
-                                 credentials are preloaded (`credentials loaded: true|false`). Query
-                                 this first to decide whether you must supply a password.
+- `status`                       Report connection state, destination, last frame size and number
+                                 (`frame: N`), and whether credentials are preloaded
+                                 (`credentials loaded: true|false`). Query this first to decide
+                                 whether you must supply a password.
+- `wait-frame --after-frame N [--timeout-ms MS]`
+                                 Wait without polling for a frame numbered above N, then print the
+                                 same report as `status`. Read N from `status` before the action
+                                 whose result you wait for, so a frame that arrives early still
+                                 counts; use 0 to wait for the first frame. Fails (exit 1) when the
+                                 session ends or the timeout (default 30000, at most 60000) elapses
+                                 first, so success always means a newer frame.
 
 ## Inspection
 

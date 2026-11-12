@@ -80,6 +80,35 @@ fn daemon_reports_no_active_session() {
     }
 }
 
+// oracle: mutant a command line without `wait-frame` or its options, or a daemon that waits with no session
+#[test]
+fn wait_frame_reports_no_active_session() {
+    let endpoint = test_endpoint("wait-frame");
+    let mut daemon = spawn_daemon(&endpoint);
+
+    let result = std::panic::catch_unwind(|| {
+        wait_for_daemon(&endpoint);
+
+        let started = Instant::now();
+        let output = agent(
+            &endpoint,
+            &["wait-frame", "--after-frame", "3", "--timeout-ms", "60000"],
+        );
+        assert!(!output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
+
+        let stderr = String::from_utf8(output.stderr).expect("stderr");
+        assert!(stderr.contains("no active session"), "{stderr}");
+    });
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+
 #[test]
 fn daemon_start_foreground_stops_after_ipc_shutdown() {
     let endpoint = test_endpoint("foreground");
