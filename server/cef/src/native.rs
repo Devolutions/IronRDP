@@ -341,10 +341,19 @@ wrap_app! {
                 command.append_switch(Some(&"no-startup-window".into()));
                 command.append_switch(Some(&"disable-gpu".into()));
                 command.append_switch(Some(&"disable-gpu-compositing".into()));
+                #[cfg(unix)]
+                command.append_switch(Some(&"disable-chrome-shutdown-signal-handlers".into()));
                 #[cfg(target_os = "macos")]
                 command.append_switch(Some(&"use-mock-keychain".into()));
+                #[cfg(target_os = "macos")]
+                command.append_switch_with_value(
+                    Some(&"disable-features".into()),
+                    Some(&"AperitifHelpers,GpuPersistentCache".into()),
+                );
+                // A patched runtime keeps page copies in process memory; stock CEF ignores the switch.
+                command.append_switch(Some(&crate::private_clipboard::SWITCH.into()));
                 #[cfg(target_os = "linux")]
-                command.append_switch_with_value(Some(&"ozone-platform".into()), Some(&"x11".into()));
+                command.append_switch_with_value(Some(&"ozone-platform".into()), Some(&"headless".into()));
             }
         }
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {

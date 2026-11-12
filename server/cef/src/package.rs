@@ -51,10 +51,10 @@ fn bundle_mac(output: &std::path::Path, target: &std::path::Path) -> anyhow::Res
     );
     let path = cef::build_util::mac::bundle(output, target, "ironrdp-cef-server", "ironrdp-cef-helper", None, info)?;
     let status = Command::new("plutil")
-        .args(["-insert", "LSUIElement", "-bool", "YES"])
+        .args(["-insert", "LSBackgroundOnly", "-bool", "YES"])
         .arg(path.join("Contents/Info.plist"))
         .status()
         .context("failed to invoke plutil")?;
-    anyhow::ensure!(status.success(), "failed to mark the application as a background agent");
+    anyhow::ensure!(status.success(), "failed to mark the application as background-only");
     Ok(path)
 }

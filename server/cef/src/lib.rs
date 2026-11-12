@@ -1,3 +1,5 @@
+#[cfg(feature = "runtime")]
+pub mod clipboard;
 pub mod download;
 pub mod model;
 pub mod platform;
@@ -8,6 +10,8 @@ mod app;
 mod input;
 #[cfg(feature = "runtime")]
 mod native;
+#[cfg(feature = "runtime")]
+mod private_clipboard;
 #[cfg(feature = "runtime")]
 mod rdp;
 

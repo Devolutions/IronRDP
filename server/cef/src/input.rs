@@ -162,6 +162,21 @@ impl Input {
             };
             host.send_key_event(Some(&event));
             self.keys.insert(scan, (tab, event.clone()));
+            // macOS Chromium binds editing commands to Command, but RDP clients send Control.
+            #[cfg(target_os = "macos")]
+            if self.modifiers.ctrl && !self.modifiers.alt && !self.modifiers.meta {
+                use cef::{ImplBrowser as _, ImplFrame as _};
+
+                if let Some(frame) = engine.browser(tab).and_then(|browser| browser.focused_frame()) {
+                    match code {
+                        0x1e => frame.select_all(),
+                        0x2d => frame.cut(),
+                        0x2e => frame.copy(),
+                        0x2f => frame.paste(),
+                        _ => {}
+                    }
+                }
+            }
             if character != 0 && !self.modifiers.ctrl && !self.modifiers.alt && !self.modifiers.meta {
                 let mut event = event;
                 event.type_ = cef::KeyEventType::CHAR;

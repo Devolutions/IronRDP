@@ -1,0 +1,24 @@
+diff --git a/chrome/browser/chrome_browser_main_posix.cc b/chrome/browser/chrome_browser_main_posix.cc
+index 2f4f777546..972c8b7fe2 100644
+--- a/chrome/browser/chrome_browser_main_posix.cc
++++ b/chrome/browser/chrome_browser_main_posix.cc
+@@ -14,6 +14,7 @@
+ #include <string>
+ 
+ #include "base/allocator/partition_alloc_support.h"
++#include "base/command_line.h"
+ #include "base/check_op.h"
+ #include "base/compiler_specific.h"
+ #include "base/functional/bind.h"
+@@ -173,6 +174,11 @@ int ChromeBrowserMainPartsPosix::PreEarlyInitialization() {
+ void ChromeBrowserMainPartsPosix::PostCreateMainMessageLoop() {
+   ChromeBrowserMainParts::PostCreateMainMessageLoop();
+ 
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "disable-chrome-shutdown-signal-handlers")) {
++    return;
++  }
++
+   // Exit in response to SIGINT, SIGTERM, etc.
+   InstallShutdownSignalHandlers(
+       base::BindOnce(&ExitHandler::ExitWhenPossibleOnUIThread),

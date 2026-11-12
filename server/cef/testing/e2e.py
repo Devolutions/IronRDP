@@ -33,9 +33,10 @@ def require_background_bundle(server):
     plist = server.parent.parent / "Info.plist"
     with plist.open("rb") as source:
         info = plistlib.load(source)
-    # oracle: spec Apple Bundle Resources §LSUIElement (agent apps do not appear in the Dock).
-    if info.get("LSUIElement") is not True:
-        raise RuntimeError("Server bundle must set LSUIElement before running tests: " + str(plist))
+    if info.get("LSUIElement") is not True and info.get("LSBackgroundOnly") is not True:
+        raise RuntimeError(
+            "Server bundle must set LSUIElement or LSBackgroundOnly: " + str(plist)
+        )
 
 
 def server_process_options():

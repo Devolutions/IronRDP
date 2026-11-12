@@ -18,8 +18,8 @@ resolver = "2"
 default = []
 runtime = [
     "dep:cef", "dep:async-trait", "dep:bytes", "dep:clap",
-    "dep:ironrdp-server", "dep:ironrdp-displaycontrol", "dep:ironrdp-rdpdr", "dep:ironrdp-core", "dep:ironrdp-pdu",
-    "dep:tokio", "dep:tokio-rustls", "dep:rcgen", "dep:nix",
+    "dep:ironrdp-server", "dep:ironrdp-displaycontrol", "dep:ironrdp-rdpdr", "dep:ironrdp-cliprdr", "dep:ironrdp-cliprdr-format", "dep:ironrdp-core", "dep:ironrdp-pdu",
+    "dep:tokio", "dep:tokio-rustls", "dep:rcgen", "dep:nix", "dep:libc",
     "dep:tempfile", "dep:tracing", "dep:tracing-subscriber", "dep:windows-sys",
 ]
 bundle = ["runtime", "cef/build-util"]
@@ -34,6 +34,8 @@ clap = { version = "4.6", features = ["derive"], optional = true }
 ironrdp-server = { path = "../../crates/ironrdp-server", optional = true } # public
 ironrdp-displaycontrol = { path = "../../crates/ironrdp-displaycontrol", optional = true }
 ironrdp-rdpdr = { path = "../../crates/ironrdp-rdpdr", optional = true }
+ironrdp-cliprdr = { path = "../../crates/ironrdp-cliprdr", optional = true }
+ironrdp-cliprdr-format = { path = "../../crates/ironrdp-cliprdr-format", optional = true }
 ironrdp-core = { path = "../../crates/ironrdp-core", optional = true }
 ironrdp-pdu = { path = "../../crates/ironrdp-pdu", optional = true }
 tokio = { version = "1", features = ["rt", "sync", "time", "signal", "net", "macros"], optional = true } # public (JoinHandle)
@@ -45,9 +47,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = tr
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["signal"], optional = true }
+libc = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"], optional = true }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_LibraryLoader"], optional = true }
 
 [dev-dependencies]
 ironrdp-svc = { path = "../../crates/ironrdp-svc" }

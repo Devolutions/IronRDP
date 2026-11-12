@@ -1,0 +1,330 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index 2018b0dc0..ec790bfc9 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -568,6 +568,8 @@ source_set("libcef_static") {
+     "libcef/browser/chrome/chrome_browser_host_impl.h",
+     "libcef/browser/chrome/chrome_browser_main_extra_parts_cef.cc",
+     "libcef/browser/chrome/chrome_browser_main_extra_parts_cef.h",
++    "libcef/browser/isolated_clipboard.cc",
++    "libcef/browser/isolated_clipboard.h",
+     "libcef/browser/chrome/chrome_browser_web_contents_delegate.cc",
+     "libcef/browser/chrome/chrome_browser_web_contents_delegate.h",
+     "libcef/browser/chrome/chrome_content_browser_client_cef.cc",
+@@ -964,6 +966,7 @@ source_set("libcef_static") {
+     "//chrome/common:buildflags",
+     "//chrome/services/printing:lib",
+     "//components/certificate_transparency",
++    "//components/headless/clipboard",
+     "//components/component_updater",
+     "//components/content_settings/core/browser",
+     "//components/content_settings/core/common",
+diff --git a/libcef/browser/chrome/chrome_browser_main_extra_parts_cef.cc b/libcef/browser/chrome/chrome_browser_main_extra_parts_cef.cc
+index 7c96eb632..6af9ff21a 100644
+--- a/libcef/browser/chrome/chrome_browser_main_extra_parts_cef.cc
++++ b/libcef/browser/chrome/chrome_browser_main_extra_parts_cef.cc
+@@ -10,6 +10,7 @@
+ #include "cef/libcef/browser/chrome/chrome_startup_browser_creator.h"
+ #include "cef/libcef/browser/context.h"
+ #include "cef/libcef/browser/file_dialog_runner.h"
++#include "cef/libcef/browser/isolated_clipboard.h"
+ #include "cef/libcef/browser/permission_prompt.h"
+ #include "cef/libcef/common/app_manager.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -38,6 +39,10 @@ ChromeBrowserMainExtraPartsCef::~ChromeBrowserMainExtraPartsCef() {
+ #endif
+ }
+ 
++void ChromeBrowserMainExtraPartsCef::PreEarlyInitialization() {
++  isolated_clipboard::InstallIfRequested();
++}
++
+ void ChromeBrowserMainExtraPartsCef::PostProfileInit(Profile* profile,
+                                                      bool is_initial_profile) {
+   if (!is_initial_profile) {
+diff --git a/libcef/browser/chrome/chrome_browser_main_extra_parts_cef.h b/libcef/browser/chrome/chrome_browser_main_extra_parts_cef.h
+index 6908b4309..4fbc12fef 100644
+--- a/libcef/browser/chrome/chrome_browser_main_extra_parts_cef.h
++++ b/libcef/browser/chrome/chrome_browser_main_extra_parts_cef.h
+@@ -47,6 +47,7 @@ class ChromeBrowserMainExtraPartsCef : public ChromeBrowserMainExtraParts {
+ 
+  private:
+   // ChromeBrowserMainExtraParts overrides.
++  void PreEarlyInitialization() override;
+   void PostProfileInit(Profile* profile, bool is_initial_profile) override;
+   void PostBrowserStart() override;
+   void PreMainMessageLoopRun() override;
+diff --git a/libcef/browser/isolated_clipboard.cc b/libcef/browser/isolated_clipboard.cc
+new file mode 100644
+index 000000000..f6bd418e0
+--- /dev/null
++++ b/libcef/browser/isolated_clipboard.cc
+@@ -0,0 +1,192 @@
++// Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
++// reserved. Use of this source code is governed by a BSD-style license that
++// can be found in the LICENSE file.
++
++#include "cef/libcef/browser/isolated_clipboard.h"
++
++#include <algorithm>
++#include <memory>
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/check.h"
++#include "base/command_line.h"
++#include "components/headless/clipboard/headless_clipboard.h"
++#include "content/public/browser/browser_thread.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "ui/base/clipboard/clipboard.h"
++#include "ui/base/clipboard/clipboard_buffer.h"
++#include "ui/base/clipboard/clipboard_data.h"
++#include "ui/base/clipboard/clipboard_non_backed.h"
++#include "ui/base/clipboard/clipboard_sequence_number_token.h"
++#include "ui/gfx/codec/png_codec.h"
++
++namespace isolated_clipboard {
++
++namespace {
++
++bool g_installed = false;
++
++struct GenerationState {
++  std::optional<ui::ClipboardSequenceNumberToken> token;
++  int64_t generation = 0;
++};
++
++GenerationState& generation_state() {
++  static GenerationState state;
++  return state;
++}
++
++ui::ClipboardNonBacked* GetClipboard() {
++  if (!g_installed ||
++      !content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) {
++    return nullptr;
++  }
++  return ui::ClipboardNonBacked::GetForCurrentThread();
++}
++
++bool HasFormat(const ui::ClipboardData& data,
++               ui::ClipboardInternalFormat format) {
++  return (data.format() & static_cast<int>(format)) != 0;
++}
++
++int64_t CopyOut(const uint8_t* bytes,
++                size_t length,
++                uint8_t* buffer,
++                size_t capacity) {
++  if (buffer && capacity > 0) {
++    std::copy_n(bytes, std::min(length, capacity), buffer);
++  }
++  return static_cast<int64_t>(length);
++}
++
++}  // namespace
++
++void InstallIfRequested() {
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(kSwitch)) {
++    return;
++  }
++  // A clipboard created earlier would keep serving the platform clipboard,
++  // and SetClipboardForCurrentThread only DCHECKs against replacing it.
++  CHECK(!ui::Clipboard::TakeForCurrentThread())
++      << "a platform clipboard was created before the isolated clipboard";
++  headless::SetHeadlessClipboardForCurrentThread();
++  g_installed = true;
++}
++
++}  // namespace isolated_clipboard
++
++using isolated_clipboard::CopyOut;
++using isolated_clipboard::GetClipboard;
++using isolated_clipboard::HasFormat;
++
++int cef_isolated_clipboard_enabled(void) {
++  return GetClipboard() ? 1 : 0;
++}
++
++int64_t cef_isolated_clipboard_generation(void) {
++  ui::ClipboardNonBacked* clipboard = GetClipboard();
++  if (!clipboard) {
++    return CEF_ISOLATED_CLIPBOARD_WRONG_STATE;
++  }
++  auto& state = isolated_clipboard::generation_state();
++  const auto& token =
++      clipboard->GetSequenceNumber(ui::ClipboardBuffer::kCopyPaste);
++  if (state.token != token) {
++    state.token = token;
++    ++state.generation;
++  }
++  return state.generation;
++}
++
++int64_t cef_isolated_clipboard_read(int kind,
++                                    uint8_t* buffer,
++                                    size_t capacity) {
++  ui::ClipboardNonBacked* clipboard = GetClipboard();
++  if (!clipboard) {
++    return CEF_ISOLATED_CLIPBOARD_WRONG_STATE;
++  }
++  if (!buffer && capacity > 0) {
++    return CEF_ISOLATED_CLIPBOARD_INVALID;
++  }
++  const ui::ClipboardData* data =
++      clipboard->GetClipboardData(nullptr, ui::ClipboardBuffer::kCopyPaste);
++  if (!data) {
++    return CEF_ISOLATED_CLIPBOARD_ABSENT;
++  }
++
++  switch (kind) {
++    case CEF_ISOLATED_CLIPBOARD_TEXT: {
++      if (!HasFormat(*data, ui::ClipboardInternalFormat::kText)) {
++        return CEF_ISOLATED_CLIPBOARD_ABSENT;
++      }
++      const std::string& text = data->text();
++      return CopyOut(reinterpret_cast<const uint8_t*>(text.data()), text.size(),
++                     buffer, capacity);
++    }
++    case CEF_ISOLATED_CLIPBOARD_HTML: {
++      if (!HasFormat(*data, ui::ClipboardInternalFormat::kHtml)) {
++        return CEF_ISOLATED_CLIPBOARD_ABSENT;
++      }
++      const std::string& markup = data->markup_data();
++      return CopyOut(reinterpret_cast<const uint8_t*>(markup.data()),
++                     markup.size(), buffer, capacity);
++    }
++    case CEF_ISOLATED_CLIPBOARD_PNG: {
++      if (!HasFormat(*data, ui::ClipboardInternalFormat::kPng)) {
++        return CEF_ISOLATED_CLIPBOARD_ABSENT;
++      }
++      if (!data->maybe_png()) {
++        std::optional<SkBitmap> bitmap = data->GetBitmapIfPngNotEncoded();
++        if (!bitmap) {
++          return CEF_ISOLATED_CLIPBOARD_ABSENT;
++        }
++        std::optional<std::vector<uint8_t>> png =
++            gfx::PNGCodec::EncodeBGRASkBitmap(*bitmap,
++                                              /*discard_transparency=*/false);
++        if (!png) {
++          return CEF_ISOLATED_CLIPBOARD_ABSENT;
++        }
++        data->SetPngDataAfterEncoding(std::move(*png));
++      }
++      const std::vector<uint8_t>& png = *data->maybe_png();
++      return CopyOut(png.data(), png.size(), buffer, capacity);
++    }
++    default:
++      return CEF_ISOLATED_CLIPBOARD_INVALID;
++  }
++}
++
++int cef_isolated_clipboard_write(const uint8_t* text,
++                                 size_t text_length,
++                                 const uint8_t* html,
++                                 size_t html_length,
++                                 const uint8_t* png,
++                                 size_t png_length) {
++  ui::ClipboardNonBacked* clipboard = GetClipboard();
++  if (!clipboard) {
++    return CEF_ISOLATED_CLIPBOARD_WRONG_STATE;
++  }
++  if ((!text && text_length > 0) || (!html && html_length > 0) ||
++      (!png && png_length > 0)) {
++    return CEF_ISOLATED_CLIPBOARD_INVALID;
++  }
++
++  auto data = std::make_unique<ui::ClipboardData>();
++  if (text) {
++    data->set_text(
++        std::string(reinterpret_cast<const char*>(text), text_length));
++  }
++  if (html) {
++    data->set_markup_data(
++        std::string(reinterpret_cast<const char*>(html), html_length));
++  }
++  if (png) {
++    data->SetPngData(std::vector<uint8_t>(png, png + png_length));
++  }
++  clipboard->WriteClipboardData(std::move(data),
++                                ui::ClipboardBuffer::kCopyPaste);
++  return 0;
++}
+diff --git a/libcef/browser/isolated_clipboard.h b/libcef/browser/isolated_clipboard.h
+new file mode 100644
+index 000000000..7ffe696ef
+--- /dev/null
++++ b/libcef/browser/isolated_clipboard.h
+@@ -0,0 +1,70 @@
++// Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
++// reserved. Use of this source code is governed by a BSD-style license that
++// can be found in the LICENSE file.
++
++#ifndef CEF_LIBCEF_BROWSER_ISOLATED_CLIPBOARD_H_
++#define CEF_LIBCEF_BROWSER_ISOLATED_CLIPBOARD_H_
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "cef/include/internal/cef_export.h"
++
++// Process-private clipboard for embedders that must never read or write the
++// host clipboard, such as remote browser isolation servers.
++//
++// Launch the browser process with --isolated-clipboard to replace the
++// platform clipboard with an in-memory clipboard before any clipboard use.
++// The embedder exchanges clipboard content through the C functions below,
++// which must be called on the browser UI thread after CefInitialize.
++
++namespace isolated_clipboard {
++
++inline constexpr char kSwitch[] = "isolated-clipboard";
++
++// Installs the in-memory clipboard when kSwitch is present. Crashes if a
++// platform clipboard already exists, because isolation would silently fail.
++void InstallIfRequested();
++
++}  // namespace isolated_clipboard
++
++extern "C" {
++
++// Content kinds for cef_isolated_clipboard_read.
++#define CEF_ISOLATED_CLIPBOARD_TEXT 0  // UTF-8 plain text.
++#define CEF_ISOLATED_CLIPBOARD_HTML 1  // UTF-8 HTML markup fragment.
++#define CEF_ISOLATED_CLIPBOARD_PNG 2   // PNG-encoded image.
++
++// Return values below zero.
++#define CEF_ISOLATED_CLIPBOARD_ABSENT -1       // No content of that kind.
++#define CEF_ISOLATED_CLIPBOARD_WRONG_STATE -2  // Disabled or not UI thread.
++#define CEF_ISOLATED_CLIPBOARD_INVALID -3      // Invalid argument.
++
++// Returns 1 when the in-memory clipboard is installed, 0 otherwise.
++CEF_EXPORT int cef_isolated_clipboard_enabled(void);
++
++// Returns a counter that increases whenever the clipboard content changes,
++// including changes made by cef_isolated_clipboard_write, or a negative
++// error.
++CEF_EXPORT int64_t cef_isolated_clipboard_generation(void);
++
++// Copies up to |capacity| bytes of |kind| content into |buffer| and returns
++// the full content length, or a negative value. Call with a null |buffer|
++// and zero |capacity| to query the length.
++CEF_EXPORT int64_t cef_isolated_clipboard_read(int kind,
++                                               uint8_t* buffer,
++                                               size_t capacity);
++
++// Replaces the clipboard content with the given representations of one item.
++// Null pointers omit a representation; all null clears the clipboard.
++// Returns 0 on success or a negative error.
++CEF_EXPORT int cef_isolated_clipboard_write(const uint8_t* text,
++                                            size_t text_length,
++                                            const uint8_t* html,
++                                            size_t html_length,
++                                            const uint8_t* png,
++                                            size_t png_length);
++
++}  // extern "C"
++
++#endif  // CEF_LIBCEF_BROWSER_ISOLATED_CLIPBOARD_H_
