@@ -16,6 +16,7 @@ use ironrdp_server::{
 };
 use tokio::sync::watch;
 
+use crate::clipboard::Clipboard;
 use crate::download::runtime::Downloads;
 
 #[derive(Clone)]
@@ -230,6 +231,12 @@ impl RdpServerDisplay for Bridge {
     }
 }
 
+/// Device redirection offered to the client.
+pub struct Redirection {
+    pub downloads: Downloads,
+    pub clipboard: Option<Clipboard>,
+}
+
 pub fn start(
     runtime: Runtime,
     addr: SocketAddr,
@@ -237,10 +244,18 @@ pub fn start(
     commands: mpsc::SyncSender<Command>,
     frames: watch::Receiver<Frame>,
     stop: Arc<AtomicBool>,
-    downloads: Downloads,
+    redirection: Redirection,
 ) -> std::thread::JoinHandle<anyhow::Result<()>> {
     std::thread::spawn(move || {
-        let result = run(runtime, addr, artifacts, commands, frames, Arc::clone(&stop), downloads);
+        let result = run(
+            runtime,
+            addr,
+            artifacts,
+            commands,
+            frames,
+            Arc::clone(&stop),
+            redirection,
+        );
         if let Err(error) = &result {
             tracing::error!(%error, "RDP server failed");
         }
@@ -256,8 +271,9 @@ fn run(
     commands: mpsc::SyncSender<Command>,
     frames: watch::Receiver<Frame>,
     stop: Arc<AtomicBool>,
-    downloads: Downloads,
+    redirection: Redirection,
 ) -> anyhow::Result<()> {
+    let Redirection { downloads, clipboard } = redirection;
     let Runtime {
         reactor,
         mut interrupt,
@@ -291,6 +307,7 @@ fn run(
             .with_connection_handler(Some(Box::new(bridge)))
             .with_connection_policy(ConnectionPolicy::Reject)
             .with_rdpdr_factory(Some(downloads.factory()))
+            .with_cliprdr_factory(clipboard.as_ref().map(Clipboard::factory))
             .with_honor_client_desktop_size(Some(DesktopSize {
                 width: 3840,
                 height: 2160,

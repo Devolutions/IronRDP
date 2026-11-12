@@ -15,6 +15,13 @@ macOS needs the Xcode command-line tools; Windows needs the MSVC C++ build tools
 The package has its own Cargo workspace and lockfile, so root-workspace builds do not build or download CEF.
 The pinned `tauri-apps/cef-rs` revision is `9aa78c450489eddb828eb982eaee6c104a89d348`, using CEF `156.4.0+156.0.26`.
 Building the native feature downloads a large CEF distribution and compiles its wrapper.
+The default `package-cef` command uses stock CEF.
+The server requires patched CEF even when CLIPRDR redirection is disabled; it rejects stock CEF at browser startup.
+Apply `isolated-clipboard.patch` to the CEF checkout.
+On POSIX, also apply `disable-chromium-shutdown-signals.patch` to Chromium so Rust can own shutdown cleanup.
+Rebuild and distribute the patched CEF checkout, then set `CEF_PATH` to its distribution root before packaging.
+Both patches are in `server/cef/patches`.
+The custom clipboard build has been validated on macOS ARM64; Linux and Windows remain unverified.
 
 Run commands from the repository root.
 If CMake or Ninja is missing, install them locally on macOS or Linux:
@@ -45,9 +52,9 @@ Run the packaged executable so CEF can find its libraries, resources, locales, a
 
 | Platform | Executable under `server/cef/artifacts/bundle/` | Native validation |
 | --- | --- | --- |
-| macOS | `ironrdp-cef-server.app/Contents/MacOS/ironrdp-cef-server` | Apple Silicon build and real-agent acceptance |
-| Linux | `ironrdp-cef-server` | Debian ARM64 VM build and real-agent acceptance |
-| Windows | `ironrdp_cef_server.exe` | ARM64 cross-build and real-agent browsing and download acceptance in Windows 11 VM |
+| macOS | `ironrdp-cef-server.app/Contents/MacOS/ironrdp-cef-server` | Apple Silicon build, real-agent acceptance, and private clipboard E2E |
+| Linux | `ironrdp-cef-server` | Debian ARM64 VM browsing; private clipboard runtime unverified |
+| Windows | `ironrdp_cef_server.exe` | ARM64 cross-build and browsing/download acceptance; private clipboard runtime unverified |
 
 The macOS server is a background agent and does not appear in the Dock.
 Its development bundle is not sealed: `codesign --verify` and Gatekeeper assessment fail, although the linker-signed executable runs locally.
@@ -67,7 +74,7 @@ $artifacts = Join-Path $PWD.Path "server/cef/artifacts/windows-run"
 ```
 
 On Linux, install a TrueType font such as DejaVu Sans and run as a non-root user with a working Chromium sandbox.
-The server selects the X11 backend and loads its sibling helper, resources, locales, and libraries; the executables use an `$ORIGIN` library search path.
+The server selects the headless Ozone backend and loads its sibling helper, resources, locales, and libraries; the executables use an `$ORIGIN` library search path.
 With Xvfb and xauth installed, a private display can be started without a desktop session:
 
 ```sh
@@ -78,7 +85,7 @@ xvfb-run -a -s "-screen 0 1280x800x24 -nolisten tcp" \
 ```
 
 Do not add `--no-sandbox` when user namespaces or sandbox installation are unavailable; fix the native runtime configuration instead.
-This display setup does not implement a private clipboard bridge or constitute a container isolation boundary.
+Running in Xvfb does not provide a container isolation boundary.
 The Windows and Linux runtime and packager type-check with `cef/dox`, which skips native CEF linking.
 Linux architectures other than ARM64 remain unverified.
 The server chooses an installed platform font, or accepts an explicit TrueType file with `--font`.
@@ -101,7 +108,8 @@ Clients that support RDP error reporting receive a server-shutdown reason before
 A startup SIGINT is deferred until CEF initializes.
 The startup mask assumes native library initializers do not leave a SIGINT-unblocked thread running before `main`.
 On Windows, Ctrl-Break during CEF initialization can leave profile files locked until the browser process exits; the server reports a failure and leaves the remaining files in place.
-The pinned CEF runtime can intercept macOS SIGTERM and exit without Rust cleanup, even with its generic signal handlers disabled.
+The custom POSIX patch disables Chromium's own shutdown signal handler so Rust can close CEF and remove the profile on SIGINT.
+An unpatched or stock CEF bundle may intercept POSIX shutdown signals before Rust cleanup.
 macOS CEF teardown can also expire its Chromium watchdog before Rust removes the profile.
 SIGTERM, crashes, stalled initialization or shutdown, and forced termination can leave a profile in the artifact directory; do not treat exit code zero alone as evidence of cleanup.
 If CEF shutdown, a worker, or log preservation fails, the server logs and retains the profile.
@@ -130,17 +138,16 @@ Manual acceptance covered its homepage, scrolling, Products menu, Remote Desktop
 The Linux ARM64 VM also displayed the homepage through the agent with normal HTTPS verification.
 These checks are separate from the deterministic suite: public website availability and content must not become test dependencies.
 
-## Private clipboard limitation
+## Private clipboard
 
-Session-private text, HTML, and image clipboard redirection is **not implemented**.
-The pinned macOS Chromium clipboard uses the host's general pasteboard, and the inspected public CEF API does not expose a supported replacement clipboard backend.
-Not installing a CLIPRDR backend does not isolate native browser copy and paste.
-Do not use clipboard operations when relying on this prototype to avoid the host clipboard.
-
-Chromium has an internal in-memory clipboard implementation, but it is not an interface exposed by the bundled CEF C ABI.
-A private macOS clipboard may require a CEF extension or a separate isolation boundary.
-A private Linux X11 server with a clipboard bridge is a possible stock-CEF alternative, not an implemented or verified feature.
-The prototype does not temporarily replace the host clipboard, call private Chromium symbols, or inject page-level paste substitutes.
+The custom CEF build provides an in-memory clipboard for each browser process.
+The server installs it before browser startup, so page reads and writes never use the host clipboard.
+With `--clipboard`, the CLIPRDR bridge redirects UTF-8 text, HTML, and PNG in both directions between the browser and RDP client.
+Without RDP redirection, the private clipboard remains local to the browser process.
+Stock CEF lacks the private API and is rejected at startup rather than falling back to the platform clipboard.
+The macOS ARM64 end-to-end test covers all three formats and confirms that the host pasteboard change count stays unchanged.
+The private clipboard itself does not use X11 or a desktop clipboard service.
+The Linux runtime selects headless Ozone but has only been tested under Xvfb; private clipboard operation and rendering without Xvfb remain unverified.
 
 ## Redirected downloads
 
@@ -198,6 +205,17 @@ The runner also checks server exit status and profile removal.
 On Linux or Windows, substitute the packaged executable and native agent paths.
 Windows uses a unique named pipe and sends Ctrl-Break to a new console process group; Unix uses a private socket and SIGINT.
 Screenshot color comparisons allow four levels per RGB channel because the negotiated RemoteFX codec is lossy; geometry and distinct fixture states are still checked.
+
+Run the private clipboard test against the custom macOS bundle and verify that stock CEF fails closed:
+
+```sh
+python3 server/cef/testing/clipboard.py \
+  --server-bin server/cef/artifacts/clipboard-bundle/ironrdp-cef-server.app/Contents/MacOS/ironrdp-cef-server \
+  --stock-server-bin server/cef/artifacts/bundle/ironrdp-cef-server.app/Contents/MacOS/ironrdp-cef-server \
+  --agent target/debug/ironrdp-agent
+```
+
+The runner checks text, HTML, and PNG in both directions, unchanged host pasteboard state, and profile cleanup.
 
 Evidence is written under `server/cef/artifacts/e2e/run-*/`: `report.json`, screenshots, agent command/output logs, and per-server logs and certificates.
 On Unix, CEF logs are copied out of the profile on orderly shutdown; on Windows, CEF writes directly to `cef.log` in the artifact directory.
@@ -290,11 +308,12 @@ In a Windows 11 ARM64 VM, observed renderers had untrusted-integrity tokens and 
 These observations do not enumerate every child or prove container isolation.
 GPU rendering, remote debugging, native context menus, and external-protocol launches are disabled.
 Downloads are disabled unless explicitly enabled and require the dedicated client device.
-Audio is muted, and no clipboard or audio RDP backend is installed.
-This does not virtualize the host clipboard, filesystem, network, keychain, permission prompts, or file pickers.
+CEF's process-private clipboard is always active; CLIPRDR redirection is opt-in.
+Audio is muted, and no audio RDP backend is installed.
+This isolates page clipboard operations from the host pasteboard but does not virtualize the host filesystem, network, keychain, permission prompts, or file pickers.
 On macOS, Chromium can read a [host Chrome brand][chromium-brand] and send an [RLZ request][chromium-rlz] that may include a machine identifier.
 Only HTTP, HTTPS, and `about:blank` navigations are supported; allowed new-window requests become tabs.
-Permission prompts, private clipboard integration, and arbitrary websites are not covered by the fixture.
+Permission prompts and arbitrary websites are not covered by the fixture.
 
 The `UNTESTED:` property at the resize bridge is CEF's UI-thread paint ordering across rapid size changes.
 Queued paints carry Rust generations and wrong-size frames are rejected, but CEF does not provide a native resize token for a late paint after dimensions cycle back.
