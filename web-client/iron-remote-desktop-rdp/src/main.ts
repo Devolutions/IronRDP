@@ -46,8 +46,10 @@ export function displayControl(enable: boolean): Extension {
 }
 
 /**
- * Plays the remote desktop's audio: `callback` receives `{ type: 'wave', sampleRate, channels, data }`
- * (interleaved 16-bit little-endian PCM), `{ type: 'volume', left, right }` (0..1) and `{ type: 'close' }`.
+ * Receives the remote desktop's audio through the callback described in README.md, Audio playback.
+ * Wave messages contain interleaved 16-bit little-endian PCM in a Uint8Array.
+ * Volume messages contain normalized logarithmic protocol levels, not linear amplitude gains.
+ * Close messages also precede initial format negotiation and renegotiation; later waves can follow.
  */
 export function audioPlayback(callback: (message: unknown) => void): Extension {
     return new Extension('audio_playback', callback);

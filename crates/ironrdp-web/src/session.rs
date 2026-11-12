@@ -1730,6 +1730,9 @@ fn attach_audio_and_printer_channels(
     printer_driver_name: String,
     computer_name: String,
 ) {
+    // UNTESTED: Live Windows/GNOME servers must deliver PCM to the registered callback.
+    // Channel tests cover local advertisement and negotiation; play a remote sound in the
+    // browser when changing this setup to check server interoperability and callback delivery.
     let audio = audio_backend.is_some();
     if let Some(audio_backend) = audio_backend {
         connector.attach_static_channel(Rdpsnd::new(Box::new(audio_backend)));
@@ -2168,97 +2171,122 @@ mod tests {
         }
     }
 
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn audio_and_printer_channels_preserve_backends() {
-        use ironrdp::rdpdr::NoopRdpdrBackend;
-        use ironrdp::rdpsnd::pdu::{self, AudioFormat, WaveFormat};
+    fn audio_test_connector(audio: bool, printer: bool) -> ClientConnector {
+        let (tx, _rx) = mpsc::unbounded();
+        let mut connector = ClientConnector::new(
+            connector_config(SecurityConfig {
+                enable_credssp: true,
+                enable_standard_rdp_security: false,
+            }),
+            core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
+        );
+        attach_audio_and_printer_channels(
+            &mut connector,
+            audio.then(|| crate::audio::WasmAudioBackend::new(tx.clone())),
+            printer.then(|| WasmPrinterBackend::new(crate::printer::WasmPrinterMessageProxy::new(tx.clone()))),
+            7,
+            "Test printer".to_owned(),
+            DEFAULT_PRINTER_DRIVER_NAME.to_owned(),
+            "ironrdp-web-test".to_owned(),
+        );
+        connector
+    }
+
+    fn assert_audio_and_device_channels(connector: &ClientConnector) {
+        let channels: Vec<_> = connector
+            .static_channels
+            .values()
+            .map(|channel| channel.channel_name())
+            .collect();
+        assert_eq!(channels.len(), 2, "unexpected channels: {channels:?}");
+        assert!(channels.contains(&Rdpsnd::NAME), "missing RDPSND: {channels:?}");
+        assert!(channels.contains(&Rdpdr::NAME), "missing RDPDR: {channels:?}");
+    }
+
+    fn audio_test_format() -> ironrdp::rdpsnd::pdu::AudioFormat {
+        ironrdp::rdpsnd::pdu::AudioFormat {
+            format: ironrdp::rdpsnd::pdu::WaveFormat::PCM,
+            n_channels: 2,
+            n_samples_per_sec: 48_000,
+            n_avg_bytes_per_sec: 192_000,
+            n_block_align: 4,
+            bits_per_sample: 16,
+            data: None,
+        }
+    }
+
+    fn negotiate_audio_formats(connector: &mut ClientConnector) -> Vec<ironrdp::rdpsnd::pdu::AudioFormat> {
+        use ironrdp::rdpsnd::pdu;
         use ironrdp_core::{decode, encode_vec};
         use ironrdp_svc::SvcProcessor as _;
 
-        for (audio, printer) in [(false, false), (true, false), (false, true), (true, true)] {
-            let (tx, _rx) = mpsc::unbounded();
-            let mut connector = ClientConnector::new(
-                connector_config(SecurityConfig {
-                    enable_credssp: true,
-                    enable_standard_rdp_security: false,
-                }),
-                core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
-            );
-            attach_audio_and_printer_channels(
-                &mut connector,
-                audio.then(|| crate::audio::WasmAudioBackend::new(tx.clone())),
-                printer.then(|| WasmPrinterBackend::new(crate::printer::WasmPrinterMessageProxy::new(tx.clone()))),
-                7,
-                "Test printer".to_owned(),
-                DEFAULT_PRINTER_DRIVER_NAME.to_owned(),
-                "ironrdp-web-test".to_owned(),
-            );
+        let rdpsnd = connector
+            .get_static_channel_processor_mut::<Rdpsnd>()
+            .expect("RDPSND attached");
+        let response = rdpsnd
+            .process(
+                &encode_vec(&pdu::ServerAudioOutputPdu::AudioFormat(pdu::ServerAudioFormatPdu {
+                    version: pdu::Version::V8,
+                    formats: vec![audio_test_format()],
+                }))
+                .expect("encode server formats"),
+            )
+            .expect("negotiate audio formats");
+        let encoded = response[0].encode_unframed_pdu().expect("encode client formats");
+        let pdu::ClientAudioOutputPdu::AudioFormat(reply) = decode(&encoded).expect("decode client formats") else {
+            panic!("expected client audio formats");
+        };
+        reply.formats
+    }
 
-            let channels: Vec<_> = connector
-                .static_channels
-                .values()
-                .map(|channel| channel.channel_name())
-                .collect();
-            let redirected = audio || printer;
-            assert_eq!(
-                channels.len(),
-                if redirected { 2 } else { 0 },
-                "audio={audio}, printer={printer}"
-            );
-            assert_eq!(
-                channels.contains(&Rdpsnd::NAME),
-                redirected,
-                "audio={audio}, printer={printer}"
-            );
-            assert_eq!(
-                channels.contains(&Rdpdr::NAME),
-                redirected,
-                "audio={audio}, printer={printer}"
-            );
-            if !redirected {
-                continue;
-            }
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn no_audio_or_printer_attaches_neither_channel() {
+        // oracle: mutant attaching redirection channels when both features are disabled.
+        let connector = audio_test_connector(false, false);
+        assert_eq!(connector.static_channels.values().count(), 0);
+    }
 
-            let rdpdr = connector
-                .get_static_channel_processor::<Rdpdr>()
-                .expect("RDPDR attached");
-            assert_eq!(rdpdr.downcast_backend::<WasmPrinterBackend>().is_some(), printer);
-            assert_eq!(rdpdr.downcast_backend::<NoopRdpdrBackend>().is_some(), !printer);
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn audio_only_attaches_device_less_rdpdr() {
+        // oracle: spec MS-RDPEA Appendix A<1> requires RDPDR advertisement for Windows audio.
+        // oracle: mutant replacing the playback backend with a no-op or enabling a printer.
+        let mut connector = audio_test_connector(true, false);
+        assert_audio_and_device_channels(&connector);
+        let rdpdr = connector
+            .get_static_channel_processor::<Rdpdr>()
+            .expect("RDPDR attached");
+        assert!(rdpdr.downcast_backend::<ironrdp::rdpdr::NoopRdpdrBackend>().is_some());
+        assert_eq!(negotiate_audio_formats(&mut connector), [audio_test_format()]);
+    }
 
-            // Negotiate through the attached processor: replacing the audio backend with the
-            // printer's no-op RDPSND would incorrectly return an empty format list here.
-            let format = AudioFormat {
-                format: WaveFormat::PCM,
-                n_channels: 2,
-                n_samples_per_sec: 48_000,
-                n_avg_bytes_per_sec: 192_000,
-                n_block_align: 4,
-                bits_per_sample: 16,
-                data: None,
-            };
-            let rdpsnd = connector
-                .get_static_channel_processor_mut::<Rdpsnd>()
-                .expect("RDPSND attached");
-            let response = rdpsnd
-                .process(
-                    &encode_vec(&pdu::ServerAudioOutputPdu::AudioFormat(pdu::ServerAudioFormatPdu {
-                        version: pdu::Version::V8,
-                        formats: vec![format.clone()],
-                    }))
-                    .expect("encode server formats"),
-                )
-                .expect("negotiate audio formats");
-            let encoded = response[0].encode_unframed_pdu().expect("encode client formats");
-            let pdu::ClientAudioOutputPdu::AudioFormat(reply) = decode(&encoded).expect("decode client formats") else {
-                panic!("expected client audio formats");
-            };
-            assert_eq!(
-                reply.formats,
-                if audio { vec![format] } else { Vec::new() },
-                "audio={audio}, printer={printer}"
-            );
-        }
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn printer_only_attaches_noop_audio() {
+        // oracle: spec MS-RDPEFS Appendix A<1> requires RDPSND advertisement for Windows RDPDR.
+        // oracle: mutant enabling playback without its callback or discarding the printer backend.
+        let mut connector = audio_test_connector(false, true);
+        assert_audio_and_device_channels(&connector);
+        let rdpdr = connector
+            .get_static_channel_processor::<Rdpdr>()
+            .expect("RDPDR attached");
+        assert!(rdpdr.downcast_backend::<WasmPrinterBackend>().is_some());
+        assert_eq!(negotiate_audio_formats(&mut connector), []);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn audio_and_printer_channels_preserve_both_backends() {
+        // oracle: spec MS-RDPEA and MS-RDPEFS Appendix A<1> require both channel advertisements.
+        // oracle: mutant replacing playback with the printer's no-op RDPSND or discarding the printer.
+        let mut connector = audio_test_connector(true, true);
+        assert_audio_and_device_channels(&connector);
+        let rdpdr = connector
+            .get_static_channel_processor::<Rdpdr>()
+            .expect("RDPDR attached");
+        assert!(rdpdr.downcast_backend::<WasmPrinterBackend>().is_some());
+        assert_eq!(negotiate_audio_formats(&mut connector), [audio_test_format()]);
     }
 
     #[test]
