@@ -89,9 +89,11 @@ pub(crate) fn scaled_to_fit(pointer: &DecodedPointer) -> Option<Scaled> {
     };
 
     // Per invariants: Following conversions will never saturate.
+    // A side is at least 1 pixel, which the resizer requires: a long, thin pointer would otherwise round to 0.
+    // INVARIANT: 1 <= width <= MAX_CURSOR_SIZE and 1 <= height <= MAX_CURSOR_SIZE
     Some(Scaled {
-        width: f64_to_u16_saturating_cast(f64::from(pointer.width) * scale),
-        height: f64_to_u16_saturating_cast(f64::from(pointer.height) * scale),
+        width: f64_to_u16_saturating_cast(f64::from(pointer.width) * scale).max(1),
+        height: f64_to_u16_saturating_cast(f64::from(pointer.height) * scale).max(1),
         hotspot_x: f64_to_u16_saturating_cast(f64::from(pointer.hotspot_x) * scale),
         hotspot_y: f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale),
     })
@@ -178,5 +180,35 @@ mod tests {
     #[test]
     fn a_hotspot_outside_the_bitmap_is_left_alone() {
         assert!(crop_transparent(&pointer(8, 8, (8, 0), &[(1, 1)])).is_none());
+    }
+
+    // oracle: mutant the scale applied to only one side, or the hotspot left unscaled
+    #[test]
+    fn a_large_pointer_is_scaled_to_fit_with_its_hotspot() {
+        let s = scaled_to_fit(&pointer(64, 48, (10, 20), &[])).unwrap();
+        assert_eq!((s.width, s.height), (32, 24));
+        assert_eq!((s.hotspot_x, s.hotspot_y), (5, 10));
+    }
+
+    // oracle: mutant a pointer that already fits scaled anyway
+    #[test]
+    fn a_pointer_that_fits_is_not_scaled() {
+        assert!(scaled_to_fit(&pointer(32, 32, (0, 0), &[])).is_none());
+    }
+
+    // oracle: mutant a side rounded down to zero pixels, which the resizer refuses, ending the session
+    #[test]
+    fn a_long_thin_pointer_keeps_at_least_one_pixel_per_side() {
+        let s = scaled_to_fit(&pointer(64, 1, (0, 0), &[])).unwrap();
+        assert_eq!((s.width, s.height), (32, 1));
+        let resizer = resize::new(
+            64,
+            1,
+            usize::from(s.width),
+            usize::from(s.height),
+            resize::Pixel::RGBA8P,
+            resize::Type::Lanczos3,
+        );
+        assert!(resizer.is_ok(), "the session's resizer must accept the scaled size");
     }
 }
