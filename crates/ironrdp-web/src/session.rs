@@ -545,8 +545,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             computer_name: client_name.clone(),
             use_display_control,
             audio_backend: audio_playback_callback
-                .as_ref()
-                .map(|_| crate::audio::WasmAudioBackend::new(input_events_tx.clone())),
+                .is_some()
+                .then(|| crate::audio::WasmAudioBackend::new(input_events_tx.clone())),
         })
         .await?;
 
@@ -924,7 +924,7 @@ impl iron_remote_desktop::Session for Session {
                         RdpInputEvent::Audio(message) => {
                             if let Some(callback) = &self.audio_playback_callback {
                                 if let Err(error) = callback.call1(&JsValue::NULL, &crate::audio::to_js(message)) {
-                                    warn!(?error, "audio playback callback failed");
+                                    warn!(?error, "Audio playback callback failed");
                                 }
                             }
                             Vec::new()
@@ -1662,6 +1662,46 @@ fn macos_major_version_from_user_agent(user_agent: &str) -> Option<u32> {
         .and_then(|major| major.parse().ok())
 }
 
+fn attach_audio_and_printer_channels(
+    connector: &mut ClientConnector,
+    audio_backend: Option<crate::audio::WasmAudioBackend>,
+    printer_backend: Option<WasmPrinterBackend>,
+    printer_device_id: u32,
+    printer_name: String,
+    printer_driver_name: String,
+    computer_name: String,
+) {
+    let audio = audio_backend.is_some();
+    if let Some(audio_backend) = audio_backend {
+        connector.attach_static_channel(Rdpsnd::new(Box::new(audio_backend)));
+        // Windows servers require RDPDR to be advertised before sending RDPSND traffic
+        // (MS-RDPEA Appendix A<1>); without a printer, advertise it without any devices.
+        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/deaaab30-d4d6-473e-ac56-3f76c4f6fb24#Appendix_A_1
+        if printer_backend.is_none() {
+            connector.attach_static_channel(Rdpdr::new(
+                Box::new(ironrdp::rdpdr::NoopRdpdrBackend),
+                computer_name.clone(),
+            ));
+        }
+    }
+
+    if let Some(printer_backend) = printer_backend {
+        // Windows servers only speak on RDPDR when RDPSND is advertised too
+        // (MS-RDPEFS Appendix A<1>). Without audio playback, the no-op RDPSND
+        // processor satisfies that channel dependency.
+        if !audio {
+            connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
+        }
+        connector.attach_static_channel(
+            Rdpdr::new(Box::new(printer_backend), computer_name).with_printer_driver(
+                printer_device_id,
+                printer_name,
+                printer_driver_name,
+            ),
+        );
+    }
+}
+
 async fn connect(
     ConnectParams {
         ws,
@@ -1692,35 +1732,15 @@ async fn connect(
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
     }
 
-    let audio = audio_backend.is_some();
-    if let Some(audio_backend) = audio_backend {
-        connector.attach_static_channel(Rdpsnd::new(Box::new(audio_backend)));
-        // Windows servers require RDPDR to be advertised before sending RDPSND traffic
-        // (MS-RDPEA Appendix A<1>); without a printer, advertise it without any devices.
-        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/deaaab30-d4d6-473e-ac56-3f76c4f6fb24#Appendix_A_1
-        if printer_backend.is_none() {
-            connector.attach_static_channel(Rdpdr::new(
-                Box::new(ironrdp::rdpdr::NoopRdpdrBackend),
-                computer_name.clone(),
-            ));
-        }
-    }
-
-    if let Some(printer_backend) = printer_backend {
-        // Windows servers only speak on RDPDR when RDPSND is advertised too
-        // (MS-RDPEFS Appendix A<1>). Without audio playback, the no-op RDPSND
-        // processor satisfies that channel dependency.
-        if !audio {
-            connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
-        }
-        connector.attach_static_channel(
-            Rdpdr::new(Box::new(printer_backend), computer_name).with_printer_driver(
-                printer_device_id,
-                printer_name,
-                printer_driver_name,
-            ),
-        );
-    }
+    attach_audio_and_printer_channels(
+        &mut connector,
+        audio_backend,
+        printer_backend,
+        printer_device_id,
+        printer_name,
+        printer_driver_name,
+        computer_name,
+    );
 
     if use_display_control {
         connector.attach_static_channel(
@@ -2064,6 +2084,99 @@ mod tests {
             pcb: None,
             vmconnect: None,
             kerberos_config: None,
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn audio_and_printer_channels_preserve_backends() {
+        use ironrdp::rdpdr::NoopRdpdrBackend;
+        use ironrdp::rdpsnd::pdu::{self, AudioFormat, WaveFormat};
+        use ironrdp_core::{decode, encode_vec};
+        use ironrdp_svc::SvcProcessor as _;
+
+        for (audio, printer) in [(false, false), (true, false), (false, true), (true, true)] {
+            let (tx, _rx) = mpsc::unbounded();
+            let mut connector = ClientConnector::new(
+                connector_config(SecurityConfig {
+                    enable_credssp: true,
+                    enable_standard_rdp_security: false,
+                }),
+                core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
+            );
+            attach_audio_and_printer_channels(
+                &mut connector,
+                audio.then(|| crate::audio::WasmAudioBackend::new(tx.clone())),
+                printer.then(|| WasmPrinterBackend::new(crate::printer::WasmPrinterMessageProxy::new(tx.clone()))),
+                7,
+                "Test printer".to_owned(),
+                DEFAULT_PRINTER_DRIVER_NAME.to_owned(),
+                "ironrdp-web-test".to_owned(),
+            );
+
+            let channels: Vec<_> = connector
+                .static_channels
+                .values()
+                .map(|channel| channel.channel_name())
+                .collect();
+            let redirected = audio || printer;
+            assert_eq!(
+                channels.len(),
+                if redirected { 2 } else { 0 },
+                "audio={audio}, printer={printer}"
+            );
+            assert_eq!(
+                channels.contains(&Rdpsnd::NAME),
+                redirected,
+                "audio={audio}, printer={printer}"
+            );
+            assert_eq!(
+                channels.contains(&Rdpdr::NAME),
+                redirected,
+                "audio={audio}, printer={printer}"
+            );
+            if !redirected {
+                continue;
+            }
+
+            let rdpdr = connector
+                .get_static_channel_processor::<Rdpdr>()
+                .expect("RDPDR attached");
+            assert_eq!(rdpdr.downcast_backend::<WasmPrinterBackend>().is_some(), printer);
+            assert_eq!(rdpdr.downcast_backend::<NoopRdpdrBackend>().is_some(), !printer);
+
+            // Negotiate through the attached processor: replacing the audio backend with the
+            // printer's no-op RDPSND would incorrectly return an empty format list here.
+            let format = AudioFormat {
+                format: WaveFormat::PCM,
+                n_channels: 2,
+                n_samples_per_sec: 48_000,
+                n_avg_bytes_per_sec: 192_000,
+                n_block_align: 4,
+                bits_per_sample: 16,
+                data: None,
+            };
+            let rdpsnd = connector
+                .get_static_channel_processor_mut::<Rdpsnd>()
+                .expect("RDPSND attached");
+            let response = rdpsnd
+                .process(
+                    &encode_vec(&pdu::ServerAudioOutputPdu::AudioFormat(pdu::ServerAudioFormatPdu {
+                        version: pdu::Version::V8,
+                        formats: vec![format.clone()],
+                    }))
+                    .expect("encode server formats"),
+                )
+                .expect("negotiate audio formats");
+            let encoded = response[0].encode_unframed_pdu().expect("encode client formats");
+            let pdu::ClientAudioOutputPdu::AudioFormat(reply) = decode(&encoded).expect("decode client formats") else {
+                panic!("expected client audio formats");
+            };
+            assert_eq!(
+                reply.formats,
+                if audio { vec![format] } else { Vec::new() },
+                "audio={audio}, printer={printer}"
+            );
         }
     }
 

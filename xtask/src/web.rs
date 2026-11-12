@@ -30,6 +30,8 @@ pub fn check(sh: &Shell) -> anyhow::Result<()> {
 
     build(sh, true)?;
 
+    run_cmd_in!(sh, IRONRDP_WEB_PATH, "wasm-pack test --node --lib --locked")?;
+
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run lint")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run test")?;
