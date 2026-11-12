@@ -35,6 +35,10 @@ writeable = "writeable"
 # CBOR Object Signing and Encryption (WebAuthn COSE algorithms / Windows APIs).
 COSE = "COSE"
 cose = "cose"
+# Microsoft's spelling of the IMsTscAdvancedSettings::BitmapPeristence ActiveX property.
+Peristence = "Peristence"
+# Windows notification icon callback messages (`NIN_SELECT`, `NIN_BALLOONUSERCLICK`).
+NIN = "NIN"
 
 [default.extend-identifiers]
 # COM FORMATETC target-device field.
@@ -43,6 +47,8 @@ ptd = "ptd"
 rto = "rto"
 # Windows TRACKMOUSEEVENT flag.
 TME_LEAVE = "TME_LEAVE"
+# Misspelled property in Microsoft's published IMsRdpClientAdvancedSettings interface.
+BitmapPeristence = "BitmapPeristence"
 # WebAuthn COSE algorithm parameter identifiers / locals.
 cose_params = "cose_params"
 WEBAUTHN_COSE_CREDENTIAL_PARAMETER = "WEBAUTHN_COSE_CREDENTIAL_PARAMETER"
@@ -78,4 +84,8 @@ extend-ignore-re = [
 
    # Commit hashes in CHANGELOG.md files.
    "\\b[0-9a-f]{7,40}\\b",
+
+   # Hex dumps in eight-digit uppercase groups, as in the protocol specification examples
+   # (MS-RDPEVOR and MS-RDPEGT fixtures in ironrdp-testsuite-core).
+   "\\b[0-9A-F]{8}\\b",
 ]

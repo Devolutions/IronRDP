@@ -20,10 +20,10 @@ use nix::{
     poll::{PollFd, PollFlags, PollTimeout, poll},
 };
 use wayland_client::{
-    Connection, EventQueue,
+    Connection, Dispatch, EventQueue,
     backend::WaylandError,
     globals::{GlobalList, registry_queue_init},
-    protocol::wl_seat::WlSeat,
+    protocol::{wl_callback::WlCallback, wl_seat::WlSeat},
 };
 use wayland_protocols::ext::data_control::v1::client::ext_data_control_manager_v1::ExtDataControlManagerV1;
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
@@ -233,6 +233,11 @@ impl Worker {
         let queue_handle = self.queue.handle();
         while let Ok(command) = self.commands.try_recv() {
             match command {
+                Command::Synchronize(sender) => {
+                    // The callback fires after the compositor has handled the
+                    // requests sent before it; the event loop keeps running meanwhile.
+                    self.connection.display().sync(&queue_handle, sender);
+                }
                 Command::SetSelection { mime_types, data } => {
                     self.client.data_control.set_selection(&mime_types, data, &queue_handle);
                 }
@@ -263,6 +268,20 @@ impl Worker {
                 Err(_) => break,
             }
         }
+    }
+}
+
+impl Dispatch<WlCallback, mpsc::Sender<()>> for Client {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlCallback,
+        _event: <WlCallback as wayland_client::Proxy>::Event,
+        data: &mpsc::Sender<()>,
+        _conn: &Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
+    ) {
+        // The waiter may have timed out and gone away.
+        let _ = data.send(());
     }
 }
 

@@ -1,6 +1,7 @@
 [package]
 name = "ironrdp-client-glutin"
 version = "0.1.0"
+publish = false
 readme = "README.md"
 description = "GPU-accelerated RDP client using glutin"
 edition.workspace = true

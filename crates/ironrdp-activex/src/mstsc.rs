@@ -12,7 +12,7 @@ use core::ffi::c_void;
 
 use windows::Win32::System::Com::{IDispatch, IDispatch_Impl, IDispatch_Vtbl};
 use windows::Win32::System::Variant::VARIANT;
-use windows_core::{IUnknown, IUnknown_Vtbl, Result, interface};
+use windows_core::{HRESULT, IUnknown, IUnknown_Vtbl, Result, interface};
 
 pub(crate) type Bstr = *const u16;
 pub(crate) type BstrOut = *mut *const u16;
@@ -90,6 +90,19 @@ pub(crate) unsafe trait ITSRemoteProgram2: ITSRemoteProgram {
 #[interface("4B84EA77-ACEA-418C-881A-4A8C28AB1510")]
 pub(crate) unsafe trait ITSRemoteProgram3: ITSRemoteProgram2 {
     pub(crate) fn ServerStartApp(&self, app_user_model_id: Bstr, arguments: Bstr, expand_arguments: i16) -> Result<()>;
+}
+
+#[interface("D012AE6D-C19A-4BFE-B367-201F8911F134")]
+pub(crate) unsafe trait IMsRdpClientShell: IDispatch {
+    pub(crate) fn Launch(&self) -> Result<()>;
+    pub(crate) fn put_RdpFileContents(&self, contents: Bstr) -> Result<()>;
+    pub(crate) fn get_RdpFileContents(&self, contents: BstrOut) -> Result<()>;
+    pub(crate) fn SetRdpProperty(&self, name: Bstr, value: VARIANT) -> Result<()>;
+    pub(crate) fn GetRdpProperty(&self, name: Bstr, value: *mut VARIANT) -> Result<()>;
+    pub(crate) fn get_IsRemoteProgramClientInstalled(&self, installed: *mut i16) -> Result<()>;
+    pub(crate) fn put_PublicMode(&self, public_mode: i16) -> Result<()>;
+    pub(crate) fn get_PublicMode(&self, public_mode: *mut i16) -> Result<()>;
+    pub(crate) fn ShowTrustedSitesManagementDialog(&self) -> HRESULT;
 }
 
 #[interface("56540617-D281-488C-8738-6A8FDF64A118")]
@@ -183,8 +196,8 @@ pub(crate) unsafe trait IMsRdpClientNonScriptable2: IMsRdpClientNonScriptable {
 
 #[interface("B3378D90-0728-45C7-8ED7-B6159FB92219")]
 pub(crate) unsafe trait IMsRdpClientNonScriptable3: IMsRdpClientNonScriptable2 {
-    fn put_ShowRedirectionWarningDialog(&self, value: i16) -> Result<()>;
-    fn get_ShowRedirectionWarningDialog(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_ShowRedirectionWarningDialog(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_ShowRedirectionWarningDialog(&self, value: *mut i16) -> Result<()>;
     fn put_PromptForCredentials(&self, value: i16) -> Result<()>;
     pub(crate) fn get_PromptForCredentials(&self, value: *mut i16) -> Result<()>;
     fn put_NegotiateSecurityLayer(&self, value: i16) -> Result<()>;
@@ -207,22 +220,22 @@ pub(crate) unsafe trait IMsRdpClientNonScriptable3: IMsRdpClientNonScriptable2 {
 
 #[interface("F50FA8AA-1C7D-4F59-B15C-A90CACAE1FCB")]
 pub(crate) unsafe trait IMsRdpClientNonScriptable4: IMsRdpClientNonScriptable3 {
-    fn put_RedirectionWarningType(&self, value: i32) -> Result<()>;
-    fn get_RedirectionWarningType(&self, value: *mut i32) -> Result<()>;
-    fn put_MarkRdpSettingsSecure(&self, value: i16) -> Result<()>;
-    fn get_MarkRdpSettingsSecure(&self, value: *mut i16) -> Result<()>;
-    fn put_PublisherCertificateChain(&self, value: *mut VARIANT) -> Result<()>;
-    fn get_PublisherCertificateChain(&self, value: *mut VARIANT) -> Result<()>;
-    fn put_WarnAboutPrinterRedirection(&self, value: i16) -> Result<()>;
-    fn get_WarnAboutPrinterRedirection(&self, value: *mut i16) -> Result<()>;
-    fn put_AllowCredentialSaving(&self, value: i16) -> Result<()>;
-    fn get_AllowCredentialSaving(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_RedirectionWarningType(&self, value: i32) -> Result<()>;
+    pub(crate) fn get_RedirectionWarningType(&self, value: *mut i32) -> Result<()>;
+    pub(crate) fn put_MarkRdpSettingsSecure(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_MarkRdpSettingsSecure(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_PublisherCertificateChain(&self, value: *mut VARIANT) -> Result<()>;
+    pub(crate) fn get_PublisherCertificateChain(&self, value: *mut VARIANT) -> Result<()>;
+    pub(crate) fn put_WarnAboutPrinterRedirection(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_WarnAboutPrinterRedirection(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_AllowCredentialSaving(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_AllowCredentialSaving(&self, value: *mut i16) -> Result<()>;
     pub(crate) fn put_PromptForCredsOnClient(&self, value: i16) -> Result<()>;
     pub(crate) fn get_PromptForCredsOnClient(&self, value: *mut i16) -> Result<()>;
-    fn put_LaunchedViaClientShellInterface(&self, value: i16) -> Result<()>;
-    fn get_LaunchedViaClientShellInterface(&self, value: *mut i16) -> Result<()>;
-    fn put_TrustedZoneSite(&self, value: i16) -> Result<()>;
-    fn get_TrustedZoneSite(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_LaunchedViaClientShellInterface(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_LaunchedViaClientShellInterface(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_TrustedZoneSite(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_TrustedZoneSite(&self, value: *mut i16) -> Result<()>;
 }
 
 #[interface("4F6996D5-D7B1-412C-B0FF-063718566907")]
@@ -239,10 +252,10 @@ pub(crate) unsafe trait IMsRdpClientNonScriptable5: IMsRdpClientNonScriptable4 {
     ) -> Result<()>;
     fn get_RemoteMonitorLayoutMatchesLocal(&self, value: *mut i16) -> Result<()>;
     pub(crate) fn put_DisableConnectionBar(&self, value: i16) -> Result<()>;
-    fn put_DisableRemoteAppCapsCheck(&self, value: i16) -> Result<()>;
-    fn get_DisableRemoteAppCapsCheck(&self, value: *mut i16) -> Result<()>;
-    fn put_WarnAboutDirectXRedirection(&self, value: i16) -> Result<()>;
-    fn get_WarnAboutDirectXRedirection(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_DisableRemoteAppCapsCheck(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_DisableRemoteAppCapsCheck(&self, value: *mut i16) -> Result<()>;
+    pub(crate) fn put_WarnAboutDirectXRedirection(&self, value: i16) -> Result<()>;
+    pub(crate) fn get_WarnAboutDirectXRedirection(&self, value: *mut i16) -> Result<()>;
     pub(crate) fn put_AllowPromptingForCredentials(&self, value: i16) -> Result<()>;
     fn get_AllowPromptingForCredentials(&self, value: *mut i16) -> Result<()>;
 }
@@ -353,7 +366,7 @@ pub(crate) unsafe trait IMsRdpClient5: IMsRdpClient4 {
     fn get_AdvancedSettings6(&self, settings: InterfaceOut) -> Result<()>;
     fn GetErrorDescription(&self, disconnect_reason: u32, extended_reason: u32, message: BstrOut) -> Result<()>;
     pub(crate) fn get_RemoteProgram(&self, program: InterfaceOut) -> Result<()>;
-    fn get_MsRdpClientShell(&self, shell: InterfaceOut) -> Result<()>;
+    pub(crate) fn get_MsRdpClientShell(&self, shell: InterfaceOut) -> Result<()>;
 }
 
 #[interface("D43B7D80-8517-4B6D-9EAC-96AD6800D7F2")]

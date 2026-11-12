@@ -1,25 +1,22 @@
 use core::cmp::min;
 
-use ironrdp_graphics::color_conversion::{self, YCbCrBuffer};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rectangle_processing::Region;
-use ironrdp_graphics::{dwt, quantization, rlgr, subband_reconstruction};
-use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, Quant, RfxRectangle, Tile};
+use ironrdp_graphics::rfx::{TILE_SIZE, TileDecoder};
+use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, RfxRectangle, Tile};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::{Decode as _, ReadCursor, decode_cursor};
-use tracing::{instrument, trace};
+use tracing::{debug, instrument, trace};
 
 use crate::image::DecodedImage;
 use crate::{SessionResult, custom_err, general_err, reason_err};
-
-const TILE_SIZE: u16 = 64;
 
 pub type FrameId = u32;
 
 pub struct DecodingContext {
     context: rfx::ContextPdu,
     channels: rfx::ChannelsPdu,
-    decoding_tiles: DecodingTileContext,
+    tile_decoder: TileDecoder,
 }
 
 impl Default for DecodingContext {
@@ -30,7 +27,7 @@ impl Default for DecodingContext {
                 entropy_algorithm: EntropyAlgorithm::Rlgr1,
             },
             channels: rfx::ChannelsPdu(Vec::new()),
-            decoding_tiles: DecodingTileContext::new(),
+            tile_decoder: TileDecoder::new(),
         }
     }
 }
@@ -153,19 +150,24 @@ impl DecodingContext {
 
         let mut final_update_rectangle = clipping_rectangles.extents.clone();
 
-        for (update_rectangle, tile_data) in tiles_to_rectangles(tile_set.tiles.as_slice(), destination)
-            .zip(map_tiles_data(tile_set.tiles.as_slice(), tile_set.quants.as_slice()))
+        for (update_rectangle, tile) in tiles_to_rectangles(tile_set.tiles.as_slice(), destination).zip(&tile_set.tiles)
         {
-            decode_tile(
-                &tile_data,
-                entropy_algorithm,
-                self.decoding_tiles.tile_output.as_mut(),
-                self.decoding_tiles.ycbcr_buffer.as_mut(),
-                self.decoding_tiles.ycbcr_temp_buffer.as_mut(),
-            )?;
+            let Some(update_rectangle) = update_rectangle else {
+                debug!(
+                    x = tile.x,
+                    y = tile.y,
+                    "Skipping tile placed past the u16 coordinate range"
+                );
+                continue;
+            };
+
+            let tile_output = self
+                .tile_decoder
+                .decode(tile, &tile_set.quants, entropy_algorithm)
+                .map_err(|e| custom_err!("decode_tile", e))?;
 
             let current_update_rectangle = image.apply_tile(
-                &self.decoding_tiles.tile_output,
+                tile_output,
                 PixelFormat::RgbA32,
                 &clipping_rectangles,
                 &update_rectangle,
@@ -178,61 +180,7 @@ impl DecodingContext {
     }
 }
 
-#[derive(Debug, Clone)]
-struct DecodingTileContext {
-    tile_output: Vec<u8>,
-    ycbcr_buffer: Vec<Vec<i16>>,
-    ycbcr_temp_buffer: Vec<i16>,
-}
-
-impl DecodingTileContext {
-    fn new() -> Self {
-        let tile_size = usize::from(TILE_SIZE);
-        Self {
-            tile_output: vec![0; tile_size * tile_size * 4],
-            ycbcr_buffer: vec![vec![0; tile_size * tile_size]; 3],
-            ycbcr_temp_buffer: vec![0; tile_size * tile_size],
-        }
-    }
-}
-
-fn decode_tile(
-    tile: &TileData<'_>,
-    entropy_algorithm: EntropyAlgorithm,
-    output: &mut [u8],
-    ycbcr_temp: &mut [Vec<i16>],
-    temp: &mut [i16],
-) -> SessionResult<()> {
-    for ((quant, data), ycbcr_buffer) in tile.quants.iter().zip(tile.data.iter()).zip(ycbcr_temp.iter_mut()) {
-        decode_component(quant, entropy_algorithm, data, ycbcr_buffer.as_mut_slice(), temp)?;
-    }
-
-    let ycbcr_buffer = YCbCrBuffer {
-        y: ycbcr_temp[0].as_slice(),
-        cb: ycbcr_temp[1].as_slice(),
-        cr: ycbcr_temp[2].as_slice(),
-    };
-
-    color_conversion::ycbcr_to_rgba(ycbcr_buffer, output).map_err(|e| custom_err!("decode_tile", e))?;
-
-    Ok(())
-}
-
-fn decode_component(
-    quant: &Quant,
-    entropy_algorithm: EntropyAlgorithm,
-    data: &[u8],
-    output: &mut [i16],
-    temp: &mut [i16],
-) -> SessionResult<()> {
-    rlgr::decode(entropy_algorithm, data, output).map_err(|e| custom_err!("decode_component", e))?;
-    subband_reconstruction::decode(&mut output[4032..]);
-    quantization::decode(output, quant);
-    dwt::decode(output, temp);
-
-    Ok(())
-}
-
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn clipping_rectangles(
     rectangles: &[RfxRectangle],
     destination: &InclusiveRectangle,
@@ -241,96 +189,53 @@ fn clipping_rectangles(
 ) -> Region {
     let mut clipping_rectangles = Region::new();
 
+    // Exclusive bounds in u32, so that no server-supplied position or size can wrap.
+    let right_limit = min(u32::from(destination.left) + u32::from(width), u32::from(u16::MAX) + 1);
+    let bottom_limit = min(u32::from(destination.top) + u32::from(height), u32::from(u16::MAX) + 1);
+
     rectangles
         .iter()
-        .map(|r| InclusiveRectangle {
-            left: min(destination.left + r.x, destination.left + width - 1),
-            top: min(destination.top + r.y, destination.top + height - 1),
-            right: min(destination.left + r.x + r.width - 1, destination.left + width - 1),
-            bottom: min(destination.top + r.y + r.height - 1, destination.top + height - 1),
+        .filter_map(|r| {
+            let left = min(u32::from(destination.left) + u32::from(r.x), right_limit);
+            let top = min(u32::from(destination.top) + u32::from(r.y), bottom_limit);
+            let right = min(left + u32::from(r.width), right_limit);
+            let bottom = min(top + u32::from(r.height), bottom_limit);
+
+            // An empty rectangle covers nothing.
+            if left == right || top == bottom {
+                return None;
+            }
+
+            // INVARIANT: left < right <= right_limit <= u16::MAX + 1, and likewise for top and bottom,
+            // so every conversion below succeeds.
+            Some(InclusiveRectangle {
+                left: u16::try_from(left).ok()?,
+                top: u16::try_from(top).ok()?,
+                right: u16::try_from(right - 1).ok()?,
+                bottom: u16::try_from(bottom - 1).ok()?,
+            })
         })
         .for_each(|r| clipping_rectangles.union_rectangle(r));
 
     clipping_rectangles
 }
 
+/// Returns `None` for a tile that starts past the u16 range, since no clipping rectangle can reach it.
+/// A tile crossing the end of the range is cut there, like the clipping rectangles.
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 fn tiles_to_rectangles<'a>(
     tiles: &'a [Tile<'_>],
     destination: &'a InclusiveRectangle,
-) -> impl Iterator<Item = InclusiveRectangle> + 'a {
-    tiles.iter().map(|t| InclusiveRectangle {
-        left: destination.left + t.x * TILE_SIZE,
-        top: destination.top + t.y * TILE_SIZE,
-        right: destination.left + t.x * TILE_SIZE + TILE_SIZE - 1,
-        bottom: destination.top + t.y * TILE_SIZE + TILE_SIZE - 1,
-    })
-}
+) -> impl Iterator<Item = Option<InclusiveRectangle>> + 'a {
+    tiles.iter().map(|t| {
+        let left = t.x.checked_mul(TILE_SIZE)?.checked_add(destination.left)?;
+        let top = t.y.checked_mul(TILE_SIZE)?.checked_add(destination.top)?;
 
-fn map_tiles_data<'a>(tiles: &[Tile<'a>], quants: &[Quant]) -> Vec<TileData<'a>> {
-    tiles
-        .iter()
-        .map(|t| TileData {
-            quants: [
-                quants[usize::from(t.y_quant_index)].clone(),
-                quants[usize::from(t.cb_quant_index)].clone(),
-                quants[usize::from(t.cr_quant_index)].clone(),
-            ],
-            data: [t.y_data, t.cb_data, t.cr_data],
+        Some(InclusiveRectangle {
+            left,
+            top,
+            right: left.saturating_add(TILE_SIZE - 1),
+            bottom: top.saturating_add(TILE_SIZE - 1),
         })
-        .collect()
-}
-
-struct TileData<'a> {
-    quants: [Quant; 3],
-    data: [&'a [u8]; 3],
-}
-
-#[cfg(test)]
-mod tests {
-    use ironrdp_pdu::codecs::rfx::RfxRectangle;
-    use ironrdp_pdu::geometry::InclusiveRectangle;
-
-    use super::clipping_rectangles;
-
-    /// A RemoteFX surface for a secondary monitor is placed at a non-zero
-    /// framebuffer offset, and its channel (frame) dimensions describe only
-    /// that surface's own content rather than the entire desktop.
-    #[test]
-    fn clipping_rectangles_track_surface_framebuffer_offset() {
-        // Update for a second monitor with origin (2000, 1000) and dimensions 1000x1200
-        let destination = InclusiveRectangle {
-            left: 2000,
-            top: 1000,
-            right: 2999,
-            bottom: 2199,
-        };
-        let channel_width = 1000;
-        let channel_height = 1200;
-
-        let rects = [RfxRectangle {
-            x: 0,
-            y: 0,
-            width: channel_width,
-            height: channel_height,
-        }];
-
-        let region = clipping_rectangles(&rects, &destination, channel_width, channel_height);
-
-        assert_eq!(
-            region.extents.left, 2000,
-            "clip collapsed away from the surface's framebuffer position (left)"
-        );
-        assert_eq!(
-            region.extents.right, 2999,
-            "clip collapsed away from the surface's framebuffer position (right)"
-        );
-        assert_eq!(
-            region.extents.top, 1000,
-            "clip collapsed away from the surface's framebuffer position (top)"
-        );
-        assert_eq!(
-            region.extents.bottom, 2199,
-            "clip collapsed away from the surface's framebuffer position (bottom)"
-        );
-    }
+    })
 }

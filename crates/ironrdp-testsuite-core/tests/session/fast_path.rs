@@ -1,11 +1,6 @@
-//! Regression tests for bulk-compressed FastPath updates.
+//! Regression tests for Fast-Path update processing.
 //!
-//! A FastPath `Processor` always owns a bulk decompressor: the library builds
-//! one in `ProcessorBuilder::build`. A server can send a compressed FastPath
-//! update (for example a full-frame redraw after a resize) regardless of what
-//! the client advertised, so the decompressor must always be present. These
-//! tests pin that a compressed update decodes to exactly the same pixels as its
-//! uncompressed twin rather than being dropped or aborting the session.
+//! Covers software-rendered and accelerated pointer updates as well as bulk-compressed Fast-Path frames.
 
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags as bulk_flags};
 use ironrdp_core::{WriteBuf, encode_vec};
@@ -13,23 +8,202 @@ use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::pointer::{
+    ColorPointerAttribute, LargePointerAttribute, Point16, PointerAttribute, PointerUpdateData,
+};
 use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::CompressionFlags;
-use ironrdp_session::fast_path::{Processor, ProcessorBuilder};
+use ironrdp_session::fast_path::{Processor, ProcessorBuilder, UpdateKind};
 use ironrdp_session::image::DecodedImage;
 
 const IMAGE_DIM: u16 = 64;
 const RECT_DIM: u16 = 8;
 
-fn processor() -> Processor {
+fn processor_with_pointer(enable_server_pointer: bool, pointer_software_rendering: bool) -> Processor {
     ProcessorBuilder {
         io_channel_id: 0,
         user_channel_id: 0,
         share_id: 0,
-        enable_server_pointer: false,
-        pointer_software_rendering: false,
+        enable_server_pointer,
+        pointer_software_rendering,
     }
     .build()
+}
+
+fn processor() -> Processor {
+    processor_with_pointer(false, false)
+}
+
+fn software_pointer_fixture() -> (Processor, DecodedImage) {
+    (
+        processor_with_pointer(true, true),
+        DecodedImage::new(PixelFormat::RgbA32, 4, 4),
+    )
+}
+
+fn assert_visible_pixels(image: &DecodedImage, expected: &[u8]) {
+    let visible: Vec<_> = image
+        .data()
+        .chunks_exact(4)
+        .flat_map(|pixel| pixel[..3].iter().copied())
+        .collect();
+    assert_eq!(visible, expected);
+}
+
+const CURSOR_IMAGE: ColorPointerAttribute<'static> = ColorPointerAttribute {
+    cache_index: 0,
+    hot_spot: Point16 { x: 0, y: 0 },
+    width: 1,
+    height: 1,
+    xor_mask: &[255, 255, 255, 0],
+    and_mask: &[0x80, 0],
+};
+
+// oracle: mutant (software pointer shape updates leaving use_system_pointer set, omitting or misordering UpdateKind::PointerHidden, or SetPosition omitting UpdateKind::PointerPosition)
+#[rstest::rstest]
+#[case::color(PointerUpdateData::Color(CURSOR_IMAGE))]
+#[case::new(PointerUpdateData::New(PointerAttribute { xor_bpp: 24, color_pointer: CURSOR_IMAGE }))]
+#[case::large(PointerUpdateData::Large(LargePointerAttribute {
+    xor_bpp: 24,
+    cache_index: 0,
+    hot_spot: Point16 { x: 0, y: 0 },
+    width: 1,
+    height: 1,
+    xor_mask: &[255, 255, 255, 0],
+    and_mask: &[0x80, 0],
+}))]
+fn pointer_shape_reactivates_software_movement_and_hiding(#[case] shape: PointerUpdateData<'_>) {
+    let (mut processor, mut image) = software_pointer_fixture();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
+        .unwrap();
+    let shape_updates = processor.process_pointer_update(&mut image, shape).unwrap();
+    assert!(
+        matches!(
+            shape_updates.as_slice(),
+            [UpdateKind::PointerHidden, UpdateKind::Region(_)]
+        ),
+        "software pointer shape activation must hide the system pointer before redrawing the pointer region"
+    );
+    let updates = processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetPosition(Point16 { x: 2, y: 1 }))
+        .unwrap();
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, UpdateKind::PointerPosition { x: 2, y: 1 })),
+        "software rendering must also report the server's position to input consumers"
+    );
+    let mut expected = [0; 48];
+    expected[18..21].copy_from_slice(&[255, 255, 255]);
+    assert_visible_pixels(&image, &expected);
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
+        .unwrap();
+    assert_visible_pixels(&image, &[0; 48]);
+}
+
+// oracle: mutant (accelerated pointer shape updates emitting UpdateKind::PointerHidden or drawing into the software framebuffer)
+#[rstest::rstest]
+#[case::color(PointerUpdateData::Color(CURSOR_IMAGE))]
+#[case::new(PointerUpdateData::New(PointerAttribute { xor_bpp: 24, color_pointer: CURSOR_IMAGE }))]
+#[case::large(PointerUpdateData::Large(LargePointerAttribute {
+    xor_bpp: 24,
+    cache_index: 0,
+    hot_spot: Point16 { x: 0, y: 0 },
+    width: 1,
+    height: 1,
+    xor_mask: &[255, 255, 255, 0],
+    and_mask: &[0x80, 0],
+}))]
+fn accelerated_pointer_shape_emits_only_pointer_bitmap(#[case] shape: PointerUpdateData<'_>) {
+    let mut processor = processor_with_pointer(true, false);
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 4, 4);
+    let updates = processor.process_pointer_update(&mut image, shape).unwrap();
+    assert!(
+        matches!(updates.as_slice(), [UpdateKind::PointerBitmap(_)]),
+        "accelerated pointer shapes must emit only PointerBitmap without PointerHidden or software regions"
+    );
+    assert_visible_pixels(&image, &[0; 48]);
+}
+
+// oracle: mutant (SetPosition while the pointer is hidden omitting UpdateKind::PointerPosition or failing to retain coordinates for the next shape update)
+#[test]
+fn hidden_pointer_position_is_retained_when_shape_returns() {
+    let (mut processor, mut image) = software_pointer_fixture();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
+        .unwrap();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
+        .unwrap();
+    let updates = processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetPosition(Point16 { x: 2, y: 1 }))
+        .unwrap();
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, UpdateKind::PointerPosition { x: 2, y: 1 })),
+        "hidden pointer movement must still report the server's position to input consumers"
+    );
+    assert_visible_pixels(&image, &[0; 48]);
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
+        .unwrap();
+    let mut expected = [0; 48];
+    expected[18..21].copy_from_slice(&[255, 255, 255]);
+    assert_visible_pixels(&image, &expected);
+}
+
+// oracle: mutant (update_pointer restoring stale PointerLayer::Background pixels over desktop updates received while the pointer was hidden)
+#[test]
+fn restored_pointer_preserves_background_changes_while_hidden() {
+    let (mut processor, mut image) = software_pointer_fixture();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
+        .unwrap();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetHidden)
+        .unwrap();
+    let bitmap = encode_vec(&BitmapUpdateData {
+        rectangles: vec![BitmapData {
+            rectangle: InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: 3,
+                bottom: 3,
+            },
+            width: 4,
+            height: 4,
+            bits_per_pixel: 32,
+            compression_flags: Compression::empty(),
+            compressed_data_header: None,
+            bitmap_data: &[100, 80, 30, 255].repeat(16),
+        }],
+    })
+    .unwrap();
+    let frame = fastpath_frame(
+        &encode_vec(&FastPathUpdatePdu {
+            fragmentation: Fragmentation::Single,
+            update_code: UpdateCode::Bitmap,
+            compression_flags: None,
+            compression_type: None,
+            data: &bitmap,
+        })
+        .unwrap(),
+    );
+    processor
+        .process(&mut image, &frame, &mut WriteBuf::new(), &mut None)
+        .unwrap();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::SetPosition(Point16 { x: 2, y: 1 }))
+        .unwrap();
+    processor
+        .process_pointer_update(&mut image, PointerUpdateData::Color(CURSOR_IMAGE))
+        .unwrap();
+    let mut expected = [30, 80, 100].repeat(16);
+    expected[18..21].copy_from_slice(&[225, 175, 155]);
+    assert_visible_pixels(&image, &expected);
 }
 
 /// Encodes the inner FastPath Bitmap update: a single uncompressed 8x8 32bpp

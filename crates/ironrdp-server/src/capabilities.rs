@@ -19,6 +19,13 @@ pub(crate) fn capabilities(opts: &RdpServerOptions, size: DesktopSize) -> Vec<ca
         caps.push(capability_sets::CapabilitySet::LargePointer(large_pointer));
     }
 
+    if let Some(remote_app) = &opts.remote_app {
+        caps.push(capability_sets::CapabilitySet::Rail(remote_app.rail.clone()));
+        caps.push(capability_sets::CapabilitySet::WindowList(
+            remote_app.window_list.clone(),
+        ));
+    }
+
     caps
 }
 
@@ -78,7 +85,9 @@ fn input_capabilities() -> capability_sets::Input {
             | capability_sets::InputFlags::MOUSEX
             | capability_sets::InputFlags::FASTPATH_INPUT
             | capability_sets::InputFlags::UNICODE
-            | capability_sets::InputFlags::FASTPATH_INPUT_2,
+            | capability_sets::InputFlags::FASTPATH_INPUT_2
+            // MS-RDPBCGR 2.2.8.1.1.3.1.1.3: without it the client MUST NOT send horizontal wheel events.
+            | capability_sets::InputFlags::TS_MOUSE_HWHEEL,
         keyboard_layout: 0,
         keyboard_type: None,
         keyboard_subtype: 0,

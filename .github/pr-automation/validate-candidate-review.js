@@ -5,7 +5,7 @@ const {
   normalizeText, parseJson,
   unicodeLength,
 } = require("./validation");
-const { REVIEWER_ORDER: REVIEWERS } = require("./routing");
+const { REVIEWER_ORDER: REVIEWERS, SPECIALIST_FINDING_LIMITS } = require("./routing");
 
 const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
 const FINDING_ID = /^[a-z][a-z0-9-]{0,63}$/;
@@ -35,7 +35,8 @@ function normalizeCandidateReview(raw, {
   if (!exactKeys(value, ["head_sha", "reviewer", "summary", "findings"]) ||
       !SHA.test(value.head_sha) || value.head_sha !== expectedSha ||
       !REVIEWERS.includes(value.reviewer) || value.reviewer !== expectedReviewer ||
-      !Array.isArray(value.findings) || value.findings.length > 20) {
+      !Array.isArray(value.findings) ||
+      value.findings.length > SPECIALIST_FINDING_LIMITS[value.reviewer]) {
     return invalid("invalid candidate review object");
   }
 

@@ -16,6 +16,7 @@ pub mod multitransport;
 pub mod refresh_rectangle;
 pub mod server_error_info;
 pub mod server_license;
+pub mod server_redirection;
 pub mod session_info;
 pub mod suppress_output;
 pub mod vc;

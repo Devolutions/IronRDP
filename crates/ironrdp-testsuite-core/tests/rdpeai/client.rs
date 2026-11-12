@@ -1,5 +1,5 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{decode, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
@@ -48,6 +48,36 @@ fn decode_dvc(msg: &ironrdp_dvc::DvcMessage) -> RdpeaiPdu {
 
 fn client_with(handler: MockCapture) -> RdpeaiClient {
     RdpeaiClient::new(Box::new(handler), Box::new(|_, _| Ok(())))
+}
+
+type Uplinked = Arc<Mutex<Vec<ironrdp_svc::SvcMessage>>>;
+
+/// Builds a client whose uplink records the messages it carries.
+fn client_with_uplink(handler: impl RdpeaiCaptureHandler + 'static) -> (RdpeaiClient, Uplinked) {
+    let uplinked = Uplinked::default();
+    let recorder = Arc::clone(&uplinked);
+    let client = RdpeaiClient::new(
+        Box::new(handler),
+        Box::new(move |_, messages| {
+            recorder.lock().unwrap().extend(messages);
+            Ok(())
+        }),
+    );
+    (client, uplinked)
+}
+
+/// Decodes the AUDIO_INPUT PDU carried by an uplinked DRDYNVC data message.
+fn decode_uplinked(message: &ironrdp_svc::SvcMessage) -> RdpeaiPdu {
+    use ironrdp_core::{Decode as _, ReadCursor};
+    use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu};
+
+    let encoded = message.encode_unframed_pdu().expect("encode uplinked message");
+    let DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(data)) =
+        DrdynvcClientPdu::decode(&mut ReadCursor::new(&encoded)).expect("decode DRDYNVC")
+    else {
+        panic!("expected DVC data");
+    };
+    decode(data.data()).expect("decode AUDIO_INPUT PDU")
 }
 
 fn process_encoded(client: &mut RdpeaiClient, channel_id: u32, pdu: RdpeaiPdu) -> Vec<ironrdp_dvc::DvcMessage> {
@@ -126,12 +156,13 @@ fn open_with_bad_index_returns_fail() {
     }
 }
 
+// oracle: spec MS-RDPEAI §3.2.5.3.1
 #[test]
 fn format_change_to_other_index_is_confirmed() {
     let fmt_a = pcm_format(1, 16000, 16);
     let fmt_b = pcm_format(1, 48000, 16);
     let set_format_calls = Arc::new(AtomicUsize::new(0));
-    let mut client = client_with(MockCapture {
+    let (mut client, uplinked) = client_with_uplink(MockCapture {
         formats: vec![fmt_a.clone(), fmt_b.clone()],
         open_calls: Arc::new(AtomicUsize::new(0)),
         open_result: OpenReplyPdu::S_OK,
@@ -157,9 +188,15 @@ fn format_change_to_other_index_is_confirmed() {
     );
 
     let out = process_encoded(&mut client, 3, RdpeaiPdu::FormatChange(FormatChangePdu::new(1)));
-    assert_eq!(out.len(), 1);
+
+    // The confirmation goes through the uplink, behind the capture packets already queued there.
+    assert!(out.is_empty());
     assert_eq!(set_format_calls.load(Ordering::Relaxed), 1);
-    match decode_dvc(&out[0]) {
+    let uplinked = uplinked.lock().unwrap();
+    let [confirmation] = uplinked.as_slice() else {
+        panic!("expected one uplinked message, got {}", uplinked.len());
+    };
+    match decode_uplinked(confirmation) {
         RdpeaiPdu::FormatChange(change) => assert_eq!(change.new_format, 1),
         other => panic!("expected FormatChange confirm, got {other:?}"),
     }
@@ -236,12 +273,13 @@ fn open_rejects_oversized_frames_per_packet() {
     }
 }
 
+// oracle: spec MS-RDPEAI §3.2.5.3.1
 #[test]
 fn out_of_sequence_version_is_ignored() {
     let fmt = pcm_format(1, 16000, 16);
     let open_calls = Arc::new(AtomicUsize::new(0));
     let set_format_calls = Arc::new(AtomicUsize::new(0));
-    let mut client = client_with(MockCapture {
+    let (mut client, uplinked) = client_with_uplink(MockCapture {
         formats: vec![fmt.clone()],
         open_calls: Arc::clone(&open_calls),
         open_result: OpenReplyPdu::S_OK,
@@ -271,7 +309,112 @@ fn out_of_sequence_version_is_ignored() {
 
     // Still opened: FormatChange should reach the backend rather than idle-ack only.
     let change_out = process_encoded(&mut client, 1, RdpeaiPdu::FormatChange(FormatChangePdu::new(0)));
-    assert_eq!(change_out.len(), 1);
+    assert!(change_out.is_empty());
     assert_eq!(set_format_calls.load(Ordering::Relaxed), 1);
-    assert!(matches!(decode_dvc(&change_out[0]), RdpeaiPdu::FormatChange(_)));
+    let uplinked = uplinked.lock().unwrap();
+    assert!(matches!(decode_uplinked(&uplinked[0]), RdpeaiPdu::FormatChange(_)));
+}
+
+/// Capture backend that keeps the packet sink so a test can queue capture data.
+struct SinkKeepingCapture {
+    formats: Vec<AudioFormat>,
+    sink: Arc<Mutex<Option<AudioPacketSink>>>,
+}
+
+impl RdpeaiCaptureHandler for SinkKeepingCapture {
+    fn supported_formats(&self) -> &[AudioFormat] {
+        &self.formats
+    }
+
+    fn open(
+        &mut self,
+        _capture_format: &AudioFormat,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        sink: AudioPacketSink,
+    ) -> i32 {
+        *self.sink.lock().unwrap() = Some(sink);
+        OpenReplyPdu::S_OK
+    }
+
+    fn set_format(&mut self, _encode_format: &AudioFormat, _packet_size: usize) -> bool {
+        true
+    }
+
+    fn close(&mut self) {}
+}
+
+// oracle: spec MS-RDPEAI §3.2.5.3.1 (all audio data after the confirmation uses the new format)
+#[test]
+fn format_change_confirmation_follows_already_queued_data() {
+    let fmt_a = pcm_format(1, 16000, 16);
+    let fmt_b = pcm_format(1, 48000, 16);
+    let sink = Arc::new(Mutex::new(None));
+    let (mut client, uplinked) = client_with_uplink(SinkKeepingCapture {
+        formats: vec![fmt_a.clone(), fmt_b.clone()],
+        sink: Arc::clone(&sink),
+    });
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt_a.clone(), fmt_b])),
+    );
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 2,
+            initial_format: 0,
+            capture_format: fmt_a,
+        }),
+    );
+
+    // A packet captured in the old format is queued before the server asks for the new one.
+    (sink.lock().unwrap().as_mut().unwrap())(vec![1, 2, 3, 4]);
+    let replies = process_encoded(&mut client, 3, RdpeaiPdu::FormatChange(FormatChangePdu::new(1)));
+
+    assert!(replies.is_empty());
+    let uplinked: Vec<RdpeaiPdu> = uplinked.lock().unwrap().iter().map(decode_uplinked).collect();
+    assert!(
+        matches!(
+            uplinked.as_slice(),
+            [RdpeaiPdu::DataIncoming, RdpeaiPdu::Data(_), RdpeaiPdu::FormatChange(change)] if change.new_format == 1
+        ),
+        "the confirmation must follow the queued data, got {uplinked:?}"
+    );
+}
+
+// oracle: spec MS-RDPEAI §3.2.5.1.5 (the client replies with formats it supports among those the server sent)
+#[test]
+fn negotiated_formats_keep_client_order_and_only_offered_formats() {
+    let mono_16k = pcm_format(1, 16000, 16);
+    let mono_48k = pcm_format(1, 48000, 16);
+    let stereo_44k = pcm_format(2, 44100, 16);
+    let mut client = client_with(MockCapture {
+        formats: vec![mono_48k.clone(), stereo_44k, mono_16k.clone()],
+        open_calls: Arc::new(AtomicUsize::new(0)),
+        open_result: OpenReplyPdu::S_OK,
+        set_format_ok: true,
+        set_format_calls: Arc::new(AtomicUsize::new(0)),
+    });
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+
+    let replies = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![
+            mono_16k.clone(),
+            pcm_format(2, 8000, 16),
+            mono_48k.clone(),
+        ])),
+    );
+
+    let RdpeaiPdu::Formats(reply) = decode_dvc(&replies[1]) else {
+        panic!("expected the client Sound Formats PDU");
+    };
+    // Client preference order, limited to what the server offered.
+    assert_eq!(reply.formats, vec![mono_48k, mono_16k]);
 }

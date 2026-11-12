@@ -4,6 +4,7 @@
 
 mod macros;
 
+mod bench;
 mod bin_install;
 mod bin_version;
 mod check;
@@ -14,13 +15,15 @@ mod ffi;
 mod fuzz;
 mod pr;
 mod prelude;
+mod release;
 mod section;
 mod wasm;
 mod web;
 
+use anyhow::Context as _;
 use std::path::{Path, PathBuf};
-
-use xshell::Shell;
+use tinyjson::JsonValue;
+use xshell::{Shell, cmd};
 
 use crate::cli::Action;
 use crate::macros::trace;
@@ -29,6 +32,11 @@ use crate::macros::trace;
 pub const LOCAL_CARGO_ROOT: &str = ".cargo\\local_root\\";
 #[cfg(not(target_os = "windows"))]
 pub const LOCAL_CARGO_ROOT: &str = ".cargo/local_root/";
+
+#[cfg(target_os = "windows")]
+const NPM: &str = "npm.cmd";
+#[cfg(not(target_os = "windows"))]
+const NPM: &str = "npm";
 
 pub const CARGO: &str = env!("CARGO");
 
@@ -59,10 +67,13 @@ fn main() -> anyhow::Result<()> {
                 list_files(&sh, local_bin())?;
             }
         }
+        Action::BenchCorpusFetch => bench::corpus(&sh, "fetch")?,
+        Action::BenchCorpusList => bench::corpus(&sh, "list")?,
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
         Action::CheckLocks => check::lock_files(&sh)?,
         Action::CheckDependencies => check::dependencies(&sh)?,
+        Action::CheckCaptures => check::capture_files(&sh)?,
         Action::CheckTestSettings { base, head } => check::test_settings(&sh, &base, &head)?,
         Action::CheckTests { no_run } => {
             if no_run {
@@ -97,6 +108,7 @@ fn main() -> anyhow::Result<()> {
             check::lints(&sh)?;
             features::run_all(&sh)?;
             check::dependencies(&sh)?;
+            check::capture_files(&sh)?;
             wasm::check(&sh)?;
             fuzz::run(&sh, None, None)?;
             web::install(&sh)?;
@@ -105,6 +117,7 @@ fn main() -> anyhow::Result<()> {
         }
         Action::Clean => clean::workspace(&sh)?,
         Action::PrCheckMessage { event_file } => pr::check_message(event_file.as_deref())?,
+        Action::ReleaseCheckPublicDeps { fix } => release::check_public_deps(&sh, fix)?,
         Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
         Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
@@ -115,6 +128,23 @@ fn main() -> anyhow::Result<()> {
             cli::ListFormat::GithubMatrix => fuzz::list_github_matrix()?,
         },
         Action::FuzzRun { duration, target } => fuzz::run(&sh, duration, target)?,
+        Action::BenchRfxDecode {
+            filter,
+            save_baseline,
+            baseline,
+        } => {
+            let args = filter
+                .into_iter()
+                .chain(
+                    save_baseline
+                        .into_iter()
+                        .flat_map(|name| ["--save-baseline".to_owned(), name]),
+                )
+                .chain(baseline.into_iter().flat_map(|name| ["--baseline".to_owned(), name]))
+                .collect();
+            bench::rfx_decode(&sh, args)?
+        }
+        Action::BenchRfxDecodeWasm { simd } => bench::rfx_decode_wasm(&sh, simd)?,
         Action::WasmCheck => wasm::check(&sh)?,
         Action::WasmInstall => wasm::install(&sh)?,
         Action::WebCheck => web::check(&sh)?,
@@ -195,6 +225,21 @@ pub fn local_bin() -> PathBuf {
     let mut path = local_cargo_root();
     path.push("bin");
     path
+}
+
+fn cargo_metadata(sh: &Shell) -> anyhow::Result<JsonValue> {
+    let metadata = cmd!(sh, "{CARGO} metadata --format-version 1 --no-deps").read()?;
+    metadata.parse().context("parse cargo metadata")
+}
+
+fn target_directory(sh: &Shell) -> anyhow::Result<PathBuf> {
+    let metadata = cargo_metadata(sh)?;
+
+    let directory: &String = metadata["target_directory"]
+        .get()
+        .context("cargo metadata has no target_directory")?;
+
+    Ok(PathBuf::from(directory))
 }
 
 static VERBOSE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);

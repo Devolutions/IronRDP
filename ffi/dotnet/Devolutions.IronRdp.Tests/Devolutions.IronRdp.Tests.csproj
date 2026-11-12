@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <NativeDllPath Condition="'$(NativeDllPath)' == '' And $([MSBuild]::IsOSPlatform('Windows'))">$(MSBuildThisFileDirectory)..\..\..\dependencies\runtimes\win-x64\native\DevolutionsIronRdp.dll</NativeDllPath>
+    <NativeDllPath Condition="'$(NativeDllPath)' == '' And $([MSBuild]::IsOSPlatform('Linux'))">$(MSBuildThisFileDirectory)..\..\..\dependencies\runtimes\linux-x64\native\libDevolutionsIronRdp.so</NativeDllPath>
+    <NativeDllPath Condition="'$(NativeDllPath)' == '' And $([MSBuild]::IsOSPlatform('OSX'))">$(MSBuildThisFileDirectory)..\..\..\dependencies\runtimes\osx-x64\native\libDevolutionsIronRdp.dylib</NativeDllPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="SmokeTests.cs" />
+    <ProjectReference Include="..\Devolutions.IronRdp\Devolutions.IronRdp.csproj" />
+    <None Include="$(NativeDllPath)" Link="$([System.IO.Path]::GetFileName('$(NativeDllPath)'))" CopyToOutputDirectory="Always" />
+  </ItemGroup>
+</Project>

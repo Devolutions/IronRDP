@@ -3,8 +3,8 @@ use std::sync::OnceLock;
 use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
 use ironrdp_dvc::pdu::{
     CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreateResponsePdu,
-    CreationStatus, DataFirstPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, FieldType,
-    SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncResponsePdu, SoftSyncTunnelType,
+    CreationStatus, DataCompressedPdu, DataFirstCompressedPdu, DataFirstPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu,
+    DrdynvcServerPdu, FieldType, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncResponsePdu, SoftSyncTunnelType,
 };
 
 // TODO: This likely generalizes to many tests and can thus be reused outside of this module.
@@ -21,10 +21,30 @@ fn test_decodes<'a, T: Decode<'a> + PartialEq + core::fmt::Debug>(encoded: &'a [
     assert_eq!(*expected, T::decode(&mut src).unwrap());
 }
 
+struct TestPayload(Vec<u8>);
+
+impl ironrdp_dvc::DvcEncode for TestPayload {}
+
+impl Encode for TestPayload {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> ironrdp_core::EncodeResult<()> {
+        self.0.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        "TestPayload"
+    }
+
+    fn size(&self) -> usize {
+        self.0.len()
+    }
+}
+
 mod capabilities;
 mod client;
 mod close;
 mod create;
 mod data;
+mod data_compressed;
 mod data_first;
+mod server;
 mod soft_sync;

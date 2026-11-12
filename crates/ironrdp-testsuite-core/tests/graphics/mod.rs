@@ -1,6 +1,10 @@
+mod alpha;
+mod bit_reader;
 mod clearcodec;
 mod color_conversion;
 mod dwt;
 mod image_processing;
+mod rdp6;
+mod rfx;
 mod rle;
 mod rlgr;

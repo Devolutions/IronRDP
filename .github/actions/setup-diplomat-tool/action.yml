@@ -1,0 +1,26 @@
+name: Set up the pinned diplomat-tool
+description: Restore the Rust and tool caches, then install the diplomat-tool version pinned in xtask.
+
+runs:
+  using: composite
+  steps:
+    - name: Prune Rust toolchains
+      uses: ./.github/actions/prune-rust-toolchains
+
+    - name: Rust cache
+      uses: Swatinem/rust-cache@v2.9.1
+      with:
+        save-if: ${{ github.ref == 'refs/heads/master' }}
+
+    - name: Binary cache
+      uses: actions/cache@v5
+      with:
+        path: |
+          ./.cargo/local_root/bin
+          ./.cargo/local_root/*.source
+          ./.cargo/local_root/*.version
+        key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
+
+    - name: Install pinned diplomat-tool
+      shell: bash
+      run: cargo xtask ffi install -v

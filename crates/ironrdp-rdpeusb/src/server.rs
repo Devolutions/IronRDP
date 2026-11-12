@@ -262,7 +262,7 @@ enum Pending {
     },
 }
 
-fn expected_result_for_in(kind: &TsUrbInKind) -> ExpectedTsUrbResult {
+pub(crate) fn expected_result_for_in(kind: &TsUrbInKind) -> ExpectedTsUrbResult {
     match kind {
         TsUrbInKind::SelectConfig(_) => ExpectedTsUrbResult::SelectConfig,
         TsUrbInKind::SelectIface(_) => ExpectedTsUrbResult::SelectIface,
@@ -282,7 +282,7 @@ fn expected_result_for_in(kind: &TsUrbInKind) -> ExpectedTsUrbResult {
     }
 }
 
-fn expected_result_for_out(kind: &TsUrbOutKind) -> ExpectedTsUrbResult {
+pub(crate) fn expected_result_for_out(kind: &TsUrbOutKind) -> ExpectedTsUrbResult {
     match kind {
         TsUrbOutKind::IsochTransfer(_) => ExpectedTsUrbResult::Isoch,
         TsUrbOutKind::CtlTransfer(_)

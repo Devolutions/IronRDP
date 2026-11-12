@@ -1,4 +1,5 @@
 #![expect(clippy::missing_panics_doc, reason = "panics in benches are allowed")]
+#![allow(unused_crate_dependencies)] // Library and binary dependencies are not used by this target.
 
 use core::num::{NonZeroU16, NonZeroUsize};
 

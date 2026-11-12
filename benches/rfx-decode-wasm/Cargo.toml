@@ -1,0 +1,21 @@
+[package]
+name = "rfx-decode-wasm"
+version = "0.0.0"
+description = "WebAssembly build of the IronRDP RemoteFX decode benchmark"
+publish = false
+edition.workspace = true
+
+# `benches` depends on server crates that do not build for wasm32, hence the separate package.
+[lib]
+crate-type = ["cdylib"]
+doctest = false
+
+[dependencies]
+ironrdp = { path = "../../crates/ironrdp", features = ["graphics", "pdu"] }
+rfx-decode-fixtures = { path = "../rfx-decode-fixtures" }
+
+[dev-dependencies]
+rstest.workspace = true
+
+[lints]
+workspace = true

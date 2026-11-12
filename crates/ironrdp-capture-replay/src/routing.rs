@@ -116,7 +116,7 @@ pub enum ReplayGapKind {
     Framing,
     /// A PDU ended before its declared boundary.
     TruncatedPdu,
-    /// A static virtual-channel PDU was malformed.
+    /// A static virtual-channel PDU or an embedded codec update could not be processed.
     StaticChannel,
     /// A DVC message was malformed or could not be attached.
     DynamicChannel,
@@ -371,7 +371,11 @@ impl ReplayRouter {
         if route == ReplayRoute::OtherServerMessage {
             return Ok((route, false));
         }
-        match self.stage.process(&mut self.image, message.action, &message.bytes) {
+        // A replay has no live server to measure bandwidth for.
+        match self
+            .stage
+            .process(&mut self.image, message.action, &message.bytes, None)
+        {
             Ok(outputs) => {
                 if outputs
                     .iter()
@@ -383,6 +387,14 @@ impl ReplayRouter {
                         height: self.image.height(),
                         pixels: self.image.data().to_vec(),
                     })?;
+                }
+                if let Some(kind) = self.take_egfx_decode_gap() {
+                    report.gaps.push(ReplayGap {
+                        packet: message.packet,
+                        direction: ReplayDirection::Server,
+                        kind,
+                        skipped_bytes: 0,
+                    });
                 }
                 self.drain_egfx_output(message.packet, report, frame_sink)?;
                 Ok((
@@ -396,10 +408,8 @@ impl ReplayRouter {
                 report.gaps.push(ReplayGap {
                     packet: message.packet,
                     direction: ReplayDirection::Server,
-                    kind: if route == ReplayRoute::StaticChannel && self.take_unsupported_egfx_codec() {
-                        ReplayGapKind::Unsupported
-                    } else if route == ReplayRoute::StaticChannel {
-                        ReplayGapKind::StaticChannel
+                    kind: if route == ReplayRoute::StaticChannel {
+                        self.take_egfx_decode_gap().unwrap_or(ReplayGapKind::StaticChannel)
                     } else {
                         ReplayGapKind::Session
                     },
@@ -538,18 +548,20 @@ impl ReplayRouter {
         Ok(())
     }
 
-    fn take_unsupported_egfx_codec(&mut self) -> bool {
+    fn take_egfx_decode_gap(&mut self) -> Option<ReplayGapKind> {
         let channel_ids = self.egfx_dynamic_channels.iter().copied().collect::<Vec<_>>();
-        channel_ids.into_iter().any(|channel_id| {
-            self.stage
-                .get_svc_processor_mut::<DrdynvcClient>()
-                .and_then(|drdynvc| {
-                    drdynvc
-                        .get_dvc_by_channel_id_mut::<ReplayEgfxChannel>(channel_id)
-                        .map(|mut channel| channel.processor_mut().take_unsupported_codec())
-                })
-                .unwrap_or(false)
-        })
+        let mut gap = None;
+        for channel_id in channel_ids {
+            let next = self.stage.get_svc_processor_mut::<DrdynvcClient>().and_then(|drdynvc| {
+                drdynvc
+                    .get_dvc_by_channel_id_mut::<ReplayEgfxChannel>(channel_id)
+                    .and_then(|mut channel| channel.processor_mut().take_decode_gap())
+            });
+            if next == Some(ReplayGapKind::Unsupported) || gap.is_none() {
+                gap = next;
+            }
+        }
+        gap
     }
 }
 
@@ -863,6 +875,7 @@ impl GraphicsPipelineHandler for ReplayGraphicsHandler {
 struct ReplayEgfxChannel {
     client: GraphicsPipelineClient,
     output: Arc<ReplayGraphicsOutput>,
+    observed_dropped_updates: u64,
 }
 
 impl ReplayEgfxChannel {
@@ -881,6 +894,7 @@ impl ReplayEgfxChannel {
                 })),
             ),
             output,
+            observed_dropped_updates: 0,
         }
     }
 
@@ -889,11 +903,23 @@ impl ReplayEgfxChannel {
             .client
             .take_output_reset()
             .map(|(width, height)| (u32::from(width), u32::from(height)));
+        // Replay renders the graphics output only. RemoteApp window pixels are drained
+        // and dropped so they stop counting against the compositor's memory budget.
+        let _ = self.client.drain_window_updates();
         (reset, self.client.drain_output())
     }
 
-    fn take_unsupported_codec(&mut self) -> bool {
-        self.output.unsupported.swap(false, Ordering::SeqCst)
+    fn take_decode_gap(&mut self) -> Option<ReplayGapKind> {
+        let dropped_updates = self.client.dropped_updates();
+        let update_dropped = dropped_updates != self.observed_dropped_updates;
+        self.observed_dropped_updates = dropped_updates;
+        if self.output.unsupported.swap(false, Ordering::SeqCst) {
+            Some(ReplayGapKind::Unsupported)
+        } else if update_dropped {
+            Some(ReplayGapKind::StaticChannel)
+        } else {
+            None
+        }
     }
 }
 
@@ -1033,8 +1059,9 @@ mod tests {
     use ironrdp_dvc::pdu::{CreateRequestPdu, DataPdu, DrdynvcDataPdu};
     use ironrdp_egfx::pdu::{
         Avc420Region, CapabilitiesConfirmPdu, CapabilitiesV8Flags, CapabilitySet as EgfxCapabilitySet, Codec1Type,
-        CreateSurfacePdu, EndFramePdu, MapSurfaceToOutputPdu, PixelFormat as EgfxPixelFormat, ResetGraphicsPdu,
-        StartFramePdu, Timestamp, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+        Codec2Type, CreateSurfacePdu, EndFramePdu, MapSurfaceToOutputPdu, MapSurfaceToWindowPdu,
+        PixelFormat as EgfxPixelFormat, ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
+        WireToSurface2Pdu, encode_avc420_bitmap_stream,
     };
     use ironrdp_graphics::zgfx::wrap_uncompressed;
     use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
@@ -1401,6 +1428,111 @@ mod tests {
         );
     }
 
+    // oracle: scaffold (replay renders the graphics output only, so it must not keep window
+    // updates charged against the compositor budget)
+    #[test]
+    fn replay_drains_window_updates_while_rendering_the_output() {
+        let mut router = ReplayRouter::new(activation()).unwrap();
+        let mut frames = Vec::new();
+        let channel_id = 43;
+        let start_frame = |frame_id| {
+            GfxPdu::StartFrame(StartFramePdu {
+                timestamp: Timestamp {
+                    milliseconds: 0,
+                    seconds: 0,
+                    minutes: 0,
+                    hours: 0,
+                },
+                frame_id,
+            })
+        };
+        let pixel = |surface_id, bitmap_data| {
+            GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                surface_id,
+                codec_id: Codec1Type::Uncompressed,
+                pixel_format: EgfxPixelFormat::XRgb,
+                destination_rectangle: ExclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 1,
+                    bottom: 1,
+                },
+                bitmap_data,
+            })
+        };
+        let surface = |surface_id| {
+            GfxPdu::CreateSurface(CreateSurfacePdu {
+                surface_id,
+                width: 1,
+                height: 1,
+                pixel_format: EgfxPixelFormat::XRgb,
+            })
+        };
+        let pdus = [
+            GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&EgfxCapabilitySet::V8 {
+                flags: CapabilitiesV8Flags::empty(),
+            })),
+            GfxPdu::ResetGraphics(ResetGraphicsPdu {
+                width: 1,
+                height: 1,
+                monitors: Vec::new(),
+            }),
+            surface(7),
+            GfxPdu::MapSurfaceToWindow(MapSurfaceToWindowPdu {
+                surface_id: 7,
+                window_id: 0x42,
+                mapped_width: 1,
+                mapped_height: 1,
+            }),
+            surface(8),
+            GfxPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+                surface_id: 8,
+                output_origin_x: 0,
+                output_origin_y: 0,
+            }),
+            start_frame(9),
+            pixel(7, vec![0x33, 0x22, 0x11, 0xff]),
+            pixel(8, vec![0x66, 0x55, 0x44, 0xff]),
+            GfxPdu::EndFrame(EndFramePdu { frame_id: 9 }),
+        ];
+        let mut server = vec![
+            (1, demand_active()),
+            (2, font_map()),
+            (3, static_message(1_005, create(channel_id, ironrdp_egfx::CHANNEL_NAME))),
+        ];
+        server.extend(
+            pdus.into_iter()
+                .zip(4..)
+                .map(|(pdu, packet)| (packet, static_message(1_005, egfx_data(channel_id, pdu)))),
+        );
+
+        router
+            .route_plaintext_with_frame_sink(
+                &Plaintext {
+                    client: Vec::new(),
+                    server,
+                },
+                &mut |frame| {
+                    frames.push(frame);
+                    Ok::<_, ()>(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].pixels, [0x44, 0x55, 0x66, 0xff]);
+        let pending_window_updates = router
+            .stage
+            .get_svc_processor_mut::<DrdynvcClient>()
+            .and_then(|drdynvc| {
+                drdynvc
+                    .get_dvc_by_channel_id_mut::<ReplayEgfxChannel>(channel_id)
+                    .map(|mut channel| channel.processor_mut().client.drain_window_updates().len())
+            })
+            .expect("the EGFX channel is open");
+        assert_eq!(pending_window_updates, 0);
+    }
+
     #[test]
     fn passive_egfx_channel_does_not_start_negotiation() {
         assert!(ReplayEgfxChannel::new().start(43).unwrap().is_empty());
@@ -1481,6 +1613,78 @@ mod tests {
     }
 
     #[test]
+    fn reports_supported_codec_decode_failures_as_replay_gaps() {
+        let bad_updates = [
+            wire_to_surface1(Codec1Type::ClearCodec, vec![0xFF; 16]),
+            wire_to_surface1(Codec1Type::Planar, vec![0xFF; 16]),
+            GfxPdu::WireToSurface2(WireToSurface2Pdu {
+                surface_id: 7,
+                codec_id: Codec2Type::RemoteFxProgressive,
+                codec_context_id: 1,
+                pixel_format: EgfxPixelFormat::XRgb,
+                bitmap_data: vec![0xFF; 16],
+            }),
+        ];
+        for bad_update in bad_updates {
+            let mut router = ReplayRouter::new(activation()).unwrap();
+            let channel_id = 47;
+            let mut server = vec![
+                (1, demand_active()),
+                (2, font_map()),
+                (3, static_message(1_005, create(channel_id, ironrdp_egfx::CHANNEL_NAME))),
+            ];
+            for (index, pdu) in [
+                GfxPdu::ResetGraphics(ResetGraphicsPdu {
+                    width: 1,
+                    height: 1,
+                    monitors: Vec::new(),
+                }),
+                GfxPdu::CreateSurface(CreateSurfacePdu {
+                    surface_id: 7,
+                    width: 1,
+                    height: 1,
+                    pixel_format: EgfxPixelFormat::XRgb,
+                }),
+                bad_update,
+                wire_to_surface1(Codec1Type::Uncompressed, vec![1, 2, 3, 255]),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                server.push((index + 4, static_message(1_005, egfx_data(channel_id, pdu))));
+            }
+            let report = router.route_plaintext(&Plaintext {
+                client: Vec::new(),
+                server,
+            });
+            assert_eq!(
+                report.gaps,
+                [ReplayGap {
+                    packet: 6,
+                    direction: ReplayDirection::Server,
+                    kind: ReplayGapKind::StaticChannel,
+                    skipped_bytes: 0,
+                }]
+            );
+        }
+
+        fn wire_to_surface1(codec_id: Codec1Type, bitmap_data: Vec<u8>) -> GfxPdu {
+            GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                surface_id: 7,
+                codec_id,
+                pixel_format: EgfxPixelFormat::XRgb,
+                destination_rectangle: ExclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 1,
+                    bottom: 1,
+                },
+                bitmap_data,
+            })
+        }
+    }
+
+    #[test]
     fn reports_avc420_as_an_unsupported_replay_gap() {
         let mut router = ReplayRouter::new(activation()).unwrap();
         let channel_id = 47;
@@ -1536,6 +1740,27 @@ mod tests {
                                     bottom: 1,
                                 },
                                 bitmap_data: encode_avc420_bitmap_stream(&[Avc420Region::full_frame(1, 1, 22)], &[]),
+                            }),
+                        ),
+                    ),
+                ),
+                (
+                    7,
+                    static_message(
+                        1_005,
+                        egfx_data(
+                            channel_id,
+                            GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                                surface_id: 7,
+                                codec_id: Codec1Type::Uncompressed,
+                                pixel_format: EgfxPixelFormat::XRgb,
+                                destination_rectangle: ExclusiveRectangle {
+                                    left: 0,
+                                    top: 0,
+                                    right: 1,
+                                    bottom: 1,
+                                },
+                                bitmap_data: vec![1, 2, 3, 255],
                             }),
                         ),
                     ),
@@ -1729,6 +1954,7 @@ mod tests {
                     password: String::new(),
                     domain: None,
                 },
+                password_cookie: None,
                 code_page: 0,
                 flags: ClientInfoFlags::UNICODE | ClientInfoFlags::COMPRESSION,
                 compression_type: CompressionType::K64,

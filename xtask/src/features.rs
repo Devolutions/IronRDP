@@ -146,6 +146,7 @@ const CASES: &[FeatureCheckCase] = &[
                 "ironrdp-ainput",
                 "ironrdp-displaycontrol",
                 "ironrdp-rdpeusb",
+                "ironrdp-rdpear",
             ],
             depth: 2,
             extra_args: &[],

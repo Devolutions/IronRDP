@@ -7,14 +7,18 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{PduResult, decode_err, pdu_other_err};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::efs::{
-    AnyIoCtlCode, Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientNameRequest,
-    ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME,
-    DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest, DeviceControlResponse, DeviceCreateResponse,
-    DeviceIoRequest, DeviceIoResponse, DeviceType, Devices, Information, MajorFunction, NtStatus, PrinterIoRequest,
-    ServerDeviceAnnounceResponse, VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
+    AnyIoCtlCode, Capabilities, ClientDeviceListAnnounce, ClientDeviceListRemove, ClientDriveQueryDirectoryResponse,
+    ClientDriveQueryVolumeInformationResponse, ClientDriveSetInformationResponse,
+    ClientDriveSetVolumeInformationResponse, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
+    CoreCapabilityKind, DEFAULT_PRINTER_DRIVER_NAME, DeviceAnnounceHeader, DeviceCloseResponse, DeviceControlRequest,
+    DeviceControlResponse, DeviceCreateResponse, DeviceIoRequest, DeviceIoResponse, DeviceType, Devices, Information,
+    MajorFunction, NtStatus, PrinterIoRequest, ServerDeviceAnnounceResponse, UnsupportedDriveIoRequest,
+    VERSION_MINOR_12, VERSION_MINOR_RDP51, VersionAndIdPdu, VersionAndIdPduKind,
 };
+use pdu::epc::{PrinterCacheData, PrinterUsingXps};
 use pdu::esc::{ScardCall, ScardIoCtlCode};
-use pdu::{PacketId, RdpdrPdu, SharedHeader};
+use pdu::esp::PortIoRequest;
+use pdu::{DeviceIoCompletion, PacketId, RdpdrPdu, SharedHeader};
 use tracing::{debug, trace, warn};
 
 pub mod backend;
@@ -23,11 +27,17 @@ pub mod server;
 
 pub use self::backend::noop::NoopRdpdrBackend;
 pub use self::backend::{
-    RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult, RdpdrBackendProduct, RdpdrDrive, RdpdrPrinter,
+    InMemoryRdpdrPrinterCacheStore, InvalidPortName, RdpdrBackend, RdpdrBackendFactory, RdpdrBackendFactoryResult,
+    RdpdrBackendProduct, RdpdrDrive, RdpdrPort, RdpdrPortKind, RdpdrPrinter, RdpdrPrinterCacheEntry,
+    RdpdrPrinterCacheResult, RdpdrPrinterCacheStore,
 };
 use crate::pdu::efs::ServerDriveIoRequest;
 
 const MAX_PRINTER_WRITE_BYTES: u32 = 16 * 1024 * 1024;
+/// Largest `CachedPrinterConfigData` blob persisted from the server.
+///
+/// Printer configuration is a driver DEVMODE and private data, usually a few kilobytes.
+const MAX_PRINTER_CACHE_DATA_BYTES: usize = 256 * 1024;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///
@@ -54,7 +64,11 @@ pub struct Rdpdr {
     client_id: Option<u32>,
     server_capabilities_received: bool,
     printer_capability_negotiated: bool,
+    port_capability_negotiated: bool,
     client_id_confirmed: bool,
+    /// Windows can send User Logged On before Client ID Confirm, for example when it
+    /// re-announces the channel after logon; handle it once the client ID is confirmed.
+    user_logged_on_pending: bool,
     post_logon_devices_announced: bool,
     pending_device_announcements: Vec<u32>,
     pending_drive_removals: Vec<u32>,
@@ -62,7 +76,28 @@ pub struct Rdpdr {
     backend_active_drive_ids: Vec<u32>,
     active_device_ids: Vec<u32>,
     rejected_device_ids: Vec<u32>,
+    printers: Vec<RedirectedPrinter>,
+    printer_cache_store: Option<PrinterCacheStore>,
     backend: Option<Box<dyn RdpdrBackend>>,
+}
+
+/// A printer added with [`Rdpdr::with_redirected_printer`].
+#[derive(Debug)]
+struct RedirectedPrinter {
+    printer: RdpdrPrinter,
+    /// Name the server uses in cache-data messages; a rename event changes it.
+    server_name: String,
+    /// Driver in the current announcement, which the server's cached configuration belongs to.
+    announced_driver: String,
+}
+
+#[derive(Clone)]
+struct PrinterCacheStore(std::sync::Arc<dyn RdpdrPrinterCacheStore>);
+
+impl core::fmt::Debug for PrinterCacheStore {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("PrinterCacheStore")
+    }
 }
 
 impl_as_any!(Rdpdr);
@@ -81,7 +116,9 @@ impl Rdpdr {
             client_id: None,
             server_capabilities_received: false,
             printer_capability_negotiated: false,
+            port_capability_negotiated: false,
             client_id_confirmed: false,
+            user_logged_on_pending: false,
             post_logon_devices_announced: false,
             pending_device_announcements: Vec::new(),
             pending_drive_removals: Vec::new(),
@@ -89,6 +126,8 @@ impl Rdpdr {
             backend_active_drive_ids: Vec::new(),
             active_device_ids: Vec::new(),
             rejected_device_ids: Vec::new(),
+            printers: Vec::new(),
+            printer_cache_store: None,
             backend: Some(backend),
         }
     }
@@ -149,19 +188,144 @@ impl Rdpdr {
     }
 
     /// Adds printer redirection capability with explicit driver and network-queue metadata.
+    ///
+    /// The printer is marked as the default printer unless another printer already is; see
+    /// [`Self::with_redirected_printer`].
     #[must_use]
     pub fn with_printer_driver_and_network(
-        mut self,
+        self,
         device_id: u32,
         print_name: String,
         driver_name: String,
         network: bool,
     ) -> Self {
+        self.with_redirected_printer(
+            RdpdrPrinter::new(device_id, print_name, driver_name)
+                .with_network(network)
+                .with_default(true),
+        )
+    }
+
+    /// Adds printer redirection capability and announces `printer` after the user logs on.
+    ///
+    /// The announcement carries the printer's default flag, network flag, and cached
+    /// configuration. When a cache store is attached, its entry for the local queue name is
+    /// applied with [`RdpdrPrinter::with_cache_entry`]. [MS-RDPEPC 2.2.2.1] allows one default printer, so
+    /// the default flag is dropped from a printer added after another default printer. A printer
+    /// is skipped with a warning when all `PRN1` to `PRN9999` port names are taken.
+    ///
+    /// [MS-RDPEPC 2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/2057a02f-57d5-47db-9a32-e337ac3f50e9
+    #[must_use]
+    pub fn with_redirected_printer(mut self, mut printer: RdpdrPrinter) -> Self {
+        if printer.is_default() && self.printers.iter().any(|existing| existing.printer.is_default()) {
+            warn!(
+                device_id = printer.device_id(),
+                "Announcing printer without the default flag; another printer is already the default"
+            );
+            printer = printer.with_default(false);
+        }
+        let announced = self.announced_printer(&printer);
+        if !self.device_list.add_printer_announce(
+            printer.device_id(),
+            printer_announce_flags(&printer),
+            announced.driver_name(),
+            announced.announced_name(),
+            announced.cached_config_data(),
+        ) {
+            warn!(
+                device_id = printer.device_id(),
+                "Skipping printer; no PRN port number is left"
+            );
+            return self;
+        }
         self.capabilities.add_printer();
-        self.device_list
-            .add_printer_with_driver_and_network(device_id, print_name, driver_name, network);
-        self.device_types.push((device_id, DeviceType::Print));
+        self.device_types.push((printer.device_id(), DeviceType::Print));
+        self.printers.push(RedirectedPrinter {
+            server_name: announced.announced_name().to_owned(),
+            announced_driver: announced.driver_name().to_owned(),
+            printer,
+        });
         self
+    }
+
+    /// Adds port redirection capability and announces a serial or parallel port.
+    ///
+    /// Ports are only announced when the server advertises the port capability. Serial ports
+    /// are announced at Client ID Confirm, after the smart cards and in their own PDU, and
+    /// parallel ports after the remote user logs on, as mstsc does. IRPs targeting this device
+    /// are dispatched to [`RdpdrBackend::handle_port_io_request`].
+    #[must_use]
+    pub fn with_port(mut self, port: RdpdrPort) -> Self {
+        let (device_id, kind, name) = port.into_parts();
+        self.capabilities.add_port();
+        self.device_list.add_port(device_id, kind.device_type(), name);
+        self.device_types.push((device_id, kind.device_type()));
+        self
+    }
+
+    /// Persists `PAKID_PRN_CACHE_DATA` messages in `store` and replays its entries in printer
+    /// announcements ([MS-RDPEPC 3.1.1.1]).
+    ///
+    /// Printers added before or after this call use the store. Entries are keyed by the local
+    /// printer queue name.
+    ///
+    /// [MS-RDPEPC 3.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/
+    #[must_use]
+    pub fn with_printer_cache_store(mut self, store: std::sync::Arc<dyn RdpdrPrinterCacheStore>) -> Self {
+        self.printer_cache_store = Some(PrinterCacheStore(store));
+        for index in 0..self.printers.len() {
+            self.reencode_printer(index);
+        }
+        self
+    }
+
+    /// Returns `printer` with the cache store's entry for it applied.
+    fn announced_printer(&self, printer: &RdpdrPrinter) -> RdpdrPrinter {
+        let Some(store) = &self.printer_cache_store else {
+            return printer.clone();
+        };
+        match store.0.load(printer.name()) {
+            Ok(Some(entry)) => {
+                debug!(
+                    device_id = printer.device_id(),
+                    cached_bytes = entry.config_data.len(),
+                    "Applying cached printer configuration"
+                );
+                printer.clone().with_cache_entry(entry)
+            }
+            Ok(None) => printer.clone(),
+            Err(error) => {
+                warn!(%error, device_id = printer.device_id(), "Failed to load cached printer configuration");
+                printer.clone()
+            }
+        }
+    }
+
+    /// Rebuilds the configured announcement of `self.printers[index]` from the current cache store.
+    fn reencode_printer(&mut self, index: usize) {
+        let printer = self.printers[index].printer.clone();
+        let Some(port_number) = self
+            .device_list
+            .device(printer.device_id())
+            .and_then(DeviceAnnounceHeader::printer_port_number)
+        else {
+            return;
+        };
+        let announced = self.announced_printer(&printer);
+        let replaced = self
+            .device_list
+            .replace_device(DeviceAnnounceHeader::new_printer_announce(
+                printer.device_id(),
+                port_number,
+                printer_announce_flags(&printer),
+                announced.driver_name(),
+                announced.announced_name(),
+                announced.cached_config_data(),
+            ));
+        debug_assert!(replaced, "configured printer has an announcement");
+        let redirected = &mut self.printers[index];
+        redirected.server_name = announced.announced_name().to_owned();
+        redirected.announced_driver = announced.driver_name().to_owned();
     }
 
     /// Builds a raw drive announcement for integrations that manage their own
@@ -354,12 +518,18 @@ impl Rdpdr {
 
         self.server_capabilities_received = false;
         self.printer_capability_negotiated = false;
+        self.port_capability_negotiated = false;
         self.client_id_confirmed = false;
+        self.user_logged_on_pending = false;
         self.post_logon_devices_announced = false;
         self.pending_device_announcements.clear();
         self.manually_announced_device_ids.clear();
         self.active_device_ids.clear();
         self.rejected_device_ids.clear();
+        // Cache events may have changed the store since the last announcement.
+        for index in 0..self.printers.len() {
+            self.reencode_printer(index);
+        }
 
         let client_id = if req.version_minor < VERSION_MINOR_12 {
             let mut bytes = [0; size_of::<u32>()];
@@ -395,6 +565,7 @@ impl Rdpdr {
 
         self.server_capabilities_received = true;
         self.printer_capability_negotiated = req.supports_printer();
+        self.port_capability_negotiated = req.supports_port();
         let client_capability_response =
             RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_supported_by(&req)));
         trace!("sending {:?}", client_capability_response);
@@ -422,20 +593,24 @@ impl Rdpdr {
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
                 !self.manually_announced_device_ids.contains(device_id)
-                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
+                    && self.device_capability_negotiated(device)
                     && (announce_all_devices || Self::is_pre_logon_device(device))
             })
             .map(|(device, (device_id, _))| (device, device_id))
             .unzip();
 
-        let messages = if device_list.is_empty() {
-            Vec::new()
-        } else {
-            self.announce_devices(device_list, device_ids)?
-        };
+        // Like mstsc, serial ports follow the smart cards in a Device List Announce of their own.
+        let (serial, other): (Vec<_>, Vec<_>) = device_list
+            .into_iter()
+            .zip(device_ids)
+            .partition(|(device, _)| !announce_all_devices && device.device_type() == DeviceType::Serial);
+        let mut messages = self.announce_batches([other, serial])?;
 
         self.client_id_confirmed = true;
         self.post_logon_devices_announced = announce_all_devices;
+        if core::mem::take(&mut self.user_logged_on_pending) {
+            messages.extend(self.handle_user_logged_on()?);
+        }
         Ok(messages)
     }
 
@@ -453,21 +628,54 @@ impl Rdpdr {
             .zip(self.device_types.iter().copied())
             .filter(|(device, (device_id, _))| {
                 !self.manually_announced_device_ids.contains(device_id)
-                    && (device.device_type() != DeviceType::Print || self.printer_capability_negotiated)
-                    && !Self::is_pre_logon_device(device)
+                    && self.device_capability_negotiated(device)
+                    // A pre-logon device is announced here when Client ID Confirm came before
+                    // the server capability that enables it, as mstsc does for serial ports.
+                    && (!Self::is_pre_logon_device(device) || !self.device_announced(*device_id))
             })
             .map(|(device, (device_id, _))| (device, device_id))
             .unzip();
 
-        if device_list.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        self.announce_devices(device_list, device_ids)
+        // Late pre-logon devices go in their own announce, ahead of the post-logon batch.
+        let (pre_logon, post_logon): (Vec<_>, Vec<_>) = device_list
+            .into_iter()
+            .zip(device_ids)
+            .partition(|(device, _)| Self::is_pre_logon_device(device));
+        self.announce_batches([pre_logon, post_logon])
     }
 
+    /// Announces each nonempty batch in a Device List Announce of its own, in order.
+    fn announce_batches(&mut self, batches: [Vec<(DeviceAnnounceHeader, u32)>; 2]) -> PduResult<Vec<SvcMessage>> {
+        let mut messages = Vec::new();
+        for batch in batches {
+            if !batch.is_empty() {
+                let (device_list, device_ids) = batch.into_iter().unzip();
+                messages.extend(self.announce_devices(device_list, device_ids)?);
+            }
+        }
+        Ok(messages)
+    }
+
+    /// Whether the device was announced in the current initialization sequence.
+    fn device_announced(&self, device_id: u32) -> bool {
+        self.pending_device_announcements.contains(&device_id)
+            || self.active_device_ids.contains(&device_id)
+            || self.rejected_device_ids.contains(&device_id)
+    }
+
+    /// Printers and ports are only announced when the server advertised their capability set.
+    fn device_capability_negotiated(&self, device: &DeviceAnnounceHeader) -> bool {
+        match device.device_type() {
+            DeviceType::Print => self.printer_capability_negotiated,
+            DeviceType::Serial | DeviceType::Parallel => self.port_capability_negotiated,
+            DeviceType::Filesystem | DeviceType::Smartcard => true,
+        }
+    }
+
+    /// Smart cards and serial ports are announced before logon, as mstsc does. Parallel ports
+    /// go with drives and printers once the user has logged on.
     fn is_pre_logon_device(device: &DeviceAnnounceHeader) -> bool {
-        matches!(device.device_type(), DeviceType::Smartcard)
+        matches!(device.device_type(), DeviceType::Smartcard | DeviceType::Serial)
     }
 
     fn enable_drive_capability(&mut self) {
@@ -570,11 +778,24 @@ impl Rdpdr {
         Ok(messages)
     }
 
+    /// Whether the server may send IRPs for `device_id`: it was announced and not rejected.
+    ///
+    /// A device awaiting its announcement response counts as announced. Windows can send the first
+    /// IRP for a device just before the response accepting it, and an unanswered IRP stalls the
+    /// server for about 30 seconds. A later rejection removes the drive from the backend, which
+    /// cancels its pending IRPs, and a port backend releases a rejected port's files when it sees
+    /// the response; printer creates still wait for acceptance, because a rejected printer's job
+    /// would not be released. FreeRDP likewise serves every announced device until
+    /// rejected.
+    fn device_is_announced(&self, device_id: u32) -> bool {
+        self.active_device_ids.contains(&device_id) || self.pending_device_announcements.contains(&device_id)
+    }
+
     fn handle_user_logged_on(&mut self) -> PduResult<Vec<SvcMessage>> {
         if !self.client_id_confirmed {
-            return Err(pdu_other_err!(
-                "received RDPDR user logged on before client ID confirmation"
-            ));
+            debug!("Deferring RDPDR user logged on until the client ID is confirmed");
+            self.user_logged_on_pending = true;
+            return Ok(Vec::new());
         }
 
         let mut backend = self.backend.take().expect("missing rdpdr backend");
@@ -630,12 +851,12 @@ impl Rdpdr {
                     );
                     return Ok(Vec::new());
                 }
-                if !self.active_device_ids.contains(&dev_io_req.device_id) {
+                if !self.device_is_announced(dev_io_req.device_id) {
                     warn!(
                         device_id = dev_io_req.device_id,
                         file_id = dev_io_req.file_id,
                         completion_id = dev_io_req.completion_id,
-                        "Ignoring filesystem IRP before device announcement confirmation"
+                        "Ignoring filesystem IRP for a device that was not announced"
                     );
                     return Ok(Vec::new());
                 }
@@ -663,10 +884,16 @@ impl Rdpdr {
                     }
                     src.advance(CLOSE_REQUEST_PADDING_SIZE);
                 }
-                let req = ServerDriveIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                let req = ServerDriveIoRequest::decode_or_unsupported(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                // Directory control requests with an undescribed minor function have no defined body,
+                // so their decoding consumes everything and this check never rejects them.
                 if !src.is_empty() {
                     return Err(pdu_other_err!("received filesystem IRP with trailing RDPDR data"));
                 }
+                let req = match req {
+                    Ok(req) => req,
+                    Err(unsupported) => return Ok(vec![Self::unsupported_drive_io_response(unsupported)]),
+                };
 
                 debug!(?req);
 
@@ -686,14 +913,33 @@ impl Rdpdr {
                     );
                     return Ok(Vec::new());
                 }
-                if !self.active_device_ids.contains(&dev_io_req.device_id) {
+                if !self.device_is_announced(dev_io_req.device_id) {
                     warn!(
                         device_id = dev_io_req.device_id,
                         file_id = dev_io_req.file_id,
                         completion_id = dev_io_req.completion_id,
-                        "Ignoring printer IRP before device announcement confirmation"
+                        "Ignoring printer IRP for a device that was not announced"
                     );
                     return Ok(Vec::new());
+                }
+                // A printer create starts a native print job, which a later rejection would leave
+                // allocated because the rejected device's close is ignored. Fail it until the
+                // server accepts the printer.
+                if dev_io_req.major_function == MajorFunction::Create
+                    && !self.active_device_ids.contains(&dev_io_req.device_id)
+                {
+                    debug!(
+                        device_id = dev_io_req.device_id,
+                        completion_id = dev_io_req.completion_id,
+                        "Failing printer create before the announcement response"
+                    );
+                    return Ok(vec![SvcMessage::from(RdpdrPdu::DeviceCreateResponse(
+                        DeviceCreateResponse {
+                            device_io_reply: DeviceIoResponse::new(dev_io_req, NtStatus::UNSUCCESSFUL),
+                            file_id: 0,
+                            information: Information::empty(),
+                        },
+                    ))]);
                 }
 
                 match dev_io_req.major_function {
@@ -767,11 +1013,241 @@ impl Rdpdr {
                     }
                 }
             }
-            _ => {
-                // This should never happen, as we only announce devices that we support.
-                warn!(?dev_io_req, "received packet for unsupported device type");
-                Ok(Vec::new())
+            DeviceType::Serial | DeviceType::Parallel => self.handle_port_io_request(dev_io_req, src),
+        }
+    }
+
+    fn handle_port_io_request(
+        &mut self,
+        dev_io_req: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
+    ) -> PduResult<Vec<SvcMessage>> {
+        if self.rejected_device_ids.contains(&dev_io_req.device_id) {
+            warn!(
+                device_id = dev_io_req.device_id,
+                file_id = dev_io_req.file_id,
+                completion_id = dev_io_req.completion_id,
+                "Ignoring port IRP for a rejected device"
+            );
+            return Ok(Vec::new());
+        }
+        if !self.device_is_announced(dev_io_req.device_id) {
+            warn!(
+                device_id = dev_io_req.device_id,
+                file_id = dev_io_req.file_id,
+                completion_id = dev_io_req.completion_id,
+                "Ignoring port IRP for a device that was not announced"
+            );
+            return Ok(Vec::new());
+        }
+
+        let req = PortIoRequest::decode_or_unsupported(dev_io_req, src).map_err(|e| decode_err!(e))?;
+        if !src.is_empty() {
+            return Err(pdu_other_err!("received port IRP with trailing RDPDR data"));
+        }
+        let req = match req {
+            Ok(req) => req,
+            Err(rejection) => {
+                // MS-RDPESP only describes create, close, read, write and device control for
+                // ports. Other requests are completed instead of tearing down the channel.
+                debug!(
+                    major = ?rejection.device_io_request.major_function,
+                    device_id = rejection.device_io_request.device_id,
+                    completion_id = rejection.device_io_request.completion_id,
+                    status = ?rejection.io_status,
+                    "Completing rejected port IRP"
+                );
+                return Ok(vec![SvcMessage::from(DeviceIoCompletion::Padded(
+                    DeviceIoResponse::new(rejection.device_io_request, rejection.io_status),
+                ))]);
             }
+        };
+
+        if let PortIoRequest::DeviceControl(control) = &req {
+            debug!(
+                ioctl = ?control.request.io_control_code,
+                input_buffer_length = control.input_buffer.len(),
+                output_buffer_length = control.request.output_buffer_length,
+                "Dispatching port device-control IRP"
+            );
+        } else {
+            debug!(?req, "Dispatching port IRP");
+        }
+
+        self.backend
+            .as_mut()
+            .ok_or_else(|| pdu_other_err!("missing rdpdr backend"))?
+            .handle_port_io_request(req)
+    }
+
+    /// Completes a filesystem IRP that is well-formed but asks for a function or information class
+    /// this client does not implement, so that the server receives a failure status instead of the
+    /// whole channel being torn down.
+    ///
+    /// MS-RDPEFS 3.1.5.2 says an unrecognized field value SHOULD terminate the channel, and an
+    /// information class outside a request's table is one. Like FreeRDP, such requests are completed
+    /// with STATUS_NOT_SUPPORTED instead, which keeps the session alive.
+    fn unsupported_drive_io_response(req: UnsupportedDriveIoRequest) -> SvcMessage {
+        let not_supported = |device_io_request| DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED);
+
+        let message = match req {
+            UnsupportedDriveIoRequest::SetVolumeInformation {
+                device_io_request,
+                length,
+            } => SvcMessage::from(DeviceIoCompletion::SetVolumeInformation(
+                ClientDriveSetVolumeInformationResponse {
+                    device_io_reply: not_supported(device_io_request),
+                    length,
+                },
+            )),
+            UnsupportedDriveIoRequest::SetInformation {
+                device_io_request,
+                length,
+            } => SvcMessage::from(RdpdrPdu::ClientDriveSetInformationResponse(
+                ClientDriveSetInformationResponse {
+                    device_io_reply: not_supported(device_io_request),
+                    length,
+                },
+            )),
+            UnsupportedDriveIoRequest::QueryVolumeInformation(device_io_request) => SvcMessage::from(
+                RdpdrPdu::ClientDriveQueryVolumeInformationResponse(ClientDriveQueryVolumeInformationResponse {
+                    device_io_reply: not_supported(device_io_request),
+                    buffer: None,
+                }),
+            ),
+            UnsupportedDriveIoRequest::QueryDirectory(device_io_request) => SvcMessage::from(
+                RdpdrPdu::ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse {
+                    device_io_reply: not_supported(device_io_request),
+                    buffer: None,
+                }),
+            ),
+            // > If the request contains MajorFunction or MinorFunction fields that are not described by this
+            // > protocol, the request SHOULD be completed with a Device I/O Response message that has the
+            // > IoStatus field set to STATUS_UNSUCCESSFUL.
+            // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9925f2e4-8d5a-4777-a41a-7ba6ef6e8bff
+            UnsupportedDriveIoRequest::DirectoryControl(device_io_request) => SvcMessage::from(
+                DeviceIoCompletion::Bare(DeviceIoResponse::new(device_io_request, NtStatus::UNSUCCESSFUL)),
+            ),
+        };
+        debug!(?message, "Completing unsupported filesystem IRP");
+
+        message
+    }
+
+    /// Persists a `PAKID_PRN_CACHE_DATA` message ([MS-RDPEPC 3.2.5.1.3] to 3.2.5.1.6).
+    ///
+    /// Entries are keyed by the local queue name and record the name the server gave the
+    /// printer, which the next announcement uses. For a rename event, that recorded name is the
+    /// client's redirected printer queue: the local Windows queue keeps its name, so a server
+    /// cannot rename printers on the client machine. Store failures and oversized blobs are
+    /// logged; they never close the channel.
+    ///
+    /// [MS-RDPEPC 3.2.5.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpepc/
+    fn handle_printer_cache_data(&mut self, pdu: PrinterCacheData) {
+        let Some(store) = self.printer_cache_store.clone() else {
+            debug!(
+                printer = pdu.printer_name(),
+                "Ignoring printer cache data without a cache store"
+            );
+            return;
+        };
+        // An add event names the queue a user created on the redirected port, which may differ
+        // from the announced printer name (MS-RDPEPC 3.2.5.1.3), so it also matches by port.
+        let port_dos_name = match &pdu {
+            PrinterCacheData::Add(add) => Some(add.port_dos_name.as_str()),
+            _ => None,
+        };
+        let Some(index) = self
+            .printers
+            .iter()
+            .position(|redirected| redirected.server_name == pdu.printer_name())
+            .or_else(|| {
+                let port_dos_name = port_dos_name?;
+                self.printers.iter().position(|redirected| {
+                    self.device_list
+                        .device(redirected.printer.device_id())
+                        .is_some_and(|device| device.preferred_dos_name().eq_ignore_ascii_case(port_dos_name))
+                })
+            })
+        else {
+            warn!(
+                printer = pdu.printer_name(),
+                "Ignoring printer cache data for a printer this client did not announce"
+            );
+            return;
+        };
+        let redirected = &mut self.printers[index];
+        let printer_name = redirected.printer.name().to_owned();
+        // The server name to record; the local queue name needs no record.
+        let recorded_name = |server_name: &str| (server_name != printer_name).then(|| server_name.to_owned());
+
+        let result = match &pdu {
+            PrinterCacheData::Add(pdu) if pdu.config_data.len() <= MAX_PRINTER_CACHE_DATA_BYTES => {
+                let driver_name = (!pdu.driver_name.is_empty()).then(|| pdu.driver_name.clone());
+                // The server queue now uses the manually installed driver and name, so later
+                // messages refer to it, and the next connection announces it (MS-RDPEPC 3.2.5.1.3).
+                if let Some(driver_name) = &driver_name {
+                    redirected.announced_driver.clone_from(driver_name);
+                }
+                redirected.server_name.clone_from(&pdu.printer_name);
+                store.0.save(
+                    &printer_name,
+                    &RdpdrPrinterCacheEntry {
+                        printer_name: recorded_name(&pdu.printer_name),
+                        config_driver_name: Some(
+                            driver_name
+                                .clone()
+                                .unwrap_or_else(|| redirected.announced_driver.clone()),
+                        ),
+                        driver_name,
+                        config_data: pdu.config_data.clone(),
+                    },
+                )
+            }
+            PrinterCacheData::Update(pdu) if pdu.config_data.len() <= MAX_PRINTER_CACHE_DATA_BYTES => {
+                store.0.load(&printer_name).and_then(|entry| {
+                    let mut entry = entry.unwrap_or_default();
+                    // A driver saved from an add event that the session no longer announces (an
+                    // explicit override, for example) would pair the new configuration with the
+                    // wrong driver on the next connection.
+                    if entry
+                        .driver_name
+                        .as_ref()
+                        .is_some_and(|driver_name| *driver_name != redirected.announced_driver)
+                    {
+                        entry.driver_name = None;
+                    }
+                    entry.printer_name = recorded_name(&redirected.server_name);
+                    entry.config_data.clone_from(&pdu.config_data);
+                    entry.config_driver_name = Some(redirected.announced_driver.clone());
+                    store.0.save(&printer_name, &entry)
+                })
+            }
+            PrinterCacheData::Add(_) | PrinterCacheData::Update(_) => {
+                warn!(
+                    printer = pdu.printer_name(),
+                    limit = MAX_PRINTER_CACHE_DATA_BYTES,
+                    "Ignoring oversized printer cache data"
+                );
+                return;
+            }
+            PrinterCacheData::Delete(_) => store.0.delete(&printer_name),
+            PrinterCacheData::Rename(pdu) if pdu.new_printer_name.is_empty() => {
+                warn!(printer = %pdu.old_printer_name, "Ignoring a rename to an empty printer name");
+                return;
+            }
+            PrinterCacheData::Rename(pdu) => {
+                redirected.server_name.clone_from(&pdu.new_printer_name);
+                store.0.load(&printer_name).and_then(|entry| {
+                    let mut entry = entry.unwrap_or_default();
+                    entry.printer_name = recorded_name(&pdu.new_printer_name);
+                    store.0.save(&printer_name, &entry)
+                })
+            }
+        };
+        match result {
+            Ok(()) => debug!(printer = pdu.printer_name(), "Updated printer cache data"),
+            Err(error) => warn!(%error, printer = pdu.printer_name(), "Failed to update printer cache data"),
         }
     }
 
@@ -780,6 +1256,17 @@ impl Rdpdr {
             device_io_response: DeviceIoResponse::new(device_io_request, NtStatus::NOT_SUPPORTED),
         }))
     }
+}
+
+fn printer_announce_flags(printer: &RdpdrPrinter) -> u32 {
+    let mut flags = 0;
+    if printer.is_default() {
+        flags |= pdu::efs::RDPDR_PRINTER_ANNOUNCE_FLAG_DEFAULTPRINTER;
+    }
+    if printer.network() {
+        flags |= pdu::efs::RDPDR_PRINTER_ANNOUNCE_FLAG_NETWORKPRINTER;
+    }
+    flags
 }
 
 impl SvcProcessor for Rdpdr {
@@ -794,12 +1281,24 @@ impl SvcProcessor for Rdpdr {
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let mut src = ReadCursor::new(payload);
         let header = SharedHeader::decode(&mut src).map_err(|e| decode_err!(e))?;
-        if matches!(header.packet_id, PacketId::PrnCacheData | PacketId::PrnUsingXps) {
-            warn!(
-                packet_id = ?header.packet_id,
-                "Ignoring unhandled RDPDR printer-cache PDU"
-            );
-            return Ok(vec![]);
+        match header.packet_id {
+            // A malformed message fails the channel, as for other RDPDR packets (MS-RDPEFS 3.1.5.2).
+            PacketId::PrnCacheData => {
+                let pdu = PrinterCacheData::decode_body(&mut src).map_err(|e| decode_err!(e))?;
+                self.handle_printer_cache_data(pdu);
+                return Ok(vec![]);
+            }
+            PacketId::PrnUsingXps => {
+                // [MS-RDPEPC 3.2.5.1.2] Only printers announced with XPSFORMAT can be switched to
+                // XPS mode, and this client never sets that flag.
+                let pdu = PrinterUsingXps::decode_body(&mut src).map_err(|e| decode_err!(e))?;
+                warn!(
+                    printer_id = pdu.printer_id,
+                    "Ignoring XPS mode request for a printer announced without XPS support"
+                );
+                return Ok(vec![]);
+            }
+            _ => {}
         }
 
         let pdu = RdpdrPdu::decode_body(header, &mut src).map_err(|e| decode_err!(e))?;
@@ -862,6 +1361,7 @@ mod tests {
         added_drives: Vec<u32>,
         removed_drives: Vec<u32>,
         deferred_messages: Vec<SvcMessage>,
+        user_logged_on_calls: usize,
     }
 
     impl_as_any!(TrackingBackend);
@@ -926,6 +1426,11 @@ mod tests {
 
         fn poll_deferred_messages(&mut self) -> PduResult<Vec<SvcMessage>> {
             Ok(core::mem::take(&mut self.deferred_messages))
+        }
+
+        fn handle_user_logged_on(&mut self, _rdpdr: &mut Rdpdr) -> PduResult<Vec<SvcMessage>> {
+            self.user_logged_on_calls += 1;
+            Ok(Vec::new())
         }
     }
 
@@ -1005,6 +1510,85 @@ mod tests {
                 .process(&encoded_server_device_announce_response(device_id, NtStatus::SUCCESS))
                 .expect("process accepted device announcement")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn user_logged_on_before_client_id_confirm_is_deferred() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+
+        assert!(
+            rdpdr
+                .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+                .expect("defer early user logged on")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .user_logged_on_calls,
+            0
+        );
+        assert_eq!(
+            rdpdr
+                .process(&encoded_server_client_id_confirm(0x1234))
+                .expect("process server client ID confirm")
+                .len(),
+            1
+        );
+        assert!(
+            rdpdr
+                .process(&encoded_server_device_announce_response(42, NtStatus::SUCCESS))
+                .expect("process accepted device announcement")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .process(&encoded_drive_io_request(42, 0x100, MajorFunction::Close))
+                .expect("process drive close")
+                .len(),
+            1
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .user_logged_on_calls,
+            1
+        );
+    }
+
+    #[test]
+    fn server_announce_discards_a_deferred_user_logged_on() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("defer early user logged on");
+
+        rdpdr
+            .process(&encoded_server_announce(0x5678))
+            .expect("process replacement server announce");
+        assert!(
+            rdpdr
+                .process(&encoded_server_client_id_confirm(0x5678))
+                .expect("process server client ID confirm")
+                .is_empty()
+        );
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .user_logged_on_calls,
+            0
         );
     }
 
@@ -1193,6 +1777,94 @@ mod tests {
                 .drive_requests
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn drive_irps_before_the_announcement_response_reach_the_backend() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        let responses = rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        let client_id = read_u32(
+            &responses[0]
+                .encode_unframed_pdu()
+                .expect("encode client announce response"),
+            8,
+        );
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .expect("process server client ID confirm");
+
+        // Not announced yet: the drive is only announced after the user logs on.
+        assert!(
+            rdpdr
+                .process(&encoded_drive_io_request(42, 0x100, MajorFunction::Close))
+                .expect("process request for an unannounced drive")
+                .is_empty()
+        );
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+
+        // Windows can send the first IRP just before accepting the announcement.
+        rdpdr
+            .process(&encoded_drive_io_request(42, 0x101, MajorFunction::Close))
+            .expect("process request before the announcement response");
+        assert!(
+            rdpdr
+                .process(&encoded_server_device_announce_response(42, NtStatus::SUCCESS))
+                .expect("accept the drive")
+                .is_empty()
+        );
+        rdpdr
+            .process(&encoded_drive_io_request(42, 0x102, MajorFunction::Close))
+            .expect("process request after the announcement response");
+        assert_eq!(
+            rdpdr
+                .downcast_backend::<TrackingBackend>()
+                .expect("tracking backend")
+                .drive_requests,
+            vec![(42, 0x101), (42, 0x102)]
+        );
+    }
+
+    #[test]
+    fn rejecting_a_drive_after_an_early_irp_removes_it_from_the_backend() {
+        let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
+            .with_drives(Some(vec![(42, "C:".to_owned())]));
+        let responses = rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        let client_id = read_u32(
+            &responses[0]
+                .encode_unframed_pdu()
+                .expect("encode client announce response"),
+            8,
+        );
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .expect("process server client ID confirm");
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+
+        rdpdr
+            .process(&encoded_drive_io_request(42, 0x101, MajorFunction::Close))
+            .expect("process request before the announcement response");
+        let responses = rdpdr
+            .process(&encoded_server_device_announce_response(42, NtStatus::ACCESS_DENIED))
+            .expect("process rejected device announcement");
+        assert_eq!(responses.len(), 1, "the rejected drive is removed");
+        assert!(
+            rdpdr
+                .process(&encoded_drive_io_request(42, 0x102, MajorFunction::Close))
+                .expect("process request for the rejected drive")
+                .is_empty()
+        );
+        let backend = rdpdr.downcast_backend::<TrackingBackend>().expect("tracking backend");
+        assert_eq!(backend.drive_requests, vec![(42, 0x101)]);
+        assert_eq!(backend.removed_drives, vec![42]);
     }
 
     #[test]

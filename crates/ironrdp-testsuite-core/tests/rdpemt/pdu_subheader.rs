@@ -67,3 +67,24 @@ fn decode_rejects_unknown_type() {
     let result: DecodeResult<TunnelSubHeader> = ironrdp_core::decode(&wire);
     assert!(result.is_err());
 }
+
+/// An auto-detect sub-header is the auto-detect structure itself: Its
+/// SubHeaderLength and SubHeaderType are the structure's headerLength and
+/// headerTypeId, so SubHeaderData starts at the sequence number
+/// (MS-RDPEMT 2.2.1.1.1, MS-RDPBCGR 2.2.14.1.2).
+#[test]
+fn autodetect_subheader_is_the_autodetect_structure() {
+    use ironrdp_pdu::rdp::autodetect::AutoDetectRequest;
+
+    // RDP_BW_START: headerLength 6, TYPE_ID_AUTODETECT_REQUEST,
+    // sequenceNumber 7, requestType 0x0014.
+    let wire = [0x06, 0x00, 0x07, 0x00, 0x14, 0x00];
+
+    let sub: TunnelSubHeader = ironrdp_core::decode(&wire).expect("decode as a sub-header");
+    assert_eq!(sub.sub_header_type, SubHeaderType::AutoDetectRequest);
+    assert_eq!(sub.data, [0x07, 0x00, 0x14, 0x00]);
+
+    let request: AutoDetectRequest = ironrdp_core::decode(&wire).expect("decode as an auto-detect request");
+    assert_eq!(request, AutoDetectRequest::bw_start_continuous(7));
+    assert_eq!(ironrdp_core::encode_vec(&request).expect("encode"), wire);
+}

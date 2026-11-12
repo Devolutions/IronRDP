@@ -1014,7 +1014,8 @@ test("runtime rejects incompatible streamed indices without executing tools or e
         schema,
         metrics,
       }),
-      (error) => error.reason === "provider stream was malformed",
+      (error) => error.reason === "provider stream was malformed" && error.retryable &&
+        error.streamStructuralViolation === streamCase.violation,
       streamCase.name,
     );
     assert.equal(executions, 0, streamCase.name);
@@ -1104,8 +1105,33 @@ test("runtime rejects every non-no-op post-finish tail without executing tools",
     },
     {
       name: "empty content key",
-      shape: "delta-content",
+      shape: "delta-content-empty",
       choices: [{ index: 0, delta: { content: "" } }],
+    },
+    {
+      name: "null content key",
+      shape: "delta-content-empty",
+      choices: [{ index: 0, delta: { content: null } }],
+    },
+    {
+      name: "empty content and reasoning keys",
+      shape: "delta-content-empty",
+      choices: [{ index: 0, delta: { content: "", reasoning_content: null } }],
+    },
+    {
+      name: "empty content beside late reasoning",
+      shape: "delta-reasoning",
+      choices: [{ index: 0, delta: { content: "", reasoning_content: sentinel } }],
+    },
+    {
+      name: "empty content beside tool calls",
+      shape: "delta-tool-calls",
+      choices: [{ index: 0, delta: { content: null, tool_calls: [] } }],
+    },
+    {
+      name: "empty content beside an extension",
+      shape: "delta-extension",
+      choices: [{ index: 0, delta: { content: "", refusal: null } }],
     },
     {
       name: "late reasoning",
@@ -1114,8 +1140,13 @@ test("runtime rejects every non-no-op post-finish tail without executing tools",
     },
     {
       name: "empty reasoning",
-      shape: "delta-reasoning",
+      shape: "delta-reasoning-empty",
       choices: [{ index: 0, delta: { reasoning_content: "" } }],
+    },
+    {
+      name: "null reasoning",
+      shape: "delta-reasoning-empty",
+      choices: [{ index: 0, delta: { reasoning_content: null } }],
     },
     {
       name: "late tool calls",
@@ -1171,7 +1202,9 @@ test("runtime rejects every non-no-op post-finish tail without executing tools",
         schema,
         metrics,
       }),
-      (error) => error.reason === "provider stream was malformed",
+      (error) => error.reason === "provider stream was malformed" && error.retryable &&
+        error.streamStructuralViolation === "post-finish" &&
+        error.postFinishShape === streamCase.shape,
       streamCase.name,
     );
     assert.equal(executions, 0, streamCase.name);
@@ -1260,6 +1293,135 @@ test("stream retry discards partial fragments without spending another logical t
   assert.equal(result.output, '{"answer":"retry"}');
   assert.equal(result.turnCount, 1);
   assert.equal(executions, 0);
+});
+
+test("malformed provider streams retry the unchanged call without executing tools", async () => {
+  let executions = 0;
+  const requests = [];
+  const delays = [];
+  const toolCall = {
+    index: 0,
+    id: "malformed",
+    type: "function",
+    function: { name: "read_file", arguments: '{"path":"a"}' },
+  };
+  const result = await runAgent({
+    client: clientFrom([
+      completionStream(null, {
+        fragments: [
+          { choices: [{ index: 0, delta: { tool_calls: [toolCall] }, finish_reason: "tool_calls" }] },
+          { choices: [{ index: 0, delta: { content: "" } }] },
+        ],
+      }),
+      new SyntaxError("RAW_SSE_SECRET_SENTINEL"),
+      message('{"answer":"retry"}'),
+    ], requests),
+    config: { ...baseConfig, max_request_retries: 2 },
+    methodologies: [],
+    prompt: "p",
+    sandbox: {
+      ...sandbox,
+      readFile() {
+        executions++;
+        return "{}";
+      },
+    },
+    schema,
+    retrySleep: async (milliseconds) => { delays.push(milliseconds); },
+  });
+
+  assert.equal(result.output, '{"answer":"retry"}');
+  assert.equal(result.turnCount, 1);
+  assert.equal(result.toolCallCount, 0);
+  assert.equal(executions, 0);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(requests[1], requests[0]);
+  assert.deepEqual(requests[2], requests[0]);
+  assert.equal(delays.length, 2);
+});
+
+test("malformed provider streams fail retryably once the request-retry budget is spent", async () => {
+  const requests = [];
+  const delays = [];
+  const malformed = () => completionStream(null, {
+    fragments: [
+      { choices: [{ index: 0, delta: { content: '{"answer":"done"}' }, finish_reason: "stop" }] },
+      { choices: [{ index: 0, delta: { content: "late" } }] },
+    ],
+  });
+  await assert.rejects(
+    runAgent({
+      client: clientFrom([malformed(), malformed(), malformed()], requests),
+      config: { ...baseConfig, max_request_retries: 2 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      retrySleep: async (milliseconds) => { delays.push(milliseconds); },
+    }),
+    (error) => error instanceof AgentFailure &&
+      error.reason === "provider stream was malformed" &&
+      error.category === "provider-response" && error.retryable &&
+      error.streamStructuralViolation === "post-finish" &&
+      error.postFinishShape === "delta-content" && error.turnCount === 1,
+  );
+  assert.equal(requests.length, 3);
+  assert.equal(delays.length, 2);
+});
+
+test("real SDK retries malformed streams and records each attempt's violation", async () => {
+  const metrics = new RuntimeMetrics();
+  const sentinel = "MALFORMED_STREAM_SECRET_SENTINEL";
+  const sse = (body) => new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+  const chunk = (choices) => `data: ${JSON.stringify({
+    id: "completion", object: "chat.completion.chunk", created: 0, model: "test", choices,
+  })}\n\n`;
+  let calls = 0;
+  const client = createProviderClient(OpenAI, {
+    apiKey: "test-key",
+    baseURL: "https://provider.example/v1",
+  }, metrics, async () => {
+    calls++;
+    if (calls === 1) {
+      return sse(`${chunk([{
+        index: 0, delta: { content: '{"answer":"done"}' }, finish_reason: "stop",
+      }])}${chunk([{ index: 0, delta: { content: "" } }])}data: [DONE]\n\n`);
+    }
+    if (calls === 2) return sse(`data: {"${sentinel}\n\n`);
+    return sseResponse('{"answer":"done"}');
+  });
+
+  const result = await runAgent({
+    client,
+    config: { ...baseConfig, max_request_retries: 4 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    metrics,
+    retrySleep: async () => {},
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.equal(calls, 3);
+  const diagnostics = metrics.snapshot();
+  assert.equal(diagnostics.requestRetryCount, 2);
+  assert.equal(diagnostics.streamStructuralViolation, "post-finish");
+  assert.equal(diagnostics.postFinishShape, "delta-content-empty");
+  assert.deepEqual(
+    diagnostics.providerAttempts.map(({ streamStructuralViolation, postFinishShape }) => ({
+      streamStructuralViolation, postFinishShape,
+    })),
+    [
+      { streamStructuralViolation: "post-finish", postFinishShape: "delta-content-empty" },
+      { streamStructuralViolation: "sse-json-invalid", postFinishShape: undefined },
+      { streamStructuralViolation: undefined, postFinishShape: undefined },
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(diagnostics), new RegExp(sentinel));
 });
 
 test("runtime accepts length-finished text and marks missing completion metadata retryable", async () => {
@@ -2258,6 +2420,71 @@ test("real SDK classifies interrupted response bodies as recoverable connections
 
   assert.equal(calls, 1);
   assert.equal(metrics.snapshot().providerAttempts[0].durationMs >= 40, true);
+});
+
+test("real SDK retries error events inside an accepted stream", async () => {
+  const metrics = new RuntimeMetrics();
+  const errorEvents = [
+    `data: ${JSON.stringify({ error: { message: "secret" } })}\n\n`,
+    `event: error\ndata: ${JSON.stringify({ message: "secret" })}\n\n`,
+  ];
+  let calls = 0;
+  const client = createProviderClient(OpenAI, {
+    apiKey: "test-key",
+    baseURL: "https://provider.example/v1",
+  }, metrics, async () => {
+    const errorEvent = errorEvents[calls++];
+    if (errorEvent === undefined) return sseResponse('{"answer":"done"}');
+    return new Response(errorEvent, {
+      status: 200,
+      headers: { "content-type": "text/event-stream", "retry-after-ms": "0" },
+    });
+  });
+
+  const result = await runAgent({
+    client,
+    config: { ...baseConfig, max_request_retries: 2 },
+    methodologies: [],
+    prompt: "p",
+    sandbox,
+    schema,
+    metrics,
+    retrySleep: async () => {},
+  });
+
+  assert.equal(result.output, '{"answer":"done"}');
+  assert.equal(result.turnCount, 1);
+  assert.equal(calls, 3);
+  assert.equal(metrics.snapshot().requestRetryCount, 2);
+});
+
+test("real SDK does not retry a quota error event inside an accepted stream", async () => {
+  let calls = 0;
+  const client = createProviderClient(OpenAI, {
+    apiKey: "test-key",
+    baseURL: "https://provider.example/v1",
+  }, new RuntimeMetrics(), async () => {
+    calls++;
+    return new Response(
+      `data: ${JSON.stringify({ error: { message: "secret", code: "insufficient_quota" } })}\n\n`,
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  });
+
+  await assert.rejects(
+    runAgent({
+      client,
+      config: { ...baseConfig, max_request_retries: 2 },
+      methodologies: [],
+      prompt: "p",
+      sandbox,
+      schema,
+      retrySleep: async () => {},
+    }),
+    (error) => error.reason === "provider quota exhausted" &&
+      error.category === "provider-quota" && !error.retryable,
+  );
+  assert.equal(calls, 1);
 });
 
 test("real SDK does not treat ordinary EOF as streamed completion", async () => {

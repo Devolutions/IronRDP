@@ -191,6 +191,18 @@ pub(crate) fn decompress_8bpp_plane(
     RlePlaneDecoder::new(width, height).decode(src, dst)
 }
 
+/// Returns the minimum number of bytes an RLE-compressed 8bpp color plane takes.
+///
+/// Encoding "ensures that there is at least one subsegment per scan-line" ([3.1.9.2.3] Decoding Run-Length
+/// Sequences), and each [2.2.2.5.1.2] RDP 6.0 RLE Segment (RDP6_RLE_SEGMENT) takes at least its nonzero controlByte
+/// and decodes to at most [`MAX_DECODED_SEGMENT_SIZE`] values.
+///
+/// [2.2.2.5.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegdi/f7e4c717-669e-4f31-8b34-e8f5ab2e107e
+/// [3.1.9.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegdi/46a9972c-0cdd-4673-add4-87f89b837742
+pub(crate) fn min_compressed_plane_size(width: usize, height: usize) -> usize {
+    height.saturating_mul(width.div_ceil(MAX_DECODED_SEGMENT_SIZE))
+}
+
 struct RleEncoderScanlineIterator<I> {
     inner: core::iter::Enumerate<I>,
     width: usize,

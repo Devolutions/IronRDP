@@ -25,7 +25,7 @@
 //! UncompressedSize (4 bytes LE): Total data size
 //! For each segment:
 //!   Size (4 bytes LE): Segment size including flags byte
-//!   Flags (1 byte): 0x04 (RDP8 type, not compressed)
+//!   Flags (1 byte): 0x04 (RDP8 type, not compressed) or 0x24 (RDP8 type, compressed)
 //!   Data: Segment data bytes
 //! ```
 
@@ -77,7 +77,11 @@ pub fn wrap_uncompressed(data: &[u8]) -> Vec<u8> {
     if data.len() <= ZGFX_SEGMENTED_MAXSIZE {
         wrap_single_segment(data, false)
     } else {
-        wrap_multipart_segments(data, false)
+        let segments: Vec<(bool, &[u8])> = data
+            .chunks(ZGFX_SEGMENTED_MAXSIZE)
+            .map(|chunk| (false, chunk))
+            .collect();
+        wrap_multipart(data.len(), &segments)
     }
 }
 
@@ -85,10 +89,11 @@ pub fn wrap_uncompressed(data: &[u8]) -> Vec<u8> {
 ///
 /// The COMPRESSED flag is set, telling the client to decompress using ZGFX.
 ///
-/// Only single-segment wrapping is supported for compressed data because a ZGFX
-/// compressed bitstream cannot be split at arbitrary byte boundaries -- each segment
-/// must be an independently decodable stream. If multi-segment compressed output is
-/// needed, the compressor must emit pre-segmented output.
+/// A single segment decompresses to at most [`ZGFX_SEGMENTED_MAXSIZE`] bytes
+/// (MS-RDPEGFX 3.1.9.1), so the caller must only use this for input that was at most
+/// that long before compression. A ZGFX bitstream cannot be split at arbitrary byte
+/// boundaries; larger input must be compressed in chunks of at most
+/// [`ZGFX_SEGMENTED_MAXSIZE`] bytes and wrapped with `wrap_multipart`.
 ///
 /// # Panics
 ///
@@ -97,12 +102,70 @@ pub fn wrap_compressed(compressed_data: &[u8]) -> Vec<u8> {
     assert!(
         compressed_data.len() <= ZGFX_SEGMENTED_MAXSIZE,
         "compressed data ({} bytes) exceeds single-segment limit ({}); \
-         the compressor must emit pre-segmented output for larger payloads",
+         compress larger payloads in chunks and use wrap_multipart",
         compressed_data.len(),
         ZGFX_SEGMENTED_MAXSIZE,
     );
 
     wrap_single_segment(compressed_data, true)
+}
+
+/// Flags byte of a segment: RDP8 type plus the optional COMPRESSED flag.
+///
+/// Lower 4 bits = compression type, upper 4 bits = flags.
+fn segment_flags(compressed: bool) -> u8 {
+    if compressed {
+        ZGFX_PACKET_COMPR_TYPE_RDP8 | (ZGFX_PACKET_COMPRESSED << 4)
+    } else {
+        ZGFX_PACKET_COMPR_TYPE_RDP8
+    }
+}
+
+/// Wrap pre-built segments in a ZGFX multipart message
+///
+/// Each segment is `(compressed, payload)`. A compressed payload must decompress to
+/// at most [`ZGFX_SEGMENTED_MAXSIZE`] bytes, and the compressed segments must have been
+/// produced in order from one [`super::Compressor`] so that the client history matches.
+/// `uncompressed_size` is the total size of the decompressed message.
+///
+/// # Panics
+///
+/// Panics if there are more than `u16::MAX` segments or a payload exceeds
+/// [`ZGFX_SEGMENTED_MAXSIZE`] bytes.
+pub(crate) fn wrap_multipart(uncompressed_size: usize, segments: &[(bool, &[u8])]) -> Vec<u8> {
+    let payload_size: usize = segments.iter().map(|(_, data)| data.len() + 5).sum();
+
+    // Header: descriptor(1) + count(2) + uncompressed_size(4)
+    // Per segment: size(4) + flags(1) + data
+    let mut output = Vec::with_capacity(payload_size + 7);
+
+    output.push(ZGFX_SEGMENTED_MULTIPART);
+
+    output
+        .write_u16::<LittleEndian>(u16::try_from(segments.len()).expect("segment count exceeds u16"))
+        .expect("write to Vec cannot fail");
+
+    output
+        .write_u32::<LittleEndian>(u32::try_from(uncompressed_size).expect("data exceeds u32"))
+        .expect("write to Vec cannot fail");
+
+    for &(compressed, data) in segments {
+        assert!(
+            data.len() <= ZGFX_SEGMENTED_MAXSIZE,
+            "segment ({} bytes) exceeds limit ({ZGFX_SEGMENTED_MAXSIZE})",
+            data.len()
+        );
+
+        // Segment size (includes flags byte) - max ZGFX_SEGMENTED_MAXSIZE + 1
+        output
+            .write_u32::<LittleEndian>(u32::try_from(data.len() + 1).expect("segment size exceeds u32"))
+            .expect("write to Vec cannot fail");
+
+        output.push(segment_flags(compressed));
+        output.extend_from_slice(data);
+    }
+
+    output
 }
 
 /// Wrap data in a single ZGFX segment
@@ -117,61 +180,10 @@ fn wrap_single_segment(data: &[u8], compressed: bool) -> Vec<u8> {
     // Descriptor
     output.push(ZGFX_SEGMENTED_SINGLE);
 
-    // Flags: RDP8 type + optional COMPRESSED flag
-    // Lower 4 bits = compression type, upper 4 bits = flags
-    let flags = if compressed {
-        ZGFX_PACKET_COMPR_TYPE_RDP8 | (ZGFX_PACKET_COMPRESSED << 4)
-    } else {
-        ZGFX_PACKET_COMPR_TYPE_RDP8
-    };
-    output.push(flags);
+    output.push(segment_flags(compressed));
 
     // Data (raw or compressed)
     output.extend_from_slice(data);
-
-    output
-}
-
-/// Wrap data in multiple ZGFX segments
-///
-/// # Arguments
-///
-/// * `data` - Data to wrap
-/// * `compressed` - Whether the data is already ZGFX-compressed
-fn wrap_multipart_segments(data: &[u8], compressed: bool) -> Vec<u8> {
-    let segment_count = data.len().div_ceil(ZGFX_SEGMENTED_MAXSIZE);
-
-    // Header: descriptor(1) + count(2) + uncompressed_size(4)
-    // Per segment: size(4) + flags(1) + data
-    let mut output = Vec::with_capacity(data.len() + 7 + segment_count * 5);
-
-    output.push(ZGFX_SEGMENTED_MULTIPART);
-
-    output
-        .write_u16::<LittleEndian>(u16::try_from(segment_count).expect("segment count exceeds u16"))
-        .expect("write to Vec cannot fail");
-
-    output
-        .write_u32::<LittleEndian>(u32::try_from(data.len()).expect("data exceeds u32"))
-        .expect("write to Vec cannot fail");
-
-    for segment in data.chunks(ZGFX_SEGMENTED_MAXSIZE) {
-        // Segment size (includes flags byte) - max ZGFX_SEGMENTED_MAXSIZE + 1
-        output
-            .write_u32::<LittleEndian>(u32::try_from(segment.len() + 1).expect("segment size exceeds u32"))
-            .expect("write to Vec cannot fail");
-
-        // Flags: RDP8 type + optional COMPRESSED flag
-        let flags = if compressed {
-            ZGFX_PACKET_COMPR_TYPE_RDP8 | (ZGFX_PACKET_COMPRESSED << 4)
-        } else {
-            ZGFX_PACKET_COMPR_TYPE_RDP8
-        };
-        output.push(flags);
-
-        // Segment data
-        output.extend_from_slice(segment);
-    }
 
     output
 }

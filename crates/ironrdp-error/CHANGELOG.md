@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-error-v0.2.0...ironrdp-error-v0.2.1)] - 2026-10-23
+
+### <!-- 1 -->Features
+
+- Add the `ErrorMapping` trait and the `ResultExt` extension trait (`map_err_as`, `map_err_kind`, `map_err_source`) for converting errors between error kinds ([#1481](https://github.com/Devolutions/IronRDP/issues/1481)) ([71d63c75f5](https://github.com/Devolutions/IronRDP/commit/71d63c75f58228fa0960c3b52327e9694272e976))
+
+- Implement `core::error::Error` for `Error<Kind>` without the `std` feature ([#1481](https://github.com/Devolutions/IronRDP/issues/1481)) ([71d63c75f5](https://github.com/Devolutions/IronRDP/commit/71d63c75f58228fa0960c3b52327e9694272e976))
+
+### <!-- 4 -->Bug Fixes
+
+- Omit source locations from the default `Display` output of `Error` and `ErrorReport`; include them with the alternate form (`{:#}`) or `ErrorReport::with_locations` ([#1480](https://github.com/Devolutions/IronRDP/issues/1480)) ([f84cd01450](https://github.com/Devolutions/IronRDP/commit/f84cd01450e18d12838b225859878b311802b805))
+
+### <!-- 7 -->Build
+
+- Raise the minimum supported Rust version to 1.94 ([#1495](https://github.com/Devolutions/IronRDP/issues/1495)) ([0aeea76e95](https://github.com/Devolutions/IronRDP/commit/0aeea76e95e6b6b590d65be353dd00596d50a895))
+
 ## [[0.2.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-error-v0.1.3...ironrdp-error-v0.2.0)] - 2026-05-27
 
 ### <!-- 1 -->Features

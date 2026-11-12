@@ -457,7 +457,7 @@ impl Decode<'_> for TsUsbdPipeInfo {
         ensure_fixed_part_size!(in: src);
 
         let max_packet_size = src.read_u16();
-        read_padding(src, 2);
+        read_padding!(src, 2);
         let max_transfer_size = src.read_u32();
         let pipe_flags = src.read_u32();
 

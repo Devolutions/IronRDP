@@ -12,12 +12,16 @@
 //! `MultitransportBootstrap` owns the sideband connection attempt between those connector steps.
 
 use core::net::SocketAddr;
+#[cfg(feature = "ice")]
+use core::time::Duration;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu, RequestedProtocol};
 use ironrdp_rdpemt::{RdpemtError, RdpemtErrorExt as _, TunnelConfig};
 use ironrdp_rdpeudp::ConnectionConfig;
 use tracing::debug;
 
 use crate::error::{UdpTransportError, UdpTransportErrorExt as _};
+#[cfg(feature = "ice")]
+use crate::ice::{IceGatheredCandidates, IceRole, IceTransportError, RemoteIceDescription, connect_udp_with_ice};
 use crate::transport::{UdpTlsConfig, UdpTransport, UdpTransportConfig, connect_udp};
 
 /// Orchestrates the multitransport connection sequence.
@@ -104,6 +108,42 @@ impl MultitransportBootstrap {
         connection_config: ConnectionConfig,
         tls_config: UdpTlsConfig,
     ) -> Result<(), UdpTransportError> {
+        let tunnel_config = self.prepare_tunnel_config()?;
+        let mut config = UdpTransportConfig::new(server_addr, server_name, tunnel_config);
+        config.connection_config = connection_config;
+        config.tls = tls_config;
+
+        self.log_connect_start(server_addr);
+        let result = connect_udp(config).await;
+        self.finish_connect(result)
+    }
+
+    /// Attempt multitransport over an ICE-nominated UDP path.
+    ///
+    /// The caller supplies candidates and credentials through its own signaling mechanism.
+    /// On success, this stores the tunnel and prepares an `S_OK` response; on failure, it prepares `E_ABORT`.
+    /// `config.tunnel_config` is replaced with the request ID and security cookie from this bootstrap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IceTransportError::Transport`] for RDPEUDP2, TLS, or RDPEMT failures, and another `IceTransportError` variant for ICE failures or invalid inputs.
+    #[cfg(feature = "ice")]
+    pub async fn connect_with_ice(
+        &mut self,
+        mut config: UdpTransportConfig,
+        local: IceGatheredCandidates,
+        remote: RemoteIceDescription,
+        role: IceRole,
+        timeout: Duration,
+    ) -> Result<(), IceTransportError> {
+        config.tunnel_config = self.prepare_tunnel_config().map_err(IceTransportError::Transport)?;
+
+        self.log_connect_start(config.server_addr);
+        let result = connect_udp_with_ice(config, local, remote, role, timeout).await;
+        self.finish_connect(result)
+    }
+
+    fn prepare_tunnel_config(&mut self) -> Result<TunnelConfig, UdpTransportError> {
         // This driver only implements the reliable transport (RDPEUDP2 + TLS).
         // UdpFecL (lossy RDPEUDP + DTLS) is a distinct wire protocol this crate
         // does not speak; connecting the reliable stack anyway and reporting
@@ -122,21 +162,25 @@ impl MultitransportBootstrap {
             ));
         }
 
-        let tunnel_config = TunnelConfig {
+        Ok(TunnelConfig {
             request_id: self.request.request_id,
             security_cookie: self.request.security_cookie,
-        };
-        let mut config = UdpTransportConfig::new(server_addr, server_name, tunnel_config);
-        config.connection_config = connection_config;
-        config.tls = tls_config;
+        })
+    }
 
+    fn log_connect_start(&self, peer: SocketAddr) {
         debug!(
             request_id = self.request.request_id,
-            peer = %server_addr,
+            %peer,
             "Starting multitransport UDP connection"
         );
+    }
 
-        match connect_udp(config).await {
+    fn finish_connect<E>(&mut self, result: Result<UdpTransport, E>) -> Result<(), E>
+    where
+        E: core::fmt::Display,
+    {
+        match result {
             Ok(transport) => {
                 debug!(
                     request_id = self.request.request_id,
@@ -146,10 +190,10 @@ impl MultitransportBootstrap {
                 self.response = Some(MultitransportResponsePdu::success(self.request.request_id));
                 Ok(())
             }
-            Err(e) => {
+            Err(error) => {
                 debug!(
                     request_id = self.request.request_id,
-                    error = %e,
+                    %error,
                     "Multitransport UDP connection failed"
                 );
                 // A stale transport from an earlier successful call must not
@@ -159,7 +203,7 @@ impl MultitransportBootstrap {
                 // transport the server was just told doesn't exist.
                 self.transport = None;
                 self.response = Some(MultitransportResponsePdu::abort(self.request.request_id));
-                Err(e)
+                Err(error)
             }
         }
     }
@@ -201,6 +245,7 @@ impl MultitransportBootstrap {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "ice"))]
     use core::time::Duration;
 
     use ironrdp_pdu::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};

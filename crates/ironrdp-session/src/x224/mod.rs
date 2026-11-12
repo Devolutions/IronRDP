@@ -1,9 +1,9 @@
 use ironrdp_bulk::BulkCompressor;
-use ironrdp_core::{Decode as _, ReadCursor, WriteBuf, decode};
+use ironrdp_core::{Decode as _, MonotonicInstant, ReadCursor, WriteBuf, decode};
 use ironrdp_dvc::{DrdynvcClient, DvcClientProcessor, DynamicChannelMut, DynamicChannelRef};
-use ironrdp_pdu::gcc::{ChannelName, Monitor};
+use ironrdp_pdu::gcc::{ChannelName, ChannelOptions, Monitor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage, SendDataIndicationCtx};
-use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectResponse, AutoDetectRspPdu};
+use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDetectRspPdu};
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, IoChannelPdu, ShareDataCtx, ShareDataPdu,
@@ -11,13 +11,18 @@ use ironrdp_pdu::rdp::headers::{
 use ironrdp_pdu::rdp::heartbeat::HeartbeatPdu;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
-use ironrdp_pdu::rdp::session_info::{InfoData, SaveSessionInfoPdu, ServerAutoReconnect};
+use ironrdp_pdu::rdp::server_redirection::ServerRedirectionPdu;
+use ironrdp_pdu::rdp::session_info::{
+    InfoData, LogonErrorsInfo, LogonInfoVersion1, LogonInfoVersion2, SaveSessionInfoPdu, ServerAutoReconnect,
+};
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{
-    StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages, client_encode_svc_messages_with_max_chunk_len,
+    ChannelFlags, StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor, SvcProcessorMessages,
+    client_encode_svc_messages_with_max_chunk_len,
 };
 use tracing::debug;
 
+use crate::autodetect::AutoDetectResponder;
 use crate::{SessionError, SessionErrorExt as _, SessionResult, reason_err};
 
 /// X224 Processor output
@@ -38,6 +43,14 @@ pub enum ProcessorOutput {
     /// logon; the source PDU is not retained because it can contain user details and
     /// auto-reconnect cookies.
     SaveSessionInfo { logon_complete: bool },
+    /// The ID of the remote session, from a Save Session Info PDU that carries logon information
+    /// (Logon Info Version 1 or 2, [\[MS-RDPBCGR\] 2.2.10.1.1.1 and 2.2.10.1.1.2]).
+    ///
+    /// It precedes the [`ProcessorOutput::SaveSessionInfo`] output of the same PDU, so a consumer
+    /// knows the ID when it reports the completed logon.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.10.1.1.1 and 2.2.10.1.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    SessionId(u32),
     /// Server Initiate Multitransport Request. The application should establish a
     /// sideband UDP transport using the request ID and security cookie, then send
     /// a [`MultitransportResponsePdu`] back on the message channel.
@@ -63,6 +76,13 @@ pub enum ProcessorOutput {
     /// [\[MS-RDPBCGR\] 2.2.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18f4f605-0ee3-4175-8a62-cf8775252547
     /// [\[MS-RDPBCGR\] 1.3.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
     AutoReconnectCookie(ServerAutoReconnect),
+    /// Logon error or warning notification from a Save Session Info PDU
+    /// ([\[MS-RDPBCGR\] 2.2.10.1.1.4.1.1]).
+    ///
+    /// Only the two notification codes are surfaced; neither carries credentials.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.10.1.1.4.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/845eb789-6edf-453a-8b0e-c976823d1f72
+    LogonErrors(LogonErrorsInfo),
     /// Server rejected a Client Auto-Reconnect Packet ([\[MS-RDPBCGR\] 2.2.4.1]).
     ///
     /// The client must discard its cookie and not report the reconnect as successful.
@@ -72,9 +92,10 @@ pub enum ProcessorOutput {
     /// Auto-detect network characteristics from server ([\[MS-RDPBCGR\] 2.2.14]).
     ///
     /// Currently only surfaces [`AutoDetectRequest::NetworkCharacteristicsResult`].
-    /// RTT requests are handled internally with automatic responses.
+    /// RTT requests and continuous reliable bandwidth measurements are answered internally;
+    /// other bandwidth measurement types are ignored.
     ///
-    /// [\[MS-RDPBCGR\] 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dc672839-4f4e-40b1-a71c-cd6a959baa38
+    /// [\[MS-RDPBCGR\] 2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/925b8e3a-fe60-43fe-aaff-29f07dc18993
     AutoDetect(AutoDetectRequest),
     /// Slow-path graphics update ([MS-RDPBCGR] 2.2.9.1.1.3).
     /// Raw update payload starting with `updateType(u16)`.
@@ -87,6 +108,11 @@ pub enum ProcessorOutput {
     /// The server may send this after activation when the client advertises
     /// `RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU`.
     MonitorLayout(Vec<Monitor>),
+    /// Server Redirection PDU ([MS-RDPBCGR] 2.2.13).
+    ///
+    /// The client must close the connection and reconnect to the target it describes. Informational PDUs
+    /// (`LB_NOREDIRECT`) are not reported.
+    ServerRedirection(Box<ServerRedirectionPdu>),
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +133,7 @@ pub struct Processor {
     io_channel_id: u16,
     message_channel_id: Option<u16>,
     share_id: u32,
+    auto_detect: AutoDetectResponder,
 }
 
 impl Processor {
@@ -123,6 +150,7 @@ impl Processor {
             io_channel_id,
             message_channel_id,
             share_id,
+            auto_detect: AutoDetectResponder::default(),
         }
     }
 
@@ -168,6 +196,7 @@ impl Processor {
             channel_id,
             self.user_channel_id,
             self.static_channels.maximum_chunk_size(),
+            self.static_channels.get_by_channel_id(channel_id),
         )
     }
 
@@ -187,6 +216,7 @@ impl Processor {
             channel_id,
             self.user_channel_id,
             self.static_channels.maximum_chunk_size(),
+            self.static_channels.get_by_channel_id(channel_id),
         )
     }
 
@@ -208,10 +238,13 @@ impl Processor {
 
     /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that must be processed
     /// in the returned order.
+    ///
+    /// `received_at` is when the transport read the frame; see [`crate::ActiveStage::process`].
     pub fn process(
         &mut self,
         frame: &[u8],
         bulk_decompressor: &mut Option<BulkCompressor>,
+        received_at: Option<MonotonicInstant>,
     ) -> SessionResult<Vec<ProcessorOutput>> {
         let data_ctx: SendDataIndicationCtx<'_> = match ironrdp_pdu::mcs::decode_send_data_indication(frame) {
             Ok(data_ctx) => data_ctx,
@@ -233,15 +266,24 @@ impl Processor {
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
-            self.process_io_channel_data_indication(data_ctx, bulk_decompressor)
+            self.process_io_channel_data_indication(data_ctx, frame.len(), bulk_decompressor)
         } else if self.message_channel_id == Some(channel_id) {
-            self.process_message_channel(data_ctx)
+            self.process_message_channel(data_ctx, received_at)
         } else {
+            // SVC data has no RDP Security Header (Enhanced RDP Security, or Standard RDP
+            // Security at ENCRYPTION_LEVEL_NONE): include TPKT/X224/MCS.
+            self.record_bandwidth_bytes(frame.len());
             let maximum_chunk_size = self.static_channels.maximum_chunk_size();
             if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
                 let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
-                process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id, maximum_chunk_size)
-                    .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
+                process_svc_messages(
+                    response_pdus,
+                    channel_id,
+                    data_ctx.initiator_id,
+                    maximum_chunk_size,
+                    Some(&*svc),
+                )
+                .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
             } else {
                 Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
             }
@@ -251,19 +293,29 @@ impl Processor {
     fn process_io_channel_data_indication(
         &mut self,
         data_ctx: SendDataIndicationCtx<'_>,
+        frame_len: usize,
         bulk_decompressor: &mut Option<BulkCompressor>,
     ) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
 
-        // Multitransport PDUs use BasicSecurityHeader, so the first two bytes are flags
-        // rather than Share Control totalLength. Delegate before walking concatenated PDUs.
-        if matches!(
-            ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx),
-            Ok(IoChannelPdu::MultitransportRequest(_))
-        ) {
+        // Multitransport PDUs and the Standard Security Server Redirection PDU use BasicSecurityHeader, so the first
+        // two bytes are flags rather than Share Control totalLength. Delegate before walking concatenated PDUs.
+        let basic_security_header = data_ctx.user_data.get(2..4) == Some([0, 0].as_slice());
+        if basic_security_header
+            && matches!(
+                ironrdp_pdu::rdp::headers::decode_io_channel(data_ctx),
+                Ok(IoChannelPdu::MultitransportRequest(_) | IoChannelPdu::ServerRedirection(_))
+            )
+        {
+            self.record_bandwidth_bytes(data_ctx.user_data.len() - BasicSecurityHeader::FIXED_PART_SIZE);
             return self.process_io_channel(data_ctx, bulk_decompressor);
         }
 
+        // Ordinary IO data has no RDP Security Header (Enhanced RDP Security, or Standard RDP
+        // Security at ENCRYPTION_LEVEL_NONE), and the Share Control decode below relies on
+        // that. Count the entire frame once, including framing and any concatenated
+        // Share Control PDUs.
+        self.record_bandwidth_bytes(frame_len);
         let mut outputs = Vec::new();
         let mut offset = 0usize;
         let data = data_ctx.user_data;
@@ -314,6 +366,14 @@ impl Processor {
                 Ok(Vec::new())
             }
             IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll]),
+            IoChannelPdu::ServerRedirection(redirection) => {
+                if redirection.is_informational() {
+                    debug!(?redirection, "Ignoring informational Server Redirection PDU");
+                    return Ok(Vec::new());
+                }
+                debug!(?redirection, "Received Server Redirection PDU");
+                Ok(vec![ProcessorOutput::ServerRedirection(Box::new(redirection))])
+            }
         }
     }
 
@@ -341,9 +401,15 @@ impl Processor {
         match pdu {
             ShareDataPdu::SaveSessionInfo(session_info) => {
                 debug!("Got Session Save Info PDU: {session_info:?}");
-                let mut outputs = vec![ProcessorOutput::SaveSessionInfo {
+                let mut outputs = Vec::new();
+                if let InfoData::LogonInfoV1(LogonInfoVersion1 { logon_info })
+                | InfoData::LogonInfoV2(LogonInfoVersion2 { logon_info }) = &session_info.info_data
+                {
+                    outputs.push(ProcessorOutput::SessionId(logon_info.session_id));
+                }
+                outputs.push(ProcessorOutput::SaveSessionInfo {
                     logon_complete: is_logon_complete(&session_info),
-                }];
+                });
 
                 // Surface the auto-reconnect cookie alongside the logon status so
                 // the consumer can keep it for a later reconnect. Both come out of
@@ -351,6 +417,9 @@ impl Processor {
                 if let InfoData::LogonExtended(extended) = &session_info.info_data {
                     if let Some(cookie) = &extended.auto_reconnect {
                         outputs.push(ProcessorOutput::AutoReconnectCookie(cookie.clone()));
+                    }
+                    if let Some(errors) = &extended.errors_info {
+                        outputs.push(ProcessorOutput::LogonErrors(errors.clone()));
                     }
                 }
 
@@ -445,6 +514,14 @@ impl Processor {
         Ok(decompressed)
     }
 
+    /// Counts received bytes while a continuous bandwidth window is open. When an RDP Security
+    /// Header is present, pass only the bytes after it ([\[MS-RDPBCGR\] 3.2.5.14]).
+    ///
+    /// [\[MS-RDPBCGR\] 3.2.5.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/16ffa852-8aa7-481c-99a0-36c1a9a198f6
+    pub(crate) fn record_bandwidth_bytes(&mut self, bytes: usize) {
+        self.auto_detect.record_bytes(bytes);
+    }
+
     /// Process a PDU received on the MCS message channel: auto-detect
     /// ([MS-RDPBCGR] 2.2.14), multitransport ([MS-RDPBCGR] 2.2.15), or
     /// Heartbeat ([MS-RDPBCGR] 2.2.16.1).
@@ -457,13 +534,18 @@ impl Processor {
     /// session-fatal decode error: this channel is forward-safe for future
     /// message-channel PDU types the same way the connect-time demux
     /// (`ironrdp-connector`) already is.
-    fn process_message_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
+    fn process_message_channel(
+        &mut self,
+        data_ctx: SendDataIndicationCtx<'_>,
+        received_at: Option<MonotonicInstant>,
+    ) -> SessionResult<Vec<ProcessorOutput>> {
         let Some(message_channel_id) = self.message_channel_id else {
             return Err(reason_err!("message channel", "no message channel negotiated"));
         };
 
         let mut peek = ReadCursor::new(data_ctx.user_data);
         let security_header = BasicSecurityHeader::decode(&mut peek).map_err(SessionError::decode)?;
+        self.record_bandwidth_bytes(peek.len());
         let flags = security_header
             .flags
             .difference(BasicSecurityHeaderFlags::RESET_SEQNO | BasicSecurityHeaderFlags::IGNORE_SEQNO);
@@ -495,29 +577,23 @@ impl Processor {
 
         let req = decode::<AutoDetectReqPdu>(data_ctx.user_data).map_err(SessionError::decode)?;
 
-        match req.request {
-            AutoDetectRequest::RttRequest { sequence_number, .. } => {
-                let response = AutoDetectRspPdu::new(AutoDetectResponse::RttResponse { sequence_number });
-                let mut frame = WriteBuf::new();
-                ironrdp_pdu::mcs::encode_send_data_request(
-                    self.user_channel_id,
-                    message_channel_id,
-                    &response,
-                    &mut frame,
-                )
-                .map_err(SessionError::encode)?;
-                debug!(sequence_number, "Responded to auto-detect RTT request");
-                Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
-            }
-            req @ AutoDetectRequest::NetworkCharacteristicsResult { .. } => {
-                debug!(?req, "Received network characteristics from server");
-                Ok(vec![ProcessorOutput::AutoDetect(req)])
-            }
-            req => {
-                debug!(?req, "Auto-detect request not yet implemented");
-                Ok(Vec::new())
-            }
+        if let request @ AutoDetectRequest::NetworkCharacteristicsResult { .. } = req.request {
+            debug!(?request, "Received network characteristics from server");
+            return Ok(vec![ProcessorOutput::AutoDetect(request)]);
         }
+        let Some(response) = self.auto_detect.respond(req.request, received_at) else {
+            return Ok(Vec::new());
+        };
+        debug!(?response, "Responding to an auto-detect request");
+        let mut frame = WriteBuf::new();
+        ironrdp_pdu::mcs::encode_send_data_request(
+            self.user_channel_id,
+            message_channel_id,
+            &AutoDetectRspPdu::new(response),
+            &mut frame,
+        )
+        .map_err(SessionError::encode)?;
+        Ok(vec![ProcessorOutput::ResponseFrame(frame.into_inner())])
     }
 
     /// Encodes an Initiate Multitransport Response on the MCS message channel.
@@ -561,13 +637,25 @@ fn is_logon_complete(session_info: &SaveSessionInfoPdu) -> bool {
 /// This includes chunkifying the messages, adding MCS, x224, and tpkt headers, and encoding them into a buffer.
 /// The messages returned here are ready to be sent to the server.
 ///
+/// Messages of a channel defined with `CHANNEL_OPTION_SHOW_PROTOCOL` carry
+/// `CHANNEL_FLAG_SHOW_PROTOCOL`, like FreeRDP's client.
+///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
 fn process_svc_messages(
     messages: Vec<SvcMessage>,
     channel_id: u16,
     initiator_id: u16,
     maximum_chunk_size: usize,
+    channel: Option<&StaticVirtualChannel>,
 ) -> SessionResult<Vec<u8>> {
+    let messages = if channel.is_some_and(|channel| channel.channel_options().contains(ChannelOptions::SHOW_PROTOCOL)) {
+        messages
+            .into_iter()
+            .map(|message| message.with_flags(ChannelFlags::SHOW_PROTOCOL))
+            .collect()
+    } else {
+        messages
+    };
     client_encode_svc_messages_with_max_chunk_len(messages, channel_id, initiator_id, maximum_chunk_size)
         .map_err(SessionError::encode)
 }
@@ -638,14 +726,17 @@ mod tests {
     fn processor_surfaces_multitransport_request_on_message_channel() {
         let request = multitransport_request();
         let encoded = encode_vec(&request).expect("encode multitransport request");
-        let processor = Processor::new(StaticChannelSet::new(), 1002, 1003, Some(1004), 0);
+        let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, Some(1004), 0);
 
         let outputs = processor
-            .process_message_channel(SendDataIndicationCtx {
-                initiator_id: 1002,
-                channel_id: 1004,
-                user_data: &encoded,
-            })
+            .process_message_channel(
+                SendDataIndicationCtx {
+                    initiator_id: 1002,
+                    channel_id: 1004,
+                    user_data: &encoded,
+                },
+                None,
+            )
             .expect("surface multitransport request");
 
         assert!(matches!(
@@ -667,6 +758,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &encoded,
                 },
+                encoded.len(),
                 &mut None,
             )
             .expect("ignore a misrouted optional multitransport request");
@@ -768,7 +860,7 @@ mod tests {
         let mut processor = Processor::new(StaticChannelSet::new(), 1002, 1003, None, 0);
 
         let outputs = processor
-            .process(&frame, &mut None)
+            .process(&frame, &mut None, None)
             .expect("disconnect provider ultimatum should not be a protocol error");
 
         assert!(matches!(
@@ -884,6 +976,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &user_data,
                 },
+                user_data.len(),
                 &mut None,
             )
             .expect("concatenated Share Control PDUs should be split");
@@ -905,6 +998,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &[0x06],
                 },
+                1,
                 &mut None,
             )
             .expect_err("a truncated totalLength field is invalid");
@@ -925,6 +1019,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &user_data,
                 },
+                user_data.len(),
                 &mut None,
             )
             .expect_err("an overrunning concatenated totalLength is invalid");
@@ -950,6 +1045,7 @@ mod tests {
                     channel_id: 1003,
                     user_data: &user_data,
                 },
+                user_data.len(),
                 &mut None,
             )
             .expect("invalid first totalLength should fall back to whole-buffer decode");

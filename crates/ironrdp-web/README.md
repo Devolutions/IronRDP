@@ -13,6 +13,8 @@ Run the same tests and the JavaScript callback-contract tests in WebAssembly wit
 The Wasm tests exercise JavaScript objects and typed arrays in Node.js; they do not require browser APIs or test live playback.
 `cargo xtask web check` also runs these Wasm tests.
 
+See [tests/README.md](tests/README.md) for the WebSocket builder API test instructions.
+
 This crate is part of the [IronRDP] project.
 
 [IronRDP]: https://github.com/Devolutions/IronRDP

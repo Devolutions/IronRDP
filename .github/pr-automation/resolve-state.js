@@ -49,6 +49,11 @@ function evidenceLimitComment(reason) {
     : null;
 }
 
+// Diff facts select the conditional specialists; analysis that predates them selects none.
+function deterministicDiffReviewers(deterministic) {
+  return deterministic?.ok && Array.isArray(deterministic.reviewers) ? deterministic.reviewers : [];
+}
+
 function deterministicLabelSets(deterministic) {
   if (!deterministic?.ok) return [];
   return [
@@ -60,10 +65,10 @@ function deterministicLabelSets(deterministic) {
 
 function classificationMachineState({
   risk = "unknown", protocolRelated = false,
-  automaticReviewEligible = false,
+  automaticReviewEligible = false, diffReviewers = [],
 } = {}) {
   const route = resolveReviewerRoute({
-    deterministicReviewers: ["code-compressor"], protocolRelated, risk,
+    deterministicReviewers: ["code-compressor", ...diffReviewers], protocolRelated, risk,
   });
   if (!route.ok) return null;
   return {
@@ -99,6 +104,7 @@ function failedClassification(expectedSha, deterministic, reason, rateLimit, sem
       summary: `Automated classification was unavailable: ${reason}. Automation remains blocked until retry or repair.`,
       machineState: classificationMachineState({
         risk: semverStatus === "suspected" ? "high" : "unknown",
+        diffReviewers: deterministicDiffReviewers(deterministic),
       }),
       conclusion: "neutral",
     },
@@ -150,6 +156,7 @@ function resolveClassificationState({
     risk,
     protocolRelated: model.protocol_related,
     automaticReviewEligible: !forced,
+    diffReviewers: deterministicDiffReviewers(deterministic),
   });
   if (!machineState) {
     return failedClassification(

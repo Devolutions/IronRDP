@@ -16,13 +16,13 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct KerberosConfig(pub ironrdp::connector::credssp::KerberosConfig);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct CredsspSequence(pub ironrdp::connector::credssp::CredsspSequence);
 
     #[diplomat::opaque]
     pub struct TsRequest(pub sspi::credssp::TsRequest);
 
-    #[diplomat::opaque]
+    #[diplomat::opaque_mut]
     pub struct CredsspSequenceInitResult {
         pub credssp_sequence: Option<Box<CredsspSequence>>,
         pub ts_request: Option<Box<TsRequest>>,

@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpewa-native"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 description = "Windows WebAuthn backend for IronRDP MS-RDPEWA client"
 edition.workspace = true
@@ -16,7 +16,7 @@ categories.workspace = true
 doctest = false
 
 [target.'cfg(windows)'.dependencies]
-ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.1" } # public
+ironrdp-rdpewa = { path = "../ironrdp-rdpewa", version = "0.2" } # public
 tracing = { version = "0.1", features = ["log"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",

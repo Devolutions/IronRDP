@@ -72,6 +72,121 @@ fn annex_b_to_avc(data: &[u8]) -> Vec<u8> {
 }
 
 // ============================================================================
+// Surface Streams
+// ============================================================================
+
+/// Each surface is an H.264 stream of its own, and P-frames need that stream's own reference pictures.
+/// On one decoder, two interleaved streams fail with OpenH264 error 2, then error 18.
+// oracle: regression #2033
+#[test]
+fn test_openh264_interleaved_surface_streams() {
+    use std::sync::{Arc, Mutex};
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler};
+    use ironrdp_egfx::pdu::{
+        Avc420Region, CapabilitiesConfirmPdu, CapabilitiesV107Flags, CapabilitySet, Codec1Type, CreateSurfacePdu,
+        GfxPdu, PixelFormat, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+    use ironrdp_pdu::geometry::ExclusiveRectangle;
+    use openh264::encoder::Encoder;
+    use openh264::formats::YUVBuffer;
+
+    const SIZE: u16 = 64;
+    const FRAMES: u8 = 12;
+
+    struct Sink(Arc<Mutex<Vec<(u16, u8)>>>);
+    impl GraphicsPipelineHandler for Sink {
+        fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
+            self.0.lock().unwrap().push((update.surface_id, update.data[0]));
+        }
+    }
+
+    let send = |client: &mut GraphicsPipelineClient, pdu: GfxPdu| {
+        let wire = wrap_uncompressed(&encode_vec(&pdu).expect("the PDU should encode"));
+        client.process(0, &wire).expect("the client should accept the PDU");
+    };
+    let gray_frame = |luma: u8| {
+        let (luma_size, chroma_size) = (
+            usize::from(SIZE) * usize::from(SIZE),
+            usize::from(SIZE) * usize::from(SIZE) / 2,
+        );
+        let mut planes = vec![luma; luma_size];
+        planes.resize(luma_size + chroma_size, 128);
+        YUVBuffer::from_vec(planes, usize::from(SIZE), usize::from(SIZE))
+    };
+
+    let painted = Arc::new(Mutex::new(Vec::new()));
+    let mut client = GraphicsPipelineClient::new(
+        Box::new(Sink(Arc::clone(&painted))),
+        Some(Box::new(OpenH264Decoder::new().expect("decoder should initialize"))),
+    )
+    .with_h264_decoder_factory(Box::new(|| -> Option<Box<dyn H264Decoder>> {
+        Some(Box::new(OpenH264Decoder::new().ok()?))
+    }));
+
+    send(
+        &mut client,
+        GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::empty(),
+        })),
+    );
+    for surface_id in [1, 2] {
+        send(
+            &mut client,
+            GfxPdu::CreateSurface(CreateSurfacePdu {
+                surface_id,
+                width: SIZE,
+                height: SIZE,
+                pixel_format: PixelFormat::XRgb,
+            }),
+        );
+    }
+
+    // Each stream's picture changes every frame, so the encoder sends real P-frames.
+    let mut encoders = [
+        (1u16, 180u8, Encoder::new().expect("encoder should initialize")),
+        (2u16, 60u8, Encoder::new().expect("encoder should initialize")),
+    ];
+    for frame in 0..FRAMES {
+        for (surface_id, base, encoder) in &mut encoders {
+            let bitstream = encoder
+                .encode(&gray_frame(*base + frame))
+                .expect("encode should succeed")
+                .to_vec();
+            let region = Avc420Region::full_frame(SIZE, SIZE, 22);
+            send(
+                &mut client,
+                GfxPdu::WireToSurface1(WireToSurface1Pdu {
+                    surface_id: *surface_id,
+                    codec_id: Codec1Type::Avc420,
+                    pixel_format: PixelFormat::XRgb,
+                    destination_rectangle: ExclusiveRectangle {
+                        left: 0,
+                        top: 0,
+                        right: SIZE,
+                        bottom: SIZE,
+                    },
+                    bitmap_data: encode_avc420_bitmap_stream(&[region], &bitstream),
+                }),
+            );
+        }
+    }
+
+    let painted = painted.lock().unwrap();
+    assert_eq!(painted.len(), usize::from(FRAMES) * 2, "every update should be painted");
+    for (surface_id, first_channel) in painted.iter() {
+        let expected = if *surface_id == 1 { 180u8 } else { 60u8 };
+        assert!(
+            first_channel.abs_diff(expected) <= FRAMES + 8,
+            "surface {surface_id} painted {first_channel}, expected about {expected}"
+        );
+    }
+}
+
+// ============================================================================
 // Happy Path Tests
 // ============================================================================
 
@@ -351,4 +466,76 @@ fn test_decode_uses_bt709_chroma_matrix() {
         assert!(px[1] < 20, "red G channel leaked: {}", px[1]);
         assert!(px[2] < 20, "red B channel leaked: {}", px[2]);
     }
+}
+
+// ============================================================================
+// AVC444 Through a Real H.264 Stream
+// ============================================================================
+
+/// The main and auxiliary views of a picture go through one OpenH264 encoder and one decoder,
+/// as MS-RDPEGFX 2.2.4.5 requires, and recombine into a picture closer to the original than
+/// the main view alone.
+// oracle: spec MS-RDPEGFX §2.2.4.5
+#[rstest::rstest]
+#[case::avc444(ironrdp_egfx::avc444::Avc444Layout::V1)]
+#[case::avc444v2(ironrdp_egfx::avc444::Avc444Layout::V2)]
+fn test_openh264_avc444_views_recombine(#[case] layout: ironrdp_egfx::avc444::Avc444Layout) {
+    use ironrdp_egfx::avc444::Yuv444Frame;
+    use ironrdp_egfx::decode::Yuv420Frame;
+    use ironrdp_pdu::geometry::ExclusiveRectangle;
+    use openh264::encoder::Encoder;
+    use openh264::formats::YUVSlices;
+
+    const SIZE: u16 = 64;
+    // Stripes of saturated colors one pixel wide, which 4:2:0 subsampling blurs.
+    let mut original = Vec::new();
+    for _ in 0..SIZE {
+        for x in 0..SIZE {
+            let pixel = if x % 2 == 0 { [230, 40, 40] } else { [40, 60, 230] };
+            original.extend_from_slice(&pixel);
+            original.push(0xFF);
+        }
+    }
+    let picture = Yuv444Frame::from_rgba(&original, SIZE, SIZE).expect("picture");
+    let (main, auxiliary) = picture.split(layout).expect("views");
+
+    let mut encoder = Encoder::new().expect("encoder should initialize");
+    let mut decoder = OpenH264Decoder::new().expect("decoder should initialize");
+    let mut round_trip = |view: &Yuv420Frame| {
+        let y: Vec<u8> = (0..).map_while(|row| view.luma_row(row)).flatten().copied().collect();
+        let u: Vec<u8> = (0..).map_while(|row| view.u_row(row)).flatten().copied().collect();
+        let v: Vec<u8> = (0..).map_while(|row| view.v_row(row)).flatten().copied().collect();
+        let (width, height) = (usize::from(view.width()), usize::from(view.height()));
+        let yuv = YUVSlices::new((&y, &u, &v), (width, height), (width, width / 2, width / 2));
+        let bitstream = encoder.encode(&yuv).expect("encode should succeed").to_vec();
+        decoder.decode_yuv420(&bitstream).expect("decode should succeed")
+    };
+    let main = round_trip(&main);
+    let auxiliary = round_trip(&auxiliary);
+
+    let everything = ExclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: SIZE,
+        bottom: SIZE,
+    };
+    let mut combined = Yuv444Frame::new(SIZE, SIZE);
+    combined.apply_main_view(&main, core::slice::from_ref(&everything));
+    let subsampled = combined.to_rgba(&everything);
+    combined.apply_auxiliary_view(layout, &auxiliary, core::slice::from_ref(&everything));
+    let recombined = combined.to_rgba(&everything);
+
+    let mean_error = |picture: &[u8]| {
+        let total: u64 = picture
+            .iter()
+            .zip(&original)
+            .map(|(actual, expected)| u64::from(actual.abs_diff(*expected)))
+            .sum();
+        total / u64::try_from(picture.len()).expect("length fits in u64")
+    };
+    let (avc420_error, avc444_error) = (mean_error(&subsampled), mean_error(&recombined));
+    assert!(
+        avc444_error * 4 < avc420_error,
+        "AVC444 error {avc444_error} is not well below the 4:2:0 error {avc420_error}"
+    );
 }

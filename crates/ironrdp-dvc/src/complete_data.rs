@@ -1,81 +1,155 @@
 use alloc::vec::Vec;
 use core::cmp;
 
-use ironrdp_core::{DecodeResult, cast_length, invalid_field_err};
+use ironrdp_bulk::rdp8::Rdp8Decompressor;
+use ironrdp_core::{DecodeResult, cast_length, invalid_field_err, other_err};
 use tracing::error;
 
-use crate::pdu::{DataFirstPdu, DataPdu, DrdynvcDataPdu};
+use crate::pdu::DrdynvcDataPdu;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct CompleteData {
-    total_size: usize,
+    max_message_size: Option<usize>,
+    total_size: Option<usize>,
     data: Vec<u8>,
+    /// MS-RDPEDYC 3.1.5.2.5: each channel has its own decompression context, created when
+    /// the channel first receives compressed data.
+    decompressor: Option<Rdp8Decompressor>,
+    /// Set once decompression fails. The history may have advanced partway through the bad
+    /// block, so it no longer matches the sender's and cannot decode anything after it.
+    decompression_failed: bool,
 }
 
 impl CompleteData {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(max_message_size: Option<usize>) -> Self {
         Self {
-            total_size: 0,
+            max_message_size,
+            total_size: None,
             data: Vec::new(),
+            decompressor: None,
+            decompression_failed: false,
         }
     }
 
     pub(crate) fn process_data(&mut self, pdu: DrdynvcDataPdu) -> DecodeResult<Option<Vec<u8>>> {
         match pdu {
-            DrdynvcDataPdu::DataFirst(data_first) => self.process_data_first_pdu(data_first),
-            DrdynvcDataPdu::Data(data) => self.process_data_pdu(data),
+            DrdynvcDataPdu::DataFirst(data_first) => {
+                let total_size = data_first.length();
+                self.process_data_first(total_size, data_first.into_data())
+            }
+            DrdynvcDataPdu::Data(data) => self.process_data_block(data.into_data()),
+            DrdynvcDataPdu::DataFirstCompressed(data_first) => {
+                let data = self.decompress(data_first.data())?;
+                self.process_data_first(data_first.length(), data)
+            }
+            DrdynvcDataPdu::DataCompressed(data) => {
+                let data = self.decompress(data.data())?;
+                self.process_data_block(data)
+            }
         }
     }
 
-    fn process_data_first_pdu(&mut self, data_first: DataFirstPdu) -> DecodeResult<Option<Vec<u8>>> {
-        let total_data_size: DecodeResult<_> = cast_length!("DataFirstPdu::length", data_first.length());
+    fn decompress(&mut self, compressed: &[u8]) -> DecodeResult<Vec<u8>> {
+        if self.decompression_failed {
+            return Err(invalid_field_err!(
+                "DVC compressed data",
+                "data",
+                "the channel's decompression history is out of sync after an earlier error"
+            ));
+        }
+
+        let decompressor = self.decompressor.get_or_insert_with(Rdp8Decompressor::new_lite);
+        let mut data = Vec::new();
+        if let Err(e) = decompressor.decompress(compressed, &mut data) {
+            self.decompression_failed = true;
+            return Err(other_err!("DVC compressed data", source: e));
+        }
+        Ok(data)
+    }
+
+    fn process_data_first(&mut self, total_size: u32, data: Vec<u8>) -> DecodeResult<Option<Vec<u8>>> {
+        let total_data_size: DecodeResult<_> = cast_length!("DataFirstPdu::length", total_size);
         let total_data_size = total_data_size?;
-        if self.total_size != 0 || !self.data.is_empty() {
+        if self.total_size.is_some() {
             error!("Incomplete DVC message, it will be skipped");
-
-            self.data.clear();
+            self.clear();
         }
 
-        if total_data_size == data_first.data().len() {
-            Ok(Some(data_first.into_data()))
-        } else {
-            self.total_size = total_data_size;
-            self.data = data_first.into_data();
-
-            Ok(None)
+        if self
+            .max_message_size
+            .is_some_and(|max_message_size| total_data_size > max_message_size)
+        {
+            return Err(invalid_field_err!(
+                "DataFirstPdu::length",
+                "DVC message exceeds configured maximum size"
+            ));
         }
+
+        if data.len() > total_data_size {
+            return Err(invalid_field_err!(
+                "DataFirstPdu::data",
+                "fragment exceeds advertised DVC message size"
+            ));
+        }
+
+        if total_data_size == data.len() {
+            return Ok(Some(data));
+        }
+
+        self.total_size = Some(total_data_size);
+        self.data = data;
+        Ok(None)
     }
 
-    fn process_data_pdu(&mut self, mut data: DataPdu) -> DecodeResult<Option<Vec<u8>>> {
-        if self.total_size == 0 && self.data.is_empty() {
+    fn process_data_block(&mut self, mut data: Vec<u8>) -> DecodeResult<Option<Vec<u8>>> {
+        let Some(total_size) = self.total_size else {
             // message is not fragmented
-            return Ok(Some(data.into_data()));
-        }
+            if self
+                .max_message_size
+                .is_some_and(|max_message_size| data.len() > max_message_size)
+            {
+                return Err(invalid_field_err!(
+                    "DataPdu::data",
+                    "DVC message exceeds configured maximum size"
+                ));
+            }
+            return Ok(Some(data));
+        };
 
         // The message is fragmented and needs to be reassembled.
-        match self.data.len().checked_add(data.data().len()) {
+        match self.data.len().checked_add(data.len()) {
             Some(actual_data_length) => {
-                match actual_data_length.cmp(&(self.total_size)) {
+                match actual_data_length.cmp(&total_size) {
                     cmp::Ordering::Less => {
                         // this is one of the fragmented messages, just append it
-                        self.data.append(data.data_mut());
+                        self.data.append(&mut data);
                         Ok(None)
                     }
                     cmp::Ordering::Equal => {
                         // this is the last fragmented message, need to return the whole reassembled message
-                        self.total_size = 0;
-                        self.data.append(data.data_mut());
-                        Ok(Some(self.data.drain(..).collect()))
+                        self.data.append(&mut data);
+                        self.total_size = None;
+                        Ok(Some(core::mem::take(&mut self.data)))
                     }
                     cmp::Ordering::Greater => {
-                        error!("Actual DVC message size is grater than expected total DVC message size");
-                        self.total_size = 0;
-                        self.data.clear();
-                        Ok(None)
+                        error!("Actual DVC message size is greater than expected total DVC message size");
+                        self.clear();
+                        Err(invalid_field_err!(
+                            "DataPdu::data",
+                            "fragment exceeds advertised DVC message size"
+                        ))
                     }
                 }
             }
-            _ => Err(invalid_field_err!("DVC message", "data", "overflow occurred")),
+            _ => {
+                self.clear();
+                Err(invalid_field_err!("DVC message", "data", "overflow occurred"))
+            }
         }
+    }
+
+    fn clear(&mut self) {
+        self.total_size = None;
+        self.data.clear();
     }
 }

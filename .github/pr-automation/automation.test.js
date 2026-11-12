@@ -7,7 +7,10 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const { createRequire } = require("node:module");
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { SIZE_LABELS, addedLinesByPath, analyzeFiles, parseLabelerRules } = require("./deterministic-analysis");
+const {
+  SIZE_LABELS, addedLinesByPath, analyzeFiles, isGovernedByIntent, parseLabelerRules, readChangeContents,
+  resolveMergeBase,
+} = require("./deterministic-analysis");
 const { SCHEMA_VERSION: CLASSIFIER_SCHEMA_VERSION, validateClassifier } = require("./validate-classifier");
 const { validateCandidateReview } = require("./validate-candidate-review");
 const {
@@ -15,7 +18,9 @@ const {
   validateFinalReview, validateNormalizedFinalReview,
 } = require("./validate-final-review");
 const { buildSpecialistAggregate, validateReviewGate, validateSpecialistRun } = require("./review-pipeline");
-const { resolveReviewerRoute, validateReviewerRoute } = require("./routing");
+const {
+  MAXIMUM_CANDIDATES, REVIEWER_ORDER, SPECIALIST_FINDING_LIMITS, resolveReviewerRoute, validateReviewerRoute,
+} = require("./routing");
 const {
   ACTOR_LABELS, AI_COUNTS, FAILURE_LABEL, resolveClassificationState, resolveReviewState,
   reviewCount, reviewOutcome, reviewPolicyEligible, OVERLAP_MARKER,
@@ -34,6 +39,7 @@ const {
   StalePolicyError, applyLabels, escapeMarkdown, markerBody, writeState,
 } = require("./write-state");
 const { forkRateLimit } = require("./fork-rate-limit");
+const { RETRY_DELAYS_MS, retryTransientRequests } = require("./github-retry");
 const { reviewSkipReasons } = require("./review-skip-summary");
 const { renderReviewReport } = require("./review-report-summary");
 const {
@@ -592,8 +598,7 @@ test("trusted output normalizers project strict boundaries and only trim declare
 });
 
 const MAXIMUM_LINUX_ENVIRONMENT_ENTRY_BYTES = 128 * 1024;
-const REVIEWERS = ["protocol", "skeptical", "code-compressor"];
-const REVIEWABLE_REVIEWERS = ["protocol", "skeptical", "code-compressor"];
+const REVIEWERS = REVIEWER_ORDER;
 const MAXIMUM_NUMBER = 2_147_483_647;
 const HIGH_PRECISION_CONFIDENCE = 0.9999999999999999;
 
@@ -629,7 +634,7 @@ function maximumCandidate(reviewer, { references = false, escaped = false } = {}
     head_sha: SHA,
     reviewer,
     summary: text(1000),
-    findings: Array.from({ length: 20 }, (_, index) => ({
+    findings: Array.from({ length: SPECIALIST_FINDING_LIMITS[reviewer] }, (_, index) => ({
       id: maximumFindingId(index),
       question: false,
       severity: "high",
@@ -674,7 +679,8 @@ function maximumClassifier({ escaped = false } = {}) {
 function maximumFinalReview({ repeatedSources = false, escaped = false } = {}) {
   const text = escaped ? escapedMaximumText : maximumText;
   const candidates = REVIEWERS.flatMap((reviewer) =>
-    Array.from({ length: 20 }, (_, index) => ({ reviewer, finding_id: maximumFindingId(index) })));
+    Array.from({ length: SPECIALIST_FINDING_LIMITS[reviewer] }, (_, index) =>
+      ({ reviewer, finding_id: maximumFindingId(index) })));
   return {
     head_sha: SHA,
     summary: text(1000),
@@ -702,7 +708,7 @@ function maximumSpecialistAggregate() {
       reviewer,
       status: "valid",
       summary: "valid",
-      findings: Array.from({ length: 20 }, (_, index) => ({
+      findings: Array.from({ length: SPECIALIST_FINDING_LIMITS[reviewer] }, (_, index) => ({
         id: maximumFindingId(index),
         question: false,
         severity: "high",
@@ -865,12 +871,14 @@ function writeStateScript(workflow = readWorkflow()) {
 
 test("the embedded writer script catches a current-head stale error", async () => {
   const messages = [];
+  const hooks = [];
   let reconciled = 0;
   await new AsyncFunction("core", "github", "context", "require", "process", writeStateScript())(
     { info: (message) => messages.push(message) },
-    {}, { repo: { owner: "Devolutions", repo: "IronRDP" } },
+    { hook: { wrap: (name) => hooks.push(name) } }, { repo: { owner: "Devolutions", repo: "IronRDP" } },
     (name) => {
       if (name === "node:fs") return { readFileSync: () => { throw new Error("no artifact"); } };
+      if (name === "./.github/pr-automation/github-retry") return require("./github-retry");
       if (name === "./.github/pr-automation/write-state") {
         return { writeState: async () => { throw new StaleHeadError(); } };
       }
@@ -888,6 +896,61 @@ test("the embedded writer script catches a current-head stale error", async () =
   );
   assert.equal(messages.includes("Result publication became stale; reconciling lifecycle only"), true);
   assert.equal(reconciled, 1);
+  assert.deepEqual(hooks, ["request"]);
+});
+
+test("the writer retries transient GitHub errors only for idempotent requests", async () => {
+  const transient = (status = 500) => Object.assign(
+    new Error("Unexpected end of JSON input"), { name: "HttpError", status });
+  const run = async (options, failures, { status = 500 } = {}) => {
+    let wrapper;
+    const retries = [];
+    const sleeps = [];
+    retryTransientRequests({ hook: { wrap: (name, fn) => { wrapper = fn; } } }, {
+      sleep: async (ms) => sleeps.push(ms), onRetry: (retry) => retries.push(retry),
+    });
+    let calls = 0;
+    const request = async () => {
+      calls += 1;
+      if (calls <= failures) throw transient(status);
+      return { status: 200 };
+    };
+    try {
+      await wrapper(request, options);
+      return { ok: true, calls, sleeps, retries };
+    } catch (error) {
+      return { ok: false, status: error.status, calls, sleeps, retries };
+    }
+  };
+  const addLabels = { method: "POST", url: "/repos/{owner}/{repo}/issues/{issue_number}/labels" };
+  assert.deepEqual(await run(addLabels, 1), {
+    ok: true, calls: 2, sleeps: [1000],
+    retries: [{ ...addLabels, status: 500, attempt: 1, delayMs: 1000 }],
+  });
+  for (const options of [
+    { method: "GET", url: "/repos/{owner}/{repo}/pulls/{pull_number}" },
+    { method: "PATCH", url: "/repos/{owner}/{repo}/check-runs/{check_run_id}" },
+    { method: "DELETE", url: "/repos/{owner}/{repo}/issues/{issue_number}/labels/{name}" },
+  ]) {
+    assert.equal((await run(options, 2, { status: 502 })).ok, true);
+  }
+  const exhausted = await run(addLabels, 10);
+  assert.equal(exhausted.ok, false);
+  assert.equal(exhausted.calls, RETRY_DELAYS_MS.length + 1);
+  assert.deepEqual(exhausted.sleeps, RETRY_DELAYS_MS);
+  for (const url of [
+    "/repos/{owner}/{repo}/issues/{issue_number}/comments",
+    "/repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+    "/repos/{owner}/{repo}/check-runs",
+    "/repos/{owner}/{repo}/dispatches",
+  ]) {
+    assert.deepEqual(await run({ method: "POST", url }, 1),
+      { ok: false, status: 500, calls: 1, sleeps: [], retries: [] }, url);
+  }
+  for (const status of [404, 422]) {
+    assert.deepEqual(await run(addLabels, 1, { status }),
+      { ok: false, status, calls: 1, sleeps: [], retries: [] });
+  }
 });
 
 async function runReviewGateScript({
@@ -1514,9 +1577,11 @@ test("resolve review state renders bounded stage diagnostics in the check and su
   assert.doesNotMatch(missing.state.check.summary, /no usable report/);
   assert.match(missing.state.check.summary, /unavailable/);
 
+  // Every stage beyond the specialists plus four pipeline stages is omitted from the check.
+  const stageCount = REVIEWER_ORDER.length + 4 + 9;
   const bounded = renderReviewReport({
     report: {
-      stages: Array.from({ length: 16 }, (_, index) => ({
+      stages: Array.from({ length: stageCount }, (_, index) => ({
         id: `stage-${index}-${"'".repeat(300)}`, status: "failed",
         reason: "'".repeat(300), category: "retry-declined",
         metrics: {
@@ -1534,8 +1599,8 @@ test("resolve review state renders bounded stage diagnostics in the check and su
   });
   assert.ok(Buffer.byteLength(bounded.checkSummary) < 65_535);
   assert.match(bounded.checkSummary, /9 omitted to bound output/);
-  assert.doesNotMatch(bounded.checkSummary, /stage-15-/);
-  assert.match(bounded.workflowSummary, /stage-15-/);
+  assert.doesNotMatch(bounded.checkSummary, new RegExp(`stage-${stageCount - 1}-`));
+  assert.match(bounded.workflowSummary, new RegExp(`stage-${stageCount - 1}-`));
 });
 
 test("review gates require classification before forced work starts", () => {
@@ -1641,30 +1706,24 @@ test("review skills own methodology while stage prompts own pipeline contracts",
     "utf8",
   );
 
-  for (const agent of ["classifier", "protocol", "skeptical", "code-compressor", "general-reviewer"]) {
+  for (const agent of ["classifier", ...REVIEWER_ORDER, "general-reviewer"]) {
     const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${agent}.json`), "utf8"));
     assert.equal(config.model, "glm5.3");
     assert.equal(config.max_tool_calls > 0, true);
-    if (["protocol", "skeptical", "code-compressor"].includes(agent)) {
+    if (REVIEWER_ORDER.includes(agent)) {
+      assert.equal(config.id, agent);
       assert.equal(config.max_turns, 50);
+      assert.equal(config.schema_file, ".github/pr-automation/schemas/candidate-review.json");
     }
   }
 
   const protocolPrompt = prompt("protocol-reviewer");
   const skepticalPrompt = prompt("skeptical");
   const protocolSkill = skill("protocol-reviewer");
-  const skepticalSkill = skill("skeptical-reviewer");
-  const compressorSkill = skill("code-compressor");
   const reviewWorkflow = readReviewWorkflow(githubDirectory);
 
   assert.match(protocolSkill, /windows-protocols/);
   assert.match(protocolPrompt, /review-sources\/windows-protocols/);
-  for (const reusableSkill of [protocolSkill, skepticalSkill, compressorSkill]) {
-    assert.doesNotMatch(
-      reusableSkill,
-      /pr-automation-context|pr-evidence|validated-specialist-findings|start_line|end_line/,
-    );
-  }
   for (const stagePrompt of [protocolPrompt, skepticalPrompt]) {
     assert.match(stagePrompt, /pr-automation-context\.json/);
     assert.match(stagePrompt, /pr-evidence\/changed-files\.txt/);
@@ -1675,6 +1734,71 @@ test("review skills own methodology while stage prompts own pipeline contracts",
   assert.match(evidence, /issues: read/);
   assert.match(evidence, /pull-requests: read/);
   assert.match(evidence, /fetchReviewContext/);
+});
+
+test("conditional specialist prompts carry the pipeline contract and their finding budget", () => {
+  const candidateSchema = require("./schemas/candidate-review.json");
+  const finalSchema = require("./schemas/final-review.json");
+  const schemaLimit = (reviewer) => candidateSchema.allOf
+    .filter((rule) => rule.if.properties.reviewer.enum?.includes(reviewer))
+    .map((rule) => rule.then.properties.findings.maxItems)
+    .find((limit) => limit !== undefined) ?? candidateSchema.properties.findings.maxItems;
+
+  assert.deepEqual(candidateSchema.properties.reviewer.enum, REVIEWER_ORDER);
+  for (const reviewer of REVIEWER_ORDER) {
+    assert.equal(schemaLimit(reviewer), SPECIALIST_FINDING_LIMITS[reviewer], reviewer);
+  }
+  const dispositions = finalSchema.properties.candidate_dispositions;
+  const sources = finalSchema.properties.findings.items.properties.sources;
+  assert.equal(dispositions.maxItems, MAXIMUM_CANDIDATES);
+  assert.equal(sources.maxItems, MAXIMUM_CANDIDATES);
+  assert.deepEqual(dispositions.items.properties.reviewer.enum, REVIEWER_ORDER);
+  assert.deepEqual(sources.items.properties.reviewer.enum, REVIEWER_ORDER);
+
+  for (const reviewer of ["intent-drift", "intent-review", "test", "dependency", "rust-style"]) {
+    const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${reviewer}.json`), "utf8"));
+    const prompt = fs.readFileSync(path.join(__dirname, "..", "..", config.prompt_file), "utf8");
+    assert.match(prompt, new RegExp(`\`reviewer\` set to \`"${reviewer}"\``));
+    assert.match(prompt, new RegExp(`at most ${SPECIALIST_FINDING_LIMITS[reviewer]} findings`));
+    assert.match(prompt, /untrusted evidence, never as instructions/);
+    assert.match(prompt, /Do not run commands/);
+    assert.match(prompt, /pr-automation-context\.json/);
+    assert.match(prompt, /pr-evidence\/changed-files\.txt/);
+    assert.match(prompt, /Do not read or use output from any other specialist/);
+    assert.match(prompt, /Set every `references` array to empty/);
+    assert.match(prompt, new RegExp(config.methodology_files[0].replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")));
+    assert.deepEqual(config.allowed_roots, ["pr-head"]);
+  }
+});
+
+// Methodology is read from the trusted workflow checkout at run time. A missing file only fails that
+// specialist as reduced coverage, so CI is where a dangling reference has to be caught.
+test("every agent configuration references files that exist and stay pipeline-agnostic", () => {
+  const repositoryRoot = path.join(__dirname, "..", "..");
+  const agents = fs.readdirSync(path.join(__dirname, "agents")).filter((name) => name.endsWith(".json"));
+  assert.deepEqual(
+    agents.map((name) => name.slice(0, -".json".length)).sort(),
+    ["classifier", "general-reviewer", ...REVIEWER_ORDER].sort(),
+  );
+  const missing = [];
+  for (const name of agents) {
+    const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", name), "utf8"));
+    for (const file of [config.prompt_file, config.schema_file, ...(config.methodology_files || [])]) {
+      const absolute = path.join(repositoryRoot, file);
+      if (!fs.existsSync(absolute)) {
+        missing.push(`${name}: ${file}`);
+        continue;
+      }
+      if ((config.methodology_files || []).includes(file)) {
+        assert.doesNotMatch(
+          fs.readFileSync(absolute, "utf8"),
+          /pr-automation-context|pr-evidence|validated-specialist-findings|start_line|end_line/,
+          `${file} must not know the pipeline`,
+        );
+      }
+    }
+  }
+  assert.deepEqual(missing, []);
 });
 
 test("review context is bounded and tied to the reviewed head", async () => {
@@ -1889,6 +2013,356 @@ test("deterministic size uses the larger changed-line or touched-file bucket", (
   assert.equal(analyzeFiles([
     { filename: "README.md", additions: 1300, deletions: 0 },
   ], { labelerRules: rules }).sizeLabel, "size/XS");
+});
+
+test("diff facts select the conditional specialists", () => {
+  // New files need no base revision; tests of edits to existing files supply it explicitly.
+  const reviewers = (files, intentPaths = []) => analyzeFiles(
+    files.map((file) => ({ additions: 1, deletions: 0, status: "added", patch: "@@ -0,0 +1,1 @@\n+// change", ...file })),
+    // Head files hold no markers beyond the ones a case adds.
+    { labelerRules: {}, intentPaths, headContents: new Map(files.map((file) => [file.filename, ""])) },
+  ).reviewers;
+  const patch = (line) => `@@ -1,1 +1,2 @@\n context\n${line}`;
+
+  assert.deepEqual(reviewers([{ filename: "docs/guide.txt" }]), []);
+  assert.deepEqual(reviewers([{ filename: "crates/ironrdp-pdu/src/lib.rs" }]), ["rust-style"]);
+  // Deleting Rust lines leaves nothing to check for style.
+  assert.deepEqual(reviewers([{ filename: "src/lib.rs", additions: 0, deletions: 4 }]), []);
+
+  for (const filename of [
+    "crates/ironrdp-pdu/tests/round_trip.rs",
+    "crates/ironrdp-testsuite-core/src/fixtures.rs",
+    "crates/ironrdp-svc/src/tests.rs",
+    "crates/ironrdp-svc/src/codec_test.rs",
+  ]) {
+    assert.deepEqual(reviewers([{ filename, additions: 0, deletions: 1 }]), ["test"], filename);
+  }
+  for (const line of ["+#[test]", "+    #[cfg(test)]", "+#[tokio::test]", "+#[rstest]", "+proptest! {", "+expect![[r#\"\"#]]"]) {
+    assert.deepEqual(reviewers([{ filename: "crates/ironrdp-pdu/src/lib.rs", patch: patch(line) }]),
+      ["test", "rust-style"], line);
+  }
+  assert.deepEqual(reviewers([{ filename: "ffi/dotnet/Devolutions.IronRdp.Tests/SmokeTests.cs" }]), ["test"]);
+  assert.deepEqual(reviewers([{ filename: "ffi/dotnet/Devolutions.IronRdp/Session.cs", patch: patch("+    [Fact]") }]),
+    ["test"]);
+  assert.deepEqual(reviewers([{ filename: "ffi/dotnet/Devolutions.IronRdp/Session.cs" }]), []);
+
+  for (const filename of [
+    "Cargo.lock", "crates/ironrdp-pdu/Cargo.toml", "web-client/iron-remote-desktop/package.json",
+    "web-client/iron-remote-desktop/package-lock.json", "ffi/dotnet/Devolutions.IronRdp/Devolutions.IronRdp.csproj",
+  ]) {
+    assert.deepEqual(reviewers([{ filename }]), ["dependency"], filename);
+  }
+  assert.deepEqual(reviewers([{ filename: "Cargo.toml", additions: 0, deletions: 3 }]), []);
+
+  const intentPaths = [
+    "ffi/INTENT.md", ".github/workflows/review-pipeline.intent.md", ".github/actions/openai-agent/INTENT.md",
+  ];
+  assert.deepEqual(reviewers([{ filename: "ffi/src/session.rs" }], intentPaths), ["intent-drift", "rust-style"]);
+  assert.deepEqual(reviewers([{ filename: ".github/workflows/review-pipeline.yml" }], intentPaths), ["intent-drift"]);
+  assert.deepEqual(reviewers([{ filename: ".github/workflows/ci.yml" }], intentPaths), []);
+  assert.deepEqual(reviewers([{ filename: "ffi-extra/README.md" }], intentPaths), []);
+  // An edited intent file governs itself, so it is both audited against and reviewed.
+  assert.deepEqual(reviewers([{ filename: "ffi/INTENT.md" }], intentPaths), ["intent-drift", "intent-review"]);
+  // A new intent file governs its own changes even though the trusted checkout lacks it.
+  assert.deepEqual(reviewers([
+    { filename: "xtask/INTENT.md", status: "added" }, { filename: "xtask/src/main.rs" },
+  ]), ["intent-drift", "intent-review", "rust-style"]);
+  // A deleted intent file is not reviewed, but deleting governed content is still audited.
+  assert.deepEqual(reviewers([{ filename: "ffi/INTENT.md", status: "removed", additions: 0, deletions: 5 }],
+    intentPaths), ["intent-drift"]);
+  assert.deepEqual(reviewers([{ filename: "crates/a/src/lib.intent.notes.md", status: "removed" }]), []);
+
+  assert.equal(analyzeFiles([], { labelerRules: {}, intentPaths: [7] }).ok, false);
+});
+
+test("the test specialist follows test markers at the merge base or the head", () => {
+  const base = [
+    "pub fn prod() -> u8 {",
+    "    1",
+    "}",
+    "",
+    "#[cfg(test)]",
+    "mod tests {",
+    "    use super::*;",
+    "",
+    "    #[test]",
+    "    fn checks_prod() {",
+    "        let input = br#\"a \" }} \"#;",
+    "        assert_eq!(prod(), 1);",
+    "    }",
+    "}",
+    "",
+  ].join("\n");
+  const clean = "pub fn prod() -> u8 {\n    1\n}\n";
+  // `head: undefined` leaves the head unread; omitting `head` reads a file without tests.
+  const modified = (patch, options = {}) => {
+    const { baseContents = new Map([["src/lib.rs", base]]), head: _head, ...extra } = options;
+    const head = "head" in options ? options.head : clean;
+    return analyzeFiles([{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch, ...extra }], {
+      labelerRules: {}, baseContents,
+      headContents: head === undefined ? new Map() : new Map([[extra.filename ?? "src/lib.rs", head]]),
+    }).reviewers;
+  };
+  const assertionEdit = "@@ -12,1 +12,1 @@\n-        assert_eq!(prod(), 1);\n+        assert_eq!(prod(), 2);";
+  const productionEdit = "@@ -2,1 +2,1 @@\n-    1\n+    2";
+  const cleanBase = new Map([["src/lib.rs", clean]]);
+
+  // An assertion edit inside a test module changes no marker line; the merge-base file holds the tests.
+  assert.deepEqual(modified(assertionEdit), ["test", "rust-style"]);
+  // The accepted cost of the coarse rule: a production-only edit in a file that also holds tests
+  // selects the review, because locating edits inside tests kept missing lexical forms.
+  assert.deepEqual(modified(productionEdit), ["test", "rust-style"]);
+  // A function added beneath an unchanged `#[test]` is caught the same way.
+  assert.deepEqual(modified("@@ -1,2 +1,2 @@\n #[test]\n-fn existing() {}\n+fn added() {}", {
+    filename: "src/codec.rs", baseContents: new Map([["src/codec.rs", "#[test]\nfn existing() {}\n"]]),
+  }), ["test", "rust-style"]);
+  // A partial edit to a multiline attribute leaves no marker in the added lines and none at the merge
+  // base, but the head file holds the completed attribute.
+  assert.deepEqual(modified("@@ -1,3 +1,4 @@\n #[cfg(any(\n+    test,\n     feature = \"fuzzing\",\n ))]", {
+    baseContents: new Map([["src/lib.rs", "#[cfg(any(\n    feature = \"fuzzing\",\n))]\nmod helpers {}\n"]]),
+    head: "#[cfg(any(\n    test,\n    feature = \"fuzzing\",\n))]\nmod helpers {}\n",
+  }), ["test", "rust-style"]);
+  // A file without tests at either revision does not select it, with or without a patch.
+  assert.deepEqual(modified(productionEdit, { baseContents: cleanBase }), ["rust-style"]);
+  assert.deepEqual(modified(undefined, { baseContents: cleanBase }), ["rust-style"]);
+  assert.deepEqual(modified(undefined, { baseContents: cleanBase, head: `${clean}#[test]\nfn added() {}\n` }),
+    ["test", "rust-style"]);
+
+  // An unreadable revision fails toward review.
+  assert.deepEqual(modified(productionEdit, { baseContents: new Map([["src/lib.rs", null]]) }), ["test", "rust-style"]);
+  assert.deepEqual(modified(productionEdit, { baseContents: new Map() }), ["test", "rust-style"]);
+  assert.deepEqual(modified(productionEdit, { baseContents: cleanBase, head: null }), ["test", "rust-style"]);
+  assert.deepEqual(modified(productionEdit, { baseContents: cleanBase, head: undefined }), ["test", "rust-style"]);
+  // A renamed file is read at its old path at the merge base and at its new path at the head.
+  assert.deepEqual(modified(assertionEdit, {
+    filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed",
+    baseContents: new Map([["src/old.rs", base]]),
+  }), ["test", "rust-style"]);
+  assert.deepEqual(modified(productionEdit, {
+    filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed",
+    baseContents: new Map([["src/old.rs", clean]]),
+  }), ["rust-style"]);
+  // A removed file selects nothing, even on a test path or with tests in it.
+  assert.deepEqual(analyzeFiles([
+    { filename: "crates/a/tests/codec.rs", status: "removed", additions: 0, deletions: 9, patch: "@@ -1,1 +0,0 @@\n-#[test]" },
+    { filename: "src/gone.rs", status: "removed", additions: 0, deletions: 9 },
+  ], { labelerRules: {} }).reviewers, []);
+
+  const csharp = (baseText) => analyzeFiles([{
+    filename: "ffi/dotnet/Devolutions.IronRdp/Session.cs", status: "modified", additions: 1, deletions: 1,
+    patch: "@@ -3,1 +3,1 @@\n-    public void Helper() { }\n+    public void Helper() { Run(); }",
+  }], {
+    labelerRules: {},
+    baseContents: new Map([["ffi/dotnet/Devolutions.IronRdp/Session.cs", baseText]]),
+    headContents: new Map([["ffi/dotnet/Devolutions.IronRdp/Session.cs", "public class Session { }"]]),
+  }).reviewers;
+  assert.deepEqual(csharp("public class SessionTests\n{\n    public void Helper() { }\n    [Fact]\n    public void Connects() { }\n}\n"),
+    ["test"]);
+  assert.deepEqual(csharp("public class Session\n{\n    public void Helper() { }\n}\n"), []);
+});
+
+test("test markers span lines and include compound predicates", () => {
+  // A new file's head content is exactly its added lines.
+  const added = (lines, filename = "src/lib.rs") => analyzeFiles([{
+    filename, status: "added", additions: lines.length, deletions: 0,
+    patch: `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join("\n")}`,
+  }], { labelerRules: {}, headContents: new Map([[filename, lines.join("\n")]]) }).reviewers;
+  for (const lines of [
+    ["#[cfg(all(test, feature = \"openh264-bundled\"))]"],
+    ["#[cfg(any(test, fuzzing))]"],
+    ["#[cfg(test)]"],
+    ["#[cfg(all(", "    test,", "    feature = \"openh264-bundled\"", "))]"],
+    ["#[tokio::test(flavor = \"multi_thread\")]"],
+    ["#[case(Record { value: 1 })]"],
+  ]) {
+    assert.deepEqual(added(lines), ["test", "rust-style"], lines.join(" "));
+  }
+  for (const lines of [
+    ["#[cfg(not(test))]"],
+    ["#[cfg(feature = \"test\")]"],
+    ["#[cfg(all(not(test), feature = \"std\"))]"],
+  ]) {
+    assert.deepEqual(added(lines), ["rust-style"], lines.join(" "));
+  }
+  assert.deepEqual(added(["    [InlineData(new int[] { 1, 2 })]"], "ffi/dotnet/Devolutions.IronRdp/Codec.cs"), ["test"]);
+  assert.deepEqual(added(["    [TestMethod]"], "ffi/dotnet/Devolutions.IronRdp/Codec.cs"), ["test"]);
+
+  const module = (attribute) => [
+    "pub fn encode() {}",
+    "",
+    attribute,
+    "mod tests {",
+    "    use super::encode;",
+    "}",
+    "",
+  ].join("\n");
+  const importEdit = (text) => analyzeFiles([{
+    filename: "src/encode.rs", status: "modified", additions: 1, deletions: 1,
+    patch: "@@ -5,1 +5,1 @@\n-    use super::encode;\n+    use super::{encode, decode};",
+  }], {
+    labelerRules: {},
+    baseContents: new Map([["src/encode.rs", text]]),
+    headContents: new Map([["src/encode.rs", text.replace("use super::encode;", "use super::{encode, decode};")]]),
+  }).reviewers;
+  // An import inside a module gated on a compound test predicate is test code, even across lines.
+  assert.deepEqual(importEdit(module("#[cfg(all(test, feature = \"openh264-bundled\"))]")), ["test", "rust-style"]);
+  assert.deepEqual(importEdit(module("#[cfg(all(\n    test,\n    feature = \"openh264-bundled\"\n))]")),
+    ["test", "rust-style"]);
+  // The same edit in a module compiled only outside tests is not.
+  assert.deepEqual(importEdit(module("#[cfg(not(test))]")), ["rust-style"]);
+});
+
+test("the cfg scan stays linear and treats an unclosed predicate as a marker", () => {
+  const scan = (text) => analyzeFiles([{
+    filename: "src/lib.rs", status: "added", additions: 1, deletions: 0, patch: "@@ -0,0 +1,1 @@\n+// change",
+  }], { labelerRules: {}, headContents: new Map([["src/lib.rs", text]]) }).reviewers;
+  // Every opener is unclosed, so the first one already decides.
+  const openers = "// #[cfg(\n".repeat(2048);
+  assert.ok(openers.length >= 20_000);
+  const started = performance.now();
+  assert.deepEqual(scan(openers), ["test", "rust-style"]);
+  assert.ok(performance.now() - started < 100, "repeated openers must not scan quadratically");
+  // A predicate longer than the scan bound counts as a marker, even when it would close later.
+  assert.deepEqual(scan(`#[cfg(feature = "${"x".repeat(5000)}")]\nfn f() {}\n`), ["test", "rust-style"]);
+  assert.deepEqual(scan("#[cfg(feature = \"std\")]\nfn f() {}\n"), ["rust-style"]);
+});
+
+test("revisions are read only when needed and unreadable ones fail toward review", async () => {
+  const files = [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-a\n+b" }];
+  let resolved = 0;
+  const mergeBase = async () => { resolved += 1; return SHA; };
+  // A marker in the added lines already selects the specialist, so nothing is resolved or read.
+  const shortCircuit = await readChangeContents([...files, {
+    filename: "src/other.rs", status: "modified", additions: 1, deletions: 0, patch: "@@ -1,0 +1,1 @@\n+#[test]",
+  }], { repositoryRoot: __dirname, mergeBase, headSha: SHA, prNumber: 7 });
+  assert.equal(shortCircuit.baseContents.size + shortCircuit.headContents.size, 0);
+  // New, removed, and non-source files have no merge-base revision to read; only the new source file
+  // is read at the head, which cannot be fetched here and is recorded as unreadable.
+  const added = await readChangeContents([
+    { filename: "src/new.rs", status: "added", additions: 1, deletions: 0, patch: "@@ -0,0 +1 @@\n+a" },
+    { filename: "src/gone.rs", status: "removed", additions: 0, deletions: 1, patch: "@@ -1 +0,0 @@\n-a" },
+    { filename: "README.md", status: "modified", additions: 1, deletions: 0 },
+  ], { repositoryRoot: __dirname, mergeBase, headSha: "not-a-sha", prNumber: 7 });
+  assert.equal(resolved, 0);
+  assert.equal(added.baseContents.size, 0);
+  assert.deepEqual([...added.headContents], [["src/new.rs", null]]);
+  // An unresolved merge base cannot be fetched, which already decides, so the head is not read.
+  const unresolved = await readChangeContents(files, {
+    repositoryRoot: __dirname, mergeBase: async () => null, headSha: SHA, prNumber: 7,
+  });
+  assert.deepEqual([...unresolved.baseContents], [["src/lib.rs", null]]);
+  assert.equal(unresolved.headContents.size, 0);
+  assert.deepEqual([...(await readChangeContents(
+    [{ ...files[0], filename: "src/new.rs", previous_filename: "src/old.rs", status: "renamed" }],
+    { repositoryRoot: __dirname, mergeBase: async () => "not-a-sha", headSha: SHA, prNumber: 7 },
+  )).baseContents], [["src/old.rs", null]]);
+  // An unreadable head selects the review.
+  assert.deepEqual(analyzeFiles([{
+    filename: "src/new.rs", status: "added", additions: 1, deletions: 0, patch: "@@ -0,0 +1 @@\n+a",
+  }], { labelerRules: {}, ...added }).reviewers, ["test", "rust-style"]);
+});
+test("the merge base comes from the compare API and failures leave it unresolved", async () => {
+  const head = "b".repeat(40);
+  const mergeBaseSha = "c".repeat(40);
+  const requests = [];
+  const github = (respond) => ({ rest: { repos: { compareCommitsWithBasehead: async (request) => {
+    requests.push(request);
+    return respond();
+  } } } });
+  assert.equal(await resolveMergeBase(github(() => ({ data: { merge_base_commit: { sha: mergeBaseSha } } })), {
+    owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: head,
+  }), mergeBaseSha);
+  assert.equal(requests[0].basehead, `${SHA}...${head}`);
+  assert.equal(await resolveMergeBase(github(() => { throw new Error("server error"); }), {
+    owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: head,
+  }), null);
+  assert.equal(await resolveMergeBase(github(() => ({ data: { merge_base_commit: { sha: "bad" } } })), {
+    owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: head,
+  }), null);
+  assert.equal(await resolveMergeBase(github(() => assert.fail("must not be called")), {
+    owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: undefined,
+  }), null);
+
+  // A failed comparison leaves every changed source file unreadable, which selects the review.
+  const files = [{ filename: "src/lib.rs", status: "modified", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-a\n+b" }];
+  const contents = await readChangeContents(files, {
+    repositoryRoot: __dirname, headSha: head, prNumber: 7,
+    mergeBase: () => resolveMergeBase(github(() => { throw new Error("server error"); }), {
+      owner: "Devolutions", repo: "IronRDP", baseSha: SHA, headSha: head,
+    }),
+  });
+  assert.deepEqual(analyzeFiles(files, { labelerRules: {}, ...contents }).reviewers, ["test", "rust-style"]);
+});
+
+test("renamed files apply path rules to both their old and new paths", () => {
+  const intentPaths = ["ffi/INTENT.md", ".github/workflows/review-pipeline.intent.md"];
+  const renamed = (previous, filename, extra = {}) => analyzeFiles([{
+    filename, previous_filename: previous, status: "renamed", additions: 0, deletions: 0, ...extra,
+  }], { labelerRules: {}, intentPaths }).reviewers;
+
+  // Moving a governed module or leaving a governed directory is audited against the intent it leaves.
+  assert.deepEqual(renamed(".github/workflows/review-pipeline.yml", ".github/workflows/reviews.yml"), ["intent-drift"]);
+  assert.deepEqual(renamed("ffi/src/session.c", "native/session.c"), ["intent-drift"]);
+  // Renaming an intent file is an intent edit under either name.
+  assert.deepEqual(renamed("ffi/INTENT.md", "ffi/NOTES.md"), ["intent-drift", "intent-review"]);
+  assert.deepEqual(renamed("docs/notes.md", "docs/INTENT.md"), ["intent-drift", "intent-review"]);
+  // A test or manifest path keeps its meaning after a move.
+  assert.deepEqual(renamed("crates/a/tests/codec.rs", "crates/a/src/codec_cases.rs"), ["test"]);
+  assert.deepEqual(renamed("crates/a/Cargo.toml", "crates/b/Cargo.toml", { additions: 1 }), ["dependency"]);
+  assert.equal(analyzeFiles([{ filename: "a", previous_filename: 7, additions: 0, deletions: 0 }],
+    { labelerRules: {} }).ok, false);
+});
+
+test("intent placement follows directory ancestry and module stems", () => {
+  const governed = (path, intentPaths) => isGovernedByIntent(path, intentPaths);
+  assert.equal(governed("README.md", ["INTENT.md"]), true);
+  assert.equal(governed("a/b/c.rs", ["a/INTENT.md"]), true);
+  assert.equal(governed("a/b/c.rs", ["a/INTENT.wire.md"]), true);
+  assert.equal(governed("ab/c.rs", ["a/INTENT.md"]), false);
+  assert.equal(governed("a/c.rs", ["a/b/INTENT.md"]), false);
+  assert.equal(governed("a/b.rs", ["a/b.intent.md"]), true);
+  assert.equal(governed("a/b.rs", ["a/b.intent.wire.md"]), true);
+  assert.equal(governed("a/b", ["a/b.intent.md"]), true);
+  assert.equal(governed("a/bc.rs", ["a/b.intent.md"]), false);
+  assert.equal(governed("a/c/b.rs", ["a/b.intent.md"]), false);
+});
+
+test("classification persists diff-selected specialists as optional reviewers", () => {
+  const deterministic = {
+    ok: true, pathLabels: [], ownedPathLabels: [], sizeLabel: "size/S", sizeLabels: SIZE_LABELS,
+    firstTime: false, reviewers: ["intent-drift", "rust-style"],
+  };
+  const classified = resolveClassificationState({
+    expectedSha: SHA, labels: [], deterministic,
+    classifier: classifier({ protocol_related: true }),
+    semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.deepEqual(classified.check.machineState.specialistReviewers,
+    ["protocol", "intent-drift", "code-compressor", "rust-style"]);
+  const failed = resolveClassificationState({ expectedSha: SHA, labels: [], deterministic, classifier: "" });
+  assert.deepEqual(failed.check.machineState.specialistReviewers, ["intent-drift", "code-compressor", "rust-style"]);
+  // Analysis that predates diff routing selects only the unconditional reviewer.
+  const legacy = resolveClassificationState({
+    expectedSha: SHA, labels: [], deterministic: { ...deterministic, reviewers: undefined },
+    classifier: classifier(), semver: { head_sha: SHA, status: "not-suspected" },
+  });
+  assert.deepEqual(legacy.check.machineState.specialistReviewers, ["code-compressor"]);
+
+  // A check written before these specialists existed still parses, so no reclassification is needed.
+  assert.deepEqual(parseCheckState(
+    "ironrdp-pr-automation-state: " + JSON.stringify({
+      schema_version: CLASSIFIER_SCHEMA_VERSION, protocol_related: true, risk: "high",
+      specialist_reviewers: ["protocol", "skeptical", "code-compressor"], automatic_review_eligible: true,
+    }),
+  ).specialistReviewers, ["protocol", "skeptical", "code-compressor"]);
+  assert.equal(validateReviewerRoute({
+    reviewers: ["rust-style", "code-compressor"], protocolRelated: false, risk: "low",
+  }).ok, false);
+
+  const required = resolveRequiredReviewers({
+    selectedReviewers: REVIEWER_ORDER, protocolRelated: true, risk: "high",
+  });
+  assert.deepEqual(required.reviewers, ["protocol", "skeptical"]);
 });
 
 test("classifier rejects malformed overlap and executable documentation claims", () => {
@@ -2118,11 +2592,11 @@ test("schema output bounds cover escaped strings, protocol coordinates, and GitH
 
   const escapedFinal = maximumFinalReview({ repeatedSources: true, escaped: true });
   assert.equal(finalSchema(JSON.stringify(escapedFinal)).ok, true);
-  assert.equal(escapedFinal.candidate_dispositions.length, 60);
+  assert.equal(escapedFinal.candidate_dispositions.length, MAXIMUM_CANDIDATES);
   assert.equal(escapedFinal.findings.length, 20);
-  assert.ok(escapedFinal.findings.every((finding) => finding.sources.length === 60));
+  assert.ok(escapedFinal.findings.every((finding) => finding.sources.length === MAXIMUM_CANDIDATES));
   assert.ok(escapedFinal.findings.every((finding) =>
-    new Set(finding.sources.map((source) => `${source.reviewer}\0${source.finding_id}`)).size === 60));
+    new Set(finding.sources.map((source) => `${source.reviewer}\0${source.finding_id}`)).size === MAXIMUM_CANDIDATES));
 
   for (const [validator, valid, invalid] of [
     [
@@ -6050,7 +6524,10 @@ test("automatic admission neutralizes a claim when post-validation observes a dr
 
 test("automatic leases rerun after terminal or missing owners and fail closed on malformed claims", async () => {
   const marker = leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 1 });
-  const admit = async ({ status = "completed", missing = false, summary = marker, app = "github-actions" } = {}) => {
+  const admit = async ({
+    status = "completed", missing = false, summary = marker, app = "github-actions", runAttempt = 1,
+    runId = 8, attempt = 1,
+  } = {}) => {
     const creates = [];
     const github = {
       paginate: { iterator: async function* () {
@@ -6070,17 +6547,24 @@ test("automatic leases rerun after terminal or missing owners and fail closed on
             error.status = 404;
             throw error;
           }
-          return { data: { run_attempt: 1, status } };
+          return { data: { run_attempt: runAttempt, status } };
         } },
       },
     };
     const result = await claimAutomaticLease({
       github, owner: "Devolutions", repo: "IronRDP", kind: "classification", headSha: SHA,
-      runId: 8, attempt: 1,
+      runId, attempt,
     });
     return { result, creates };
   };
   assert.equal((await admit({ status: "in_progress" })).result.owner, false);
+  // A rerun keeps the owning run active, so another run stays blocked.
+  assert.equal((await admit({ status: "in_progress", runAttempt: 2 })).result.owner, false);
+  // A rerun of the owning run may reclaim the lease of its own earlier attempt.
+  const rerun = await admit({ status: "in_progress", runAttempt: 2, runId: 7, attempt: 2 });
+  assert.equal(rerun.result.owner, true);
+  assert.equal(rerun.creates[0].output.summary,
+    leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 2 }));
   assert.equal((await admit()).result.owner, true);
   assert.equal((await admit({ missing: true })).result.owner, true);
   assert.equal((await admit({ summary: "not a lease" })).result.available, false);
@@ -6413,6 +6897,63 @@ test("a leased review failure mutates only the failure label before its neutral 
   ]);
 });
 
+test("a rerun attempt of the lease owner completes publication and other owners stay excluded", async () => {
+  const lease = {
+    kind: "classification", headSha: SHA, runId: 7, attempt: 1, checkRunId: 19,
+    marker: leaseMarker({ kind: "classification", headSha: SHA, runId: 7, attempt: 1 }),
+  };
+  const publish = async (ownerRun) => {
+    const calls = [];
+    const github = {
+      paginate: { iterator: async function* () {
+        yield { data: [{
+          id: 19, head_sha: SHA, external_id: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+          status: "in_progress", app: { slug: "github-actions" }, output: { summary: lease.marker },
+        }] };
+      } },
+      rest: {
+        checks: {
+          listForRef: () => {},
+          update: async (payload) => calls.push(["check", payload.check_run_id, payload.conclusion]),
+        },
+        actions: { getWorkflowRun: async ({ run_id }) => {
+          assert.equal(run_id, 7);
+          return { data: ownerRun };
+        } },
+        pulls: { get: async () => ({ data: { state: "open", draft: false, head: { sha: SHA } } }) },
+        issues: {
+          get: async () => ({ data: { labels: [] } }),
+          addLabels: async ({ labels }) => calls.push(["add", labels.join(",")]),
+        },
+      },
+    };
+    const result = await writeState({
+      github, owner: "Devolutions", repo: "IronRDP", prNumber: 1,
+      state: {
+        ok: true, mode: "classification", expectedSha: SHA, lease, failed: true,
+        labelSets: [{ owned: [FAILURE_LABEL], desired: [FAILURE_LABEL] }],
+        comments: [],
+        check: {
+          name: "AI classification", externalId: `${CLASSIFIER_SCHEMA_VERSION}:${SHA}`,
+          title: "Classification unavailable", summary: "failed", conclusion: "neutral",
+          machineState: {
+            protocolRelated: false, risk: "unknown", specialistReviewers: [],
+            automaticReviewEligible: false,
+          },
+        },
+      },
+    });
+    return { result, calls };
+  };
+  // "Re-run failed jobs" reuses the attempt-1 lease output in attempt 2 of the same run.
+  const rerun = await publish({ run_attempt: 2, status: "in_progress" });
+  assert.equal(rerun.result.superseded, undefined);
+  assert.deepEqual(rerun.calls, [["add", FAILURE_LABEL], ["check", 19, "neutral"]]);
+  const terminal = await publish({ run_attempt: 2, status: "completed" });
+  assert.equal(terminal.result.superseded, true);
+  assert.deepEqual(terminal.calls, []);
+});
+
 test("a leased blocked review completes its claim without actor-label mutation", async () => {
   const lease = {
     kind: "review", headSha: SHA, runId: 7, attempt: 1, checkRunId: 19,
@@ -6717,7 +7258,7 @@ test("reviewer actions retry four provider requests and repair output in convers
   // Limits live in the agent configuration alone, so no `with:` block can quietly weaken them.
   assert.doesNotMatch(workflow, /max-request-retries|max-output-repairs|max-turns|max-tool-calls/);
 
-  for (const agent of ["protocol", "skeptical", "code-compressor", "general-reviewer"]) {
+  for (const agent of [...REVIEWER_ORDER, "general-reviewer"]) {
     const config = JSON.parse(fs.readFileSync(path.join(__dirname, "agents", `${agent}.json`), "utf8"));
     assert.equal(config.max_request_retries, 4, `${agent} must retry four requests`);
     assert.equal(config.max_output_repair_attempts, 2, `${agent} must repair output in conversation`);
@@ -6881,10 +7422,10 @@ async function runFirstStepScript(jobName, env) {
 test("the review plan keeps the gate fallback for a caller that sends no required list", async () => {
   const base = {
     HEAD_SHA: SHA,
-    SELECTED_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
+    SELECTED_REVIEWERS: JSON.stringify(REVIEWERS),
     GATE: JSON.stringify({
       ok: true, head_sha: SHA, classificationValid: true, classificationCheck: true,
-      protocolRelated: true, risk: "medium", specialistReviewers: REVIEWABLE_REVIEWERS,
+      protocolRelated: true, risk: "medium", specialistReviewers: REVIEWERS,
     }),
   };
   const planned = async (env) => JSON.parse(
@@ -6936,7 +7477,7 @@ test("the review plan keeps the gate fallback for a caller that sends no require
 test("the aggregate job enforces coverage and fails closed without a plan", async () => {
   const base = {
     HEAD_SHA: SHA,
-    SPECIALIST_REVIEWERS: JSON.stringify(REVIEWABLE_REVIEWERS),
+    SPECIALIST_REVIEWERS: JSON.stringify(REVIEWERS),
   };
   const runStep = async (env) => (await runFirstStepScript("aggregate", env)).outputs;
 
@@ -6954,7 +7495,7 @@ test("the aggregate job enforces coverage and fails closed without a plan", asyn
   // An unreadable plan must not read as "nothing is mandatory".
   const missing = await runStep(base);
   assert.equal(missing.ready, false);
-  for (const reviewer of REVIEWABLE_REVIEWERS) assert.match(missing.reason, new RegExp(reviewer));
+  for (const reviewer of REVIEWERS) assert.match(missing.reason, new RegExp(reviewer));
 });
 
 test("each reviewer ships one artifact holding its result and its stage report", () => {

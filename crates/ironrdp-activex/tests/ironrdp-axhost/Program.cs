@@ -250,6 +250,7 @@ internal enum Operation
     Probe,
     Connect,
     Unload,
+    Automation,
 }
 
 internal sealed record ConnectionSettings(string Server, string UserName, string Password)
@@ -335,6 +336,85 @@ internal static class ReportWriter
             Console.Error.WriteLine($"failure: {report.Failure}");
         if (report.UnloadStatus is int unloadStatus)
             Console.WriteLine($"dll-can-unload-now: 0x{unchecked((uint)unloadStatus):X8}");
+    }
+}
+
+/// Exercises the control's late-bound surface the way script and `dynamic` callers reach it.
+internal static class AutomationProbe
+{
+    private const BindingFlags MethodFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.InvokeMethod;
+    private const BindingFlags PropertyGetFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.GetProperty;
+    private const BindingFlags PropertySetFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.SetProperty;
+    private const string ChannelName = "axtest";
+    private const int ChannelOptionEncryptRdp = 0x40000000;
+
+    internal static LifecycleResult Run(object control)
+    {
+        var events = new List<string> { "activated" };
+        string step = "advanced-settings";
+        try
+        {
+            object advanced = Get(control, "AdvancedSettings9");
+            Set(advanced, "RDPPort", (short)3390);
+            Require(Convert.ToInt32(Get(advanced, "RDPPort")) == 3390);
+            Set(advanced, "SmartSizing", true);
+            Require(Convert.ToBoolean(Get(advanced, "SmartSizing")));
+            events.Add(step);
+
+            step = "transport-settings";
+            object transport = Get(control, "TransportSettings4");
+            Set(transport, "GatewayHostname", "gateway.invalid");
+            Require((string?)Get(transport, "GatewayHostname") == "gateway.invalid");
+            events.Add(step);
+
+            step = "secured-settings";
+            object secured = Get(control, "SecuredSettings3");
+            Set(secured, "WorkDir", @"C:\");
+            Require((string?)Get(secured, "WorkDir") == @"C:\");
+            events.Add(step);
+
+            step = "virtual-channels";
+            Call(control, "CreateVirtualChannels", ChannelName);
+            Call(control, "SetVirtualChannelOptions", ChannelName, ChannelOptionEncryptRdp);
+            Require(Convert.ToInt32(Call(control, "GetVirtualChannelOptions", ChannelName)) == ChannelOptionEncryptRdp);
+            Call(control, "SendOnVirtualChannel", ChannelName, "data");
+            events.Add(step);
+
+            step = "dynamic";
+            dynamic client = control;
+            dynamic dynamicAdvanced = client.AdvancedSettings9;
+            dynamicAdvanced.RDPPort = 3391;
+            Require((int)dynamicAdvanced.RDPPort == 3391);
+            Require((int)client.GetVirtualChannelOptions(ChannelName) == ChannelOptionEncryptRdp);
+            events.Add(step);
+
+            return new LifecycleResult(true, false, events, null, null);
+        }
+        catch (Exception exception)
+        {
+            return new LifecycleResult(
+                false,
+                false,
+                events,
+                null,
+                $"late-bound {step} failed ({exception.GetType().Name}, 0x{exception.HResult:X8})");
+        }
+    }
+
+    private static object Get(object target, string name) =>
+        target.GetType().InvokeMember(name, PropertyGetFlags, null, target, null)
+            ?? throw new InvalidOperationException($"{name} returned null");
+
+    private static void Set(object target, string name, object value) =>
+        target.GetType().InvokeMember(name, PropertySetFlags, null, target, [value]);
+
+    private static object? Call(object target, string name, params object[] arguments) =>
+        target.GetType().InvokeMember(name, MethodFlags, null, target, arguments);
+
+    private static void Require(bool condition)
+    {
+        if (!condition)
+            throw new InvalidOperationException("a late-bound value did not round-trip");
     }
 }
 
@@ -731,6 +811,7 @@ internal static class Program
                         form,
                         options).Run(ConnectionSettings.FromEnvironment(options.Server, options.UserName, options.PasswordVariable)),
                     Operation.Unload => RunUnloadProbe(host),
+                    Operation.Automation => AutomationProbe.Run(host.ActiveXObject),
                     _ => throw new InvalidOperationException("unknown test operation"),
                 };
 
@@ -897,13 +978,14 @@ internal static class Program
                 continue;
             }
 
-            if (!operationSpecified && argument is "probe" or "connect" or "unload")
+            if (!operationSpecified && argument is "probe" or "connect" or "unload" or "automation")
             {
                 operation = argument switch
                 {
                     "probe" => Operation.Probe,
                     "connect" => Operation.Connect,
                     "unload" => Operation.Unload,
+                    "automation" => Operation.Automation,
                     _ => throw new ArgumentException(),
                 };
                 operationSpecified = true;
@@ -994,7 +1076,7 @@ internal static class Program
             throw new ArgumentException();
         }
 
-        if ((operation is Operation.Probe or Operation.Unload)
+        if ((operation is Operation.Probe or Operation.Unload or Operation.Automation)
             && (server is not null
                 || userName is not null
                 || screenshotPath is not null
@@ -1009,7 +1091,7 @@ internal static class Program
 
         if (show && observe == TimeSpan.Zero)
             observe = TimeSpan.FromSeconds(30);
-        if ((operation is Operation.Probe or Operation.Unload) && observe != TimeSpan.Zero && !show)
+        if ((operation is Operation.Probe or Operation.Unload or Operation.Automation) && observe != TimeSpan.Zero && !show)
             throw new ArgumentException();
 
         return new AxHostOptions(
@@ -1047,7 +1129,7 @@ internal static class Program
 
     private static void PrintUsage() =>
         Console.Error.WriteLine(
-            "Usage: ironrdp-axhost <com-server.dll> [class-id] [probe|connect|unload] [--autologon] [--json] [--show] [--timeout <seconds>] [--observe <seconds>] [--server <host[:port]>] [--username <name>] [--password-env <variable>] [--screenshot <path>] [--remoteapp-program <program>] [--remoteapp-args <arguments>]\nUse --help-agent for the machine-readable contract.");
+            "Usage: ironrdp-axhost <com-server.dll> [class-id] [probe|connect|unload|automation] [--autologon] [--json] [--show] [--timeout <seconds>] [--observe <seconds>] [--server <host[:port]>] [--username <name>] [--password-env <variable>] [--screenshot <path>] [--remoteapp-program <program>] [--remoteapp-args <arguments>]\nUse --help-agent for the machine-readable contract.");
 
     private const string AgentGuide = """
 # ironrdp-axhost
@@ -1074,6 +1156,12 @@ failed. Exit `64` means the command line was invalid.
   unadvise `IMsTscAxEvents`, release the connection point, let AxHost release the root control,
   then require
   `DllCanUnloadNow` to return `S_OK` before freeing the DLL. The JSON `unloadStatus` is that HRESULT.
+- `automation`: prove late-bound `IDispatch` access without connecting: read and write
+  `AdvancedSettings9`, `TransportSettings4`, and `SecuredSettings3` properties by name through
+  `Type.InvokeMember`, create a static virtual channel and round-trip its options with
+  `CreateVirtualChannels`, `SetVirtualChannelOptions`, `GetVirtualChannelOptions`, and
+  `SendOnVirtualChannel`, then repeat a property write and a method call through C# `dynamic`.
+  `events` records each completed step.
 - `connect`: run the complete lifecycle: configure the control, subscribe to
   `IMsTscAxEvents`, invoke `Connect`, require the `Connected` property or `OnConnected`, then
   disconnect and unadvise the sink. `events` records only `connecting`, `connected`,
@@ -1108,6 +1196,7 @@ range 1-600).
 
 ```powershell
 ironrdp-axhost .\target\release\ironrdpax.dll probe --json
+ironrdp-axhost .\target\release\ironrdpax.dll automation --json
 ironrdp-axhost .\target\release\ironrdpax.dll connect --timeout 60 --screenshot .\artifacts\frame.png --json
 ironrdp-axhost <path-to-MsRdpEx.dll> {7CACBD7B-0D99-468F-AC33-22E495C0AFE5} connect --json
 ```
