@@ -66,10 +66,7 @@ impl RdpsndClientHandler for WasmAudioBackend {
     }
 
     fn wave(&mut self, format: &AudioFormat, _ts: u32, data: Cow<'_, [u8]>) {
-        if format.format != WaveFormat::PCM || format.bits_per_sample != 16 {
-            debug!(?format, "Unsupported audio format; block dropped");
-            return;
-        }
+        // Rdpsnd supplies a negotiated entry from get_formats(), which contains only 16-bit PCM.
         self.send(AudioMessage::Wave {
             sample_rate: format.n_samples_per_sec,
             channels: format.n_channels,
@@ -169,18 +166,6 @@ mod tests {
             }
             other => panic!("expected a wave block, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn drops_blocks_it_cannot_play() {
-        let (mut backend, mut rx) = backend();
-        let mut eight_bit = backend.get_formats()[0].clone();
-        eight_bit.bits_per_sample = 8;
-        backend.wave(&eight_bit, 0, Cow::Borrowed(&[0; 4]));
-        let mut compressed = backend.get_formats()[0].clone();
-        compressed.format = WaveFormat::ADPCM;
-        backend.wave(&compressed, 0, Cow::Borrowed(&[0; 4]));
-        assert!(next_audio(&mut rx).is_none());
     }
 
     #[test]

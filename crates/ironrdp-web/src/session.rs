@@ -1695,8 +1695,9 @@ async fn connect(
     let audio = audio_backend.is_some();
     if let Some(audio_backend) = audio_backend {
         connector.attach_static_channel(Rdpsnd::new(Box::new(audio_backend)));
-        // Windows servers only start audio playback once RDPDR is up too (FreeRDP enables device redirection
-        // along with audio for the same reason); without a printer, a device-less RDPDR does it.
+        // Windows servers require RDPDR to be advertised before sending RDPSND traffic
+        // (MS-RDPEA Appendix A<1>); without a printer, advertise it without any devices.
+        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/deaaab30-d4d6-473e-ac56-3f76c4f6fb24#Appendix_A_1
         if printer_backend.is_none() {
             connector.attach_static_channel(Rdpdr::new(
                 Box::new(ironrdp::rdpdr::NoopRdpdrBackend),
