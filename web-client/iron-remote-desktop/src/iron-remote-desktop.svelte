@@ -204,7 +204,7 @@
     }
 
     function fitResize(realSizeLimit = false) {
-        const windowSize = getAvailableCorner();
+        const windowSize = availableAreaCorner($host());
         const wrapperBoundingBox = wrapper.getBoundingClientRect();
 
         const containerWidth = windowSize.x - wrapperBoundingBox.x;
@@ -228,7 +228,7 @@
     }
 
     function realResize() {
-        const windowSize = getAvailableCorner();
+        const windowSize = availableAreaCorner($host());
         const wrapperBoundingBox = wrapper.getBoundingClientRect();
 
         const containerWidth = windowSize.x - wrapperBoundingBox.x;
@@ -283,11 +283,6 @@
 
         // Propagate further
         return true;
-    }
-
-    // The fit and real scalings stay within the host element, which can be smaller than the window.
-    function getAvailableCorner() {
-        return availableAreaCorner($host());
     }
 
     async function initcanvas() {
