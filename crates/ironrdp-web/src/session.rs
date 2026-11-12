@@ -573,6 +573,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name,
             computer_name: client_name.clone(),
             use_display_control,
+            legacy_graphics,
         })
         .await?;
 
@@ -741,10 +742,7 @@ impl iron_remote_desktop::Session for Session {
             connection_result.desktop_size.width,
             connection_result.desktop_size.height,
         );
-        let mut framebuffer_size = (
-            connection_result.desktop_size.width,
-            connection_result.desktop_size.height,
-        );
+        let mut framebuffer_size = (image.width(), image.height());
 
         // Reused across frames so per-region extraction doesn't allocate on every draw.
         let mut draw_buffer = WriteBuf::new();
@@ -974,15 +972,10 @@ impl iron_remote_desktop::Session for Session {
 
             // UNTESTED: HTML canvas dimensions stay synchronized with `image` after an EGFX
             // `ResetGraphics` PDU updates `DecodedImage` without a `DeactivateAll` sequence,
-            // so `gui.draw` never blits post-reset regions onto stale canvas bounds. Check
-            // dynamic resize against an EGFX-capable server when changing this loop.
-            let output_size = (image.width(), image.height());
-            if output_size != framebuffer_size {
-                let width = NonZeroU32::new(u32::from(output_size.0)).context("graphics output width is zero")?;
-                let height = NonZeroU32::new(u32::from(output_size.1)).context("graphics output height is zero")?;
-                gui.resize(width, height);
-                framebuffer_size = output_size;
-            }
+            // so `gui.draw` never blits post-reset regions onto stale canvas bounds; only the
+            // size decision (`canvas_resize`) is unit-tested, not the loop placement.
+            // Check dynamic resize against an EGFX-capable server when changing this loop.
+            sync_canvas(&mut gui, &image, &mut framebuffer_size)?;
 
             for out in outputs {
                 match out {
@@ -1140,15 +1133,7 @@ impl iron_remote_desktop::Session for Session {
                                 drop(image);
                                 ensure_framebuffer_allocatable(desktop_size)?;
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-                                let output_size = (image.width(), image.height());
-                                if output_size != framebuffer_size {
-                                    let width = NonZeroU32::new(u32::from(output_size.0))
-                                        .context("graphics output width is zero")?;
-                                    let height = NonZeroU32::new(u32::from(output_size.1))
-                                        .context("graphics output height is zero")?;
-                                    gui.resize(width, height);
-                                    framebuffer_size = output_size;
-                                }
+                                sync_canvas(&mut gui, &image, &mut framebuffer_size)?;
                                 if !active_stage.reactivate(
                                     connection_activation.io_channel_id(),
                                     connection_activation.user_channel_id(),
@@ -1546,15 +1531,20 @@ fn build_config(
     security: SecurityConfig,
 ) -> connector::Config {
     // Win7-class servers need 32-bpp lossless bitmaps and no advertised codecs.
-    let codecs = if legacy_graphics {
-        BitmapCodecs(Vec::new())
+    // The 16-bpp lossy configuration carries the whole session only when the server does not
+    // negotiate the EGFX pipeline, so it stays the WAN-friendly default.
+    let bitmap = if legacy_graphics {
+        connector::BitmapConfig {
+            color_depth: 32,
+            lossy_compression: false,
+            codecs: BitmapCodecs(Vec::new()),
+        }
     } else {
-        client_codecs_capabilities(&[]).expect("can't panic for &[]")
-    };
-    let bitmap = connector::BitmapConfig {
-        color_depth: 32,
-        lossy_compression: false,
-        codecs,
+        connector::BitmapConfig {
+            color_depth: 16,
+            lossy_compression: true,
+            codecs: client_codecs_capabilities(&[]).expect("can't panic for &[]"),
+        }
     };
 
     connector::Config {
@@ -1597,7 +1587,7 @@ fn build_config(
         request_data: None,
         pointer_software_rendering: false,
         multitransport_flags: None,
-        support_dyn_vc_gfx_protocol: true,
+        support_dyn_vc_gfx_protocol: !legacy_graphics,
         rdp_version: ironrdp::pdu::gcc::RdpVersion::V5_PLUS,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
@@ -1671,6 +1661,7 @@ struct ConnectParams {
     /// `computer_name` when constructing the `Rdpdr` processor.
     computer_name: String,
     use_display_control: bool,
+    legacy_graphics: bool,
 }
 
 fn default_printer_driver_name() -> String {
@@ -1724,6 +1715,7 @@ async fn connect(
         printer_driver_name,
         computer_name,
         use_display_control,
+        legacy_graphics,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
@@ -1751,8 +1743,15 @@ async fn connect(
         );
     }
 
-    let mut dynamic_channels = DrdynvcClient::new()
-        .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(NoopGraphicsPipelineHandler), None));
+    let mut dynamic_channels = DrdynvcClient::new();
+    if !legacy_graphics {
+        dynamic_channels = dynamic_channels.with_dynamic_channel(GraphicsPipelineClient::new(
+            Box::new(NoopGraphicsPipelineHandler),
+            // The browser build has no H.264 decoder, so the pipeline filters out the AVC
+            // capability sets and falls back to non-AVC V8.
+            None,
+        ));
+    }
     if use_display_control {
         dynamic_channels = dynamic_channels.with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
     }
@@ -2054,6 +2053,31 @@ fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
 }
 
+/// Returns the canvas dimensions to apply when the graphics output changed size since it was
+/// last tracked, or `None` while the size is unchanged.
+fn canvas_resize(
+    framebuffer_size: (u16, u16),
+    output_size: (u16, u16),
+) -> anyhow::Result<Option<(NonZeroU32, NonZeroU32)>> {
+    if output_size == framebuffer_size {
+        return Ok(None);
+    }
+    let width = NonZeroU32::new(u32::from(output_size.0)).context("graphics output width is zero")?;
+    let height = NonZeroU32::new(u32::from(output_size.1)).context("graphics output height is zero")?;
+    Ok(Some((width, height)))
+}
+
+/// Resizes the canvas to match the `DecodedImage`, keeping the canvas bounds equal to the image
+/// dimensions so `gui.draw` never blits onto a stale backing store.
+fn sync_canvas(gui: &mut Canvas, image: &DecodedImage, framebuffer_size: &mut (u16, u16)) -> anyhow::Result<()> {
+    let output_size = (image.width(), image.height());
+    if let Some((width, height)) = canvas_resize(*framebuffer_size, output_size)? {
+        gui.resize(width, height);
+        *framebuffer_size = output_size;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use futures_util::io::Cursor;
@@ -2074,7 +2098,7 @@ mod tests {
         ironrdp_futures::LocalFuturesFramed::new_with_leftover(Cursor::new(Vec::new()), BytesMut::from(response))
     }
 
-    fn connector_config(security: SecurityConfig) -> connector::Config {
+    fn connector_config(legacy_graphics: bool, security: SecurityConfig) -> connector::Config {
         build_config(
             String::new(),
             String::new(),
@@ -2084,7 +2108,7 @@ mod tests {
                 width: DEFAULT_WIDTH,
                 height: DEFAULT_HEIGHT,
             },
-            false,
+            legacy_graphics,
             security,
         )
     }
@@ -2166,10 +2190,13 @@ mod tests {
             ("credssp disabled", false, false, true, false),
             ("standard RDP security", true, true, false, false),
         ] {
-            let config = connector_config(SecurityConfig {
-                enable_credssp,
-                enable_standard_rdp_security,
-            });
+            let config = connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp,
+                    enable_standard_rdp_security,
+                },
+            );
 
             assert_eq!(config.enable_tls, expected_tls, "{case}");
             assert_eq!(config.enable_credssp, expected_credssp, "{case}");
@@ -2177,14 +2204,78 @@ mod tests {
     }
 
     #[test]
+    fn graphics_config_tracks_legacy_graphics() {
+        // The expected values pin the contract agreed for this change: legacy_graphics keeps
+        // the pre-EGFX behavior as a compatibility escape hatch, and the WAN-friendly 16-bpp
+        // lossy bitmap configuration carries the session when the server does not negotiate
+        // the EGFX pipeline.
+        for (case, legacy_graphics, gfx_protocol, color_depth, lossy_compression, codecs_empty) in [
+            ("modern servers get the EGFX pipeline", false, true, 16, true, false),
+            (
+                "legacy graphics keeps the pre-EGFX behavior",
+                true,
+                false,
+                32,
+                false,
+                true,
+            ),
+        ] {
+            let config = connector_config(
+                legacy_graphics,
+                SecurityConfig {
+                    enable_credssp: true,
+                    enable_standard_rdp_security: false,
+                },
+            );
+            let bitmap = config.bitmap.expect("bitmap config is always set");
+
+            assert_eq!(config.support_dyn_vc_gfx_protocol, gfx_protocol, "{case}");
+            assert_eq!(bitmap.color_depth, color_depth, "{case}");
+            assert_eq!(bitmap.lossy_compression, lossy_compression, "{case}");
+            assert_eq!(bitmap.codecs.0.is_empty(), codecs_empty, "{case}");
+        }
+    }
+
+    #[test]
+    fn canvas_resize_reports_unchanged_output_size() {
+        let resized = canvas_resize((1280, 720), (1280, 720)).expect("an unchanged size is not an error");
+
+        assert_eq!(resized, None);
+    }
+
+    #[test]
+    fn canvas_resize_returns_the_new_dimensions() {
+        // An EGFX ResetGraphics PDU resizes the output without a DeactivateAll sequence.
+        let resized = canvas_resize((1280, 720), (1920, 1080)).expect("a non-zero size is not an error");
+
+        assert_eq!(
+            resized,
+            Some((
+                NonZeroU32::new(1920).expect("test dimensions are non-zero"),
+                NonZeroU32::new(1080).expect("test dimensions are non-zero"),
+            ))
+        );
+    }
+
+    #[test]
+    fn canvas_resize_rejects_a_zero_sized_output() {
+        // A zero-sized canvas cannot be drawn to, so the resize must fail the session instead.
+        assert!(canvas_resize((1280, 720), (0, 1080)).is_err());
+        assert!(canvas_resize((1280, 720), (1920, 0)).is_err());
+    }
+
+    #[test]
     fn standard_rdp_security_accepts_empty_rdcleanpath_certificate_chain() {
         let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::empty());
         let mut framed = rdcleanpath_framed(&response);
         let mut connector = ClientConnector::new(
-            connector_config(SecurityConfig {
-                enable_credssp: false,
-                enable_standard_rdp_security: true,
-            }),
+            connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp: false,
+                    enable_standard_rdp_security: true,
+                },
+            ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         let mut network_client = WasmNetworkClient;
@@ -2234,10 +2325,13 @@ mod tests {
         let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::SSL);
         let mut framed = rdcleanpath_framed(&response);
         let mut connector = ClientConnector::new(
-            connector_config(SecurityConfig {
-                enable_credssp: false,
-                enable_standard_rdp_security: false,
-            }),
+            connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp: false,
+                    enable_standard_rdp_security: false,
+                },
+            ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         let mut network_client = WasmNetworkClient;
@@ -2279,10 +2373,13 @@ mod tests {
         .expect("encode RDCleanPath error");
         let mut framed = rdcleanpath_framed(&response);
         let mut connector = ClientConnector::new(
-            connector_config(SecurityConfig {
-                enable_credssp: false,
-                enable_standard_rdp_security: false,
-            }),
+            connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp: false,
+                    enable_standard_rdp_security: false,
+                },
+            ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         let mut network_client = WasmNetworkClient;
