@@ -701,11 +701,7 @@ impl RdpeudpConnection {
         // would add before pushing any of them, since pushing part of a
         // split chunk set and rejecting the rest would corrupt the byte
         // stream the receiving end reassembles.
-        let window = self.send_window.as_ref().map_or_else(
-            || 1usize << usize::from(self.config.log_window_size),
-            SendWindow::max_entries,
-        );
-        let max_entries = SEND_BUFFER_WINDOW_MULTIPLE * window;
+        let max_entries = SEND_BUFFER_WINDOW_MULTIPLE * (1usize << usize::from(self.config.log_window_size));
         let chunks_needed = data.len().div_ceil(max_payload).max(1);
         if self.send_buffer.len() + chunks_needed > max_entries {
             trace!(
