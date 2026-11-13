@@ -12,6 +12,7 @@ struct Tile {
     rectangle: InclusiveRectangle,
     width: u16,
     height: u16,
+    scan_width: u16,
 }
 
 /// Encodes `update` for a client without surface commands, which gets slow-path style bitmap
@@ -36,6 +37,7 @@ async fn bitmap_tiles(desktop: DesktopSize, update: BitmapUpdate) -> Vec<Tile> {
             rectangle: r.rectangle.clone(),
             width: r.width,
             height: r.height,
+            scan_width: r.compressed_data_header.as_ref().expect("compressed bitmap").scan_width,
         }));
     }
     tiles
@@ -98,6 +100,26 @@ async fn bitmap_update_tiles_fit_freerdp_planar_context() {
             top: 4,
             right: 143,
             bottom: 73,
+        },
+    );
+}
+
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.3 (cbScanWidth MUST be divisible by 4)
+#[tokio::test]
+async fn bitmap_update_of_odd_width_has_scan_width_divisible_by_4() {
+    let tiles = bitmap_tiles(DesktopSize { width: 67, height: 3 }, bitmap(0, 0, 67, 3)).await;
+    assert!(!tiles.is_empty(), "an odd-width update is sent");
+    for tile in &tiles {
+        assert_eq!(tile.scan_width % 4, 0, "{tile:?}");
+    }
+    // oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.2 (destLeft..destBottom are the inclusive bounds drawn)
+    assert_covers_exactly(
+        &tiles,
+        &InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 66,
+            bottom: 2,
         },
     );
 }

@@ -1,4 +1,4 @@
-use ironrdp_core::{Encode as _, WriteCursor, cast_int, cast_length, invalid_field_err};
+use ironrdp_core::{Encode as _, WriteCursor, cast_int, cast_length};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rdp6::{
     ABgrChannels, ARgbChannels, BgrAChannels, BitmapEncodeError, BitmapStreamEncoder, RgbAChannels,
@@ -27,13 +27,6 @@ impl BitmapEncoder {
     const TILE: u16 = 64;
 
     pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> Result<usize, BitmapEncodeError> {
-        if !bitmap.width.get().is_multiple_of(4) {
-            return Err(BitmapEncodeError::Encode(invalid_field_err!(
-                "bitmap",
-                "Width must be a multiple of 4"
-            )));
-        }
-
         let bytes_per_pixel = usize::from(bitmap.format.bytes_per_pixel());
         let stride = bitmap.stride.get();
         let (width, height) = (bitmap.width.get(), bitmap.height.get());
@@ -50,18 +43,24 @@ impl BitmapEncoder {
             let tile_h = Self::TILE.min(height - top);
             for tx in 0..tiles_x {
                 let left = tx * Self::TILE;
-                // `width` is a multiple of 4 and so is TILE, so every tile width is too.
                 let tile_w = Self::TILE.min(width - left);
+                // Bitmap widths must be a multiple of 4 (MS-RDPBCGR 2.2.9.1.1.3.1.2.3).
+                // An edge tile of an odd-sized desktop is padded by repeating
+                // its last column; the destination rectangle below stays the
+                // real area, so the padding is never drawn.
+                let enc_w = tile_w.next_multiple_of(4);
                 let row_len = usize::from(tile_w) * bytes_per_pixel;
                 let col = usize::from(left) * bytes_per_pixel;
 
-                let encoder = BitmapStreamEncoder::new(usize::from(tile_w), usize::from(tile_h));
+                let encoder = BitmapStreamEncoder::new(usize::from(enc_w), usize::from(tile_h));
                 let len = {
+                    let pad = usize::from(enc_w - tile_w);
                     // Planar bitmaps are bottom-up.
-                    let pixels = (usize::from(top)..usize::from(top + tile_h))
-                        .rev()
-                        .map(|y| &bitmap.data[y * stride + col..y * stride + col + row_len])
-                        .flat_map(|row| row.chunks(bytes_per_pixel));
+                    let pixels = (usize::from(top)..usize::from(top + tile_h)).rev().flat_map(|y| {
+                        let row = &bitmap.data[y * stride + col..y * stride + col + row_len];
+                        let last = &row[row_len - bytes_per_pixel..];
+                        row.chunks(bytes_per_pixel).chain(core::iter::repeat_n(last, pad))
+                    });
                     Self::encode_iter(encoder, bitmap.format, pixels, self.buffer.as_mut_slice())?
                 };
 
@@ -72,15 +71,18 @@ impl BitmapEncoder {
                         right: bitmap.x + left + tile_w - 1,
                         bottom: bitmap.y + top + tile_h - 1,
                     },
-                    width: tile_w,
+                    width: enc_w,
                     height: tile_h,
                     bits_per_pixel: u16::from(bitmap.format.bytes_per_pixel()) * 8,
                     compression_flags: Compression::BITMAP_COMPRESSION,
                     compressed_data_header: Some(bitmap::CompressedDataHeader {
                         main_body_size: cast_length!("main body size", len).map_err(BitmapEncodeError::Encode)?,
-                        scan_width: tile_w,
-                        uncompressed_size: cast_length!("uncompressed size", usize::from(tile_h) * row_len)
-                            .map_err(BitmapEncodeError::Encode)?,
+                        scan_width: enc_w,
+                        uncompressed_size: cast_length!(
+                            "uncompressed size",
+                            usize::from(tile_h) * usize::from(enc_w) * bytes_per_pixel
+                        )
+                        .map_err(BitmapEncodeError::Encode)?,
                     }),
                     bitmap_data: &self.buffer[..len],
                 };
