@@ -46,7 +46,7 @@ use crate::ipc::{
     ClipboardFileEntry, ConnState, KeyFilter, KeyInput, MAX_CLIPBOARD_FILE_BYTES, MAX_CLIPBOARD_FILE_LIST_ENTRIES,
     MAX_KEY_BATCH_EVENTS, MAX_RAIL_RETAINED_EVENTS, MAX_UNICODE_TEXT_CHARS, NowDiagnostics, Payload, PenFrameRequest,
     PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump, RailEventKind, RailExecuteFailureReason,
-    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, StatusInfo, TouchFrameRequest,
+    RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response, SessionInfo, StatusInfo, TouchFrameRequest,
     pen_event_from_request, touch_event_from_request,
 };
 use crate::known_certificates::{
@@ -491,6 +491,8 @@ struct Live {
     /// Set by the certificate callback when strict validation rejects an untrusted certificate, so
     /// the connection failure can tell the caller which fingerprint to trust.
     certificate_rejection: Arc<Mutex<Option<CertificateRejection>>>,
+    /// What the server has reported about the session so far.
+    session_info: SessionInfo,
 }
 
 const MAX_PENDING_RAIL_LAUNCHES: usize = 64;
@@ -751,6 +753,7 @@ impl Daemon {
             Request::Logoff => DaemonResponse::Single(self.logoff().await),
             Request::DaemonStop => DaemonResponse::Single(Response::ok()),
             Request::Status => DaemonResponse::Single(self.status()),
+            Request::SessionInfo => DaemonResponse::Single(self.session_info()),
             Request::QueryProps { filter } => DaemonResponse::Single(self.query_props(filter.as_ref())),
             Request::QueryLogs { substring, last } => {
                 DaemonResponse::Single(self.query_logs(substring.as_deref(), last))
@@ -1135,6 +1138,7 @@ impl Daemon {
                 initial_rail_execute,
             ),
             certificate_rejection,
+            session_info: SessionInfo::default(),
         }));
 
         // Capture this session's logs into the ring buffer (queryable via `Request::QueryLogs`)
@@ -1347,6 +1351,15 @@ impl Daemon {
             }
         }
         Response::Ok(Payload::Logs(lines))
+    }
+
+    fn session_info(&self) -> Response {
+        let guard = self.state.lock().expect("daemon state poisoned");
+        let Some(session) = guard.as_ref() else {
+            return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
+        };
+        let live = session.live.lock().expect("session live state poisoned");
+        Response::Ok(Payload::SessionInfo(live.session_info.clone()))
     }
 
     fn rail_status(&self) -> Response {
@@ -2285,7 +2298,46 @@ async fn consume_output(
                 }
                 false
             }
-            RdpOutputEvent::LoginComplete | RdpOutputEvent::RemoteSessionId(_) => false,
+            RdpOutputEvent::LoginComplete => {
+                guard.session_info.logon_complete = true;
+                false
+            }
+            RdpOutputEvent::RemoteSessionId(session_id) => {
+                guard.session_info.remote_session_id = Some(session_id);
+                false
+            }
+            RdpOutputEvent::MonitorLayout(monitors) => {
+                guard.session_info.monitors = monitors
+                    .iter()
+                    .map(|monitor| crate::ipc::MonitorInfo {
+                        left: monitor.left,
+                        top: monitor.top,
+                        right: monitor.right,
+                        bottom: monitor.bottom,
+                        primary: monitor.flags.contains(ironrdp_pdu::gcc::MonitorFlags::PRIMARY),
+                    })
+                    .collect();
+                false
+            }
+            RdpOutputEvent::NetworkCharacteristics {
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms,
+            } => {
+                guard.session_info.network = Some(crate::ipc::NetworkCharacteristicsInfo {
+                    base_rtt_ms,
+                    bandwidth_kbps,
+                    average_rtt_ms,
+                });
+                false
+            }
+            RdpOutputEvent::LogonError(error) => {
+                guard.session_info.logon_error = Some(crate::ipc::LogonErrorInfo {
+                    notification_type: error.error_type.as_u32(),
+                    notification_data: error.error_data.to_u32(),
+                });
+                false
+            }
             RdpOutputEvent::WindowingOrders(orders) => {
                 guard.rail.record(RailEventKind::WindowingOrders {
                     byte_count: u32::try_from(ironrdp_pdu::window::slow_path_windowing_orders_update_size(&orders))
@@ -2447,6 +2499,8 @@ async fn consume_output(
             }
             RdpOutputEvent::ServerRedirected { target } => {
                 info!(%target, "Session redirected by the server");
+                // What was reported so far describes the server that redirected, not the target.
+                guard.session_info = SessionInfo::default();
                 false
             }
             // With software pointer rendering the cursor is composited into the `Image` frames
@@ -2832,6 +2886,7 @@ mod tests {
             rail_initial_execute: Some((0, "notepad.exe".to_owned())),
             rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
             certificate_rejection: Arc::default(),
+            session_info: Default::default(),
         }));
         {
             let mut guard = live.lock().expect("session live state poisoned");
@@ -2894,6 +2949,7 @@ mod tests {
             rail_initial_execute: None,
             rail: RailLedger::new(1, 1, None),
             certificate_rejection: Arc::default(),
+            session_info: Default::default(),
         }));
         let rail_notify = Arc::new(tokio::sync::Notify::new());
         *daemon.state.lock().expect("daemon state poisoned") = Some(Session {
@@ -4092,5 +4148,195 @@ mod tests {
             response,
             Response::Err(err) if err.message.contains("timed out")
         ));
+    }
+
+    /// Feeds `events` through the output consumer and returns what the daemon then reports about the session.
+    async fn session_info_after(
+        daemon: &Daemon,
+        live: &Arc<Mutex<Live>>,
+        events: Vec<ironrdp_client::rdp::RdpOutputEvent>,
+    ) -> crate::ipc::SessionInfo {
+        let (output_tx, output_rx) = output_channel(events.len().max(1));
+        for event in events {
+            output_tx.send(event).await.expect("send output event");
+        }
+        drop(output_tx);
+        consume_output(
+            output_rx,
+            Arc::clone(live),
+            None,
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(AtomicU64::new(2)),
+        )
+        .await;
+        let Response::Ok(Payload::SessionInfo(info)) = daemon.session_info() else {
+            panic!("expected session info response");
+        };
+        info
+    }
+
+    // oracle: mutant an output consumer that drops a fact the server reported, or keeps one across a redirection
+    // oracle: mutant an output consumer that keeps the first report of a fact rather than the latest
+    #[tokio::test]
+    async fn session_info_reports_what_the_server_sent_until_a_redirection() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+        use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
+        use ironrdp_pdu::rdp::session_info::{
+            LogonErrorNotificationData, LogonErrorNotificationDataErrorCode, LogonErrorNotificationType,
+            LogonErrorsInfo,
+        };
+
+        use crate::ipc::{LogonErrorInfo, MonitorInfo, NetworkCharacteristicsInfo, SessionInfo};
+
+        let (daemon, _, live, _) = active_rail_session(false);
+        assert_eq!(
+            session_info_after(&daemon, &live, Vec::new()).await,
+            SessionInfo::default()
+        );
+
+        let reported = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::RemoteSessionId(2),
+                RdpOutputEvent::LoginComplete,
+                RdpOutputEvent::NetworkCharacteristics {
+                    base_rtt_ms: Some(3),
+                    bandwidth_kbps: None,
+                    average_rtt_ms: 4,
+                },
+                RdpOutputEvent::MonitorLayout(vec![
+                    Monitor {
+                        left: 0,
+                        top: 0,
+                        right: 1919,
+                        bottom: 1079,
+                        flags: MonitorFlags::PRIMARY,
+                    },
+                    Monitor {
+                        left: -1280,
+                        top: 0,
+                        right: -1,
+                        bottom: 1023,
+                        flags: MonitorFlags::empty(),
+                    },
+                ]),
+                RdpOutputEvent::LogonError(LogonErrorsInfo {
+                    error_type: LogonErrorNotificationType::NtStatus(0xC000_006D),
+                    error_data: LogonErrorNotificationData::ErrorCode(LogonErrorNotificationDataErrorCode::FailedOther),
+                }),
+            ],
+        )
+        .await;
+        assert_eq!(
+            reported,
+            SessionInfo {
+                remote_session_id: Some(2),
+                logon_complete: true,
+                network: Some(NetworkCharacteristicsInfo {
+                    base_rtt_ms: Some(3),
+                    bandwidth_kbps: None,
+                    average_rtt_ms: 4,
+                }),
+                monitors: vec![
+                    MonitorInfo {
+                        left: 0,
+                        top: 0,
+                        right: 1919,
+                        bottom: 1079,
+                        primary: true,
+                    },
+                    MonitorInfo {
+                        left: -1280,
+                        top: 0,
+                        right: -1,
+                        bottom: 1023,
+                        primary: false,
+                    },
+                ],
+                // oracle: spec MS-RDPBCGR §2.2.10.1.1.4.1.1
+                logon_error: Some(LogonErrorInfo {
+                    notification_type: 0xC000_006D,
+                    notification_data: 0x0000_0002, // LOGON_FAILED_OTHER
+                }),
+            }
+        );
+
+        // A fact the server reports again replaces the earlier report.
+        let rereported = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::NetworkCharacteristics {
+                    base_rtt_ms: None,
+                    bandwidth_kbps: Some(10_000),
+                    average_rtt_ms: 7,
+                },
+                RdpOutputEvent::MonitorLayout(vec![Monitor {
+                    left: 0,
+                    top: 0,
+                    right: 1279,
+                    bottom: 1023,
+                    flags: MonitorFlags::PRIMARY,
+                }]),
+                RdpOutputEvent::LogonError(LogonErrorsInfo {
+                    error_type: LogonErrorNotificationType::SessionTerminate,
+                    error_data: LogonErrorNotificationData::SessionId(2),
+                }),
+            ],
+        )
+        .await;
+        assert_eq!(
+            rereported,
+            SessionInfo {
+                remote_session_id: Some(2),
+                logon_complete: true,
+                network: Some(NetworkCharacteristicsInfo {
+                    base_rtt_ms: None,
+                    bandwidth_kbps: Some(10_000),
+                    average_rtt_ms: 7,
+                }),
+                monitors: vec![MonitorInfo {
+                    left: 0,
+                    top: 0,
+                    right: 1279,
+                    bottom: 1023,
+                    primary: true,
+                }],
+                // oracle: spec MS-RDPBCGR §2.2.10.1.1.4.1.1
+                logon_error: Some(LogonErrorInfo {
+                    notification_type: 0xFFFF_FFFD, // LOGON_MSG_SESSION_TERMINATE
+                    notification_data: 2,
+                }),
+            }
+        );
+
+        let redirected = session_info_after(
+            &daemon,
+            &live,
+            vec![RdpOutputEvent::ServerRedirected {
+                target: "target.example:3389".to_owned(),
+            }],
+        )
+        .await;
+        assert_eq!(redirected, SessionInfo::default());
+    }
+
+    // oracle: mutant an output consumer that clears the session facts on an automatic reconnect
+    #[tokio::test]
+    async fn session_info_survives_an_auto_reconnect() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+
+        let (daemon, _, live, _) = active_rail_session(false);
+        let reported = session_info_after(
+            &daemon,
+            &live,
+            vec![RdpOutputEvent::RemoteSessionId(2), RdpOutputEvent::LoginComplete],
+        )
+        .await;
+        assert_eq!(reported.remote_session_id, Some(2));
+
+        let reconnected = session_info_after(&daemon, &live, vec![RdpOutputEvent::AutoReconnected]).await;
+        assert_eq!(reconnected, reported);
     }
 }

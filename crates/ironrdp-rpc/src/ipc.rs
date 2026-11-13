@@ -24,10 +24,10 @@ use ironrdp_rdpei::pdu::{
 };
 
 use crate::wire::{
-    bytes_size, opt_bytes_size, opt_string_size, opt_u16_size, opt_u64_size, propertyset, read_bool, read_bytes,
-    read_char, read_mouse_button, read_opt_bytes, read_opt_string, read_opt_u16, read_opt_u64, read_string,
-    string_size, write_bool, write_bytes, write_char, write_mouse_button, write_opt_bytes, write_opt_string,
-    write_opt_u16, write_opt_u64, write_string,
+    bytes_size, opt_bytes_size, opt_string_size, opt_u16_size, opt_u32_size, opt_u64_size, propertyset, read_bool,
+    read_bytes, read_char, read_mouse_button, read_opt_bytes, read_opt_string, read_opt_u16, read_opt_u32,
+    read_opt_u64, read_string, string_size, write_bool, write_bytes, write_char, write_mouse_button, write_opt_bytes,
+    write_opt_string, write_opt_u16, write_opt_u32, write_opt_u64, write_string,
 };
 
 /// Maximum number of Unicode scalar values accepted in one [`Request::UnicodeText`] request.
@@ -451,6 +451,8 @@ pub enum Request {
     DaemonStop,
     /// Query the current session status.
     Status,
+    /// Report the facts the server sent about the session: its ID, the logon, the network and the monitors.
+    SessionInfo,
     /// Query the live session property bag, optionally filtered.
     QueryProps { filter: Option<KeyFilter> },
     /// Return retained log lines, optionally filtered by substring and/or limited to the last `n`.
@@ -588,6 +590,7 @@ impl fmt::Debug for Request {
             Self::Logoff => f.write_str("Logoff"),
             Self::DaemonStop => f.write_str("DaemonStop"),
             Self::Status => f.write_str("Status"),
+            Self::SessionInfo => f.write_str("SessionInfo"),
             Self::QueryProps { filter } => f.debug_struct("QueryProps").field("filter", filter).finish(),
             Self::QueryLogs { substring, last } => f
                 .debug_struct("QueryLogs")
@@ -784,6 +787,8 @@ pub enum Payload {
     RailEvents(RailEventDump),
     /// A locally assigned RAIL launch identifier.
     RailLaunch(RailLaunchInfo),
+    /// The facts the server sent about the session.
+    SessionInfo(SessionInfo),
     /// The remote clipboard's last `CF_UNICODETEXT` text, or `None` if unavailable.
     ClipboardText(Option<String>),
     /// The remote clipboard's last image as PNG bytes, or `None` if unavailable.
@@ -819,6 +824,7 @@ impl fmt::Debug for Payload {
             Self::RailStatus(status) => f.debug_tuple("RailStatus").field(status).finish(),
             Self::RailEvents(events) => f.debug_tuple("RailEvents").field(events).finish(),
             Self::RailLaunch(launch) => f.debug_tuple("RailLaunch").field(launch).finish(),
+            Self::SessionInfo(info) => f.debug_tuple("SessionInfo").field(info).finish(),
             // Never print clipboard contents.
             Self::ClipboardText(text) => f
                 .debug_tuple("ClipboardText")
@@ -870,6 +876,68 @@ impl fmt::Debug for RailExecuteRequest {
             .field("flags", &self.flags)
             .finish()
     }
+}
+
+/// Facts the server reported about the session, returned by [`Request::SessionInfo`].
+///
+/// Each one is absent until the server sends it, and all are cleared when the server redirects the connection.
+/// A cookie-based auto-reconnect keeps them, because it returns to the same session on the same server.
+/// `logon_complete` reads `false` until the logon notification arrives.
+/// A logon that is still continuing, or that has failed, is reported as `logon_error` instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionInfo {
+    /// ID of the remote session, from the server's logon notification.
+    pub remote_session_id: Option<u32>,
+    /// `true` once the server notified a completed logon ([MS-RDPBCGR] 2.2.10.1 "Server Save Session Info PDU").
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    pub logon_complete: bool,
+    /// The network characteristics the server last reported.
+    pub network: Option<NetworkCharacteristicsInfo>,
+    /// The monitor layout the server last reported, empty when it reported none.
+    pub monitors: Vec<MonitorInfo>,
+    /// The logon error, warning or status the server last reported.
+    pub logon_error: Option<LogonErrorInfo>,
+}
+
+/// Network characteristics the server measured ([MS-RDPBCGR] 2.2.14.1.5 "Network Characteristics Result
+/// (RDP_NETCHAR_RESULTS)").
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkCharacteristicsInfo {
+    /// Lowest detected round-trip time in milliseconds, when the server reported it.
+    pub base_rtt_ms: Option<u32>,
+    /// Current bandwidth in kilobits per second, when the server reported it.
+    pub bandwidth_kbps: Option<u32>,
+    /// Current average round-trip time in milliseconds.
+    pub average_rtt_ms: u32,
+}
+
+/// One monitor of the layout the server reported ([MS-RDPBCGR] 2.2.1.3.6.1 "Monitor Definition (TS_MONITOR_DEF)").
+///
+/// `right` and `bottom` are inclusive, as in the definition.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorInfo {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub primary: bool,
+}
+
+/// A logon error, warning or status the server reported ([MS-RDPBCGR] 2.2.10.1.1.4.1.1 "Logon Errors Info
+/// (TS_LOGON_ERRORS_INFO)").
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogonErrorInfo {
+    /// The `ErrorNotificationType` value.
+    pub notification_type: u32,
+    /// The `ErrorNotificationData` value.
+    pub notification_data: u32,
 }
 
 /// Summary of the current RAIL observation generation.
@@ -1820,6 +1888,106 @@ impl Decode<'_> for RailStatusInfo {
 
 impl_pdu_pod!(RailStatusInfo);
 
+impl SessionInfo {
+    const MONITOR_SIZE: usize = 4 /* left */ + 4 /* top */ + 4 /* right */ + 4 /* bottom */ + 1 /* primary */;
+}
+
+impl Encode for SessionInfo {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        write_opt_u32(dst, self.remote_session_id)?;
+        write_bool(dst, self.logon_complete)?;
+        write_bool(dst, self.network.is_some())?;
+        if let Some(network) = &self.network {
+            write_opt_u32(dst, network.base_rtt_ms)?;
+            write_opt_u32(dst, network.bandwidth_kbps)?;
+            dst.write_u32(network.average_rtt_ms);
+        }
+        let count: u16 = cast_length!("monitor count", self.monitors.len())?;
+        dst.write_u16(count);
+        for monitor in &self.monitors {
+            dst.write_i32(monitor.left);
+            dst.write_i32(monitor.top);
+            dst.write_i32(monitor.right);
+            dst.write_i32(monitor.bottom);
+            write_bool(dst, monitor.primary)?;
+        }
+        write_bool(dst, self.logon_error.is_some())?;
+        if let Some(error) = &self.logon_error {
+            dst.write_u32(error.notification_type);
+            dst.write_u32(error.notification_data);
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "ironrdp_rpc::ipc::SessionInfo"
+    }
+
+    fn size(&self) -> usize {
+        opt_u32_size(self.remote_session_id)
+            + 1 /* logon_complete */
+            + 1 /* network presence */
+            + self.network.as_ref().map_or(0, |network| {
+                opt_u32_size(network.base_rtt_ms) + opt_u32_size(network.bandwidth_kbps) + 4 /* average_rtt_ms */
+            })
+            + 2 /* monitor count */
+            + self.monitors.len() * Self::MONITOR_SIZE
+            + 1 /* logon_error presence */
+            + self.logon_error.map_or(0, |_| 4 /* notification_type */ + 4 /* notification_data */)
+    }
+}
+
+impl Decode<'_> for SessionInfo {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+        let remote_session_id = read_opt_u32(src)?;
+        let logon_complete = read_bool(src)?;
+        let network = if read_bool(src)? {
+            let base_rtt_ms = read_opt_u32(src)?;
+            let bandwidth_kbps = read_opt_u32(src)?;
+            ensure_size!(in: src, size: 4);
+            Some(NetworkCharacteristicsInfo {
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms: src.read_u32(),
+            })
+        } else {
+            None
+        };
+        ensure_size!(in: src, size: 2);
+        let count = usize::from(src.read_u16());
+        ensure_size!(in: src, size: count * Self::MONITOR_SIZE);
+        let mut monitors = Vec::with_capacity(count);
+        for _ in 0..count {
+            monitors.push(MonitorInfo {
+                left: src.read_i32(),
+                top: src.read_i32(),
+                right: src.read_i32(),
+                bottom: src.read_i32(),
+                primary: read_bool(src)?,
+            });
+        }
+        let logon_error = if read_bool(src)? {
+            ensure_size!(in: src, size: 8);
+            Some(LogonErrorInfo {
+                notification_type: src.read_u32(),
+                notification_data: src.read_u32(),
+            })
+        } else {
+            None
+        };
+        Ok(Self {
+            remote_session_id,
+            logon_complete,
+            network,
+            monitors,
+            logon_error,
+        })
+    }
+}
+
+impl_pdu_pod!(SessionInfo);
+
 impl Encode for RailEventKind {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
@@ -2194,6 +2362,10 @@ impl Encode for Payload {
                 dst.write_u8(12);
                 launch.encode(dst)?;
             }
+            Self::SessionInfo(info) => {
+                dst.write_u8(18);
+                info.encode(dst)?;
+            }
             Self::ClipboardText(text) => {
                 dst.write_u8(13);
                 write_opt_string(dst, text.as_deref())?;
@@ -2245,6 +2417,7 @@ impl Encode for Payload {
                 Self::RailStatus(status) => status.size(),
                 Self::RailEvents(events) => events.size(),
                 Self::RailLaunch(launch) => launch.size(),
+                Self::SessionInfo(info) => info.size(),
                 Self::ClipboardText(text) => opt_string_size(text.as_deref()),
                 Self::ClipboardImage(png) => opt_bytes_size(png.as_deref()),
                 Self::ClipboardHtml(html) => opt_string_size(html.as_deref()),
@@ -2298,6 +2471,7 @@ impl Decode<'_> for Payload {
             10 => Ok(Self::RailStatus(RailStatusInfo::decode(src)?)),
             11 => Ok(Self::RailEvents(RailEventDump::decode(src)?)),
             12 => Ok(Self::RailLaunch(RailLaunchInfo::decode(src)?)),
+            18 => Ok(Self::SessionInfo(SessionInfo::decode(src)?)),
             13 => Ok(Self::ClipboardText(read_opt_string(src)?)),
             14 => {
                 let png = read_opt_bytes(src)?;
@@ -2411,6 +2585,7 @@ impl Encode for Request {
             Self::Logoff => dst.write_u8(41),
             Self::DaemonStop => dst.write_u8(38),
             Self::Status => dst.write_u8(2),
+            Self::SessionInfo => dst.write_u8(43),
             Self::QueryProps { filter } => {
                 dst.write_u8(3);
                 match filter {
@@ -2628,6 +2803,7 @@ impl Encode for Request {
                 | Self::Logoff
                 | Self::DaemonStop
                 | Self::Status
+                | Self::SessionInfo
                 | Self::Screenshot
                 | Self::NowCapabilities
                 | Self::NowList
@@ -2714,6 +2890,7 @@ impl Decode<'_> for Request {
             41 => Ok(Self::Logoff),
             38 => Ok(Self::DaemonStop),
             2 => Ok(Self::Status),
+            43 => Ok(Self::SessionInfo),
             3 => {
                 ensure_size!(in: src, size: 1);
                 let filter = match src.read_u8() {

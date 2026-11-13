@@ -476,6 +476,10 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             "daemon stop is not supported by ActiveX",
         ),
         Request::Status => status(shared),
+        Request::SessionInfo => Response::typed_error(
+            AgentErrorCategory::Unavailable,
+            "session info is unavailable through ActiveX",
+        ),
         Request::QueryProps { filter } => query_props(shared, filter.as_ref()),
         Request::QueryLogs { substring, last } => query_logs(shared, substring.as_deref(), last),
         Request::Screenshot => screenshot(shared),
@@ -954,6 +958,20 @@ mod tests {
     fn screenshot_without_a_frame_is_unavailable() {
         let rpc = rpc();
         assert!(!screenshot(&rpc.shared).is_ok());
+    }
+
+    // oracle: mutant an ActiveX host that answers a session info request, or answers it through another arm
+    #[tokio::test]
+    async fn session_info_is_explicitly_unavailable() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) =
+            handle_request(&rpc.shared, 0, Request::SessionInfo).await
+        else {
+            panic!("session info must be unavailable through ActiveX");
+        };
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert!(error.message.contains("session info"), "{}", error.message);
     }
 
     #[test]

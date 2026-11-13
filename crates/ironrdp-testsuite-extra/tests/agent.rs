@@ -15,7 +15,7 @@ use ironrdp_rpc::ipc::{
     NowDiagnostics, NowExecutionKind, NowExecutionRequest, NowStream, OperationEvent, OperationEventKind,
     OperationInfo, OperationState, Payload, PropValue, PropertyDump, PropertyEntry, RailEvent, RailEventDump,
     RailEventKind, RailExecuteFailureReason, RailExecuteRequest, RailLaunchInfo, RailStatusInfo, Request, Response,
-    StatusInfo, UntrustedCertificate,
+    SessionInfo, StatusInfo, UntrustedCertificate,
 };
 use ironrdp_rpc::wire;
 
@@ -33,6 +33,7 @@ where
     assert_eq!(value, &decoded, "decode round-trip mismatch");
 }
 
+// oracle: property round-trip
 #[test]
 fn request_variants_round_trip() {
     let mut props = PropertySet::new();
@@ -53,6 +54,7 @@ fn request_variants_round_trip() {
         },
         Request::Disconnect,
         Request::Status,
+        Request::SessionInfo,
         Request::QueryProps { filter: None },
         Request::QueryProps {
             filter: Some(KeyFilter::Substring("addr".to_owned())),
@@ -208,6 +210,7 @@ fn request_variants_round_trip() {
     }
 }
 
+// oracle: property round-trip
 #[test]
 fn response_variants_round_trip() {
     let responses = [
@@ -327,6 +330,8 @@ fn response_variants_round_trip() {
                 flags: 0,
             }],
         })),
+        Response::Ok(Payload::SessionInfo(SessionInfo::default())),
+        Response::Ok(Payload::SessionInfo(reported_session())),
         Response::Ok(Payload::RailEvents(RailEventDump {
             generation: 9,
             events: vec![
@@ -538,4 +543,73 @@ fn now_endpoint_is_per_session_and_uses_documented_deadlines() {
     assert_eq!(first.dvc_proxy_info().channel_name, DVC_CHANNEL_NAME);
     assert_eq!(INITIAL_ENDPOINT_TIMEOUT.as_secs(), 30);
     assert_eq!(RECONNECT_ENDPOINT_TIMEOUT.as_secs(), 10);
+}
+
+fn reported_session() -> SessionInfo {
+    SessionInfo {
+        remote_session_id: Some(2),
+        logon_complete: true,
+        network: Some(ironrdp_rpc::ipc::NetworkCharacteristicsInfo {
+            base_rtt_ms: Some(3),
+            bandwidth_kbps: None,
+            average_rtt_ms: 4,
+        }),
+        monitors: vec![
+            ironrdp_rpc::ipc::MonitorInfo {
+                left: 0,
+                top: 0,
+                right: 1919,
+                bottom: 1079,
+                primary: true,
+            },
+            ironrdp_rpc::ipc::MonitorInfo {
+                left: -1280,
+                top: 0,
+                right: -1,
+                bottom: 1023,
+                primary: false,
+            },
+        ],
+        logon_error: Some(ironrdp_rpc::ipc::LogonErrorInfo {
+            notification_type: 0xFFFF_FFFE,
+            notification_data: 3,
+        }),
+    }
+}
+
+// oracle: mutant a session info decoder that reads past a short reply, or accepts a monitor count the bytes do not hold
+#[test]
+fn session_info_rejects_every_truncation() {
+    let encoded = encode_vec(&reported_session()).expect("encode session info");
+    assert_eq!(
+        decode::<SessionInfo>(&encoded).expect("decode session info"),
+        reported_session()
+    );
+    for length in 0..encoded.len() {
+        assert!(
+            decode::<SessionInfo>(&encoded[..length]).is_err(),
+            "prefix of {length} bytes"
+        );
+    }
+}
+
+// oracle: mutant an optional u32 decoder that takes a presence flag other than 0 or 1 as absent or present
+#[test]
+fn session_info_rejects_an_invalid_optional_u32_flag() {
+    let info = SessionInfo {
+        network: Some(ironrdp_rpc::ipc::NetworkCharacteristicsInfo {
+            base_rtt_ms: None,
+            bandwidth_kbps: None,
+            average_rtt_ms: 0,
+        }),
+        ..SessionInfo::default()
+    };
+    let encoded = encode_vec(&info).expect("encode session info");
+    // The optional u32 flags: `remote_session_id` first, then the network's two after the logon and network flags.
+    for (field, offset) in [("remote_session_id", 0), ("base_rtt_ms", 3), ("bandwidth_kbps", 4)] {
+        assert_eq!(encoded[offset], 0, "{field} is absent in the clean encoding");
+        let mut corrupted = encoded.clone();
+        corrupted[offset] = 2;
+        assert!(decode::<SessionInfo>(&corrupted).is_err(), "{field} presence flag 2");
+    }
 }
