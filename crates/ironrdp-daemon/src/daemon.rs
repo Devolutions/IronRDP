@@ -4176,6 +4176,7 @@ mod tests {
     }
 
     // oracle: mutant an output consumer that drops a fact the server reported, or keeps one across a redirection
+    // oracle: mutant an output consumer that keeps the first report of a fact rather than the latest
     #[tokio::test]
     async fn session_info_reports_what_the_server_sent_until_a_redirection() {
         use ironrdp_client::rdp::RdpOutputEvent;
@@ -4257,6 +4258,55 @@ mod tests {
                 logon_error: Some(LogonErrorInfo {
                     notification_type: 0xC000_006D,
                     notification_data: 0x0000_0002, // LOGON_FAILED_OTHER
+                }),
+            }
+        );
+
+        // A fact the server reports again replaces the earlier report.
+        let rereported = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::NetworkCharacteristics {
+                    base_rtt_ms: None,
+                    bandwidth_kbps: Some(10_000),
+                    average_rtt_ms: 7,
+                },
+                RdpOutputEvent::MonitorLayout(vec![Monitor {
+                    left: 0,
+                    top: 0,
+                    right: 1279,
+                    bottom: 1023,
+                    flags: MonitorFlags::PRIMARY,
+                }]),
+                RdpOutputEvent::LogonError(LogonErrorsInfo {
+                    error_type: LogonErrorNotificationType::SessionTerminate,
+                    error_data: LogonErrorNotificationData::SessionId(2),
+                }),
+            ],
+        )
+        .await;
+        assert_eq!(
+            rereported,
+            SessionInfo {
+                remote_session_id: Some(2),
+                logon_complete: true,
+                network: Some(NetworkCharacteristicsInfo {
+                    base_rtt_ms: None,
+                    bandwidth_kbps: Some(10_000),
+                    average_rtt_ms: 7,
+                }),
+                monitors: vec![MonitorInfo {
+                    left: 0,
+                    top: 0,
+                    right: 1279,
+                    bottom: 1023,
+                    primary: true,
+                }],
+                // oracle: spec MS-RDPBCGR §2.2.10.1.1.4.1.1
+                logon_error: Some(LogonErrorInfo {
+                    notification_type: 0xFFFF_FFFD, // LOGON_MSG_SESSION_TERMINATE
+                    notification_data: 2,
                 }),
             }
         );

@@ -960,6 +960,20 @@ mod tests {
         assert!(!screenshot(&rpc.shared).is_ok());
     }
 
+    // oracle: mutant an ActiveX host that answers a session info request, or answers it through another arm
+    #[tokio::test]
+    async fn session_info_is_explicitly_unavailable() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) =
+            handle_request(&rpc.shared, 0, Request::SessionInfo).await
+        else {
+            panic!("session info must be unavailable through ActiveX");
+        };
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert!(error.message.contains("session info"), "{}", error.message);
+    }
+
     #[test]
     fn retained_rpc_frame_applies_partial_updates() {
         let rpc = rpc();

@@ -51,6 +51,7 @@ ironrdp-agent session info --format json
 
 It reports the remote session ID, whether the logon completed, the network characteristics the server measured, its monitor layout and the last logon error or warning.
 A fact the server has not sent is left out, or `null` in JSON, and all of them are cleared when the server redirects the connection.
+The logon reads as not completed until the server's logon notification arrives, since no server message reports a logon as incomplete.
 
 A disconnect leaves the user's session running on the host.
 To end it, log the user off instead:

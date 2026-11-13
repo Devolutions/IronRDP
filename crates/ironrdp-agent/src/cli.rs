@@ -1109,14 +1109,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 SessionCommand::Logoff(args) => logoff_session(&endpoint, args).await,
                 SessionCommand::Info(args) => {
                     let format = args.format;
-                    if let Err(error) = session_info(&endpoint, args).await {
-                        if let Some(error) = error.downcast_ref::<DaemonRequestError>() {
-                            print_request_error(&error.0, format)?;
-                            std::process::exit(1);
-                        }
-                        return Err(error);
-                    }
-                    Ok(())
+                    session_info(&endpoint, args)
+                        .await
+                        .map_err(|error| exit_on_daemon_error(error, format))
                 }
             };
         }
@@ -1159,16 +1154,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Now(args) => {
             let format = args.format;
-            let exit_code = match run_now(&endpoint, args).await {
-                Ok(exit_code) => exit_code,
-                Err(error) => {
-                    if let Some(error) = error.downcast_ref::<DaemonRequestError>() {
-                        print_request_error(&error.0, format)?;
-                        std::process::exit(1);
-                    }
-                    return Err(error);
-                }
-            };
+            let exit_code = run_now(&endpoint, args)
+                .await
+                .map_err(|error| exit_on_daemon_error(error, format))?;
             if let Some(exit_code) = exit_code {
                 if exit_code != 0 {
                     std::process::exit(remote_exit_status(exit_code));
@@ -1178,14 +1166,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Rail(args) => {
             let format = args.format;
-            if let Err(error) = run_rail(&endpoint, args).await {
-                if let Some(error) = error.downcast_ref::<DaemonRequestError>() {
-                    print_request_error(&error.0, format)?;
-                    std::process::exit(1);
-                }
-                return Err(error);
-            }
-            return Ok(());
+            return run_rail(&endpoint, args)
+                .await
+                .map_err(|error| exit_on_daemon_error(error, format));
         }
         Command::Connect(args) => {
             use std::io::IsTerminal as _;
@@ -1490,11 +1473,7 @@ async fn session_info(endpoint: &Endpoint, args: SessionInfoArgs) -> anyhow::Res
         Response::Err(error) => return Err(DaemonRequestError(error).into()),
     };
     match args.format {
-        OutputFormat::Human => {
-            for line in session_info_lines(&info) {
-                println!("{line}");
-            }
-        }
+        OutputFormat::Human => print_payload(Payload::SessionInfo(info)),
         OutputFormat::Json | OutputFormat::Ndjson => println!("{}", serde_json::to_string(&session_info_json(&info))?),
     }
     Ok(())
@@ -2439,6 +2418,18 @@ fn print_request_error(error: &AgentError, format: OutputFormat) -> anyhow::Resu
             Ok(())
         }
     }
+}
+
+/// Prints a daemon's error in `format` and exits with status 1.
+/// Any other error, or a failure to print, is returned to the caller.
+fn exit_on_daemon_error(error: anyhow::Error, format: OutputFormat) -> anyhow::Error {
+    if let Some(daemon_error) = error.downcast_ref::<DaemonRequestError>() {
+        if let Err(print_error) = print_request_error(&daemon_error.0, format) {
+            return print_error;
+        }
+        std::process::exit(1);
+    }
+    error
 }
 
 fn push_json_payload(

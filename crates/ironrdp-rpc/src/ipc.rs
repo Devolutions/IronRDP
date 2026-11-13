@@ -881,6 +881,7 @@ impl fmt::Debug for RailExecuteRequest {
 /// Facts the server reported about the session, returned by [`Request::SessionInfo`].
 ///
 /// Each one is absent until the server sends it, and all are cleared when the server redirects the connection.
+/// `logon_complete` reads `false` until the logon notification, as no server message reports the opposite.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionInfo {
     /// ID of the remote session, from the server's logon notification.

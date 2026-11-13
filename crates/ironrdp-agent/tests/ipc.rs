@@ -350,3 +350,58 @@ fn session_info_reports_no_active_session() {
         std::panic::resume_unwind(error);
     }
 }
+
+// oracle: mutant a `session info` command that drops the daemon's reply or prints it in the other format
+#[test]
+fn session_info_prints_what_the_daemon_reports() {
+    use ironrdp_rpc::ipc::{Payload, Request, Response, SessionInfo};
+    use ironrdp_rpc::transport::{self, Listener};
+
+    let endpoint = test_endpoint("session-info-facts");
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    let (human, json) = runtime.block_on(async {
+        let mut listener =
+            Listener::bind(&transport::endpoint_from_string(endpoint.clone())).expect("bind mock daemon");
+        let mut command = tokio::task::spawn_blocking(move || {
+            (
+                agent(&endpoint, &["session", "info"]),
+                agent(&endpoint, &["session", "info", "--format", "json"]),
+            )
+        });
+        // A stand-in daemon with session 2 and a completed logon answers every request until both commands exit.
+        // It serves on this task because the Windows listener isn't `Send`.
+        let serve = async {
+            loop {
+                tokio::select! {
+                    outputs = &mut command => break outputs.expect("run session info commands"),
+                    accepted = listener.accept() => {
+                        let mut stream = accepted.expect("accept session info request");
+                        let request: Request = transport::read_message(&mut stream).await.expect("read request");
+                        assert_eq!(request, Request::SessionInfo);
+                        let info = SessionInfo {
+                            remote_session_id: Some(2),
+                            logon_complete: true,
+                            ..SessionInfo::default()
+                        };
+                        transport::write_message(&mut stream, &Response::Ok(Payload::SessionInfo(info)))
+                            .await
+                            .expect("send session info");
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(30), serve)
+            .await
+            .expect("session info commands timeout")
+    });
+
+    assert!(human.status.success(), "{}", String::from_utf8_lossy(&human.stderr));
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.lines().any(|line| line == "remote session id: 2"), "{stdout}");
+    assert!(stdout.lines().any(|line| line == "logon complete: true"), "{stdout}");
+
+    assert!(json.status.success(), "{}", String::from_utf8_lossy(&json.stderr));
+    let document: serde_json::Value = serde_json::from_slice(&json.stdout).expect("session info JSON");
+    assert_eq!(document["remote_session_id"], 2);
+    assert_eq!(document["logon_complete"], true);
+}
