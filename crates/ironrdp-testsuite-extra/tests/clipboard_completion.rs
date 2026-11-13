@@ -11,7 +11,7 @@ use ironrdp_cliprdr::pdu::{
     FormatDataRequest, FormatDataResponse, LockDataId, OwnedFormatDataResponse,
 };
 use ironrdp_core::impl_as_any;
-use ironrdp_server::{RdpServer, ServerEvent, SharedWriter, dispatch_static_channel_events};
+use ironrdp_server::{ConnectionWriter, RdpServer, ServerEvent, dispatch_static_channel_events};
 use ironrdp_svc::StaticChannelSet;
 use ironrdp_tokio::TokioFramed;
 use tokio::io::AsyncReadExt as _;
@@ -118,7 +118,7 @@ async fn dispatch_and_capture(events: Vec<ServerEvent>, channels: StaticChannelS
         &mut server,
         channels,
         &mut events,
-        &mut SharedWriter::new(&mut transport),
+        &mut ConnectionWriter::new(&mut transport),
     )
     .await
     .unwrap();
@@ -146,7 +146,7 @@ async fn completion_waits_for_clipboard_output_to_drain() {
     let (event, mut processed) = completion_event(copy_message());
     let (stream, mut peer) = tokio::io::duplex(1);
     let mut transport = TokioFramed::new(stream);
-    let mut writer = SharedWriter::new(&mut transport);
+    let mut writer = ConnectionWriter::new(&mut transport);
     let mut server = server();
     let mut events = vec![event];
     let dispatch = dispatch_static_channel_events(&mut server, clipboard_channels(), &mut events, &mut writer);
@@ -184,7 +184,7 @@ async fn transport_failure_closes_completion() {
             &mut server,
             clipboard_channels(),
             &mut events,
-            &mut SharedWriter::new(&mut transport),
+            &mut ConnectionWriter::new(&mut transport),
         )
         .await
         .is_err()
@@ -239,7 +239,7 @@ async fn refused_request_completes_before_a_later_event() {
         &mut server,
         clipboard_channels(),
         &mut events,
-        &mut SharedWriter::new(&mut transport),
+        &mut ConnectionWriter::new(&mut transport),
     )
     .await
     .unwrap();
