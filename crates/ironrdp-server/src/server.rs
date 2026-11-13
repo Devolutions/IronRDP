@@ -191,6 +191,13 @@ const FINALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 /// close their connection within about 20 s of showing one and reconnect once
 /// the user answers. Preemption candidates keep their own shorter budget,
 /// [`CANDIDATE_NEGOTIATION_TIMEOUT`].
+///
+/// The budget also covers the server's own work in this phase, including a
+/// configured credential validator, so a validator that hangs is cut off here
+/// too.
+///
+/// `tests/server/negotiation_timeout.rs` in `ironrdp-testsuite-core` pins this
+/// value; change both together.
 const NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Monotonic milliseconds since first use, for feeding the auto-detect state machine.
@@ -2046,8 +2053,7 @@ impl PendingConnection {
     /// caller should abandon the connection quietly rather than treat it as a
     /// connection error (preserving the pre-existing `return Ok(())` behaviour).
     ///
-    /// Bounded by [`NEGOTIATION_TIMEOUT`]: every step here reads from a peer
-    /// that has not authenticated yet.
+    /// Bounded by [`NEGOTIATION_TIMEOUT`].
     async fn negotiate_and_authenticate<S>(
         self,
         stream: S,
@@ -2066,10 +2072,10 @@ impl PendingConnection {
             Err(_) => {
                 warn!(
                     timeout = ?NEGOTIATION_TIMEOUT,
-                    "Client did not finish negotiating and authenticating in time, dropping the connection"
+                    "Negotiation and authentication did not finish in time, dropping the connection"
                 );
                 Err(ServerError::io(
-                    "timed out waiting for the client to negotiate and authenticate",
+                    "timed out negotiating and authenticating the connection",
                     std::io::Error::from(std::io::ErrorKind::TimedOut),
                 ))
             }
