@@ -5722,6 +5722,7 @@ impl RdpServer {
         // Its result is then lost, and its socket can remain bound until UDP_ACCEPT_TIMEOUT.
         let state = loop {
             let current_udp_transport = udp_transport.as_ref();
+            let mut heartbeat_tick = false;
             let result = tokio::select! {
                 frame = reader.read_pdu() => {
                     let (action, bytes) = frame.map_err(|e| ServerError::io("read pdu", e))?;
@@ -5805,15 +5806,14 @@ impl RdpServer {
                         None => core::future::pending().await,
                     }
                 } => {
-                    let writes_now = writer.write_count();
+                    heartbeat_tick = true;
                     // Ordinary traffic already serves as the liveness signal for this interval.
-                    if writes_now == writes_at_last_tick {
-                        let data = encode_heartbeat(&config, channel_id, user_channel_id)?;
-                        writer.write_all(&data).await.map_err(|e| ServerError::io("send heartbeat", e))?;
-                    }
-                    // Exclude the heartbeat's own write from the next interval's traffic.
-                    writes_at_last_tick = writer.write_count();
-                    ConnectionIteration::state(RunState::Continue)
+                    let outputs = if writer.write_count() == writes_at_last_tick {
+                        vec![ConnectionOutput::ResponseFrame(encode_heartbeat(&config, channel_id, user_channel_id)?)]
+                    } else {
+                        Vec::new()
+                    };
+                    ConnectionIteration::outputs(outputs)
                 }
                 accepted = async {
                     match pending_udp_accept.as_mut() {
@@ -5884,6 +5884,13 @@ impl RdpServer {
                 .await?
             {
                 break Ok(RunState::Disconnect);
+            }
+            if heartbeat_tick {
+                // Exclude the heartbeat's own write from the next interval's traffic.
+                // UNTESTED: no test drives the heartbeat timer. Taking the count before the
+                // heartbeat is written would make the next tick skip as if there were traffic,
+                // halving the heartbeat rate. Keep this after the outputs are executed.
+                writes_at_last_tick = writer.write_count();
             }
             match result.state {
                 RunState::Continue => {}
