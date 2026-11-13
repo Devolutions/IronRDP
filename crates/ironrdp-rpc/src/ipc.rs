@@ -881,7 +881,9 @@ impl fmt::Debug for RailExecuteRequest {
 /// Facts the server reported about the session, returned by [`Request::SessionInfo`].
 ///
 /// Each one is absent until the server sends it, and all are cleared when the server redirects the connection.
-/// `logon_complete` reads `false` until the logon notification, as no server message reports the opposite.
+/// A cookie-based auto-reconnect keeps them, because it returns to the same session on the same server.
+/// `logon_complete` reads `false` until the logon notification arrives.
+/// A logon that is still continuing, or that has failed, is reported as `logon_error` instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionInfo {
     /// ID of the remote session, from the server's logon notification.
@@ -894,7 +896,7 @@ pub struct SessionInfo {
     pub network: Option<NetworkCharacteristicsInfo>,
     /// The monitor layout the server last reported, empty when it reported none.
     pub monitors: Vec<MonitorInfo>,
-    /// The logon error or warning the server last reported.
+    /// The logon error, warning or status the server last reported.
     pub logon_error: Option<LogonErrorInfo>,
 }
 
@@ -926,7 +928,7 @@ pub struct MonitorInfo {
     pub primary: bool,
 }
 
-/// A logon error or warning the server reported ([MS-RDPBCGR] 2.2.10.1.1.4.1.1 "Logon Errors Info
+/// A logon error, warning or status the server reported ([MS-RDPBCGR] 2.2.10.1.1.4.1.1 "Logon Errors Info
 /// (TS_LOGON_ERRORS_INFO)").
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/

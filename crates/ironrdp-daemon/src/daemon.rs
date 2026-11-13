@@ -4321,4 +4321,22 @@ mod tests {
         .await;
         assert_eq!(redirected, SessionInfo::default());
     }
+
+    // oracle: mutant an output consumer that clears the session facts on an automatic reconnect
+    #[tokio::test]
+    async fn session_info_survives_an_auto_reconnect() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+
+        let (daemon, _, live, _) = active_rail_session(false);
+        let reported = session_info_after(
+            &daemon,
+            &live,
+            vec![RdpOutputEvent::RemoteSessionId(2), RdpOutputEvent::LoginComplete],
+        )
+        .await;
+        assert_eq!(reported.remote_session_id, Some(2));
+
+        let reconnected = session_info_after(&daemon, &live, vec![RdpOutputEvent::AutoReconnected]).await;
+        assert_eq!(reconnected, reported);
+    }
 }

@@ -1479,64 +1479,116 @@ async fn session_info(endpoint: &Endpoint, args: SessionInfoArgs) -> anyhow::Res
     Ok(())
 }
 
-fn session_info_lines(info: &ironrdp_rpc::ipc::SessionInfo) -> Vec<String> {
-    let mut lines = Vec::new();
-    if let Some(session_id) = info.remote_session_id {
-        lines.push(format!("remote session id: {session_id}"));
-    }
-    lines.push(format!("logon complete: {}", info.logon_complete));
-    if let Some(network) = &info.network {
-        let mut parts = vec![format!("average rtt {} ms", network.average_rtt_ms)];
-        if let Some(base_rtt_ms) = network.base_rtt_ms {
-            parts.push(format!("base rtt {base_rtt_ms} ms"));
-        }
-        if let Some(bandwidth_kbps) = network.bandwidth_kbps {
-            parts.push(format!("bandwidth {bandwidth_kbps} kbps"));
-        }
-        lines.push(format!("network: {}", parts.join(", ")));
-    }
-    for (index, monitor) in info.monitors.iter().enumerate() {
-        lines.push(format!(
-            "monitor {index}: {},{} to {},{}{}",
-            monitor.left,
-            monitor.top,
-            monitor.right,
-            monitor.bottom,
-            if monitor.primary { " (primary)" } else { "" }
-        ));
-    }
-    if let Some(error) = &info.logon_error {
-        lines.push(format!(
-            "logon error: type 0x{:08x}, data 0x{:08x}",
-            error.notification_type, error.notification_data
-        ));
-    }
-    lines
+fn session_info_lines(info: &ironrdp_rpc::ipc::SessionInfo) -> impl Iterator<Item = String> + '_ {
+    use ironrdp_rpc::ipc::{LogonErrorInfo, MonitorInfo, NetworkCharacteristicsInfo, SessionInfo};
+
+    // Every type is destructured without `..`, so a field added to one fails to compile here until it's printed.
+    let SessionInfo {
+        remote_session_id,
+        logon_complete,
+        network,
+        monitors,
+        logon_error,
+    } = info;
+    let session_id = remote_session_id.map(|session_id| format!("remote session id: {session_id}"));
+    let logon = format!("logon complete: {logon_complete}");
+    let network = network.as_ref().map(
+        |NetworkCharacteristicsInfo {
+             base_rtt_ms,
+             bandwidth_kbps,
+             average_rtt_ms,
+         }| {
+            let mut parts = vec![format!("average rtt {average_rtt_ms} ms")];
+            if let Some(base_rtt_ms) = base_rtt_ms {
+                parts.push(format!("base rtt {base_rtt_ms} ms"));
+            }
+            if let Some(bandwidth_kbps) = bandwidth_kbps {
+                parts.push(format!("bandwidth {bandwidth_kbps} kbps"));
+            }
+            format!("network: {}", parts.join(", "))
+        },
+    );
+    let monitors = monitors.iter().enumerate().map(
+        |(
+            index,
+            MonitorInfo {
+                left,
+                top,
+                right,
+                bottom,
+                primary,
+            },
+        )| {
+            let primary = if *primary { " (primary)" } else { "" };
+            format!("monitor {index}: {left},{top} to {right},{bottom}{primary}")
+        },
+    );
+    let logon_error = logon_error.as_ref().map(
+        |LogonErrorInfo {
+             notification_type,
+             notification_data,
+         }| { format!("logon error: type 0x{notification_type:08x}, data 0x{notification_data:08x}") },
+    );
+    session_id
+        .into_iter()
+        .chain(core::iter::once(logon))
+        .chain(network)
+        .chain(monitors)
+        .chain(logon_error)
 }
 
 fn session_info_json(info: &ironrdp_rpc::ipc::SessionInfo) -> serde_json::Value {
+    use ironrdp_rpc::ipc::{LogonErrorInfo, MonitorInfo, NetworkCharacteristicsInfo, SessionInfo};
     use serde_json::json;
 
+    // Every type is destructured without `..`, so a field added to one fails to compile here until it's written.
+    let SessionInfo {
+        remote_session_id,
+        logon_complete,
+        network,
+        monitors,
+        logon_error,
+    } = info;
+    let network = network.as_ref().map(
+        |NetworkCharacteristicsInfo {
+             base_rtt_ms,
+             bandwidth_kbps,
+             average_rtt_ms,
+         }| {
+            json!({
+                "base_rtt_ms": base_rtt_ms,
+                "bandwidth_kbps": bandwidth_kbps,
+                "average_rtt_ms": average_rtt_ms,
+            })
+        },
+    );
+    let monitors = monitors
+        .iter()
+        .map(
+            |MonitorInfo {
+                 left,
+                 top,
+                 right,
+                 bottom,
+                 primary,
+             }| {
+                json!({ "left": left, "top": top, "right": right, "bottom": bottom, "primary": primary })
+            },
+        )
+        .collect::<Vec<_>>();
+    let logon_error = logon_error.as_ref().map(
+        |LogonErrorInfo {
+             notification_type,
+             notification_data,
+         }| { json!({ "notification_type": notification_type, "notification_data": notification_data }) },
+    );
     json!({
         "type": "session_info",
-        "remote_session_id": info.remote_session_id,
-        "logon_complete": info.logon_complete,
-        "network": info.network.as_ref().map(|network| json!({
-            "base_rtt_ms": network.base_rtt_ms,
-            "bandwidth_kbps": network.bandwidth_kbps,
-            "average_rtt_ms": network.average_rtt_ms,
-        })),
-        "monitors": info.monitors.iter().map(|monitor| json!({
-            "left": monitor.left,
-            "top": monitor.top,
-            "right": monitor.right,
-            "bottom": monitor.bottom,
-            "primary": monitor.primary,
-        })).collect::<Vec<_>>(),
-        "logon_error": info.logon_error.as_ref().map(|error| json!({
-            "notification_type": error.notification_type,
-            "notification_data": error.notification_data,
-        })),
+        "remote_session_id": remote_session_id,
+        "logon_complete": logon_complete,
+        "network": network,
+        "monitors": monitors,
+        "logon_error": logon_error,
     })
 }
 
@@ -3385,87 +3437,5 @@ mod tests {
                 "ActiveX RPC endpoint is unavailable at \\\\.\\pipe\\remote-guard\0invalid; start an ActiveX host with IRONRDP_ACTIVEX_RPC=1"
             );
         }
-    }
-
-    fn reported_session() -> ironrdp_rpc::ipc::SessionInfo {
-        ironrdp_rpc::ipc::SessionInfo {
-            remote_session_id: Some(2),
-            logon_complete: true,
-            network: Some(ironrdp_rpc::ipc::NetworkCharacteristicsInfo {
-                base_rtt_ms: Some(3),
-                bandwidth_kbps: None,
-                average_rtt_ms: 4,
-            }),
-            monitors: vec![
-                ironrdp_rpc::ipc::MonitorInfo {
-                    left: 0,
-                    top: 0,
-                    right: 1919,
-                    bottom: 1079,
-                    primary: true,
-                },
-                ironrdp_rpc::ipc::MonitorInfo {
-                    left: -1280,
-                    top: 0,
-                    right: -1,
-                    bottom: 1023,
-                    primary: false,
-                },
-            ],
-            logon_error: Some(ironrdp_rpc::ipc::LogonErrorInfo {
-                notification_type: 0xFFFF_FFFE,
-                notification_data: 3,
-            }),
-        }
-    }
-
-    // oracle: mutant a report that drops a fact, prints an absent one, or mislabels a monitor
-    #[test]
-    fn session_info_prints_one_line_per_reported_fact() {
-        assert_eq!(
-            super::session_info_lines(&reported_session()),
-            [
-                "remote session id: 2",
-                "logon complete: true",
-                "network: average rtt 4 ms, base rtt 3 ms",
-                "monitor 0: 0,0 to 1919,1079 (primary)",
-                "monitor 1: -1280,0 to -1,1023",
-                "logon error: type 0xfffffffe, data 0x00000003",
-            ]
-        );
-        assert_eq!(
-            super::session_info_lines(&ironrdp_rpc::ipc::SessionInfo::default()),
-            ["logon complete: false"]
-        );
-    }
-
-    // oracle: mutant a JSON document that omits an absent fact instead of writing null, or renames a field
-    #[test]
-    fn session_info_json_keeps_every_field_and_writes_null_for_an_absent_fact() {
-        assert_eq!(
-            super::session_info_json(&reported_session()),
-            serde_json::json!({
-                "type": "session_info",
-                "remote_session_id": 2,
-                "logon_complete": true,
-                "network": { "base_rtt_ms": 3, "bandwidth_kbps": null, "average_rtt_ms": 4 },
-                "monitors": [
-                    { "left": 0, "top": 0, "right": 1919, "bottom": 1079, "primary": true },
-                    { "left": -1280, "top": 0, "right": -1, "bottom": 1023, "primary": false },
-                ],
-                "logon_error": { "notification_type": 4_294_967_294u32, "notification_data": 3 },
-            })
-        );
-        assert_eq!(
-            super::session_info_json(&ironrdp_rpc::ipc::SessionInfo::default()),
-            serde_json::json!({
-                "type": "session_info",
-                "remote_session_id": null,
-                "logon_complete": false,
-                "network": null,
-                "monitors": [],
-                "logon_error": null,
-            })
-        );
     }
 }

@@ -33,6 +33,7 @@ where
     assert_eq!(value, &decoded, "decode round-trip mismatch");
 }
 
+// oracle: property round-trip
 #[test]
 fn request_variants_round_trip() {
     let mut props = PropertySet::new();
@@ -209,6 +210,7 @@ fn request_variants_round_trip() {
     }
 }
 
+// oracle: property round-trip
 #[test]
 fn response_variants_round_trip() {
     let responses = [
@@ -588,5 +590,26 @@ fn session_info_rejects_every_truncation() {
             decode::<SessionInfo>(&encoded[..length]).is_err(),
             "prefix of {length} bytes"
         );
+    }
+}
+
+// oracle: mutant an optional u32 decoder that takes a presence flag other than 0 or 1 as absent or present
+#[test]
+fn session_info_rejects_an_invalid_optional_u32_flag() {
+    let info = SessionInfo {
+        network: Some(ironrdp_rpc::ipc::NetworkCharacteristicsInfo {
+            base_rtt_ms: None,
+            bandwidth_kbps: None,
+            average_rtt_ms: 0,
+        }),
+        ..SessionInfo::default()
+    };
+    let encoded = encode_vec(&info).expect("encode session info");
+    // The optional u32 flags: `remote_session_id` first, then the network's two after the logon and network flags.
+    for (field, offset) in [("remote_session_id", 0), ("base_rtt_ms", 3), ("bandwidth_kbps", 4)] {
+        assert_eq!(encoded[offset], 0, "{field} is absent in the clean encoding");
+        let mut corrupted = encoded.clone();
+        corrupted[offset] = 2;
+        assert!(decode::<SessionInfo>(&corrupted).is_err(), "{field} presence flag 2");
     }
 }
