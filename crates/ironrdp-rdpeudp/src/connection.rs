@@ -2363,15 +2363,15 @@ impl RdpeudpConnection {
 
         // The peer's receive window bounds what may be outstanding (MS-RDPEUDP
         // 3.1.1.7, uReceiveWindowSize), whatever the local window size.
-        if let Some(send_window) = self.send_window.as_mut()
-            && send_window.max_entries() != usize::from(datagram.header.receive_window_size)
-        {
-            trace!(
-                from = send_window.max_entries(),
-                to = datagram.header.receive_window_size,
-                "Send window follows the peer's receive window"
-            );
-            send_window.set_peer_window(datagram.header.receive_window_size);
+        if let Some(send_window) = self.send_window.as_mut() {
+            let from = send_window.max_entries();
+            if send_window.set_peer_window(datagram.header.receive_window_size) {
+                trace!(
+                    from,
+                    to = send_window.max_entries(),
+                    "Send window follows the peer's receive window"
+                );
+            }
         }
 
         let delayed = datagram.header.flags.contains(V1Flags::ACKDELAYED);

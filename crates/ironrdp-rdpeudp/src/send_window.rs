@@ -132,9 +132,12 @@ impl SendWindow {
     /// outstanding than the receiver can hold. The value is taken from every
     /// datagram, so the window follows the peer. Packets already in flight
     /// beyond a smaller value are not recalled: new ones wait until the window
-    /// drains below it.
-    pub(crate) fn set_peer_window(&mut self, packets: u16) {
-        self.max_entries = usize::from(packets).clamp(1, MAX_PEER_WINDOW);
+    /// drains below it. The value is clamped to `1..=MAX_PEER_WINDOW`.
+    ///
+    /// Returns whether the window changed.
+    pub(crate) fn set_peer_window(&mut self, packets: u16) -> bool {
+        let max_entries = usize::from(packets).clamp(1, MAX_PEER_WINDOW);
+        core::mem::replace(&mut self.max_entries, max_entries) != max_entries
     }
 
     /// Number of entries currently in the window.
