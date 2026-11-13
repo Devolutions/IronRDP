@@ -2365,6 +2365,40 @@ impl ConnectionState {
         outputs
     }
 
+    /// Drives the clipboard channel's time-based cleanup.
+    ///
+    /// See [`CLIPRDR_DRIVE_TIMEOUTS_INTERVAL`]. A cleanup failure is logged and
+    /// swallowed: the sweep is best-effort maintenance, and failing it must not
+    /// disconnect an otherwise healthy session.
+    fn drive_cliprdr_timeouts(&mut self, user_channel_id: u16) -> ServerResult<Vec<ConnectionOutput>> {
+        let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
+            return Ok(Vec::new());
+        };
+
+        let msgs = match cliprdr.drive_timeouts() {
+            Ok(msgs) => Vec::from(msgs),
+            Err(error) => {
+                warn!(%error, "Clipboard timeout cleanup failed");
+                return Ok(Vec::new());
+            }
+        };
+
+        if msgs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Unreachable today: locks and pending requests only accumulate through
+        // a joined channel, so an unjoined one yields no messages above. Kept as
+        // a non-fatal skip because a best-effort sweep must never end the session.
+        let Some(channel_id) = self.get_channel_id_by_type::<CliprdrServer>() else {
+            warn!("Clipboard channel not joined, dropping timeout cleanup messages");
+            return Ok(Vec::new());
+        };
+        let data = server_encode_svc_messages(msgs, channel_id, user_channel_id).map_err(ServerError::encode)?;
+
+        Ok(vec![ConnectionOutput::ResponseFrame(data)])
+    }
+
     fn process_x224(&mut self, context: &PduContext, frame: &[u8]) -> ServerResult<Vec<ConnectionOutput>> {
         let message = decode::<X224<mcs::McsMessage<'_>>>(frame).map_err(ServerError::decode)?;
         match message.0 {
@@ -3389,49 +3423,6 @@ impl RdpServer {
 
         Self::send_auto_reconnect_cookie(cookie.clone(), writer, io_channel_id, user_channel_id).await?;
         self.commit_auto_reconnect_rotation(cookie);
-
-        Ok(())
-    }
-
-    /// Drives the clipboard channel's time-based cleanup.
-    ///
-    /// See [`CLIPRDR_DRIVE_TIMEOUTS_INTERVAL`]. A cleanup failure is logged and
-    /// swallowed: the sweep is best-effort maintenance, and failing it must not
-    /// disconnect an otherwise healthy session.
-    async fn drive_cliprdr_timeouts(
-        &mut self,
-        conn: &mut ConnectionState,
-        writer: &mut impl FramedWrite,
-        user_channel_id: u16,
-    ) -> ServerResult<()> {
-        let Some(cliprdr) = conn.get_svc_processor::<CliprdrServer>() else {
-            return Ok(());
-        };
-
-        let msgs = match cliprdr.drive_timeouts() {
-            Ok(msgs) => Vec::from(msgs),
-            Err(error) => {
-                warn!(%error, "Clipboard timeout cleanup failed");
-                return Ok(());
-            }
-        };
-
-        if msgs.is_empty() {
-            return Ok(());
-        }
-
-        // Unreachable today: locks and pending requests only accumulate through
-        // a joined channel, so an unjoined one yields no messages above. Kept as
-        // a non-fatal skip because a best-effort sweep must never end the session.
-        let Some(channel_id) = conn.get_channel_id_by_type::<CliprdrServer>() else {
-            warn!("Clipboard channel not joined, dropping timeout cleanup messages");
-            return Ok(());
-        };
-        let data = server_encode_svc_messages(msgs, channel_id, user_channel_id).map_err(ServerError::encode)?;
-        writer
-            .write_all(&data)
-            .await
-            .map_err(|e| ServerError::io("write_all", e))?;
 
         Ok(())
     }
@@ -5885,8 +5876,7 @@ impl RdpServer {
                     ConnectionIteration::outputs(conn.process_udp_payload(user_channel_id, current_udp_transport.is_some(), &message.data)?)
                 }
                 _ = cliprdr_interval.tick() => {
-                    self.drive_cliprdr_timeouts(conn, &mut writer, user_channel_id).await?;
-                    ConnectionIteration::state(RunState::Continue)
+                    ConnectionIteration::outputs(conn.drive_cliprdr_timeouts(user_channel_id)?)
                 }
             };
             if self
@@ -8496,7 +8486,6 @@ mod tests {
 #[cfg(test)]
 mod cliprdr_timeout_tests {
     use core::any::TypeId;
-    use core::net::Ipv4Addr;
     use core::sync::atomic::AtomicU64;
 
     use ironrdp_cliprdr::Cliprdr;
@@ -8508,7 +8497,6 @@ mod cliprdr_timeout_tests {
     };
     use ironrdp_core::{Encode as _, WriteCursor, impl_as_any};
 
-    use super::cliprdr_error_tests::CapturingWriter;
     use super::*;
 
     /// The clipboard channel dates locks from [`CliprdrBackend::now_ms`], so the
@@ -8580,19 +8568,12 @@ mod cliprdr_timeout_tests {
         }])
     }
 
-    fn server_with_cliprdr(clock: &Arc<AtomicU64>) -> (RdpServer, ConnectionState) {
+    fn connection_with_cliprdr(clock: &Arc<AtomicU64>) -> ConnectionState {
         let cliprdr: CliprdrServer = Cliprdr::with_lock_timeouts(
             Box::new(ClockBackend(Arc::clone(clock))),
             Duration::from_millis(100),
             Duration::from_secs(60 * 60),
         );
-
-        let server = RdpServer::builder()
-            .with_addr((Ipv4Addr::LOCALHOST, 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
 
         let mut conn = ConnectionState::default();
         conn.static_channels.insert(cliprdr);
@@ -8600,15 +8581,15 @@ mod cliprdr_timeout_tests {
         conn.static_channels
             .attach_channel_id(TypeId::of::<CliprdrServer>(), 1004);
 
-        (server, conn)
+        conn
     }
 
     /// An expired lock is released once its inactivity timeout elapses -- but
     /// only because something drove the sweep.
-    #[tokio::test]
-    async fn an_expired_lock_is_released_when_the_sweep_is_driven() {
+    #[test]
+    fn an_expired_lock_is_released_when_the_sweep_is_driven() {
         let clock = Arc::new(AtomicU64::new(0));
-        let (mut server, mut conn) = server_with_cliprdr(&clock);
+        let mut conn = connection_with_cliprdr(&clock);
 
         let cliprdr = conn.get_svc_processor::<CliprdrServer>().unwrap();
         cliprdr.process(&capabilities_buf()).unwrap();
@@ -8627,46 +8608,28 @@ mod cliprdr_timeout_tests {
             .process(&text_format_list_buf())
             .unwrap();
 
-        let mut writer = CapturingWriter::default();
-
-        server
-            .drive_cliprdr_timeouts(&mut conn, &mut writer, 1002)
-            .await
-            .unwrap();
         assert!(
-            writer.0.is_empty(),
+            conn.drive_cliprdr_timeouts(1002).unwrap().is_empty(),
             "a lock that expired 0ms ago is still inside its inactivity window"
         );
 
         clock.store(500, Ordering::SeqCst);
-        server
-            .drive_cliprdr_timeouts(&mut conn, &mut writer, 1002)
-            .await
-            .unwrap();
         assert!(
-            !writer.0.is_empty(),
+            matches!(
+                conn.drive_cliprdr_timeouts(1002).unwrap().as_slice(),
+                [ConnectionOutput::ResponseFrame(_)]
+            ),
             "past the inactivity timeout the sweep must emit an Unlock PDU; \
-             an empty write means the server leaks the lock for the rest of the session"
+             no output means the server leaks the lock for the rest of the session"
         );
     }
 
     /// A session without a clipboard channel must not be an error path: the
     /// timer fires for every connection.
-    #[tokio::test]
-    async fn a_session_without_a_clipboard_channel_sweeps_quietly() {
-        let mut server = RdpServer::builder()
-            .with_addr((Ipv4Addr::LOCALHOST, 0))
-            .with_no_security()
-            .with_no_input()
-            .with_no_display()
-            .build();
+    #[test]
+    fn a_session_without_a_clipboard_channel_sweeps_quietly() {
         let mut conn = ConnectionState::default();
 
-        let mut writer = CapturingWriter::default();
-        server
-            .drive_cliprdr_timeouts(&mut conn, &mut writer, 1002)
-            .await
-            .unwrap();
-        assert!(writer.0.is_empty());
+        assert!(conn.drive_cliprdr_timeouts(1002).unwrap().is_empty());
     }
 }
