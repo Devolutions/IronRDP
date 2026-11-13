@@ -350,25 +350,15 @@ async fn window_orders_wait_for_all_bitmap_fragments() {
         Some(remote_app()),
         Some(65536),
         |mut client, events, display, _| async move {
-            display
-                .send(DisplayUpdate::Bitmap(BitmapUpdate {
-                    x: 0,
-                    y: 0,
-                    width: 128.try_into().unwrap(),
-                    height: 64.try_into().unwrap(),
-                    format: PixelFormat::ARgb32,
-                    data: vec![0x55; 128 * 64 * 4].into(),
-                    stride: 512.try_into().unwrap(),
-                }))
-                .unwrap();
+            display.send(DisplayUpdate::Bitmap(fragmented_bitmap())).unwrap();
             let (code, first, _) = read_update(&mut client).await;
-            assert_eq!(code, UpdateCode::SurfaceCommands);
+            assert_eq!(code, UpdateCode::Bitmap);
             assert_eq!(first, Fragmentation::First);
             let (request, completion) = WindowingOrders::new(vec![deleted(7)]);
             events.send(ServerEvent::WindowingOrders(request)).unwrap();
             loop {
                 let (code, fragment, _) = read_update(&mut client).await;
-                assert_eq!(code, UpdateCode::SurfaceCommands);
+                assert_eq!(code, UpdateCode::Bitmap);
                 if fragment == Fragmentation::Last {
                     break;
                 }
@@ -388,19 +378,9 @@ async fn dropping_completion_while_waiting_for_bitmap_skips_orders() {
         Some(remote_app()),
         Some(65536),
         |mut client, events, display, _| async move {
-            display
-                .send(DisplayUpdate::Bitmap(BitmapUpdate {
-                    x: 0,
-                    y: 0,
-                    width: 128.try_into().unwrap(),
-                    height: 64.try_into().unwrap(),
-                    format: PixelFormat::ARgb32,
-                    data: vec![0x55; 128 * 64 * 4].into(),
-                    stride: 512.try_into().unwrap(),
-                }))
-                .unwrap();
+            display.send(DisplayUpdate::Bitmap(fragmented_bitmap())).unwrap();
             let (code, first, _) = read_update(&mut client).await;
-            assert_eq!(code, UpdateCode::SurfaceCommands);
+            assert_eq!(code, UpdateCode::Bitmap);
             assert_eq!(first, Fragmentation::First);
             let (request, completion) = WindowingOrders::new(vec![deleted(7)]);
             events.send(ServerEvent::WindowingOrders(request)).unwrap();
@@ -408,7 +388,7 @@ async fn dropping_completion_while_waiting_for_bitmap_skips_orders() {
             drop(completion);
             loop {
                 let (code, fragment, _) = read_update(&mut client).await;
-                assert_eq!(code, UpdateCode::SurfaceCommands);
+                assert_eq!(code, UpdateCode::Bitmap);
                 if fragment == Fragmentation::Last {
                     break;
                 }
@@ -532,6 +512,30 @@ async fn read_deactivate_all(client: &mut TokioFramed<DuplexStream>) {
         header.share_control_pdu,
         ShareControlPdu::ServerDeactivateAll(_)
     ));
+}
+
+/// A 128x64 update that does not compress, so its bitmap update spans several fast-path fragments.
+///
+/// The client of these tests shares no codec with the server, so it gets bitmap updates.
+fn fragmented_bitmap() -> BitmapUpdate {
+    BitmapUpdate {
+        x: 0,
+        y: 0,
+        width: 128.try_into().unwrap(),
+        height: 64.try_into().unwrap(),
+        format: PixelFormat::ARgb32,
+        data: core::iter::successors(Some(0x2545_f491u32), |&x| {
+            // xorshift32: no run or row-to-row delta for the planar encoder to compress.
+            let x = x ^ (x << 13);
+            let x = x ^ (x >> 17);
+            Some(x ^ (x << 5))
+        })
+        .map(|x| x.to_le_bytes()[0])
+        .take(128 * 64 * 4)
+        .collect::<Vec<u8>>()
+        .into(),
+        stride: 512.try_into().unwrap(),
+    }
 }
 
 fn deleted(window_id: u32) -> WindowingOrder {
