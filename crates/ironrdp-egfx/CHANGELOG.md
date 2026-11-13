@@ -5,6 +5,83 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [[0.5.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-egfx-v0.5.0...ironrdp-egfx-v0.5.1)] - 2026-11-13
+
+### <!-- 4 -->Bug Fixes
+
+- Drop AVC444 updates whose views cannot combine ([#2286](https://github.com/Devolutions/IronRDP/issues/2286)) ([f01f9b5aab](https://github.com/Devolutions/IronRDP/commit/f01f9b5aabb4c102a7e45f7f86e5adaa200aff28)) 
+
+  Follow-up to #2199, carrying over two guards from #2112.
+  
+  A chroma-only AVC444 update for a surface with no picture yet created a
+  black picture and painted the chroma over it. An update whose main and
+  auxiliary views differ in size combined two pictures into one, painting
+  the wrong chroma over the main view.
+  
+  Both now return an error from `decode_avc444`, so they count as dropped
+  updates with the usual rate-limited warning, and paint nothing. A
+  mismatched update is dropped whole, main view included, rather than
+  degraded to its main view.
+  
+  Frames are only cleared where the surface itself goes away (capability
+  reset, `ResetGraphics`, create and delete surface), so a legitimate
+  chroma-only update never arrives without a picture.
+
+- Wait for new caps on a reopened channel ([#2296](https://github.com/Devolutions/IronRDP/issues/2296)) ([06cdca22f3](https://github.com/Devolutions/IronRDP/commit/06cdca22f36d0438c94d6b5b9fb5a3a327f554c4)) 
+
+  A display control channel the server closes and reopens could send a
+  monitor layout before the server's new capabilities arrived.
+  
+  Keep pre-registered channel processors available for reopening, but
+  clear DisplayControl capabilities on close so layouts wait for fresh
+  server capabilities. Custom listeners and factories retain control over
+  subsequent opens. Release EGFX graphics state when the channel closes,
+  after saving its persistent bitmap cache, and wait for pipe proxy
+  workers and pending filesystem operations to finish before starting a
+  replacement.
+  
+  ---------
+
+- Read the DWT variant from REGION flags ([#2085](https://github.com/Devolutions/IronRDP/issues/2085)) ([43d75cd48e](https://github.com/Devolutions/IronRDP/commit/43d75cd48e8f2dee6ffa6388346dc53790fc7bb8)) 
+
+  The Progressive decoder chose the DWT variant from bit 0 of the
+  RFX_PROGRESSIVE_CONTEXT flags. MS-RDPEGFX 2.2.4.2.1.4 defines that bit
+  as RFX_SUBBAND_DIFFING; the variant is bit 0 of each
+  RFX_PROGRESSIVE_REGION's flags (RFX_DWT_REDUCE_EXTRAPOLATE,
+  2.2.4.2.1.5). Tiles decoded correctly only while a server set both bits
+  to the same value.
+  
+  Each REGION now selects its own variant. The decoder kept the CONTEXT
+  value only for this choice, so its per-surface fallback and the
+  MissingBlock("CONTEXT") error are removed; CONTEXT is optional per
+  2.2.4.2.1.4. A stream without CONTEXT for an unseen codec context now
+  decodes instead of failing.
+
+- Give each surface its own H.264 decoder ([#2365](https://github.com/Devolutions/IronRDP/issues/2365)) ([e427425707](https://github.com/Devolutions/IronRDP/commit/e427425707d84c6ce83ae362a84ab65da3881eeb)) 
+
+  GraphicsPipelineClient feeds the AVC420 and AVC444 updates of every
+  surface to one H.264 decoder. A server that encodes each surface as its
+  own stream interleaves independent streams into it, and decoding fails,
+  because each stream replaces the other's parameter sets and reference
+  pictures. Two interleaved OpenH264 streams fail with native error 2 and
+  then error 18.
+  
+  This adds GraphicsPipelineClient::with_h264_decoder_factory. The decoder
+  passed to new serves the first surface that sends H.264, so a session
+  with one such surface creates nothing more. Each other surface gets a
+  decoder from the factory when its first update arrives, and that decoder
+  is freed when the surface is deleted or created again. ResetGraphics and
+  a protocol reset free the ones from the factory. An update is dropped if
+  the factory has no decoder, if the decoder can't start, or past 32
+  decoders, which bounds what a server can make the client allocate by
+  creating surfaces. A surface that can't get a decoder doesn't ask again
+  until its stream ends.
+  
+  ironrdp-client passes its H264DecoderFactory, so it gets this by
+  default. Other callers keep one shared decoder until they set a factory.
+
+
+
 ## [[0.5.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-egfx-v0.4.0...ironrdp-egfx-v0.5.0)] - 2026-10-27
 
 ### <!-- 1 -->Features

@@ -6,6 +6,80 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.11.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.11.0...ironrdp-pdu-v0.11.1)] - 2026-11-13
+
+### <!-- 0 -->Security
+
+- Withhold licensing secrets from Debug output ([#2344](https://github.com/Devolutions/IronRDP/issues/2344)) ([5c4dcfa7b1](https://github.com/Devolutions/IronRDP/commit/5c4dcfa7b1160a64ec0578f71c947b3bce5982ef)) 
+
+  The licensing PDUs derived Debug, so a log at the debug or trace level
+  printed the premaster secret, the MAC salt and license keys, the client
+  and server randoms, the encrypted HWID, the platform challenge and its
+  response, and the license itself, as the server sent it, byte by byte;
+  also the user and machine names the client announces. Such a log can't
+  be handed to anyone.
+  
+  Those fields now print as their length only (`<48 bytes withheld>`), in
+  Debug implementations of their own. The server certificate's material
+  (chain, modulus, signature) is public but prints the same way, for a
+  different reason: a derived Debug writes its kilobytes as a decimal list
+  that buries the rest of the exchange, while the lengths tell the key
+  size and the chain's shape. What tells an exchange apart stays: the
+  security and license headers (message type, flags, version, size), the
+  product and scope, the public exponent, error codes and state
+  transitions. The connector also logs the Server License Request, the
+  client's reply to it, and the error message that ends an exchange
+  without one at the debug level, as it already did the later PDUs, so
+  that a debug log shows the whole exchange.
+
+### <!-- 4 -->Bug Fixes
+
+- Read the DWT variant from REGION flags ([#2085](https://github.com/Devolutions/IronRDP/issues/2085)) ([43d75cd48e](https://github.com/Devolutions/IronRDP/commit/43d75cd48e8f2dee6ffa6388346dc53790fc7bb8)) 
+
+  The Progressive decoder chose the DWT variant from bit 0 of the
+  RFX_PROGRESSIVE_CONTEXT flags. MS-RDPEGFX 2.2.4.2.1.4 defines that bit
+  as RFX_SUBBAND_DIFFING; the variant is bit 0 of each
+  RFX_PROGRESSIVE_REGION's flags (RFX_DWT_REDUCE_EXTRAPOLATE,
+  2.2.4.2.1.5). Tiles decoded correctly only while a server set both bits
+  to the same value.
+  
+  Each REGION now selects its own variant. The decoder kept the CONTEXT
+  value only for this choice, so its per-surface fallback and the
+  MissingBlock("CONTEXT") error are removed; CONTEXT is optional per
+  2.2.4.2.1.4. A stream without CONTEXT for an unseen codec context now
+  decodes instead of failing.
+
+- Size logon info names in UTF-16 bytes ([#2377](https://github.com/Devolutions/IronRDP/issues/2377)) ([26f7e4c0c8](https://github.com/Devolutions/IronRDP/commit/26f7e4c0c8ac7929048062f899e6ab62f1dbc82c)) 
+
+  `TS_LOGON_INFO` and `TS_LOGON_INFO_VERSION_2` declare each name's size
+  in bytes of UTF-16, including the null terminator (MS-RDPBCGR
+  2.2.10.1.1.1 and 2.2.10.1.1.2). The encoder counted UTF-8 bytes, so a
+  non-ASCII name got the wrong size. In Version 2 those sizes are how a
+  reader finds each name, so a wrong domain size also misplaced the user
+  name.
+  
+  Version 1 also cut a long name short while declaring its full size,
+  which this crate's decoder rejects. The encoder now returns an error for
+  a name that doesn't fit. Version 2 gets the same limits although the
+  spec sets none, because this crate's decoder and FreeRDP's both apply
+  them.
+  
+  Nothing in the workspace sends these structures yet.
+
+- Write EncryptedHWID as BB_DATA_BLOB ([#2386](https://github.com/Devolutions/IronRDP/issues/2386)) ([0f4f0026d2](https://github.com/Devolutions/IronRDP/commit/0f4f0026d285b9c22e5115ffb1b836d30bf9149c)) 
+
+  Client License Information carries its encrypted hardware ID in a
+  BB_DATA_BLOB: That's the type MS-RDPBCGR 2.2.1.12.1.2 lists for this
+  message, and the one in the MS-RDPELE 4.3 sample. The encoder wrote
+  BB_ENCRYPTED_DATA_BLOB, so ClientLicenseInfo::decode, which expects the
+  right type, rejected the encoder's own output.
+  
+  A client sending a stored license now writes the type the sample shows.
+  FreeRDP's server expects BB_ENCRYPTED_DATA_BLOB there, but on a mismatch
+  it only logs an error and continues.
+
+
+
 ## [[0.11.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-pdu-v0.10.0...ironrdp-pdu-v0.11.0)] - 2026-10-27
 
 ### <!-- 0 -->Security
