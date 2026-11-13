@@ -359,33 +359,26 @@ fn status_prints_the_frame_number() {
     let output = runtime.block_on(async {
         let mut listener =
             Listener::bind(&transport::endpoint_from_string(endpoint.clone())).expect("bind mock daemon");
-        let mut command = tokio::task::spawn_blocking(move || agent(&endpoint, &["status"]));
-        // A stand-in daemon whose session is at frame 7 answers every status request until the command exits.
-        // It serves on this task because the Windows listener isn't `Send`.
+        let command = tokio::task::spawn_blocking(move || agent(&endpoint, &["status"]));
+        // A stand-in daemon whose session is at frame 7 answers the command's one status request.
         let serve = async {
-            loop {
-                tokio::select! {
-                    output = &mut command => break output.expect("run status command"),
-                    accepted = listener.accept() => {
-                        let mut stream = accepted.expect("accept status request");
-                        let request: Request = transport::read_message(&mut stream).await.expect("read request");
-                        assert_eq!(request, Request::Status);
-                        let status = StatusInfo {
-                            state: ConnState::Connected,
-                            destination: None,
-                            width: None,
-                            height: None,
-                            message: None,
-                            credentials_loaded: false,
-                            untrusted_certificate: None,
-                            frame_number: Some(7),
-                        };
-                        transport::write_message(&mut stream, &Response::Ok(Payload::Status(status)))
-                            .await
-                            .expect("send status");
-                    }
-                }
-            }
+            let mut stream = listener.accept().await.expect("accept status request");
+            let request: Request = transport::read_message(&mut stream).await.expect("read request");
+            assert_eq!(request, Request::Status);
+            let status = StatusInfo {
+                state: ConnState::Connected,
+                destination: None,
+                width: None,
+                height: None,
+                message: None,
+                credentials_loaded: false,
+                untrusted_certificate: None,
+                frame_number: Some(7),
+            };
+            transport::write_message(&mut stream, &Response::Ok(Payload::Status(status)))
+                .await
+                .expect("send status");
+            command.await.expect("run status command")
         };
         tokio::time::timeout(Duration::from_secs(30), serve)
             .await
