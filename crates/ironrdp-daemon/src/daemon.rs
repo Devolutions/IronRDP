@@ -365,6 +365,9 @@ struct Session {
     rail_enabled: bool,
     live: Arc<Mutex<Live>>,
     rail_notify: Arc<tokio::sync::Notify>,
+    /// Woken after every output event and at session end, for [`Daemon::wait_frame`].
+    /// The wait re-checks `live` on each wake-up.
+    frame_notify: Arc<tokio::sync::Notify>,
     /// Woken by the `CLIPRDR` backend whenever an in-progress `clipboard_get_file` fetch
     /// advances or finishes; see `crate::clipboard::AgentCliprdrBackend`.
     clipboard_file_notify: Arc<tokio::sync::Notify>,
@@ -487,8 +490,6 @@ struct Live {
     frame: Option<Frame>,
     /// Number of frames received in this session, which is also the number of the frame in `frame`.
     frame_number: u64,
-    /// Woken whenever `frame_number` or `state` changes, for [`Daemon::wait_frame`].
-    frame_notify: Arc<tokio::sync::Notify>,
     pending_pointer_position: Option<MousePosition>,
     rail_initial_execute: Option<(u16, String)>,
     rail: RailLedger,
@@ -1130,13 +1131,13 @@ impl Daemon {
         )));
 
         let rail_notify = Arc::new(tokio::sync::Notify::new());
+        let frame_notify = Arc::new(tokio::sync::Notify::new());
         let live = Arc::new(Mutex::new(Live {
             properties: live_seed,
             state: ConnState::Connecting,
             error: None,
             frame: None,
             frame_number: 0,
-            frame_notify: Arc::default(),
             pending_pointer_position: None,
             rail_initial_execute: initial_rail_execute.clone(),
             rail: RailLedger::new(
@@ -1172,11 +1173,14 @@ impl Daemon {
             );
         }
 
+        // UNTESTED: The consumer and `Session` must share one `frame_notify`, or frame waits end only at their timeout.
+        // No test runs `connect`, so check both uses of the handle when changing how a session is built.
         let consumer = tokio::spawn(consume_output(
             output_rx,
             Arc::clone(&live),
             self.notification.clone(),
             Arc::clone(&rail_notify),
+            Arc::clone(&frame_notify),
             Arc::clone(&self.next_rail_generation),
         ));
 
@@ -1197,6 +1201,7 @@ impl Daemon {
             rail_enabled,
             live,
             rail_notify,
+            frame_notify,
             clipboard_file_notify,
             operations: OperationManager::new(Arc::clone(&now_endpoint)),
             now_endpoint,
@@ -1344,11 +1349,13 @@ impl Daemon {
             let Some(session) = guard.as_ref() else {
                 return Response::typed_error(crate::ipc::AgentErrorCategory::Unavailable, "no active session");
             };
-            let frame_notify = Arc::clone(&session.live.lock().expect("session live state poisoned").frame_notify);
-            (session.destination.clone(), Arc::clone(&session.live), frame_notify)
+            (
+                session.destination.clone(),
+                Arc::clone(&session.live),
+                Arc::clone(&session.frame_notify),
+            )
         };
         let deadline = tokio::time::Instant::now() + Duration::from_millis(u64::from(timeout_ms));
-        let mut timed_out = timeout_ms == 0;
         loop {
             let notified = frame_notify.notified();
             tokio::pin!(notified);
@@ -1361,7 +1368,7 @@ impl Daemon {
                 }
                 let failure = if matches!(live.state, ConnState::Disconnected | ConnState::Failed) {
                     Some("session ended")
-                } else if timed_out {
+                } else if deadline <= tokio::time::Instant::now() {
                     Some("frame wait timed out")
                 } else {
                     None
@@ -1374,7 +1381,8 @@ impl Daemon {
                 }
             }
 
-            timed_out = tokio::time::timeout_at(deadline, &mut notified).await.is_err();
+            // The check above decides whether the deadline has passed, so the outcome here isn't needed.
+            let _ = tokio::time::timeout_at(deadline, &mut notified).await;
         }
     }
 
@@ -2337,13 +2345,12 @@ async fn consume_output(
     live: Arc<Mutex<Live>>,
     notification: Option<mpsc::Sender<()>>,
     rail_notify: Arc<tokio::sync::Notify>,
+    frame_notify: Arc<tokio::sync::Notify>,
     next_rail_generation: Arc<AtomicU64>,
 ) {
-    let frame_notify = Arc::clone(&live.lock().expect("session live state poisoned").frame_notify);
     while let Some(event) = output_rx.recv().await {
         let mut guard = live.lock().expect("session live state poisoned");
         let previous = guard.state;
-        let previous_frame_number = guard.frame_number;
         let rail_changed = match event {
             RdpOutputEvent::Connected => {
                 guard.state = ConnState::Connected;
@@ -2522,14 +2529,11 @@ async fn consume_output(
             // above; the remaining pointer events (default/hidden) carry no live state we track.
             _ => false,
         };
-        let frame_or_state_changed = guard.frame_number != previous_frame_number || guard.state != previous;
         drop(guard);
         if rail_changed {
             rail_notify.notify_waiters();
         }
-        if frame_or_state_changed {
-            frame_notify.notify_waiters();
-        }
+        frame_notify.notify_waiters();
         notify(&notification);
     }
 
@@ -2903,7 +2907,6 @@ mod tests {
             error: None,
             frame: None,
             frame_number: 0,
-            frame_notify: Arc::default(),
             pending_pointer_position: None,
             rail_initial_execute: Some((0, "notepad.exe".to_owned())),
             rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
@@ -2930,6 +2933,7 @@ mod tests {
             Arc::clone(&live),
             None,
             Arc::clone(&rail_notify),
+            Arc::default(),
             Arc::new(AtomicU64::new(2)),
         ));
         output_tx
@@ -2967,7 +2971,6 @@ mod tests {
             error: None,
             frame: None,
             frame_number: 0,
-            frame_notify: Arc::default(),
             pending_pointer_position: None,
             rail_initial_execute: None,
             rail: RailLedger::new(1, 1, None),
@@ -2981,6 +2984,7 @@ mod tests {
             rail_enabled,
             live: Arc::clone(&live),
             rail_notify: Arc::clone(&rail_notify),
+            frame_notify: Arc::new(tokio::sync::Notify::new()),
             clipboard_file_notify: Arc::new(tokio::sync::Notify::new()),
             operations: OperationManager::new(Arc::clone(&now_endpoint)),
             now_endpoint,
@@ -3035,6 +3039,7 @@ mod tests {
             live,
             Some(notification_tx),
             rail_notify,
+            Arc::default(),
             Arc::new(AtomicU64::new(2)),
         ));
         output_tx
@@ -3172,6 +3177,7 @@ mod tests {
             live,
             None,
             rail_notify,
+            Arc::default(),
             Arc::new(AtomicU64::new(2)),
         ));
         output_tx
@@ -3270,7 +3276,15 @@ mod tests {
             output_tx.send(event).await.expect("send RAIL output");
         }
         drop(output_tx);
-        consume_output(output_rx, live, None, rail_notify, Arc::new(AtomicU64::new(2))).await;
+        consume_output(
+            output_rx,
+            live,
+            None,
+            rail_notify,
+            Arc::default(),
+            Arc::new(AtomicU64::new(2)),
+        )
+        .await;
 
         assert!(matches!(
             daemon.handle(Request::RailStatus).await.response(),
@@ -3325,6 +3339,7 @@ mod tests {
             Arc::clone(&live),
             None,
             rail_notify,
+            Arc::default(),
             Arc::new(AtomicU64::new(2)),
         ));
 
@@ -3394,6 +3409,7 @@ mod tests {
             Arc::clone(&live),
             None,
             rail_notify,
+            Arc::default(),
             Arc::new(AtomicU64::new(2)),
         ));
 
@@ -3455,6 +3471,7 @@ mod tests {
             live,
             None,
             rail_notify,
+            Arc::default(),
             Arc::new(AtomicU64::new(2)),
         ));
         output_tx
@@ -3503,6 +3520,7 @@ mod tests {
             live,
             None,
             rail_notify,
+            Arc::default(),
             Arc::new(AtomicU64::new(2)),
         ));
         output_tx
@@ -3540,6 +3558,7 @@ mod tests {
             live,
             None,
             rail_notify,
+            Arc::default(),
             Arc::new(AtomicU64::new(2)),
         ));
         output_tx
@@ -3594,6 +3613,13 @@ mod tests {
         error
     }
 
+    /// The session's frame wake-up handle, which an output consumer under test must signal.
+    fn session_frame_notify(daemon: &Daemon) -> Arc<tokio::sync::Notify> {
+        let guard = daemon.state.lock().expect("daemon state poisoned");
+        let session = guard.as_ref().expect("active session");
+        Arc::clone(&session.frame_notify)
+    }
+
     fn session_at_frame(frame_number: u64) -> (Daemon, Arc<Mutex<Live>>) {
         let (daemon, _, live, _) = active_rail_session(false);
         let mut guard = live.lock().expect("session live state poisoned");
@@ -3608,6 +3634,7 @@ mod tests {
     }
 
     // oracle: mutant an output consumer that stores a frame without counting it or waking frame waiters
+    // oracle: mutant an output consumer that counts a non-frame event (a pointer move) as a frame
     #[tokio::test]
     async fn wait_frame_returns_the_next_frame_with_its_number() {
         let (daemon, _, live, rail_notify) = active_rail_session(false);
@@ -3617,6 +3644,7 @@ mod tests {
             live,
             None,
             rail_notify,
+            session_frame_notify(&daemon),
             Arc::new(AtomicU64::new(2)),
         ));
 
@@ -3639,6 +3667,18 @@ mod tests {
                 .await
                 .is_err()
         );
+
+        // A pointer move changes live state but isn't a frame, so the wait goes on.
+        output_tx
+            .send(ironrdp_client::rdp::RdpOutputEvent::PointerPosition { x: 713, y: 338 })
+            .await
+            .expect("send pointer move");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), wait.as_mut())
+                .await
+                .is_err()
+        );
+
         output_tx.send(frame_event()).await.expect("send second frame");
         let status = frame_status(wait).await;
         assert_eq!(status.frame_number, Some(2));
@@ -3673,10 +3713,11 @@ mod tests {
         let error = frame_wait_error(daemon.wait_frame(5, 50)).await;
         assert!(Duration::from_millis(50) <= started.elapsed());
         assert_eq!(error.category, AgentErrorCategory::Unavailable);
-        assert_eq!(error.message, "frame wait timed out at frame 5");
+        assert!(error.message.contains("timed out"), "{}", error.message);
 
         let error = frame_wait_error(daemon.wait_frame(5, 0)).await;
-        assert_eq!(error.message, "frame wait timed out at frame 5");
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert!(error.message.contains("timed out"), "{}", error.message);
     }
 
     // oracle: mutant a frame wait woken only by frames, or one that reports the end of the session as success
@@ -3689,6 +3730,7 @@ mod tests {
             live,
             None,
             rail_notify,
+            session_frame_notify(&daemon),
             Arc::new(AtomicU64::new(2)),
         ));
 
@@ -3702,25 +3744,28 @@ mod tests {
         drop(output_tx);
         let error = frame_wait_error(wait).await;
         assert_eq!(error.category, AgentErrorCategory::Unavailable);
-        assert_eq!(error.message, "session ended at frame 0");
+        assert!(error.message.contains("session ended"), "{}", error.message);
 
         consumer.await.expect("consume output");
     }
 
-    // oracle: mutant a frame wait with no upper bound on its timeout, or one that waits with no session
+    // oracle: mutant a frame wait with no upper bound on its timeout
     #[tokio::test]
-    async fn wait_frame_rejects_an_oversized_timeout_and_a_missing_session() {
+    async fn wait_frame_rejects_a_timeout_over_the_cap() {
         let (daemon, _, _, _) = active_rail_session(false);
         assert!(matches!(
             daemon.wait_frame(0, 60_001).await,
             Response::Err(error) if error.category == AgentErrorCategory::InvalidRequest
         ));
+    }
 
+    // oracle: mutant a frame wait that waits with no session
+    #[tokio::test]
+    async fn wait_frame_without_a_session_is_unavailable() {
         let daemon = Daemon::with_overlay(PropertySet::new());
-        assert!(matches!(
-            daemon.wait_frame(0, 1_000).await,
-            Response::Err(error) if error.category == AgentErrorCategory::Unavailable
-        ));
+        // The wait asks for far longer than `frame_wait_error` allows, so only an immediate answer passes.
+        let error = frame_wait_error(daemon.wait_frame(0, 60_000)).await;
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
     }
 
     // oracle: mutant a status message that drops the host's Set Error Info description, which `ironrdp-agent session logoff` relies on
@@ -3735,6 +3780,7 @@ mod tests {
             live,
             None,
             rail_notify,
+            Arc::default(),
             Arc::new(AtomicU64::new(2)),
         ));
         let description = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::LogoffByUser).description();

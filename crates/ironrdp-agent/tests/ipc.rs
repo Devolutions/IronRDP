@@ -347,3 +347,48 @@ fn session_list_and_disconnect_distinguish_session_from_daemon() {
         std::panic::resume_unwind(error);
     }
 }
+
+// oracle: mutant a status printer that drops the frame number or prints it under another label
+#[test]
+fn status_prints_the_frame_number() {
+    use ironrdp_rpc::ipc::{ConnState, Payload, Request, Response, StatusInfo};
+    use ironrdp_rpc::transport::{self, Listener};
+
+    let endpoint = test_endpoint("frame-status");
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    let output = runtime.block_on(async {
+        let mut listener =
+            Listener::bind(&transport::endpoint_from_string(endpoint.clone())).expect("bind mock daemon");
+        // A stand-in daemon whose session is at frame 7, answering every status request.
+        let daemon = tokio::spawn(async move {
+            while let Ok(mut stream) = listener.accept().await {
+                let request: Request = transport::read_message(&mut stream).await.expect("read request");
+                assert_eq!(request, Request::Status);
+                let status = StatusInfo {
+                    state: ConnState::Connected,
+                    destination: None,
+                    width: None,
+                    height: None,
+                    message: None,
+                    credentials_loaded: false,
+                    untrusted_certificate: None,
+                    frame_number: Some(7),
+                };
+                transport::write_message(&mut stream, &Response::Ok(Payload::Status(status)))
+                    .await
+                    .expect("send status");
+            }
+        });
+        let command = tokio::task::spawn_blocking(move || agent(&endpoint, &["status"]));
+        let output = tokio::time::timeout(Duration::from_secs(30), command)
+            .await
+            .expect("status command timeout")
+            .expect("run status command");
+        daemon.abort();
+        output
+    });
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.lines().any(|line| line == "frame: 7"), "{stdout}");
+}

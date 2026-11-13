@@ -33,6 +33,7 @@ where
     assert_eq!(value, &decoded, "decode round-trip mismatch");
 }
 
+// oracle: property round-trip
 #[test]
 fn request_variants_round_trip() {
     let mut props = PropertySet::new();
@@ -212,6 +213,7 @@ fn request_variants_round_trip() {
     }
 }
 
+// oracle: property round-trip
 #[test]
 fn response_variants_round_trip() {
     let responses = [

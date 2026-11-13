@@ -1055,6 +1055,27 @@ mod tests {
         assert_eq!(error.message, "RAIL audit endpoints are unavailable through ActiveX");
     }
 
+    // oracle: mutant an ActiveX host that accepts a frame wait, or answers it through another arm
+    #[tokio::test]
+    async fn frame_wait_is_explicitly_unavailable() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) = handle_request(
+            &rpc.shared,
+            0,
+            Request::WaitFrame {
+                after_frame: 0,
+                timeout_ms: 0,
+            },
+        )
+        .await
+        else {
+            panic!("frame waits must be unavailable through ActiveX");
+        };
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert!(error.message.contains("frame waits"), "{}", error.message);
+    }
+
     #[tokio::test]
     async fn touch_with_illegal_flags_is_rejected() {
         let rpc = rpc();

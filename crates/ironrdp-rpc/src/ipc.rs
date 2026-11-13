@@ -2772,7 +2772,7 @@ impl Decode<'_> for Request {
             }
             5 => Ok(Self::Screenshot),
             42 => {
-                ensure_size!(in: src, size: 12);
+                ensure_size!(in: src, size: 8 /* after_frame */ + 4 /* timeout_ms */);
                 Ok(Self::WaitFrame {
                     after_frame: src.read_u64(),
                     timeout_ms: src.read_u32(),
