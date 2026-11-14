@@ -1,13 +1,30 @@
 use std::borrow::Cow;
 
 use ironrdp_core::{
-    Decode, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor, WriteCursor, cast_int, ensure_size,
+    Decode, DecodeError, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor, WriteCursor, cast_int, ensure_size,
     invalid_field_err,
 };
 use ironrdp_pdu::utils::{CharacterSet, read_string_from_cursor, to_utf16_bytes, write_string_to_cursor};
 use ironrdp_pdu::{PduResult, decode_err, impl_pdu_borrowing, impl_pdu_pod};
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
+
+/// Largest number of formats taken from one Format List PDU.
+///
+/// Applications put a few dozen formats on the clipboard at most.
+/// The limit is far above that, and keeps what a list costs to decode and to go through small: a few megabytes at
+/// most, with names of [`MAX_FORMAT_NAME_LENGTH`] characters.
+pub const MAX_FORMAT_COUNT: usize = 1024;
+
+/// Longest format name taken from a Format List PDU, in characters (UTF-16 code units, or bytes for ANSI names), not
+/// counting its null terminator.
+///
+/// Windows keeps registered format names as [string atoms], at most 255 characters long; servers that name formats
+/// after MIME types use at most 255 as well ([RFC 6838 4.2 Naming Requirements]).
+///
+/// [string atoms]: https://learn.microsoft.com/en-us/windows/win32/dataxchg/about-atom-tables#string-atoms
+/// [RFC 6838 4.2 Naming Requirements]: https://www.rfc-editor.org/rfc/rfc6838#section-4.2
+pub const MAX_FORMAT_NAME_LENGTH: usize = 1024;
 
 /// Clipboard format id.
 ///
@@ -321,14 +338,23 @@ impl FormatList<'_> {
         }
     }
 
+    /// Encodes `formats` with Unicode names.
+    ///
+    /// [`MAX_FORMAT_COUNT`] and [`MAX_FORMAT_NAME_LENGTH`] bound what [`Self::get_formats`] takes, not what is
+    /// sent: the peer applies its own limits.
     pub fn new_unicode(formats: &[ClipboardFormat], use_long_format: bool) -> EncodeResult<Self> {
         Self::new_impl(formats, use_long_format, false)
     }
 
+    /// As [`Self::new_unicode`], with ANSI names.
     pub fn new_ascii(formats: &[ClipboardFormat], use_long_format: bool) -> EncodeResult<Self> {
         Self::new_impl(formats, use_long_format, true)
     }
 
+    /// The formats in the list.
+    ///
+    /// Fails for a list of more than [`MAX_FORMAT_COUNT`] formats, or with a name longer than
+    /// [`MAX_FORMAT_NAME_LENGTH`] characters.
     pub fn get_formats(&self, use_long_format: bool) -> PduResult<Vec<ClipboardFormat>> {
         let mut src = ReadCursor::new(self.encoded_formats.as_ref());
         let charset = if self.use_ascii {
@@ -339,13 +365,17 @@ impl FormatList<'_> {
 
         if use_long_format {
             // Minimal `CLIPRDR_LONG_FORMAT_NAME` size (id + null-terminated name)
-            const MINIMAL_FORMAT_SIZE: usize = 4 /* id */ + 2 /* null-terminated name */;
+            let minimal_format_size = 4 /* id */ + if self.use_ascii { 1 } else { 2 } /* null terminator */;
 
             let mut formats = Vec::with_capacity(16);
 
-            while src.len() >= MINIMAL_FORMAT_SIZE {
+            while minimal_format_size <= src.len() {
+                if formats.len() == MAX_FORMAT_COUNT {
+                    return Err(decode_err!(too_many_formats(&src)));
+                }
+
                 let id = src.read_u32();
-                let name = read_string_from_cursor(&mut src, charset, true).map_err(|e| decode_err!(e))?;
+                let name = read_format_name(&mut src, charset).map_err(|e| decode_err!(e))?;
 
                 let format = ClipboardFormat::new(ClipboardFormatId::new(id)).with_name(ClipboardFormatName::new(name));
 
@@ -355,6 +385,10 @@ impl FormatList<'_> {
             Ok(formats)
         } else {
             let items_count = src.len() / Self::SHORT_FORMAT_SIZE;
+
+            if MAX_FORMAT_COUNT < items_count {
+                return Err(decode_err!(too_many_formats(&src)));
+            }
 
             let mut formats = Vec::with_capacity(items_count);
 
@@ -373,6 +407,44 @@ impl FormatList<'_> {
             Ok(formats)
         }
     }
+}
+
+fn too_many_formats(src: &ReadCursor<'_>) -> DecodeError {
+    invalid_field_err!(FormatList::NAME, "formatListData", "format count exceeds MAX_FORMAT_COUNT", in: src)
+}
+
+/// Reads a null-terminated format name of at most [`MAX_FORMAT_NAME_LENGTH`] characters.
+/// A name that runs to the end of the list without a terminator is read to its end.
+fn read_format_name(src: &mut ReadCursor<'_>, charset: CharacterSet) -> DecodeResult<String> {
+    // The terminator is looked for among the first MAX_FORMAT_NAME_LENGTH + 1 characters only: a longer name is
+    // refused without going through it.
+    let (terminated, characters_left) = match charset {
+        CharacterSet::Unicode => (
+            src.remaining()
+                .chunks_exact(2)
+                .take(MAX_FORMAT_NAME_LENGTH + 1)
+                .any(|character| character == [0, 0]),
+            src.len() / 2,
+        ),
+        CharacterSet::Ansi => (
+            src.remaining()
+                .iter()
+                .take(MAX_FORMAT_NAME_LENGTH + 1)
+                .any(|&character| character == 0),
+            src.len(),
+        ),
+    };
+
+    if !terminated && MAX_FORMAT_NAME_LENGTH < characters_left {
+        return Err(invalid_field_err!(
+            FormatList::NAME,
+            "wszFormatName",
+            "format name exceeds MAX_FORMAT_NAME_LENGTH",
+            in: src
+        ));
+    }
+
+    read_string_from_cursor(src, charset, true)
 }
 
 impl<'de> Decode<'de> for FormatList<'de> {
