@@ -408,6 +408,12 @@ pub trait ConnectionHandler: Send {
     ///
     /// `duration` is the wall-clock time the connection was active.
     /// `error` is `Some` if the connection ended with an error.
+    ///
+    /// [`RdpServer::serve`] logs such an error at INFO, whatever its cause: a
+    /// refused logon, a client that closes the connection, or a server fault.
+    /// To alert on the errors that matter to the application, inspect `error`
+    /// here. An error that does not end the connection, such as a failed
+    /// clipboard event, is logged where it occurs, at its own level.
     fn on_disconnected(
         &mut self,
         peer: SocketAddr,
@@ -4267,7 +4273,7 @@ impl RdpServer {
             pending = successor;
 
             if let Err(ref error) = result {
-                error!(?error, "Connection error");
+                info!(?peer, ?error, "Connection ended");
             }
 
             if let Some(action) = peer.and_then(|peer| {
