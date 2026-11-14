@@ -1,22 +1,19 @@
 use core::num::{NonZeroU16, NonZeroUsize};
 
 use ironrdp_core::decode;
-use ironrdp_pdu::bitmap::BitmapUpdateData;
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_graphics::rdp6::BitmapStreamDecoder;
+use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData};
 use ironrdp_pdu::rdp::capability_sets::{CmdFlags, LargePointerSupportFlags};
 use ironrdp_server::{BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat, UpdateEncoder, UpdateEncoderCodecs};
-
-/// One `TS_BITMAP_DATA` of a bitmap update, as the client reads it.
-#[derive(Debug)]
-struct Tile {
-    rectangle: InclusiveRectangle,
-    width: u16,
-    height: u16,
-}
+use proptest::prelude::*;
 
 /// Encodes `update` for a client without surface commands, which gets slow-path style bitmap
-/// updates, and returns every `TS_BITMAP_DATA` sent for it.
-async fn bitmap_tiles(desktop: DesktopSize, update: BitmapUpdate) -> Vec<Tile> {
+/// updates, and returns every bitmap update PDU sent for it.
+async fn bitmap_updates(update: BitmapUpdate) -> Vec<Vec<u8>> {
+    let desktop = DesktopSize {
+        width: update.x + update.width.get(),
+        height: update.y + update.height.get(),
+    };
     let mut encoder = UpdateEncoder::new(
         desktop,
         CmdFlags::empty(),
@@ -28,19 +25,27 @@ async fn bitmap_tiles(desktop: DesktopSize, update: BitmapUpdate) -> Vec<Tile> {
     )
     .unwrap();
     let mut updates = encoder.update(DisplayUpdate::Bitmap(update));
-    let mut tiles = Vec::new();
+    let mut pdus = Vec::new();
     while let Some(fragmenter) = updates.next().await {
-        let fragmenter = fragmenter.unwrap();
-        let data = decode::<BitmapUpdateData<'_>>(&fragmenter.data).unwrap();
-        tiles.extend(data.rectangles.iter().map(|r| Tile {
-            rectangle: r.rectangle.clone(),
-            width: r.width,
-            height: r.height,
-        }));
+        pdus.push(fragmenter.unwrap().data);
     }
-    tiles
+    pdus
 }
 
+fn encode(update: BitmapUpdate) -> Vec<Vec<u8>> {
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    runtime.block_on(bitmap_updates(update))
+}
+
+/// Calls `f` with every `TS_BITMAP_DATA` of `pdus`.
+fn for_each_tile(pdus: &[Vec<u8>], mut f: impl FnMut(&BitmapData<'_>)) {
+    for pdu in pdus {
+        let data = decode::<BitmapUpdateData<'_>>(pdu).unwrap();
+        data.rectangles.iter().for_each(&mut f);
+    }
+}
+
+/// A `width`x`height` BgrX32 update at (`x`, `y`) whose pixels differ along rows and columns.
 fn bitmap(x: u16, y: u16, width: u16, height: u16) -> BitmapUpdate {
     let stride = usize::from(width) * 4;
     BitmapUpdate {
@@ -49,55 +54,114 @@ fn bitmap(x: u16, y: u16, width: u16, height: u16) -> BitmapUpdate {
         width: NonZeroU16::new(width).unwrap(),
         height: NonZeroU16::new(height).unwrap(),
         format: PixelFormat::BgrX32,
-        data: (0..stride * usize::from(height))
-            .map(|i| u8::try_from(i % 251).expect("below 251"))
+        // 251 is prime, so no row or column of a tile repeats the one before it.
+        data: (0..=250u8)
+            .cycle()
+            .take(stride * usize::from(height))
             .collect::<Vec<u8>>()
             .into(),
         stride: NonZeroUsize::new(stride).unwrap(),
     }
 }
 
-/// Asserts that the tiles' destination rectangles draw every pixel of `area` exactly once and
-/// nothing outside it.
-fn assert_covers_exactly(tiles: &[Tile], area: &InclusiveRectangle) {
-    let width = usize::from(area.right - area.left + 1);
-    let height = usize::from(area.bottom - area.top + 1);
-    let mut drawn = vec![0u8; width * height];
-    for tile in tiles {
-        let r = &tile.rectangle;
+/// Asserts that every tile fits a 64x64 planar decoding context.
+fn assert_tiles_fit_64x64(pdus: &[Vec<u8>]) {
+    for_each_tile(pdus, |tile| {
         assert!(
-            r.left >= area.left && r.right <= area.right && r.top >= area.top && r.bottom <= area.bottom,
-            "{tile:?} draws outside {area:?}"
+            tile.width <= 64 && tile.height <= 64,
+            "{}x{} bitmap at {:?} is larger than 64x64",
+            tile.width,
+            tile.height,
+            tile.rectangle
         );
-        for y in r.top..=r.bottom {
-            for x in r.left..=r.right {
-                drawn[usize::from(y - area.top) * width + usize::from(x - area.left)] += 1;
-            }
-        }
-    }
-    assert!(
-        drawn.iter().all(|&n| n == 1),
-        "tiles do not cover {area:?} exactly once"
-    );
+    });
 }
 
-// oracle: reference FreeRDP/FreeRDP@d9991b9fa1b6:libfreerdp/core/codecs.c (planar context created 64x64)
-// oracle: reference FreeRDP/FreeRDP@d9991b9fa1b6:libfreerdp/codec/planar.c (planar_decompress rejects nSrcWidth > maxWidth or nSrcHeight > maxHeight)
-// FreeRDP decodes the planar bitmaps of a bitmap update with that context, so a larger one disconnects it.
-#[tokio::test]
-async fn bitmap_update_tiles_fit_freerdp_planar_context() {
-    let tiles = bitmap_tiles(DesktopSize { width: 160, height: 80 }, bitmap(8, 4, 136, 70)).await;
-    for tile in &tiles {
-        assert!(tile.width <= 64 && tile.height <= 64, "{tile:?} is larger than 64x64");
+/// Asserts that a client drawing `pdus` paints every pixel of `update` exactly once, with the
+/// update's color, and nothing outside it.
+fn assert_draws_exactly(pdus: &[Vec<u8>], update: &BitmapUpdate) {
+    let (x0, y0) = (update.x, update.y);
+    let (x1, y1) = (x0 + update.width.get() - 1, y0 + update.height.get() - 1);
+    let width = NonZeroUsize::from(update.width).get();
+    let mut drawn = vec![0u8; width * usize::from(update.height.get())];
+    let mut decoder = BitmapStreamDecoder::default();
+    let mut rgb = Vec::new();
+    for_each_tile(pdus, |tile| {
+        let r = &tile.rectangle;
+        assert!(
+            [r.left, r.right].iter().all(|x| (x0..=x1).contains(x))
+                && [r.top, r.bottom].iter().all(|y| (y0..=y1).contains(y)),
+            "{r:?} draws outside ({x0}, {y0})..=({x1}, {y1})"
+        );
+        rgb.clear();
+        decoder
+            .decode_bitmap_stream_to_rgb24(
+                tile.bitmap_data,
+                &mut rgb,
+                usize::from(tile.width),
+                usize::from(tile.height),
+            )
+            .unwrap();
+        for y in r.top..=r.bottom {
+            // The bitmap's rows are bottom-up; its columns past the rectangle are not drawn.
+            let row = usize::from(tile.height) - 1 - usize::from(y - r.top);
+            for x in r.left..=r.right {
+                let at = (row * usize::from(tile.width) + usize::from(x - r.left)) * 3;
+                let (sx, sy) = (usize::from(x - x0), usize::from(y - y0));
+                let src = &update.data[sy * update.stride.get() + sx * 4..][..3];
+                assert_eq!(
+                    rgb[at..at + 3],
+                    [src[2], src[1], src[0]],
+                    "pixel ({x}, {y}) of the bitmap at {r:?}"
+                );
+                drawn[sy * width + sx] += 1;
+            }
+        }
+    });
+    if let Some(i) = drawn.iter().position(|&n| n != 1) {
+        panic!(
+            "pixel ({}, {}) is drawn {} times",
+            usize::from(x0) + i % width,
+            usize::from(y0) + i / width,
+            drawn[i]
+        );
     }
-    // oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.2 (destLeft..destBottom are the inclusive bounds drawn)
-    assert_covers_exactly(
-        &tiles,
-        &InclusiveRectangle {
-            left: 8,
-            top: 4,
-            right: 143,
-            bottom: 73,
-        },
-    );
+}
+
+// oracle: reference FreeRDP/FreeRDP@d9991b9fa1b6:libfreerdp/codec/planar.c (freerdp_bitmap_decompress_planar rejects nSrcWidth > maxWidth or nSrcHeight > maxHeight)
+// oracle: reference FreeRDP/FreeRDP@d9991b9fa1b6:libfreerdp/core/codecs.c (freerdp_client_codecs_prepare sizes the bitmap update planar context to the desktop at connection)
+// oracle: regression FreeRDP/FreeRDP#13668 (a server-side desktop resize left that context at its connection size)
+// A bitmap larger than the context disconnects the client; a 64x64 one fits the context of any desktop of at least 64x64.
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.2 (destLeft..destBottom are the inclusive bounds drawn)
+// oracle: property round-trip (RDP 6.0 planar bitmaps without color loss decode to the pixels encoded)
+#[test]
+fn bitmap_update_tiles_fit_freerdp_planar_context() {
+    let update = bitmap(8, 4, 136, 70);
+    let pdus = encode(update.clone());
+    assert_tiles_fit_64x64(&pdus);
+    assert_draws_exactly(&pdus, &update);
+}
+
+/// An offset from 0 to `max`, with both ends as likely as any value in between.
+fn offset(max: u16) -> impl Strategy<Value = u16> {
+    prop_oneof![Just(0), Just(max), 0..=max]
+}
+
+/// Updates of widths that are multiples of 4, up to 4x4 tiles, anywhere on a 65535x65535 desktop.
+fn updates() -> impl Strategy<Value = BitmapUpdate> {
+    ((1u16..=64).prop_map(|w| w * 4), 1u16..=256).prop_flat_map(|(width, height)| {
+        (offset(u16::MAX - width), offset(u16::MAX - height)).prop_map(move |(x, y)| bitmap(x, y, width, height))
+    })
+}
+
+// Same oracles as bitmap_update_tiles_fit_freerdp_planar_context, over generated sizes and offsets.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn bitmap_update_tiles_fit_and_draw_any_update(update in updates()) {
+        let pdus = encode(update.clone());
+        assert_tiles_fit_64x64(&pdus);
+        assert_draws_exactly(&pdus, &update);
+    }
 }

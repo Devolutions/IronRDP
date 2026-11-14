@@ -21,9 +21,17 @@ impl BitmapEncoder {
         }
     }
 
-    /// Largest bitmap tile sent in one TS_BITMAP_DATA. FreeRDP decodes
-    /// bitmap-update planar data with a 64×64 context and rejects anything
-    /// larger, and Windows servers tile at 64×64 as well.
+    /// Largest bitmap tile sent in one TS_BITMAP_DATA.
+    ///
+    /// FreeRDP refuses a planar bitmap larger than its decoding context ([planar.c]), which it sizes to the desktop
+    /// when connecting ([codecs.c], [connection.c]); before [FreeRDP#13668] it kept that size when the server
+    /// resized the desktop, so a client disconnected on the first bitmap wider or taller than its first desktop.
+    /// A 64x64 tile fits the context of any desktop of at least 64x64.
+    ///
+    /// [planar.c]: https://github.com/FreeRDP/FreeRDP/blob/d9991b9fa1b6e92f6c19679c6324023f771a38c1/libfreerdp/codec/planar.c#L744-L755
+    /// [codecs.c]: https://github.com/FreeRDP/FreeRDP/blob/d9991b9fa1b6e92f6c19679c6324023f771a38c1/libfreerdp/core/codecs.c#L170-L189
+    /// [connection.c]: https://github.com/FreeRDP/FreeRDP/blob/d9991b9fa1b6e92f6c19679c6324023f771a38c1/libfreerdp/core/connection.c#L218-L220
+    /// [FreeRDP#13668]: https://github.com/FreeRDP/FreeRDP/pull/13668
     const TILE: u16 = 64;
 
     pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> Result<usize, BitmapEncodeError> {
