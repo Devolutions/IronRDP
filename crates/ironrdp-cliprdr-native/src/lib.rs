@@ -10,6 +10,11 @@
 #![warn(clippy::fn_to_numeric_cast_any)]
 #![warn(clippy::ptr_cast_constness)]
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use crate::macos::{MacClipboard, MacCliprdrBackend, MacCliprdrError};
+
 #[cfg(windows)]
 mod windows;
 #[cfg(all(windows, feature = "__test"))]

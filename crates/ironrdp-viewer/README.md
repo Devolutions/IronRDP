@@ -106,7 +106,7 @@ Currently supported properties:
 - `kdcproxyname:s:<value>`
 - `alternate shell:s:<value>`
 - `shell working directory:s:<value>`
-- `redirectclipboard:i:<0|1>`
+- `redirectclipboard:i:<0|1>` (Windows and macOS)
 - `drivestoredirect:s:<value>` (Windows drive redirection)
 - `redirectdrives:i:<0|1>` (Windows drive redirection)
 - `ironrdp_smartcard:i:<0|1>` (Windows WinSCard smartcard redirection)
