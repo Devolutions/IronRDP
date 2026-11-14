@@ -187,6 +187,15 @@ pub struct ConnectionResult {
     pub activation_factory: ConnectionActivationFactory,
     /// The bulk compression type that was negotiated, if any.
     pub compression_type: Option<rdp::client_info::CompressionType>,
+    /// The RDP version the server announced in its Server Core Data
+    /// ([MS-RDPBCGR] 2.2.1.4.2), if the Basic Settings Exchange went through
+    /// this connector.
+    ///
+    /// Servers that announce an old version may ignore newer client settings;
+    /// for example xrdp announces RDP 5 and does not apply the desktop scale factor.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/379a020e-9925-4b4f-98f3-7d634e10b411
+    pub server_rdp_version: Option<gcc::RdpVersion>,
 }
 
 impl ConnectionResult {
@@ -424,6 +433,8 @@ pub struct ClientConnector {
     /// advertised `SOFTSYNC_TCP_TO_UDP`, so the outcome reported back depends on
     /// what both peers advertised.
     pub server_multitransport_flags: Option<gcc::MultiTransportFlags>,
+    /// RDP version from the server's Server Core Data, once received.
+    pub server_rdp_version: Option<gcc::RdpVersion>,
     /// Auto-reconnect cookie from a previous session, when reconnecting.
     ///
     /// Set via [`ClientConnector::with_auto_reconnect_cookie`].
@@ -467,6 +478,7 @@ impl ClientConnector {
             response_flags: nego::ResponseFlags::empty(),
             entra_auth: false,
             server_multitransport_flags: None,
+            server_rdp_version: None,
             auto_reconnect_cookie: None,
             redirection_password_cookie: None,
             connect_time_bw_started_at: None,
@@ -1703,6 +1715,8 @@ impl Sequence for ClientConnector {
                     .as_ref()
                     .map(|data| data.flags);
 
+                self.server_rdp_version = Some(server_gcc_blocks.core.version);
+
                 let static_channel_ids = server_gcc_blocks.network.channel_ids;
                 let io_channel_id = server_gcc_blocks.network.io_channel;
 
@@ -2074,6 +2088,7 @@ impl Sequence for ClientConnector {
                                     )
                                     .with_multitransport_soft_sync(self.soft_sync_negotiated()),
                                     compression_type: self.config.compression_type,
+                                    server_rdp_version: self.server_rdp_version,
                                 },
                             }
                         }
