@@ -1302,7 +1302,7 @@ impl RdpeudpConnection {
         self.enqueue_final_ack(remote_isn);
 
         // Transition to established
-        self.transition_to_established(now);
+        self.transition_to_established(now, datagram.header.receive_window_size);
 
         Ok(())
     }
@@ -1330,7 +1330,7 @@ impl RdpeudpConnection {
 
         self.sample_handshake_rtt(now);
 
-        self.transition_to_established(now);
+        self.transition_to_established(now, datagram.header.receive_window_size);
         Ok(())
     }
 
@@ -1389,7 +1389,8 @@ impl RdpeudpConnection {
     /// Transition from handshake to established state.
     ///
     /// Initializes all data transfer components (windows, timers).
-    fn transition_to_established(&mut self, now: MonotonicInstant) {
+    /// `peer_receive_window` is the `uReceiveWindowSize` of the handshake datagram that completes the handshake.
+    fn transition_to_established(&mut self, now: MonotonicInstant, peer_receive_window: u16) {
         self.state = State::Established;
         self.timers.clear(Timer::Retransmit);
 
@@ -1429,11 +1430,17 @@ impl RdpeudpConnection {
             "Connection established"
         );
 
-        self.send_window = Some(SendWindow::new(
+        let mut send_window = SendWindow::new(
             local_initial_data_seq,
             local_initial_channel_seq,
             params.log_window_size,
-        ));
+        );
+        // MS-RDPEUDP 3.1.1.7: the peer's uReceiveWindowSize bounds what may
+        // be outstanding. MS-RDPEUDP2 has no such header field.
+        if let WireFormat::V1 { .. } = params.wire {
+            send_window.set_peer_window(peer_receive_window);
+        }
+        self.send_window = Some(send_window);
 
         self.recv_window = Some(RecvWindow::new(
             remote_initial_data_seq,
@@ -2339,6 +2346,12 @@ impl RdpeudpConnection {
         if datagram.header.flags.contains(V1Flags::SYN) {
             trace!("Ignored late handshake retransmit");
             return Ok(());
+        }
+
+        // The peer's receive window bounds what may be outstanding (MS-RDPEUDP
+        // 3.1.1.7, uReceiveWindowSize), whatever the local window size.
+        if let Some(send_window) = self.send_window.as_mut() {
+            send_window.set_peer_window(datagram.header.receive_window_size);
         }
 
         let delayed = datagram.header.flags.contains(V1Flags::ACKDELAYED);

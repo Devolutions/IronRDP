@@ -804,6 +804,165 @@ fn data_is_not_mistaken_for_a_repeated_syn_ack() {
     assert_eq!(client.poll_event(), Some(Event::DataReceived(vec![0x11; 32])));
 }
 
+// ── Peer receive window ──
+
+/// Data-bearing datagrams `sender` puts on the wire at `at`, with nothing
+/// acknowledged in between.
+fn data_packets_sent_unacknowledged(sender: &mut RdpeudpConnection, at: MonotonicInstant) -> usize {
+    let mut count = 0;
+    while let Some(transmit) = sender.poll_transmit(at) {
+        let datagram: V1Datagram = decode(&transmit.contents).expect("decode datagram");
+        if datagram.data.is_some() {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// `wire` with `window` as its uReceiveWindowSize: what the peer would have sent
+/// had its receive buffer held that many datagrams.
+fn advertising(wire: &[u8], window: u16) -> Vec<u8> {
+    let mut datagram: V1Datagram = decode(wire).expect("decode datagram");
+    datagram.header.receive_window_size = window;
+    encode_vec(&datagram).expect("encode datagram")
+}
+
+/// A version 1/2 pair, where the window is the header's uReceiveWindowSize,
+/// with the events of the handshake drained.
+fn establish_v1_pair() -> (RdpeudpConnection, RdpeudpConnection, MonotonicInstant) {
+    let mut client_config = default_config(100);
+    client_config.offer_version = UdpVersion::V2;
+    client_config.cookie_hash = None;
+    let (mut client, mut server, t) = handshake(client_config, 200);
+    while client.poll_event().is_some() {}
+    while server.poll_event().is_some() {}
+    (client, server, t)
+}
+
+/// [MS-RDPEUDP] 3.1.1.7: the receiver advertises how many datagrams it can
+/// accommodate (uReceiveWindowSize) and the sender is bound by it, even when
+/// its own window is larger; datagrams beyond it are discarded.
+// oracle: spec MS-RDPEUDP §3.1.1.7
+#[test]
+fn the_sender_never_exceeds_a_smaller_peer_receive_window() {
+    let mut client_config = default_config(100);
+    // The version 1/2 wire, where the window is the header's uReceiveWindowSize.
+    client_config.offer_version = UdpVersion::V2;
+    client_config.cookie_hash = None;
+    client_config.log_window_size = 4; // The client advertises 16 packets.
+    let (mut client, mut server, t) = handshake(client_config, 200);
+    while client.poll_event().is_some() {}
+    while server.poll_event().is_some() {}
+
+    // Small writes, so that the congestion window (counted in bytes) is not
+    // what stops the sender.
+    for _ in 0..64 {
+        server.send(vec![0x5A; 4]).expect("send");
+    }
+
+    assert_eq!(data_packets_sent_unacknowledged(&mut server, later(t, 200)), 16);
+}
+
+/// A receiver advertising a window larger than the sender's own lets more
+/// packets be outstanding: the sender's window follows the peer's
+/// uReceiveWindowSize rather than staying at its local size.
+// oracle: spec MS-RDPEUDP §3.1.1.7
+#[test]
+fn a_larger_peer_receive_window_lets_more_packets_be_outstanding() {
+    let mut client_config = default_config(100);
+    // The version 1/2 wire, where the window is the header's uReceiveWindowSize.
+    client_config.offer_version = UdpVersion::V2;
+    client_config.cookie_hash = None;
+    client_config.log_window_size = 10; // The client advertises 1024 packets.
+    let (mut client, mut server, t) = handshake(client_config, 200);
+    while client.poll_event().is_some() {}
+    while server.poll_event().is_some() {}
+
+    // The server's own log_window_size is 6: 64 packets.
+    for _ in 0..128 {
+        server.send(vec![0x5A; 4]).expect("send");
+    }
+
+    assert!(data_packets_sent_unacknowledged(&mut server, later(t, 200)) > 64);
+}
+
+/// [MS-RDPEUDP] 3.1.1.7: the sender may transmit from CumAcked + 1 to
+/// CumAcked + uReceiveWindowSize, and the window is the one of the last
+/// datagram received, not only that of the handshake. Packets sent before the
+/// peer advertised less stay outstanding, and no new one goes out until the
+/// acknowledged ones leave room in the smaller window.
+// oracle: spec MS-RDPEUDP §3.1.1.7
+#[test]
+fn the_send_window_follows_each_datagram_of_the_peer() {
+    let (mut client, mut server, t) = establish_v1_pair();
+
+    // Four packets go out, which the client does not get yet.
+    for _ in 0..4 {
+        server.send(vec![0x5A; 4]).expect("send");
+    }
+    let mut in_flight = Vec::new();
+    while let Some(transmit) = server.poll_transmit(later(t, 200)) {
+        in_flight.push(transmit.contents);
+    }
+    assert_eq!(in_flight.len(), 4);
+
+    // The client, which acknowledges none of them, now advertises 2 datagrams.
+    client.send(vec![0x11; 4]).expect("send");
+    let from_client = client.poll_transmit(later(t, 200)).expect("client data").contents;
+    let mut shrunk = advertising(&from_client, 2);
+    server.handle_datagram(&mut shrunk, later(t, 210)).expect("handle data");
+
+    // Four are outstanding against a window of two: nothing new goes out.
+    for _ in 0..4 {
+        server.send(vec![0x5A; 4]).expect("send");
+    }
+    assert_eq!(data_packets_sent_unacknowledged(&mut server, later(t, 210)), 0);
+
+    // The client gets the four and acknowledges them, still advertising 2.
+    for mut datagram in in_flight {
+        client
+            .handle_datagram(&mut datagram, later(t, 220))
+            .expect("handle data");
+    }
+    while let Some(transmit) = client.poll_transmit(later(t, 300)) {
+        let mut acknowledgement = advertising(&transmit.contents, 2);
+        server
+            .handle_datagram(&mut acknowledgement, later(t, 310))
+            .expect("handle ACK");
+    }
+
+    // Nothing is outstanding: two of the four waiting go out, and no more.
+    assert_eq!(data_packets_sent_unacknowledged(&mut server, later(t, 310)), 2);
+}
+
+/// [MS-RDPEUDP] 3.1.1.7: with uReceiveWindowSize at zero the range the sender
+/// may transmit, CumAcked + 1 to CumAcked + uReceiveWindowSize, is empty, so
+/// nothing new goes out until a later datagram advertises room.
+// oracle: spec MS-RDPEUDP §3.1.1.7
+#[test]
+fn a_zero_peer_receive_window_holds_new_packets_until_it_reopens() {
+    let (mut client, mut server, t) = establish_v1_pair();
+
+    client.send(vec![0x11; 4]).expect("send");
+    let from_client = client.poll_transmit(later(t, 200)).expect("client data").contents;
+    let mut closed = advertising(&from_client, 0);
+    server.handle_datagram(&mut closed, later(t, 210)).expect("handle data");
+
+    for _ in 0..4 {
+        server.send(vec![0x5A; 4]).expect("send");
+    }
+    assert_eq!(data_packets_sent_unacknowledged(&mut server, later(t, 210)), 0);
+
+    client.send(vec![0x22; 4]).expect("send");
+    let from_client = client.poll_transmit(later(t, 220)).expect("client data").contents;
+    let mut reopened = advertising(&from_client, 3);
+    server
+        .handle_datagram(&mut reopened, later(t, 230))
+        .expect("handle data");
+
+    assert_eq!(data_packets_sent_unacknowledged(&mut server, later(t, 230)), 3);
+}
+
 // ── Receive window lifecycle ──
 
 /// Shuttle packets between the two endpoints until neither has more to say.
