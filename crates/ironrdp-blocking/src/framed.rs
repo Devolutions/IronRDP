@@ -2,7 +2,7 @@ use std::io::{self, Read, Write};
 
 use bytes::{Bytes, BytesMut};
 use ironrdp_connector::MonotonicInstant;
-use ironrdp_pdu::PduHint;
+use ironrdp_pdu::{MAX_UNSIZED_BUFFER_LEN, PduHint};
 use tracing::debug;
 
 pub struct Framed<S> {
@@ -102,10 +102,21 @@ where
     }
 
     /// Reads a frame using the provided PduHint.
+    ///
+    /// Fails with [`io::ErrorKind::InvalidData`] once [`MAX_UNSIZED_BUFFER_LEN`] bytes are buffered without the hint
+    /// determining a PDU size.
     pub fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
         loop {
             match hint.find_size(self.peek()).map_err(io::Error::other)? {
                 Some((matched, length)) => {
+                    // Skipping a zero-length unmatched PDU consumes nothing and reads nothing, so the loop would
+                    // spin forever on the same bytes.
+                    if length == 0 && !matched {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "PduHint reported a zero-length unmatched PDU; cannot make progress",
+                        ));
+                    }
                     let bytes = self.read_exact(length)?.freeze();
                     if matched {
                         return Ok(bytes);
@@ -114,6 +125,13 @@ where
                     }
                 }
                 None => {
+                    if MAX_UNSIZED_BUFFER_LEN <= self.buf.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "PduHint found no PDU size within the buffer limit",
+                        ));
+                    }
+
                     let len = self.read()?;
 
                     // Handle EOF

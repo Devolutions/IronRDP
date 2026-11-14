@@ -1,5 +1,5 @@
-use ironrdp_core::{WriteBuf, other_err};
-use ironrdp_pdu::{PduHint, nego};
+use ironrdp_core::WriteBuf;
+use ironrdp_pdu::{CREDSSP_TS_REQUEST_HINT, PduHint, nego};
 use picky::key::PrivateKey;
 use picky_asn1_x509::{Certificate, ExtensionView, GeneralName, oids};
 use sspi::credssp::{self, ClientState, CredSspClient};
@@ -60,21 +60,6 @@ impl From<KerberosConfig> for sspi::KerberosConfig {
         sspi::KerberosConfig {
             kdc_resolution: val.kdc_resolution.into(),
             client_computer_name: val.hostname,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CredsspTsRequestHint;
-
-const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
-
-impl PduHint for CredsspTsRequestHint {
-    fn find_size(&self, bytes: &[u8]) -> ironrdp_core::DecodeResult<Option<(bool, usize)>> {
-        match credssp::TsRequest::read_length(bytes) {
-            Ok(length) => Ok(Some((true, length))),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(e) => Err(other_err!("CredsspTsRequestHint", source: e)),
         }
     }
 }
