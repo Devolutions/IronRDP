@@ -17,6 +17,7 @@ extern crate time as _;
 
 mod canvas;
 mod clipboard;
+mod cursor;
 mod error;
 mod image;
 mod input;
