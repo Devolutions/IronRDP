@@ -429,7 +429,8 @@ test("prior terminal review trusts only the newest published bot review", async 
 });
 
 test("workflow github-script accepts once, reconciles, and skips ineligible events", async () => {
-  const workflow = fs.readFileSync(".github/workflows/pr-automation-review-ready.yml", "utf8");
+  const workflow = fs.readFileSync(".github/workflows/pr-automation-review-ready.yml", "utf8")
+    .replace(/\r\n/g, "\n");
   assert.match(workflow, /if: github\.event\.issue\.pull_request/);
   const body = workflow.slice(workflow.indexOf("          script: |\n") + "          script: |\n".length);
   const lines = [];

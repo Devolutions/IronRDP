@@ -1,0 +1,40 @@
+# Trusted comment handler: never checkout or execute contributor code, and never access a provider key.
+name: PR automation retry
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  checks: write
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  retry:
+    if: github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-automation-mutation-${{ github.event.issue.number }}
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          persist-credentials: false
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const { acceptRetry, commandBody } = require("./.github/pr-automation/retry-command");
+            if (!context.payload.issue?.pull_request ||
+                context.payload.comment?.user?.type !== "User" ||
+                !commandBody(context.payload.comment?.body)) return;
+            await acceptRetry({
+              github, owner: context.repo.owner, repo: context.repo.repo,
+              prNumber: context.payload.issue.number, commentId: context.payload.comment.id,
+              eventHadFailureLabel: context.payload.issue.labels?.some(
+                (label) => label.name === "automation-failed"),
+            });
