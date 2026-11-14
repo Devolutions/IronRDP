@@ -76,6 +76,44 @@ export function legacyGraphics(enable: boolean): Extension {
     return new Extension('legacy_graphics', enable);
 }
 
+/** One monitor in desktop coordinates; `right` and `bottom` are inclusive. */
+export interface MonitorRect {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    primary: boolean;
+}
+
+/**
+ * Send the client's monitors (Client Monitor Data, MS-RDPBCGR 2.2.1.3.6) so one session spans up to 16 of them.
+ * The primary monitor sits at 0,0, and the desktop size covers the union of the monitors.
+ */
+export function monitorLayout(monitors: MonitorRect[]): Extension {
+    return new Extension(
+        'monitor_layout',
+        monitors.flatMap((m) => [m.left, m.top, m.right, m.bottom, m.primary ? 1 : 0]),
+    );
+}
+
+/** Called with the monitor layout the server applies, when the session starts and whenever it changes. */
+export function monitorLayoutCallback(callback: (monitors: MonitorRect[]) => void): Extension {
+    const unpack = (values: number[]) => {
+        const monitors: MonitorRect[] = [];
+        for (let i = 0; i + 4 < values.length; i += 5) {
+            monitors.push({
+                left: values[i],
+                top: values[i + 1],
+                right: values[i + 2],
+                bottom: values[i + 3],
+                primary: (values[i + 4] & 1) !== 0,
+            });
+        }
+        callback(monitors);
+    };
+    return new Extension('monitor_layout_callback', unpack as unknown);
+}
+
 // --- RDCleanPath ---
 
 export { RDCleanPathErrorCode } from './RDCleanPathErrorCode';
