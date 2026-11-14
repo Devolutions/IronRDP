@@ -2241,8 +2241,11 @@ enum ConnectionOutput {
     DisplayLayout(DisplayControlMonitorLayout),
     ResponseFrame(Vec<u8>),
     TunnelData(Vec<u8>),
-    /// The client could not establish the sideband transport, and will not attempt to
-    /// create one (MS-RDPBCGR 2.2.15.2, 3.2.5.15.2).
+    /// The client could not establish the sideband transport, and will not attempt to create one.
+    ///
+    /// See [MS-RDPBCGR] 2.2.15.2 "Client Initiate Multitransport Response PDU" and 3.2.5.15.2 "Sending the Initiate Multitransport Response PDU".
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
     MultitransportFailed,
     Disconnect,
 }
@@ -2640,6 +2643,7 @@ impl ConnectionState {
 
     fn handle_input_event(&self, input: InputEventPdu) -> Vec<ConnectionOutput> {
         let core_mouse = !self.advanced_input_owns_mouse();
+        let mouse_output = |event: MouseEvent| core_mouse.then_some(ConnectionOutput::Mouse(event));
         input
             .0
             .into_iter()
@@ -2651,15 +2655,9 @@ impl ConnectionState {
                     Some(ConnectionOutput::Keyboard((key.unicode_code, key.flags).into()))
                 }
                 ironrdp_pdu::input::InputEvent::Sync(sync) => Some(ConnectionOutput::Keyboard(sync.flags.into())),
-                ironrdp_pdu::input::InputEvent::Mouse(mouse) => {
-                    core_mouse.then(|| ConnectionOutput::Mouse(mouse.into()))
-                }
-                ironrdp_pdu::input::InputEvent::MouseX(mouse) => {
-                    core_mouse.then(|| ConnectionOutput::Mouse(mouse.into()))
-                }
-                ironrdp_pdu::input::InputEvent::MouseRel(mouse) => {
-                    core_mouse.then(|| ConnectionOutput::Mouse(mouse.into()))
-                }
+                ironrdp_pdu::input::InputEvent::Mouse(mouse) => mouse_output(mouse.into()),
+                ironrdp_pdu::input::InputEvent::MouseX(mouse) => mouse_output(mouse.into()),
+                ironrdp_pdu::input::InputEvent::MouseRel(mouse) => mouse_output(mouse.into()),
                 ironrdp_pdu::input::InputEvent::Unused(_) => None,
             })
             .collect()
@@ -2667,6 +2665,7 @@ impl ConnectionState {
 
     fn handle_fastpath(&self, input: FastPathInput) -> Vec<ConnectionOutput> {
         let core_mouse = !self.advanced_input_owns_mouse();
+        let mouse_output = |event: MouseEvent| core_mouse.then_some(ConnectionOutput::Mouse(event));
         input
             .input_events()
             .iter()
@@ -2676,9 +2675,9 @@ impl ConnectionState {
                     Some(ConnectionOutput::Keyboard((key, flags).into()))
                 }
                 FastPathInputEvent::SyncEvent(flags) => Some(ConnectionOutput::Keyboard(flags.into())),
-                FastPathInputEvent::MouseEvent(mouse) => core_mouse.then(|| ConnectionOutput::Mouse(mouse.into())),
-                FastPathInputEvent::MouseEventEx(mouse) => core_mouse.then(|| ConnectionOutput::Mouse(mouse.into())),
-                FastPathInputEvent::MouseEventRel(mouse) => core_mouse.then(|| ConnectionOutput::Mouse(mouse.into())),
+                FastPathInputEvent::MouseEvent(mouse) => mouse_output(mouse.into()),
+                FastPathInputEvent::MouseEventEx(mouse) => mouse_output(mouse.into()),
+                FastPathInputEvent::MouseEventRel(mouse) => mouse_output(mouse.into()),
                 FastPathInputEvent::QoeEvent(quality) => {
                     warn!(quality, "Received QoE");
                     None
@@ -8218,47 +8217,62 @@ mod tests {
         assert_eq!(*received, layout);
     }
 
-    // oracle: mutant delivering core mouse input while Advanced Input owns the mouse, or dropping it after the channel closes.
-    #[test]
-    fn core_mouse_input_is_dropped_while_advanced_input_owns_the_mouse() {
-        use ironrdp_dvc::pdu::{ClosePdu, DrdynvcClientPdu};
+    /// Sends a key press and a mouse move over the core input path.
+    fn send_core_input(conn: &mut ConnectionState) -> Vec<ConnectionOutput> {
         use ironrdp_pdu::input::fast_path::KeyboardFlags;
         use ironrdp_pdu::input::mouse::PointerFlags;
 
-        let core_input = |conn: &mut ConnectionState| {
-            let input = FastPathInput::new(vec![
-                FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 30),
-                FastPathInputEvent::MouseEvent(ironrdp_pdu::input::MousePdu {
-                    flags: PointerFlags::MOVE,
-                    number_of_wheel_rotation_units: 0,
-                    x_position: 12,
-                    y_position: 34,
-                }),
-            ])
-            .unwrap();
-            conn.dispatch_pdu(&tcp_pdu_context(), Action::FastPath, &encode_vec(&input).unwrap())
-                .unwrap()
-        };
-        let (mut conn, ainput_id, _) = connection_with_builtin_dvcs();
+        let input = FastPathInput::new(vec![
+            FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 30),
+            FastPathInputEvent::MouseEvent(ironrdp_pdu::input::MousePdu {
+                flags: PointerFlags::MOVE,
+                number_of_wheel_rotation_units: 0,
+                x_position: 12,
+                y_position: 34,
+            }),
+        ])
+        .unwrap();
+        conn.dispatch_pdu(&tcp_pdu_context(), Action::FastPath, &encode_vec(&input).unwrap())
+            .unwrap()
+    }
 
-        // An open channel the client has not used yet leaves the mouse to core input.
+    // oracle: mutant dropping core mouse input as soon as the Advanced Input channel opens.
+    #[test]
+    fn an_unused_advanced_input_channel_leaves_the_mouse_to_core_input() {
+        let (mut conn, _, _) = connection_with_builtin_dvcs();
+
         assert!(matches!(
-            core_input(&mut conn).as_slice(),
+            send_core_input(&mut conn).as_slice(),
             [
                 ConnectionOutput::Keyboard(KeyboardEvent::Pressed { code: 30, .. }),
                 ConnectionOutput::Mouse(MouseEvent::Move { x: 12, y: 34 })
             ]
         ));
+    }
 
+    // oracle: mutant delivering core mouse input while Advanced Input owns the mouse.
+    #[test]
+    fn core_mouse_input_is_dropped_while_advanced_input_owns_the_mouse() {
+        let (mut conn, ainput_id, _) = connection_with_builtin_dvcs();
         send_drdynvc(&mut conn, ainput_mouse_move(ainput_id, 1, 2));
+
         assert!(matches!(
-            core_input(&mut conn).as_slice(),
+            send_core_input(&mut conn).as_slice(),
             [ConnectionOutput::Keyboard(KeyboardEvent::Pressed { code: 30, .. })]
         ));
+    }
 
+    // oracle: mutant keeping Advanced Input mouse ownership after the client closes the channel.
+    #[test]
+    fn closing_advanced_input_returns_the_mouse_to_core_input() {
+        use ironrdp_dvc::pdu::{ClosePdu, DrdynvcClientPdu};
+
+        let (mut conn, ainput_id, _) = connection_with_builtin_dvcs();
+        send_drdynvc(&mut conn, ainput_mouse_move(ainput_id, 1, 2));
         send_drdynvc(&mut conn, DrdynvcClientPdu::Close(ClosePdu::new(ainput_id)));
+
         assert!(matches!(
-            core_input(&mut conn).as_slice(),
+            send_core_input(&mut conn).as_slice(),
             [
                 ConnectionOutput::Keyboard(KeyboardEvent::Pressed { code: 30, .. }),
                 ConnectionOutput::Mouse(MouseEvent::Move { x: 12, y: 34 })
@@ -8584,6 +8598,7 @@ mod cliprdr_timeout_tests {
 
     /// An expired lock is released once its inactivity timeout elapses -- but
     /// only because something drove the sweep.
+    // oracle: mutant discarding the Unlock PDU the sweep produced, or sending it inside the inactivity window.
     #[test]
     fn an_expired_lock_is_released_when_the_sweep_is_driven() {
         let clock = Arc::new(AtomicU64::new(0));
@@ -8624,6 +8639,7 @@ mod cliprdr_timeout_tests {
 
     /// A session without a clipboard channel must not be an error path: the
     /// timer fires for every connection.
+    // oracle: mutant failing the sweep on a connection without a clipboard channel.
     #[test]
     fn a_session_without_a_clipboard_channel_sweeps_quietly() {
         let mut conn = ConnectionState::default();
