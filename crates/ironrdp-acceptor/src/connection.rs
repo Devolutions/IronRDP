@@ -149,7 +149,10 @@ pub struct Acceptor {
     static_channels: StaticChannelSet,
     pending_input_events: InputEventBuffer,
     saved_for_reactivation: AcceptorState,
-    pub(crate) creds: Option<Credentials>,
+    /// Accepted credentials. `None` (nothing configured) leaves ClientInfo
+    /// credentials unchecked; a list, even an empty one, requires a match.
+    /// CredSSP fails without an entry.
+    pub(crate) creds: Option<Vec<Credentials>>,
     pub(crate) credssp_backend: crate::CredsspBackend,
     received_credentials: Option<ReceivedCredentials>,
     credentials_handled: bool,
@@ -494,7 +497,7 @@ impl Acceptor {
             static_channels: StaticChannelSet::new(),
             pending_input_events: InputEventBuffer::default(),
             saved_for_reactivation: Default::default(),
-            creds,
+            creds: creds.map(|creds| vec![creds]),
             credssp_backend: crate::CredsspBackend::default(),
             received_credentials: None,
             credentials_handled: false,
@@ -559,6 +562,17 @@ impl Acceptor {
     /// [`RdpServerDisplay`]: <https://docs.rs/ironrdp-server/latest/ironrdp_server/trait.RdpServerDisplay.html>
     pub fn set_honor_client_desktop_size(&mut self, max: Option<DesktopSize>) {
         self.honor_client_desktop_size = max;
+    }
+
+    /// Accept any of `creds`, replacing the credentials given to [`Self::new`].
+    ///
+    /// CredSSP checks the client's password against the entry with its user
+    /// name; ClientInfo credentials must match one of them. An empty list
+    /// accepts no one: CredSSP fails and ClientInfo logons are refused,
+    /// unless [`Self::set_allow_unverified_credentials`] hands them to an
+    /// external validator.
+    pub fn set_credential_list(&mut self, creds: Vec<Credentials>) {
+        self.creds = Some(creds);
     }
 
     /// Selects the CredSSP authentication provider before negotiation begins.
@@ -1534,8 +1548,8 @@ impl Sequence for Acceptor {
                     let creds = client_info.client_info.credentials;
 
                     if !self.allow_unverified_credentials
-                        && let Some(expected) = &self.creds
-                        && !credentials_match(expected, &creds)
+                        && let Some(accepted) = &self.creds
+                        && !accepted.iter().any(|expected| credentials_match(expected, &creds))
                     {
                         self.encode_access_denied(output)?;
                         return Err(ConnectorError::general("invalid credentials"));
