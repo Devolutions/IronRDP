@@ -1538,6 +1538,10 @@ impl ErrorInfoDisconnectHandle {
     /// `RNS_UD_CS_SUPPORT_ERRINFO_PDU` in its Client Core Data: MS-RDPBCGR
     /// 3.3.5.7.1 forbids sending it the PDU, so it is disconnected without
     /// the reason.
+    ///
+    /// Either way the connection ends with a provider-initiated MCS
+    /// Disconnect Provider Ultimatum, which tells the client that the server
+    /// ended the session and the network did not fail.
     #[expect(
         clippy::result_large_err,
         reason = "SendError<ServerEvent> hands the whole event back on a closed channel; ServerEvent's size is \
@@ -1656,7 +1660,8 @@ pub enum ServerEvent {
     /// handle.
     EvictedByOtherConnection,
     /// Disconnect the active client with a `ServerSetErrorInfoPdu` carrying
-    /// the given reason. See [`ErrorInfoDisconnectHandle::disconnect`].
+    /// the given reason and an MCS Disconnect Provider Ultimatum. See
+    /// [`ErrorInfoDisconnectHandle::disconnect`].
     Disconnect(ErrorInfo),
     /// Redirect the active client with a Server Redirection PDU, then close the connection.
     /// See [`ServerRedirectionHandle::redirect`].
@@ -4915,22 +4920,21 @@ impl RdpServer {
                 }
                 ServerEvent::Disconnect(error) => {
                     debug!(?error, "Got disconnect event");
-                    if !conn.client_supports_errinfo {
+                    if conn.client_supports_errinfo {
+                        let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error));
+                        // pduSource=0, not user_channel_id -- same MS-RDPBCGR
+                        // 2.2.5.1.1 requirement as the EvictedByOtherConnection
+                        // arm above.
+                        let data = encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id)?;
+                        writer
+                            .write_all(&data)
+                            .await
+                            .map_err(|e| ServerError::io("send server set error info", e))?;
+                    } else {
                         // Same MS-RDPBCGR 3.3.5.7.1 rule as the eviction arm.
                         debug!("client did not opt into Set Error Info PDUs; disconnecting without the reason");
-                        return Ok(RunState::Disconnect);
                     }
-                    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error));
-                    // pduSource=0, not user_channel_id -- same MS-RDPBCGR
-                    // 2.2.5.1.1 requirement as the EvictedByOtherConnection
-                    // arm above; upstream's original call here (before this
-                    // merge) predated that parameter and used
-                    // user_channel_id, which this fixes to match.
-                    let data = encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id)?;
-                    writer
-                        .write_all(&data)
-                        .await
-                        .map_err(|e| ServerError::io("send server set error info", e))?;
+                    send_disconnect_ultimatum(writer).await;
                     return Ok(RunState::Disconnect);
                 }
                 ServerEvent::Redirect(redirection) => {
@@ -6823,6 +6827,25 @@ async fn send_error_info(
         }
         Err(error) => {
             warn!(%error, reason, "Could not encode the reason; disconnecting anyway");
+        }
+    }
+}
+
+/// Ends a server-initiated disconnection with an MCS Disconnect Provider Ultimatum, reason rn-provider-initiated
+/// (MS-RDPBCGR 1.3.1.4.3 and 3.1.5.1.1), best-effort.
+///
+/// It tells a client that gets no Set Error Info PDU that the server ended the session on purpose. FreeRDP takes a
+/// connection that closes without it for a network failure and reconnects.
+async fn send_disconnect_ultimatum(writer: &mut impl FramedWrite) {
+    let ultimatum = mcs::DisconnectProviderUltimatum::from_reason(mcs::DisconnectReason::ProviderInitiated);
+    match encode_vec(&X224(mcs::McsMessage::DisconnectProviderUltimatum(ultimatum))) {
+        Ok(bytes) => {
+            if let Err(error) = writer.write_all(&bytes).await {
+                debug!(%error, "Could not send the Disconnect Provider Ultimatum; disconnecting anyway");
+            }
+        }
+        Err(error) => {
+            warn!(%error, "Could not encode the Disconnect Provider Ultimatum; disconnecting anyway");
         }
     }
 }
