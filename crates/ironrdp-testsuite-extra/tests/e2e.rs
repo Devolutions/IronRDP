@@ -196,6 +196,27 @@ async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
     assert!(query.await.is_err());
 }
 
+// oracle: mutant init_from_paths not reading PEM certificates or PKCS#8 keys from files without a .pem extension
+#[test]
+fn tls_identity_reads_pem_files_whatever_their_extension() {
+    let certs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs");
+    let dir = std::env::temp_dir().join(format!("ironrdp-tls-identity-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (cert, key) = (dir.join("server.crt"), dir.join("server.key"));
+    std::fs::copy(certs.join("server-cert.pem"), &cert).unwrap();
+    std::fs::copy(certs.join("server-key.pem"), &key).unwrap();
+
+    let pem = TlsIdentityCtx::init_from_paths(&certs.join("server-cert.pem"), &certs.join("server-key.pem")).unwrap();
+    let other = TlsIdentityCtx::init_from_paths(&cert, &key);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let other = other.unwrap();
+
+    assert_eq!(other.certs, pem.certs);
+    assert_eq!(other.pub_key, pem.pub_key);
+    assert_eq!(other.priv_key.secret_der(), pem.priv_key.secret_der());
+    other.make_acceptor().unwrap();
+}
+
 fn server_for_handle_tests(connection_handler: Option<Box<dyn server::ConnectionHandler>>) -> RdpServer {
     RdpServer::builder()
         .with_addr(([127, 0, 0, 1], 0))
