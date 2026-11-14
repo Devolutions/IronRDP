@@ -70,7 +70,7 @@ use crate::error::{ServerError, ServerErrorExt as _, ServerErrorKind, ServerResu
 #[cfg(feature = "egfx")]
 use crate::gfx::{EgfxServerMessage, GfxContext, GfxServerFactory, GfxServerHandle};
 use crate::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
-use crate::heartbeat::HeartbeatConfig;
+use crate::heartbeat::{HeartbeatConfig, HeartbeatGate};
 use crate::multitransport;
 use crate::rdpeai::RdpeaiServerFactory;
 use crate::rdpei::RdpeiServerFactory;
@@ -5715,14 +5715,13 @@ impl RdpServer {
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             (interval, config, channel_id)
         });
-        let mut writes_at_last_tick = writer.write_count();
+        let mut heartbeat_gate = HeartbeatGate::new(writer.write_count());
 
         // Keep the pending accept task across select iterations and only borrow it while waiting.
         // A reactivation or disconnect drops an unfinished task's handle without aborting it.
         // Its result is then lost, and its socket can remain bound until UDP_ACCEPT_TIMEOUT.
         let state = loop {
             let current_udp_transport = udp_transport.as_ref();
-            let mut heartbeat_tick = false;
             let result = tokio::select! {
                 frame = reader.read_pdu() => {
                     let (action, bytes) = frame.map_err(|e| ServerError::io("read pdu", e))?;
@@ -5806,9 +5805,8 @@ impl RdpServer {
                         None => core::future::pending().await,
                     }
                 } => {
-                    heartbeat_tick = true;
                     // Ordinary traffic already serves as the liveness signal for this interval.
-                    let outputs = if writer.write_count() == writes_at_last_tick {
+                    let outputs = if heartbeat_gate.tick(writer.write_count()) {
                         vec![ConnectionOutput::ResponseFrame(encode_heartbeat(&config, channel_id, user_channel_id)?)]
                     } else {
                         Vec::new()
@@ -5884,13 +5882,6 @@ impl RdpServer {
                 .await?
             {
                 break Ok(RunState::Disconnect);
-            }
-            if heartbeat_tick {
-                // Exclude the heartbeat's own write from the next interval's traffic.
-                // UNTESTED: no test drives the heartbeat timer. Taking the count before the
-                // heartbeat is written would make the next tick skip as if there were traffic,
-                // halving the heartbeat rate. Keep this after the outputs are executed.
-                writes_at_last_tick = writer.write_count();
             }
             match result.state {
                 RunState::Continue => {}
