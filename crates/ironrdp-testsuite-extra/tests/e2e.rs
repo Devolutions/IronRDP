@@ -23,6 +23,7 @@ use ironrdp::pdu::rdp::client_info::{ClientInfoFlags, CompressionType as PduComp
 use ironrdp::pdu::rdp::headers::CompressionFlags;
 use ironrdp::pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
 use ironrdp::pdu::rdp::session_info::ServerAutoReconnect;
+use ironrdp::pdu::x224::{X224, X224Data};
 use ironrdp::pdu::{self, gcc};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::rdpsnd::pdu::AudioFormat;
@@ -37,7 +38,7 @@ use ironrdp::session::{self, ActiveStage, ActiveStageBuilder, ActiveStageOutput}
 use ironrdp::svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcServerProcessor};
 use ironrdp_async::{Framed, FramedWrite as _};
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags as bulk_flags};
-use ironrdp_core::{ReadCursor, decode_cursor};
+use ironrdp_core::{ReadCursor, decode, decode_cursor};
 use ironrdp_dvc::{DvcClientProcessor, DvcEncode, DvcMessage, DvcProcessor};
 use ironrdp_egfx::pdu::{CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitySet, GfxPdu};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
@@ -769,40 +770,62 @@ async fn a_new_connection_starts_without_the_previous_sessions_events() {
 
 /// A display that cannot start returns a `ServerErrorKind::ErrorInfo` error, and the client gets that code in a Set
 /// Error Info PDU, so it can tell the user why the session ended instead of reporting a lost connection.
+/// The Disconnect Provider Ultimatum follows the reason.
 // oracle: spec MS-RDPBCGR §2.2.5.1.1
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
 // oracle: regression #2301
 #[tokio::test]
 async fn a_display_that_cannot_start_tells_the_client_why() {
     let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
 
-    let (reason, close) = Box::pin(run_failing_display_probe(Some(error_info))).await;
+    let (reasons, close) = Box::pin(run_failing_display_probe(Some(error_info), true)).await;
 
-    let Some(session::GracefulDisconnectReason::Other(description)) = reason else {
-        panic!("the client did not get the reason, it got {reason:?}");
+    let [
+        session::GracefulDisconnectReason::Other(description),
+        session::GracefulDisconnectReason::ServerInitiated,
+    ] = reasons.as_slice()
+    else {
+        panic!("the client did not get the reason and then the ultimatum, it got {reasons:?}");
     };
     // oracle: property round-trip
-    assert_eq!(description, error_info.description());
-    // The server closes the TLS session (close_notify) after the reason, as on a normal disconnect.
+    assert_eq!(*description, error_info.description());
+    // The server closes the TLS session (close_notify) after the ultimatum, as on a normal disconnect.
     assert!(matches!(close, Some(Ok(0))), "{close:?}");
+}
+
+/// A client that did not set `RNS_UD_CS_SUPPORT_ERRINFO_PDU`, as FreeRDP 3 does not, gets no reason when the display
+/// cannot start, but still a provider-initiated Disconnect Provider Ultimatum, so it does not take the end of the
+/// session for a lost connection and reconnect.
+// oracle: spec MS-RDPBCGR §3.1.5.1.1
+// oracle: regression #2388
+#[tokio::test]
+async fn a_display_that_cannot_start_tells_a_client_without_error_info_that_the_server_ended_the_session() {
+    let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
+
+    let (reasons, _) = Box::pin(run_failing_display_probe(Some(error_info), false)).await;
+
+    assert!(
+        matches!(reasons.as_slice(), [session::GracefulDisconnectReason::ServerInitiated]),
+        "{reasons:?}"
+    );
 }
 
 /// Other display errors close the connection as before, with no Set Error Info PDU.
 // oracle: doc RdpServerDisplay::updates and ServerErrorKind::ErrorInfo
 #[tokio::test]
 async fn a_display_error_without_error_info_sends_no_reason() {
-    let (reason, _) = Box::pin(run_failing_display_probe(None)).await;
-    assert!(reason.is_none(), "{reason:?}");
+    let (reasons, _) = Box::pin(run_failing_display_probe(None, true)).await;
+    assert!(reasons.is_empty(), "{reasons:?}");
 }
 
-/// Connects a client to a server whose display fails to start with `error_info`, or with a plain error. Returns the
-/// reason the client got for the end of the session, and, when it got one, the result of the next read on the TLS
-/// stream: `Ok(0)` when the server closed the TLS session with close_notify.
+/// Connects a client that sets `RNS_UD_CS_SUPPORT_ERRINFO_PDU` when `client_error_info` is true to a server whose
+/// display fails to start with `error_info`, or with a plain error. Returns every reason the client got for the end of
+/// the session, in order, and, when it got one, the result of the next read on the TLS stream: `Ok(0)` when the server
+/// closed the TLS session with close_notify.
 async fn run_failing_display_probe(
     error_info: Option<ErrorInfo>,
-) -> (
-    Option<session::GracefulDisconnectReason>,
-    Option<std::io::Result<usize>>,
-) {
+    client_error_info: bool,
+) -> (Vec<session::GracefulDisconnectReason>, Option<std::io::Result<usize>>) {
     let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
     let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
     let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
@@ -820,18 +843,25 @@ async fn run_failing_display_probe(
         domain: None,
     }));
     let ev = server.event_sender().clone();
+    let opted_out = Arc::new(AtomicBool::new(false));
+    let client_opted_out = Arc::clone(&opted_out);
 
     let local = tokio::task::LocalSet::new();
-    Box::pin(local.run_until(async move {
+    let result = Box::pin(local.run_until(async move {
         let server_task = tokio::task::spawn_local(async move {
             let _ = server.run().await;
         });
 
         let server_addr = local_addr_of(&ev).await;
-        let (mut framed, connection_result) = connect_client(server_addr, |client_addr| {
-            connector::ClientConnector::new(default_client_config(), client_addr)
-        })
-        .await;
+        let make_connector = |client_addr| connector::ClientConnector::new(default_client_config(), client_addr);
+        let (mut framed, connection_result) =
+            connect_client_with(server_addr, make_connector, |stream| ErrorInfoOptOut {
+                inner: stream,
+                enabled: !client_error_info,
+                opted_out: client_opted_out,
+            })
+            .await
+            .expect("finalize connection");
         let mut stage = ActiveStageBuilder {
             static_channels: connection_result.static_channels,
             user_channel_id: connection_result.user_channel_id,
@@ -845,11 +875,11 @@ async fn run_failing_display_probe(
         .build();
         let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
-        // The server closes the connection right after the display fails. Read until the reason, the end of
+        // The server closes the connection right after the display fails. Read until the ultimatum, the end of
         // the stream, or the deadline.
-        let mut reason = None;
+        let mut reasons = Vec::new();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while reason.is_none() {
+        while !matches!(reasons.last(), Some(session::GracefulDisconnectReason::ServerInitiated)) {
             let Ok(read) = tokio::time::timeout_at(deadline, framed.read_pdu()).await else {
                 break;
             };
@@ -858,25 +888,32 @@ async fn run_failing_display_probe(
             };
             for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
                 if let ActiveStageOutput::Terminate(terminate) = output {
-                    reason = Some(terminate);
+                    reasons.push(terminate);
                 }
             }
         }
 
-        let close = if reason.is_some() {
+        let close = if reasons.is_empty() {
+            None
+        } else {
             use tokio::io::AsyncReadExt as _;
 
             let (mut stream, _) = framed.into_inner();
             let mut buf = [0u8; 1];
             tokio::time::timeout_at(deadline, stream.read(&mut buf)).await.ok()
-        } else {
-            None
         };
 
         server_task.abort();
-        (reason, close)
+        (reasons, close)
     }))
-    .await
+    .await;
+
+    assert_eq!(
+        opted_out.load(Ordering::Relaxed),
+        !client_error_info,
+        "the client's RNS_UD_CS_SUPPORT_ERRINFO_PDU was not cleared"
+    );
+    result
 }
 
 struct FailingDisplay {
@@ -898,6 +935,180 @@ impl RdpServerDisplay for FailingDisplay {
             None => server::ServerError::new("display", server::ServerErrorKind::Reason("capture failed".to_owned())),
         })
     }
+}
+
+/// A client that did not set `RNS_UD_CS_SUPPORT_ERRINFO_PDU`, as FreeRDP 3 does not, gets no reason when the server
+/// disconnects it, but still a provider-initiated Disconnect Provider Ultimatum, so it can tell the server ended the
+/// session from a lost connection.
+// oracle: spec MS-RDPBCGR §3.1.5.1.1
+// oracle: regression #2384
+#[tokio::test]
+async fn a_disconnect_tells_a_client_without_error_info_that_the_server_ended_the_session() {
+    let reasons = Box::pin(run_disconnect_probe(false)).await;
+    assert!(
+        matches!(reasons.as_slice(), [session::GracefulDisconnectReason::ServerInitiated]),
+        "{reasons:?}"
+    );
+}
+
+/// A client that set `RNS_UD_CS_SUPPORT_ERRINFO_PDU` gets the reason in a Set Error Info PDU, then the Disconnect
+/// Provider Ultimatum.
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
+#[tokio::test]
+async fn a_disconnect_tells_an_error_info_client_the_reason_before_the_ultimatum() {
+    let reasons = Box::pin(run_disconnect_probe(true)).await;
+    let [
+        session::GracefulDisconnectReason::Other(description),
+        session::GracefulDisconnectReason::ServerInitiated,
+    ] = reasons.as_slice()
+    else {
+        panic!("the client did not get the reason and then the ultimatum, it got {reasons:?}");
+    };
+    // oracle: property round-trip
+    assert_eq!(*description, DISCONNECT_REASON.description());
+}
+
+const DISCONNECT_REASON: ErrorInfo =
+    ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::RpcInitiatedDisconnectByuser);
+
+/// Connects a client that sets `RNS_UD_CS_SUPPORT_ERRINFO_PDU` when `error_info` is true, ends the session with
+/// `ServerEvent::Disconnect(DISCONNECT_REASON)`, and returns every reason the client got for the end, in order.
+async fn run_disconnect_probe(error_info: bool) -> Vec<session::GracefulDisconnectReason> {
+    let identity = test_tls_identity();
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(identity.make_acceptor().expect("failed to build TLS acceptor"))
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+    let opted_out = Arc::new(AtomicBool::new(false));
+
+    let local = tokio::task::LocalSet::new();
+    let reasons = Box::pin(local.run_until({
+        let opted_out = Arc::clone(&opted_out);
+        async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+
+            let server_addr = local_addr_of(&ev).await;
+            let make_connector = |client_addr| connector::ClientConnector::new(default_client_config(), client_addr);
+            let (mut framed, connection_result) =
+                connect_client_with(server_addr, make_connector, |stream| ErrorInfoOptOut {
+                    inner: stream,
+                    enabled: !error_info,
+                    opted_out,
+                })
+                .await
+                .expect("finalize connection");
+            let mut stage = ActiveStageBuilder {
+                static_channels: connection_result.static_channels,
+                user_channel_id: connection_result.user_channel_id,
+                io_channel_id: connection_result.io_channel_id,
+                message_channel_id: connection_result.message_channel_id,
+                share_id: connection_result.share_id,
+                compression_type: connection_result.compression_type,
+                enable_server_pointer: connection_result.enable_server_pointer,
+                pointer_software_rendering: connection_result.pointer_software_rendering,
+            }
+            .build();
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+            ev.send(ServerEvent::Disconnect(DISCONNECT_REASON)).unwrap();
+
+            // Read until the server closes the connection or the deadline passes.
+            let mut reasons = Vec::new();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while let Ok(Ok((action, frame))) = tokio::time::timeout_at(deadline, framed.read_pdu()).await {
+                for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
+                    if let ActiveStageOutput::Terminate(reason) = output {
+                        reasons.push(reason);
+                    }
+                }
+            }
+
+            drop(display_tx);
+            server_task.abort();
+            reasons
+        }
+    }))
+    .await;
+
+    assert_eq!(
+        opted_out.load(Ordering::Relaxed),
+        !error_info,
+        "the client's RNS_UD_CS_SUPPORT_ERRINFO_PDU was not cleared"
+    );
+    reasons
+}
+
+/// Clears `RNS_UD_CS_SUPPORT_ERRINFO_PDU` in the client's MCS Connect Initial before TLS encrypts it, when `enabled`.
+struct ErrorInfoOptOut<S> {
+    inner: S,
+    enabled: bool,
+    opted_out: Arc<AtomicBool>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for ErrorInfoOptOut<S> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for ErrorInfoOptOut<S> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let patched = (this.enabled && !this.opted_out.load(Ordering::Relaxed))
+            .then(|| connect_initial_without_error_info(buf))
+            .flatten();
+        let Some(patched) = patched else {
+            return Pin::new(&mut this.inner).poll_write(cx, buf);
+        };
+        let written = Pin::new(&mut this.inner).poll_write(cx, &patched);
+        if let Poll::Ready(Ok(written)) = written
+            && written == patched.len()
+        {
+            this.opted_out.store(true, Ordering::Relaxed);
+        }
+        written
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+/// Re-encodes `frame` with `RNS_UD_CS_SUPPORT_ERRINFO_PDU` cleared, if it is an MCS Connect Initial that sets it.
+fn connect_initial_without_error_info(frame: &[u8]) -> Option<Vec<u8>> {
+    let data = decode::<X224<X224Data<'_>>>(frame).ok()?.0.data;
+    let initial = decode::<pdu::mcs::ConnectInitial>(&data).ok()?;
+    let mut blocks = initial.conference_create_request.into_gcc_blocks();
+    let flags = blocks.core.optional_data.early_capability_flags.as_mut()?;
+    if !flags.contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU) {
+        return None;
+    }
+    flags.remove(gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
+    let initial = pdu::mcs::ConnectInitial {
+        conference_create_request: gcc::ConferenceCreateRequest::new(blocks).ok()?,
+        ..initial
+    };
+    let mut buf = pdu::WriteBuf::new();
+    connector::encode_x224_packet(&initial, &mut buf).ok()?;
+    Some(buf.filled().to_vec())
 }
 
 #[tokio::test]
