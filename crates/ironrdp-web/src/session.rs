@@ -618,6 +618,10 @@ pub(crate) enum RdpInputEvent {
         scale_factor: Option<u32>,
         physical_size: Option<(u32, u32)>,
     },
+    /// Stop (`false`) or resume (`true`) the server's display updates.
+    DisplayUpdates {
+        allow: bool,
+    },
     TerminateSession,
 }
 
@@ -748,6 +752,8 @@ impl iron_remote_desktop::Session for Session {
 
         // We retain the factory to drive the Deactivation-Reactivation Sequence locally.
         let activation_factory = connection_result.activation_factory;
+
+        let mut display_updates = DisplayUpdates::new(connection_result.suppress_output_support);
 
         let mut active_stage = ActiveStageBuilder {
             static_channels: connection_result.static_channels,
@@ -929,6 +935,15 @@ impl iron_remote_desktop::Session for Session {
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                             } else {
                                 debug!("Resize event ignored");
+                                Vec::new()
+                            }
+                        },
+                        RdpInputEvent::DisplayUpdates { allow } => {
+                            if let Some(resume) = display_updates.toggle(allow, (image.width(), image.height())) {
+                                debug!(allow, "Display updates toggled");
+                                vec![ActiveStageOutput::ResponseFrame(active_stage.encode_suppress_output(resume)?)]
+                            } else {
+                                debug!("Display updates toggle ignored: the server does not support Suppress Output");
                                 Vec::new()
                             }
                         },
@@ -1127,6 +1142,7 @@ impl iron_remote_desktop::Session for Session {
                                 pointer_software_rendering,
                                 static_channel_chunk_size,
                                 window_support_level,
+                                suppress_output_support: reactivated_suppress_output_support,
                                 ..
                             } = connection_activation.connection_activation_state()
                             {
@@ -1147,6 +1163,13 @@ impl iron_remote_desktop::Session for Session {
                                     return Err(IronError::from(anyhow::anyhow!("invalid static channel chunk size")));
                                 }
                                 active_stage.set_window_support_level(window_support_level);
+                                // UNTESTED: no test drives this loop, so this send relies on the tests of `DisplayUpdates`.
+                                if let Some(resume) = display_updates.reactivated(reactivated_suppress_output_support) {
+                                    debug!("Display updates stopped again after reactivation");
+                                    self.writer_tx
+                                        .unbounded_send(active_stage.encode_suppress_output(resume)?)
+                                        .context("Send frame to writer task")?;
+                                }
                                 break 'activation_seq;
                             }
                         }
@@ -1326,6 +1349,19 @@ impl iron_remote_desktop::Session for Session {
                         },
                     ))
                     .context("send file contents response")
+                    .map_err(IronError::from)?;
+
+                return Ok(JsValue::NULL);
+            };
+            |display_updates: JsValue| {
+                let allow = display_updates
+                    .as_bool()
+                    .context("display_updates expects a boolean")
+                    .map_err(IronError::from)?;
+
+                self.input_events_tx
+                    .unbounded_send(RdpInputEvent::DisplayUpdates { allow })
+                    .context("send display updates toggle")
                     .map_err(IronError::from)?;
 
                 return Ok(JsValue::NULL);
@@ -2040,6 +2076,37 @@ fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
 }
 
+/// The app's display updates toggle, applied while the server supports Suppress Output.
+///
+/// Each method returns `Some(resume)` when a Suppress Output PDU has to be sent, with `resume` as taken by
+/// `ActiveStage::encode_suppress_output`, and `None` when nothing is sent.
+struct DisplayUpdates {
+    server_support: bool,
+    allowed: bool,
+}
+
+impl DisplayUpdates {
+    fn new(server_support: bool) -> Self {
+        Self {
+            server_support,
+            allowed: true,
+        }
+    }
+
+    /// Records the app's toggle, and resumes updates for a desktop of `desktop_size`.
+    fn toggle(&mut self, allow: bool, desktop_size: (u16, u16)) -> Option<Option<(u16, u16)>> {
+        self.allowed = allow;
+        self.server_support.then_some(allow.then_some(desktop_size))
+    }
+
+    /// Reads the server's support again after a Deactivation-Reactivation Sequence.
+    /// Updates the app stopped are stopped again, since the server may have reset them.
+    fn reactivated(&mut self, server_support: bool) -> Option<Option<(u16, u16)>> {
+        self.server_support = server_support;
+        (server_support && !self.allowed).then_some(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures_util::io::Cursor;
@@ -2642,5 +2709,32 @@ mod tests {
             }
             _ => panic!("Expected correct flags conversion"),
         }
+    }
+
+    #[test]
+    fn display_updates_toggle_is_sent_only_while_the_server_supports_it() {
+        let mut supported = DisplayUpdates::new(true);
+        assert_eq!(supported.toggle(false, (1024, 768)), Some(None));
+        assert_eq!(supported.toggle(true, (1024, 768)), Some(Some((1024, 768))));
+
+        let mut unsupported = DisplayUpdates::new(false);
+        assert_eq!(unsupported.toggle(false, (1024, 768)), None);
+        assert_eq!(unsupported.toggle(true, (1024, 768)), None);
+    }
+
+    #[test]
+    fn display_updates_stopped_by_the_app_are_stopped_again_after_reactivation() {
+        let mut display_updates = DisplayUpdates::new(true);
+        assert_eq!(display_updates.reactivated(true), None);
+
+        display_updates.toggle(false, (1024, 768));
+        assert_eq!(display_updates.reactivated(true), Some(None));
+        assert_eq!(display_updates.reactivated(false), None);
+
+        // Support gained by reactivation applies to a toggle made before it.
+        let mut display_updates = DisplayUpdates::new(false);
+        display_updates.toggle(false, (1024, 768));
+        assert_eq!(display_updates.reactivated(true), Some(None));
+        assert_eq!(display_updates.toggle(true, (1920, 1080)), Some(Some((1920, 1080))));
     }
 }
