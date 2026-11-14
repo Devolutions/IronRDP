@@ -63,6 +63,11 @@ pub fn lints(sh: &Shell) -> anyhow::Result<()> {
         "{CARGO} clippy --workspace --all-targets --features helper,__bench --locked -- -D warnings"
     )
     .run()?;
+    cmd!(
+        sh,
+        "{CARGO} clippy -p ironrdp-graphics --all-targets --features rayon --locked -- -D warnings"
+    )
+    .run()?;
 
     println!("All good!");
 
@@ -302,6 +307,11 @@ pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
         "{CARGO} test -p ironrdp-testsuite-extra --features remote-guard --locked --no-run"
     )
     .run()?;
+    cmd!(
+        sh,
+        "{CARGO} test -p ironrdp-graphics --lib --features rayon --locked --no-run"
+    )
+    .run()?;
     println!("All good!");
     Ok(())
 }
@@ -350,6 +360,7 @@ pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
         "{CARGO} test -p ironrdp-testsuite-extra --features remote-guard --locked -- client::remote_guard"
     )
     .run()?;
+    cmd!(sh, "{CARGO} test -p ironrdp-graphics --lib --features rayon --locked").run()?;
     println!("All good!");
     Ok(())
 }

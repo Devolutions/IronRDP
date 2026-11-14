@@ -12,7 +12,7 @@ TASKS:
   bootstrap               Install all requirements for development
   bench corpus-fetch      Fetch and verify the pinned benchmark capture corpus
   bench corpus-list       List pinned benchmark capture corpus metadata
-  bench rfx-decode [--filter <REGEX>] [--save-baseline <NAME>] [--baseline <NAME>]
+  bench rfx-decode [--filter <REGEX>] [--save-baseline <NAME>] [--baseline <NAME>] [--rayon]
                           Run the native RemoteFX decode benchmark
   bench rfx-decode-wasm [--simd]
                           Build the RemoteFX decode benchmark for WASM and run it under Node
@@ -144,6 +144,7 @@ pub enum Action {
         filter: Option<String>,
         save_baseline: Option<String>,
         baseline: Option<String>,
+        rayon: bool,
     },
     BenchRfxDecodeWasm {
         simd: bool,
@@ -178,6 +179,7 @@ pub fn parse_args() -> anyhow::Result<Args> {
                     filter: args.opt_value_from_str("--filter")?,
                     save_baseline: args.opt_value_from_str("--save-baseline")?,
                     baseline: args.opt_value_from_str("--baseline")?,
+                    rayon: args.contains("--rayon"),
                 },
                 Some("rfx-decode-wasm") => Action::BenchRfxDecodeWasm {
                     simd: args.contains("--simd"),

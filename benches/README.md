@@ -18,6 +18,17 @@ Criterion accepts a regex to select a subset, so you can iterate on one stage wi
 cargo xtask bench rfx-decode --filter 'stage/rlgr'
 ```
 
+#### Progressive
+
+The `progressive` group decodes a full-screen RemoteFX Progressive update through `ProgressiveDecoder::decode_bitmap`.
+Add `--rayon` to build with the `rayon` feature, which decodes the region's tiles on rayon's pool.
+Run it both ways to compare sequential and parallel decoding:
+
+```sh
+cargo xtask bench rfx-decode --filter progressive
+cargo xtask bench rfx-decode --filter progressive --rayon
+```
+
 #### Validating a change
 
 Use Criterion baselines to compare two runs.
@@ -59,6 +70,7 @@ Stage times cover one component, except YCbCr conversion, which covers all three
 
 Fixtures are generated at runtime.
 A synthetic screen is rendered, encoded with `rfx_encode_component`, and decoded as a video-mode stream with headers sent once.
+The Progressive fixture encodes the same screen with `encode_first_pass` into one region of simple tiles, with the classic fixtures' quantization and the reduce-extrapolate DWT.
 The round-trip test (`cargo test -p rfx-decode-fixtures`) guards them.
 
 Synthetic workloads:
