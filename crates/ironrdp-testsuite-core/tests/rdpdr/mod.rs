@@ -846,11 +846,14 @@ fn printer_is_not_announced_without_server_printer_capability() {
             .unwrap()
             .is_empty()
     );
-    assert!(
-        rdpdr
-            .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
-            .unwrap()
-            .is_empty()
+
+    // The list still goes after logon, without the printer.
+    let logged_on = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(logged_on.len(), 1);
+    // oracle: spec MS-RDPEFS §2.2.2.9 (Client Device List Announce with a DeviceCount of zero)
+    assert_eq!(
+        logged_on[0].encode_unframed_pdu().unwrap(),
+        [0x72, 0x44, 0x41, 0x44, 0, 0, 0, 0]
     );
 }
 
