@@ -122,22 +122,29 @@ impl SendWindow {
         self.entries.len() < self.max_entries
     }
 
-    /// Maximum number of packets in flight.
-    pub(crate) fn max_entries(&self) -> usize {
-        self.max_entries
-    }
-
-    /// Bound the window by the receive window the peer advertises (MS-RDPEUDP
-    /// uReceiveWindowSize, in packets): the sender must not have more packets
-    /// outstanding than the receiver can hold. The value is taken from every
-    /// datagram, so the window follows the peer. Packets already in flight
-    /// beyond a smaller value are not recalled: new ones wait until the window
-    /// drains below it. The value is clamped to `1..=MAX_PEER_WINDOW`.
+    /// Bound the window by the receive window the peer advertises.
     ///
-    /// Returns whether the window changed.
-    pub(crate) fn set_peer_window(&mut self, packets: u16) -> bool {
-        let max_entries = usize::from(packets).clamp(1, MAX_PEER_WINDOW);
-        core::mem::replace(&mut self.max_entries, max_entries) != max_entries
+    /// [3.1.1.7] Flow Control: "The receiver advertises the number of datagrams it can accommodate at any given time.
+    /// The sender MUST NOT send more datagrams than the advertised number of datagrams."
+    ///
+    /// `packets` is the `uReceiveWindowSize` of a datagram's [2.2.2.1] RDPUDP_FEC_HEADER Structure.
+    /// The value is taken from every datagram, so the window follows the peer.
+    /// Packets already in flight beyond a smaller value are not recalled: new ones wait until the window drains below it.
+    /// A window of zero lets no new packet out until a later datagram advertises room.
+    /// A value above `MAX_PEER_WINDOW` is taken as `MAX_PEER_WINDOW`, which sends less than the peer allows.
+    ///
+    /// [3.1.1.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/a102f4ab-e411-4f9a-93d7-6d07b3b98e1b
+    /// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeudp/ceaae261-e538-40f0-8678-254e31621054
+    pub(crate) fn set_peer_window(&mut self, packets: u16) {
+        let max_entries = usize::from(packets).min(MAX_PEER_WINDOW);
+        if self.max_entries != max_entries {
+            trace!(
+                from = self.max_entries,
+                to = max_entries,
+                "Send window follows the peer's receive window"
+            );
+            self.max_entries = max_entries;
+        }
     }
 
     /// Number of entries currently in the window.

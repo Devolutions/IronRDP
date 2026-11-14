@@ -333,10 +333,6 @@ pub struct RdpeudpConnection {
 
     // ── Data transfer components (initialized on Established) ──
     send_window: Option<SendWindow>,
-    /// The receive window the peer advertised in its handshake datagram
-    /// (uReceiveWindowSize, MS-RDPEUDP wire only), applied to the send window
-    /// once it exists.
-    peer_receive_window: Option<u16>,
     recv_window: Option<RecvWindow>,
     congestion: CongestionControl,
     loss_detector: LossDetector,
@@ -614,7 +610,6 @@ impl RdpeudpConnection {
             "Accepted SYN"
         );
 
-        conn.peer_receive_window = Some(syn_datagram.header.receive_window_size);
         conn.enqueue_syn_ack(remote_isn, negotiated_version, now);
         conn.timers.set(Timer::Idle, now + conn.config.idle_timeout);
 
@@ -628,7 +623,6 @@ impl RdpeudpConnection {
             config,
             params: None,
             send_window: None,
-            peer_receive_window: None,
             recv_window: None,
             congestion: CongestionControl::new(),
             loss_detector: LossDetector::new(),
@@ -1248,8 +1242,6 @@ impl RdpeudpConnection {
             .as_ref()
             .ok_or_else(|| RdpeudpError::invalid_packet("handle SYN+ACK", "SYN+ACK missing SynDataEx"))?;
 
-        self.peer_receive_window = Some(datagram.header.receive_window_size);
-
         // 3.1.5.1.1: the version in the SYN+ACK is "the highest version
         // supported by both endpoints", and per 3.1.5.1.3 that is the version
         // both MUST then use. Version 3 selects the MS-RDPEUDP2 framing; 1 and
@@ -1310,7 +1302,7 @@ impl RdpeudpConnection {
         self.enqueue_final_ack(remote_isn);
 
         // Transition to established
-        self.transition_to_established(now);
+        self.transition_to_established(now, datagram.header.receive_window_size);
 
         Ok(())
     }
@@ -1336,11 +1328,9 @@ impl RdpeudpConnection {
 
         debug!("Received final ACK");
 
-        self.peer_receive_window = Some(datagram.header.receive_window_size);
-
         self.sample_handshake_rtt(now);
 
-        self.transition_to_established(now);
+        self.transition_to_established(now, datagram.header.receive_window_size);
         Ok(())
     }
 
@@ -1399,7 +1389,8 @@ impl RdpeudpConnection {
     /// Transition from handshake to established state.
     ///
     /// Initializes all data transfer components (windows, timers).
-    fn transition_to_established(&mut self, now: MonotonicInstant) {
+    /// `peer_receive_window` is the `uReceiveWindowSize` of the handshake datagram that completes the handshake.
+    fn transition_to_established(&mut self, now: MonotonicInstant, peer_receive_window: u16) {
         self.state = State::Established;
         self.timers.clear(Timer::Retransmit);
 
@@ -1446,8 +1437,8 @@ impl RdpeudpConnection {
         );
         // MS-RDPEUDP 3.1.1.7: the peer's uReceiveWindowSize bounds what may
         // be outstanding. MS-RDPEUDP2 has no such header field.
-        if let (WireFormat::V1 { .. }, Some(packets)) = (&params.wire, self.peer_receive_window) {
-            send_window.set_peer_window(packets);
+        if let WireFormat::V1 { .. } = params.wire {
+            send_window.set_peer_window(peer_receive_window);
         }
         self.send_window = Some(send_window);
 
@@ -2360,14 +2351,7 @@ impl RdpeudpConnection {
         // The peer's receive window bounds what may be outstanding (MS-RDPEUDP
         // 3.1.1.7, uReceiveWindowSize), whatever the local window size.
         if let Some(send_window) = self.send_window.as_mut() {
-            let from = send_window.max_entries();
-            if send_window.set_peer_window(datagram.header.receive_window_size) {
-                trace!(
-                    from,
-                    to = send_window.max_entries(),
-                    "Send window follows the peer's receive window"
-                );
-            }
+            send_window.set_peer_window(datagram.header.receive_window_size);
         }
 
         let delayed = datagram.header.flags.contains(V1Flags::ACKDELAYED);
