@@ -552,6 +552,94 @@ fn decode_stream_with_bands_layer_short_vbar_cache_miss() {
     assert_eq!(pixels[idx3 + 2], 0x00, "red channel at (1,3)");
 }
 
+/// Build a 4x4 stream: a white residual layer, then one band over column 1
+/// (rows 0-3, red background) holding the given V-bar bytes.
+fn make_white_stream_with_one_vbar(vbar: &[u8]) -> Vec<u8> {
+    let residual = make_solid_residual(0xFF, 0xFF, 0xFF, 16);
+
+    let mut bands_data = Vec::new();
+    bands_data.extend_from_slice(&1u16.to_le_bytes()); // x_start
+    bands_data.extend_from_slice(&1u16.to_le_bytes()); // x_end
+    bands_data.extend_from_slice(&0u16.to_le_bytes()); // y_start
+    bands_data.extend_from_slice(&3u16.to_le_bytes()); // y_end
+    bands_data.extend_from_slice(&[0x00, 0x00, 0xFF]); // background BGR = red
+    bands_data.extend_from_slice(vbar);
+
+    let mut stream = Vec::new();
+    stream.push(0x00); // flags
+    stream.push(0x00); // seq
+    stream.extend_from_slice(&u32::try_from(residual.len()).unwrap().to_le_bytes());
+    stream.extend_from_slice(&u32::try_from(bands_data.len()).unwrap().to_le_bytes());
+    stream.extend_from_slice(&0u32.to_le_bytes()); // subcodecByteCount
+    stream.extend_from_slice(&residual);
+    stream.extend_from_slice(&bands_data);
+    stream
+}
+
+fn pixel_at(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
+    let offset = (y * width + x) * 4;
+    pixels[offset..offset + 4].try_into().unwrap()
+}
+
+#[test]
+fn vbar_cache_hit_on_empty_entry_draws_zero_pixels() {
+    let mut dec = ClearCodecDecoder::new();
+    let stream = make_white_stream_with_one_vbar(&(0x8000u16 | 7).to_le_bytes());
+
+    let pixels = dec.decode(&stream, 4, 4).unwrap();
+
+    for y in 0..4 {
+        assert_eq!(
+            pixel_at(&pixels, 4, 1, y),
+            [0x00, 0x00, 0x00, 0xFF],
+            "column 1, row {y}"
+        );
+        assert_eq!(
+            pixel_at(&pixels, 4, 0, y),
+            [0xFF, 0xFF, 0xFF, 0xFF],
+            "column 0, row {y}"
+        );
+        assert_eq!(
+            pixel_at(&pixels, 4, 2, y),
+            [0xFF, 0xFF, 0xFF, 0xFF],
+            "column 2, row {y}"
+        );
+    }
+}
+
+#[test]
+fn short_vbar_cache_hit_on_empty_entry_draws_band_background() {
+    let mut dec = ClearCodecDecoder::new();
+    let mut vbar = (0x4000u16 | 9).to_le_bytes().to_vec();
+    vbar.push(1); // yOn
+    let stream = make_white_stream_with_one_vbar(&vbar);
+
+    let pixels = dec.decode(&stream, 4, 4).unwrap();
+
+    for y in 0..4 {
+        assert_eq!(
+            pixel_at(&pixels, 4, 1, y),
+            [0x00, 0x00, 0xFF, 0xFF],
+            "column 1, row {y}"
+        );
+        assert_eq!(
+            pixel_at(&pixels, 4, 3, y),
+            [0xFF, 0xFF, 0xFF, 0xFF],
+            "column 3, row {y}"
+        );
+    }
+}
+
+#[test]
+fn short_vbar_cache_hit_on_empty_entry_still_checks_y_on() {
+    let mut dec = ClearCodecDecoder::new();
+    let mut vbar = (0x4000u16 | 9).to_le_bytes().to_vec();
+    vbar.push(5); // yOn past the 4-row band
+    let stream = make_white_stream_with_one_vbar(&vbar);
+
+    assert!(dec.decode(&stream, 4, 4).is_err());
+}
+
 #[test]
 fn adversarial_large_dimensions_rejected() {
     // 65535x65535 would allocate ~17GB. The decoder should reject it.

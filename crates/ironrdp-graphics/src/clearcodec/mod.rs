@@ -233,20 +233,19 @@ impl ClearCodecDecoder {
         bg_green: u8,
         bg_red: u8,
     ) -> DecodeResult<FullVBar> {
+        // A server can refer to a cache entry this decoder never stored (Windows
+        // does so after a cache reset). As in FreeRDP, an empty entry reads as a
+        // column of zero pixels instead of failing the whole update.
         match vbar {
-            VBar::CacheHit { index } => {
-                let cached = self
-                    .vbar_cache
-                    .get_vbar(*index)
-                    .ok_or_else(|| invalid_field_err!("vbarIndex", "V-bar cache miss on hit"))?;
-                Ok(cached.clone())
-            }
+            VBar::CacheHit { index } => Ok(self.vbar_cache.get_vbar(*index).cloned().unwrap_or_else(|| FullVBar {
+                pixels: vec![0; usize::from(band_height) * 3],
+            })),
             VBar::ShortCacheHit { index, y_on } => {
-                let cached_short = self
-                    .vbar_cache
-                    .get_short_vbar(*index)
-                    .ok_or_else(|| invalid_field_err!("shortVbarIndex", "short V-bar cache miss on hit"))?;
-                if usize::from(*y_on) + usize::from(cached_short.pixel_count) > usize::from(band_height) {
+                let (pixel_count, pixels) = match self.vbar_cache.get_short_vbar(*index) {
+                    Some(cached_short) => (cached_short.pixel_count, cached_short.pixels.clone()),
+                    None => (0, Vec::new()),
+                };
+                if usize::from(*y_on) + usize::from(pixel_count) > usize::from(band_height) {
                     return Err(invalid_field_err!(
                         "shortVBarYOn",
                         "y_on + pixel_count exceeds band height"
@@ -255,8 +254,8 @@ impl ClearCodecDecoder {
                 // Create a modified short vbar with the y_on from this reference
                 let modified = ShortVBar {
                     y_on: *y_on,
-                    pixel_count: cached_short.pixel_count,
-                    pixels: cached_short.pixels.clone(),
+                    pixel_count,
+                    pixels,
                 };
                 let full = VBarCache::reconstruct_full_vbar(&modified, band_height, bg_blue, bg_green, bg_red);
                 // Store reconstructed full V-bar in cache
