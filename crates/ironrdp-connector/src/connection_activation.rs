@@ -626,7 +626,7 @@ fn create_client_confirm_active(
         }),
         CapabilitySet::Input(Input {
             input_flags: InputFlags::all(),
-            keyboard_layout: 0,
+            keyboard_layout: config.keyboard_layout,
             keyboard_type: Some(config.keyboard_type),
             keyboard_subtype: config.keyboard_subtype,
             keyboard_function_key: config.keyboard_functional_keys_count,
@@ -838,6 +838,33 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn input_capability_carries_configured_keyboard_layout() {
+        let mut config = test_config(None);
+        config.keyboard_layout = 0x409;
+
+        let confirm = create_client_confirm_active(
+            &config,
+            Vec::new(),
+            DesktopSize {
+                width: 1024,
+                height: 768,
+            },
+            None,
+        )
+        .unwrap();
+
+        let input = confirm
+            .pdu
+            .capability_sets
+            .iter()
+            .find_map(|capability| match capability {
+                CapabilitySet::Input(input) => Some(input),
+                _ => None,
+            });
+        assert_eq!(input.map(|input| input.keyboard_layout), Some(0x409));
     }
 
     #[test]

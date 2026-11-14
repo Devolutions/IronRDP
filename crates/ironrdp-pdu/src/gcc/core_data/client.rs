@@ -103,6 +103,12 @@ impl Encode for ClientCoreData {
 
         let mut client_name_dst = utils::to_utf16_bytes(self.client_name.as_ref());
         client_name_dst.resize(CLIENT_NAME_SIZE - 2, 0);
+        // A cut through a surrogate pair leaves its high half unpaired; drop it.
+        if let Some(unit) = client_name_dst.chunks_exact_mut(2).next_back() {
+            if matches!(unit, [_, 0xD8..=0xDB]) {
+                unit.fill(0);
+            }
+        }
         let mut ime_file_name_dst = utils::to_utf16_bytes(self.ime_file_name.as_ref());
         ime_file_name_dst.resize(IME_FILE_NAME_SIZE - 2, 0);
 
