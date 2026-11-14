@@ -770,6 +770,12 @@ impl Acceptor {
         })
     }
 
+    /// Bounds the messages of each static channel whose processor sets no limit of its own, in the channels attached so
+    /// far and those attached later; see [`StaticChannelSet::set_max_message_size`].
+    pub fn set_max_static_message_size(&mut self, max_message_size: usize) {
+        self.static_channels.set_max_message_size(max_message_size);
+    }
+
     pub fn attach_static_channel<T>(&mut self, channel: T)
     where
         T: SvcServerProcessor + 'static,

@@ -1,7 +1,9 @@
 use ironrdp_core::{encode_vec, impl_as_any};
 use ironrdp_dvc::ironrdp_pdu::PduResult;
+use ironrdp_dvc::ironrdp_pdu::rdp::vc::ChannelControlFlags;
 use ironrdp_dvc::{DrdynvcServer, DvcMessage, DvcProcessor, DvcServerProcessor};
-use ironrdp_svc::SvcProcessor as _;
+use ironrdp_svc::{MAX_CHANNEL_CHUNK_LENGTH, StaticChannelSet, SvcProcessor as _};
+use rstest::rstest;
 
 use super::*;
 
@@ -40,7 +42,11 @@ fn process_client_pdu(server: &mut DrdynvcServer, pdu: DrdynvcClientPdu) {
 }
 
 fn open_recorded_server(maximum: Option<usize>) -> (DrdynvcServer, u32) {
-    let mut server = DrdynvcServer::new().with_dynamic_channel(RecordedServerDvc {
+    open_recorded_server_on(DrdynvcServer::new(), maximum)
+}
+
+fn open_recorded_server_on(server: DrdynvcServer, maximum: Option<usize>) -> (DrdynvcServer, u32) {
+    let mut server = server.with_dynamic_channel(RecordedServerDvc {
         maximum,
         ..Default::default()
     });
@@ -195,10 +201,16 @@ fn close_channel_suppresses_pdu_for_pending_and_declined_channels() {
     assert!(server.close_channel(declined_id).is_none());
 }
 
+#[rstest]
 // oracle: mutant buffering an oversized fragmented message before the backend can reject it.
-#[test]
-fn server_rejects_oversized_fragmented_messages_before_reassembly() {
-    let (mut server, id) = open_recorded_server(Some(8));
+#[case::processor_limit(DrdynvcServer::new(), Some(8))]
+// oracle: mutant ignoring the server-wide message limit for a channel whose processor sets none.
+#[case::server_limit(DrdynvcServer::new().with_max_message_size(8), None)]
+fn server_rejects_oversized_fragmented_messages_before_reassembly(
+    #[case] server: DrdynvcServer,
+    #[case] maximum: Option<usize>,
+) {
+    let (mut server, id) = open_recorded_server_on(server, maximum);
     let response = server
         .process(
             &encode_vec(&DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(
@@ -215,6 +227,184 @@ fn server_rejects_oversized_fragmented_messages_before_reassembly() {
         ironrdp_core::decode::<DrdynvcServerPdu>(&response[0].encode_unframed_pdu().unwrap()).unwrap(),
         DrdynvcServerPdu::Close(ClosePdu::new(id))
     );
+}
+
+// oracle: mutant refusing a message whose declared length equals the server-wide limit.
+#[test]
+fn a_message_declared_at_the_limit_is_delivered() {
+    let (mut server, id) = open_recorded_server_on(DrdynvcServer::new().with_max_message_size(8), None);
+    process_client_pdu(
+        &mut server,
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(id, 8, vec![1; 4]))),
+    );
+    process_client_pdu(
+        &mut server,
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(id, vec![1; 4]))),
+    );
+    assert!(server.is_channel_opened(id));
+    let channel = server.dvc_by_id::<RecordedServerDvc>(id).unwrap();
+    assert_eq!(channel.processor().received, vec![vec![1; 8]]);
+}
+
+// oracle: mutant applying the server-wide message limit over a processor's own.
+#[test]
+fn a_processor_limit_takes_precedence_over_the_server_limit() {
+    let (mut server, id) = open_recorded_server_on(DrdynvcServer::new().with_max_message_size(8), Some(16));
+    process_client_pdu(
+        &mut server,
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(id, vec![1; 12]))),
+    );
+    assert!(server.is_channel_opened(id));
+    let channel = server.dvc_by_id::<RecordedServerDvc>(id).unwrap();
+    assert_eq!(channel.processor().received, vec![vec![1; 12]]);
+}
+
+// oracle: mutant taking the larger of a processor's own message limit and the server-wide one.
+#[test]
+fn a_stricter_processor_limit_takes_precedence_over_the_server_limit() {
+    let (mut server, id) = open_recorded_server_on(DrdynvcServer::new().with_max_message_size(16), Some(8));
+    process_client_pdu(
+        &mut server,
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(id, vec![1; 12]))),
+    );
+    assert!(!server.is_channel_opened(id));
+}
+
+/// A message from the client as one static channel chunk.
+fn static_chunk(pdu: &DrdynvcClientPdu) -> Vec<u8> {
+    let body = encode_vec(pdu).unwrap();
+    crate::svc::channel_chunk(
+        &body,
+        u32::try_from(body.len()).unwrap(),
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+    )
+}
+
+/// The first static channel chunk of a message declared `length` bytes long.
+fn first_chunk(length: u32) -> Vec<u8> {
+    crate::svc::channel_chunk(&[1; 8], length, ChannelControlFlags::FLAG_FIRST)
+}
+
+/// The limit of the static channel set in which [`open_in_bounded_static_set`] puts the DRDYNVC static channel.
+const STATIC_LIMIT: usize = 15;
+
+/// The recorded channel, opened on `server`, which is then put in a static channel set bounded at [`STATIC_LIMIT`].
+fn open_in_bounded_static_set(server: DrdynvcServer) -> (StaticChannelSet, u32) {
+    let (server, id) = open_recorded_server_on(server, None);
+    let mut set = StaticChannelSet::new();
+    set.set_max_message_size(STATIC_LIMIT);
+    set.insert(server);
+    (set, id)
+}
+
+// oracle: mutant bounding the DRDYNVC static channel at the dynamic channel limit, which leaves no room for the DRDYNVC
+// header.
+#[test]
+fn a_message_at_the_limit_passes_through_a_bounded_static_set() {
+    let (mut set, id) = open_in_bounded_static_set(DrdynvcServer::new().with_max_message_size(15));
+    let svc = set.get_by_type_mut::<DrdynvcServer>().unwrap();
+    svc.process(&static_chunk(&DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(
+        DataPdu::new(id, vec![1; 15]),
+    ))))
+    .expect("a message at the limit");
+    let server = svc.channel_processor_downcast_ref::<DrdynvcServer>().unwrap();
+    assert!(server.is_channel_opened(id));
+    assert_eq!(
+        server.dvc_by_id::<RecordedServerDvc>(id).unwrap().processor().received,
+        vec![vec![1; 15]]
+    );
+}
+
+// oracle: mutant ignoring the server-wide message limit for an unfragmented message.
+#[test]
+fn a_message_over_the_limit_closes_only_its_channel_through_a_bounded_static_set() {
+    let (mut set, id) = open_in_bounded_static_set(DrdynvcServer::new().with_max_message_size(15));
+    let svc = set.get_by_type_mut::<DrdynvcServer>().unwrap();
+    svc.process(&static_chunk(&DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(
+        DataPdu::new(id, vec![1; 16]),
+    ))))
+    .expect("an oversized message closes only its channel");
+    assert!(
+        !svc.channel_processor_downcast_ref::<DrdynvcServer>()
+            .unwrap()
+            .is_channel_opened(id)
+    );
+}
+
+// oracle: spec MS-RDPEDYC §2.2.3.1, a DYNVC_DATA_FIRST PDU may fill 1,600 bytes; mutant bounding the DRDYNVC static
+// channel below that for a small dynamic channel limit, which ends the session.
+#[test]
+fn a_full_size_pdu_passes_a_static_channel_bounded_below_it() {
+    const CHANNEL_PDU_HEADER_SIZE: usize = 4 /* length */ + 4 /* flags */;
+    const DATA_FIRST_HEADER_SIZE: usize = 1 /* cbId, Len, Cmd */ + 1 /* ChannelId */ + 4 /* Length */;
+
+    let (mut set, id) = open_in_bounded_static_set(DrdynvcServer::new().with_max_message_size(15));
+    let chunk = static_chunk(&DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(
+        id,
+        1_000_000,
+        vec![1; 1600 - DATA_FIRST_HEADER_SIZE],
+    ))));
+    assert_eq!(chunk.len(), CHANNEL_PDU_HEADER_SIZE + 1600, "a full-size PDU");
+    let svc = set.get_by_type_mut::<DrdynvcServer>().unwrap();
+    svc.process(&chunk).expect("a full-size PDU closes only its channel");
+    assert!(
+        !svc.channel_processor_downcast_ref::<DrdynvcServer>()
+            .unwrap()
+            .is_channel_opened(id)
+    );
+}
+
+#[rstest]
+// oracle: mutant leaving the DRDYNVC static channel unbounded without a dynamic channel limit, which lets a client make
+// it keep a declared 4 GiB under a static channel set's limit.
+#[case::static_set_limit(DrdynvcServer::new, STATIC_LIMIT)]
+// oracle: mutant leaving the DRDYNVC static channel unbounded with a dynamic channel limit, or bounding it elsewhere
+// than at the limit plus one chunk.
+#[case::dynamic_limit_plus_one_chunk(|| DrdynvcServer::new().with_max_message_size(15), 15 + MAX_CHANNEL_CHUNK_LENGTH)]
+fn the_drdynvc_static_channel_is_bounded(#[case] server: fn() -> DrdynvcServer, #[case] bound: usize) {
+    let bound = u32::try_from(bound).unwrap();
+
+    let (mut set, _) = open_in_bounded_static_set(server());
+    let svc = set.get_by_type_mut::<DrdynvcServer>().unwrap();
+    svc.process(&first_chunk(bound))
+        .expect("a message declared at the bound");
+
+    let (mut set, _) = open_in_bounded_static_set(server());
+    let svc = set.get_by_type_mut::<DrdynvcServer>().unwrap();
+    let error = svc
+        .process(&first_chunk(bound + 1))
+        .expect_err("a message declared over the bound");
+    assert!(
+        format!("{error:?}").contains("exceeds configured maximum size"),
+        "refused for another reason: {error:?}"
+    );
+}
+
+// oracle: mutant wrapping the DRDYNVC static channel's bound for a dynamic channel limit near `usize::MAX`, which
+// bounds it below a full-size PDU.
+#[test]
+fn the_largest_dynamic_channel_limit_leaves_drdynvc_unbounded() {
+    let (mut set, _) = open_in_bounded_static_set(DrdynvcServer::new().with_max_message_size(usize::MAX));
+    let svc = set.get_by_type_mut::<DrdynvcServer>().unwrap();
+    svc.process(&first_chunk(u32::MAX))
+        .expect("a message declared at the largest length");
+}
+
+// oracle: mutant ignoring DataFirstCompressedPdu::Length when bounding a message.
+#[test]
+fn a_declared_compressed_length_over_the_limit_closes_the_channel() {
+    let (mut server, id) = open_recorded_server_on(DrdynvcServer::new().with_max_message_size(8), None);
+    // The MS-RDPEDYC 4.3.3 block, which decompresses to 1595 bytes, as the start of a far longer message: only the
+    // declared length can refuse it.
+    process_client_pdu(
+        &mut server,
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirstCompressed(DataFirstCompressedPdu::new(
+            id,
+            1_000_000,
+            vec![0xe0, 0x26, 0x38, 0xc4, 0x3f, 0xf4, 0x74, 0x01],
+        ))),
+    );
+    assert!(!server.is_channel_opened(id));
 }
 
 // oracle: mutant enforcing the backend message limit only for fragmented data.

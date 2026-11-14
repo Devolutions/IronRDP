@@ -13,6 +13,7 @@ use ironrdp_svc::{
     make_channel_options,
 };
 use proptest::prelude::*;
+use rstest::rstest;
 
 const UNFRAGMENTED_MISMATCH: &str = "unfragmented channel data does not match its declared length";
 const EXCEEDS_DECLARED: &str = "channel fragment sequence exceeds its declared length";
@@ -97,7 +98,7 @@ impl<const ID: usize> SvcProcessor for TypedChannel<ID> {
     }
 }
 
-fn channel_chunk(data: &[u8], length: u32, flags: ChannelControlFlags) -> Vec<u8> {
+pub(crate) fn channel_chunk(data: &[u8], length: u32, flags: ChannelControlFlags) -> Vec<u8> {
     let mut chunk = encode_vec(&ChannelPduHeader { length, flags }).expect("channel header should encode");
     chunk.extend_from_slice(data);
     chunk
@@ -830,4 +831,79 @@ fn session_encodes_messages_for_runtime_channel_name() {
         .0;
 
     assert_eq!(request.channel_id, 1005);
+}
+
+fn set_channel(set: &mut StaticChannelSet) -> &mut StaticVirtualChannel {
+    set.get_by_type_mut::<ContextChannel>().expect("context channel")
+}
+
+/// A set holding `channel`, bounded at `limit` before the channel is inserted.
+fn limit_then_insert(limit: usize, channel: ContextChannel) -> StaticChannelSet {
+    let mut set = StaticChannelSet::new();
+    set.set_max_message_size(limit);
+    set.insert(channel);
+    set
+}
+
+/// A set holding `channel`, bounded at `limit` after the channel is inserted.
+fn insert_then_limit(limit: usize, channel: ContextChannel) -> StaticChannelSet {
+    let mut set = StaticChannelSet::new();
+    set.insert(channel);
+    set.set_max_message_size(limit);
+    set
+}
+
+type BoundedSet = fn(usize, ContextChannel) -> StaticChannelSet;
+
+#[rstest]
+// oracle: mutant applying a set's message limit only to channels inserted before, or only after, it was set.
+#[case::set_limit(8, None)]
+// oracle: mutant taking the larger of a processor's own message limit and the set's.
+#[case::stricter_processor_limit(32, Some(8))]
+fn a_message_over_the_limit_in_force_is_refused(
+    #[case] set_limit: usize,
+    #[case] processor_limit: Option<usize>,
+    #[values(limit_then_insert, insert_then_limit)] bounded_set: BoundedSet,
+) {
+    let mut set = bounded_set(set_limit, ContextChannel::new(Some(1), processor_limit));
+    expect_invalid_length(
+        set_channel(&mut set),
+        b"a",
+        16,
+        ChannelControlFlags::FLAG_FIRST,
+        EXCEEDS_MAX_SIZE,
+    );
+}
+
+// oracle: mutant ignoring a set's message limit for a runtime-defined channel.
+#[test]
+fn a_set_limit_bounds_a_runtime_defined_channel() {
+    let mut set = StaticChannelSet::new();
+    set.set_max_message_size(8);
+    let key = set
+        .insert_dynamic(RuntimeChannel::new("runtime", ChannelOptions::empty()))
+        .expect("dynamic key");
+    expect_invalid_length(
+        set.get_by_key_mut(key).expect("runtime channel"),
+        b"a",
+        16,
+        ChannelControlFlags::FLAG_FIRST,
+        EXCEEDS_MAX_SIZE,
+    );
+}
+
+// oracle: mutant applying a set's message limit over a processor's own, for a channel inserted before or after the
+// limit is set.
+#[rstest]
+#[case::inserted_later(limit_then_insert)]
+#[case::already_inserted(insert_then_limit)]
+fn a_processor_limit_takes_precedence_over_the_set_limit(#[case] bounded_set: BoundedSet) {
+    let mut set = bounded_set(8, ContextChannel::new(Some(1), Some(32)));
+    expect_delivered(
+        set_channel(&mut set),
+        &[0; 16],
+        16,
+        ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+        1,
+    );
 }
