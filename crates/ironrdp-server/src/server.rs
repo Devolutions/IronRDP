@@ -176,6 +176,30 @@ const CLIPRDR_DRIVE_TIMEOUTS_INTERVAL: Duration = Duration::from_secs(5);
 /// reconnects (immediately, if it holds an auto-reconnect cookie).
 const FINALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Upper bound on negotiating and authenticating a connection: X.224
+/// negotiation, the TLS handshake and CredSSP, everything before
+/// `accept_finalize`.
+///
+/// Every step reads from a peer that has not authenticated yet, so without a
+/// bound a client that connects and goes silent holds the connection forever.
+/// Under [`ConnectionPolicy::Queue`] that blocks every later client too.
+///
+/// Generous on purpose: some clients prompt for the password in the middle of
+/// this phase, so a person typing is inside it (7-11 s measured with Windows
+/// App for macOS), and CredSSP over a slow mobile link has taken 12.5 s. A
+/// certificate warning does not hold the phase open: mstsc and Windows App
+/// close their connection within about 20 s of showing one and reconnect once
+/// the user answers. Preemption candidates keep their own shorter budget,
+/// [`CANDIDATE_NEGOTIATION_TIMEOUT`].
+///
+/// The budget also covers the server's own work in this phase, including a
+/// configured credential validator, so a validator that hangs is cut off here
+/// too.
+///
+/// `tests/server/negotiation_timeout.rs` in `ironrdp-testsuite-core` pins this
+/// value; change both together.
+const NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Monotonic milliseconds since first use, for feeding the auto-detect state machine.
 ///
 /// The clock lives here, in the I/O driver, rather than inside [`AutoDetectManager`]:
@@ -2028,7 +2052,37 @@ impl PendingConnection {
     /// `Ok(None)` means the TLS handshake failed and was already logged — the
     /// caller should abandon the connection quietly rather than treat it as a
     /// connection error (preserving the pre-existing `return Ok(())` behaviour).
+    ///
+    /// Bounded by [`NEGOTIATION_TIMEOUT`].
     async fn negotiate_and_authenticate<S>(
+        self,
+        stream: S,
+        tls: TransportTls,
+    ) -> ServerResult<Option<NegotiatedConnection<S>>>
+    where
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+    {
+        match tokio::time::timeout(
+            NEGOTIATION_TIMEOUT,
+            self.negotiate_and_authenticate_unbounded(stream, tls),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                warn!(
+                    timeout = ?NEGOTIATION_TIMEOUT,
+                    "Negotiation and authentication did not finish in time, dropping the connection"
+                );
+                Err(ServerError::io(
+                    "timed out negotiating and authenticating the connection",
+                    std::io::Error::from(std::io::ErrorKind::TimedOut),
+                ))
+            }
+        }
+    }
+
+    async fn negotiate_and_authenticate_unbounded<S>(
         self,
         stream: S,
         tls: TransportTls,
