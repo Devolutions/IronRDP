@@ -76,6 +76,15 @@ export function legacyGraphics(enable: boolean): Extension {
     return new Extension('legacy_graphics', enable);
 }
 
+/**
+ * The `performanceFlags` of the Extended Info Packet (MS-RDPBCGR 2.2.1.11.1.1.1), such as
+ * 0x1 to leave out the wallpaper or 0x20 to leave out the cursor shadow on a slow link.
+ * Without it the client sends DISABLE_FULLWINDOWDRAG, DISABLE_MENUANIMATIONS and ENABLE_FONT_SMOOTHING.
+ */
+export function performanceFlags(flags: number): Extension {
+    return new Extension('performance_flags', flags);
+}
+
 // --- RDCleanPath ---
 
 export { RDCleanPathErrorCode } from './RDCleanPathErrorCode';

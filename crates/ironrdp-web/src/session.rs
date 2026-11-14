@@ -101,6 +101,7 @@ struct SessionBuilderInner {
     enable_server_pointer: bool,
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
+    performance_flags: Option<PerformanceFlags>,
 }
 
 impl Default for SessionBuilderInner {
@@ -147,6 +148,7 @@ impl Default for SessionBuilderInner {
             enable_server_pointer: true,
             legacy_graphics: false,
             outbound_message_size_limit: None,
+            performance_flags: None,
         }
     }
 }
@@ -306,6 +308,15 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     0 // Fallback to no limit for invalid values.
                 };
                 self.0.borrow_mut().outbound_message_size_limit = if limit > 0 { Some(limit) } else { None };
+            };
+            |performance_flags: f64| {
+                if performance_flags.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&performance_flags) {
+                    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let bits = performance_flags as u32;
+                    self.0.borrow_mut().performance_flags = Some(PerformanceFlags::from_bits_truncate(bits));
+                } else {
+                    warn!(performance_flags, "Invalid performance flags; ignored");
+                }
             };
             // File transfer callbacks - protocol-specific, routed through extension()
             // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
@@ -478,6 +489,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let enable_server_pointer = self.0.borrow().enable_server_pointer;
         config.enable_server_pointer = enable_server_pointer;
+
+        if let Some(performance_flags) = self.0.borrow().performance_flags {
+            config.performance_flags = performance_flags;
+        }
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
