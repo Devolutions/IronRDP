@@ -188,14 +188,13 @@ pub struct ConnectionResult {
     /// The bulk compression type that was negotiated, if any.
     pub compression_type: Option<rdp::client_info::CompressionType>,
     /// The RDP version the server announced in its Server Core Data
-    /// ([MS-RDPBCGR] 2.2.1.4.2), if the Basic Settings Exchange went through
-    /// this connector.
+    /// ([MS-RDPBCGR] 2.2.1.4.2).
     ///
     /// Servers that announce an old version may ignore newer client settings;
     /// for example xrdp announces RDP 5 and does not apply the desktop scale factor.
     ///
     /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/379a020e-9925-4b4f-98f3-7d634e10b411
-    pub server_rdp_version: Option<gcc::RdpVersion>,
+    pub server_rdp_version: gcc::RdpVersion,
 }
 
 impl ConnectionResult {
@@ -2066,6 +2065,10 @@ impl Sequence for ClientConnector {
                                 return Err(general_err!("invalid static channel chunk size"));
                             }
 
+                            let server_rdp_version = self
+                                .server_rdp_version
+                                .ok_or_else(|| general_err!("no Server Core Data before finalization"))?;
+
                             ClientConnectorState::Connected {
                                 result: ConnectionResult {
                                     io_channel_id: connection_activation.io_channel_id(),
@@ -2088,7 +2091,7 @@ impl Sequence for ClientConnector {
                                     )
                                     .with_multitransport_soft_sync(self.soft_sync_negotiated()),
                                     compression_type: self.config.compression_type,
-                                    server_rdp_version: self.server_rdp_version,
+                                    server_rdp_version,
                                 },
                             }
                         }
