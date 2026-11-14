@@ -1,6 +1,8 @@
 use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_graphics::rfx::RfxDecodeError;
 use ironrdp_pdu::ReadCursor;
 use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_session::SessionResult;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::rfx::DecodingContext;
 use rstest::rstest;
@@ -14,6 +16,53 @@ fn decode_decodes_valid_sequence_of_messages() {
     let image = decode_messages(ENCODED_MESSAGES.as_ref());
 
     assert_eq!(DECODED_IMAGE.as_ref(), image.data());
+}
+
+/// Each quantization index of a [2.2.2.3.4.1] TS_RFX_TILE "specifies an index into the TS_RFX_CODEC_QUANT
+/// array provided in the TS_RFX_TILESET message". An index past the end is a decoding error, not a panic.
+///
+/// [2.2.2.3.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/89e669ed-b6dd-4591-a267-73a72bc6d84e
+// oracle: spec MS-RDPRFX §2.2.2.3.4.1 (quantIdx fields index the tileset's quantVals array)
+#[rstest]
+#[case::y_out_of_range(1, [1, 0, 0])]
+#[case::cb_out_of_range(1, [0, 1, 0])]
+#[case::cr_out_of_range(1, [0, 0, 1])]
+#[case::no_quantization_tables(0, [0, 0, 0])]
+fn decode_rejects_tile_quant_index_out_of_range(#[case] quant_count: usize, #[case] quant_indexes: [u8; 3]) {
+    use core::error::Error as _;
+
+    use ironrdp_pdu::Decode as _;
+    use ironrdp_pdu::codecs::rfx::{Block, CodecChannel};
+
+    // Re-encode the valid sequence with only the tileset changed.
+    let mut src = ReadCursor::new(ENCODED_MESSAGES.as_ref());
+    let mut encoded = Vec::new();
+    while !src.is_empty() {
+        let mut block = Block::decode(&mut src).unwrap();
+        if let Block::CodecChannel(CodecChannel::TileSet(tile_set)) = &mut block {
+            tile_set.quants.truncate(quant_count);
+            let [y, cb, cr] = quant_indexes;
+            tile_set.tiles[0].y_quant_index = y;
+            tile_set.tiles[0].cb_quant_index = cb;
+            tile_set.tiles[0].cr_quant_index = cr;
+        }
+        encoded.extend(ironrdp_core::encode_vec(&block).unwrap());
+    }
+
+    let error = try_decode_messages(&encoded).map(drop).unwrap_err();
+    let cause = error
+        .source()
+        .and_then(|source| source.downcast_ref::<RfxDecodeError>());
+
+    // Every case names the first index past the end of its table.
+    assert!(
+        matches!(
+            cause,
+            Some(&RfxDecodeError::InvalidQuantIndex { index, table_len })
+                if usize::from(index) == quant_count && table_len == quant_count
+        ),
+        "{error:?}"
+    );
 }
 
 /// MS-RDPRFX 4.2.2, 4.2.3 and 4.2.4.1: header, frame and tileset sample messages.
@@ -1110,6 +1159,10 @@ enum Edit {
 
 /// Decodes `messages` into a fresh image covering the whole 64x64 channel.
 fn decode_messages(messages: &[u8]) -> DecodedImage {
+    try_decode_messages(messages).unwrap()
+}
+
+fn try_decode_messages(messages: &[u8]) -> SessionResult<DecodedImage> {
     let destination = InclusiveRectangle {
         left: 0,
         top: 0,
@@ -1122,11 +1175,9 @@ fn decode_messages(messages: &[u8]) -> DecodedImage {
         IMAGE_WIDTH.try_into().unwrap(),
         IMAGE_HEIGHT.try_into().unwrap(),
     );
-    DecodingContext::default()
-        .decode(&mut image, &destination, &mut ReadCursor::new(messages))
-        .unwrap();
+    DecodingContext::default().decode(&mut image, &destination, &mut ReadCursor::new(messages))?;
 
-    image
+    Ok(image)
 }
 
 #[test]
