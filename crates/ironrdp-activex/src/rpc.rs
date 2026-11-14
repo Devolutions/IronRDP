@@ -562,6 +562,10 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::WaitFrame { .. } => Response::typed_error(
+            AgentErrorCategory::Unavailable,
+            "frame waits are unavailable through ActiveX",
+        ),
         Request::RailStatus | Request::RailEvents { .. } | Request::RailWait { .. } | Request::RailExecute(_) => {
             Response::typed_error(
                 AgentErrorCategory::Unavailable,
@@ -663,6 +667,7 @@ fn status(shared: &Shared) -> Response {
         message: live.error.clone(),
         credentials_loaded: false,
         untrusted_certificate: None,
+        frame_number: None,
     }))
 }
 
@@ -1048,6 +1053,27 @@ mod tests {
         };
         assert_eq!(error.category, AgentErrorCategory::Unavailable);
         assert_eq!(error.message, "RAIL audit endpoints are unavailable through ActiveX");
+    }
+
+    // oracle: mutant an ActiveX host that accepts a frame wait, or answers it through another arm
+    #[tokio::test]
+    async fn frame_wait_is_explicitly_unavailable() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) = handle_request(
+            &rpc.shared,
+            0,
+            Request::WaitFrame {
+                after_frame: 0,
+                timeout_ms: 0,
+            },
+        )
+        .await
+        else {
+            panic!("frame waits must be unavailable through ActiveX");
+        };
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert!(error.message.contains("frame waits"), "{}", error.message);
     }
 
     #[tokio::test]

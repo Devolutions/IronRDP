@@ -82,6 +82,15 @@ enum Command {
     Logoff(LogoffArgs),
     /// Report the current session status.
     Status,
+    /// Wait without polling for a frame newer than one already seen, then report the session status.
+    WaitFrame {
+        /// The `frame: N` number from a status read before the action being waited on, or 0 for the first frame.
+        #[arg(long)]
+        after_frame: u64,
+        /// Maximum wait time in milliseconds, capped at 60,000.
+        #[arg(long, default_value_t = 30_000)]
+        timeout_ms: u32,
+    },
     /// Query the live session properties.
     QueryProps(QueryPropsArgs),
     /// Print the RDP session's captured log lines (from the daemon's in-memory ring buffer).
@@ -1211,6 +1220,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Disconnect(args) => return disconnect_session(&endpoint, args, cli.backend).await,
         Command::Logoff(args) => return logoff_session(&endpoint, args).await,
         Command::Status => Request::Status,
+        Command::WaitFrame {
+            after_frame,
+            timeout_ms,
+        } => Request::WaitFrame {
+            after_frame,
+            timeout_ms,
+        },
         Command::QueryProps(args) => Request::QueryProps {
             filter: args
                 .filter
@@ -2591,6 +2607,9 @@ fn print_payload(payload: Payload) {
             }
             if let (Some(width), Some(height)) = (status.width, status.height) {
                 println!("resolution: {width}x{height}");
+            }
+            if let Some(frame_number) = status.frame_number {
+                println!("frame: {frame_number}");
             }
             if let Some(message) = status.message {
                 println!("detail: {message}");

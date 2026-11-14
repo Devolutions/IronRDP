@@ -184,6 +184,22 @@ Closing the last application window does not automatically disconnect this headl
 The daemon reserves all queue slots before changing keyboard state, so queue backpressure sends none of a rejected request.
 The ActiveX backend explicitly rejects this bulk input operation.
 
+## Waiting for a frame
+
+`status` reports the number of the most recent frame as `frame: N`, counted from 1 within the session.
+`wait-frame --after-frame N` returns once a frame with a greater number arrives, without polling, and prints the same report as `status`:
+
+```powershell
+ironrdp-agent status                                          # frame: 12
+ironrdp-agent mouse-button --button left --pressed true
+ironrdp-agent wait-frame --after-frame 12 --timeout-ms 5000   # frame: 13
+```
+
+Read the number before the action whose result you are waiting for.
+A frame the action produces can arrive before the next command runs, and it still satisfies the wait because its number is greater.
+Each report carries the new number for the next wait, and `--after-frame 0` waits for the first frame of a session.
+The command fails when the session ends or the timeout elapses first, so success always means a newer frame arrived.
+
 ## Terminal screenshots
 
 `screenshot --terminal` renders the current frame inline instead of writing a PNG file:

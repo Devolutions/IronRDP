@@ -830,6 +830,7 @@ mod tests {
                     message,
                     credentials_loaded: false,
                     untrusted_certificate: None,
+                    frame_number: None,
                 }))
             } else {
                 panic!("unexpected request to mock daemon: {request:?}");
