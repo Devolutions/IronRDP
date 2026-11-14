@@ -29,6 +29,7 @@ use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::credssp::{KdcResolution, KerberosConfig};
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::displaycontrol::client::DisplayControlClient;
+use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
@@ -38,7 +39,7 @@ use ironrdp::rdpdr::Rdpdr;
 use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
+use ironrdp::session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp_core::WriteBuf;
 use ironrdp_futures::{FramedWrite, single_sequence_step_read};
 use rgb::AsPixels as _;
@@ -742,6 +743,7 @@ impl iron_remote_desktop::Session for Session {
         );
 
         let mut requested_resize = None;
+        let mut pending_resize = None;
 
         // Reused across frames so per-region extraction doesn't allocate on every draw.
         let mut draw_buffer = WriteBuf::new();
@@ -765,7 +767,7 @@ impl iron_remote_desktop::Session for Session {
         let mut cleanup_interval = IntervalStream::new(5_000).fuse();
 
         let disconnect_reason = 'outer: loop {
-            let outputs = select! {
+            let mut outputs = select! {
                 frame = framed.read_pdu().fuse() => {
                     let (action, payload) = frame.context("read frame")?;
                     trace!(?action, frame_length = payload.len(), "Frame received");
@@ -918,17 +920,25 @@ impl iron_remote_desktop::Session for Session {
                         }
                         RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
                             debug!(width, height, scale_factor, "Resize event received");
-                            if width == 0 || height == 0 {
-                                warn!("Resize event ignored: width or height is zero");
-                                Vec::new()
-                            } else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
-                                let width = NonZeroU32::new(width).expect("width is guaranteed to be non-zero due to the prior check");
-                                let height = NonZeroU32::new(height).expect("height is guaranteed to be non-zero due to the prior check");
-
-                                requested_resize = Some((width, height));
-                                vec![ActiveStageOutput::ResponseFrame(response_frame?)]
+                            if let (Some(width), Some(height)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+                                let resize = DeferredResize {
+                                    width,
+                                    height,
+                                    scale_factor,
+                                    physical_size,
+                                };
+                                if let Some(frame) = encode_resize_frame(&mut active_stage, resize, &mut requested_resize)? {
+                                    vec![ActiveStageOutput::ResponseFrame(frame)]
+                                } else if active_stage.display_control_ready() == Some(false) {
+                                    debug!("Deferring resize until Display Control capabilities arrive");
+                                    pending_resize = Some(resize);
+                                    Vec::new()
+                                } else {
+                                    warn!("Resize request was not sent: Display Control is unavailable or not ready");
+                                    Vec::new()
+                                }
                             } else {
-                                debug!("Resize event ignored");
+                                warn!("Resize event ignored: width or height is zero");
                                 Vec::new()
                             }
                         },
@@ -972,6 +982,18 @@ impl iron_remote_desktop::Session for Session {
                     }
                 }
             };
+
+            // UNTESTED: A resize deferred while `active_stage.display_control_ready() == Some(false)`
+            // is flushed in the same iteration that processes the server's `DISPLAYCONTROL_CAPS_PDU`;
+            // only the readiness decision (`take_deferred_resize`) is unit-tested, not the placement
+            // in this loop.
+            // Check initial-connect and post-reactivation resize behavior against Windows and `xrdp`
+            // servers when changing this loop.
+            if let Some(resize) = take_deferred_resize(&mut pending_resize, active_stage.display_control_ready()) {
+                if let Some(frame) = encode_resize_frame(&mut active_stage, resize, &mut requested_resize)? {
+                    outputs.push(ActiveStageOutput::ResponseFrame(frame));
+                }
+            }
 
             for out in outputs {
                 match out {
@@ -2040,6 +2062,67 @@ fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
 }
 
+/// A resize request deferred until the Display Control channel finishes opening.
+///
+/// The dimensions are non-zero: the zero case is rejected where the deferral happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeferredResize {
+    width: NonZeroU32,
+    height: NonZeroU32,
+    scale_factor: Option<u32>,
+    physical_size: Option<(u32, u32)>,
+}
+
+impl DeferredResize {
+    /// Returns the dimensions adjusted into the valid range of [2.2.2.2.1], so an out-of-range
+    /// browser viewport fails neither the encode nor the session.
+    ///
+    /// [2.2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
+    fn adjusted_dimensions(self) -> (NonZeroU32, NonZeroU32) {
+        let (width, height) = MonitorLayoutEntry::adjust_display_size(self.width.get(), self.height.get());
+        (
+            NonZeroU32::new(width).expect("width is clamped into 200..=8192"),
+            NonZeroU32::new(height).expect("height is clamped into 200..=8192"),
+        )
+    }
+}
+
+/// Resolves a deferred resize against the Display Control readiness: returns it to send once the
+/// channel is ready, keeps waiting while the channel is still opening, and drops it when the
+/// channel is closed.
+fn take_deferred_resize(
+    pending_resize: &mut Option<DeferredResize>,
+    display_control_ready: Option<bool>,
+) -> Option<DeferredResize> {
+    match display_control_ready {
+        Some(true) => pending_resize.take(),
+        Some(false) => None,
+        None => {
+            // The Display Control channel closed, so the deferred resize can never be sent.
+            pending_resize.take();
+            None
+        }
+    }
+}
+
+/// Encodes a Display Control resize and records it in `requested_resize`, so the canvas is
+/// resized after the next DeactivateAll.
+///
+/// Returns `None` while the Display Control channel cannot carry the request yet.
+fn encode_resize_frame(
+    active_stage: &mut ActiveStage,
+    resize: DeferredResize,
+    requested_resize: &mut Option<(NonZeroU32, NonZeroU32)>,
+) -> SessionResult<Option<Vec<u8>>> {
+    let (width, height) = resize.adjusted_dimensions();
+    let Some(frame) = active_stage.encode_resize(width.get(), height.get(), resize.scale_factor, resize.physical_size)
+    else {
+        return Ok(None);
+    };
+    *requested_resize = Some((width, height));
+    frame.map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use futures_util::io::Cursor;
@@ -2102,6 +2185,69 @@ mod tests {
             pcb: None,
             vmconnect: None,
             kerberos_config: None,
+        }
+    }
+
+    fn deferred_resize(width: u32, height: u32) -> DeferredResize {
+        DeferredResize {
+            width: NonZeroU32::new(width).expect("test dimensions are non-zero"),
+            height: NonZeroU32::new(height).expect("test dimensions are non-zero"),
+            scale_factor: None,
+            physical_size: None,
+        }
+    }
+
+    #[test]
+    fn deferred_resize_waits_while_display_control_is_opening() {
+        let mut pending = Some(deferred_resize(1280, 800));
+
+        assert_eq!(take_deferred_resize(&mut pending, Some(false)), None);
+        assert!(pending.is_some(), "the resize must be retained while the channel opens");
+    }
+
+    #[test]
+    fn deferred_resize_is_sent_once_display_control_is_ready() {
+        // oracle: spec MS-RDPEDISP §2.2.2.2.1 (DesktopScaleFactor and the physical dimensions are
+        // independent of the pixel size, so a scale-only change is a valid layout update)
+        let pending_resize = DeferredResize {
+            scale_factor: Some(150),
+            physical_size: Some((300, 200)),
+            ..deferred_resize(1280, 800)
+        };
+        let mut pending = Some(pending_resize);
+
+        assert_eq!(
+            take_deferred_resize(&mut pending, Some(true)),
+            Some(pending_resize),
+            "the whole request, including scale factor and physical size, is sent"
+        );
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn deferred_resize_is_dropped_when_display_control_channel_closes() {
+        let mut pending = Some(deferred_resize(1280, 800));
+
+        assert_eq!(take_deferred_resize(&mut pending, None), None);
+        assert!(pending.is_none(), "a resize that can never be sent must not linger");
+    }
+
+    #[test]
+    fn deferred_resize_dimensions_are_clamped_into_the_valid_range() {
+        // oracle: spec MS-RDPEDISP §2.2.2.2.1 (width and height in 200..=8192, width even)
+        for (case, width, height, expected_width, expected_height) in [
+            ("below minimum", 100, 50, 200, 200),
+            ("above maximum", 8193, 9000, 8192, 8192),
+            ("odd width", 1023, 768, 1022, 768),
+            ("in range", 1280, 720, 1280, 720),
+        ] {
+            let (adjusted_width, adjusted_height) = deferred_resize(width, height).adjusted_dimensions();
+
+            assert_eq!(
+                (adjusted_width.get(), adjusted_height.get()),
+                (expected_width, expected_height),
+                "{case}"
+            );
         }
     }
 
