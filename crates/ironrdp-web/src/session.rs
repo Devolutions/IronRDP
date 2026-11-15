@@ -842,9 +842,9 @@ pub(crate) struct Session {
 }
 
 impl Session {
-    // UNTESTED: A registered callback receives server layouts on activation, reactivation and layout changes.
-    // A missed event leaves the application's monitor geometry stale.
-    // When changing these paths, verify all three with a live server.
+    // UNTESTED: The callback receives layouts from a live server.
+    // Server interoperability failures can leave the application's monitor geometry stale.
+    // When changing these paths, verify activation, reactivation and layout changes with a server.
     fn report_monitor_layout(&self, monitors: &[ironrdp::pdu::gcc::Monitor]) {
         let Some(callback) = &self.monitor_layout_callback else {
             return;
@@ -3020,3 +3020,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "monitor_layout_tests.rs"]
+mod monitor_layout_tests;

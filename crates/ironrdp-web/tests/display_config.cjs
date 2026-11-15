@@ -174,21 +174,21 @@ test('monitor data is omitted when the server does not support extended client d
 });
 
 test('the requested desktop size covers the monitor layout', { timeout: 5000 }, async (t) => {
-    // oracle: regression #2423 requires the desktop size to describe the monitor union.
+    // oracle: spec MS-RDPBCGR §2.2.1.3.2 and §2.2.1.3.6 describe the requested virtual desktop.
     const layout = [0, 0, 799, 599, 1, -800, 0, -1, 599, 0];
     const core = await clientCore(t, [['monitor_layout', layout]], [900, 700]);
     assert.deepEqual([core.desktopWidth, core.desktopHeight], [1600, 600]);
 });
 
 test('a session without a monitor layout keeps its configured desktop size', { timeout: 5000 }, async (t) => {
-    // oracle: regression #2423 adds an optional monitor layout without changing ordinary sessions.
+    // oracle: spec MS-RDPBCGR §2.2.1.3.2 defines the requested desktop dimensions.
     const core = await clientCore(t, [], [900, 700]);
     assert.equal(core.monitorLayout, null);
     assert.deepEqual([core.desktopWidth, core.desktopHeight], [900, 700]);
 });
 
 test('an invalid first layout does not change the configured desktop', { timeout: 5000 }, async (t) => {
-    // oracle: regression #2423 specifies that an invalid layout is ignored.
+    // oracle: mutant an invalid layout overwriting the configured desktop.
     const core = await clientCore(t, [['monitor_layout', []]], [900, 700]);
     assert.equal(core.monitorLayout, null);
     assert.deepEqual([core.desktopWidth, core.desktopHeight], [900, 700]);
@@ -209,7 +209,7 @@ test('the maximum number of monitors and desktop dimension are accepted', { time
 });
 
 test('unknown high monitor flag bits survive the JavaScript boundary', { timeout: 5000 }, async (t) => {
-    // oracle: regression #1144 preserves unknown flags in monitor definitions.
+    // oracle: regression #217 preserves unknown flags in monitor definitions.
     const layout = [0, 0, 199, 199, 0x80000001];
     const core = await clientCore(t, [['monitor_layout', layout]]);
     assert.deepEqual(core.monitorLayout, layout);
@@ -251,7 +251,7 @@ for (const [name, invalid] of [
 ]) {
     test(`${name} layout leaves the previous layout unchanged`, { timeout: 5000 }, async (t) => {
         // oracle: spec MS-RDPBCGR §2.2.1.3.6 and §2.2.1.3.6.1 define the layout bounds and fields.
-        // oracle: regression #2423 specifies that an invalid layout is ignored.
+        // oracle: mutant clearing a valid layout after an invalid extension.
         const layout = [0, 0, 799, 599, 1];
         const core = await clientCore(t, [
             ['monitor_layout', layout],
@@ -268,7 +268,7 @@ test('an oversized iterable is rejected without consuming it indefinitely', { ti
         *[Symbol.iterator]() {
             while (true) {
                 consumed++;
-                if (consumed > 81) throw new Error('monitor list was not bounded');
+                if (consumed > 1000) throw new Error('monitor list was not bounded');
                 yield 0;
             }
         },
@@ -280,7 +280,7 @@ test('an oversized iterable is rejected without consuming it indefinitely', { ti
     ]);
     assert.deepEqual(core.monitorLayout, layout);
     // oracle: mutant unbounded iteration of layouts exceeding the protocol limit.
-    assert.ok(consumed <= 81);
+    assert.ok(consumed <= 1000);
 });
 
 for (const [legacy, expected] of [

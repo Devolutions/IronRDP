@@ -30,7 +30,6 @@ describe('monitor layout extensions', () => {
 
     it('round-trips monitor coordinates and primary status', () => {
         // oracle: spec MS-RDPBCGR §2.2.1.3.6.1 defines the coordinate order and primary flag.
-        // oracle: property round-trip.
         const monitors: MonitorRect[] = [
             { left: 0, top: 0, right: 799, bottom: 599, primary: true },
             { left: -800, top: 0, right: -1, bottom: 599, primary: false },
