@@ -412,6 +412,10 @@ impl DvcProcessor for RdpeaiServer {
         CHANNEL_NAME
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        Some(256 * 1024)
+    }
+
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         self.reset(State::AwaitingClientVersion);
         debug!(channel_id, "AUDIO_INPUT channel started");

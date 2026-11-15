@@ -457,3 +457,10 @@ fn close_resets_state_and_notifies_backend() {
     // Opened state was reset to Start, so Open must be rejected again until re-negotiated.
     assert!(server.open(320, 0, pcm_format(1, 16000, 16)).is_err());
 }
+
+// oracle: mutant leaving RdpeaiServer without a 256 KiB DVC message size bound.
+#[test]
+fn rdpeai_server_bounds_inbound_dvc_messages() {
+    let server = RdpeaiServer::new(Box::new(NoopRdpeaiServerBackend));
+    assert_eq!(server.max_message_size(), Some(256 * 1024));
+}

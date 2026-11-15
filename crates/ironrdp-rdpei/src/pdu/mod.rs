@@ -627,7 +627,10 @@ impl<'de> Decode<'de> for TouchFrame {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let contact_count = TwoByteUnsigned::decode(src)?.get();
         let frame_offset = EightByteUnsigned::decode(src)?.get();
-        let mut contacts = Vec::with_capacity(contact_count as usize);
+        // UNTESTED: Cap preallocation by the 5-byte minimum contact wire size so a truncated frame cannot allocate
+        // `contact_count` contacts before `TouchContact::decode` fails and drops the vector; verify the minimum wire
+        // size when changing contact encoding.
+        let mut contacts = Vec::with_capacity(usize::from(contact_count).min(src.len() / 5));
         for _ in 0..contact_count {
             contacts.push(TouchContact::decode(src)?);
         }
@@ -696,7 +699,10 @@ impl<'de> Decode<'de> for TouchEventPdu {
         }
         let encode_time = FourByteUnsigned::decode(src)?.get();
         let frame_count = TwoByteUnsigned::decode(src)?.get();
-        let mut frames = Vec::with_capacity(frame_count as usize);
+        // UNTESTED: Cap preallocation by the 2-byte minimum frame wire size so a truncated event cannot allocate
+        // `frame_count` frames before `TouchFrame::decode` fails and drops the vector; verify the minimum wire size
+        // when changing frame encoding.
+        let mut frames = Vec::with_capacity(usize::from(frame_count).min(src.len() / 2));
         for _ in 0..frame_count {
             frames.push(TouchFrame::decode(src)?);
         }
@@ -1072,7 +1078,10 @@ impl<'de> Decode<'de> for PenFrame {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let contact_count = TwoByteUnsigned::decode(src)?.get();
         let frame_offset = EightByteUnsigned::decode(src)?.get();
-        let mut contacts = Vec::with_capacity(contact_count as usize);
+        // UNTESTED: Cap preallocation by the 5-byte minimum contact wire size so a truncated frame cannot allocate
+        // `contact_count` contacts before `PenContact::decode` fails and drops the vector; verify the minimum wire
+        // size when changing contact encoding.
+        let mut contacts = Vec::with_capacity(usize::from(contact_count).min(src.len() / 5));
         for _ in 0..contact_count {
             contacts.push(PenContact::decode(src)?);
         }
@@ -1140,7 +1149,10 @@ impl<'de> Decode<'de> for PenEventPdu {
         }
         let encode_time = FourByteUnsigned::decode(src)?.get();
         let frame_count = TwoByteUnsigned::decode(src)?.get();
-        let mut frames = Vec::with_capacity(frame_count as usize);
+        // UNTESTED: Cap preallocation by the 2-byte minimum frame wire size so a truncated event cannot allocate
+        // `frame_count` frames before `PenFrame::decode` fails and drops the vector; verify the minimum wire size
+        // when changing frame encoding.
+        let mut frames = Vec::with_capacity(usize::from(frame_count).min(src.len() / 2));
         for _ in 0..frame_count {
             frames.push(PenFrame::decode(src)?);
         }

@@ -95,6 +95,10 @@ impl DvcProcessor for GfxDvcBridge {
         ironrdp_egfx::CHANNEL_NAME
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        Some(256 * 1024)
+    }
+
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         self.inner
             .lock()

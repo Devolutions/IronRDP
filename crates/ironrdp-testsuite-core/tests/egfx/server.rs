@@ -1907,3 +1907,17 @@ fn test_a_suspending_acknowledgement_still_acknowledges_its_frame() {
         "the suspending acknowledgement was not counted, so no round-trip sample exists"
     );
 }
+
+// oracle: mutant leaving GraphicsPipelineServer or GfxDvcBridge without a 256 KiB DVC message size bound.
+#[test]
+fn egfx_server_and_bridge_bound_inbound_dvc_messages() {
+    use std::sync::{Arc, Mutex};
+
+    use ironrdp_server::GfxDvcBridge;
+
+    let server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    assert_eq!(server.max_message_size(), Some(256 * 1024));
+
+    let bridge = GfxDvcBridge::new(Arc::new(Mutex::new(server)));
+    assert_eq!(bridge.max_message_size(), Some(256 * 1024));
+}

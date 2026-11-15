@@ -26,6 +26,8 @@ pub trait RdpeiHandler: Send {
     fn dismiss_hovering(&mut self, pdu: DismissHoveringTouchContactPdu) {
         debug!(contact_id = pdu.contact_id, "RDPEI dismiss hovering");
     }
+
+    fn close(&mut self) {}
 }
 
 /// Server endpoint for the MS-RDPEI dynamic channel.
@@ -65,6 +67,10 @@ impl DvcProcessor for RdpeiServer {
         CHANNEL_NAME
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        Some(64 * 1024)
+    }
+
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         let mut sc = ScReadyPdu::new(self.protocol_version);
         if let Some(features) = self.supported_features {
@@ -88,6 +94,10 @@ impl DvcProcessor for RdpeiServer {
             }
         }
         Ok(Vec::new())
+    }
+
+    fn close(&mut self, _channel_id: u32) {
+        self.handler.close();
     }
 }
 
