@@ -7,6 +7,7 @@ use ironrdp_pdu::rdp::autodetect::{AutoDetectReqPdu, AutoDetectRequest, AutoDete
 use ironrdp_pdu::rdp::client_info::CompressionType;
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, IoChannelPdu, ShareDataCtx, ShareDataPdu,
+    VRDP_POINTER_DECLARED_LENGTH,
 };
 use ironrdp_pdu::rdp::heartbeat::HeartbeatPdu;
 use ironrdp_pdu::rdp::multitransport::{MultitransportRequestPdu, MultitransportResponsePdu};
@@ -325,7 +326,7 @@ impl Processor {
             }
 
             let total_length = usize::from(u16::from_le_bytes([data[offset], data[offset + 1]]));
-            if total_length == 0 || offset + total_length > data.len() {
+            if total_length == 0 || data.len() < offset + total_length {
                 if offset == 0 {
                     return self.process_io_channel(data_ctx, bulk_decompressor);
                 }
@@ -333,6 +334,25 @@ impl Processor {
                     "X224",
                     "invalid concatenated Share Control PDU length: {total_length}"
                 ));
+            }
+
+            // VirtualBox's VRDP sends complete slow-path pointer shape updates with `totalLength`
+            // set to `VRDP_POINTER_DECLARED_LENGTH`.
+            // By `decode_io_channel`'s `ShareDataPdu::Pointer` invariant, any trailing
+            // concatenated PDUs are absorbed into the pointer payload and fail the complete-shape
+            // check, so `decode_io_channel` only succeeds here when `&data[offset..]` is one
+            // complete VRDP pointer shape update.
+            if total_length == VRDP_POINTER_DECLARED_LENGTH
+                && offset + total_length < data.len()
+                && let Ok(IoChannelPdu::Data(ctx)) =
+                    ironrdp_pdu::rdp::headers::decode_io_channel(SendDataIndicationCtx {
+                        user_data: &data[offset..],
+                        ..data_ctx
+                    })
+                && matches!(ctx.pdu, ShareDataPdu::Pointer(_))
+            {
+                outputs.extend(Self::process_share_data(ctx, bulk_decompressor)?);
+                break;
             }
 
             let part_ctx = SendDataIndicationCtx {
