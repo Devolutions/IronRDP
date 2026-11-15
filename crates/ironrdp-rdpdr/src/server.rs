@@ -194,6 +194,13 @@ impl IrpTracker {
 /// channel on a response it cannot make sense of, rather than being forced to swallow
 /// the error or panic.
 pub trait RdpdrServerBackend: AsAny + fmt::Debug + Send {
+    /// Limits inbound RDPDR message bytes before static-channel reassembly.
+    ///
+    /// The default leaves the size unlimited.
+    fn max_message_size(&self) -> Option<usize> {
+        None
+    }
+
     /// The client announced `devices` (initial announce or a later hot-plug).
     ///
     /// Returns `(device_id, accepted)` for every device in `devices`. An accepted
@@ -205,6 +212,24 @@ pub trait RdpdrServerBackend: AsAny + fmt::Debug + Send {
 
     /// The client removed (hot-unplugged) the given devices.
     fn on_device_remove(&mut self, device_ids: &[u32]);
+
+    /// Releases removed devices, failing the channel if their state cannot be safely discarded.
+    ///
+    /// The default preserves the infallible removal callback.
+    fn try_on_device_remove(&mut self, device_ids: &[u32]) -> PduResult<()> {
+        self.on_device_remove(device_ids);
+        Ok(())
+    }
+
+    /// Releases the announced devices (`device_ids`) forgotten when a repeated `ClientAnnounceReply` restarts the
+    /// handshake, letting a backend distinguish session-wide reinitialization from hot-unplug removal
+    /// (`try_on_device_remove`).
+    ///
+    /// Returning an error ends the channel instead of accepting a new sequence.
+    /// The default delegates to `try_on_device_remove`.
+    fn on_reinitialize(&mut self, device_ids: &[u32]) -> PduResult<()> {
+        self.try_on_device_remove(device_ids)
+    }
 
     /// The client's computer name arrived during the initialization handshake.
     fn on_client_name(&mut self, computer_name: &str);
@@ -531,6 +556,9 @@ impl RdpdrServer {
         ])
     }
 
+    /// `RdpdrServer` runs inside an already-authenticated RDP session and therefore emits `RdpdrPdu::UserLoggedon`
+    /// immediately after `ClientCoreCapabilityResponse` when `supports_user_logged_on()` holds, unblocking clients that
+    /// wait for logon before announcing drives.
     fn handle_client_capability_response(
         &mut self,
         header: SharedHeader,
@@ -545,7 +573,11 @@ impl RdpdrServer {
             "received ClientCoreCapabilityResponse"
         );
         self.state = RdpdrServerState::Active;
-        Ok(Vec::new())
+        Ok(if response.supports_user_logged_on() {
+            vec![SvcMessage::from(RdpdrPdu::UserLoggedon)]
+        } else {
+            Vec::new()
+        })
     }
 
     fn handle_device_list_announce(&mut self, src: &mut ReadCursor<'_>) -> PduResult<Vec<SvcMessage>> {
@@ -571,10 +603,10 @@ impl RdpdrServer {
 
     fn handle_device_list_remove(&mut self, src: &mut ReadCursor<'_>) -> PduResult<Vec<SvcMessage>> {
         let remove = ClientDeviceListRemove::decode(src).map_err(|e| decode_err!(e))?;
+        self.backend.try_on_device_remove(&remove.device_list)?;
         for device_id in &remove.device_list {
             self.devices.remove(device_id);
         }
-        self.backend.on_device_remove(&remove.device_list);
         Ok(Vec::new())
     }
 
@@ -1052,6 +1084,10 @@ impl SvcProcessor for RdpdrServer {
         Self::NAME
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        self.backend.max_message_size()
+    }
+
     fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::WhenRdpDataIsCompressed
     }
@@ -1091,10 +1127,13 @@ impl SvcProcessor for RdpdrServer {
             // will see a new `on_device_announce` batch once the client re-announces.
             (RdpdrServerState::Active, PacketId::CoreClientidConfirm) => {
                 warn!("received a duplicate RDPDR initialization sequence while active; re-initializing");
+                let response = decode_client_announce_reply(&mut src)?;
+                let devices = self.devices.keys().copied().collect::<Vec<_>>();
+                self.backend.on_reinitialize(&devices)?;
                 self.devices.clear();
                 self.pending_irps.clear();
                 self.state = RdpdrServerState::AwaitingAnnounce;
-                decode_client_announce_reply(&mut src)
+                Ok(response)
             }
             (RdpdrServerState::CapabilityExchange, PacketId::CoreDevicelistAnnounce)
             | (RdpdrServerState::Active, PacketId::CoreDevicelistAnnounce) => {
