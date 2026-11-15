@@ -11,6 +11,7 @@ pub const ENUMERATION_CHANNEL_NAME: &str = "RDCamera_Device_Enumerator";
 
 pub mod client;
 pub mod pdu;
+pub mod server;
 
 pub use client::{
     CameraBackend, CameraRedirectionSession, DeviceChannelListener, DeviceClient, EnumerationClient, RedirectedDevice,
@@ -20,3 +21,4 @@ pub use pdu::{
     DeviceDescriptor, ErrorCode, MediaFormat, MediaType, PropertyDescription, PropertyId, PropertyMode, PropertySet,
     PropertyValue, ProtocolVersion, StartStreamInfo, StreamDescription,
 };
+pub use server::{DesiredCameraFormat, DeviceServer, EnumerationServer};

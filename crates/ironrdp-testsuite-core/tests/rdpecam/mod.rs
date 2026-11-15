@@ -5,6 +5,7 @@ use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu};
 use ironrdp_dvc::{DvcChannelListener as _, DvcProcessor as _};
 use ironrdp_rdpecam::client::CameraBackend;
 use ironrdp_rdpecam::pdu::{DeviceMessage, DevicePdu, EnumerationPdu};
+use ironrdp_rdpecam::server::{DesiredCameraFormat, DeviceServer, EnumerationServer};
 use ironrdp_rdpecam::{
     CameraRedirectionSession, DeviceClient, DeviceDescriptor, ErrorCode, MediaFormat, MediaType, PropertyDescription,
     PropertyId, PropertyMode, PropertySet, PropertyValue, ProtocolVersion, SampleDelivery, SampleSink, SampleUplink,
@@ -1117,4 +1118,512 @@ fn negotiated_device(version: ProtocolVersion) -> ironrdp_rdpecam::RedirectedDev
     let response = encode_vec(&EnumerationPdu::SelectVersionResponse(version)).unwrap();
     enumeration.process(41, &response).unwrap();
     device
+}
+
+fn negotiate_media_type(width: u32, height: u32) -> (Option<DevicePdu>, usize) {
+    let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
+    let failures = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let received_failures = Arc::clone(&failures);
+    let mut server = DeviceServer::with_failure_handler(
+        &device,
+        ProtocolVersion::V2,
+        DesiredCameraFormat {
+            width: 640,
+            height: 480,
+            frame_rate: 30.0,
+            max_width: 4096,
+            max_height: 4096,
+        },
+        Box::new(|_, _| {}),
+        Box::new(move || {
+            received_failures.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        }),
+    );
+    server.start(1).unwrap();
+    let success = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, DevicePdu::SuccessResponse)).unwrap();
+    server.process(1, &success).unwrap();
+
+    let streams = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::StreamListResponse(vec![StreamDescription::color(true, false)]),
+    ))
+    .unwrap();
+    server.process(1, &streams).unwrap();
+
+    let media_type = MediaType::new(MediaFormat::Mjpg, width, height, 30, 1, 1, 1, 0).unwrap();
+    let media_types = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::MediaTypeListResponse(vec![media_type]),
+    ))
+    .unwrap();
+    let messages = server.process(1, &media_types).unwrap();
+    let response = if messages.is_empty() {
+        None
+    } else {
+        Some(decode_message::<DeviceMessage>(&messages).pdu)
+    };
+    if response == Some(DevicePdu::DeactivateDeviceRequest) {
+        server.process(1, &success).unwrap();
+    }
+    (response, failures.load(core::sync::atomic::Ordering::SeqCst))
+}
+
+// oracle: spec MS-RDPECAM §3.3.5.1, §3.3.5.3, §3.3.5.4
+#[test]
+fn server_negotiates_version_and_processes_device_notifications() {
+    let added = Arc::new(Mutex::new(Vec::new()));
+    let received_added = Arc::clone(&added);
+    let removed = Arc::new(Mutex::new(Vec::new()));
+    let received_removed = Arc::clone(&removed);
+    let mut server = EnumerationServer::new(
+        Box::new(move |_, device| received_added.lock().unwrap().push(device)),
+        Box::new(move |_, channel| received_removed.lock().unwrap().push(channel)),
+    );
+    server.start(0).unwrap();
+
+    let request = encode_vec(&EnumerationPdu::SelectVersionRequest(ProtocolVersion::V2)).unwrap();
+    let response = server.process(0, &request).unwrap();
+    assert_eq!(
+        decode_message::<EnumerationPdu>(&response),
+        EnumerationPdu::SelectVersionResponse(ProtocolVersion::V2)
+    );
+
+    let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
+    let notification = encode_vec(&EnumerationPdu::DeviceAdded {
+        version: ProtocolVersion::V2,
+        device: device.clone(),
+    })
+    .unwrap();
+    assert!(server.process(0, &notification).unwrap().is_empty());
+    assert_eq!(*added.lock().unwrap(), [device]);
+
+    let removal = encode_vec(&EnumerationPdu::DeviceRemoved {
+        version: ProtocolVersion::V2,
+        channel_name: "RDCamera_Device_0".into(),
+    })
+    .unwrap();
+    assert!(server.process(0, &removal).unwrap().is_empty());
+    assert_eq!(*removed.lock().unwrap(), ["RDCamera_Device_0"]);
+}
+
+// oracle: spec MS-RDPECAM §1.3.4, §1.3.5
+#[test]
+fn server_initializes_and_stops_camera_stream() {
+    let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let received = Arc::clone(&frames);
+    let mut server = DeviceServer::new(
+        &device,
+        ProtocolVersion::V2,
+        DesiredCameraFormat {
+            width: 640,
+            height: 480,
+            frame_rate: 30.0,
+            max_width: 4096,
+            max_height: 4096,
+        },
+        Box::new(move |media_type, sample| {
+            received.lock().unwrap().push((media_type, sample.to_vec()));
+        }),
+    );
+
+    let activation = server.start(1).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&activation).pdu,
+        DevicePdu::ActivateDeviceRequest
+    );
+
+    let success = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, DevicePdu::SuccessResponse)).unwrap();
+    let streams_request = server.process(1, &success).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&streams_request).pdu,
+        DevicePdu::StreamListRequest
+    );
+
+    let streams = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::StreamListResponse(vec![StreamDescription::color(true, false)]),
+    ))
+    .unwrap();
+    let media_types_request = server.process(1, &streams).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&media_types_request).pdu,
+        DevicePdu::MediaTypeListRequest(0)
+    );
+
+    let media_type = MediaType::new(MediaFormat::Mjpg, 640, 480, 30, 1, 1, 1, MediaType::DECODING_REQUIRED).unwrap();
+    let media_types = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::MediaTypeListResponse(vec![media_type]),
+    ))
+    .unwrap();
+    let start_request = server.process(1, &media_types).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&start_request).pdu,
+        DevicePdu::StartStreamsRequest(vec![StartStreamInfo {
+            stream_index: 0,
+            media_type,
+        }])
+    );
+
+    let sample_request = server.process(1, &success).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&sample_request).pdu,
+        DevicePdu::SampleRequest(0)
+    );
+
+    let sample = vec![0xFF, 0xD8, 0xFF, 0xD9];
+    let response = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::SampleResponse {
+            stream_index: 0,
+            sample: sample.clone(),
+        },
+    ))
+    .unwrap();
+    let next_request = server.process(1, &response).unwrap();
+    assert_eq!(*frames.lock().unwrap(), [(media_type, sample)]);
+    assert_eq!(
+        decode_message::<DeviceMessage>(&next_request).pdu,
+        DevicePdu::SampleRequest(0)
+    );
+
+    let stop_request = server.stop().expect("a streaming camera must stop its streams");
+    assert_eq!(
+        decode_message::<DeviceMessage>(core::slice::from_ref(&stop_request)).pdu,
+        DevicePdu::StopStreamsRequest
+    );
+    let deactivate_request = server.process(1, &success).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&deactivate_request).pdu,
+        DevicePdu::DeactivateDeviceRequest
+    );
+    assert!(server.process(1, &success).unwrap().is_empty());
+    assert!(server.is_stopped());
+}
+
+// oracle: spec MS-RDPECAM §3.3.5.21
+#[test]
+fn server_deactivates_a_device_when_stream_discovery_fails() {
+    let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
+    let failed = Arc::new(Mutex::new(false));
+    let received_failure = Arc::clone(&failed);
+    let mut server = DeviceServer::with_failure_handler(
+        &device,
+        ProtocolVersion::V2,
+        DesiredCameraFormat {
+            width: 640,
+            height: 480,
+            frame_rate: 30.0,
+            max_width: 4096,
+            max_height: 4096,
+        },
+        Box::new(|_, _| {}),
+        Box::new(move || *received_failure.lock().unwrap() = true),
+    );
+
+    let activation = server.start(1).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&activation).pdu,
+        DevicePdu::ActivateDeviceRequest
+    );
+    let success = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, DevicePdu::SuccessResponse)).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&server.process(1, &success).unwrap()).pdu,
+        DevicePdu::StreamListRequest
+    );
+    let streams = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::StreamListResponse(vec![StreamDescription {
+            frame_source_types: StreamDescription::INFRARED,
+            selected: false,
+            can_be_shared: false,
+        }]),
+    ))
+    .unwrap();
+    let deactivate = server.process(1, &streams).unwrap();
+    assert_eq!(
+        deactivate.len(),
+        1,
+        "an activated device must be deactivated after stream discovery fails"
+    );
+    assert_eq!(
+        decode_message::<DeviceMessage>(&deactivate).pdu,
+        DevicePdu::DeactivateDeviceRequest
+    );
+    // oracle: mutant reports setup failure before deactivation is acknowledged.
+    assert!(
+        !*failed.lock().unwrap(),
+        "failure closed the channel before deactivation"
+    );
+
+    assert!(server.process(1, &success).unwrap().is_empty());
+    // oracle: mutant fails to report setup failure after deactivation is acknowledged.
+    assert!(
+        *failed.lock().unwrap(),
+        "failed setup did not close the channel after deactivation"
+    );
+}
+
+// oracle: spec MS-RDPECAM §1.3.5, §3.3.5.21
+#[test]
+fn server_stops_and_deactivates_a_stream_after_sample_failure() {
+    let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
+    let mut server = DeviceServer::new(
+        &device,
+        ProtocolVersion::V2,
+        DesiredCameraFormat {
+            width: 640,
+            height: 480,
+            frame_rate: 30.0,
+            max_width: 4096,
+            max_height: 4096,
+        },
+        Box::new(|_, _| {}),
+    );
+
+    server.start(1).unwrap();
+    let success = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, DevicePdu::SuccessResponse)).unwrap();
+    server.process(1, &success).unwrap();
+    let streams = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::StreamListResponse(vec![StreamDescription::color(true, false)]),
+    ))
+    .unwrap();
+    server.process(1, &streams).unwrap();
+    let media_types = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::MediaTypeListResponse(vec![
+            MediaType::new(MediaFormat::I420, 640, 480, 30, 1, 1, 1, 0).unwrap(),
+        ]),
+    ))
+    .unwrap();
+    server.process(1, &media_types).unwrap();
+    server.process(1, &success).unwrap();
+
+    let sample_error = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::SampleErrorResponse {
+            stream_index: 0,
+            error: ErrorCode::Unexpected,
+        },
+    ))
+    .unwrap();
+    let stop = server.process(1, &sample_error).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&stop).pdu,
+        DevicePdu::StopStreamsRequest
+    );
+    let deactivate = server.process(1, &success).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&deactivate).pdu,
+        DevicePdu::DeactivateDeviceRequest
+    );
+    assert!(server.process(1, &success).unwrap().is_empty());
+}
+
+// oracle: spec MS-RDPECAM §1.3.5
+#[test]
+fn server_stops_streams_that_start_after_capture_ends() {
+    let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
+    let mut server = DeviceServer::new(
+        &device,
+        ProtocolVersion::V2,
+        DesiredCameraFormat {
+            width: 640,
+            height: 480,
+            frame_rate: 30.0,
+            max_width: 4096,
+            max_height: 4096,
+        },
+        Box::new(|_, _| {}),
+    );
+    server.start(1).unwrap();
+    let success = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, DevicePdu::SuccessResponse)).unwrap();
+    server.process(1, &success).unwrap();
+    let streams = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::StreamListResponse(vec![StreamDescription::color(true, false)]),
+    ))
+    .unwrap();
+    server.process(1, &streams).unwrap();
+    let media_type = MediaType::new(MediaFormat::I420, 640, 480, 30, 1, 1, 1, 0).unwrap();
+    let media_types = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::MediaTypeListResponse(vec![media_type]),
+    ))
+    .unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&server.process(1, &media_types).unwrap()).pdu,
+        DevicePdu::StartStreamsRequest(vec![StartStreamInfo {
+            stream_index: 0,
+            media_type,
+        }])
+    );
+
+    assert!(server.stop().is_none());
+    let stop_request = server.process(1, &success).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&stop_request).pdu,
+        DevicePdu::StopStreamsRequest
+    );
+    let deactivate_request = server.process(1, &success).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&deactivate_request).pdu,
+        DevicePdu::DeactivateDeviceRequest
+    );
+    assert!(server.process(1, &success).unwrap().is_empty());
+    assert!(server.is_stopped());
+}
+
+// oracle: mutant deactivation before the outstanding Stream List Response is processed.
+#[test]
+fn server_defers_deactivation_until_pending_stream_list_response() {
+    let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
+    let mut server = DeviceServer::new(
+        &device,
+        ProtocolVersion::V2,
+        DesiredCameraFormat {
+            width: 640,
+            height: 480,
+            frame_rate: 30.0,
+            max_width: 4096,
+            max_height: 4096,
+        },
+        Box::new(|_, _| {}),
+    );
+    server.start(1).unwrap();
+    let success = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, DevicePdu::SuccessResponse)).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&server.process(1, &success).unwrap()).pdu,
+        DevicePdu::StreamListRequest
+    );
+
+    assert!(server.stop().is_none());
+    let streams = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::StreamListResponse(vec![StreamDescription::color(true, false)]),
+    ))
+    .unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&server.process(1, &streams).unwrap()).pdu,
+        DevicePdu::DeactivateDeviceRequest
+    );
+    assert!(server.process(1, &success).unwrap().is_empty());
+    assert!(server.is_stopped());
+}
+
+// oracle: mutant rejecting a media type at the inclusive width limit or accepting one above it.
+#[test]
+fn server_accepts_width_at_limit_and_rejects_above() {
+    let (at_limit, at_limit_failures) = negotiate_media_type(4096, 480);
+    assert_eq!(
+        at_limit,
+        Some(DevicePdu::StartStreamsRequest(vec![StartStreamInfo {
+            stream_index: 0,
+            media_type: MediaType::new(MediaFormat::Mjpg, 4096, 480, 30, 1, 1, 1, 0).unwrap(),
+        }]))
+    );
+    // oracle: mutant reports a camera failure for an accepted media type.
+    assert_eq!(at_limit_failures, 0);
+
+    let (above_limit, above_limit_failures) = negotiate_media_type(4097, 480);
+    // oracle: spec MS-RDPECAM §3.3.5.21
+    assert_eq!(above_limit, Some(DevicePdu::DeactivateDeviceRequest));
+    // oracle: mutant omits the failure notification for a rejected media type.
+    assert_eq!(above_limit_failures, 1);
+}
+
+// oracle: mutant rejecting a media type at the inclusive height limit or accepting one above it.
+#[test]
+fn server_accepts_height_at_limit_and_rejects_above() {
+    let (at_limit, at_limit_failures) = negotiate_media_type(640, 4096);
+    assert_eq!(
+        at_limit,
+        Some(DevicePdu::StartStreamsRequest(vec![StartStreamInfo {
+            stream_index: 0,
+            media_type: MediaType::new(MediaFormat::Mjpg, 640, 4096, 30, 1, 1, 1, 0).unwrap(),
+        }]))
+    );
+    // oracle: mutant reports a camera failure for an accepted media type.
+    assert_eq!(at_limit_failures, 0);
+
+    let (above_limit, above_limit_failures) = negotiate_media_type(640, 4097);
+    // oracle: spec MS-RDPECAM §3.3.5.21
+    assert_eq!(above_limit, Some(DevicePdu::DeactivateDeviceRequest));
+    // oracle: mutant omits the failure notification for a rejected media type.
+    assert_eq!(above_limit_failures, 1);
+}
+
+// oracle: spec MS-RDPECAM §2.2.3.8.1, §3.3.5.21
+// oracle: mutant selecting H264 without decoder opt-in or rejecting H264 when enabled.
+#[test]
+fn server_gates_h264_selection_on_decoder_opt_in() {
+    let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
+    let desired = DesiredCameraFormat {
+        width: 640,
+        height: 480,
+        frame_rate: 30.0,
+        max_width: 4096,
+        max_height: 4096,
+    };
+    let h264 = MediaType::new(MediaFormat::H264, 640, 480, 30, 1, 1, 1, MediaType::DECODING_REQUIRED).unwrap();
+    let success = encode_vec(&DeviceMessage::new(ProtocolVersion::V2, DevicePdu::SuccessResponse)).unwrap();
+    let streams = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::StreamListResponse(vec![StreamDescription::color(true, false)]),
+    ))
+    .unwrap();
+    let media_types = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::MediaTypeListResponse(vec![h264]),
+    ))
+    .unwrap();
+
+    let mut without_h264 = DeviceServer::new(&device, ProtocolVersion::V2, desired, Box::new(|_, _| {}));
+    without_h264.start(1).unwrap();
+    without_h264.process(1, &success).unwrap();
+    without_h264.process(1, &streams).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&without_h264.process(1, &media_types).unwrap()).pdu,
+        DevicePdu::DeactivateDeviceRequest
+    );
+
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&frames);
+    let mut with_h264 = DeviceServer::new(
+        &device,
+        ProtocolVersion::V2,
+        desired,
+        Box::new(move |mt, sample| recorded.lock().unwrap().push((mt, sample.to_vec()))),
+    )
+    .with_h264(true);
+    with_h264.start(1).unwrap();
+    with_h264.process(1, &success).unwrap();
+    with_h264.process(1, &streams).unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&with_h264.process(1, &media_types).unwrap()).pdu,
+        DevicePdu::StartStreamsRequest(vec![StartStreamInfo {
+            stream_index: 0,
+            media_type: h264,
+        }])
+    );
+    assert_eq!(
+        decode_message::<DeviceMessage>(&with_h264.process(1, &success).unwrap()).pdu,
+        DevicePdu::SampleRequest(0)
+    );
+    let annex_b = vec![0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1E];
+    let sample = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::SampleResponse {
+            stream_index: 0,
+            sample: annex_b.clone(),
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        decode_message::<DeviceMessage>(&with_h264.process(1, &sample).unwrap()).pdu,
+        DevicePdu::SampleRequest(0)
+    );
+    assert_eq!(*frames.lock().unwrap(), [(h264, annex_b)]);
 }
