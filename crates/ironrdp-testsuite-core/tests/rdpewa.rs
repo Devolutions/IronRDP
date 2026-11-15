@@ -4,10 +4,9 @@ use ironrdp_core::encode_vec;
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_rdpewa::pdu::decode_all;
 use ironrdp_rdpewa::{
-    Attachment, Attestation, CTAPCLT_UV_REQUIRED_FLAG, DeviceInfo, E_ABORT, RdpewaClient, RdpewaClientHandler,
-    RdpewaHandlerError, RdpewaResponseSender, RdpewaResult, RdpewaServerRpc, RdpewaWebAuthnRequest, UserVerification,
-    WebAuthnDispatch, WebAuthnOperationRequest, WebAuthnOperationResponse, WebAuthnPara, WebAuthnRequestBody,
-    WebAuthnSubcommand,
+    Attachment, Attestation, DeviceInfo, E_ABORT, RdpewaClient, RdpewaClientHandler, RdpewaHandlerError,
+    RdpewaResponseSender, RdpewaResult, RdpewaServerRpc, RdpewaWebAuthnRequest, UserVerification, WebAuthnDispatch,
+    WebAuthnOperationRequest, WebAuthnOperationResponse, WebAuthnPara, WebAuthnRequestBody, WebAuthnSubcommand,
 };
 
 struct RecordingHandler {
@@ -206,10 +205,8 @@ fn server_webauthn_rpc_encodes_spec_parameter_keys_and_returns_ctap_response() {
 
     let cbor = decode_all(&wire_request).unwrap();
     let map = cbor.as_map().unwrap();
-    assert_eq!(
-        map.get(&CborKey::text("flags")).unwrap().as_u32().unwrap(),
-        CTAPCLT_UV_REQUIRED_FLAG
-    );
+    // oracle: spec MS-RDPEWA §2.2.1; CTAPCLT_UV_REQUIRED_FLAG (0x00400000).
+    assert_eq!(map.get(&CborKey::text("flags")).unwrap().as_u32().unwrap(), 0x0040_0000);
     let para_map = map.get(&CborKey::text("webAuthNPara")).unwrap().as_map().unwrap();
     assert!(
         para_map
@@ -218,13 +215,21 @@ fn server_webauthn_rpc_encodes_spec_parameter_keys_and_returns_ctap_response() {
             .as_bool()
             .unwrap()
     );
+    assert!(
+        !para_map
+            .get(&CborKey::text("preferResident"))
+            .unwrap()
+            .as_bool()
+            .unwrap()
+    );
+    // oracle: spec MS-RDPEWA §2.2.1.1; WEBAUTHN_ATTESTATION_CONVEYANCE_PREFERENCE_DIRECT (3).
     assert_eq!(
         para_map
             .get(&CborKey::text("attestationPreference"))
             .unwrap()
             .as_u32()
             .unwrap(),
-        Attestation::Direct.as_u32()
+        3
     );
 
     let reply = client.process(9, &wire_request).unwrap();
@@ -238,6 +243,7 @@ fn server_webauthn_rpc_encodes_spec_parameter_keys_and_returns_ctap_response() {
     assert_eq!(seen[0].client_data_json, client_data_json);
     assert_eq!(seen[0].ctap_cbor, ctap_cbor);
     assert!(seen[0].para.require_resident_key);
+    assert!(!seen[0].para.prefer_resident_key);
     assert_eq!(seen[0].para.attestation, Attestation::Direct);
     assert_eq!(
         seen[0].para.cancellation_id.as_deref(),
@@ -300,25 +306,66 @@ fn server_cancel_rpc_places_cancellation_guid_in_request_field() {
     assert_eq!(*outcome.lock().unwrap(), Some(Ok(())));
 }
 
-// oracle: mutant dropping a declined WebAuthN_Channel processor without failing its caller.
+// oracle: mutant declining, closing, or dropping an unanswered WebAuthN_Channel RPC without aborting its caller once with E_ABORT (MS-ERREF §2.1, 0x80004004).
 #[test]
 fn dropping_unanswered_server_rpc_aborts_pending_ceremony_once() {
-    use ironrdp_dvc::DvcServerProcessor as _;
-    use ironrdp_dvc::pdu::CreationStatus;
+    use ironrdp_dvc::DrdynvcServer;
+    use ironrdp_dvc::pdu::{CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
+    use ironrdp_svc::SvcProcessor as _;
 
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let recorded = Arc::clone(&calls);
-    let mut server = RdpewaServerRpc::iuvpaa(
+    let declined_calls = Arc::new(Mutex::new(Vec::new()));
+    let recorded_declined = Arc::clone(&declined_calls);
+    let mut drdynvc = DrdynvcServer::new().with_dynamic_channel(RdpewaServerRpc::iuvpaa(
         [0x44; 16],
         Box::new(move |result| {
-            recorded.lock().unwrap().push(result);
+            recorded_declined.lock().unwrap().push(result);
+        }),
+    ));
+    drdynvc
+        .process(
+            &encode_vec(&DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(
+                CapsVersion::V2,
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+    drdynvc
+        .process(
+            &encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(
+                0,
+                CreationStatus::NO_LISTENER,
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+    // oracle: spec MS-ERREF §2.1; E_ABORT (0x80004004).
+    assert_eq!(*declined_calls.lock().unwrap(), [Err(0x8000_4004)]);
+    drop(drdynvc);
+    assert_eq!(*declined_calls.lock().unwrap(), [Err(0x8000_4004)]);
+
+    let closed_calls = Arc::new(Mutex::new(Vec::new()));
+    let recorded_closed = Arc::clone(&closed_calls);
+    let mut closed_server = RdpewaServerRpc::iuvpaa(
+        [0x45; 16],
+        Box::new(move |result| {
+            recorded_closed.lock().unwrap().push(result);
         }),
     );
-    server.creation_failed(12, CreationStatus::NO_LISTENER);
-    server.close(12);
-    drop(server);
+    closed_server.close(12);
+    assert_eq!(*closed_calls.lock().unwrap(), [Err(0x8000_4004)]);
+    drop(closed_server);
+    assert_eq!(*closed_calls.lock().unwrap(), [Err(0x8000_4004)]);
 
-    assert_eq!(*calls.lock().unwrap(), [Err(E_ABORT)]);
+    let dropped_calls = Arc::new(Mutex::new(Vec::new()));
+    let recorded_dropped = Arc::clone(&dropped_calls);
+    let dropped_server = RdpewaServerRpc::iuvpaa(
+        [0x46; 16],
+        Box::new(move |result| {
+            recorded_dropped.lock().unwrap().push(result);
+        }),
+    );
+    drop(dropped_server);
+    assert_eq!(*dropped_calls.lock().unwrap(), [Err(0x8000_4004)]);
 }
 
 // oracle: spec RFC 8949 §4.2.3
