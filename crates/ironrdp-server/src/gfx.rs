@@ -96,7 +96,10 @@ impl DvcProcessor for GfxDvcBridge {
     }
 
     fn max_message_size(&self) -> Option<usize> {
-        Some(256 * 1024)
+        self.inner
+            .lock()
+            .expect("GfxServerHandle mutex poisoned")
+            .max_message_size()
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {

@@ -4,7 +4,7 @@ mod contact;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use ironrdp_core::{decode, encode_vec};
+use ironrdp_core::{Decode as _, ReadCursor, decode, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
 use ironrdp_rdpei::pdu::{
     CsReadyFlags, CsReadyPdu, DismissHoveringTouchContactPdu, PenContact, PenContactFlags, PenEventPdu, PenFrame,
@@ -12,6 +12,7 @@ use ironrdp_rdpei::pdu::{
 };
 use ironrdp_rdpei::{RdpeiHandler, RdpeiServer};
 use ironrdp_testsuite_core::assert_eq_hex;
+use proptest::prelude::*;
 
 #[test]
 fn sc_ready_v200_round_trip() {
@@ -125,21 +126,65 @@ fn rdpei_server_bounds_inbound_dvc_messages() {
     assert_eq!(server.max_message_size(), Some(64 * 1024));
 }
 
-// oracle: spec MS-RDPEI §2.2.3.3, §2.2.3.3.1, §2.2.3.7, §2.2.3.7.1
+// oracle: spec MS-RDPEI §2.2.2.1, §2.2.2.3, §2.2.2.5, §2.2.3.3, §2.2.3.3.1, §2.2.3.7, §2.2.3.7.1
 #[test]
 fn touch_and_pen_decoders_reject_truncated_counts() {
-    // Truncated TouchFrame / PenFrame claiming 0x7FFF contacts with no contact bytes left.
-    assert!(decode::<TouchFrame>(&[0xFF, 0xFF, 0x00]).is_err());
-    assert!(decode::<PenFrame>(&[0xFF, 0xFF, 0x00]).is_err());
+    // In MS-RDPEI §2.2.2.1 and §2.2.2.5, `0xFF, 0xFF` is the 2-byte TWO_BYTE_UNSIGNED_INTEGER
+    // encoding of `0x7FFF` (high bit set), and `0x00` is the 1-byte EIGHT_BYTE_UNSIGNED_INTEGER
+    // encoding of `frameOffset = 0` (high 3 bits clear). All 3 header bytes are consumed before
+    // `Vec::with_capacity` runs and the first contact read fails at EOF.
+    let truncated_frame = [0xFF, 0xFF, 0x00];
+    let mut cursor = ReadCursor::new(&truncated_frame);
+    assert!(TouchFrame::decode(&mut cursor).is_err());
+    assert!(cursor.remaining().is_empty());
 
-    // Truncated TouchEventPdu / PenEventPdu claiming 0x7FFF frames with no frame bytes left.
-    assert!(decode::<TouchEventPdu>(&[0x03, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF]).is_err());
-    assert!(decode::<PenEventPdu>(&[0x08, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF]).is_err());
+    let mut cursor = ReadCursor::new(&truncated_frame);
+    assert!(PenFrame::decode(&mut cursor).is_err());
+    assert!(cursor.remaining().is_empty());
+
+    // 6-byte RDPINPUT_HEADER, 1-byte FOUR_BYTE_UNSIGNED_INTEGER `encodeTime = 0` (`0x00`),
+    // and 2-byte TWO_BYTE_UNSIGNED_INTEGER `frameCount = 0x7FFF` (`0xFF, 0xFF`). All 9 header
+    // bytes are consumed before `Vec::with_capacity` runs and the first frame read fails at EOF.
+    let truncated_touch_event = [0x03, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF];
+    let mut cursor = ReadCursor::new(&truncated_touch_event);
+    assert!(TouchEventPdu::decode(&mut cursor).is_err());
+    assert!(cursor.remaining().is_empty());
+
+    let truncated_pen_event = [0x08, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF];
+    let mut cursor = ReadCursor::new(&truncated_pen_event);
+    assert!(PenEventPdu::decode(&mut cursor).is_err());
+    assert!(cursor.remaining().is_empty());
 }
 
 // oracle: mutant under-sizing the minimum contact or frame wire size in Vec::with_capacity.
 #[test]
 fn touch_and_pen_decoders_preallocate_exact_capacity_for_minimal_items() {
+    // oracle: spec MS-RDPEI §2.2.2.1, §2.2.2.3, §2.2.2.4, §2.2.2.5, §2.2.3.3.1, §2.2.3.7.1
+    assert_eq!(
+        encode_vec(&TouchContact::new(0, 0, 0, TouchContactFlags::UP))
+            .expect("encode touch contact")
+            .len(),
+        TouchContact::MIN_WIRE_SIZE
+    );
+    assert_eq!(
+        encode_vec(&TouchFrame::new(0, Vec::new()))
+            .expect("encode touch frame")
+            .len(),
+        TouchFrame::MIN_WIRE_SIZE
+    );
+    assert_eq!(
+        encode_vec(&PenContact::new(0, 0, 0, PenContactFlags::UP))
+            .expect("encode pen contact")
+            .len(),
+        PenContact::MIN_WIRE_SIZE
+    );
+    assert_eq!(
+        encode_vec(&PenFrame::new(0, Vec::new()))
+            .expect("encode pen frame")
+            .len(),
+        PenFrame::MIN_WIRE_SIZE
+    );
+
     let touch_contacts = (0..3)
         .map(|id| TouchContact::new(id, 0, 0, TouchContactFlags::UP))
         .collect();
@@ -177,4 +222,25 @@ fn touch_and_pen_decoders_preallocate_exact_capacity_for_minimal_items() {
     );
     let decoded_pen: PenEventPdu = decode(&encode_vec(&pen_event).expect("encode pen event")).expect("decode");
     assert_eq!(decoded_pen.frames.capacity(), 3);
+}
+
+proptest! {
+    // oracle: mutant panicking or over-allocating on arbitrary malformed RDPEI touch and pen payloads.
+    #[test]
+    fn arbitrary_rdpei_touch_and_pen_bytes_never_over_allocate_decoded_vectors(
+        bytes in proptest::collection::vec(any::<u8>(), 0..=128),
+    ) {
+        if let Ok(frame) = decode::<TouchFrame>(&bytes) {
+            prop_assert!(frame.contacts.len() <= bytes.len() / TouchContact::MIN_WIRE_SIZE);
+        }
+        if let Ok(frame) = decode::<PenFrame>(&bytes) {
+            prop_assert!(frame.contacts.len() <= bytes.len() / PenContact::MIN_WIRE_SIZE);
+        }
+        if let Ok(event) = decode::<TouchEventPdu>(&bytes) {
+            prop_assert!(event.frames.len() <= bytes.len() / TouchFrame::MIN_WIRE_SIZE);
+        }
+        if let Ok(event) = decode::<PenEventPdu>(&bytes) {
+            prop_assert!(event.frames.len() <= bytes.len() / PenFrame::MIN_WIRE_SIZE);
+        }
+    }
 }

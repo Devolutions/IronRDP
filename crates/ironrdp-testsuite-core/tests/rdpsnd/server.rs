@@ -432,6 +432,11 @@ fn block_number_wrap_counts_unconfirmed_waves_and_stale_confirms() {
     assert_eq!(stats.second_confirms, 0);
     assert_eq!(stats.unmatched_confirms, 0);
     assert_eq!(rec.lock().expect("poisoned").wave_confirms, vec![(0, 500), (0, 2600)]);
+    // oracle: mutant firing unconfirmed_waves_changed when a wraparound send overwrites an already-unconfirmed slot.
+    assert_eq!(
+        rec.lock().expect("poisoned").unconfirmed_waves,
+        (1..=256).chain([255]).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -468,7 +473,7 @@ fn stale_check_follows_the_u16_timestamp_wrap() {
     assert_eq!(blocks.confirm(8, 0x0010), ConfirmKind::First(0xFFF0));
 }
 
-// oracle: spec MS-RDPEA §2.2.3.8; mutant reporting second, unmatched, or stale confirms as unconfirmed wave transitions.
+// oracle: mutant reporting second, unmatched, or stale confirms as unconfirmed wave transitions.
 #[test]
 fn unconfirmed_waves_changed_tracks_sends_and_first_valid_confirms() {
     let rec = Arc::new(Mutex::new(Recording::default()));
@@ -488,6 +493,7 @@ fn unconfirmed_waves_changed_tracks_sends_and_first_valid_confirms() {
     // unmatched confirm for block 9, and stale confirm for block 1 (0x0050 < 0x0200)
     // must not invoke `unconfirmed_waves_changed`.
     for (block_no, timestamp) in [(0, 0x0100), (0, 0x0340), (0, 0x0350), (9, 0x0360), (1, 0x0050)] {
+        // oracle: spec MS-RDPEA §2.2.3.8
         let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu { timestamp, block_no });
         server
             .process(&encode_vec(&confirm).expect("encode wave confirm"))
@@ -496,6 +502,7 @@ fn unconfirmed_waves_changed_tracks_sends_and_first_valid_confirms() {
     assert_eq!(rec.lock().expect("poisoned").unconfirmed_waves, vec![1, 2, 1]);
 
     // First valid confirm for block 1 reduces the unconfirmed count to 0.
+    // oracle: spec MS-RDPEA §2.2.3.8
     let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu {
         timestamp: 0x0210,
         block_no: 1,

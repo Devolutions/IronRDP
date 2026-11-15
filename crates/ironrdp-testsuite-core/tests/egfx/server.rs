@@ -1916,8 +1916,9 @@ fn egfx_server_and_bridge_bound_inbound_dvc_messages() {
     use ironrdp_server::GfxDvcBridge;
 
     let server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
-    assert_eq!(server.max_message_size(), Some(256 * 1024));
+    let expected = server.max_message_size();
+    assert_eq!(expected, Some(256 * 1024));
 
     let bridge = GfxDvcBridge::new(Arc::new(Mutex::new(server)));
-    assert_eq!(bridge.max_message_size(), Some(256 * 1024));
+    assert_eq!(bridge.max_message_size(), expected);
 }
