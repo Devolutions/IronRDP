@@ -151,6 +151,7 @@ for (const [colorDepth, legacy] of [
 }
 
 for (const [name, invalid] of [
+    ['below the supported depths', 14],
     ['unsupported', 17],
     ['fractional', 24.5],
     ['NaN', NaN],
