@@ -353,7 +353,7 @@ impl From<PerformanceFlagsType> for PerformanceFlags {
             PerformanceFlagsType::DisableTheming => PerformanceFlags::DISABLE_THEMING,
             PerformanceFlagsType::DisableWallpaper => PerformanceFlags::DISABLE_WALLPAPER,
             PerformanceFlagsType::EnableDesktopComposition => PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
-            PerformanceFlagsType::EnableFontSmoothing => PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
+            PerformanceFlagsType::EnableFontSmoothing => PerformanceFlags::ENABLE_FONT_SMOOTHING,
             PerformanceFlagsType::Reserved1 => PerformanceFlags::RESERVED1,
             PerformanceFlagsType::Reserved2 => PerformanceFlags::RESERVED2,
         }
