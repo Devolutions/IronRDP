@@ -5,12 +5,7 @@ export interface Corner {
 
 /** Bottom-right corner of the window's viewport. */
 export function windowCorner(): Corner {
-    const docElem = document.documentElement;
-    const body = document.body;
-    return {
-        x: window.innerWidth ?? docElem.clientWidth ?? body.clientWidth,
-        y: window.innerHeight ?? docElem.clientHeight ?? body.clientHeight,
-    };
+    return { x: window.innerWidth, y: window.innerHeight };
 }
 
 /**
