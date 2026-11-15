@@ -26,6 +26,8 @@ pub fn check(sh: &Shell) -> anyhow::Result<()> {
 
     build(sh, true)?;
 
+    run_cmd_in!(sh, IRONRDP_WEB_PATH, "wasm-pack test --node --lib --locked")?;
+
     // Exercise the public WASM API in Node with browser objects mocked by the tests.
     run_cmd_in!(
         sh,

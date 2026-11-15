@@ -54,6 +54,30 @@ if (error.rdcleanpathDetails()?.errorCode === RDCleanPathErrorCode.EXPIRED) {
 }
 ```
 
+## Audio playback
+
+Register `audioPlayback(callback)` before connecting to receive audio from the remote desktop.
+Playback is disabled unless a callback is supplied.
+The embedding application owns playback, scheduling, and audio resources.
+
+The callback receives these message shapes.
+
+| Message                                        | Fields                                                                                                                           |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `{ type: 'wave', sampleRate, channels, data }` | `sampleRate` is in Hz; `channels` is the channel count; `data` is a `Uint8Array` of interleaved signed 16-bit little-endian PCM. |
+| `{ type: 'volume', left, right }`              | Each number is the corresponding raw SNDVOL channel value divided by 65535, ranging from 0 (silence) to 1 (full volume).         |
+| `{ type: 'close' }`                            | Playback closed or format negotiation started, including the initial negotiation before any wave.                                |
+
+The volume numbers preserve the protocol's logarithmic level scale, as specified by [MS-RDPEA §2.2.4.1 Volume PDU] and [§2.2.2.2 Client Audio Formats and Version PDU].
+They are not linear amplitude gains; mapping them to a playback API is the embedding application's responsibility.
+The extension advertises stereo 16-bit PCM at 48,000, 44,100, and 22,050 Hz in that preference order.
+
+A `close` message can arrive while the application has no active playback and again during renegotiation.
+It does not mean the RDP session ended, and subsequent wave messages can resume playback.
+
+[MS-RDPEA §2.2.4.1 Volume PDU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/d13a7930-00cc-4cdb-a17d-7bda00f6edb7
+[§2.2.2.2 Client Audio Formats and Version PDU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/d58d4d57-cb36-453a-866f-86beacc6d79b
+
 ## Virtual Printer
 
 Register `printJobStreamCallbacks` before connecting to enable the browser-side

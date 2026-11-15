@@ -45,6 +45,16 @@ export function displayControl(enable: boolean): Extension {
     return new Extension('display_control', enable);
 }
 
+/**
+ * Receives the remote desktop's audio through the callback described in README.md, Audio playback.
+ * Wave messages contain interleaved 16-bit little-endian PCM in a Uint8Array.
+ * Volume messages contain normalized logarithmic protocol levels, not linear amplitude gains.
+ * Close messages also precede initial format negotiation and renegotiation; later waves can follow.
+ */
+export function audioPlayback(callback: (message: unknown) => void): Extension {
+    return new Extension('audio_playback', callback);
+}
+
 export function kdcProxyUrl(url: string): Extension {
     return new Extension('kdc_proxy_url', url);
 }
