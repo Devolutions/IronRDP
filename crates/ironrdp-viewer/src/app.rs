@@ -52,6 +52,8 @@ enum InputTarget {
 /// A viewer application driven by the RDP client's native output events.
 pub struct App {
     inner: RpcApp,
+    #[cfg(target_os = "macos")]
+    clipboard: Option<ironrdp_cliprdr_native::MacClipboard>,
 }
 
 /// A viewer application driven by a viewer-hosted RPC daemon.
@@ -108,7 +110,19 @@ impl App {
             initial_window_size,
             remote_app,
         )?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            #[cfg(target_os = "macos")]
+            clipboard: None,
+        })
+    }
+
+    /// Attaches a macOS clipboard bridge owned by the window event loop.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn with_clipboard(mut self, clipboard: ironrdp_cliprdr_native::MacClipboard) -> Self {
+        self.clipboard = Some(clipboard);
+        self
     }
 }
 
@@ -914,7 +928,33 @@ impl ApplicationHandler<ViewerEvent> for RpcApp {
 
 impl ApplicationHandler<RdpOutputEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "macos")]
+        if let Some(clipboard) = &mut self.clipboard {
+            clipboard.poll();
+        }
+
         self.inner.on_about_to_wait(event_loop);
+
+        #[cfg(target_os = "macos")]
+        if let Some(clipboard) = &self.clipboard {
+            // Pasteboard changes and clipboard callbacks do not wake the window loop.
+            // UNTESTED: The winit loop must wake for idle and active polls; verify its sleep behavior when changing this.
+            match event_loop.control_flow() {
+                ControlFlow::Poll => {}
+                ControlFlow::Wait => event_loop.set_control_flow(ControlFlow::WaitUntil(clipboard_deadline(
+                    Instant::now(),
+                    clipboard.needs_poll(),
+                    None,
+                ))),
+                ControlFlow::WaitUntil(deadline) => {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(clipboard_deadline(
+                        Instant::now(),
+                        clipboard.needs_poll(),
+                        Some(deadline),
+                    )));
+                }
+            }
+        }
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -928,6 +968,22 @@ impl ApplicationHandler<RdpOutputEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RdpOutputEvent) {
         self.inner.handle_output_event(event_loop, event);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn clipboard_deadline(now: Instant, active: bool, existing: Option<Instant>) -> Instant {
+    let interval = if active {
+        Duration::from_millis(10)
+    } else {
+        Duration::from_millis(250)
+    };
+    existing.map_or(now + interval, |deadline| deadline.min(now + interval))
+}
+
+#[cfg(all(target_os = "macos", feature = "__test"))]
+#[doc(hidden)]
+pub fn test_clipboard_deadline(now: Instant, active: bool, existing: Option<Instant>) -> Instant {
+    clipboard_deadline(now, active, existing)
 }
 
 /// Maps a window position onto the remote desktop, which the viewer stretches over the client area.

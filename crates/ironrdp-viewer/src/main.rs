@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
 
     #[cfg(windows)]
     let enable_smartcard = config.channels().rdpdr.smartcard;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let enable_clipboard = config.channels().clipboard == ironrdp::client::config::ClipboardType::Enable;
     #[cfg(windows)]
     let server = config.destination().to_string();
@@ -78,10 +78,19 @@ fn main() -> anyhow::Result<()> {
     // Kept alive, on this thread, until the event loop returns.
     #[cfg(windows)]
     let (client, _clipboard) = attach_windows_clipboard(client, enable_clipboard)?;
+    #[cfg(target_os = "macos")]
+    let (client, mac_clipboard) = attach_macos_clipboard(client, enable_clipboard);
     let input_event_sender = client.input_sender();
 
-    let mut app = App::new(&event_loop, &input_event_sender, initial_window_size, remote_app)
+    let app = App::new(&event_loop, &input_event_sender, initial_window_size, remote_app)
         .context("unable to initialize App")?;
+    #[cfg(target_os = "macos")]
+    let mut app = match mac_clipboard {
+        Some(clipboard) => app.with_clipboard(clipboard),
+        None => app,
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut app = app;
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
@@ -211,6 +220,34 @@ fn attach_windows_clipboard(
     let client = client.with_cliprdr_backend_factory(clipboard.backend_factory());
 
     Ok((client, Some(clipboard)))
+}
+
+/// Creates the macOS clipboard backend on the main thread, where `NSPasteboard`
+/// must be accessed.
+#[cfg(target_os = "macos")]
+fn attach_macos_clipboard(
+    client: RdpClient,
+    enabled: bool,
+) -> (RdpClient, Option<ironrdp_cliprdr_native::MacClipboard>) {
+    if !enabled {
+        return (client, None);
+    }
+
+    let clipboard = match ironrdp_cliprdr_native::MacClipboard::new(
+        ironrdp_viewer::clipboard::ClientClipboardMessageProxy::new(client.input_sender()),
+    ) {
+        Ok(clipboard) => clipboard,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "unable to initialize the macOS clipboard; clipboard redirection is off for this session"
+            );
+            return (client, None);
+        }
+    };
+    let client = client.with_cliprdr_backend_factory(clipboard.backend_factory());
+
+    (client, Some(clipboard))
 }
 
 /// Attaches the Windows RDPDR backend when drive, smartcard, printer or port redirection is enabled.

@@ -1,10 +1,78 @@
 # IronRDP CLIPRDR native backends
 
-Native CLIPRDR backend implementations: Windows (`WinClipboard`) and Linux desktops over X11 and Wayland (`LinuxClipboard`, text and images).
+Native CLIPRDR backend implementations: Windows (`WinClipboard`), Linux desktops over X11 and Wayland (`LinuxClipboard`, text and images), and macOS (`MacClipboard`, text, images, and files in both directions).
 
 This crate is part of the [IronRDP] project.
 
 [IronRDP]: https://github.com/Devolutions/IronRDP
+
+## macOS
+
+`MacClipboard` implements text, image, and file clipboard exchange in both
+directions.
+
+- Local text (`CF_UNICODETEXT`) and images (`CF_DIB`/`CF_DIBV5`, converted
+  to/from PNG by `ironrdp-cliprdr-format`) are advertised with delayed
+  rendering. The pasteboard is read only when the remote asks for the data.
+- Local files are offered with `FileGroupDescriptorW`. Directories are walked
+  into relative paths, and remote `FileContents` requests are answered from the
+  current list or from the snapshot taken when the remote locked the list.
+- Remote text and images are requested when the remote copy is announced and
+  written to the pasteboard as plain text and PNG/TIFF.
+- A remote file list is published to the macOS pasteboard as local file URLs,
+  and the bytes are fetched only when a reader such as Finder opens the
+  placeholder.
+- Each remote file is a sparse file in a private `$TMPDIR/ironrdp-cliprdr`
+  tree, so a multi-gigabyte file does not allocate its full size before the
+  paste.
+- An `NSFilePresenter` receives Finder's coordinated read. On the first read,
+  the backend sends `RANGE` requests through
+  `ClipboardMessage::SendFileContentsRequest` and writes the responses into the
+  placeholder. Later reads use the completed file.
+  Uncoordinated reads can see incomplete sparse data.
+- `NSPasteboard`, presenter registration, and `MacClipboard` destruction are
+  main-thread operations. Coordinated staging deletes run on a dedicated
+  cleanup thread. Create the bridge and call `poll` from the embedder's main
+  event loop:
+
+  ```rust,ignore
+  let mut clipboard = MacClipboard::new(message_proxy)?;
+  let client = client.with_cliprdr_backend_factory(clipboard.backend_factory());
+
+  // Each main-loop tick, after routing CLIPRDR events to the backend:
+  clipboard.poll();
+  let interval = if clipboard.needs_poll() {
+      Duration::from_millis(10)
+  } else {
+      Duration::from_millis(250)
+  };
+  // Schedule the next poll within `interval`.
+  ```
+
+  `poll` drives queued CLIPRDR callbacks, local clipboard changes, format requests, file-content requests, and active downloads.
+  Finder's coordinated read blocks its own operation queue until the file completes or the transfer fails.
+- Clipboard callbacks and pasteboard changes do not wake the UI event loop.
+  Poll periodically even when `needs_poll` returns false, and use a shorter interval while it returns true.
+- A remote file descriptor must include a size. A file list without one is
+  rejected because a sparse placeholder needs the final length.
+- A file transfer with no response for 60 seconds fails. On clipboard change
+  or normal close, incomplete placeholders are removed and completed
+  placeholders are deleted with `NSFileCoordinator` so an active Finder copy
+  finishes first. The clipboard is cleared on exit only if it still contains
+  content this session published. Normal close waits up to five minutes for
+  outstanding coordinated deletes; if that expires, or the process is
+  force-terminated, the seven-day startup prune removes the remaining tree.
+  If removal fails, a reader can still copy incomplete sparse data.
+- Finder may show “Preparing to copy…” while a file read is in progress. The
+  transfer is driven by Finder's read, so the dialog is not a byte-level
+  progress indicator.
+- HTML, custom progress UI, and a File Provider/FSKit/FUSE mount are not
+  implemented.
+
+This module is compile- and clippy-checked on macOS. The sparse-placeholder
+and coordinated-read file path was live-validated separately in a prototype.
+Text, images, and local-to-remote file upload still need a live test in an
+embedder.
 
 ## Windows
 
