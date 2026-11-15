@@ -77,6 +77,19 @@ fn assert_tiles_fit_64x64(pdus: &[Vec<u8>]) {
     });
 }
 
+/// Asserts that every tile's scan width is a multiple of 4.
+fn assert_scan_widths_divisible_by_4(pdus: &[Vec<u8>]) {
+    for_each_tile(pdus, |tile| {
+        let header = tile.compressed_data_header.as_ref().expect("compressed bitmap");
+        assert_eq!(
+            header.scan_width % 4,
+            0,
+            "scan width of the bitmap at {:?}",
+            tile.rectangle
+        );
+    });
+}
+
 /// Asserts that a client drawing `pdus` paints every pixel of `update` exactly once, with the
 /// update's color, and nothing outside it.
 fn assert_draws_exactly(pdus: &[Vec<u8>], update: &BitmapUpdate) {
@@ -142,19 +155,31 @@ fn bitmap_update_tiles_fit_freerdp_planar_context() {
     assert_draws_exactly(&pdus, &update);
 }
 
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.3 (cbScanWidth MUST be divisible by 4)
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.2 (destLeft..destBottom are the inclusive bounds drawn, so the padding columns are not)
+// oracle: property round-trip (RDP 6.0 planar bitmaps without color loss decode to the pixels encoded)
+#[test]
+fn bitmap_update_of_odd_width_has_scan_width_divisible_by_4() {
+    let update = bitmap(0, 0, 67, 3);
+    let pdus = encode(update.clone());
+    assert_scan_widths_divisible_by_4(&pdus);
+    assert_draws_exactly(&pdus, &update);
+}
+
 /// An offset from 0 to `max`, with both ends as likely as any value in between.
 fn offset(max: u16) -> impl Strategy<Value = u16> {
     prop_oneof![Just(0), Just(max), 0..=max]
 }
 
-/// Updates of widths that are multiples of 4, up to 4x4 tiles, anywhere on a 65535x65535 desktop.
+/// Updates of up to 4x4 tiles, anywhere on a 65535x65535 desktop.
 fn updates() -> impl Strategy<Value = BitmapUpdate> {
-    ((1u16..=64).prop_map(|w| w * 4), 1u16..=256).prop_flat_map(|(width, height)| {
+    (1u16..=256, 1u16..=256).prop_flat_map(|(width, height)| {
         (offset(u16::MAX - width), offset(u16::MAX - height)).prop_map(move |(x, y)| bitmap(x, y, width, height))
     })
 }
 
-// Same oracles as bitmap_update_tiles_fit_freerdp_planar_context, over generated sizes and offsets.
+// Same oracles as bitmap_update_tiles_fit_freerdp_planar_context and
+// bitmap_update_of_odd_width_has_scan_width_divisible_by_4, over generated sizes and offsets.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -162,6 +187,7 @@ proptest! {
     fn bitmap_update_tiles_fit_and_draw_any_update(update in updates()) {
         let pdus = encode(update.clone());
         assert_tiles_fit_64x64(&pdus);
+        assert_scan_widths_divisible_by_4(&pdus);
         assert_draws_exactly(&pdus, &update);
     }
 }
