@@ -489,6 +489,8 @@ struct Live {
     /// graphics update; `None` until the first frame arrives.
     frame: Option<Frame>,
     /// Number of frames received in this session, which is also the number of the frame in `frame`.
+    ///
+    /// INVARIANT: `frame` is `Some` exactly when `0 < frame_number`.
     frame_number: u64,
     pending_pointer_position: Option<MousePosition>,
     rail_initial_execute: Option<(u16, String)>,
@@ -501,6 +503,9 @@ struct Live {
 }
 
 const MAX_PENDING_RAIL_LAUNCHES: usize = 64;
+
+/// Frame and RAIL waits reject a timeout longer than this.
+const MAX_WAIT_TIMEOUT_MS: u32 = 60_000;
 
 #[derive(Debug)]
 enum RailLaunchQueueError {
@@ -1341,11 +1346,10 @@ impl Daemon {
     ///
     /// INVARIANT: An `Ok` reply carries `frame_number: Some(n)` with `after_frame < n`.
     async fn wait_frame(&self, after_frame: u64, timeout_ms: u32) -> Response {
-        const MAX_FRAME_WAIT_MS: u32 = 60_000;
-        if MAX_FRAME_WAIT_MS < timeout_ms {
+        if MAX_WAIT_TIMEOUT_MS < timeout_ms {
             return Response::typed_error(
                 crate::ipc::AgentErrorCategory::InvalidRequest,
-                format!("frame wait timeout exceeds {MAX_FRAME_WAIT_MS} ms"),
+                format!("frame wait timeout exceeds {MAX_WAIT_TIMEOUT_MS} ms"),
             );
         }
         let (destination, live, frame_notify) = {
@@ -1455,11 +1459,10 @@ impl Daemon {
     }
 
     async fn rail_wait(&self, after_sequence: Option<u64>, timeout_ms: u32) -> Response {
-        const MAX_RAIL_WAIT_MS: u32 = 60_000;
-        if timeout_ms > MAX_RAIL_WAIT_MS {
+        if MAX_WAIT_TIMEOUT_MS < timeout_ms {
             return Response::typed_error(
                 crate::ipc::AgentErrorCategory::InvalidRequest,
-                format!("RAIL wait timeout exceeds {MAX_RAIL_WAIT_MS} ms"),
+                format!("RAIL wait timeout exceeds {MAX_WAIT_TIMEOUT_MS} ms"),
             );
         }
         let (live, rail_notify) = {
@@ -3786,7 +3789,6 @@ mod tests {
     }
 
     // oracle: mutant a frame wait whose timeout reads as success, so a caller takes it for the frame
-    // oracle: mutant a request dispatch that doesn't forward `after_frame` to the wait
     #[tokio::test]
     async fn wait_frame_fails_when_no_newer_frame_arrives_in_time() {
         let (daemon, _) = session_at_frame(5);
@@ -3796,8 +3798,14 @@ mod tests {
         assert!(Duration::from_millis(50) <= started.elapsed());
         assert_eq!(error.category, AgentErrorCategory::Unavailable);
         assert!(error.message.contains("timed out"), "{}", error.message);
+    }
 
-        // Through the request dispatch, which would take frame 5 as newer if it dropped `after_frame`.
+    // oracle: mutant a request dispatch that doesn't forward `after_frame` to the wait
+    #[tokio::test]
+    async fn wait_frame_request_forwards_after_frame() {
+        let (daemon, _) = session_at_frame(5);
+
+        // A dispatch that dropped `after_frame` would take frame 5 as newer and return it.
         let request = Request::WaitFrame {
             after_frame: 5,
             timeout_ms: 0,

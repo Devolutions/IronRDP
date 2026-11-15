@@ -114,7 +114,7 @@ On Windows, an ActiveX host can expose its session through the same local RPC pr
 host with `IRONRDP_ACTIVEX_RPC=1`, then use `--backend active-x` for agent operations. The agent
 uses the per-user `ironrdp-activex` endpoint by default and never attempts to start an ActiveX host.
 Use `--endpoint` when the host selected `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
-The RAIL audit commands and terminal `attach` require the daemon backend.
+The RAIL audit commands, `wait-frame` and terminal `attach` require the daemon backend.
 
 `connect` accepts `RDP_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD` as defaults for its named
 connection flags. Explicit flags override those process-local values. The native MSTSC bridge uses
@@ -213,6 +213,7 @@ Read the number before the action whose result you are waiting for.
 A frame the action produces can arrive before the next command runs, and it still satisfies the wait because its number is greater.
 Each report carries the new number for the next wait, and `--after-frame 0` waits for the first frame of a session.
 The command fails when the session ends or the timeout elapses first, so success always means a newer frame arrived.
+The ActiveX backend reports no frame number and rejects `wait-frame`.
 
 ## Terminal screenshots
 
