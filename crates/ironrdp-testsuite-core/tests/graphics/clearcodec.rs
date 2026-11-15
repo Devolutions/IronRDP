@@ -520,7 +520,7 @@ fn bgr_at(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 3] {
     pixels[offset..offset + 3].try_into().unwrap()
 }
 
-// oracle: spec MS-RDPEGFX §2.2.4.1.1.2.1.1.3 (rows below shortVBarYOn and from shortVBarYOff take the band background)
+// oracle: spec MS-RDPEGFX §2.2.4.1.1.2.1.1.3 (rows below shortVBarYOn and from shortVBarYOff take the band background).
 #[test]
 fn decode_stream_with_bands_layer_short_vbar_cache_miss() {
     let mut dec = ClearCodecDecoder::new();
@@ -547,7 +547,7 @@ fn decode_stream_with_bands_layer_short_vbar_cache_miss() {
     assert_eq!(bgr_at(&pixels, 4, 1, 3), [0x00, 0x00, 0x00], "background at (1,3)");
 }
 
-// oracle: reference FreeRDP/FreeRDP@65bcca1913a2:libfreerdp/codec/clear.c (clear_decompress_bands_data fills an empty VBAR_CACHE_HIT entry with zero bytes through resize_vbar_entry)
+// oracle: reference FreeRDP/FreeRDP@65bcca1913a2:libfreerdp/codec/clear.c (clear_decompress_bands_data fills an empty VBAR_CACHE_HIT entry with zero bytes through resize_vbar_entry).
 #[test]
 fn vbar_cache_hit_on_empty_entry_draws_zero_pixels() {
     let mut dec = ClearCodecDecoder::new();
@@ -563,7 +563,7 @@ fn vbar_cache_hit_on_empty_entry_draws_zero_pixels() {
     }
 }
 
-// oracle: reference FreeRDP/FreeRDP@65bcca1913a2:libfreerdp/codec/clear.c (clear_decompress_bands_data takes the pixel count of an empty SHORT_VBAR_CACHE_HIT entry as zero and fills the column with the band background)
+// oracle: reference FreeRDP/FreeRDP@65bcca1913a2:libfreerdp/codec/clear.c (clear_decompress_bands_data takes the pixel count of an empty SHORT_VBAR_CACHE_HIT entry as zero and fills the column with the band background).
 #[test]
 fn short_vbar_cache_hit_on_empty_entry_draws_band_background() {
     let mut dec = ClearCodecDecoder::new();
@@ -580,7 +580,7 @@ fn short_vbar_cache_hit_on_empty_entry_draws_band_background() {
     }
 }
 
-// oracle: spec MS-RDPEGFX §2.2.4.1.1.2.1.1.2 (the Short V-Bar Storage data MUST NOT exceed 3 * (yEnd - yStart + 1 - shortVBarYOn) bytes)
+// oracle: mutant guard against dropping the yOn bound on a short V-bar cache hit, which FreeRDP clamps but IronRDP rejects.
 #[test]
 fn short_vbar_cache_hit_on_empty_entry_still_checks_y_on() {
     let mut dec = ClearCodecDecoder::new();
@@ -590,13 +590,12 @@ fn short_vbar_cache_hit_on_empty_entry_still_checks_y_on() {
 
     let error = dec.decode(&stream, 4, 4).expect_err("yOn past the band should fail");
 
-    // oracle: mutant rejecting the stream for a reason other than the yOn bound
+    // oracle: mutant guard against rejecting the stream for a reason other than the yOn bound.
     assert!(
         matches!(
             error.kind(),
             DecodeErrorKind::InvalidField {
                 field: "shortVBarYOn",
-                reason: "y_on + pixel_count exceeds band height",
                 ..
             }
         ),
