@@ -146,6 +146,17 @@ pub enum DynamicStaticChannelAttachError {
     DuplicateChannelName,
 }
 
+/// Network measurements reported by the server during connection setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetworkCharacteristics {
+    /// Lowest detected RTT in milliseconds, when the server reported it.
+    pub base_rtt_ms: Option<u32>,
+    /// Current bandwidth in kilobits per second, when the server reported it.
+    pub bandwidth_kbps: Option<u32>,
+    /// Current average RTT in milliseconds.
+    pub average_rtt_ms: u32,
+}
+
 #[derive(Debug)]
 pub struct ConnectionResult {
     pub io_channel_id: u16,
@@ -178,6 +189,8 @@ pub struct ConnectionResult {
     pub window_support_level: Option<WindowSupportLevel>,
     /// The monitor layout reported by the server during connection finalization.
     pub monitor_layout: Option<rdp::finalization_messages::MonitorLayoutPdu>,
+    /// The latest network characteristics reported before connection activation.
+    pub network_characteristics: Option<NetworkCharacteristics>,
     /// Factory for producing connection activation sequences.
     ///
     /// Used to drive the [Deactivation-Reactivation Sequence] when a Server Deactivate All PDU is
@@ -452,6 +465,8 @@ pub struct ClientConnector {
     /// Only accumulated while a window is open, since a total with no interval to
     /// divide it by is not a measurement of anything.
     connect_time_bw_bytes: u32,
+    /// Latest network characteristics reported during connection negotiation.
+    network_characteristics: Option<NetworkCharacteristics>,
     remote_guard: bool,
     remote_guard_ready: bool,
     // None disables NTLM; Some(None) binds it to the configured identity.
@@ -482,6 +497,7 @@ impl ClientConnector {
             redirection_password_cookie: None,
             connect_time_bw_started_at: None,
             connect_time_bw_bytes: 0,
+            network_characteristics: None,
             remote_guard: false,
             remote_guard_ready: false,
             #[cfg(feature = "remote-guard")]
@@ -622,6 +638,17 @@ impl ClientConnector {
             .values()
             .filter(|channel| channel.channel_name() == name)
             .count()
+    }
+
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn __test_respond_to_connect_time_autodetect(
+        &mut self,
+        request: rdp::autodetect::AutoDetectRequest,
+    ) -> ConnectorResult<Option<NetworkCharacteristics>> {
+        let mut output = WriteBuf::default();
+        self.respond_to_connect_time_autodetect(request, None, 1004, 1003, &mut output)?;
+        Ok(self.network_characteristics)
     }
 
     pub fn remote_guard_enabled(&self) -> bool {
@@ -1285,6 +1312,19 @@ impl ClientConnector {
                 let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
                 Written::from_size(written)
             }
+            AutoDetectRequest::NetworkCharacteristicsResult {
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms,
+                ..
+            } => {
+                self.network_characteristics = Some(NetworkCharacteristics {
+                    base_rtt_ms,
+                    bandwidth_kbps,
+                    average_rtt_ms,
+                });
+                Ok(Written::Nothing)
+            }
             // A Stop reaching here with any other requestType means a nonconformant
             // server. [MS-RDPBCGR] 2.2.14.1.4 scopes 0x0429-via-Auto-Detect-Request-PDU
             // to after the RDP Connection Sequence has completed, so during connect-time
@@ -1305,9 +1345,8 @@ impl ClientConnector {
                 );
                 Ok(Written::Nothing)
             }
-            // The Network Characteristics Result is informational; nothing to send.
-            //
-            // This also catches the continuous-detection Bandwidth Measure Start,
+            // Other request types are informational or belong to continuous detection.
+            // In particular, this catches the continuous-detection Bandwidth Measure Start,
             // answered on a multitransport channel under a different procedure.
             // Reaching it here means a server started continuous detection before the
             // connection sequence completed (Windows Server 2022 does, during
@@ -2084,6 +2123,7 @@ impl Sequence for ClientConnector {
                                     suppress_output_support,
                                     window_support_level,
                                     monitor_layout: connection_activation.monitor_layout(),
+                                    network_characteristics: self.network_characteristics.take(),
                                     activation_factory: ConnectionActivationFactory::new(
                                         self.config.clone(),
                                         connection_activation.io_channel_id(),

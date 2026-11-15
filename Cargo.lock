@@ -2740,6 +2740,7 @@ dependencies = [
  "libc",
  "md-5 0.10.6",
  "png",
+ "rstest",
  "serde",
  "serde_json",
  "tokio",

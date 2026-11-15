@@ -90,6 +90,38 @@ fn drop_policy_classification() {
     );
 }
 
+// oracle: regression Devolutions/IronRDP#2437
+#[tokio::test]
+async fn connect_time_network_characteristics_are_delivered_on_activation() {
+    use ironrdp_client::__test_send_connect_time_network_characteristics;
+    use ironrdp_connector::NetworkCharacteristics;
+    use tokio::sync::watch;
+
+    let (output_sender, mut output_receiver) = output_channel(1);
+    let (_close_sender, mut close_receiver) = watch::channel(false);
+
+    assert!(
+        __test_send_connect_time_network_characteristics(
+            &output_sender,
+            NetworkCharacteristics {
+                base_rtt_ms: Some(3),
+                bandwidth_kbps: Some(10_000),
+                average_rtt_ms: 4,
+            },
+            &mut close_receiver,
+        )
+        .await
+    );
+    assert!(matches!(
+        output_receiver.recv().await,
+        Some(RdpOutputEvent::NetworkCharacteristics {
+            base_rtt_ms: Some(3),
+            bandwidth_kbps: Some(10_000),
+            average_rtt_ms: 4,
+        })
+    ));
+}
+
 /// A burst of `LatestOnly` sends must never block, and the receiver must see
 /// only the newest value, not every intermediate one.
 #[tokio::test]

@@ -1628,6 +1628,17 @@ impl RdpClient {
                 }
             };
 
+            if !send_connect_time_network_characteristics(
+                &self.output_event_sender,
+                connection_result.network_characteristics,
+                &mut self.close_receiver,
+            )
+            .await
+            {
+                self.emit_user_initiated_termination();
+                break;
+            }
+
             if !self
                 .send_output_event(RdpOutputEvent::ServerInputFlags(connection_result.input_flags))
                 .await
@@ -1978,6 +1989,41 @@ async fn send_active_output_event(
     send_cancellable_output_event(output_event_sender, event, close_receiver)
         .await
         .map_err(|error| ironrdp_session::custom_err!("output_event_sender", error))
+}
+
+fn network_characteristics_output_event(network: ironrdp_connector::NetworkCharacteristics) -> RdpOutputEvent {
+    RdpOutputEvent::NetworkCharacteristics {
+        base_rtt_ms: network.base_rtt_ms,
+        bandwidth_kbps: network.bandwidth_kbps,
+        average_rtt_ms: network.average_rtt_ms,
+    }
+}
+
+async fn send_connect_time_network_characteristics(
+    output_event_sender: &crate::output_channel::OutputEventSender,
+    network: Option<ironrdp_connector::NetworkCharacteristics>,
+    close_receiver: &mut watch::Receiver<bool>,
+) -> bool {
+    let Some(network) = network else {
+        return true;
+    };
+
+    send_cancellable_output_event(
+        output_event_sender,
+        network_characteristics_output_event(network),
+        close_receiver,
+    )
+    .await
+    .unwrap_or(false)
+}
+
+#[cfg(feature = "__test")]
+pub(crate) async fn __test_send_connect_time_network_characteristics(
+    output_event_sender: &crate::output_channel::OutputEventSender,
+    network: ironrdp_connector::NetworkCharacteristics,
+    close_receiver: &mut watch::Receiver<bool>,
+) -> bool {
+    send_connect_time_network_characteristics(output_event_sender, Some(network), close_receiver).await
 }
 
 // ── Connector builder ─────────────────────────────────────────────────────────
