@@ -1675,6 +1675,15 @@ pub enum ServerEvent {
     /// Completion also covers events handled without output, such as a refused request or a missing clipboard channel.
     /// It does not confirm that the peer accepted clipboard data.
     ClipboardWithCompletion(ClipboardMessage, oneshot::Sender<()>),
+    /// Drives `CLIPRDR` only while `is_current` holds, signaling completion when handled.
+    ///
+    /// Checked during event dispatch before mutating channel state or writing.
+    /// Discarded events drop `completion` without sending.
+    ClipboardWithValidity {
+        message: ClipboardMessage,
+        completion: oneshot::Sender<()>,
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
     /// Writes data to an open dynamic channel over the main RDP transport.
     ///
     /// Use [`dvc::encode_dvc_messages`] to fragment complete messages per [MS-RDPEDYC] section 2.2.3.1,
@@ -1759,8 +1768,25 @@ pub enum ServerEvent {
         is_current: Box<dyn Fn() -> bool + Send>,
     },
     Rdpsnd(RdpsndServerMessage),
+    /// Drives `RDPSND` only while `is_current` holds, retaining `permit` until sent or discarded.
+    RdpsndWithValidity {
+        message: RdpsndServerMessage,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+        /// Nonblocking check for the originating connection lifetime.
+        ///
+        /// Checked before `WAVE_KEEP` counting and during event dispatch before mutating channel state or writing.
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
     Rdpdr(RdpdrServerMessage),
     Rdpeai(RdpeaiServerMessage),
+    /// Drives an AUDIO_INPUT channel only while its originating request remains current.
+    RdpeaiWithValidity {
+        message: RdpeaiServerMessage,
+        /// A nonblocking predicate for the request lifetime.
+        ///
+        /// Checked during event dispatch before mutating channel state or writing.
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
     /// Replace or clear the Server Auto-Reconnect Cookie.
@@ -1802,6 +1828,7 @@ impl fmt::Debug for ServerEvent {
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
             Self::ClipboardWithCompletion(..) => f.write_str("ClipboardWithCompletion(..)"),
+            Self::ClipboardWithValidity { .. } => f.write_str("ClipboardWithValidity(..)"),
             Self::DynamicChannelWithCompletion { batch, .. } => f
                 .debug_tuple("DynamicChannelWithCompletion")
                 .field(&batch.channel_id())
@@ -1817,8 +1844,10 @@ impl fmt::Debug for ServerEvent {
                 f.debug_tuple("CloseDynamicChannel").field(channel_id).finish()
             }
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
+            Self::RdpsndWithValidity { .. } => f.write_str("RdpsndWithValidity(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
+            Self::RdpeaiWithValidity { .. } => f.write_str("RdpeaiWithValidity(..)"),
             Self::Echo(..) => f.write_str("Echo(..)"),
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
@@ -4650,13 +4679,21 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
         message: ClipboardMessage,
-    ) -> ServerResult<()> {
+        is_current: impl Fn() -> bool,
+    ) -> ServerResult<bool> {
+        if !is_current() {
+            return Ok(false);
+        }
+        if let ClipboardMessage::Error(error) = message {
+            error!(?error, "Handling clipboard event");
+            return Ok(true);
+        }
         let (Some(channel_id), Some(cliprdr)) = (
             conn.get_channel_id_by_type::<CliprdrServer>(),
             conn.get_svc_processor::<CliprdrServer>(),
         ) else {
             warn!("No clipboard channel, dropping event");
-            return Ok(());
+            return Ok(true);
         };
         let messages = match message {
             ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
@@ -4665,17 +4702,14 @@ impl RdpServer {
             ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
             ClipboardMessage::SendFileContentsRequest(request) => cliprdr.request_file_contents(request),
             ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
-            ClipboardMessage::Error(error) => {
-                error!(?error, "Handling clipboard event");
-                return Ok(());
-            }
+            ClipboardMessage::Error(_) => unreachable!("handled before channel lookup"),
         };
         // A refused clipboard request must not disconnect an otherwise healthy session.
         let messages = match messages {
             Ok(messages) => messages,
             Err(error) => {
                 error!(?error, "Failed to send clipboard event");
-                return Ok(());
+                return Ok(true);
             }
         };
         let data =
@@ -4683,7 +4717,8 @@ impl RdpServer {
         writer
             .write_all(&data)
             .await
-            .map_err(|error| ServerError::io("write_all", error))
+            .map_err(|error| ServerError::io("write_all", error))?;
+        Ok(true)
     }
 
     /// `conn.client_supports_errinfo` is the client's `RNS_UD_CS_SUPPORT_ERRINFO_PDU`
@@ -4722,12 +4757,27 @@ impl RdpServer {
         // actual delay, add IO priority, encode audio, use UDP, etc. 4 frames
         // is roughly low hundreds of ms in regular setups.
         const WAVE_KEEP: usize = 4;
-        let wave_total = events
-            .iter()
-            .filter(|e| matches!(e, ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(..))))
-            .count();
-        let mut wave_skip = wave_total.saturating_sub(WAVE_KEEP);
-        for event in events.drain(..) {
+        let mut events = events.drain(..);
+        while let Some(event) = events.next() {
+            let (event, _rdpsnd_permit) = match event {
+                ServerEvent::RdpeaiWithValidity { message, is_current } if is_current() => {
+                    (ServerEvent::Rdpeai(message), None)
+                }
+                ServerEvent::RdpeaiWithValidity { .. } => {
+                    trace!("Discarding stale AUDIO_INPUT event");
+                    continue;
+                }
+                ServerEvent::RdpsndWithValidity {
+                    message,
+                    permit,
+                    is_current,
+                } if is_current() => (ServerEvent::Rdpsnd(message), permit),
+                ServerEvent::RdpsndWithValidity { .. } => {
+                    trace!("Discarding stale RDPSND event");
+                    continue;
+                }
+                event => (event, None),
+            };
             trace!(?event, "Dispatching");
             match event {
                 ServerEvent::DynamicChannelWithCompletion {
@@ -4983,8 +5033,21 @@ impl RdpServer {
                     };
                     let msgs = match s {
                         RdpsndServerMessage::Wave(data, ts) => {
-                            if wave_skip > 0 {
-                                wave_skip -= 1;
+                            let remaining_waves = events
+                                .as_slice()
+                                .iter()
+                                .filter(|e| match e {
+                                    ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(..)) => true,
+                                    ServerEvent::RdpsndWithValidity {
+                                        message: RdpsndServerMessage::Wave(..),
+                                        is_current,
+                                        ..
+                                    } => is_current(),
+                                    _ => false,
+                                })
+                                .take(WAVE_KEEP)
+                                .count();
+                            if WAVE_KEEP <= remaining_waves {
                                 debug!("Dropping stale wave");
                                 continue;
                             }
@@ -5027,6 +5090,9 @@ impl RdpServer {
                         .write_all(&data)
                         .await
                         .map_err(|e| ServerError::io("write_all", e))?;
+                }
+                ServerEvent::RdpsndWithValidity { .. } => {
+                    unreachable!("guarded RDPSND events are normalized before dispatch");
                 }
                 ServerEvent::Rdpdr(msg) => {
                     let Some(rdpdr) = conn.get_svc_processor::<RdpdrServer>() else {
@@ -5133,7 +5199,12 @@ impl RdpServer {
                         warn!("No drdynvc channel, dropping AUDIO_INPUT event");
                         continue;
                     };
-                    let Some(channel_id) = drdynvc.get_channel_id_by_type::<RdpeaiServer>() else {
+                    let channel_id = match &msg {
+                        RdpeaiServerMessage::OpenOnChannel { channel_id, .. }
+                        | RdpeaiServerMessage::ChangeFormatOnChannel { channel_id, .. } => Some(*channel_id),
+                        _ => drdynvc.get_channel_id_by_type::<RdpeaiServer>(),
+                    };
+                    let Some(channel_id) = channel_id else {
                         warn!("No AUDIO_INPUT dynamic channel, dropping event");
                         continue;
                     };
@@ -5149,10 +5220,17 @@ impl RdpServer {
                             frames_per_packet,
                             initial_format,
                             capture_format,
+                        }
+                        | RdpeaiServerMessage::OpenOnChannel {
+                            frames_per_packet,
+                            initial_format,
+                            capture_format,
+                            ..
                         } => rdpeai
                             .processor_mut()
                             .open(frames_per_packet, initial_format, capture_format),
-                        RdpeaiServerMessage::ChangeFormat { new_format } => {
+                        RdpeaiServerMessage::ChangeFormat { new_format }
+                        | RdpeaiServerMessage::ChangeFormatOnChannel { new_format, .. } => {
                             rdpeai.processor_mut().change_format(new_format)
                         }
                         RdpeaiServerMessage::Error(error) => {
@@ -5184,12 +5262,26 @@ impl RdpServer {
                         .await
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
+                ServerEvent::RdpeaiWithValidity { .. } => {
+                    unreachable!("guarded AUDIO_INPUT events are normalized before dispatch");
+                }
                 ServerEvent::Clipboard(message) => {
-                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                    let _ = Self::dispatch_clipboard_event(conn, writer, user_channel_id, message, || true).await?;
                 }
                 ServerEvent::ClipboardWithCompletion(message, completion) => {
-                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                    let _ = Self::dispatch_clipboard_event(conn, writer, user_channel_id, message, || true).await?;
                     if completion.send(()).is_err() {
+                        trace!("Clipboard producer stopped waiting for dispatch");
+                    }
+                }
+                ServerEvent::ClipboardWithValidity {
+                    message,
+                    completion,
+                    is_current,
+                } => {
+                    if Self::dispatch_clipboard_event(conn, writer, user_channel_id, message, is_current).await?
+                        && completion.send(()).is_err()
+                    {
                         trace!("Clipboard producer stopped waiting for dispatch");
                     }
                 }
