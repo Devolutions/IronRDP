@@ -75,6 +75,7 @@ ironrdp-rdpemt = { path = "../ironrdp-rdpemt", features = ["std"] }
 ironrdp-rdpetxt.path = "../ironrdp-rdpetxt"
 ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", features = ["std"] }
 ironrdp-rdpeusb.path = "../ironrdp-rdpeusb"
+ironrdp-rdpewa.path = "../ironrdp-rdpewa"
 ironrdp-usb.path = "../ironrdp-usb"
 ironrdp-w365.path = "../ironrdp-w365"
 ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", features = ["__test"] }
