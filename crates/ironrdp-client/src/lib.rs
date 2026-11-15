@@ -72,6 +72,16 @@ pub fn __test_process_input(
     rdp::__test_process_input(active_stage, image, events)
 }
 
+#[cfg(feature = "__test")]
+#[doc(hidden)]
+pub async fn __test_send_connect_time_network_characteristics(
+    output_event_sender: &output_channel::OutputEventSender,
+    network: ironrdp_connector::NetworkCharacteristics,
+    close_receiver: &mut tokio::sync::watch::Receiver<bool>,
+) -> bool {
+    rdp::__test_send_connect_time_network_characteristics(output_event_sender, network, close_receiver).await
+}
+
 #[cfg(any(feature = "cloud", feature = "entra-auth"))]
 fn http_client_builder() -> std::io::Result<reqwest::ClientBuilder> {
     let builder = reqwest::Client::builder();
