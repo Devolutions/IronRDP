@@ -8,6 +8,8 @@
   #pasted-text { left: 352px; top: 24px; }
   #pasted-html { left: 440px; top: 24px; }
   #pasted-image { left: 528px; top: 24px; }
+  #pasted-file { left: 616px; top: 24px; }
+  #cleared-files { left: 704px; top: 24px; }
   #source { position: absolute; left: 24px; top: 112px; width: 300px; height: 40px; }
   #copy-text { position: absolute; left: 24px; top: 192px; width: 180px; height: 48px; }
   #copy-html { position: absolute; left: 232px; top: 192px; width: 180px; height: 48px; }
@@ -17,6 +19,7 @@
 <body>
 <input id="paste" autocomplete="off"><div id="pasted-text" class="marker"></div>
 <div id="pasted-html" class="marker"></div><div id="pasted-image" class="marker"></div>
+<div id="pasted-file" class="marker"></div><div id="cleared-files" class="marker"></div>
 <input id="source" autocomplete="off" value="browser→client ✓">
 <button id="copy-text">Copy text</button><button id="copy-html">Copy HTML</button>
 <button id="copy-image">Copy image</button><div id="copied" class="marker"></div>
@@ -26,7 +29,14 @@
     event.preventDefault();
     const data = event.clipboardData;
     if (data.getData('text/plain') === 'client→browser ✓') marker('pasted-text', '#00ff88');
+    if (data.getData('text/plain') === 'browser→client ✓') marker('pasted-text', '#ff0000');
     if (data.getData('text/html').includes('<i>client html</i>')) marker('pasted-html', '#ff00ff');
+    if (data.getData('text/plain') === 'replacement' && data.files.length === 0) marker('cleared-files', '#aaff22');
+    if (data.files.length === 1 && data.files[0].name === 'client.txt') {
+      data.files[0].text().then(text => {
+        if (text === 'isolated client file\n') marker('pasted-file', '#22aaff');
+      });
+    }
     const image = [...data.items].find(item => item.type === 'image/png');
     if (image) {
       createImageBitmap(image.getAsFile()).then(bitmap => {

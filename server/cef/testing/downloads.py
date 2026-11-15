@@ -267,6 +267,32 @@ class DownloadRunner(e2e.Runner):
             time.sleep(0.05)
         raise AssertionError("No exact client payload received for " + name)
 
+    def print_pdf(self, name, expected_name):
+        before = set(self.files())
+        offset = len(self.log())
+        self.shortcut(0x19)
+        deadline = time.monotonic() + e2e.TIMEOUT
+        while time.monotonic() < deadline:
+            new = [entry for filename, entry in self.files().items()
+                   if filename not in before and not filename.endswith(".part")]
+            if len(new) == 1 and 'download_state="completed"' in self.log()[offset:]:
+                data = new[0].read_bytes()
+                if data.startswith(b"%PDF-") and b"%%EOF" in data[-128:]:
+                    if unicodedata.normalize("NFC", new[0].name) != expected_name:
+                        raise AssertionError("Unexpected printed PDF filename: " + new[0].name)
+                    self.clean_staging()
+                    self.report["download_checks"].append({
+                        "name": name,
+                        "file": new[0].name,
+                        "bytes": len(data),
+                    })
+                    self.capture(name)
+                    return new[0]
+            if self.server.poll() is not None:
+                raise RuntimeError("Server exited during " + name)
+            time.sleep(0.05)
+        raise AssertionError("No valid PDF payload received for " + name)
+
     def rejected(self, name, trigger, reason, screenshot=True):
         before = set(self.files())
         offset = len(self.log())
@@ -484,6 +510,7 @@ class DownloadRunner(e2e.Runner):
         else:
             super().run()
         self.open_download_page("21-download-page")
+        self.print_pdf("21b-print-to-pdf", "Redirected download fixture.pdf")
         first = self.download("22-binary-download", "normal", NORMAL, "browser.bin")
         self.click(1184, 744)
         self.content("22-download-bar-preserves-viewport", [(1110, 644, "44dd11")])

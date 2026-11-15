@@ -1,5 +1,10 @@
 #[cfg(not(windows))]
 fn main() -> std::process::ExitCode {
+    // SAFETY: `main` runs single-threaded before sandbox initialization or loading CEF.
+    unsafe {
+        std::env::set_var("TZ", "UTC");
+        std::env::set_var("CEF_ISOLATE_TIMEZONE", "1");
+    }
     let args = cef::args::Args::new();
     #[cfg(target_os = "macos")]
     let mut sandbox = cef::sandbox::Sandbox::new();

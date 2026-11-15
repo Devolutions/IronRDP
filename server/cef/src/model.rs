@@ -11,6 +11,14 @@ pub const MAX_TABS: usize = 8;
 pub const CHROME_HEIGHT: u32 = 88;
 pub const TAB_STRIP_HEIGHT: u32 = 32;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChromeHover {
+    Content,
+    Address,
+    Interactive,
+    Arrow,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Navigate { tab: i32, url: String },
@@ -20,6 +28,8 @@ pub enum Action {
     Back { id: i32 },
     Forward { id: i32 },
     Reload { id: i32 },
+    Print { id: i32 },
+    Zoom { id: i32, delta: i8 },
     CancelDownloads,
 }
 
@@ -323,6 +333,37 @@ impl Model {
             .then(|| (x, y - CHROME_HEIGHT as i32))
     }
 
+    pub fn chrome_hover(&self, x: i32, y: i32) -> ChromeHover {
+        if !(0 <= x && x < self.width as i32 && 0 <= y && y < self.height as i32) {
+            return ChromeHover::Arrow;
+        }
+        if self.content_point(x, y).is_some() {
+            return ChromeHover::Content;
+        }
+        if !self.download_status.is_empty() && self.height as i32 - 32 <= y {
+            return if self.width as i32 - 96 <= x {
+                ChromeHover::Interactive
+            } else {
+                ChromeHover::Arrow
+            };
+        }
+        if y < TAB_STRIP_HEIGHT as i32 {
+            let width = self.tab_width();
+            let index = x as usize / width;
+            if index < self.tabs.len() || (x < (width * self.tabs.len() + 32) as i32 && self.tabs.len() < MAX_TABS) {
+                return ChromeHover::Interactive;
+            }
+            return ChromeHover::Arrow;
+        }
+        if 104 <= x && x < self.width as i32 - 8 {
+            ChromeHover::Address
+        } else if (0..96).contains(&x) && self.active != 0 {
+            ChromeHover::Interactive
+        } else {
+            ChromeHover::Arrow
+        }
+    }
+
     pub fn click(&mut self, x: i32, y: i32) -> Option<Action> {
         if !(0 <= x && x < self.width as i32 && 0 <= y && y < self.height as i32) {
             return None;
@@ -422,6 +463,27 @@ impl Model {
                 }
                 Key::Character('r' | 'R') if self.active != 0 => {
                     return KeyResult::Action(Action::Reload { id: self.active });
+                }
+                Key::Character('p' | 'P') if self.active != 0 => {
+                    return KeyResult::Action(Action::Print { id: self.active });
+                }
+                Key::Character('=' | '+') if self.active != 0 => {
+                    return KeyResult::Action(Action::Zoom {
+                        id: self.active,
+                        delta: 1,
+                    });
+                }
+                Key::Character('-' | '_') if self.active != 0 => {
+                    return KeyResult::Action(Action::Zoom {
+                        id: self.active,
+                        delta: -1,
+                    });
+                }
+                Key::Character('0') if self.active != 0 => {
+                    return KeyResult::Action(Action::Zoom {
+                        id: self.active,
+                        delta: 0,
+                    });
                 }
                 Key::Tab if !self.tabs.is_empty() => {
                     let index = self.tabs.iter().position(|tab| tab.id == self.active).unwrap_or(0);

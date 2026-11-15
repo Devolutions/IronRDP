@@ -15,8 +15,6 @@ use crate::remote_devices::{AuthenticatorEvent, PixelFormat, RemoteAuthenticator
 const SAMPLE_RATE: u32 = 48_000;
 const TONE_HZ: f32 = 440.0;
 const CHUNK: Duration = Duration::from_millis(10);
-/// BT.601 limited-range green.
-const GREEN: [u8; 3] = [145, 54, 34];
 const AAGUID: [u8; 16] = *b"ironrdp-cef-test";
 /// The P-256 generator point, a valid public key with no matching private key in use anywhere.
 const GENERATOR_X: [u8; 32] = [
@@ -38,8 +36,8 @@ impl DeviceSimulator {
     pub fn start(media: RemoteMedia, authenticator: &mut RemoteAuthenticator) -> anyhow::Result<Self> {
         let responder = authenticator.responder();
         authenticator.set_handler(move |event| {
-            if let AuthenticatorEvent::Request { id, message } = event {
-                let response = respond(&message);
+            if let AuthenticatorEvent::Request { id, request } = event {
+                let response = respond(&request.ctap_request);
                 // Answering off the UI thread keeps the reply out of the request's dispatch.
                 std::thread::spawn(move || {
                     if let Err(error) = responder.respond(id, &response) {
@@ -95,12 +93,8 @@ fn feed_media(media: RemoteMedia, stop: &AtomicBool) {
         }
         next_frame = now + Duration::from_secs_f32(1.0 / format.frame_rate.clamp(1.0, 60.0));
         let (width, height) = (format.width.max(2), format.height.max(2));
-        let luma = (width * height) as usize;
-        let chroma = (width.div_ceil(2) * height.div_ceil(2)) as usize;
-        let mut frame = vec![GREEN[0]; luma];
-        frame.resize(luma + chroma, GREEN[1]);
-        frame.resize(luma + 2 * chroma, GREEN[2]);
-        if let Err(error) = media.push_camera_frame(PixelFormat::I420, width, height, &frame, now - start) {
+        let frame = [0, 255, 0, 255].repeat((width * height) as usize);
+        if let Err(error) = media.push_camera_frame(PixelFormat::Bgra, width, height, &frame, now - start) {
             tracing::warn!(%error, "Simulated camera push failed");
         }
     }

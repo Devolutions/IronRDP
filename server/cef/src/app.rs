@@ -12,11 +12,17 @@ use clap::Parser;
 use nix::sys::signal::{SigSet, SigmaskHow, Signal};
 use tokio::sync::watch;
 
-use crate::clipboard::{Clipboard, Snapshot};
+use crate::audio::AudioInput;
+use crate::camera::CameraInput;
+use crate::clipboard::{Clipboard, ClipboardItem, Snapshot};
+use crate::cursor::{BuiltinCursor, CursorShape};
 use crate::download::{Limits, runtime::Downloads};
-use crate::model::{Action, Model};
+use crate::location::{LocationInput, SessionViewConfig};
+use crate::model::{Action, ChromeHover, Model};
 use crate::private_clipboard::PrivateClipboard;
 use crate::remote_devices::{RemoteAuthenticator, RemoteMedia};
+use crate::sound::AudioOutput;
+use crate::webauthn::WebAuthnInput;
 use crate::{input, native, platform, rdp};
 
 #[cfg(windows)]
@@ -50,6 +56,18 @@ struct Args {
     /// Redirect clipboard content; the private-clipboard CEF runtime is always required.
     #[arg(long)]
     clipboard: bool,
+    /// Redirect browser audio playback to the client over RDPSND without playing on the host.
+    #[arg(long)]
+    audio: bool,
+    /// Allow websites to use the redirected camera and microphone without prompting.
+    #[arg(long)]
+    remote_media: bool,
+    /// Redirect client geographic coordinates to websites over MS-RDPEL without exposing host location.
+    #[arg(long)]
+    location: bool,
+    /// Redirect Web Authentication ceremonies to the client over RDPEWA.
+    #[arg(long)]
+    webauthn: bool,
     /// Feed a synthetic camera, microphone and authenticator in place of the client's devices.
     #[cfg(feature = "device-simulator")]
     #[arg(long)]
@@ -142,17 +160,22 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
     #[cfg(not(windows))]
     let cef_log = profile.path().join("cef.log");
     let (downloads, download_worker) = Downloads::new(profile.path(), args.downloads, download_limits)?;
+    let sound = AudioOutput::new(args.audio);
     #[cfg(feature = "device-simulator")]
-    let media_capture = args.simulate_devices;
+    let media_capture = args.remote_media || args.simulate_devices;
     #[cfg(not(feature = "device-simulator"))]
-    let media_capture = false;
+    let media_capture = args.remote_media;
     let engine = native::Engine::new(
         main_args,
         sandbox_info,
         profile.path(),
         &cef_log,
         downloads.clone(),
-        media_capture,
+        native::Permissions {
+            media_capture,
+            location: args.location,
+        },
+        sound.clone(),
     );
     let mut engine = match engine {
         Ok(engine) => engine,
@@ -257,23 +280,17 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
         pixels: model.compose().into(),
     };
     let (frames, receiver) = watch::channel(initial);
+    let (cursors, cursor_receiver) = watch::channel(CursorShape::Default);
+    let (location, location_receiver) = LocationInput::new(args.location);
+    let (session_view_tx, session_view_rx) = watch::channel(SessionViewConfig::default());
     let (sender, commands) = mpsc::sync_channel(256);
-    #[cfg(feature = "device-simulator")]
-    let simulated_file = if args.simulate_devices && private.is_some() {
-        let file = profile.path().join("simulated-clipboard.txt");
-        std::fs::write(&file, "remote file ✓").context("failed to stage the simulated clipboard file")?;
-        Some(file)
-    } else {
-        None
-    };
     let clipboard = private.map(|private| {
         let (bridge, incoming) = Clipboard::new();
+        let bridge = bridge.with_staging_dir(profile.path().join("clipboard"));
         ClipboardLink {
             private,
             bridge,
             incoming,
-            #[cfg(feature = "device-simulator")]
-            simulated_file,
         }
     });
     let stop = Arc::new(AtomicBool::new(false));
@@ -282,16 +299,28 @@ pub(crate) fn run(main_args: &cef::MainArgs, sandbox_info: *mut u8) -> anyhow::R
         args.bind_addr,
         artifacts.clone(),
         sender,
-        receiver,
+        rdp::DisplayOutput {
+            frames: receiver,
+            cursors: cursor_receiver,
+        },
         Arc::clone(&stop),
         rdp::Redirection {
             downloads: downloads.clone(),
             clipboard: clipboard.as_ref().map(|link| link.bridge.clone()),
+            sound,
+            audio: AudioInput::new(devices.media),
+            camera: CameraInput::new(devices.media),
+            location,
+            session_view: session_view_tx,
+            webauthn: devices.webauthn.clone(),
         },
     );
     let mut input = input::Input::default();
     let channels = Channels {
         frames: &frames,
+        cursors: &cursors,
+        location: location_receiver,
+        session_view: session_view_rx,
         commands,
         clipboard,
     };
@@ -354,6 +383,9 @@ fn verify_cef_log(path: &std::path::Path) -> anyhow::Result<()> {
 /// Connections between the browser loop and the RDP thread.
 struct Channels<'a> {
     frames: &'a watch::Sender<rdp::Frame>,
+    cursors: &'a watch::Sender<CursorShape>,
+    location: watch::Receiver<Option<ironrdp_rdpel::server::LocationFix>>,
+    session_view: watch::Receiver<SessionViewConfig>,
     commands: mpsc::Receiver<rdp::Command>,
     clipboard: Option<ClipboardLink>,
 }
@@ -362,21 +394,16 @@ struct Channels<'a> {
 struct ClipboardLink {
     private: PrivateClipboard,
     bridge: Clipboard,
-    incoming: watch::Receiver<Option<Snapshot>>,
-    /// Pasted in place of every client copy, standing in for CLIPRDR file transfer.
-    #[cfg(feature = "device-simulator")]
-    simulated_file: Option<std::path::PathBuf>,
+    incoming: watch::Receiver<Option<ClipboardItem>>,
 }
 
 impl ClipboardLink {
     fn exchange(&mut self) -> anyhow::Result<()> {
         if self.incoming.has_changed()? {
-            if let Some(snapshot) = self.incoming.borrow_and_update().as_ref() {
-                #[cfg(feature = "device-simulator")]
-                if let Some(file) = &self.simulated_file {
-                    return self.private.write_files(&[file.as_path()]);
-                }
-                self.private.write(snapshot)?;
+            let item = self.incoming.borrow_and_update().clone();
+            if let Some(item) = item {
+                let paths: Vec<_> = item.files.iter().map(std::path::PathBuf::as_path).collect();
+                self.private.write(&item.snapshot, &paths)?;
             }
         }
         if let Some(snapshot) = self.private.take_change()? {
@@ -397,30 +424,43 @@ struct RemoteDevices {
     #[cfg(feature = "device-simulator")]
     _simulator: Option<crate::device_simulator::DeviceSimulator>,
     _authenticator: RemoteAuthenticator,
+    media: RemoteMedia,
+    webauthn: WebAuthnInput,
 }
 
 /// Loads the remote devices, which are required to keep pages off host cameras, microphones and authenticators.
-// UNTESTED: without the simulator, no WebAuthn handler is installed, so requests fail rather than reaching host authenticators.
+// UNTESTED: without `--webauthn` or the simulator, no WebAuthn handler is installed, so requests fail rather than reaching host authenticators.
 // Recheck with a plain bundle when changing the authenticator wiring or the WebAuthn switch.
 fn remote_devices(args: &Args) -> anyhow::Result<RemoteDevices> {
     const REQUIRED: &str = "browser startup requires the remote-device CEF runtime";
     let media = RemoteMedia::load().context(REQUIRED)?;
-    #[cfg_attr(
-        not(feature = "device-simulator"),
-        expect(unused_mut, reason = "only the simulator installs a handler")
-    )]
     let mut authenticator = RemoteAuthenticator::load().context(REQUIRED)?;
     #[cfg(feature = "device-simulator")]
-    let simulator = args
-        .simulate_devices
-        .then(|| crate::device_simulator::DeviceSimulator::start(media, &mut authenticator))
-        .transpose()?;
+    let (simulator, webauthn) = if args.simulate_devices {
+        (
+            Some(crate::device_simulator::DeviceSimulator::start(
+                media,
+                &mut authenticator,
+            )?),
+            WebAuthnInput::disabled(),
+        )
+    } else if args.webauthn {
+        (None, WebAuthnInput::install(&mut authenticator)?)
+    } else {
+        (None, WebAuthnInput::disabled())
+    };
     #[cfg(not(feature = "device-simulator"))]
-    let _ = (media, args);
+    let webauthn = if args.webauthn {
+        WebAuthnInput::install(&mut authenticator)?
+    } else {
+        WebAuthnInput::disabled()
+    };
     Ok(RemoteDevices {
         #[cfg(feature = "device-simulator")]
         _simulator: simulator,
         _authenticator: authenticator,
+        media,
+        webauthn,
     })
 }
 
@@ -470,10 +510,14 @@ fn run_browser(
 ) -> anyhow::Result<()> {
     let Channels {
         frames,
+        cursors,
+        mut location,
+        mut session_view,
         commands,
         mut clipboard,
     } = channels;
     let mut popup_positions = BTreeMap::new();
+    let mut tab_cursors: BTreeMap<i32, CursorShape> = BTreeMap::new();
     let mut dirty = true;
     let start = Instant::now();
     let mut last_frame = start;
@@ -489,10 +533,24 @@ fn run_browser(
         {
             break;
         }
+        if location.has_changed().unwrap_or(false) {
+            let fix = *location.borrow_and_update();
+            engine.set_location(fix)?;
+        }
+        if session_view.has_changed().unwrap_or(false) {
+            let view = session_view.borrow_and_update().clone();
+            engine.set_session_view(view)?;
+        }
         for command in commands.try_iter().take(256) {
             let action = match command {
                 rdp::Command::Keyboard(event) => input.keyboard(model, engine, event),
                 rdp::Command::Mouse(event) => input.mouse(model, engine, event),
+                rdp::Command::Touch(pdu) => input.touch(model, engine, pdu),
+                rdp::Command::Pen(pdu) => input.pen(model, engine, pdu),
+                rdp::Command::CancelTouches => {
+                    input.cancel_touches(engine);
+                    None
+                }
                 rdp::Command::Resize(width, height) => {
                     if model.dimensions() != (u32::from(width), u32::from(height)) {
                         model.resize(u32::from(width), u32::from(height))?;
@@ -502,9 +560,19 @@ fn run_browser(
                     }
                     None
                 }
-                rdp::Command::Reset => {
+                rdp::Command::Reset(completion) => {
                     input.release_content(engine);
+                    input.clear_position();
                     input.modifiers = Default::default();
+                    let _ = location.borrow_and_update();
+                    let _ = session_view.borrow_and_update();
+                    engine.reset_session_overrides()?;
+                    if let Some(link) = &mut clipboard {
+                        link.private.write(&Snapshot::default(), &[])?;
+                    }
+                    if completion.send(()).is_err() {
+                        tracing::trace!("RDP server stopped waiting for CEF reset");
+                    }
                     None
                 }
             };
@@ -561,6 +629,11 @@ fn run_browser(
                         dirty = true;
                     }
                 }
+                native::Event::Cursor(tab, cursor) => {
+                    if model.tabs().iter().any(|entry| entry.id == tab) {
+                        tab_cursors.insert(tab, cursor);
+                    }
+                }
                 native::Event::Url(tab, url) => {
                     if model.tabs().iter().any(|entry| entry.id == tab) {
                         model.update_tab(tab, None, Some(&url), None, None)?;
@@ -576,6 +649,7 @@ fn run_browser(
                 native::Event::Loading(tab, loading) => {
                     if model.tabs().iter().any(|entry| entry.id == tab) {
                         model.update_tab(tab, None, None, Some(loading), None)?;
+                        engine.refresh_tab_zoom(tab);
                         dirty = true;
                     }
                 }
@@ -592,9 +666,24 @@ fn run_browser(
                 }
                 native::Event::Closed(tab) => {
                     popup_positions.remove(&tab);
+                    tab_cursors.remove(&tab);
                 }
             }
         }
+        let active_cursor = match input.position().map(|(x, y)| model.chrome_hover(x, y)) {
+            Some(ChromeHover::Content) => tab_cursors.get(&model.active_id()).cloned().unwrap_or_default(),
+            Some(ChromeHover::Address) => CursorShape::builtin(BuiltinCursor::IBeam),
+            Some(ChromeHover::Interactive) => CursorShape::builtin(BuiltinCursor::Hand),
+            Some(ChromeHover::Arrow) | None => CursorShape::Default,
+        };
+        cursors.send_if_modified(|current| {
+            if *current == active_cursor {
+                false
+            } else {
+                *current = active_cursor;
+                true
+            }
+        });
         let previous_content = model.content_dimensions();
         dirty |= model.set_download_status(&engine.download_status())?;
         let (width, height) = model.content_dimensions();
@@ -722,6 +811,21 @@ fn perform(
             if let Some(browser) = engine.browser(id) {
                 browser.reload();
             }
+        }
+        Action::Print { id } => {
+            let title = model
+                .tabs()
+                .iter()
+                .find(|tab| tab.id == id)
+                .map_or("", |tab| tab.title.as_str())
+                .to_owned();
+            match engine.print_to_pdf(id, &title) {
+                Ok(()) => model.set_error(id, None)?,
+                Err(error) => model.set_error(id, Some(&error.to_string()))?,
+            }
+        }
+        Action::Zoom { id, delta } => {
+            engine.adjust_zoom(id, delta);
         }
     }
     Ok(())

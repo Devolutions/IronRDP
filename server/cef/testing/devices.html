@@ -4,12 +4,12 @@
 <style>
   html, body { margin: 0; background: #ffffff; font: 20px sans-serif; }
   #run { position: absolute; left: 24px; top: 24px; width: 200px; height: 48px; }
-  #paste { position: absolute; left: 24px; top: 112px; width: 300px; height: 40px; }
+  #probe { position: absolute; left: 24px; top: 88px; width: 200px; height: 48px; }
   video { position: absolute; left: 400px; top: 24px; width: 320px; height: 240px; }
 </style>
 <body>
 <button id="run">Run</button>
-<input id="paste" autocomplete="off">
+<button id="probe">Probe microphone</button>
 <video id="camera" muted playsinline></video>
 <script>
   const report = (name, value) =>
@@ -45,7 +45,7 @@
     audio.createMediaStreamSource(stream).connect(analyser);
     const samples = new Float32Array(analyser.fftSize);
     let rms = 0;
-    for (let i = 0; i < 40 && rms < 0.1; ++i) {
+    for (let i = 0; i < 40 && rms < 0.25; ++i) {
       await sleep(100);
       analyser.getFloatTimeDomainData(samples);
       rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
@@ -56,6 +56,12 @@
 
   const screen = async () => {
     const stream = await navigator.mediaDevices.getDisplayMedia({video: true});
+    stream.getTracks().forEach(track => track.stop());
+    return {granted: true};
+  };
+
+  const probe = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
     stream.getTracks().forEach(track => track.stop());
     return {granted: true};
   };
@@ -85,15 +91,6 @@
     await attempt('microphone', microphone);
     await attempt('screen', screen);
   };
+  document.getElementById('probe').onclick = () => attempt('permission', probe);
 
-  document.getElementById('paste').addEventListener('paste', event => {
-    event.preventDefault();
-    const file = event.clipboardData.files[0];
-    attempt('paste', async () => ({
-      types: [...event.clipboardData.types],
-      files: event.clipboardData.files.length,
-      name: file && file.name,
-      text: file && await file.text(),
-    }));
-  });
 </script>

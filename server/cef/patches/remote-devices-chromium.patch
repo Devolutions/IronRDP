@@ -1,5 +1,5 @@
 diff --git a/content/browser/webauth/authenticator_common_impl.cc b/content/browser/webauth/authenticator_common_impl.cc
-index 2a61a295d8..4f40ed117f 100644
+index 2a61a295d8..501477292a 100644
 --- a/content/browser/webauth/authenticator_common_impl.cc
 +++ b/content/browser/webauth/authenticator_common_impl.cc
 @@ -54,6 +54,7 @@
@@ -36,7 +36,101 @@ index 2a61a295d8..4f40ed117f 100644
    std::unique_ptr<AuthenticatorRequestClientDelegate> delegate =
        GetContentClient()->browser()->GetWebAuthenticationRequestDelegate(
            render_frame_host_impl);
-@@ -2283,6 +2296,11 @@ void AuthenticatorCommonImpl::ContinueIsUvpaaAfterOverrideCheck(
+@@ -928,6 +941,59 @@ void AuthenticatorCommonImpl::StartMakeCredentialRequest(
+       &std::get<device::CtapMakeCredentialRequest>(req_state_->ctap_request);
+   auto* make_credential_options =
+       &std::get<device::MakeCredentialOptions>(req_state_->request_options);
++  if (IsRemoteWebAuthnEnabled() && !discovery_factory()->IsTestOverride()) {
++    RemoteWebAuthnRequest metadata;
++    metadata.relying_party_id = req_state_->relying_party_id;
++    metadata.origin = req_state_->caller_origin.Serialize();
++    metadata.client_data_json = req_state_->client_data_json;
++    if (req_state_->timer && req_state_->timer->IsRunning()) {
++      metadata.timeout_ms = base::saturated_cast<uint32_t>(
++          req_state_->timer->GetCurrentDelay().InMilliseconds());
++    }
++    switch (make_credential_options->authenticator_attachment) {
++      case device::AuthenticatorAttachment::kAny:
++        metadata.attachment = 0;
++        break;
++      case device::AuthenticatorAttachment::kPlatform:
++        metadata.attachment = 1;
++        break;
++      case device::AuthenticatorAttachment::kCrossPlatform:
++        metadata.attachment = 2;
++        break;
++    }
++    switch (make_credential_options->user_verification) {
++      case device::UserVerificationRequirement::kRequired:
++        metadata.user_verification = 1;
++        break;
++      case device::UserVerificationRequirement::kPreferred:
++        metadata.user_verification = 2;
++        break;
++      case device::UserVerificationRequirement::kDiscouraged:
++        metadata.user_verification = 3;
++        break;
++    }
++    switch (ctap_make_credential_request->attestation_preference) {
++      case device::AttestationConveyancePreference::kNone:
++        metadata.attestation = 1;
++        break;
++      case device::AttestationConveyancePreference::kIndirect:
++        metadata.attestation = 2;
++        break;
++      case device::AttestationConveyancePreference::kDirect:
++      case device::AttestationConveyancePreference::
++          kEnterpriseIfRPListedOnAuthenticator:
++      case device::AttestationConveyancePreference::
++          kEnterpriseApprovedByBrowser:
++        metadata.attestation = 3;
++        break;
++    }
++    metadata.require_resident_key = make_credential_options->resident_key ==
++                                    device::ResidentKeyRequirement::kRequired;
++    metadata.prefer_resident_key = make_credential_options->resident_key ==
++                                   device::ResidentKeyRequirement::kPreferred;
++    SetRemoteDiscoveryMetadata(req_state_->discovery_factory.get(),
++                               std::move(metadata));
++  }
+   bool discover_enclave = browser_passkeys_available_ &&
+                           make_credential_options->authenticator_attachment !=
+                               device::AuthenticatorAttachment::kCrossPlatform;
+@@ -1005,6 +1071,33 @@ void AuthenticatorCommonImpl::StartGetAssertionRequest(
+               UsesDiscoverableCreds(*ctap_get_assertion_request),
+               is_uvpaa_override_, is_immediate_mediation),
+           GetTransportsAllowedByRP(*ctap_get_assertion_request));
++  if (IsRemoteWebAuthnEnabled() && !discovery_factory()->IsTestOverride()) {
++    RemoteWebAuthnRequest metadata;
++    metadata.relying_party_id = req_state_->relying_party_id;
++    metadata.origin = req_state_->caller_origin.Serialize();
++    metadata.client_data_json = req_state_->client_data_json;
++    if (req_state_->timer && req_state_->timer->IsRunning()) {
++      metadata.timeout_ms = base::saturated_cast<uint32_t>(
++          req_state_->timer->GetCurrentDelay().InMilliseconds());
++    }
++    if (transports.size() == 1 &&
++        transports.contains(device::FidoTransportProtocol::kInternal)) {
++      metadata.attachment = 1;
++    }
++    switch (ctap_get_assertion_request->user_verification) {
++      case device::UserVerificationRequirement::kRequired:
++        metadata.user_verification = 1;
++        break;
++      case device::UserVerificationRequirement::kPreferred:
++        metadata.user_verification = 2;
++        break;
++      case device::UserVerificationRequirement::kDiscouraged:
++        metadata.user_verification = 3;
++        break;
++    }
++    SetRemoteDiscoveryMetadata(req_state_->discovery_factory.get(),
++                               std::move(metadata));
++  }
+   bool discover_enclave =
+       browser_passkeys_available_ &&
+       transports.contains(device::FidoTransportProtocol::kInternal);
+@@ -2283,6 +2376,11 @@ void AuthenticatorCommonImpl::ContinueIsUvpaaAfterOverrideCheck(
      return;
    }
  
@@ -48,7 +142,7 @@ index 2a61a295d8..4f40ed117f 100644
    // Record IsUVPAA result in a UMA metric, but only if they're not the
    // WebAuthenticationDelegate override value, so that results from the testing
    // API and disabling in Guest/Off-The-Record profiles aren't counted.
-@@ -2333,7 +2351,9 @@ void AuthenticatorCommonImpl::
+@@ -2333,7 +2431,9 @@ void AuthenticatorCommonImpl::
      return;
    }
    // Conditional requests cannot be proxied, signal the feature as unavailable.
@@ -61,16 +155,17 @@ index 2a61a295d8..4f40ed117f 100644
    }
 diff --git a/content/browser/webauth/remote_authenticator.cc b/content/browser/webauth/remote_authenticator.cc
 new file mode 100644
-index 0000000000..d946b782b6
+index 0000000000..c73ae8d169
 --- /dev/null
 +++ b/content/browser/webauth/remote_authenticator.cc
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,408 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
 +
 +#include "content/browser/webauth/remote_authenticator.h"
 +
++#include <array>
 +#include <optional>
 +#include <string>
 +#include <utility>
@@ -89,18 +184,53 @@ index 0000000000..d946b782b6
 +#include "content/public/browser/browser_thread.h"
 +#include "device/fido/authenticator_get_assertion_response.h"
 +#include "device/fido/authenticator_supported_options.h"
++#include "device/fido/ctap_get_assertion_request.h"
++#include "device/fido/ctap_make_credential_request.h"
 +#include "device/fido/fido_device.h"
 +#include "device/fido/fido_device_authenticator.h"
 +#include "device/fido/fido_device_discovery.h"
 +#include "device/fido/fido_discovery_factory.h"
 +#include "device/fido/fido_request_handler_base.h"
++#include "device/fido/public/fido_constants.h"
 +#include "device/fido/public/fido_transport_protocol.h"
 +
 +namespace content {
 +
 +const char kRemoteWebAuthnSwitch[] = "remote-webauthn";
 +
++RemoteWebAuthnRequest::RemoteWebAuthnRequest() = default;
++RemoteWebAuthnRequest::RemoteWebAuthnRequest(const RemoteWebAuthnRequest&) =
++    default;
++RemoteWebAuthnRequest& RemoteWebAuthnRequest::operator=(
++    const RemoteWebAuthnRequest&) = default;
++RemoteWebAuthnRequest::RemoteWebAuthnRequest(RemoteWebAuthnRequest&&) = default;
++RemoteWebAuthnRequest& RemoteWebAuthnRequest::operator=(
++    RemoteWebAuthnRequest&&) = default;
++RemoteWebAuthnRequest::~RemoteWebAuthnRequest() = default;
++
 +namespace {
++
++// Local CTAP2 authenticatorGetInfo response:
++// {1: ["FIDO_2_0"], 3: h'00..00' (16B), 4: {"rk": true, "up": true, "uv":
++// true},
++//  5: 65536}.
++constexpr auto kGetInfoResponse = std::to_array<uint8_t>({
++    0x00, 0xA4, 0x01, 0x81, 0x68, 'F',  'I',  'D',  'O',  '_',  '2',
++    '_',  '0',  0x03, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0xA3,
++    0x62, 'r',  'k',  0xF5, 0x62, 'u',  'p',  0xF5, 0x62, 'u',  'v',
++    0xF5, 0x05, 0x1A, 0x00, 0x01, 0x00, 0x00,
++});
++
++std::vector<uint8_t> OperationDeniedResponse() {
++  return {static_cast<uint8_t>(
++      device::CtapDeviceResponseCode::kCtap2ErrOperationDenied)};
++}
++
++std::vector<uint8_t> KeepAliveCancelResponse() {
++  return {static_cast<uint8_t>(
++      device::CtapDeviceResponseCode::kCtap2ErrKeepAliveCancel)};
++}
 +
 +class RemoteFidoDevice;
 +
@@ -118,13 +248,14 @@ index 0000000000..d946b782b6
 +  return *state;
 +}
 +
-+// Forwards CTAP2 messages to the embedder. Requests stay pending until the
-+// embedder responds, the device cancels them, or the device is destroyed when
-+// the WebAuthn request ends.
++// Forwards CTAP2 ceremonies and their WebAuthn metadata to the embedder.
++// Requests stay pending until the embedder responds, the device cancels them,
++// or the device is destroyed when the WebAuthn request ends.
 +class RemoteFidoDevice final : public device::FidoDevice {
 + public:
-+  explicit RemoteFidoDevice(device::FidoTransportProtocol transport)
-+      : transport_(transport) {}
++  RemoteFidoDevice(device::FidoTransportProtocol transport,
++                   RemoteWebAuthnRequest metadata)
++      : transport_(transport), metadata_(std::move(metadata)) {}
 +
 +  RemoteFidoDevice(const RemoteFidoDevice&) = delete;
 +  RemoteFidoDevice& operator=(const RemoteFidoDevice&) = delete;
@@ -133,15 +264,14 @@ index 0000000000..d946b782b6
 +    RemoteWebAuthnState& state = GetState();
 +    for (const auto& [request_id, request] : requests_) {
 +      state.pending.erase(request_id);
-+      if (state.cancel_callback) {
++      if (request.dispatched && !request.canceled && state.cancel_callback) {
 +        state.cancel_callback.Run(request_id);
 +      }
 +    }
 +  }
 +
 +  // Runs the transaction callback, which may destroy this device.
-+  void Complete(uint64_t request_id,
-+                std::optional<std::vector<uint8_t>> response) {
++  void Complete(uint64_t request_id, std::vector<uint8_t> response) {
 +    auto it = requests_.find(request_id);
 +    if (it == requests_.end()) {
 +      return;
@@ -149,12 +279,27 @@ index 0000000000..d946b782b6
 +    DeviceCallback callback = std::move(it->second.callback);
 +    requests_.erase(it);
 +    GetState().pending.erase(request_id);
++    if (response.empty()) {
++      response = OperationDeniedResponse();
++    }
 +    std::move(callback).Run(std::move(response));
 +  }
 +
 +  // device::FidoDevice:
 +  CancelToken DeviceTransact(std::vector<uint8_t> command,
 +                             DeviceCallback callback) override {
++    if (!command.empty() &&
++        command[0] == static_cast<uint8_t>(
++                          device::CtapRequestCommand::kAuthenticatorGetInfo)) {
++      const CancelToken token = next_cancel_token_++;
++      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE,
++          base::BindOnce(std::move(callback),
++                         std::vector<uint8_t>(kGetInfoResponse.begin(),
++                                              kGetInfoResponse.end())));
++      return token;
++    }
++
 +    RemoteWebAuthnState& state = GetState();
 +    const CancelToken token = next_cancel_token_++;
 +    const uint64_t request_id = state.next_request_id++;
@@ -169,11 +314,20 @@ index 0000000000..d946b782b6
 +  }
 +
 +  void Cancel(CancelToken token) override {
-+    for (const auto& [request_id, request] : requests_) {
++    for (auto& [request_id, request] : requests_) {
 +      if (request.token == token) {
-+        RemoteWebAuthnState& state = GetState();
-+        if (state.cancel_callback) {
-+          state.cancel_callback.Run(request_id);
++        if (!request.canceled) {
++          request.canceled = true;
++          if (request.dispatched) {
++            RemoteWebAuthnState& state = GetState();
++            if (state.cancel_callback) {
++              state.cancel_callback.Run(request_id);
++            }
++          }
++          base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++              FROM_HERE, base::BindOnce(&RemoteFidoDevice::Complete,
++                                        weak_factory_.GetWeakPtr(), request_id,
++                                        KeepAliveCancelResponse()));
 +        }
 +        return;
 +      }
@@ -196,21 +350,36 @@ index 0000000000..d946b782b6
 +  struct Request {
 +    CancelToken token;
 +    DeviceCallback callback;
++    bool dispatched = false;
++    bool canceled = false;
 +  };
 +
 +  void Dispatch(uint64_t request_id, std::vector<uint8_t> command) {
-+    if (!requests_.contains(request_id)) {
++    auto it = requests_.find(request_id);
++    if (it == requests_.end() || it->second.canceled) {
 +      return;
 +    }
++    const bool supported_ceremony =
++        !command.empty() &&
++        (command[0] ==
++             static_cast<uint8_t>(
++                 device::CtapRequestCommand::kAuthenticatorMakeCredential) ||
++         command[0] ==
++             static_cast<uint8_t>(
++                 device::CtapRequestCommand::kAuthenticatorGetAssertion));
 +    RemoteWebAuthnState& state = GetState();
-+    if (!state.request_callback) {
-+      Complete(request_id, std::nullopt);
++    if (!supported_ceremony || !state.request_callback) {
++      Complete(request_id, OperationDeniedResponse());
 +      return;
 +    }
-+    state.request_callback.Run(request_id, std::move(command));
++    it->second.dispatched = true;
++    RemoteWebAuthnRequest request = metadata_;
++    request.ctap_request = std::move(command);
++    state.request_callback.Run(request_id, std::move(request));
 +  }
 +
 +  const device::FidoTransportProtocol transport_;
++  RemoteWebAuthnRequest metadata_;
 +  base::flat_map<uint64_t, Request> requests_;
 +  base::WeakPtrFactory<RemoteFidoDevice> weak_factory_{this};
 +};
@@ -228,6 +397,22 @@ index 0000000000..d946b782b6
 +    options_.is_platform_device =
 +        device::AuthenticatorSupportedOptions::PlatformDevice::kBoth;
 +    return options_;
++  }
++
++  void ExcludeAppIdCredentialsBeforeMakeCredential(
++      device::CtapMakeCredentialRequest request,
++      device::MakeCredentialOptions options,
++      base::OnceCallback<void(device::CtapDeviceResponseCode,
++                              std::optional<bool>)> callback) override {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(std::move(callback),
++                       device::CtapDeviceResponseCode::kSuccess, std::nullopt));
++  }
++
++  void GetTouch(base::OnceClosure callback) override {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, std::move(callback));
 +  }
 +
 +  void GetPlatformCredentialInfoForRequest(
@@ -248,13 +433,14 @@ index 0000000000..d946b782b6
 +
 +class RemoteFidoDiscovery final : public device::FidoDeviceDiscovery {
 + public:
-+  explicit RemoteFidoDiscovery(device::FidoTransportProtocol transport)
-+      : FidoDeviceDiscovery(transport) {}
++  RemoteFidoDiscovery(device::FidoTransportProtocol transport,
++                      RemoteWebAuthnRequest metadata)
++      : FidoDeviceDiscovery(transport), metadata_(std::move(metadata)) {}
 +
 + protected:
 +  void StartInternal() override {
 +    AddAuthenticator(std::make_unique<RemoteFidoAuthenticator>(
-+        std::make_unique<RemoteFidoDevice>(transport())));
++        std::make_unique<RemoteFidoDevice>(transport(), metadata_)));
 +    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
 +        FROM_HERE, base::BindOnce(&RemoteFidoDiscovery::NotifyDiscoveryStarted,
 +                                  weak_factory_.GetWeakPtr(),
@@ -262,23 +448,30 @@ index 0000000000..d946b782b6
 +  }
 +
 + private:
++  RemoteWebAuthnRequest metadata_;
 +  base::WeakPtrFactory<RemoteFidoDiscovery> weak_factory_{this};
 +};
 +
 +class RemoteFidoDiscoveryFactory final : public device::FidoDiscoveryFactory {
 + public:
-+  // Creates one discovery for the first of the USB or platform transports
-+  // that the request allows, so the client sees each request once.
++  void SetMetadata(RemoteWebAuthnRequest metadata) {
++    metadata_ = std::move(metadata);
++  }
++
++  // Creates one discovery for the first transport the request allows, so the
++  // client sees each request once.
 +  std::vector<std::unique_ptr<device::FidoDiscoveryBase>> Create(
 +      device::FidoTransportProtocol transport) override {
 +    std::vector<std::unique_ptr<device::FidoDiscoveryBase>> discoveries;
 +    if (created_ ||
 +        (transport != device::FidoTransportProtocol::kUsbHumanInterfaceDevice &&
-+         transport != device::FidoTransportProtocol::kInternal)) {
++         transport != device::FidoTransportProtocol::kInternal &&
++         transport != device::FidoTransportProtocol::kHybrid)) {
 +      return discoveries;
 +    }
 +    created_ = true;
-+    discoveries.push_back(std::make_unique<RemoteFidoDiscovery>(transport));
++    discoveries.push_back(
++        std::make_unique<RemoteFidoDiscovery>(transport, metadata_));
 +    return discoveries;
 +  }
 +
@@ -295,6 +488,7 @@ index 0000000000..d946b782b6
 +#endif
 +
 + private:
++  RemoteWebAuthnRequest metadata_;
 +  bool created_ = false;
 +};
 +
@@ -330,7 +524,7 @@ index 0000000000..d946b782b6
 +  const auto pending = state.pending;
 +  for (const auto& [request_id, device] : pending) {
 +    if (device) {
-+      device->Complete(request_id, std::nullopt);
++      device->Complete(request_id, OperationDeniedResponse());
 +    }
 +  }
 +}
@@ -343,9 +537,7 @@ index 0000000000..d946b782b6
 +    return false;
 +  }
 +  base::WeakPtr<RemoteFidoDevice> device = it->second;
-+  device->Complete(request_id, response.empty()
-+                                   ? std::nullopt
-+                                   : std::make_optional(std::move(response)));
++  device->Complete(request_id, std::move(response));
 +  return true;
 +}
 +
@@ -355,6 +547,14 @@ index 0000000000..d946b782b6
 +
 +std::unique_ptr<device::FidoDiscoveryFactory> MakeRemoteFidoDiscoveryFactory() {
 +  return std::make_unique<RemoteFidoDiscoveryFactory>();
++}
++
++void SetRemoteDiscoveryMetadata(device::FidoDiscoveryFactory* factory,
++                                RemoteWebAuthnRequest metadata) {
++  if (factory) {
++    static_cast<RemoteFidoDiscoveryFactory*>(factory)->SetMetadata(
++        std::move(metadata));
++  }
 +}
 +
 +std::unique_ptr<AuthenticatorRequestClientDelegate>
@@ -369,10 +569,10 @@ index 0000000000..d946b782b6
 +}  // namespace content
 diff --git a/content/browser/webauth/remote_authenticator.h b/content/browser/webauth/remote_authenticator.h
 new file mode 100644
-index 0000000000..d200909faa
+index 0000000000..3d77723bbb
 --- /dev/null
 +++ b/content/browser/webauth/remote_authenticator.h
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,38 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -395,6 +595,11 @@ index 0000000000..d200909faa
 +// Discovers only the embedder authenticator installed with
 +// SetRemoteWebAuthnHandler().
 +std::unique_ptr<device::FidoDiscoveryFactory> MakeRemoteFidoDiscoveryFactory();
++
++// Attaches the current WebAuthn ceremony's metadata to `factory` when it was
++// created by MakeRemoteFidoDiscoveryFactory().
++void SetRemoteDiscoveryMetadata(device::FidoDiscoveryFactory* factory,
++                                RemoteWebAuthnRequest metadata);
 +
 +// A request delegate without browser UI, which dispatches requests to the
 +// embedder authenticator as soon as it is discovered.
@@ -420,10 +625,10 @@ index 790d665707..09828d11e5 100644
  
 diff --git a/content/public/browser/remote_webauthn.h b/content/public/browser/remote_webauthn.h
 new file mode 100644
-index 0000000000..bba5d75927
+index 0000000000..8460903943
 --- /dev/null
 +++ b/content/public/browser/remote_webauthn.h
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,90 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -433,6 +638,7 @@ index 0000000000..bba5d75927
 +
 +#include <stdint.h>
 +
++#include <string>
 +#include <vector>
 +
 +#include "base/functional/callback_forward.h"
@@ -447,12 +653,39 @@ index 0000000000..bba5d75927
 +// not used.
 +CONTENT_EXPORT extern const char kRemoteWebAuthnSwitch[];
 +
-+// Receives a CTAP2 request: the command byte followed by its CBOR parameters.
-+// The embedder answers with RespondToRemoteWebAuthnRequest() using the same
-+// `request_id`, possibly after waiting for the user.
++// WebAuthn operation context paired with its CTAP2 request bytes.
++struct CONTENT_EXPORT RemoteWebAuthnRequest {
++  RemoteWebAuthnRequest();
++  RemoteWebAuthnRequest(const RemoteWebAuthnRequest&);
++  RemoteWebAuthnRequest& operator=(const RemoteWebAuthnRequest&);
++  RemoteWebAuthnRequest(RemoteWebAuthnRequest&&);
++  RemoteWebAuthnRequest& operator=(RemoteWebAuthnRequest&&);
++  ~RemoteWebAuthnRequest();
++
++  std::string relying_party_id;
++  std::string origin;
++  std::string client_data_json;
++  uint32_t timeout_ms = 0;
++  // MS-RDPEWA §2.2.1.1 attachment: 0 = Any, 1 = Platform, 2 = CrossPlatform.
++  uint32_t attachment = 0;
++  // MS-RDPEWA §2.2.1.1 userVerification: 0 = Any, 1 = Required, 2 = Preferred,
++  // 3 = Discouraged.
++  uint32_t user_verification = 0;
++  // MS-RDPEWA §2.2.1.1 attestationPreference: 0 = Any, 1 = None, 2 = Indirect,
++  // 3 = Direct.
++  uint32_t attestation = 0;
++  bool require_resident_key = false;
++  bool prefer_resident_key = false;
++  // CTAP2 command byte (0x01 MakeCredential or 0x02 GetAssertion) + CBOR map.
++  std::vector<uint8_t> ctap_request;
++};
++
++// Receives a WebAuthn request and its CTAP2 payload. The embedder answers with
++// RespondToRemoteWebAuthnRequest() using the same `request_id`, possibly after
++// waiting for the user.
 +using RemoteWebAuthnRequestCallback =
 +    base::RepeatingCallback<void(uint64_t request_id,
-+                                 std::vector<uint8_t> request)>;
++                                 RemoteWebAuthnRequest request)>;
 +// Asks the embedder to abandon `request_id`. The embedder should still answer
 +// with CTAP2_ERR_KEEPALIVE_CANCEL, or not at all.
 +using RemoteWebAuthnCancelCallback =
@@ -525,10 +758,10 @@ index 929b7d9fde..1cdc226422 100644
      base::CommandLine::StringType switch_value =
 diff --git a/media/audio/remote_audio_source.cc b/media/audio/remote_audio_source.cc
 new file mode 100644
-index 0000000000..24f561bd22
+index 0000000000..2c977b2fc8
 --- /dev/null
 +++ b/media/audio/remote_audio_source.cc
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,176 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -642,6 +875,17 @@ index 0000000000..24f561bd22
 +}
 +
 +// static
++void RemoteAudioSource::Reset() {
++  // UNTESTED: A later RDP client must not read microphone samples buffered
++  // before this reset. This protects session isolation; verify playback after
++  // reconnect when changing this code.
++  SharedAudio& audio = shared();
++  base::AutoLock lock(audio.lock);
++  audio.written_frames = 0;
++  ++audio.generation;
++}
++
++// static
 +int RemoteAudioSource::ActiveStreams() {
 +  SharedAudio& audio = shared();
 +  base::AutoLock lock(audio.lock);
@@ -696,10 +940,10 @@ index 0000000000..24f561bd22
 +}  // namespace media
 diff --git a/media/audio/remote_audio_source.h b/media/audio/remote_audio_source.h
 new file mode 100644
-index 0000000000..422130d8ba
+index 0000000000..d323801778
 --- /dev/null
 +++ b/media/audio/remote_audio_source.h
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,66 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -740,6 +984,10 @@ index 0000000000..422130d8ba
 +  static int Push(base::span<const int16_t> samples,
 +                  int channels,
 +                  int sample_rate);
++
++  // Discards buffered samples; readers skip audio queued before their next
++  // read.
++  static void Reset();
 +
 +  // Returns the number of open streams reading remote audio. Thread-safe.
 +  static int ActiveStreams();
@@ -827,10 +1075,10 @@ index ed8a138630..efd79df237 100644
    // Otherwise, use a Fake Video Device Factory. The File Video Device Factory
 diff --git a/media/capture/video/remote_video_capture_device.cc b/media/capture/video/remote_video_capture_device.cc
 new file mode 100644
-index 0000000000..1567aec08e
+index 0000000000..25d3c5d2d9
 --- /dev/null
 +++ b/media/capture/video/remote_video_capture_device.cc
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,199 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -929,10 +1177,19 @@ index 0000000000..1567aec08e
 +    capture.first_frame_time = now;
 +  }
 +  const VideoCaptureFormat frame_format(size, kFrameRate, format);
++  // UNTESTED: Raw frames default to limited-range Rec.709 because the
++  // embedder supplies no color metadata. Check target-camera colors when
++  // changing this fallback.
++  gfx::ColorSpace color_space = gfx::ColorSpace::CreateREC709();
++  if (format == PIXEL_FORMAT_MJPEG) {
++    color_space = gfx::ColorSpace::CreateJpeg();
++  } else if (format == PIXEL_FORMAT_ARGB) {
++    color_space = gfx::ColorSpace::CreateSRGB();
++  }
 +  // Clients accept frames from any thread as long as calls do not overlap,
 +  // which the lock guarantees.
 +  capture.client->OnIncomingCapturedData(
-+      data, frame_format, gfx::ColorSpace::CreateREC709(),
++      data, frame_format, color_space,
 +      /*clockwise_rotation=*/0, /*flip_y=*/false, now,
 +      timestamp.is_zero() ? now - capture.first_frame_time : timestamp,
 +      /*capture_begin_timestamp=*/std::nullopt, /*metadata=*/std::nullopt);
@@ -1108,9 +1365,18 @@ index 0000000000..73cb9bff49
 +
 +#endif  // MEDIA_CAPTURE_VIDEO_REMOTE_VIDEO_CAPTURE_DEVICE_H_
 diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
+index 3162721b67..9c92ad2427 100644
 --- a/content/browser/BUILD.gn
 +++ b/content/browser/BUILD.gn
-@@ -3397,6 +3397,8 @@ source_set("browser") {
+@@ -494,6 +494,7 @@ source_set("browser") {
+     "ai/echo_ai_writer.cc",
+     "ai/echo_ai_writer.h",
+     "audio/audio_service.cc",
++    "audio/in_process_audio_service.h",
+     "background_fetch/background_fetch_context.cc",
+     "background_fetch/background_fetch_context.h",
+     "background_fetch/background_fetch_cross_origin_filter.cc",
+@@ -3397,6 +3398,8 @@ source_set("browser") {
        "webauth/default_authenticator_request_client_delegate.h",
        "webauth/is_uvpaa.cc",
        "webauth/is_uvpaa.h",
@@ -1119,3 +1385,169 @@ diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
        "webauth/virtual_authenticator.cc",
        "webauth/virtual_authenticator.h",
        "webauth/virtual_authenticator_manager_impl.cc",
+diff --git a/services/audio/stream_factory.cc b/services/audio/stream_factory.cc
+index 8754d85838..6f3c7da8ed 100644
+--- a/services/audio/stream_factory.cc
++++ b/services/audio/stream_factory.cc
+@@ -9,9 +9,12 @@
+ 
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/strings/strcat.h"
+ #include "base/task/sequenced_task_runner.h"
++#include "base/task/thread_pool.h"
++#include "base/threading/thread_restrictions.h"
+ #include "base/trace_event/trace_event.h"
+ #include "base/unguessable_token.h"
+ #include "build/chromecast_buildflags.h"
+@@ -60,6 +63,27 @@ std::unique_ptr<LoopbackReferenceManager> MaybeCreateLoopbackReferenceManager(
+ // since there are no super-strict realtime requirements (no system audio calls
+ // waiting on these threads).
+ constexpr base::TimeDelta kReatimeThreadPeriod = base::Milliseconds(10);
++
++void StopLoopbackWorker(std::unique_ptr<RealtimeAudioThread> thread) {
++  if (!thread) {
++    return;
++  }
++  // When AudioServiceOutOfProcess is disabled, StreamFactory runs on the
++  // browser UI thread where joining a base::Thread is disallowed.
++  thread->StopSoon();
++  thread->DetachFromSequence();
++  base::ThreadPool::PostTask(
++      FROM_HERE,
++      {base::TaskPriority::BEST_EFFORT,
++       base::TaskShutdownBehavior::BLOCK_SHUTDOWN, base::MayBlock()},
++      base::BindOnce(
++          [](std::unique_ptr<RealtimeAudioThread> worker) {
++            base::ScopedAllowBaseSyncPrimitivesForTesting
++                scoped_allow_sync_primitives;
++            worker.reset();
++          },
++          std::move(thread)));
++}
+ }  // namespace
+ 
+ StreamFactory::StreamFactory(
+@@ -81,6 +105,8 @@ StreamFactory::StreamFactory(
+ 
+ StreamFactory::~StreamFactory() {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
++  loopback_streams_.clear();
++  StopLoopbackWorker(std::move(loopback_worker_thread_));
+ }
+ 
+ void StreamFactory::Bind(
+@@ -258,9 +284,11 @@ void StreamFactory::CreateLoopbackStream(
+     TRACE_EVENT_BEGIN("audio", "Start Loopback Worker");
+     base::Thread::Options options;
+     options.thread_type = base::ThreadType::kRealtimeAudio;
+-    loopback_worker_thread_.emplace("Loopback Worker", kReatimeThreadPeriod);
+-    if (loopback_worker_thread_->StartWithOptions(std::move(options))) {
+-      task_runner = loopback_worker_thread_->task_runner();
++    auto worker = std::make_unique<RealtimeAudioThread>("Loopback Worker",
++                                                        kReatimeThreadPeriod);
++    if (worker->StartWithOptions(std::move(options))) {
++      task_runner = worker->task_runner();
++      loopback_worker_thread_ = std::move(worker);
+       TRACE_EVENT_END("audio", "success", true);
+     } else {
+       // Something about this platform or its current environment has prevented
+@@ -334,9 +362,9 @@ void StreamFactory::DestroyLoopbackStream(LoopbackStream* stream) {
+   loopback_streams_.erase(it);
+ 
+   // If all LoopbackStreams have ended, stop and join the worker thread.
+-  if (loopback_streams_.empty()) {
++  if (loopback_streams_.empty() && loopback_worker_thread_) {
+     TRACE_EVENT0("audio", "Stop Loopback Worker");
+-    loopback_worker_thread_.reset();
++    StopLoopbackWorker(std::move(loopback_worker_thread_));
+   }
+ }
+ 
+diff --git a/services/audio/stream_factory.h b/services/audio/stream_factory.h
+index 397b55f9ba..21cd32ea6e 100644
+--- a/services/audio/stream_factory.h
++++ b/services/audio/stream_factory.h
+@@ -168,7 +168,7 @@ class StreamFactory final : public media::mojom::AudioStreamFactory {
+ #endif
+   LoopbackCoordinator coordinator_;
+   std::vector<std::unique_ptr<LocalMuter>> muters_;
+-  std::optional<RealtimeAudioThread> loopback_worker_thread_;
++  std::unique_ptr<RealtimeAudioThread> loopback_worker_thread_;
+   std::vector<std::unique_ptr<LoopbackStream>> loopback_streams_;
+   InputStreamSet input_streams_;
+   OutputStreamSet output_streams_;
+diff --git a/content/renderer/renderer_main.cc b/content/renderer/renderer_main.cc
+index 3066ee6c66..b4461f9cc7 100644
+--- a/content/renderer/renderer_main.cc
++++ b/content/renderer/renderer_main.cc
+@@ -87,6 +87,11 @@
+ #include "content/child/sandboxed_process_thread_type_handler.h"
+ #endif
+ 
++#if BUILDFLAG(IS_WIN)
++#include "base/environment.h"
++#include "third_party/icu/source/i18n/unicode/timezone.h"
++#endif
++
+ #if BUILDFLAG(MOJO_RANDOM_DELAYS_ENABLED)
+ #include "mojo/public/cpp/bindings/lib/test_random_mojo_delays.h"
+ #endif
+@@ -161,6 +166,12 @@ int RendererMain(MainFunctionParams parameters) {
+   base::apple::ScopedNSAutoreleasePool* pool = parameters.autorelease_pool;
+ #endif  // BUILDFLAG(IS_MAC)
+ 
++#if BUILDFLAG(IS_WIN)
++  if (base::Environment::Create()->HasVar("CEF_ISOLATE_TIMEZONE")) {
++    icu::TimeZone::adoptDefault(icu::TimeZone::createTimeZone("UTC"));
++  }
++#endif  // BUILDFLAG(IS_WIN)
++
+ #if BUILDFLAG(IS_CHROMEOS)
+   // As the Zygote process starts up earlier than the browser process, it gets
+   // its own locale (at login time for Chrome OS). So we have to set the ICU
+diff --git a/services/device/time_zone_monitor/time_zone_monitor_win.cc b/services/device/time_zone_monitor/time_zone_monitor_win.cc
+index 5b6d56387d..4dd5592ae3 100644
+--- a/services/device/time_zone_monitor/time_zone_monitor_win.cc
++++ b/services/device/time_zone_monitor/time_zone_monitor_win.cc
+@@ -9,8 +9,10 @@
+ #include <memory>
+ 
+ #include "base/callback_list.h"
++#include "base/environment.h"
+ #include "base/functional/bind.h"
+ #include "base/functional/callback_helpers.h"
++#include "base/memory/ptr_util.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
+@@ -43,6 +45,15 @@ class TimeZoneMonitorWin : public TimeZoneMonitor {
+       scoped_refptr<base::SequencedTaskRunner> file_task_runner)
+       : main_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
+         file_task_runner_(file_task_runner) {
++    if (base::Environment::Create()->HasVar("CEF_ISOLATE_TIMEZONE")) {
++      icu::TimeZone::adoptDefault(icu::TimeZone::createTimeZone("UTC"));
++      UpdateIcuAndNotifyClients(
++          base::WrapUnique(icu::TimeZone::createTimeZone("UTC")));
++      return;
++    }
++    hwnd_subscription_ = gfx::SingletonHwnd::GetInstance()->RegisterCallback(
++        base::BindRepeating(&TimeZoneMonitorWin::OnWndProc,
++                            base::Unretained(this)));
+     InitializeCurrentPlatformTimeZone();
+   }
+   TimeZoneMonitorWin(const TimeZoneMonitorWin&) = delete;
+@@ -116,10 +127,7 @@ class TimeZoneMonitorWin : public TimeZoneMonitor {
+     }
+   }
+ 
+-  base::CallbackListSubscription hwnd_subscription_ =
+-      gfx::SingletonHwnd::GetInstance()->RegisterCallback(
+-          base::BindRepeating(&TimeZoneMonitorWin::OnWndProc,
+-                              base::Unretained(this)));
++  base::CallbackListSubscription hwnd_subscription_;
+   bool pending_update_notification_tasks_ = false;
+   std::string current_platform_timezone_;
+   scoped_refptr<base::SequencedTaskRunner> main_task_runner_;

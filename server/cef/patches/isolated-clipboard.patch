@@ -56,10 +56,10 @@ index 6908b4309..4fbc12fef 100644
    void PreMainMessageLoopRun() override;
 diff --git a/libcef/browser/isolated_clipboard.cc b/libcef/browser/isolated_clipboard.cc
 new file mode 100644
-index 000000000..31d5e7d8c
+index 000000000..9f6a42690
 --- /dev/null
 +++ b/libcef/browser/isolated_clipboard.cc
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,233 @@
 +// Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
 +// reserved. Use of this source code is governed by a BSD-style license that
 +// can be found in the LICENSE file.
@@ -120,7 +120,7 @@ index 000000000..31d5e7d8c
 +                size_t length,
 +                uint8_t* buffer,
 +                size_t capacity) {
-+  if (buffer && capacity > 0) {
++  if (buffer && capacity > 0 && length > 0) {
 +    std::copy_n(bytes, std::min(length, capacity), buffer);
 +  }
 +  return static_cast<int64_t>(length);
@@ -235,50 +235,48 @@ index 000000000..31d5e7d8c
 +  }
 +}
 +
-+int cef_isolated_clipboard_write(const uint8_t* text,
++int cef_isolated_clipboard_write_item(const uint8_t* text,
 +                                 size_t text_length,
 +                                 const uint8_t* html,
 +                                 size_t html_length,
 +                                 const uint8_t* png,
-+                                 size_t png_length) {
++                                 size_t png_length,
++                                 const char* const* paths,
++                                 size_t file_count) {
 +  ui::ClipboardNonBacked* clipboard = GetClipboard();
 +  if (!clipboard) {
 +    return CEF_ISOLATED_CLIPBOARD_WRONG_STATE;
 +  }
 +  if ((!text && text_length > 0) || (!html && html_length > 0) ||
-+      (!png && png_length > 0)) {
++      (!png && png_length > 0) || (file_count > 0 && !paths)) {
 +    return CEF_ISOLATED_CLIPBOARD_INVALID;
 +  }
 +
 +  auto data = std::make_unique<ui::ClipboardData>();
 +  if (text) {
-+    data->set_text(
-+        std::string(reinterpret_cast<const char*>(text), text_length));
++    std::string value;
++    if (text_length > 0) {
++      value.assign(reinterpret_cast<const char*>(text), text_length);
++    }
++    data->set_text(std::move(value));
 +  }
 +  if (html) {
-+    data->set_markup_data(
-+        std::string(reinterpret_cast<const char*>(html), html_length));
++    std::string value;
++    if (html_length > 0) {
++      value.assign(reinterpret_cast<const char*>(html), html_length);
++    }
++    data->set_markup_data(std::move(value));
 +  }
 +  if (png) {
-+    data->SetPngData(std::vector<uint8_t>(png, png + png_length));
++    std::vector<uint8_t> image;
++    if (png_length > 0) {
++      image.assign(png, png + png_length);
++    }
++    data->SetPngData(std::move(image));
 +  }
-+  clipboard->WriteClipboardData(std::move(data),
-+                                ui::ClipboardBuffer::kCopyPaste);
-+  return 0;
-+}
-+
-+int cef_isolated_clipboard_write_files(const char* const* paths, size_t count) {
-+  ui::ClipboardNonBacked* clipboard = GetClipboard();
-+  if (!clipboard) {
-+    return CEF_ISOLATED_CLIPBOARD_WRONG_STATE;
-+  }
-+  if (!paths || count == 0) {
-+    return CEF_ISOLATED_CLIPBOARD_INVALID;
-+  }
-+
 +  std::vector<ui::FileInfo> files;
-+  files.reserve(count);
-+  for (size_t i = 0; i < count; ++i) {
++  files.reserve(file_count);
++  for (size_t i = 0; i < file_count; ++i) {
 +    if (!paths[i]) {
 +      return CEF_ISOLATED_CLIPBOARD_INVALID;
 +    }
@@ -288,16 +286,17 @@ index 000000000..31d5e7d8c
 +    }
 +    files.emplace_back(path, path.BaseName());
 +  }
-+
-+  auto data = std::make_unique<ui::ClipboardData>();
-+  data->set_filenames(std::move(files));
++  if (!files.empty()) {
++    data->set_filenames(std::move(files));
++  }
 +  clipboard->WriteClipboardData(std::move(data),
 +                                ui::ClipboardBuffer::kCopyPaste);
 +  return 0;
 +}
+\ No newline at end of file
 diff --git a/libcef/browser/isolated_clipboard.h b/libcef/browser/isolated_clipboard.h
 new file mode 100644
-index 000000000..6c048a534
+index 000000000..6232dcfc2
 --- /dev/null
 +++ b/libcef/browser/isolated_clipboard.h
 @@ -0,0 +1,79 @@
@@ -349,7 +348,7 @@ index 000000000..6c048a534
 +CEF_EXPORT int cef_isolated_clipboard_enabled(void);
 +
 +// Returns a counter that increases whenever the clipboard content changes,
-+// including changes made by cef_isolated_clipboard_write, or a negative
++// including changes made by cef_isolated_clipboard_write_item, or a negative
 +// error.
 +CEF_EXPORT int64_t cef_isolated_clipboard_generation(void);
 +
@@ -360,22 +359,22 @@ index 000000000..6c048a534
 +                                               uint8_t* buffer,
 +                                               size_t capacity);
 +
-+// Replaces the clipboard content with the given representations of one item.
-+// Null pointers omit a representation; all null clears the clipboard.
-+// Returns 0 on success or a negative error.
-+CEF_EXPORT int cef_isolated_clipboard_write(const uint8_t* text,
++// Replaces the clipboard content with the given representations and files.
++// Null representation pointers omit their format; a nonzero length with a
++// null pointer is invalid.
++// Each path must be a non-null, NUL-terminated UTF-8 absolute path without
++// parent references.
++// A zero file_count clears the file list.
++// Returns 0 on success, CEF_ISOLATED_CLIPBOARD_WRONG_STATE if unavailable, or
++// CEF_ISOLATED_CLIPBOARD_INVALID for invalid arguments.
++CEF_EXPORT int cef_isolated_clipboard_write_item(const uint8_t* text,
 +                                            size_t text_length,
 +                                            const uint8_t* html,
 +                                            size_t html_length,
 +                                            const uint8_t* png,
-+                                            size_t png_length);
-+
-+// Replaces the clipboard content with a list of |count| files, given as
-+// NUL-terminated UTF-8 absolute paths. Pages that paste receive the files, and
-+// the renderer is granted read access to them. Returns 0 on success or a
-+// negative error.
-+CEF_EXPORT int cef_isolated_clipboard_write_files(const char* const* paths,
-+                                                  size_t count);
++                                            size_t png_length,
++                                            const char* const* paths,
++                                            size_t file_count);
 +
 +}  // extern "C"
 +

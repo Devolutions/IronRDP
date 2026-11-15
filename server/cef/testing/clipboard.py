@@ -42,16 +42,28 @@ class ClipboardRunner(e2e.Runner):
     def __init__(self, args):
         super().__init__(args)
         self.stock_server_bin = Path(args.stock_server_bin).resolve() if args.stock_server_bin else None
+        self.with_downloads = args.with_downloads
+        self.client_directory = None
+        if self.with_downloads:
+            self.client_directory = self.artifacts / "client-downloads"
+            self.client_directory.mkdir(mode=0o700)
         self.host_before = None
 
-    def start_server(self, generation, extra_args=("--clipboard",)):
+    def agent(self, *args, **kwargs):
+        if args == ("daemon", "start") and self.client_directory is not None:
+            args += ("--rdpdr-download-dir", str(self.client_directory))
+        return super().agent(*args, **kwargs)
+
+    def start_server(self, generation, extra_args=None):
+        if extra_args is None:
+            extra_args = ("--clipboard", "--downloads") if self.with_downloads else ("--clipboard",)
         return super().start_server(generation, extra_args)
 
-    def open_fixture(self):
+    def open_fixture(self, name="01-fixture"):
         self.shortcut(0x26)
         self.agent("type-unicode", "--text", self.base_url + "clipboard.html")
         self.key(0x1c)
-        self.content("01-fixture", [(48, 300, "ffffff"), (376, 48, "333333")])
+        self.content(name, [(48, 300, "ffffff"), (376, 48, "333333")])
 
     def paste_until(self, name, marker):
         """Paste into the page until it reports the expected clipboard content.
@@ -84,6 +96,15 @@ class ClipboardRunner(e2e.Runner):
                 return
             time.sleep(0.2)
         raise AssertionError("{} did not reach the client: {!r}".format(name, last))
+
+    def disconnect(self):
+        self.agent("disconnect")
+        deadline = time.monotonic() + TIMEOUT
+        while time.monotonic() < deadline:
+            if "state: Connected" not in self.agent("status").splitlines():
+                return
+            time.sleep(0.1)
+        raise TimeoutError("RDP client did not disconnect")
 
     def check_host_untouched(self, name):
         after = host_pasteboard()
@@ -120,7 +141,8 @@ class ClipboardRunner(e2e.Runner):
             self.stock_rejects_host_clipboard()
         self.daemon_started = True
         self.agent("daemon", "start")
-        self.connect(self.start_server("clipboard"))
+        endpoint = self.start_server("clipboard")
+        self.connect(endpoint)
         self.open_fixture()
 
         # oracle: spec Clipboard API and events §8.1.3 (paste event exposes clipboard data by MIME type).
@@ -132,14 +154,31 @@ class ClipboardRunner(e2e.Runner):
         encode_png(image, 4, 3, (0x12, 0x34, 0x56))
         self.agent("clipboard-set-image", str(image))
         self.paste_until("04-client-image", (552, 48, "ffaa00"))
+        client_file = self.artifacts / "client.txt"
+        client_file.write_text("isolated client file\n", encoding="utf-8")
+        self.agent("clipboard-set-files", str(client_file))
+        self.paste_until("04-client-file", (640, 48, "22aaff"))
+        self.agent("clipboard-set", "--text", "replacement")
+        self.paste_until("04-file-replaced", (728, 48, "aaff22"))
         self.check_host_untouched("05-host-after-paste")
 
         # oracle: spec Clipboard API and events §8.1.1 (copy of a text selection).
         self.copy_until("06-browser-text", (100, CHROME_HEIGHT + 216),
                         lambda: self.agent("clipboard-get").strip() == "browser→client ✓" or None)
 
+        self.disconnect()
+        self.connect(endpoint, ("--prop", "redirectclipboard:i:0"))
+        self.open_fixture("07-reconnected-fixture")
+        self.click(100, CHROME_HEIGHT + 44)
+        self.shortcut(0x2f)
+        # oracle: mutant prior client's private clipboard content survives disconnect.
+        self.content("08-no-stale-clipboard-after-reconnect", [(376, 48, "333333")])
+        self.disconnect()
+        self.connect(endpoint)
+        self.open_fixture("09-reconnected-fixture")
+
         # oracle: spec Clipboard API and events §8.1.1 (copy handler data replaces the selection).
-        self.copy_until("07-browser-html", (300, CHROME_HEIGHT + 216),
+        self.copy_until("10-browser-html", (300, CHROME_HEIGHT + 216),
                         lambda: "<b>rich copy</b>" in self.agent("clipboard-get-html") or None)
 
         # oracle: spec Clipboard API §7.2.3 (write of an image/png ClipboardItem).
@@ -155,8 +194,20 @@ class ClipboardRunner(e2e.Runner):
                 return True
             return decoded[:2]
 
-        self.copy_until("08-browser-image", (528, CHROME_HEIGHT + 216), read_image)
-        self.check_host_untouched("09-host-after-copy")
+        self.copy_until("11-browser-image", (528, CHROME_HEIGHT + 216), read_image)
+        if self.client_directory is not None:
+            self.shortcut(0x19)
+            deadline = time.monotonic() + TIMEOUT
+            pdf_file = self.client_directory / "CEF clipboard fixture.pdf"
+            while time.monotonic() < deadline:
+                if pdf_file.is_file():
+                    data = pdf_file.read_bytes()
+                    if data.startswith(b"%PDF-") and b"%%EOF" in data[-128:]:
+                        break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("Combined --clipboard --downloads session did not deliver printed PDF")
+        self.check_host_untouched("12-host-after-copy")
 
 
 def main():
@@ -165,6 +216,7 @@ def main():
     parser.add_argument("--stock-server-bin", help="Server bundle built against stock CEF, expected to reject startup")
     parser.add_argument("--agent", required=True)
     parser.add_argument("--artifacts", default="server/cef/artifacts/clipboard-e2e")
+    parser.add_argument("--with-downloads", action="store_true", help="Also verify RDPDR download delivery in the same session")
     args = parser.parse_args()
     runner = ClipboardRunner(args)
     print("Artifacts: " + str(runner.artifacts), flush=True)
