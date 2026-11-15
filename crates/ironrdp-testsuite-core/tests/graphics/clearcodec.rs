@@ -1,4 +1,4 @@
-use ironrdp_core::ReadCursor;
+use ironrdp_core::{DecodeErrorKind, ReadCursor};
 use ironrdp_graphics::clearcodec::{ClearCodecDecoder, ClearCodecEncoder};
 use ironrdp_pdu::codecs::clearcodec::{
     ClearCodecBitmapStream, FLAG_CACHE_RESET, FLAG_GLYPH_HIT, FLAG_GLYPH_INDEX, RgbRunSegment, encode_residual_layer,
@@ -493,76 +493,14 @@ fn session_encoder_decoder_stay_synchronized_across_50_frames() {
 // Bands Layer Compositing (integration through decoder)
 // ============================================================================
 
-#[test]
-fn decode_stream_with_bands_layer_short_vbar_cache_miss() {
-    // Construct a minimal ClearCodec stream with a bands layer containing
-    // one band, one column, using a ShortVBarCacheMiss. This exercises the
-    // full decode_composite -> resolve_vbar -> blit path.
-    let mut dec = ClearCodecDecoder::new();
-
-    // Surface: 4 pixels wide, 4 pixels tall
-    let width: u16 = 4;
-    let height: u16 = 4;
-
-    // Build bands layer data: one band covering column 1, rows 0-3
-    let mut bands_data = Vec::new();
-    bands_data.extend_from_slice(&1u16.to_le_bytes()); // x_start = 1
-    bands_data.extend_from_slice(&1u16.to_le_bytes()); // x_end = 1 (1 column)
-    bands_data.extend_from_slice(&0u16.to_le_bytes()); // y_start = 0
-    bands_data.extend_from_slice(&3u16.to_le_bytes()); // y_end = 3 (height = 4)
-    bands_data.extend_from_slice(&[0x00, 0x00, 0x00]); // background BGR = black
-
-    // V-bar: ShortCacheMiss with y_on=1, y_off=3 (2 pixels at rows 1-2)
-    // bits 7:0 = y_on (1), bits 13:8 = y_off (3)
-    let vbar_word: u16 = (3 << 8) | 1;
-    bands_data.extend_from_slice(&vbar_word.to_le_bytes());
-    // 2 pixels * 3 bytes = 6 bytes of BGR pixel data (red)
-    bands_data.extend_from_slice(&[0x00, 0x00, 0xFF]); // row 1: red
-    bands_data.extend_from_slice(&[0x00, 0x00, 0xFF]); // row 2: red
-
-    // Build the full stream: no residual, bands only, no subcodec
-    let mut stream = Vec::new();
-    stream.push(0x00); // flags
-    stream.push(0x00); // seq
-    stream.extend_from_slice(&0u32.to_le_bytes()); // residualByteCount = 0
-    let bands_len = u32::try_from(bands_data.len()).unwrap();
-    stream.extend_from_slice(&bands_len.to_le_bytes()); // bandsByteCount
-    stream.extend_from_slice(&0u32.to_le_bytes()); // subcodecByteCount = 0
-    stream.extend_from_slice(&bands_data);
-
-    let pixels = dec.decode(&stream, width, height).unwrap();
-    assert_eq!(pixels.len(), usize::from(width) * usize::from(height) * 4);
-
-    // Check column 1, row 1: should be red (from short V-bar pixel data)
-    let row1_col1 = (usize::from(width) + 1) * 4;
-    assert_eq!(pixels[row1_col1], 0x00, "blue channel at (1,1)");
-    assert_eq!(pixels[row1_col1 + 1], 0x00, "green channel at (1,1)");
-    assert_eq!(pixels[row1_col1 + 2], 0xFF, "red channel at (1,1)");
-
-    // Check column 1, row 0: should be background (black, from band bkg)
-    let row0_col1 = 4; // row=0, col=1 -> offset 4
-    assert_eq!(pixels[row0_col1], 0x00, "blue channel at (1,0)");
-    assert_eq!(pixels[row0_col1 + 1], 0x00, "green channel at (1,0)");
-    assert_eq!(pixels[row0_col1 + 2], 0x00, "red channel at (1,0)");
-
-    // Check column 1, row 3: should also be background
-    let idx3 = (3 * usize::from(width) + 1) * 4;
-    assert_eq!(pixels[idx3], 0x00, "blue channel at (1,3)");
-    assert_eq!(pixels[idx3 + 1], 0x00, "green channel at (1,3)");
-    assert_eq!(pixels[idx3 + 2], 0x00, "red channel at (1,3)");
-}
-
-/// Build a 4x4 stream: a white residual layer, then one band over column 1
-/// (rows 0-3, red background) holding the given V-bar bytes.
-fn make_white_stream_with_one_vbar(vbar: &[u8]) -> Vec<u8> {
-    let residual = make_solid_residual(0xFF, 0xFF, 0xFF, 16);
-
+/// Build a 4x4 stream: an optional residual, then one band over column 1, rows 0-3, with the given background and V-bar.
+fn make_one_band_stream(residual: &[u8], bkg_bgr: [u8; 3], vbar: &[u8]) -> Vec<u8> {
     let mut bands_data = Vec::new();
     bands_data.extend_from_slice(&1u16.to_le_bytes()); // x_start
     bands_data.extend_from_slice(&1u16.to_le_bytes()); // x_end
     bands_data.extend_from_slice(&0u16.to_le_bytes()); // y_start
     bands_data.extend_from_slice(&3u16.to_le_bytes()); // y_end
-    bands_data.extend_from_slice(&[0x00, 0x00, 0xFF]); // background BGR = red
+    bands_data.extend_from_slice(&bkg_bgr);
     bands_data.extend_from_slice(vbar);
 
     let mut stream = Vec::new();
@@ -571,73 +509,100 @@ fn make_white_stream_with_one_vbar(vbar: &[u8]) -> Vec<u8> {
     stream.extend_from_slice(&u32::try_from(residual.len()).unwrap().to_le_bytes());
     stream.extend_from_slice(&u32::try_from(bands_data.len()).unwrap().to_le_bytes());
     stream.extend_from_slice(&0u32.to_le_bytes()); // subcodecByteCount
-    stream.extend_from_slice(&residual);
+    stream.extend_from_slice(residual);
     stream.extend_from_slice(&bands_data);
     stream
 }
 
-fn pixel_at(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 4] {
+/// The blue, green and red bytes of the pixel at (x, y) in a BGRA buffer.
+fn bgr_at(pixels: &[u8], width: usize, x: usize, y: usize) -> [u8; 3] {
     let offset = (y * width + x) * 4;
-    pixels[offset..offset + 4].try_into().unwrap()
+    pixels[offset..offset + 3].try_into().unwrap()
 }
 
+// oracle: spec MS-RDPEGFX §2.2.4.1.1.2.1.1.3 (rows below shortVBarYOn and from shortVBarYOff take the band background)
+#[test]
+fn decode_stream_with_bands_layer_short_vbar_cache_miss() {
+    let mut dec = ClearCodecDecoder::new();
+
+    // ShortCacheMiss with yOn 1 and yOff 3 (bits 7:0 and 13:8): red pixels at rows 1 and 2.
+    let mut vbar = ((3u16 << 8) | 1).to_le_bytes().to_vec();
+    vbar.extend_from_slice(&[0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF]);
+    let stream = make_one_band_stream(&[], [0x00, 0x00, 0x00], &vbar);
+
+    let pixels = dec.decode(&stream, 4, 4).unwrap();
+    assert_eq!(pixels.len(), 4 * 4 * 4);
+
+    assert_eq!(bgr_at(&pixels, 4, 1, 0), [0x00, 0x00, 0x00], "background at (1,0)");
+    assert_eq!(
+        bgr_at(&pixels, 4, 1, 1),
+        [0x00, 0x00, 0xFF],
+        "short V-bar pixel at (1,1)"
+    );
+    assert_eq!(
+        bgr_at(&pixels, 4, 1, 2),
+        [0x00, 0x00, 0xFF],
+        "short V-bar pixel at (1,2)"
+    );
+    assert_eq!(bgr_at(&pixels, 4, 1, 3), [0x00, 0x00, 0x00], "background at (1,3)");
+}
+
+// oracle: reference FreeRDP/FreeRDP@65bcca1913a2:libfreerdp/codec/clear.c (clear_decompress_bands_data fills an empty VBAR_CACHE_HIT entry with zero bytes through resize_vbar_entry)
 #[test]
 fn vbar_cache_hit_on_empty_entry_draws_zero_pixels() {
     let mut dec = ClearCodecDecoder::new();
-    let stream = make_white_stream_with_one_vbar(&(0x8000u16 | 7).to_le_bytes());
+    let white = make_solid_residual(0xFF, 0xFF, 0xFF, 16);
+    let stream = make_one_band_stream(&white, [0x00, 0x00, 0xFF], &(0x8000u16 | 7).to_le_bytes());
 
     let pixels = dec.decode(&stream, 4, 4).unwrap();
 
     for y in 0..4 {
-        assert_eq!(
-            pixel_at(&pixels, 4, 1, y),
-            [0x00, 0x00, 0x00, 0xFF],
-            "column 1, row {y}"
-        );
-        assert_eq!(
-            pixel_at(&pixels, 4, 0, y),
-            [0xFF, 0xFF, 0xFF, 0xFF],
-            "column 0, row {y}"
-        );
-        assert_eq!(
-            pixel_at(&pixels, 4, 2, y),
-            [0xFF, 0xFF, 0xFF, 0xFF],
-            "column 2, row {y}"
-        );
+        assert_eq!(bgr_at(&pixels, 4, 1, y), [0x00, 0x00, 0x00], "column 1, row {y}");
+        assert_eq!(bgr_at(&pixels, 4, 0, y), [0xFF, 0xFF, 0xFF], "column 0, row {y}");
+        assert_eq!(bgr_at(&pixels, 4, 2, y), [0xFF, 0xFF, 0xFF], "column 2, row {y}");
     }
 }
 
+// oracle: reference FreeRDP/FreeRDP@65bcca1913a2:libfreerdp/codec/clear.c (clear_decompress_bands_data takes the pixel count of an empty SHORT_VBAR_CACHE_HIT entry as zero and fills the column with the band background)
 #[test]
 fn short_vbar_cache_hit_on_empty_entry_draws_band_background() {
     let mut dec = ClearCodecDecoder::new();
+    let white = make_solid_residual(0xFF, 0xFF, 0xFF, 16);
     let mut vbar = (0x4000u16 | 9).to_le_bytes().to_vec();
     vbar.push(1); // yOn
-    let stream = make_white_stream_with_one_vbar(&vbar);
+    let stream = make_one_band_stream(&white, [0x00, 0x00, 0xFF], &vbar);
 
     let pixels = dec.decode(&stream, 4, 4).unwrap();
 
     for y in 0..4 {
-        assert_eq!(
-            pixel_at(&pixels, 4, 1, y),
-            [0x00, 0x00, 0xFF, 0xFF],
-            "column 1, row {y}"
-        );
-        assert_eq!(
-            pixel_at(&pixels, 4, 3, y),
-            [0xFF, 0xFF, 0xFF, 0xFF],
-            "column 3, row {y}"
-        );
+        assert_eq!(bgr_at(&pixels, 4, 1, y), [0x00, 0x00, 0xFF], "column 1, row {y}");
+        assert_eq!(bgr_at(&pixels, 4, 3, y), [0xFF, 0xFF, 0xFF], "column 3, row {y}");
     }
 }
 
+// oracle: spec MS-RDPEGFX §2.2.4.1.1.2.1.1.2 (the Short V-Bar Storage data MUST NOT exceed 3 * (yEnd - yStart + 1 - shortVBarYOn) bytes)
 #[test]
 fn short_vbar_cache_hit_on_empty_entry_still_checks_y_on() {
     let mut dec = ClearCodecDecoder::new();
     let mut vbar = (0x4000u16 | 9).to_le_bytes().to_vec();
     vbar.push(5); // yOn past the 4-row band
-    let stream = make_white_stream_with_one_vbar(&vbar);
+    let stream = make_one_band_stream(&[], [0x00, 0x00, 0xFF], &vbar);
 
-    assert!(dec.decode(&stream, 4, 4).is_err());
+    let error = dec.decode(&stream, 4, 4).expect_err("yOn past the band should fail");
+
+    // oracle: mutant rejecting the stream for a reason other than the yOn bound
+    assert!(
+        matches!(
+            error.kind(),
+            DecodeErrorKind::InvalidField {
+                field: "shortVBarYOn",
+                reason: "y_on + pixel_count exceeds band height",
+                ..
+            }
+        ),
+        "expected the yOn bound error, got {:?}",
+        error.kind()
+    );
 }
 
 #[test]
