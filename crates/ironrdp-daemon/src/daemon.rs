@@ -2526,6 +2526,7 @@ async fn consume_output(
                 true
             }
             RdpOutputEvent::DisplayResizeFallback(_) => {
+                guard.session_info = SessionInfo::default();
                 let next_sequence = guard.rail.next_sequence;
                 guard.rail = RailLedger::new(
                     next_rail_generation.fetch_add(1, Ordering::Relaxed),
@@ -2972,20 +2973,11 @@ mod tests {
 
     #[tokio::test]
     async fn resize_fallback_starts_a_new_rail_generation() {
-        let live = Arc::new(Mutex::new(Live {
-            properties: PropertySet::new(),
-            state: ConnState::Connected,
-            error: None,
-            frame: None,
-            frame_number: 0,
-            pending_pointer_position: None,
-            rail_initial_execute: Some((0, "notepad.exe".to_owned())),
-            rail: RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned()))),
-            certificate_rejection: Arc::default(),
-            session_info: Default::default(),
-        }));
+        let (daemon, _, live, _) = active_rail_session(false);
         {
             let mut guard = live.lock().expect("session live state poisoned");
+            guard.rail_initial_execute = Some((0, "notepad.exe".to_owned()));
+            guard.rail = RailLedger::new(1, 1, Some((0, "notepad.exe".to_owned())));
             guard.rail.handshake_complete = true;
             guard.rail.desktop_synchronized = true;
             guard
@@ -2996,6 +2988,11 @@ mod tests {
                     flags: 0,
                 })
                 .expect("queue a dynamic launch");
+            guard.session_info = crate::ipc::SessionInfo {
+                remote_session_id: Some(2),
+                logon_complete: true,
+                ..Default::default()
+            };
         }
 
         let (output_tx, output_rx) = output_channel(1);
@@ -3024,6 +3021,12 @@ mod tests {
         assert!(guard.rail.status().pending_launches.is_empty());
         assert_eq!(guard.rail.status().next_sequence, 2);
         assert_eq!(guard.rail.take_launch(0, "notepad.exe"), None);
+        drop(guard);
+        // oracle: regression Devolutions/IronRDP#2437
+        assert_eq!(
+            daemon.session_info(),
+            Response::Ok(Payload::SessionInfo(crate::ipc::SessionInfo::default()))
+        );
     }
 
     fn active_rail_session(
