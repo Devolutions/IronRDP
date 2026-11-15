@@ -368,7 +368,7 @@ fn dropping_unanswered_server_rpc_aborts_pending_ceremony_once() {
     assert_eq!(dropped_calls.lock().unwrap().as_slice(), [Err(0x8000_4004)]);
 }
 
-// oracle: spec RFC 8949 §4.2.3
+// oracle: spec CTAP2 §6 and RFC 8949 §4.2.3
 #[test]
 fn cbor_map_encodes_positive_negative_and_text_keys_in_canonical_byte_order() {
     use ironrdp_rdpewa::pdu::{CborKey, CborValue, encode_to_vec};
@@ -378,6 +378,7 @@ fn cbor_map_encodes_positive_negative_and_text_keys_in_canonical_byte_order() {
     cose_key.insert(CborKey::Int(-3), CborValue::Unsigned(0));
     cose_key.insert(CborKey::Int(-2), CborValue::Unsigned(0));
     cose_key.insert(CborKey::Int(-1), CborValue::Unsigned(1));
+    cose_key.insert(CborKey::Int(24), CborValue::Unsigned(0));
     cose_key.insert(CborKey::Int(3), CborValue::Negative(-7));
     cose_key.insert(CborKey::Int(1), CborValue::Unsigned(2));
     cose_key.insert(CborKey::text("alg"), CborValue::Unsigned(0));
@@ -387,9 +388,10 @@ fn cbor_map_encodes_positive_negative_and_text_keys_in_canonical_byte_order() {
     assert_eq!(
         encoded,
         [
-            0xA7, // map(7)
+            0xA8, // map(8)
             0x01, 0x02, // 1: 2
             0x03, 0x26, // 3: -7
+            0x18, 0x18, 0x00, // 24: 0 (two-byte major 0 before one-byte major 1)
             0x20, 0x01, // -1: 1
             0x21, 0x00, // -2: 0
             0x22, 0x00, // -3: 0

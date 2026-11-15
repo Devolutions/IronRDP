@@ -26,10 +26,10 @@ pub enum CborValue {
 
 /// Map keys used by MS-RDPEWA (text or integer).
 ///
-/// Ordered according to CTAP2 canonical CBOR ([RFC 8949] section 4.2.3): shorter
-/// encoded keys sort first, and equal-length keys sort lexicographically by
-/// their encoded bytes.
+/// Ordered according to [CTAP2] section 6 ("Message Encoding") and [RFC 8949] section 4.2.3 ("Length-First Map Key Ordering").
+/// Keys sort by CBOR major type first, then by encoded byte length, and finally lexicographically by their encoded bytes.
 ///
+/// [CTAP2]: https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html#message-encoding
 /// [RFC 8949]: https://www.rfc-editor.org/rfc/rfc8949#section-4.2.3
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CborKey {
@@ -42,19 +42,19 @@ impl CborKey {
         Self::Text(s.into())
     }
 
-    fn canonical_parts(&self) -> (usize, u8, u64, &[u8]) {
+    fn canonical_parts(&self) -> (u8, usize, u64, &[u8]) {
         match self {
             Self::Int(n) if 0 <= *n => {
                 let stored = u64::try_from(*n).unwrap_or(u64::MAX);
-                (1 + uint_extra_len(stored), 0, stored, &[])
+                (0, 1 + uint_extra_len(stored), stored, &[])
             }
             Self::Int(n) => {
                 let stored = negative_to_stored_uint(*n).unwrap_or(u64::MAX);
-                (1 + uint_extra_len(stored), 1, stored, &[])
+                (1, 1 + uint_extra_len(stored), stored, &[])
             }
             Self::Text(s) => {
                 let len = u64_from_usize_lossy(s.len());
-                (1 + uint_extra_len(len) + s.len(), 3, len, s.as_bytes())
+                (3, 1 + uint_extra_len(len) + s.len(), len, s.as_bytes())
             }
         }
     }
