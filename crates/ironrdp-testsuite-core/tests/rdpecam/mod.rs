@@ -1513,42 +1513,26 @@ fn server_defers_deactivation_until_pending_stream_list_response() {
     assert!(server.is_stopped());
 }
 
-// oracle: mutant rejecting a media type at the inclusive width limit or accepting one above it.
-#[test]
-fn server_accepts_width_at_limit_and_rejects_above() {
-    let (at_limit, at_limit_failures) = negotiate_media_type(4096, 480);
+// oracle: mutant rejecting a media type at the inclusive dimension limit or accepting one above it.
+#[rstest::rstest]
+#[case::width((4096, 480), (4097, 480))]
+#[case::height((640, 4096), (640, 4097))]
+fn server_accepts_dimension_at_limit_and_rejects_above(
+    #[case] (at_width, at_height): (u32, u32),
+    #[case] (above_width, above_height): (u32, u32),
+) {
+    let (at_limit, at_limit_failures) = negotiate_media_type(at_width, at_height);
     assert_eq!(
         at_limit,
         Some(DevicePdu::StartStreamsRequest(vec![StartStreamInfo {
             stream_index: 0,
-            media_type: MediaType::new(MediaFormat::Mjpg, 4096, 480, 30, 1, 1, 1, 0).unwrap(),
+            media_type: MediaType::new(MediaFormat::Mjpg, at_width, at_height, 30, 1, 1, 1, 0).unwrap(),
         }]))
     );
     // oracle: mutant reports a camera failure for an accepted media type.
     assert_eq!(at_limit_failures, 0);
 
-    let (above_limit, above_limit_failures) = negotiate_media_type(4097, 480);
-    // oracle: spec MS-RDPECAM §3.3.5.21
-    assert_eq!(above_limit, Some(DevicePdu::DeactivateDeviceRequest));
-    // oracle: mutant omits the failure notification for a rejected media type.
-    assert_eq!(above_limit_failures, 1);
-}
-
-// oracle: mutant rejecting a media type at the inclusive height limit or accepting one above it.
-#[test]
-fn server_accepts_height_at_limit_and_rejects_above() {
-    let (at_limit, at_limit_failures) = negotiate_media_type(640, 4096);
-    assert_eq!(
-        at_limit,
-        Some(DevicePdu::StartStreamsRequest(vec![StartStreamInfo {
-            stream_index: 0,
-            media_type: MediaType::new(MediaFormat::Mjpg, 640, 4096, 30, 1, 1, 1, 0).unwrap(),
-        }]))
-    );
-    // oracle: mutant reports a camera failure for an accepted media type.
-    assert_eq!(at_limit_failures, 0);
-
-    let (above_limit, above_limit_failures) = negotiate_media_type(640, 4097);
+    let (above_limit, above_limit_failures) = negotiate_media_type(above_width, above_height);
     // oracle: spec MS-RDPECAM §3.3.5.21
     assert_eq!(above_limit, Some(DevicePdu::DeactivateDeviceRequest));
     // oracle: mutant omits the failure notification for a rejected media type.
