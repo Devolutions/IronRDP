@@ -23,6 +23,13 @@ pub const E_ABORT: u32 = 0x8000_4004;
 /// HRESULT `HRESULT_FROM_WIN32(ERROR_BUSY)` — ceremony already in progress.
 pub const E_BUSY: u32 = 0x8007_00AA;
 
+/// `[MS-RDPEWA]` section 2.2.1 `flags` bit requiring user verification.
+pub const CTAPCLT_UV_REQUIRED_FLAG: u32 = 0x0040_0000;
+/// `[MS-RDPEWA]` section 2.2.1 `flags` bit preferring user verification.
+pub const CTAPCLT_UV_PREFERRED_FLAG: u32 = 0x0080_0000;
+/// `[MS-RDPEWA]` section 2.2.1 `flags` bit discouraging user verification.
+pub const CTAPCLT_UV_NOT_REQUIRED_FLAG: u32 = 0x0100_0000;
+
 /// MS-RDPEWA RPC command identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -180,6 +187,7 @@ impl Attestation {
 pub struct WebAuthnPara {
     pub attachment: Attachment,
     pub require_resident_key: bool,
+    pub prefer_resident_key: bool,
     pub user_verification: UserVerification,
     pub attestation: Attestation,
     pub cancellation_id: Option<Vec<u8>>,
@@ -196,9 +204,10 @@ impl WebAuthnPara {
             match key {
                 CborKey::Text(name) => match name.as_str() {
                     "attachment" => para.attachment = Attachment::from_u32(val.as_u32()?),
-                    "requireResidentKey" => para.require_resident_key = val.as_bool()?,
+                    "requireResident" | "requireResidentKey" => para.require_resident_key = val.as_bool()?,
+                    "preferResident" => para.prefer_resident_key = val.as_bool()?,
                     "userVerification" => para.user_verification = UserVerification::from_u32(val.as_u32()?),
-                    "attestation" => para.attestation = Attestation::from_u32(val.as_u32()?),
+                    "attestationPreference" | "attestation" => para.attestation = Attestation::from_u32(val.as_u32()?),
                     "cancellationId" => para.cancellation_id = Some(val.as_bytes()?.to_vec()),
                     "uiOrigin" => para.ui_origin = Some(val.as_text()?.to_owned()),
                     _ => {
@@ -220,15 +229,19 @@ impl WebAuthnPara {
             CborValue::Unsigned(u64::from(self.attachment.as_u32())),
         );
         map.insert(
-            CborKey::text("requireResidentKey"),
+            CborKey::text("requireResident"),
             CborValue::Bool(self.require_resident_key),
+        );
+        map.insert(
+            CborKey::text("preferResident"),
+            CborValue::Bool(self.prefer_resident_key),
         );
         map.insert(
             CborKey::text("userVerification"),
             CborValue::Unsigned(u64::from(self.user_verification.as_u32())),
         );
         map.insert(
-            CborKey::text("attestation"),
+            CborKey::text("attestationPreference"),
             CborValue::Unsigned(u64::from(self.attestation.as_u32())),
         );
         if let Some(id) = &self.cancellation_id {
@@ -560,10 +573,16 @@ impl DeviceInfo {
         if let Some(v) = map.get(&CborKey::text("devicePath")) {
             info.device_path = v.as_text()?.to_owned();
         }
-        if let Some(v) = map.get(&CborKey::text("Manufacturer")) {
+        if let Some(v) = map
+            .get(&CborKey::text("Manufacturer"))
+            .or_else(|| map.get(&CborKey::text("manufacturer")))
+        {
             info.manufacturer = v.as_text()?.to_owned();
         }
-        if let Some(v) = map.get(&CborKey::text("Product")) {
+        if let Some(v) = map
+            .get(&CborKey::text("Product"))
+            .or_else(|| map.get(&CborKey::text("product")))
+        {
             info.product = v.as_text()?.to_owned();
         }
         if let Some(v) = map.get(&CborKey::text("aaGuid")) {

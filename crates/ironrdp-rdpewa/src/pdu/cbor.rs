@@ -25,7 +25,13 @@ pub enum CborValue {
 }
 
 /// Map keys used by MS-RDPEWA (text or integer).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// Ordered according to [CTAP2] section 6 ("Message Encoding") and [RFC 8949] section 4.2.3 ("Length-First Map Key Ordering").
+/// Keys sort by CBOR major type first, then by encoded byte length, and finally lexicographically by their encoded bytes.
+///
+/// [CTAP2]: https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html#message-encoding
+/// [RFC 8949]: https://www.rfc-editor.org/rfc/rfc8949#section-4.2.3
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CborKey {
     Text(String),
     Int(i64),
@@ -34,6 +40,35 @@ pub enum CborKey {
 impl CborKey {
     pub fn text(s: impl Into<String>) -> Self {
         Self::Text(s.into())
+    }
+
+    fn canonical_parts(&self) -> (u8, usize, u64, &[u8]) {
+        match self {
+            Self::Int(n) if 0 <= *n => {
+                let stored = u64::try_from(*n).unwrap_or(u64::MAX);
+                (0, 1 + uint_extra_len(stored), stored, &[])
+            }
+            Self::Int(n) => {
+                let stored = negative_to_stored_uint(*n).unwrap_or(u64::MAX);
+                (1, 1 + uint_extra_len(stored), stored, &[])
+            }
+            Self::Text(s) => {
+                let len = u64_from_usize_lossy(s.len());
+                (3, 1 + uint_extra_len(len) + s.len(), len, s.as_bytes())
+            }
+        }
+    }
+}
+
+impl Ord for CborKey {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.canonical_parts().cmp(&other.canonical_parts())
+    }
+}
+
+impl PartialOrd for CborKey {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 

@@ -19,7 +19,10 @@ use crate::pdu::{
 };
 use crate::{CompleteData, DvcProcessor, DynamicChannelMut, DynamicChannelRef, encode_dvc_messages};
 
-pub trait DvcServerProcessor: DvcProcessor {}
+pub trait DvcServerProcessor: DvcProcessor {
+    /// Invoked when the client declines a server-initiated `Create Request` PDU.
+    fn creation_failed(&mut self, _channel_id: u32, _status: CreationStatus) {}
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ChannelState {
@@ -619,6 +622,7 @@ impl SvcProcessor for DrdynvcServer {
                     // declined on every connect, not a fault.
                     debug!(channel_id = ?id, %name, ?status, "DVC channel creation declined by client");
                     c.state = ChannelState::CreationFailed(status.into());
+                    c.processor.creation_failed(id, status);
                     return Ok(resp);
                 }
                 c.state = ChannelState::Opened;

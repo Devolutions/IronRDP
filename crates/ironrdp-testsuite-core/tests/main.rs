@@ -46,6 +46,7 @@ mod rdpetxt;
 mod rdpeudp;
 mod rdpeusb;
 mod rdpevor;
+mod rdpewa;
 mod rdpsnd;
 mod server;
 mod server_name;

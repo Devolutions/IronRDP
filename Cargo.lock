@@ -3751,6 +3751,7 @@ dependencies = [
  "ironrdp-rdpeudp",
  "ironrdp-rdpeusb",
  "ironrdp-rdpevor",
+ "ironrdp-rdpewa",
  "ironrdp-rdpfile",
  "ironrdp-rdpsnd",
  "ironrdp-server",

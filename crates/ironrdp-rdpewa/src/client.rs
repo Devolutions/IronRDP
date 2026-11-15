@@ -254,11 +254,15 @@ impl RdpewaClient {
                 }
             },
             RpcCommand::CancelCurOp => {
-                let cancellation_id = request
-                    .webauthn_para
-                    .as_ref()
-                    .and_then(|p| p.cancellation_id.as_deref())
-                    .unwrap_or(&[]);
+                let cancellation_id = if !request.request_body.is_empty() {
+                    request.request_body.as_slice()
+                } else {
+                    request
+                        .webauthn_para
+                        .as_ref()
+                        .and_then(|p| p.cancellation_id.as_deref())
+                        .unwrap_or(&[])
+                };
                 match self.handler.cancel_current_operation(cancellation_id) {
                     Ok(()) => Ok(Some(RdpewaResponse::ok_empty())),
                     Err(e) => {
