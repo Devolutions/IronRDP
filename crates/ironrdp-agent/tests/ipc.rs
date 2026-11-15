@@ -80,6 +80,35 @@ fn daemon_reports_no_active_session() {
     }
 }
 
+// oracle: mutant a command line without `wait-frame` or its options, or a daemon that waits with no session
+#[test]
+fn wait_frame_reports_no_active_session() {
+    let endpoint = test_endpoint("wait-frame");
+    let mut daemon = spawn_daemon(&endpoint);
+
+    let result = std::panic::catch_unwind(|| {
+        wait_for_daemon(&endpoint);
+
+        let started = Instant::now();
+        let output = agent(
+            &endpoint,
+            &["wait-frame", "--after-frame", "3", "--timeout-ms", "60000"],
+        );
+        assert!(!output.status.success());
+        assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
+
+        let stderr = String::from_utf8(output.stderr).expect("stderr");
+        assert!(stderr.contains("no active session"), "{stderr}");
+    });
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+
 #[test]
 fn daemon_start_foreground_stops_after_ipc_shutdown() {
     let endpoint = test_endpoint("foreground");
@@ -317,4 +346,46 @@ fn session_list_and_disconnect_distinguish_session_from_daemon() {
     if let Err(error) = result {
         std::panic::resume_unwind(error);
     }
+}
+
+// oracle: mutant a status printer that drops the frame number or prints it under another label
+#[test]
+fn status_prints_the_frame_number() {
+    use ironrdp_rpc::ipc::{ConnState, Payload, Request, Response, StatusInfo};
+    use ironrdp_rpc::transport::{self, Listener};
+
+    let endpoint = test_endpoint("frame-status");
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    let output = runtime.block_on(async {
+        let mut listener =
+            Listener::bind(&transport::endpoint_from_string(endpoint.clone())).expect("bind mock daemon");
+        let command = tokio::task::spawn_blocking(move || agent(&endpoint, &["status"]));
+        // A stand-in daemon whose session is at frame 7 answers the command's one status request.
+        let serve = async {
+            let mut stream = listener.accept().await.expect("accept status request");
+            let request: Request = transport::read_message(&mut stream).await.expect("read request");
+            assert_eq!(request, Request::Status);
+            let status = StatusInfo {
+                state: ConnState::Connected,
+                destination: None,
+                width: None,
+                height: None,
+                message: None,
+                credentials_loaded: false,
+                untrusted_certificate: None,
+                frame_number: Some(7),
+            };
+            transport::write_message(&mut stream, &Response::Ok(Payload::Status(status)))
+                .await
+                .expect("send status");
+            command.await.expect("run status command")
+        };
+        tokio::time::timeout(Duration::from_secs(30), serve)
+            .await
+            .expect("status command timeout")
+    });
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.lines().any(|line| line == "frame: 7"), "{stdout}");
 }

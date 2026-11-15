@@ -34,6 +34,8 @@ export class ClipboardService {
     private disposed: boolean = false;
     private monitoringActive: boolean = false;
     private monitorTimer?: ReturnType<typeof setTimeout>;
+    // Aborting it removes the listener that restarts monitoring once the `clipboard-read` permission is granted.
+    private resumeOnGrant?: AbortController;
     // Only the latest remote clipboard content is written once the window has the focus again.
     private pendingFocus: (() => Promise<void> | void) | null = null;
 
@@ -64,6 +66,8 @@ export class ClipboardService {
      */
     stopMonitoring(): void {
         this.monitoringActive = false;
+        this.resumeOnGrant?.abort();
+        this.resumeOnGrant = undefined;
         clearTimeout(this.monitorTimer);
         this.monitorTimer = undefined;
         this.pendingFocus = null;
@@ -442,15 +446,25 @@ export class ClipboardService {
                 }
             }
         } catch (err) {
-            if (err instanceof DOMException && err.name === 'NotAllowedError') {
-                // The browser requires user activation for clipboard reads (e.g. Firefox v127+).
-                // The polling loop cannot work in this environment; fall back to manual mode.
-                console.warn('Clipboard monitoring disabled: browser requires user activation for clipboard read.');
-                this.remoteDesktopService.setOnRemoteClipboardChanged(
-                    this.onRemoteClipboardChangedManualMode.bind(this),
-                );
-                stopped = true;
-                return;
+            // Chromium checks the focus again once the permission check completes, and rejects with
+            // "Document is not focused." if it was lost meanwhile. With the page unfocused or the permission granted,
+            // the failure is transient: keep monitoring and report it like any other error below.
+            if (err instanceof DOMException && err.name === 'NotAllowedError' && document.hasFocus()) {
+                const permission = await this.queryClipboardReadPermission();
+
+                if (permission?.state !== 'granted') {
+                    // Reads need a permission or user activation this loop doesn't have: stop until it's granted.
+                    // The remote clipboard callback only takes effect on the next connection.
+                    console.warn(`Clipboard monitoring disabled: ${err.message}`);
+                    this.remoteDesktopService.setOnRemoteClipboardChanged(
+                        this.onRemoteClipboardChangedManualMode.bind(this),
+                    );
+                    if (permission != null) {
+                        this.resumeMonitoringOnceGranted(permission);
+                    }
+                    stopped = true;
+                    return;
+                }
             }
 
             if (err instanceof Error) {
@@ -468,6 +482,34 @@ export class ClipboardService {
                 this.scheduleOnMonitorClipboardUpdate();
             }
         }
+    }
+
+    // `null` where the Permissions API doesn't know `clipboard-read` (e.g. Firefox).
+    private async queryClipboardReadPermission(): Promise<PermissionStatus | null> {
+        try {
+            return await navigator.permissions.query({ name: 'clipboard-read' as PermissionName });
+        } catch {
+            return null;
+        }
+    }
+
+    // Restarts monitoring when the user grants the permission (e.g. in the site settings), without a page reload.
+    private resumeMonitoringOnceGranted(permission: PermissionStatus) {
+        this.resumeOnGrant?.abort();
+        const resumeOnGrant = new AbortController();
+        this.resumeOnGrant = resumeOnGrant;
+        permission.addEventListener(
+            'change',
+            () => {
+                if (permission.state !== 'granted') {
+                    return;
+                }
+                resumeOnGrant.abort();
+                this.remoteDesktopService.setOnRemoteClipboardChanged(this.onRemoteClipboardChangedAutoMode.bind(this));
+                this.scheduleOnMonitorClipboardUpdate();
+            },
+            { signal: resumeOnGrant.signal },
+        );
     }
 
     // Firefox v126 and below does not support `navigator.clipboard.read` and `navigator.clipboard.write`.

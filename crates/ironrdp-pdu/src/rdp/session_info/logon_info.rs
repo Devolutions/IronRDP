@@ -37,17 +37,23 @@ impl Encode for LogonInfoVersion1 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
+        let (domain_name_size, user_name_size) = self.logon_info.encoded_name_sizes();
+        if DOMAIN_NAME_SIZE_V1 < domain_name_size {
+            return Err(invalid_field_err!("domainNameSize", "domain name is too long", in: dst));
+        }
+        if USER_NAME_SIZE_V1 < user_name_size {
+            return Err(invalid_field_err!("userNameSize", "user name is too long", in: dst));
+        }
+
         let mut domain_name_buffer = utils::to_utf16_bytes(self.logon_info.domain_name.as_ref());
         domain_name_buffer.resize(DOMAIN_NAME_SIZE_V1 - 2, 0);
         let mut user_name_buffer = utils::to_utf16_bytes(self.logon_info.user_name.as_ref());
         user_name_buffer.resize(USER_NAME_SIZE_V1 - 2, 0);
 
-        dst.write_u32(cast_length!(
-            "domainNameSize",
-            (self.logon_info.domain_name.len() + 1) * 2, in: dst)?);
+        dst.write_u32(cast_length!("domainNameSize", domain_name_size, in: dst)?);
         dst.write_slice(domain_name_buffer.as_ref());
         dst.write_u16(0); // UTF-16 null terminator
-        dst.write_u32(cast_length!("userNameSize", (self.logon_info.user_name.len() + 1) * 2, in: dst)?);
+        dst.write_u32(cast_length!("userNameSize", user_name_size, in: dst)?);
         dst.write_slice(user_name_buffer.as_ref());
         dst.write_u16(0); // UTF-16 null terminator
         dst.write_u32(self.logon_info.session_id);
@@ -111,13 +117,20 @@ impl Encode for LogonInfoVersion2 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
+        // MS-RDPBCGR 2.2.10.1.1.2 sets no limit, but this crate's decoder and FreeRDP's both use the Version 1 sizes.
+        let (domain_name_size, user_name_size) = self.logon_info.encoded_name_sizes();
+        if DOMAIN_NAME_SIZE_V2 < domain_name_size {
+            return Err(invalid_field_err!("domainNameSize", "domain name is too long", in: dst));
+        }
+        if USER_NAME_SIZE_V2 < user_name_size {
+            return Err(invalid_field_err!("userNameSize", "user name is too long", in: dst));
+        }
+
         dst.write_u16(SAVE_SESSION_PDU_VERSION_ONE);
         dst.write_u32(u32::try_from(LOGON_INFO_V2_SIZE).expect("LOGON_INFO_V2_SIZE fits into u32"));
         dst.write_u32(self.logon_info.session_id);
-        dst.write_u32(cast_length!(
-            "domainNameSize",
-            (self.logon_info.domain_name.len() + 1) * 2, in: dst)?);
-        dst.write_u32(cast_length!("userNameSize", (self.logon_info.user_name.len() + 1) * 2, in: dst)?);
+        dst.write_u32(cast_length!("domainNameSize", domain_name_size, in: dst)?);
+        dst.write_u32(cast_length!("userNameSize", user_name_size, in: dst)?);
         write_padding!(dst, LOGON_INFO_V2_PADDING_SIZE);
 
         utils::write_string_to_cursor(
@@ -141,7 +154,9 @@ impl Encode for LogonInfoVersion2 {
     }
 
     fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE + (self.logon_info.domain_name.len() + 1) * 2 + (self.logon_info.user_name.len() + 1) * 2
+        let (domain_name_size, user_name_size) = self.logon_info.encoded_name_sizes();
+
+        Self::FIXED_PART_SIZE + domain_name_size + user_name_size
     }
 }
 
@@ -194,4 +209,14 @@ pub struct LogonInfo {
     pub session_id: u32,
     pub user_name: String,
     pub domain_name: String,
+}
+
+impl LogonInfo {
+    /// Returns `cbDomain` and `cbUserName`, which count UTF-16 bytes and the null terminator.
+    fn encoded_name_sizes(&self) -> (usize, usize) {
+        (
+            utils::encoded_str_len(&self.domain_name, utils::CharacterSet::Unicode, true),
+            utils::encoded_str_len(&self.user_name, utils::CharacterSet::Unicode, true),
+        )
+    }
 }

@@ -562,6 +562,10 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::WaitFrame { .. } => Response::typed_error(
+            AgentErrorCategory::Unavailable,
+            "frame waits are unavailable through ActiveX",
+        ),
         Request::RailStatus | Request::RailEvents { .. } | Request::RailWait { .. } | Request::RailExecute(_) => {
             Response::typed_error(
                 AgentErrorCategory::Unavailable,
@@ -588,6 +592,7 @@ async fn handle_request(shared: &Arc<Shared>, dispatcher: isize, request: Reques
             })
             .await
         }
+        Request::Logoff => return ConnectionResponse::Single(logoff(shared).await),
         Request::NowCapabilities => return ConnectionResponse::Single(now_capabilities(shared).await),
         Request::NowRun { command, directory } => {
             return ConnectionResponse::Single(now_run(shared, command, directory).await);
@@ -662,6 +667,7 @@ fn status(shared: &Shared) -> Response {
         message: live.error.clone(),
         credentials_loaded: false,
         untrusted_certificate: None,
+        frame_number: None,
     }))
 }
 
@@ -726,6 +732,17 @@ async fn now_capabilities(shared: &Shared) -> Response {
     };
     match operations.capabilities().await {
         Ok(capabilities) => Response::Ok(Payload::NowCapabilities(capabilities)),
+        Err(error) => Response::Err(error),
+    }
+}
+
+async fn logoff(shared: &Shared) -> Response {
+    let operations = match operations(shared) {
+        Ok(operations) => operations,
+        Err(response) => return response,
+    };
+    match operations.session_logoff().await {
+        Ok(()) => Response::ok(),
         Err(error) => Response::Err(error),
     }
 }
@@ -1036,6 +1053,27 @@ mod tests {
         };
         assert_eq!(error.category, AgentErrorCategory::Unavailable);
         assert_eq!(error.message, "RAIL audit endpoints are unavailable through ActiveX");
+    }
+
+    // oracle: mutant an ActiveX host that accepts a frame wait, or answers it through another arm
+    #[tokio::test]
+    async fn frame_wait_is_explicitly_unavailable() {
+        let rpc = rpc();
+
+        let ConnectionResponse::Single(Response::Err(error)) = handle_request(
+            &rpc.shared,
+            0,
+            Request::WaitFrame {
+                after_frame: 0,
+                timeout_ms: 0,
+            },
+        )
+        .await
+        else {
+            panic!("frame waits must be unavailable through ActiveX");
+        };
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
+        assert!(error.message.contains("frame waits"), "{}", error.message);
     }
 
     #[tokio::test]

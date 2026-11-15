@@ -78,8 +78,19 @@ enum Command {
     Cert(CertCommand),
     /// Disconnect the current RDP session, optionally checking the server first.
     Disconnect(DisconnectArgs),
+    /// Log the user off the remote session through the NOW agent, ending the session on the host.
+    Logoff(LogoffArgs),
     /// Report the current session status.
     Status,
+    /// Wait without polling for a frame newer than one already seen, then report the session status.
+    WaitFrame {
+        /// The `frame: N` number from a status read before the action being waited on, or 0 for the first frame.
+        #[arg(long)]
+        after_frame: u64,
+        /// Maximum wait time in milliseconds, capped at 60,000.
+        #[arg(long, default_value_t = 30_000)]
+        timeout_ms: u32,
+    },
     /// Query the live session properties.
     QueryProps(QueryPropsArgs),
     /// Print the RDP session's captured log lines (from the daemon's in-memory ring buffer).
@@ -266,6 +277,8 @@ enum SessionCommand {
     List,
     /// Disconnect the current RDP session without stopping the daemon.
     Disconnect(DisconnectArgs),
+    /// Log the user off the remote session through the NOW agent, ending the session on the host.
+    Logoff(LogoffArgs),
 }
 
 #[derive(Args, Debug)]
@@ -273,6 +286,13 @@ struct DisconnectArgs {
     /// Disconnect only if the current session belongs to this host[:port].
     #[arg(long)]
     server: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct LogoffArgs {
+    /// Seconds to wait for the host to end the session after the logoff request.
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=3600))]
+    timeout_secs: u64,
 }
 
 #[derive(Args, Debug)]
@@ -1086,6 +1106,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             return match command {
                 SessionCommand::List => list_sessions(&endpoint).await,
                 SessionCommand::Disconnect(args) => disconnect_session(&endpoint, args, cli.backend).await,
+                SessionCommand::Logoff(args) => logoff_session(&endpoint, args).await,
             };
         }
         Command::DaemonChild { bootstrap } => {
@@ -1197,7 +1218,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             return run_sandbox_command(args);
         }
         Command::Disconnect(args) => return disconnect_session(&endpoint, args, cli.backend).await,
+        Command::Logoff(args) => return logoff_session(&endpoint, args).await,
         Command::Status => Request::Status,
+        Command::WaitFrame {
+            after_frame,
+            timeout_ms,
+        } => Request::WaitFrame {
+            after_frame,
+            timeout_ms,
+        },
         Command::QueryProps(args) => Request::QueryProps {
             filter: args
                 .filter
@@ -1478,6 +1507,12 @@ async fn disconnect_session(endpoint: &Endpoint, args: DisconnectArgs, backend: 
     }
     crate::daemon_lifecycle::disconnect_session(endpoint, args.server).await?;
     println!("session disconnected; daemon remains running");
+    Ok(())
+}
+
+async fn logoff_session(endpoint: &Endpoint, args: LogoffArgs) -> anyhow::Result<()> {
+    crate::daemon_lifecycle::logoff_session(endpoint, core::time::Duration::from_secs(args.timeout_secs)).await?;
+    println!("user logged off; daemon remains running");
     Ok(())
 }
 
@@ -2572,6 +2607,9 @@ fn print_payload(payload: Payload) {
             }
             if let (Some(width), Some(height)) = (status.width, status.height) {
                 println!("resolution: {width}x{height}");
+            }
+            if let Some(frame_number) = status.frame_number {
+                println!("frame: {frame_number}");
             }
             if let Some(message) = status.message {
                 println!("detail: {message}");

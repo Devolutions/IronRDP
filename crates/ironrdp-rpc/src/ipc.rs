@@ -442,6 +442,11 @@ pub enum Request {
     Disconnect,
     /// Disconnect only if the active session belongs to `server` (`host[:port]`).
     DisconnectMatching { server: String },
+    /// Ask the NOW agent inside the remote session to log the user off.
+    ///
+    /// `Ok` means the request was written to the NOW channel. The NOW logoff message has no
+    /// response, so the caller confirms the logoff by observing the end of the RDP session.
+    Logoff,
     /// Shut down the daemon after its reply has been written.
     DaemonStop,
     /// Query the current session status.
@@ -455,6 +460,12 @@ pub enum Request {
     },
     /// Capture the most recent frame (cursor composited in) as a PNG.
     Screenshot,
+    /// Wait for a frame newer than `after_frame` and reply with the session status.
+    ///
+    /// The reply is an error when the session ends or `timeout_ms` elapses first.
+    /// The caller takes `after_frame` from a status it read before the action whose result it waits for.
+    /// A frame that arrived in between then satisfies the wait at once, where a number read on arrival would miss it.
+    WaitFrame { after_frame: u64, timeout_ms: u32 },
     /// Move the mouse pointer to an absolute position.
     MouseMove { x: u16, y: u16 },
     /// Press or release a mouse button.
@@ -580,6 +591,7 @@ impl fmt::Debug for Request {
             Self::DisconnectMatching { server } => {
                 f.debug_struct("DisconnectMatching").field("server", server).finish()
             }
+            Self::Logoff => f.write_str("Logoff"),
             Self::DaemonStop => f.write_str("DaemonStop"),
             Self::Status => f.write_str("Status"),
             Self::QueryProps { filter } => f.debug_struct("QueryProps").field("filter", filter).finish(),
@@ -589,6 +601,14 @@ impl fmt::Debug for Request {
                 .field("last", last)
                 .finish(),
             Self::Screenshot => f.write_str("Screenshot"),
+            Self::WaitFrame {
+                after_frame,
+                timeout_ms,
+            } => f
+                .debug_struct("WaitFrame")
+                .field("after_frame", after_frame)
+                .field("timeout_ms", timeout_ms)
+                .finish(),
             Self::MouseMove { x, y } => f.debug_struct("MouseMove").field("x", x).field("y", y).finish(),
             Self::MouseButton { button, pressed } => f
                 .debug_struct("MouseButton")
@@ -1300,6 +1320,11 @@ pub struct StatusInfo {
     /// The server certificate that failed strict validation and is not trusted, when that is why the
     /// session failed. Interactive callers can offer to trust it and reconnect.
     pub untrusted_certificate: Option<Box<UntrustedCertificate>>,
+    /// Number of the most recent frame, counted from 1 within the session, if any.
+    ///
+    /// It grows by one with every frame the daemon receives, so replies with the same number describe the same picture.
+    /// [`Request::WaitFrame`] takes it as `after_frame`, and `0` when there is none yet.
+    pub frame_number: Option<u64>,
 }
 
 /// A server certificate rejected by strict validation.
@@ -1631,6 +1656,7 @@ impl Encode for StatusInfo {
             write_string(dst, &certificate.sha256)?;
             write_string(dst, &certificate.reason)?;
         }
+        write_opt_u64(dst, self.frame_number)?;
         Ok(())
     }
 
@@ -1649,6 +1675,7 @@ impl Encode for StatusInfo {
             + self.untrusted_certificate.as_ref().map_or(0, |certificate| {
                 string_size(&certificate.endpoint) + string_size(&certificate.sha256) + string_size(&certificate.reason)
             })
+            + opt_u64_size(self.frame_number)
     }
 }
 
@@ -1672,6 +1699,8 @@ impl Decode<'_> for StatusInfo {
         } else {
             None
         };
+        // A reply from a daemon that predates frame numbers ends here.
+        let frame_number = if src.is_empty() { None } else { read_opt_u64(src)? };
         Ok(Self {
             state,
             destination,
@@ -1680,6 +1709,7 @@ impl Decode<'_> for StatusInfo {
             message,
             credentials_loaded,
             untrusted_certificate,
+            frame_number,
         })
     }
 }
@@ -2402,6 +2432,7 @@ impl Encode for Request {
                 dst.write_u8(39);
                 write_string(dst, server)?;
             }
+            Self::Logoff => dst.write_u8(41),
             Self::DaemonStop => dst.write_u8(38),
             Self::Status => dst.write_u8(2),
             Self::QueryProps { filter } => {
@@ -2426,6 +2457,15 @@ impl Encode for Request {
                 }
             }
             Self::Screenshot => dst.write_u8(5),
+            Self::WaitFrame {
+                after_frame,
+                timeout_ms,
+            } => {
+                // Tag 42: after Logoff (41).
+                dst.write_u8(42);
+                dst.write_u64(*after_frame);
+                dst.write_u32(*timeout_ms);
+            }
             Self::MouseMove { x, y } => {
                 dst.write_u8(6);
                 dst.write_u16(*x);
@@ -2618,6 +2658,7 @@ impl Encode for Request {
                     propertyset::size(properties) + opt_string_size(log_directive.as_deref())
                 }
                 Self::Disconnect
+                | Self::Logoff
                 | Self::DaemonStop
                 | Self::Status
                 | Self::Screenshot
@@ -2663,6 +2704,7 @@ impl Encode for Request {
                 Self::RailEvents { after_sequence } => opt_u64_size(*after_sequence),
                 Self::RailExecute(request) => request.size(),
                 Self::RailWait { after_sequence, .. } => opt_u64_size(*after_sequence) + 4 /* timeout_ms */,
+                Self::WaitFrame { .. } => 8 /* after_frame */ + 4 /* timeout_ms */,
                 Self::Pen { frames, .. } => {
                     4 /* encode_time */ + 2 /* frame_count */
                         + frames
@@ -2703,6 +2745,7 @@ impl Decode<'_> for Request {
             39 => Ok(Self::DisconnectMatching {
                 server: read_string(src)?,
             }),
+            41 => Ok(Self::Logoff),
             38 => Ok(Self::DaemonStop),
             2 => Ok(Self::Status),
             3 => {
@@ -2728,6 +2771,13 @@ impl Decode<'_> for Request {
                 Ok(Self::QueryLogs { substring, last })
             }
             5 => Ok(Self::Screenshot),
+            42 => {
+                ensure_size!(in: src, size: 8 /* after_frame */ + 4 /* timeout_ms */);
+                Ok(Self::WaitFrame {
+                    after_frame: src.read_u64(),
+                    timeout_ms: src.read_u32(),
+                })
+            }
             6 => {
                 ensure_size!(in: src, size: 4);
                 let x = src.read_u16();
@@ -3339,6 +3389,52 @@ mod tests {
         assert_eq!(decode::<Request>(&encoded).expect("decode"), request);
     }
 
+    // oracle: mutant a Logoff encoding that writes a different tag or does not round-trip
+    #[test]
+    fn logoff_encodes_as_request_tag_41_and_round_trips() {
+        let encoded = encode_vec(&Request::Logoff).expect("encode");
+        assert_eq!(encoded, [41]);
+        assert_eq!(decode::<Request>(&encoded).expect("decode"), Request::Logoff);
+    }
+
+    // oracle: mutant a WaitFrame encoding that reuses a tag, drops a field, or does not round-trip
+    #[test]
+    fn wait_frame_encodes_as_request_tag_42_and_round_trips() {
+        let request = Request::WaitFrame {
+            after_frame: 7,
+            timeout_ms: 1_500,
+        };
+        let encoded = encode_vec(&request).expect("encode");
+        assert_eq!(encoded[0], 42);
+        assert_eq!(decode::<Request>(&encoded).expect("decode"), request);
+    }
+
+    // oracle: mutant a status decoder that requires the frame number, rejecting an older daemon's reply
+    #[test]
+    fn status_decodes_legacy_reply_without_frame_number() {
+        let status = super::StatusInfo {
+            state: super::ConnState::Connected,
+            destination: Some("host.example:3389".to_owned()),
+            width: Some(1920),
+            height: Some(1080),
+            message: None,
+            credentials_loaded: false,
+            untrusted_certificate: None,
+            frame_number: Some(7),
+        };
+        let encoded = encode_vec(&status).expect("encode status");
+        assert_eq!(decode::<super::StatusInfo>(&encoded).expect("decode status"), status);
+
+        let legacy_len = encoded.len() - 1 /* presence */ - 8 /* frame_number */;
+        assert_eq!(
+            decode::<super::StatusInfo>(&encoded[..legacy_len]).expect("decode legacy status"),
+            super::StatusInfo {
+                frame_number: None,
+                ..status
+            }
+        );
+    }
+
     #[test]
     fn key_batch_round_trips_and_rejects_invalid_counts() {
         let request = Request::KeyBatch {
@@ -3374,6 +3470,7 @@ mod tests {
         assert!(decode::<Request>(&[40, 1, 0, 0x1D]).is_err());
     }
 
+    // oracle: mutant a status decoder that requires the certificate presence byte, rejecting an older daemon's reply
     #[test]
     fn status_decodes_legacy_reply_without_certificate_presence() {
         let status = super::StatusInfo {
@@ -3384,9 +3481,11 @@ mod tests {
             message: None,
             credentials_loaded: false,
             untrusted_certificate: None,
+            frame_number: None,
         };
         let mut legacy = encode_vec(&status).expect("encode status");
-        assert_eq!(legacy.pop(), Some(0));
+        assert_eq!(legacy.pop(), Some(0), "frame number presence");
+        assert_eq!(legacy.pop(), Some(0), "certificate presence");
         assert_eq!(
             decode::<super::StatusInfo>(&legacy).expect("decode legacy status"),
             status

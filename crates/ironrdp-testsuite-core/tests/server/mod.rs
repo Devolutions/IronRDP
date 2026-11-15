@@ -10,6 +10,7 @@ mod fast_path;
 mod finalize_timeout;
 mod max_request_size;
 mod multitransport_finalize;
+mod negotiation_timeout;
 mod pointer_cache_index;
 mod pointer_mask;
 mod pointer_updates;

@@ -137,6 +137,7 @@ fn specification_sample_is_decoded_with_media_foundation_and_placed_at_its_geome
     assert_eq!(frame.data().len(), 480 * 256 * 4);
     // A second key frame decodes on the same stream.
     decoder.decode(&VIDEO_DATA_EXAMPLE[40..]).unwrap();
+    drop(decoder);
 
     present_specification_sample(Box::new(|| {
         let decoder: Box<dyn H264Decoder> = Box::new(MediaFoundationH264Decoder::new(YuvMatrix::Bt601Limited).ok()?);

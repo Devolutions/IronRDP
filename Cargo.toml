@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/*",
+  "server/termsrv/crates/*",
   "benches",
   "benches/rfx-decode-fixtures",
   "benches/rfx-decode-wasm",
