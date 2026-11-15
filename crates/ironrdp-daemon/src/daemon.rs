@@ -4474,6 +4474,7 @@ mod tests {
             Arc::clone(live),
             None,
             Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
             Arc::new(AtomicU64::new(2)),
         )
         .await;
