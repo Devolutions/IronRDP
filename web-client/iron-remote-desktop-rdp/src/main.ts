@@ -112,6 +112,46 @@ export function colorDepth(bitsPerPixel: 15 | 16 | 24 | 32): Extension {
     return new Extension('color_depth', bitsPerPixel);
 }
 
+/** One monitor in desktop coordinates; `right` and `bottom` are inclusive. */
+export interface MonitorRect {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    primary: boolean;
+}
+
+/**
+ * Request a session spanning up to 16 monitors (MS-RDPBCGR 2.2.1.3.6).
+ * Exactly one monitor must be primary at (0, 0), and the union must be between 200 and 32,766 pixels in each dimension.
+ * A valid layout sets the requested desktop size to the monitor union, overriding any configured desktop size.
+ * Invalid layouts are logged and ignored.
+ */
+export function monitorLayout(monitors: MonitorRect[]): Extension {
+    return new Extension(
+        'monitor_layout',
+        monitors.flatMap((m) => [m.left, m.top, m.right, m.bottom, m.primary ? 1 : 0]),
+    );
+}
+
+/** Reports the server's layout at startup and when it changes, exposing only the primary flag. */
+export function monitorLayoutCallback(callback: (monitors: MonitorRect[]) => void): Extension {
+    const unpack = (values: number[]) => {
+        const monitors: MonitorRect[] = [];
+        for (let i = 0; i + 4 < values.length; i += 5) {
+            monitors.push({
+                left: values[i],
+                top: values[i + 1],
+                right: values[i + 2],
+                bottom: values[i + 3],
+                primary: (values[i + 4] & 1) !== 0,
+            });
+        }
+        callback(monitors);
+    };
+    return new Extension('monitor_layout_callback', unpack);
+}
+
 // --- RDCleanPath ---
 
 export { RDCleanPathErrorCode } from './RDCleanPathErrorCode';
