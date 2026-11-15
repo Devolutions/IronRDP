@@ -2086,6 +2086,7 @@ fn decode_io_completion_rejects_set_volume_information() {
 
 #[derive(Debug, Default)]
 struct TrackingServerBackend {
+    max_message_size: Option<usize>,
     accepted: Vec<u32>,
     rejected_device_ids: Vec<u32>,
     reject_removal: bool,
@@ -2097,6 +2098,10 @@ struct TrackingServerBackend {
 impl_as_any!(TrackingServerBackend);
 
 impl RdpdrServerBackend for TrackingServerBackend {
+    fn max_message_size(&self) -> Option<usize> {
+        self.max_message_size
+    }
+
     fn on_device_announce(&mut self, devices: &[DeviceAnnounceHeader]) -> Vec<(u32, bool)> {
         devices
             .iter()
@@ -2376,7 +2381,20 @@ fn duplicate_client_announce_reply_while_active_reinitializes() {
     );
 }
 
-// oracle: mutant retaining backend devices after the protocol forgets them.
+// oracle: mutant ignoring the backend's inbound message size limit on the static channel processor.
+#[test]
+fn server_forwards_backend_max_message_size() {
+    let default_server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
+    assert_eq!(default_server.max_message_size(), None);
+
+    let bounded_server = RdpdrServer::new(Box::new(TrackingServerBackend {
+        max_message_size: Some(4096),
+        ..Default::default()
+    }));
+    assert_eq!(bounded_server.max_message_size(), Some(4096));
+}
+
+// oracle: mutant retaining backend devices after the protocol forgets them, or resetting state before decoding the reply.
 #[test]
 fn server_reinitialization_notifies_backend_of_forgotten_devices() {
     let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
@@ -2400,6 +2418,16 @@ fn server_reinitialization_notifies_backend_of_forgotten_devices() {
         kind: VersionAndIdPduKind::ClientAnnounceReply,
     }))
     .unwrap();
+    assert!(server.process(&duplicate[..4 /* SharedHeader */]).is_err());
+    assert!(
+        server
+            .downcast_backend::<TrackingServerBackend>()
+            .unwrap()
+            .removed
+            .is_empty()
+    );
+    assert!(server.drive_close(42, 1).is_ok());
+
     server.process(&duplicate).unwrap();
     assert_eq!(
         server.downcast_backend::<TrackingServerBackend>().unwrap().removed,
