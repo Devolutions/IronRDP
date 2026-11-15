@@ -253,6 +253,8 @@ pub struct ConnectionInfo {
     pub device_scale_factor: Option<u32>,
     /// See [`ironrdp_acceptor::AcceptorResult::performance_flags`].
     pub performance_flags: rdp::client_info::PerformanceFlags,
+    /// See [`ironrdp_acceptor::AcceptorResult::timezone_info`].
+    pub timezone_info: Option<rdp::client_info::TimezoneInfo>,
     /// The client came back with an auto-reconnect cookie the server
     /// verified, in place of its credentials.
     pub auto_reconnect: bool,
@@ -300,6 +302,7 @@ impl ConnectionInfo {
             desktop_scale_factor: None,
             device_scale_factor: None,
             performance_flags: rdp::client_info::PerformanceFlags::empty(),
+            timezone_info: None,
             auto_reconnect: false,
             client_monitors: Vec::new(),
             routing_token: None,
@@ -6042,6 +6045,7 @@ impl RdpServer {
                     desktop_scale_factor: result.desktop_scale_factor,
                     device_scale_factor: result.device_scale_factor,
                     performance_flags: result.performance_flags,
+                    timezone_info: result.timezone_info.clone(),
                     auto_reconnect: is_auto_reconnect,
                     client_monitors: result.client_monitors,
                     routing_token: result.routing_token.clone(),
