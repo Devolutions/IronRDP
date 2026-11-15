@@ -167,6 +167,7 @@ fn response_validation() {
             file_index: 0,
             flags: FileContentsFlags::SIZE,
             sent_at_ms: 0,
+            clip_data_id: None,
         },
     );
 
@@ -230,6 +231,7 @@ fn error_response_clears_tracking() {
             file_index: 0,
             flags: FileContentsFlags::SIZE,
             sent_at_ms: 0,
+            clip_data_id: None,
         },
     );
 
@@ -263,6 +265,7 @@ fn malformed_size_response_converted_to_error() {
             file_index: 0,
             flags: FileContentsFlags::SIZE,
             sent_at_ms: 0,
+            clip_data_id: None,
         },
     );
 
@@ -304,6 +307,7 @@ fn error_response_data_sanitized() {
             file_index: 0,
             flags: FileContentsFlags::RANGE,
             sent_at_ms: 0,
+            clip_data_id: None,
         },
     );
 
