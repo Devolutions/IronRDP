@@ -5,6 +5,8 @@
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use rstest::rstest;
+
 fn test_endpoint(name: &str) -> String {
     #[cfg(windows)]
     {
@@ -55,6 +57,52 @@ fn wait_for_daemon(endpoint: &str) {
     }
 
     panic!("daemon did not become ready");
+}
+
+fn run_session_info(name: &str, info: ironrdp_rpc::ipc::SessionInfo, args: &[&str]) -> std::process::Output {
+    use ironrdp_rpc::ipc::{Payload, Request, Response};
+    use ironrdp_rpc::transport::{self, Listener};
+
+    let endpoint = test_endpoint(name);
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    runtime.block_on(async {
+        let mut listener =
+            Listener::bind(&transport::endpoint_from_string(endpoint.clone())).expect("bind mock daemon");
+        let args = args.iter().map(|argument| (*argument).to_owned()).collect::<Vec<_>>();
+        let command = tokio::task::spawn_blocking(move || {
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            agent(&endpoint, &args)
+        });
+        let serve = async {
+            let mut stream = listener.accept().await.expect("accept session info request");
+            let request: Request = transport::read_message(&mut stream).await.expect("read request");
+            assert_eq!(request, Request::SessionInfo);
+            transport::write_message(&mut stream, &Response::Ok(Payload::SessionInfo(info)))
+                .await
+                .expect("send session info");
+            command.await.expect("run session info command")
+        };
+        tokio::time::timeout(Duration::from_secs(30), serve)
+            .await
+            .expect("session info command timeout")
+    })
+}
+
+fn run_session_info_without_active_session(name: &str, args: &[&str]) -> std::process::Output {
+    let endpoint = test_endpoint(name);
+    let mut daemon = spawn_daemon(&endpoint);
+    let result = std::panic::catch_unwind(|| {
+        wait_for_daemon(&endpoint);
+        agent(&endpoint, args)
+    });
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+
+    match result {
+        Ok(output) => output,
+        Err(error) => std::panic::resume_unwind(error),
+    }
 }
 
 #[test]
@@ -392,34 +440,26 @@ fn status_prints_the_frame_number() {
 
 // oracle: mutant a command line without `session info`, or a daemon that reports facts for a session it does not have
 #[test]
-fn session_info_reports_no_active_session() {
-    let endpoint = test_endpoint("session-info");
-    let mut daemon = spawn_daemon(&endpoint);
+fn session_info_reports_no_active_session_in_human_format() {
+    let output = run_session_info_without_active_session("session-info-no-session-human", &["session", "info"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("stderr");
+    assert!(stderr.contains("no active session"), "{stderr}");
+}
 
-    let result = std::panic::catch_unwind(|| {
-        wait_for_daemon(&endpoint);
-
-        let output = agent(&endpoint, &["session", "info"]);
-        assert!(!output.status.success());
-        let stderr = String::from_utf8(output.stderr).expect("stderr");
-        assert!(stderr.contains("no active session"), "{stderr}");
-
-        // A JSON caller gets the error as a document on stdout, as the `rail` commands give it.
-        let output = agent(&endpoint, &["session", "info", "--format", "json"]);
-        assert!(!output.status.success());
-        let stdout = String::from_utf8(output.stdout).expect("stdout");
-        assert_eq!(
-            stdout.trim_end(),
-            r#"{"category":"unavailable","message":"no active session","type":"error"}"#
-        );
-    });
-
-    let _ = daemon.kill();
-    let _ = daemon.wait();
-
-    if let Err(error) = result {
-        std::panic::resume_unwind(error);
-    }
+// oracle: mutant a command line without `session info`, or a daemon that reports facts for a session it does not have
+#[test]
+fn session_info_reports_no_active_session_in_json_format() {
+    let output = run_session_info_without_active_session(
+        "session-info-no-session-json",
+        &["session", "info", "--format", "json"],
+    );
+    assert!(!output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout");
+    assert_eq!(
+        stdout.trim_end(),
+        r#"{"category":"unavailable","message":"no active session","type":"error"}"#
+    );
 }
 
 // oracle: regression Devolutions/IronRDP#2437
@@ -499,95 +539,73 @@ fn reported_session() -> ironrdp_rpc::ipc::SessionInfo {
     }
 }
 
-// oracle: mutant a `session info` command that drops the daemon's reply or prints it in the other format
 // oracle: mutant a report that drops a fact, prints an absent one, or mislabels a monitor
+// oracle: mutant a report that labels a logon notification as an error
+#[rstest]
+#[case::reported_facts(
+    "session-info-human-reported",
+    reported_session(),
+    &[
+        "remote session id: 2",
+        "logon complete: true",
+        "network: average rtt 4 ms, base rtt 3 ms",
+        "monitor 0: 0,0 to 1919,1079 (primary)",
+        "monitor 1: -1280,0 to -1,1023",
+        "logon notification: type 0xfffffffe, data 0x00000003",
+    ],
+)]
+#[case::empty_facts(
+    "session-info-human-empty",
+    ironrdp_rpc::ipc::SessionInfo::default(),
+    &["logon complete: false"],
+)]
+fn session_info_prints_human_facts(
+    #[case] name: &str,
+    #[case] info: ironrdp_rpc::ipc::SessionInfo,
+    #[case] expected_lines: &[&str],
+) {
+    let output = run_session_info(name, info, &["session", "info"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), expected_lines);
+}
+
 // oracle: mutant a JSON document that omits an absent fact instead of writing null, or renames a field
-#[test]
-fn session_info_prints_what_the_daemon_reports() {
-    use ironrdp_rpc::ipc::{Payload, Request, Response, SessionInfo};
-    use ironrdp_rpc::transport::{self, Listener};
-
-    let endpoint = test_endpoint("session-info-facts");
-    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
-    let outputs = runtime.block_on(async {
-        let mut listener =
-            Listener::bind(&transport::endpoint_from_string(endpoint.clone())).expect("bind mock daemon");
-        let command = tokio::task::spawn_blocking(move || {
-            [
-                agent(&endpoint, &["session", "info"]),
-                agent(&endpoint, &["session", "info", "--format", "json"]),
-                agent(&endpoint, &["session", "info"]),
-                agent(&endpoint, &["session", "info", "--format", "json"]),
-            ]
-        });
-        // A stand-in daemon answers the commands' requests in turn: twice with every fact, then twice with none.
-        let serve = async {
-            let replies = [
-                reported_session(),
-                reported_session(),
-                SessionInfo::default(),
-                SessionInfo::default(),
-            ];
-            for info in replies {
-                let mut stream = listener.accept().await.expect("accept session info request");
-                let request: Request = transport::read_message(&mut stream).await.expect("read request");
-                assert_eq!(request, Request::SessionInfo);
-                transport::write_message(&mut stream, &Response::Ok(Payload::SessionInfo(info)))
-                    .await
-                    .expect("send session info");
-            }
-            command.await.expect("run session info commands")
-        };
-        tokio::time::timeout(Duration::from_secs(30), serve)
-            .await
-            .expect("session info commands timeout")
-    });
-    for output in &outputs {
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    }
-    let [human, json, empty_human, empty_json] = outputs;
-    let document = |output: &std::process::Output| -> serde_json::Value {
-        serde_json::from_slice(&output.stdout).expect("session info JSON")
-    };
-
-    let stdout = String::from_utf8_lossy(&human.stdout);
-    assert_eq!(
-        stdout.lines().collect::<Vec<_>>(),
-        [
-            "remote session id: 2",
-            "logon complete: true",
-            "network: average rtt 4 ms, base rtt 3 ms",
-            "monitor 0: 0,0 to 1919,1079 (primary)",
-            "monitor 1: -1280,0 to -1,1023",
-            "logon error: type 0xfffffffe, data 0x00000003",
-        ]
-    );
-    assert_eq!(
-        document(&json),
-        serde_json::json!({
-            "type": "session_info",
-            "remote_session_id": 2,
-            "logon_complete": true,
-            "network": { "base_rtt_ms": 3, "bandwidth_kbps": null, "average_rtt_ms": 4 },
-            "monitors": [
-                { "left": 0, "top": 0, "right": 1919, "bottom": 1079, "primary": true },
-                { "left": -1280, "top": 0, "right": -1, "bottom": 1023, "primary": false },
-            ],
-            "logon_error": { "notification_type": 4_294_967_294u32, "notification_data": 3 },
-        })
-    );
-
-    let stdout = String::from_utf8_lossy(&empty_human.stdout);
-    assert_eq!(stdout.lines().collect::<Vec<_>>(), ["logon complete: false"]);
-    assert_eq!(
-        document(&empty_json),
-        serde_json::json!({
-            "type": "session_info",
-            "remote_session_id": null,
-            "logon_complete": false,
-            "network": null,
-            "monitors": [],
-            "logon_error": null,
-        })
-    );
+#[rstest]
+#[case::reported_facts(
+    "session-info-json-reported",
+    reported_session(),
+    serde_json::json!({
+        "type": "session_info",
+        "remote_session_id": 2,
+        "logon_complete": true,
+        "network": { "base_rtt_ms": 3, "bandwidth_kbps": null, "average_rtt_ms": 4 },
+        "monitors": [
+            { "left": 0, "top": 0, "right": 1919, "bottom": 1079, "primary": true },
+            { "left": -1280, "top": 0, "right": -1, "bottom": 1023, "primary": false },
+        ],
+        "logon_error": { "notification_type": 4_294_967_294u32, "notification_data": 3 },
+    }),
+)]
+#[case::empty_facts(
+    "session-info-json-empty",
+    ironrdp_rpc::ipc::SessionInfo::default(),
+    serde_json::json!({
+        "type": "session_info",
+        "remote_session_id": null,
+        "logon_complete": false,
+        "network": null,
+        "monitors": [],
+        "logon_error": null,
+    }),
+)]
+fn session_info_prints_json_facts(
+    #[case] name: &str,
+    #[case] info: ironrdp_rpc::ipc::SessionInfo,
+    #[case] expected: serde_json::Value,
+) {
+    let output = run_session_info(name, info, &["session", "info", "--format", "json"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).expect("session info JSON");
+    assert_eq!(document, expected);
 }

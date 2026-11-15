@@ -67,6 +67,7 @@ libc = "0.2"
 
 [dev-dependencies]
 ironrdp-session = { path = "../ironrdp-session" }
+rstest.workspace = true
 
 [lints]
 workspace = true

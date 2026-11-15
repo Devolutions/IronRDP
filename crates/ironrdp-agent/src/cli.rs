@@ -1490,122 +1490,67 @@ async fn session_info(endpoint: &Endpoint, args: SessionInfoArgs) -> anyhow::Res
     };
     match args.format {
         OutputFormat::Human => print_payload(Payload::SessionInfo(info)),
-        OutputFormat::Json | OutputFormat::Ndjson => println!("{}", serde_json::to_string(&session_info_json(&info))?),
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            use ironrdp_rpc::ipc::{LogonErrorInfo, MonitorInfo, NetworkCharacteristicsInfo, SessionInfo};
+            use serde_json::json;
+
+            // Every type is destructured without `..`, so a field added to one fails to compile here until it's written.
+            let SessionInfo {
+                remote_session_id,
+                logon_complete,
+                network,
+                monitors,
+                logon_error,
+            } = info;
+            let network = network.map(
+                |NetworkCharacteristicsInfo {
+                     base_rtt_ms,
+                     bandwidth_kbps,
+                     average_rtt_ms,
+                 }| {
+                    json!({
+                        "base_rtt_ms": base_rtt_ms,
+                        "bandwidth_kbps": bandwidth_kbps,
+                        "average_rtt_ms": average_rtt_ms,
+                    })
+                },
+            );
+            let monitors = monitors
+                .into_iter()
+                .map(
+                    |MonitorInfo {
+                         left,
+                         top,
+                         right,
+                         bottom,
+                         primary,
+                     }| {
+                        json!({ "left": left, "top": top, "right": right, "bottom": bottom, "primary": primary })
+                    },
+                )
+                .collect::<Vec<_>>();
+            let logon_error = logon_error.map(
+                |LogonErrorInfo {
+                     notification_type,
+                     notification_data,
+                 }| {
+                    json!({ "notification_type": notification_type, "notification_data": notification_data })
+                },
+            );
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "session_info",
+                    "remote_session_id": remote_session_id,
+                    "logon_complete": logon_complete,
+                    "network": network,
+                    "monitors": monitors,
+                    "logon_error": logon_error,
+                }))?
+            );
+        }
     }
     Ok(())
-}
-
-fn session_info_lines(info: &ironrdp_rpc::ipc::SessionInfo) -> impl Iterator<Item = String> + '_ {
-    use ironrdp_rpc::ipc::{LogonErrorInfo, MonitorInfo, NetworkCharacteristicsInfo, SessionInfo};
-
-    // Every type is destructured without `..`, so a field added to one fails to compile here until it's printed.
-    let SessionInfo {
-        remote_session_id,
-        logon_complete,
-        network,
-        monitors,
-        logon_error,
-    } = info;
-    let session_id = remote_session_id.map(|session_id| format!("remote session id: {session_id}"));
-    let logon = format!("logon complete: {logon_complete}");
-    let network = network.as_ref().map(
-        |NetworkCharacteristicsInfo {
-             base_rtt_ms,
-             bandwidth_kbps,
-             average_rtt_ms,
-         }| {
-            let mut parts = vec![format!("average rtt {average_rtt_ms} ms")];
-            if let Some(base_rtt_ms) = base_rtt_ms {
-                parts.push(format!("base rtt {base_rtt_ms} ms"));
-            }
-            if let Some(bandwidth_kbps) = bandwidth_kbps {
-                parts.push(format!("bandwidth {bandwidth_kbps} kbps"));
-            }
-            format!("network: {}", parts.join(", "))
-        },
-    );
-    let monitors = monitors.iter().enumerate().map(
-        |(
-            index,
-            MonitorInfo {
-                left,
-                top,
-                right,
-                bottom,
-                primary,
-            },
-        )| {
-            let primary = if *primary { " (primary)" } else { "" };
-            format!("monitor {index}: {left},{top} to {right},{bottom}{primary}")
-        },
-    );
-    let logon_error = logon_error.as_ref().map(
-        |LogonErrorInfo {
-             notification_type,
-             notification_data,
-         }| { format!("logon error: type 0x{notification_type:08x}, data 0x{notification_data:08x}") },
-    );
-    session_id
-        .into_iter()
-        .chain(core::iter::once(logon))
-        .chain(network)
-        .chain(monitors)
-        .chain(logon_error)
-}
-
-fn session_info_json(info: &ironrdp_rpc::ipc::SessionInfo) -> serde_json::Value {
-    use ironrdp_rpc::ipc::{LogonErrorInfo, MonitorInfo, NetworkCharacteristicsInfo, SessionInfo};
-    use serde_json::json;
-
-    // Every type is destructured without `..`, so a field added to one fails to compile here until it's written.
-    let SessionInfo {
-        remote_session_id,
-        logon_complete,
-        network,
-        monitors,
-        logon_error,
-    } = info;
-    let network = network.as_ref().map(
-        |NetworkCharacteristicsInfo {
-             base_rtt_ms,
-             bandwidth_kbps,
-             average_rtt_ms,
-         }| {
-            json!({
-                "base_rtt_ms": base_rtt_ms,
-                "bandwidth_kbps": bandwidth_kbps,
-                "average_rtt_ms": average_rtt_ms,
-            })
-        },
-    );
-    let monitors = monitors
-        .iter()
-        .map(
-            |MonitorInfo {
-                 left,
-                 top,
-                 right,
-                 bottom,
-                 primary,
-             }| {
-                json!({ "left": left, "top": top, "right": right, "bottom": bottom, "primary": primary })
-            },
-        )
-        .collect::<Vec<_>>();
-    let logon_error = logon_error.as_ref().map(
-        |LogonErrorInfo {
-             notification_type,
-             notification_data,
-         }| { json!({ "notification_type": notification_type, "notification_data": notification_data }) },
-    );
-    json!({
-        "type": "session_info",
-        "remote_session_id": remote_session_id,
-        "logon_complete": logon_complete,
-        "network": network,
-        "monitors": monitors,
-        "logon_error": logon_error,
-    })
 }
 
 async fn list_sessions(endpoint: &Endpoint) -> anyhow::Result<()> {
@@ -2799,8 +2744,55 @@ fn print_payload(payload: Payload) {
             println!("RAIL handshake complete: {}", status.handshake_complete);
         }
         Payload::SessionInfo(info) => {
-            for line in session_info_lines(&info) {
-                println!("{line}");
+            use ironrdp_rpc::ipc::{LogonErrorInfo, MonitorInfo, NetworkCharacteristicsInfo, SessionInfo};
+
+            // Every type is destructured without `..`, so a field added to one fails to compile here until it's printed.
+            let SessionInfo {
+                remote_session_id,
+                logon_complete,
+                network,
+                monitors,
+                logon_error,
+            } = info;
+            if let Some(remote_session_id) = remote_session_id {
+                println!("remote session id: {remote_session_id}");
+            }
+            println!("logon complete: {logon_complete}");
+            if let Some(NetworkCharacteristicsInfo {
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms,
+            }) = network
+            {
+                let mut parts = vec![format!("average rtt {average_rtt_ms} ms")];
+                if let Some(base_rtt_ms) = base_rtt_ms {
+                    parts.push(format!("base rtt {base_rtt_ms} ms"));
+                }
+                if let Some(bandwidth_kbps) = bandwidth_kbps {
+                    parts.push(format!("bandwidth {bandwidth_kbps} kbps"));
+                }
+                println!("network: {}", parts.join(", "));
+            }
+            for (
+                index,
+                MonitorInfo {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    primary,
+                },
+            ) in monitors.into_iter().enumerate()
+            {
+                let primary = if primary { " (primary)" } else { "" };
+                println!("monitor {index}: {left},{top} to {right},{bottom}{primary}");
+            }
+            if let Some(LogonErrorInfo {
+                notification_type,
+                notification_data,
+            }) = logon_error
+            {
+                println!("logon notification: type 0x{notification_type:08x}, data 0x{notification_data:08x}");
             }
         }
         Payload::RailEvents(events) => {
