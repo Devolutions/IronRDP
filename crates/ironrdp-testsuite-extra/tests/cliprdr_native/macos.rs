@@ -5,6 +5,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
+use ironrdp_cliprdr::pdu::{FileContentsFlags, FileContentsRequest};
 use ironrdp_cliprdr_native::macos_test_support::ClipboardHarness;
 use ironrdp_viewer::app::test_clipboard_deadline;
 
@@ -93,6 +94,29 @@ fn folder_at_entry_limit_is_advertised_completely() {
     assert!(matches!(
         messages.try_recv().expect("file offer"),
         ClipboardMessage::SendInitiateFileCopy(files) if files.len() == FILE_LIMIT
+    ));
+}
+
+#[test]
+fn unknown_lock_does_not_read_current_local_files() {
+    // oracle: MS-RDPECLIP 3.1.5.3.2; a lock identifies the retained file stream data.
+    let root = TestDir::new("unknown-lock");
+    let path = root.0.join("file");
+    fs::write(&path, b"current").expect("create file");
+    let (mut clipboard, messages) = clipboard();
+    assert!(clipboard.advertise_files(&[path]));
+    let _ = messages.try_recv().expect("file offer");
+    clipboard.request_local_file(FileContentsRequest {
+        stream_id: 1,
+        index: 0,
+        flags: FileContentsFlags::RANGE,
+        position: 0,
+        requested_size: 7,
+        data_id: Some(123),
+    });
+    assert!(matches!(
+        messages.try_recv().expect("file response"),
+        ClipboardMessage::SendFileContentsResponse(response) if response.is_error()
     ));
 }
 

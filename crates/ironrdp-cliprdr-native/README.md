@@ -29,6 +29,7 @@ directions.
   the backend sends `RANGE` requests through
   `ClipboardMessage::SendFileContentsRequest` and writes the responses into the
   placeholder. Later reads use the completed file.
+  Uncoordinated reads can see incomplete sparse data.
 - `NSPasteboard`, presenter registration, and `MacClipboard` destruction are
   main-thread operations. Coordinated staging deletes run on a dedicated
   cleanup thread. Create the bridge and call `poll` from the embedder's main
@@ -61,6 +62,7 @@ directions.
   content this session published. Normal close waits up to five minutes for
   outstanding coordinated deletes; if that expires, or the process is
   force-terminated, the seven-day startup prune removes the remaining tree.
+  If removal fails, a reader can still copy incomplete sparse data.
 - Finder may show “Preparing to copy…” while a file read is in progress. The
   transfer is driven by Finder's read, so the dialog is not a byte-level
   progress indicator.

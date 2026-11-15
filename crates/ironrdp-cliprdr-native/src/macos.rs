@@ -481,11 +481,11 @@ impl MacClipboard {
 
     fn respond_local_file(&self, request: FileContentsRequest) {
         let index = usize::try_from(request.index).ok();
-        let files = request
-            .data_id
-            .and_then(|data_id| self.local_file_snapshots.get(&data_id))
-            .unwrap_or(&self.local_files);
-        let entry = index.and_then(|index| files.get(index));
+        let files = match request.data_id {
+            Some(data_id) => self.local_file_snapshots.get(&data_id),
+            None => Some(&self.local_files),
+        };
+        let entry = index.and_then(|index| files.and_then(|files| files.get(index)));
         let response = match entry {
             Some(entry) => read_local_file_contents(&request, entry),
             None => FileContentsResponse::new_error(request.stream_id).into_owned(),
@@ -1026,13 +1026,16 @@ impl MacClipboard {
             return;
         };
         file.state = LazyFileState::Failed;
-        let path = file.path.clone();
+        // UNTESTED: Remove incomplete placeholders before waking coordinated readers to reduce sparse reads.
+        // Check the removal and wakeup order when changing the failure path.
+        if let Err(error) = fs::remove_file(&file.path) {
+            if error.kind() != io::ErrorKind::NotFound {
+                warn!(%error, path = %file.path.display(), "Cannot remove an incomplete clipboard placeholder");
+            }
+        }
         for waiter in file.waiters.drain(..) {
             let _ = waiter.send(Err(reason.to_owned()));
         }
-        // Remove the placeholder before unregistering its presenter: a reader
-        // that starts in between must fail, not read a sparse incomplete file.
-        let _ = fs::remove_file(&path);
         if let Some(presenter) = offer.presenters.get_mut(file_index).and_then(Option::take) {
             // SAFETY: This registered presenter remains retained until after removal.
             unsafe {
@@ -1067,21 +1070,18 @@ impl MacClipboard {
             return;
         };
 
-        // Wake Finder reads before unregistering their presenters. A blocked
-        // reader is waiting for this reply, and removing its presenter first
-        // would make the reader and the cleanup wait on each other.
         for file in &mut offer.files {
-            for waiter in file.waiters.drain(..) {
-                let _ = waiter.send(Err("lazy clipboard offer changed".to_owned()));
-            }
-            // Incomplete placeholders must disappear before their presenter is
-            // removed, otherwise a newly started read could copy sparse zeroes.
+            // UNTESTED: Delete incomplete placeholders before waking readers, and wake them before unregistering.
+            // Check this order when changing offer retirement to avoid sparse reads and deadlocks.
             if file.state != LazyFileState::Complete {
                 if let Err(error) = fs::remove_file(&file.path) {
                     if error.kind() != io::ErrorKind::NotFound {
-                        warn!(%error, path = %file.path.display(), "cannot remove an incomplete clipboard placeholder");
+                        warn!(%error, path = %file.path.display(), "Cannot remove an incomplete clipboard placeholder");
                     }
                 }
+            }
+            for waiter in file.waiters.drain(..) {
+                let _ = waiter.send(Err("lazy clipboard offer changed".to_owned()));
             }
         }
         if drain_events {
@@ -2063,8 +2063,8 @@ fn cleanup_old_staging(root: &Path, max_age: Duration) {
 #[doc(hidden)]
 pub mod test_support {
     use super::{
-        ClipboardGeneralCapabilityFlags, ClipboardMessageProxy, FileDescriptor, HashMap, LazyFile, LazyFileState,
-        LazyOffer, MacClipboard, Path, PathBuf, PhantomData, Receiver, VecDeque, mpsc,
+        ClipboardGeneralCapabilityFlags, ClipboardMessageProxy, FileContentsRequest, FileDescriptor, HashMap, LazyFile,
+        LazyFileState, LazyOffer, MacClipboard, Path, PathBuf, PhantomData, Receiver, VecDeque, mpsc,
     };
 
     pub struct ClipboardHarness {
@@ -2137,6 +2137,10 @@ pub mod test_support {
 
         pub fn needs_poll(&self) -> bool {
             self.clipboard.needs_poll()
+        }
+
+        pub fn request_local_file(&self, request: FileContentsRequest) {
+            self.clipboard.respond_local_file(request);
         }
     }
 
