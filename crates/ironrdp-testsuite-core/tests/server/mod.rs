@@ -2,6 +2,7 @@ mod acceptor;
 mod activation;
 mod audio_redirection;
 mod autodetect;
+mod bitmap_update;
 mod connection_policy;
 mod credential_validator;
 mod dynamic_channel_factory;
