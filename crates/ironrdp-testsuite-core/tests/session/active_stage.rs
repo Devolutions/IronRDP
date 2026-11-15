@@ -554,7 +554,7 @@ fn composite_graphics_pipeline_takes_the_window_updates() {
 }
 
 // VirtualBox's VRDP sends a complete 8550-byte slow-path pointer update inside an 8565-byte frame while declaring `totalLength = 24`.
-// oracle: regression GlassHaven/Haven#422
+// oracle: regression #1536
 #[test]
 fn under_declared_vrdp_pointer_reaches_active_stage() {
     use std::borrow::Cow;
@@ -611,7 +611,7 @@ fn under_declared_vrdp_pointer_reaches_active_stage() {
 }
 
 // An under-declared VRDP pointer shape update preceded by another Share Control PDU in one Send Data Indication still decodes.
-// oracle: regression GlassHaven/Haven#422
+// oracle: regression #1536
 #[test]
 fn concatenated_pdu_before_under_declared_vrdp_pointer_reaches_active_stage() {
     use std::borrow::Cow;

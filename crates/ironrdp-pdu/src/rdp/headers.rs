@@ -28,10 +28,12 @@ pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;
 /// Under-declared `totalLength` sent by VirtualBox's VRDP server on slow-path pointer shape updates.
 ///
-/// Counts the "Share Control Header (TS_SHARECONTROLHEADER)" ([MS-RDPBCGR] 2.2.8.1.1.1.1),
-/// "Share Data Header (TS_SHAREDATAHEADER)" ([MS-RDPBCGR] 2.2.8.1.1.1.2), and 6-byte
-/// "Slow-Path Pointer Update (TS_POINTER_PDU)" ([MS-RDPBCGR] 2.2.9.1.1.4) prefix while omitting
-/// the pointer attribute body.
+/// Counts the "Share Control Header (TS_SHARECONTROLHEADER)" ([MS-RDPBCGR] 2.2.8.1.1.1.1) plus
+/// `shareId`, the "Share Data Header (TS_SHAREDATAHEADER)" ([MS-RDPBCGR] 2.2.8.1.1.1.2), the
+/// 4-byte "Slow-Path Pointer Update (TS_POINTER_PDU)" ([MS-RDPBCGR] 2.2.9.1.1.4) prefix, and the
+/// leading 2-byte `xorBpp` field of "New Pointer Update (TS_POINTERATTRIBUTE)" ([MS-RDPBCGR]
+/// 2.2.9.1.1.4.5), omitting the encapsulated "Color Pointer Update (TS_COLORPOINTERATTRIBUTE)"
+/// ([MS-RDPBCGR] 2.2.9.1.1.4.4).
 ///
 /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 pub const VRDP_POINTER_DECLARED_LENGTH: usize = ShareControlHeader::FIXED_PART_SIZE
@@ -234,6 +236,11 @@ pub enum IoChannelPdu {
 }
 
 /// Decodes a PDU received on the RDP IO channel from the user data of a Send Data Indication.
+///
+/// INVARIANT: [`ShareDataPdu::Pointer`] captures all remaining bytes of `ctx.user_data`, so
+/// returning `Ok(IoChannelPdu::Data(_))` for a [`ShareDataPdu::Pointer`] whose Share Control
+/// `totalLength` is smaller than `ctx.user_data.len()` guarantees that the entire `ctx.user_data`
+/// slice is a single validated slow-path pointer shape update rather than concatenated PDUs.
 pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> DecodeResult<IoChannelPdu> {
     // Multitransport PDUs use BasicSecurityHeader (flags:u16, flagsHi:u16) instead
     // of the ShareControlHeader (totalLength:u16, pduType:u16, ...) used by all
@@ -431,18 +438,13 @@ impl<'de> Decode<'de> for ShareControlHeader {
 
 fn decodes_as_complete_pointer_shape(data: &[u8]) -> bool {
     let mut pointer_src = ReadCursor::new(data);
-    slow_path::decode_slow_path_pointer(&mut pointer_src).is_ok_and(|pointer| {
-        let is_pointer_shape = matches!(
-            pointer,
-            PointerUpdateData::Color(_) | PointerUpdateData::New(_) | PointerUpdateData::Large(_)
-        );
-        // "Color Pointer Update (TS_COLORPOINTERATTRIBUTE)" ([MS-RDPBCGR] 2.2.9.1.1.4.4,
-        // encapsulated by `colorPtrAttr` in 2.2.9.1.1.4.5) and "Fast-Path Large Pointer Update
-        // (TS_FP_LARGEPOINTERATTRIBUTE)" ([MS-RDPBCGR] 2.2.9.1.2.1.11) each end with an optional
-        // 1-byte `pad` field ("An optional 8-bit, unsigned integer. Padding. Values in this field
-        // MUST be ignored.").
-        is_pointer_shape && pointer_src.len() <= 1
-    })
+    // "Color Pointer Update (TS_COLORPOINTERATTRIBUTE)" ([MS-RDPBCGR] 2.2.9.1.1.4.4,
+    // encapsulated by `colorPtrAttr` in 2.2.9.1.1.4.5) ends with an optional 1-byte `pad` field
+    // ("An optional 8-bit, unsigned integer. Padding. Values in this field MUST be ignored.").
+    matches!(
+        slow_path::decode_slow_path_pointer(&mut pointer_src),
+        Ok(PointerUpdateData::Color(_) | PointerUpdateData::New(_))
+    ) && pointer_src.len() <= 1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

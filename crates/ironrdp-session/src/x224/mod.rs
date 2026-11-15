@@ -336,14 +336,12 @@ impl Processor {
                 ));
             }
 
-            // `ShareControlHeader::decode` absorbs any trailing concatenated PDUs into
-            // `ShareDataPdu::Pointer`, which then fails `decodes_as_complete_pointer_shape`, so
-            // `decode_io_channel` only succeeds here when `&data[offset..]` is one complete VRDP
-            // pointer shape update.
             // VirtualBox's VRDP sends complete slow-path pointer shape updates with `totalLength`
             // set to `VRDP_POINTER_DECLARED_LENGTH`.
-            // Check for that validated pointer update before splitting `&data[offset..]` as
-            // concatenated PDUs.
+            // By `decode_io_channel`'s `ShareDataPdu::Pointer` invariant, any trailing
+            // concatenated PDUs are absorbed into the pointer payload and fail the complete-shape
+            // check, so `decode_io_channel` only succeeds here when `&data[offset..]` is one
+            // complete VRDP pointer shape update.
             if total_length == VRDP_POINTER_DECLARED_LENGTH
                 && offset + total_length < data.len()
                 && let Ok(IoChannelPdu::Data(ctx)) =

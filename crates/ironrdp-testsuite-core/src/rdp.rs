@@ -315,6 +315,34 @@ pub const CLIENT_DEMAND_ACTIVE_PDU_BUFFER: [u8; concat_arrays_size!(
 pub const VRDP_POINTER_WIDTH: u16 = 54;
 pub const VRDP_POINTER_HEIGHT: u16 = 38;
 
+/// Builds a Share Control Data PDU declaring `total_length` with raw `pdu_type` (`pduType2`) and
+/// `payload`.
+pub fn data_pdu_declaring(total_length: u16, pdu_type: u8, payload: &[u8]) -> Vec<u8> {
+    let declared_length = total_length.to_le_bytes();
+    let mut encoded = vec![
+        declared_length[0],
+        declared_length[1], // totalLength
+        0x17,
+        0x00, // pduType (Data PDU) + protocolVersion
+        0xEA,
+        0x03, // pduSource
+        0x01,
+        0x00,
+        0x00,
+        0x00, // shareId
+        0x00, // pad1
+        0x04, // streamId (Medium)
+        0x00,
+        0x00,     // uncompressedLength
+        pdu_type, // pduType2
+        0x00,     // compressedType
+        0x00,
+        0x00, // compressedLength
+    ];
+    encoded.extend_from_slice(payload);
+    encoded
+}
+
 /// Builds the 8550-byte slow-path `New` pointer update PDU for which VirtualBox's VRDP server
 /// declares `totalLength = 24`.
 ///
@@ -340,31 +368,11 @@ pub fn vrdp_pointer_pdu(hot_spot: ironrdp_pdu::pointer::Point16) -> Vec<u8> {
         },
     };
 
-    let declared_length = u16::try_from(VRDP_POINTER_DECLARED_LENGTH).unwrap().to_le_bytes();
-    let mut encoded = vec![
-        declared_length[0],
-        declared_length[1], // totalLength (under-declared)
-        0x17,
-        0x00, // pduType (Data PDU) + protocolVersion
-        0xEA,
-        0x03, // pduSource
-        0x01,
-        0x00,
-        0x00,
-        0x00, // shareId
-        0x00, // pad1
-        0x04, // streamId (Medium)
-        0x00,
-        0x00, // uncompressedLength
-        0x1B, // pduType2 (PDUTYPE2_POINTER)
-        0x00, // compressedType
-        0x00,
-        0x00, // compressedLength
-        0x08,
-        0x00, // messageType (TS_PTRMSGTYPE_POINTER)
-        0x00,
-        0x00, // pad2Octets
+    let mut payload = vec![
+        0x08, 0x00, // messageType (TS_PTRMSGTYPE_POINTER)
+        0x00, 0x00, // pad2Octets
     ];
-    encoded.extend(encode_vec(&pointer).unwrap());
-    encoded
+    payload.extend(encode_vec(&pointer).unwrap());
+
+    data_pdu_declaring(u16::try_from(VRDP_POINTER_DECLARED_LENGTH).unwrap(), 0x1B, &payload)
 }

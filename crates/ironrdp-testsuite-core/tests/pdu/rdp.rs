@@ -123,26 +123,8 @@ fn from_header_only_buffer_rejects_rdp_pdu_client_font_list() {
     assert!(decode::<ironrdp_pdu::rdp::headers::ShareControlHeader>(&CLIENT_FONT_LIST_BUFFER[..18]).is_err());
 }
 
-fn data_pdu_declaring(total_length: u16, pdu_type: u8, payload: &[u8]) -> Vec<u8> {
-    let mut encoded = vec![
-        0x00, 0x00, // totalLength
-        0x17, 0x00, // pduType (Data PDU) + protocolVersion
-        0xEA, 0x03, // pduSource
-        0xDD, 0xCC, 0xBB, 0xAA, // shareId
-        0x00, // pad1
-        0x04, // streamId (Medium)
-        0x00, 0x00,     // uncompressedLength
-        pdu_type, // pduType2
-        0x00,     // compressedType
-        0x00, 0x00, // compressedLength
-    ];
-    encoded[..2].copy_from_slice(&total_length.to_le_bytes());
-    encoded.extend_from_slice(payload);
-    encoded
-}
-
 // VirtualBox's VRDP declares `totalLength` as 24 on a complete 8550-byte slow-path pointer update.
-// oracle: regression GlassHaven/Haven#422
+// oracle: regression #1536
 #[test]
 fn from_buffer_with_under_declared_total_length_parses_rdp_pdu_pointer() {
     use ironrdp_core::ReadCursor;
@@ -175,6 +157,48 @@ fn from_buffer_with_under_declared_total_length_parses_rdp_pdu_pointer() {
                 && attr.color_pointer.xor_mask.len() == 8_208
                 && attr.color_pointer.and_mask.len() == 304
     ));
+    assert!(cursor.is_empty());
+}
+
+// MS-RDPBCGR 2.2.9.1.1.4 defines `TS_PTRMSGTYPE_COLOR` (0x0006) as the 24-bpp slow-path pointer
+// shape update (`TS_COLORPOINTERATTRIBUTE`).
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.4.4
+#[test]
+fn from_buffer_with_under_declared_total_length_parses_rdp_pdu_color_pointer() {
+    use ironrdp_core::ReadCursor;
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerUpdateData};
+    use ironrdp_pdu::rdp::headers::{
+        ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, VRDP_POINTER_DECLARED_LENGTH,
+    };
+
+    let color_pointer = ColorPointerAttribute {
+        cache_index: 1,
+        hot_spot: Point16 { x: 0, y: 0 },
+        width: 1,
+        height: 1,
+        xor_mask: &[0x10, 0x20, 0x30, 0x00],
+        and_mask: &[0x80, 0x00],
+    };
+    let mut payload = vec![
+        0x06, 0x00, // messageType (TS_PTRMSGTYPE_COLOR)
+        0x00, 0x00, // pad2Octets
+    ];
+    payload.extend(encode_vec(&color_pointer).unwrap());
+    let encoded = data_pdu_declaring(u16::try_from(VRDP_POINTER_DECLARED_LENGTH).unwrap(), 0x1B, &payload);
+
+    let decoded: ShareControlHeader =
+        decode(&encoded).expect("complete Color pointer update with under-declared totalLength");
+
+    let ShareControlPdu::Data(ShareDataHeader {
+        share_data_pdu: ShareDataPdu::Pointer(data),
+        ..
+    }) = decoded.share_control_pdu
+    else {
+        panic!("expected a Pointer Share Data PDU");
+    };
+    let mut cursor = ReadCursor::new(&data);
+    let pointer = ironrdp_pdu::slow_path::decode_slow_path_pointer(&mut cursor).expect("complete color pointer");
+    assert_eq!(pointer, PointerUpdateData::Color(color_pointer));
     assert!(cursor.is_empty());
 }
 
@@ -229,18 +253,30 @@ fn from_buffer_rejects_other_under_declared_total_lengths_for_pointer(#[case] to
     ));
 }
 
-// System and Position pointer updates carry no pointer attribute body, so a 24-byte declaration
-// on their 26-byte wire encoding is rejected.
-// oracle: spec MS-RDPBCGR §3.2.5.2
+// System and Position updates carry no shape attribute body, and Large pointer updates are defined
+// only for Fast-Path (MS-RDPBCGR 2.2.9.1.1.4 vs 2.2.9.1.2.1.11), so none may use VRDP's 24-byte
+// slow-path pointer shape carve-out.
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.4
 #[rstest::rstest]
 #[case::system(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])]
 #[case::position(&[0x03, 0x00, 0x00, 0x00, 0x40, 0x00, 0x80, 0x00])]
-fn from_buffer_rejects_non_shape_pointers_with_vrdp_total_length(#[case] pointer_payload: &[u8]) {
+#[case::large(&[
+    0x09, 0x00, 0x00, 0x00, // messageType (Large) + pad2Octets
+    24, 0x00, // xorBpp
+    0x00, 0x00, // cacheIndex
+    0x00, 0x00, 0x00, 0x00, // hotSpot
+    0x01, 0x00, 0x01, 0x00, // width = 1, height = 1
+    0x02, 0x00, 0x00, 0x00, // lengthAndMask = 2
+    0x04, 0x00, 0x00, 0x00, // lengthXorMask = 4
+    0xFF, 0xFF, 0xFF, 0x00, // xorMaskData
+    0x80, 0x00, // andMaskData
+])]
+fn from_buffer_rejects_non_slow_path_shape_pointers_with_vrdp_total_length(#[case] pointer_payload: &[u8]) {
     use ironrdp_pdu::rdp::headers::ShareControlHeader;
 
     let encoded = data_pdu_declaring(24, 0x1B, pointer_payload);
 
-    decode::<ShareControlHeader>(&encoded).expect_err("non-shape pointer updates must not use VRDP exception");
+    decode::<ShareControlHeader>(&encoded).expect_err("non-slow-path-shape pointer updates must be rejected");
 }
 
 // oracle: spec MS-RDPBCGR §2.2.9.1.1.4.4
