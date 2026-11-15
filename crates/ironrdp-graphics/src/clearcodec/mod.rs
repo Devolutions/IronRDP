@@ -233,9 +233,9 @@ impl ClearCodecDecoder {
         bg_green: u8,
         bg_red: u8,
     ) -> DecodeResult<FullVBar> {
-        // A server can refer to a cache entry this decoder never stored (Windows
-        // does so after a cache reset). As in FreeRDP, an empty entry reads as a
-        // column of zero pixels instead of failing the whole update.
+        // A server can refer to a cache entry this decoder never stored, and FreeRDP's clear.c keeps decoding.
+        // It reads an empty full V-bar entry as a zero-filled column of the band height.
+        // It reads an empty short V-bar entry as zero pixels, so the rebuilt column is the band background.
         match vbar {
             VBar::CacheHit { index } => Ok(self.vbar_cache.get_vbar(*index).cloned().unwrap_or_else(|| FullVBar {
                 pixels: vec![0; usize::from(band_height) * 3],
@@ -245,7 +245,8 @@ impl ClearCodecDecoder {
                     Some(cached_short) => (cached_short.pixel_count, cached_short.pixels.clone()),
                     None => (0, Vec::new()),
                 };
-                if usize::from(*y_on) + usize::from(pixel_count) > usize::from(band_height) {
+                // MS-RDPEGFX 2.2.4.1.1.2.1.1.2: the short V-bar must fit in the band below yOn.
+                if usize::from(band_height) < usize::from(*y_on) + usize::from(pixel_count) {
                     return Err(invalid_field_err!(
                         "shortVBarYOn",
                         "y_on + pixel_count exceeds band height"
