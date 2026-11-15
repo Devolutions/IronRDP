@@ -29,6 +29,7 @@ use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::credssp::{KdcResolution, KerberosConfig};
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::displaycontrol::client::DisplayControlClient;
+use ironrdp::displaycontrol::pdu::DeviceScaleFactor;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
@@ -103,6 +104,8 @@ struct SessionBuilderInner {
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
     performance_flags: Option<PerformanceFlags>,
+    desktop_scale_factor: Option<u32>,
+    color_depth: Option<u32>,
 }
 
 impl Default for SessionBuilderInner {
@@ -151,6 +154,8 @@ impl Default for SessionBuilderInner {
             legacy_graphics: false,
             outbound_message_size_limit: None,
             performance_flags: None,
+            desktop_scale_factor: None,
+            color_depth: None,
         }
     }
 }
@@ -322,6 +327,35 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     self.0.borrow_mut().performance_flags = Some(PerformanceFlags::from_bits_truncate(bits));
                 } else {
                     warn!(performance_flags, "Invalid performance flags; ignored");
+                }
+            };
+            |desktop_scale_factor: f64| {
+                // MS-RDPBCGR 2.2.1.3.2: the server ignores a desktop scale factor outside 100 to 500.
+                if desktop_scale_factor.fract() == 0.0 && (100.0..=500.0).contains(&desktop_scale_factor) {
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "the integral scale factor is validated in 100..=500"
+                    )]
+                    let factor = desktop_scale_factor as u32;
+                    self.0.borrow_mut().desktop_scale_factor = Some(factor);
+                } else {
+                    warn!(desktop_scale_factor, "Invalid desktop scale factor; ignored");
+                }
+            };
+            |color_depth: f64| {
+                if [15.0, 16.0, 24.0, 32.0].contains(&color_depth) {
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "the color depth is validated against the supported values"
+                    )]
+                    let depth = color_depth as u32;
+                    self.0.borrow_mut().color_depth = Some(depth);
+                } else {
+                    warn!(color_depth, "Unsupported color depth; ignored");
                 }
             };
             // File transfer callbacks - protocol-specific, routed through extension()
@@ -502,6 +536,14 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         if let Some(performance_flags) = self.0.borrow().performance_flags {
             config.performance_flags = performance_flags;
+        }
+
+        if let Some(factor) = self.0.borrow().desktop_scale_factor {
+            config.desktop_scale_factor = factor;
+            config.device_scale_factor = Some(DeviceScaleFactor::from_desktop_scale_factor(factor).value());
+        }
+        if let (Some(depth), Some(bitmap)) = (self.0.borrow().color_depth, config.bitmap.as_mut()) {
+            bitmap.color_depth = depth;
         }
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
