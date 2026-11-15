@@ -10,6 +10,7 @@ mod entra;
 mod license_exchange;
 #[cfg(feature = "remote-guard")]
 mod remote_guard;
+mod server_core_data;
 
 fn test_config() -> ironrdp_connector::Config {
     ironrdp_connector::Config {

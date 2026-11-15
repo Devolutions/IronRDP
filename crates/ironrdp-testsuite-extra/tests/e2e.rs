@@ -144,6 +144,34 @@ async fn server_handle_set_credentials_applies_to_the_next_connection() {
         .expect("credential updates and shutdown must finish");
 }
 
+// oracle: the acceptor's Server Core Data announces RdpVersion::V5_PLUS (ironrdp-acceptor connection.rs)
+// oracle: mutant dropping the server RDP version between the Basic Settings Exchange and ConnectionResult
+#[tokio::test]
+async fn connection_result_reports_the_rdp_version_the_server_announced() {
+    let (mut server, _display_tx) = hybrid_server();
+    let handle = server.handle().clone();
+
+    let local = tokio::task::LocalSet::new();
+    let test = Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move { server.run().await });
+        let addr = handle.local_addr().await.unwrap().unwrap();
+        let (mut client, connection_result) = connect_client(addr, |client_addr| {
+            connector::ClientConnector::new(hybrid_client_config(), client_addr)
+        })
+        .await;
+
+        assert_eq!(connection_result.server_rdp_version, gcc::RdpVersion::V5_PLUS);
+
+        handle.quit("disconnect the client").unwrap();
+        while client.read_pdu().await.is_ok() {}
+        handle.quit("stop idle listener").unwrap();
+        server_task.await.unwrap().unwrap();
+    }));
+    tokio::time::timeout(Duration::from_secs(15), test)
+        .await
+        .expect("connection and shutdown must finish");
+}
+
 // oracle: mutant local_addr fabricating an address when none is bound
 #[tokio::test]
 async fn server_handle_local_addr_is_none_for_an_external_source() {
