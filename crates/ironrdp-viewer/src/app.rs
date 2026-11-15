@@ -936,14 +936,24 @@ impl ApplicationHandler<RdpOutputEvent> for App {
         self.inner.on_about_to_wait(event_loop);
 
         #[cfg(target_os = "macos")]
-        if self
-            .clipboard
-            .as_ref()
-            .is_some_and(ironrdp_cliprdr_native::MacClipboard::needs_poll)
-        {
-            // Finder's file presenter does not wake the window loop, and
-            // remote format responses arrive on the RDP thread.
-            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(10)));
+        if let Some(clipboard) = &self.clipboard {
+            // Pasteboard changes and clipboard callbacks do not wake the window loop.
+            // UNTESTED: The winit loop must wake for idle and active polls; verify its sleep behavior when changing this.
+            match event_loop.control_flow() {
+                ControlFlow::Poll => {}
+                ControlFlow::Wait => event_loop.set_control_flow(ControlFlow::WaitUntil(clipboard_deadline(
+                    Instant::now(),
+                    clipboard.needs_poll(),
+                    None,
+                ))),
+                ControlFlow::WaitUntil(deadline) => {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(clipboard_deadline(
+                        Instant::now(),
+                        clipboard.needs_poll(),
+                        Some(deadline),
+                    )));
+                }
+            }
         }
     }
 
@@ -958,6 +968,22 @@ impl ApplicationHandler<RdpOutputEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RdpOutputEvent) {
         self.inner.handle_output_event(event_loop, event);
     }
+}
+
+#[cfg(target_os = "macos")]
+fn clipboard_deadline(now: Instant, active: bool, existing: Option<Instant>) -> Instant {
+    let interval = if active {
+        Duration::from_millis(10)
+    } else {
+        Duration::from_millis(250)
+    };
+    existing.map_or(now + interval, |deadline| deadline.min(now + interval))
+}
+
+#[cfg(all(target_os = "macos", feature = "__test"))]
+#[doc(hidden)]
+pub fn test_clipboard_deadline(now: Instant, active: bool, existing: Option<Instant>) -> Instant {
+    clipboard_deadline(now, active, existing)
 }
 
 /// Maps a window position onto the remote desktop, which the viewer stretches over the client area.

@@ -61,7 +61,7 @@ ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 # The EGFX-over-UDP migration in ironrdp-server is behind its `egfx` feature,
 # which nothing else in the workspace enables.
 ironrdp-server = { path = "../ironrdp-server", features = ["egfx", "__test"] }
-ironrdp-viewer.path = "../ironrdp-viewer"
+ironrdp-viewer = { path = "../ironrdp-viewer", features = ["__test"] }
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
@@ -86,6 +86,10 @@ ironrdp-cliprdr.path = "../ironrdp-cliprdr"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__test"] }
 png = "0.18"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+ironrdp-cliprdr.path = "../ironrdp-cliprdr"
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__test"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 ironrdp-rdpei.path = "../ironrdp-rdpei"

@@ -4,6 +4,8 @@ mod data_control;
 mod linux;
 #[cfg(target_os = "linux")]
 mod live;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]

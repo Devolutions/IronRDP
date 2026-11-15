@@ -7,7 +7,7 @@ mod capture_helpers;
 mod client;
 #[cfg(any(target_os = "linux", windows))]
 mod clipboard_completion;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod cliprdr_native;
 #[cfg(windows)]
 mod credssp_backend;

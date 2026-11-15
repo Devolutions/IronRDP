@@ -40,19 +40,18 @@ directions.
 
   // Each main-loop tick, after routing CLIPRDR events to the backend:
   clipboard.poll();
-  if clipboard.needs_poll() {
-      // Keep a short timer alive for Finder reads and remote format requests.
-  }
+  let interval = if clipboard.needs_poll() {
+      Duration::from_millis(10)
+  } else {
+      Duration::from_millis(250)
+  };
+  // Schedule the next poll within `interval`.
   ```
 
-  `poll` drives queued CLIPRDR callbacks, local clipboard changes, format
-  requests, file-content requests, and active downloads. Finder's coordinated
-  read blocks its own operation queue until the file completes or the transfer
-  fails.
-- Finder's presenter callback runs on a private operation queue and does not
-  wake the UI event loop. Keep polling on a short timer while a remote file
-  offer is on the pasteboard; a loop that only reacts to window events can
-  leave a read waiting.
+  `poll` drives queued CLIPRDR callbacks, local clipboard changes, format requests, file-content requests, and active downloads.
+  Finder's coordinated read blocks its own operation queue until the file completes or the transfer fails.
+- Clipboard callbacks and pasteboard changes do not wake the UI event loop.
+  Poll periodically even when `needs_poll` returns false, and use a shorter interval while it returns true.
 - A remote file descriptor must include a size. A file list without one is
   rejected because a sparse placeholder needs the final length.
 - A file transfer with no response for 60 seconds fails. On clipboard change

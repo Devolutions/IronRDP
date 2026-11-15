@@ -22,6 +22,7 @@ test = false
 
 [features]
 default = ["rustls"]
+__test = []
 rustls = ["ironrdp/rustls"]
 native-tls = ["ironrdp/native-tls"]
 qoi = ["ironrdp/qoi"]
