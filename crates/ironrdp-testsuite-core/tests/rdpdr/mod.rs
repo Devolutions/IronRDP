@@ -37,7 +37,7 @@ fn encode_to_vec(size: usize, f: impl FnOnce(&mut WriteCursor<'_>) -> ironrdp_co
     f(&mut WriteCursor::new(&mut buf)).unwrap();
     buf
 }
-use ironrdp_svc::{SvcMessage, SvcProcessor as _};
+use ironrdp_svc::{StaticVirtualChannel, SvcMessage, SvcProcessor as _};
 
 #[derive(Debug, Default)]
 struct ResetTrackingRdpdrBackend {
@@ -2088,10 +2088,13 @@ fn decode_io_completion_rejects_set_volume_information() {
 struct TrackingServerBackend {
     max_message_size: Option<usize>,
     accepted: Vec<u32>,
+    accepted_types: Vec<DeviceType>,
     rejected_device_ids: Vec<u32>,
     reject_removal: bool,
     removed: Vec<u32>,
+    reinitialized: Vec<u32>,
     client_name: Option<String>,
+    set_information: Vec<(DeviceIoResponse, u32)>,
     completions: Vec<&'static str>,
 }
 
@@ -2110,6 +2113,7 @@ impl RdpdrServerBackend for TrackingServerBackend {
                 let accepted = !self.rejected_device_ids.contains(&device_id);
                 if accepted {
                     self.accepted.push(device_id);
+                    self.accepted_types.push(device.device_type());
                 }
                 (device_id, accepted)
             })
@@ -2125,6 +2129,12 @@ impl RdpdrServerBackend for TrackingServerBackend {
             return Err(ironrdp_pdu::pdu_other_err!("device state cannot be safely removed"));
         }
         self.on_device_remove(device_ids);
+        Ok(())
+    }
+
+    fn on_reinitialize(&mut self, device_ids: &[u32]) -> PduResult<()> {
+        self.try_on_device_remove(device_ids)?;
+        self.reinitialized.extend_from_slice(device_ids);
         Ok(())
     }
 
@@ -2160,7 +2170,9 @@ impl RdpdrServerBackend for TrackingServerBackend {
         self.completions.push("query_information");
         Ok(())
     }
-    fn on_set_information_complete(&mut self, _response: &ClientDriveSetInformationResponse) -> PduResult<()> {
+    fn on_set_information_complete(&mut self, response: &ClientDriveSetInformationResponse) -> PduResult<()> {
+        self.set_information
+            .push((response.device_io_reply().clone(), response.length()));
         self.completions.push("set_information");
         Ok(())
     }
@@ -2293,6 +2305,26 @@ fn some_completion(device_id: u32, completion_id: u32) -> DeviceIoResponse {
     }
 }
 
+fn announce_drive(server: &mut RdpdrServer, device_id: u32) -> Vec<SvcMessage> {
+    let mut devices = Devices::new();
+    devices.add_drive(device_id, "DL".to_owned());
+    let announce = encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+        device_list: devices.clone_inner(),
+    }))
+    .unwrap();
+    server.process(&announce).unwrap()
+}
+
+fn duplicate_announce_reply() -> Vec<u8> {
+    encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+        version_major: 1,
+        version_minor: VERSION_MINOR_RDP51,
+        client_id: 0,
+        kind: VersionAndIdPduKind::ClientAnnounceReply,
+    }))
+    .unwrap()
+}
+
 #[test]
 fn server_start_sends_server_announce_request() {
     let mut server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
@@ -2338,13 +2370,7 @@ fn duplicate_client_announce_reply_while_active_reinitializes() {
     let stale = server.drive_close(1, 1).unwrap();
     let stale_completion_id = completion_id_of(&stale[0]);
 
-    let duplicate_announce = encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
-        version_major: 1,
-        version_minor: VERSION_MINOR_RDP51,
-        client_id: 0,
-        kind: VersionAndIdPduKind::ClientAnnounceReply,
-    }))
-    .unwrap();
+    let duplicate_announce = duplicate_announce_reply();
     assert!(server.process(&duplicate_announce).unwrap().is_empty());
 
     // Back in AwaitingAnnounce: drive I/O is rejected again until the handshake redoes.
@@ -2388,10 +2414,25 @@ fn server_forwards_backend_max_message_size() {
     assert_eq!(default_server.max_message_size(), None);
 
     let bounded_server = RdpdrServer::new(Box::new(TrackingServerBackend {
-        max_message_size: Some(4096),
+        max_message_size: Some(32),
         ..Default::default()
     }));
-    assert_eq!(bounded_server.max_message_size(), Some(4096));
+    assert_eq!(bounded_server.max_message_size(), Some(32));
+
+    let mut channel = StaticVirtualChannel::new(bounded_server);
+    assert_eq!(channel.start().unwrap().len(), 1);
+
+    let within_limit = StaticVirtualChannel::chunkify(vec![SvcMessage::from(duplicate_announce_reply())]).unwrap();
+    assert!(channel.process(within_limit[0].filled()).unwrap().is_empty());
+
+    let over_limit = StaticVirtualChannel::chunkify(vec![SvcMessage::from(RdpdrPdu::ClientNameRequest(
+        ClientNameRequest::new(
+            "client-name-exceeding-32-bytes".to_owned(),
+            ClientNameRequestUnicodeFlag::Unicode,
+        ),
+    ))])
+    .unwrap();
+    assert!(channel.process(over_limit[0].filled()).is_err());
 }
 
 // oracle: mutant retaining backend devices after the protocol forgets them, or resetting state before decoding the reply.
@@ -2399,25 +2440,13 @@ fn server_forwards_backend_max_message_size() {
 fn server_reinitialization_notifies_backend_of_forgotten_devices() {
     let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
     handshake_to_active(&mut server);
-    let mut devices = Devices::new();
-    devices.add_drive(42, "DL".to_owned());
-    let announce = encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
-        device_list: devices.clone_inner(),
-    }))
-    .unwrap();
-    let accepted = server.process(&announce).unwrap();
+    let accepted = announce_drive(&mut server, 42);
     assert_eq!(
         ntstatus_at(&accepted[0].encode_unframed_pdu().unwrap(), 8),
         NtStatus::SUCCESS
     );
 
-    let duplicate = encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
-        version_major: 1,
-        version_minor: VERSION_MINOR_RDP51,
-        client_id: 0,
-        kind: VersionAndIdPduKind::ClientAnnounceReply,
-    }))
-    .unwrap();
+    let duplicate = duplicate_announce_reply();
     assert!(server.process(&duplicate[..4 /* SharedHeader */]).is_err());
     assert!(
         server
@@ -2429,10 +2458,10 @@ fn server_reinitialization_notifies_backend_of_forgotten_devices() {
     assert!(server.drive_close(42, 1).is_ok());
 
     server.process(&duplicate).unwrap();
-    assert_eq!(
-        server.downcast_backend::<TrackingServerBackend>().unwrap().removed,
-        [42]
-    );
+    let backend = server.downcast_backend::<TrackingServerBackend>().unwrap();
+    assert_eq!(backend.accepted_types, [DeviceType::Filesystem]);
+    assert_eq!(backend.removed, [42]);
+    assert_eq!(backend.reinitialized, [42]);
 }
 
 // oracle: mutant accepting a new initialization after the backend rejects device cleanup.
@@ -2443,23 +2472,8 @@ fn server_reinitialization_propagates_backend_failure() {
         ..Default::default()
     }));
     handshake_to_active(&mut server);
-    let mut devices = Devices::new();
-    devices.add_drive(42, "DL".to_owned());
-    server
-        .process(
-            &encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
-                device_list: devices.clone_inner(),
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-    let duplicate = encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
-        version_major: 1,
-        version_minor: VERSION_MINOR_RDP51,
-        client_id: 0,
-        kind: VersionAndIdPduKind::ClientAnnounceReply,
-    }))
-    .unwrap();
+    announce_drive(&mut server, 42);
+    let duplicate = duplicate_announce_reply();
     assert!(server.process(&duplicate).is_err());
     assert!(server.drive_close(42, 1).is_ok());
 
@@ -2506,6 +2520,7 @@ fn device_announce_accepts_and_rejects_per_backend_decision() {
 
     let backend = server.downcast_backend::<TrackingServerBackend>().unwrap();
     assert_eq!(backend.accepted, vec![1]);
+    assert_eq!(backend.accepted_types, vec![DeviceType::Smartcard]);
 }
 
 #[test]
@@ -2538,16 +2553,7 @@ fn device_remove_propagates_backend_failure() {
         ..Default::default()
     }));
     handshake_to_active(&mut server);
-    let mut devices = Devices::new();
-    devices.add_drive(42, "DL".to_owned());
-    server
-        .process(
-            &encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
-                device_list: devices.clone_inner(),
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+    announce_drive(&mut server, 42);
     let remove = encode_vec(&RdpdrPdu::ClientDeviceListRemove(ClientDeviceListRemove {
         device_list: vec![42],
     }))
@@ -2558,13 +2564,7 @@ fn device_remove_propagates_backend_failure() {
         .downcast_backend_mut::<TrackingServerBackend>()
         .unwrap()
         .reject_removal = false;
-    let duplicate = encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
-        version_major: 1,
-        version_minor: VERSION_MINOR_RDP51,
-        client_id: 0,
-        kind: VersionAndIdPduKind::ClientAnnounceReply,
-    }))
-    .unwrap();
+    let duplicate = duplicate_announce_reply();
     server.process(&duplicate).unwrap();
     assert_eq!(
         server.downcast_backend::<TrackingServerBackend>().unwrap().removed,
@@ -2763,10 +2763,9 @@ fn drive_set_information_completion_round_trips() {
     let response = ClientDriveSetInformationResponse::new(&request, NtStatus::SUCCESS).unwrap();
     let completion = encode_vec(&RdpdrPdu::ClientDriveSetInformationResponse(response)).unwrap();
     server.process(&completion).unwrap();
-    assert_eq!(
-        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
-        vec!["set_information"]
-    );
+    let backend = server.downcast_backend::<TrackingServerBackend>().unwrap();
+    assert_eq!(backend.completions, vec!["set_information"]);
+    assert_eq!(backend.set_information, vec![(some_completion(1, completion_id), 8)]);
 }
 
 #[test]

@@ -221,10 +221,12 @@ pub trait RdpdrServerBackend: AsAny + fmt::Debug + Send {
         Ok(())
     }
 
-    /// Releases the devices and pending state forgotten by a repeated initialization.
+    /// Releases the announced devices (`device_ids`) forgotten when a repeated `ClientAnnounceReply` restarts the
+    /// handshake, letting a backend distinguish session-wide reinitialization from hot-unplug removal
+    /// (`try_on_device_remove`).
     ///
     /// Returning an error ends the channel instead of accepting a new sequence.
-    /// The default treats every forgotten device as removed.
+    /// The default delegates to `try_on_device_remove`.
     fn on_reinitialize(&mut self, device_ids: &[u32]) -> PduResult<()> {
         self.try_on_device_remove(device_ids)
     }
@@ -554,6 +556,9 @@ impl RdpdrServer {
         ])
     }
 
+    /// `RdpdrServer` runs inside an already-authenticated RDP session and therefore emits `RdpdrPdu::UserLoggedon`
+    /// immediately after `ClientCoreCapabilityResponse` when `supports_user_logged_on()` holds, unblocking clients that
+    /// wait for logon before announcing drives.
     fn handle_client_capability_response(
         &mut self,
         header: SharedHeader,
