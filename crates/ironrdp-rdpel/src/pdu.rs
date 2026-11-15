@@ -201,6 +201,12 @@ impl FourByteFloat {
         if self.negative { -magnitude } else { magnitude }
     }
 
+    pub(crate) fn nanodegrees(self) -> i64 {
+        let scale = 10i64.pow(u32::from(9 - self.exponent));
+        let magnitude = i64::from(self.magnitude) * scale;
+        if self.negative { -magnitude } else { magnitude }
+    }
+
     fn with_max_exponent(value: f64, max_exponent: u8) -> EncodeResult<Self> {
         if !value.is_finite() {
             return Err(invalid_field_err!("value", "FOUR_BYTE_FLOAT must be finite"));
