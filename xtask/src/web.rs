@@ -34,7 +34,11 @@ pub fn check(sh: &Shell) -> anyhow::Result<()> {
         IRONRDP_WEB_PATH,
         "wasm-pack build --dev --target nodejs --out-dir ../../target/ironrdp-web-tests -- --locked"
     )?;
-    cmd!(sh, "node --test crates/ironrdp-web/tests/websocket_protocols.cjs").run()?;
+    cmd!(
+        sh,
+        "node --test crates/ironrdp-web/tests/websocket_protocols.cjs crates/ironrdp-web/tests/display_config.cjs"
+    )
+    .run()?;
 
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run lint")?;

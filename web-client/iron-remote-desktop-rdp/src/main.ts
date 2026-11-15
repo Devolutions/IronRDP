@@ -97,14 +97,16 @@ export function performanceFlags(flags: number): Extension {
 
 /**
  * Ask the server to scale its user interface, in percent (100 to 500), as Windows'
- * display scale does on a high-density screen. Pair it with a desktop size in device pixels.
+ * display scale does on a high-density screen.
+ * Pair it with a desktop size in device pixels.
  */
 export function desktopScaleFactor(percent: number): Extension {
     return new Extension('desktop_scale_factor', percent);
 }
 
 /**
- * The session's color depth in bits per pixel. Without it the client asks for 16, or 32 with `legacyGraphics`.
+ * The session's color depth in bits per pixel.
+ * Without it the client asks for 16, or 32 with `legacyGraphics`.
  */
 export function colorDepth(bitsPerPixel: 15 | 16 | 24 | 32): Extension {
     return new Extension('color_depth', bitsPerPixel);

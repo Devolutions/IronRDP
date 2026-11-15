@@ -29,6 +29,7 @@ use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::credssp::{KdcResolution, KerberosConfig};
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::displaycontrol::client::DisplayControlClient;
+use ironrdp::displaycontrol::pdu::DeviceScaleFactor;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
@@ -331,7 +332,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |desktop_scale_factor: f64| {
                 // MS-RDPBCGR 2.2.1.3.2: the server ignores a desktop scale factor outside 100 to 500.
                 if desktop_scale_factor.fract() == 0.0 && (100.0..=500.0).contains(&desktop_scale_factor) {
-                    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "the integral scale factor is validated in 100..=500"
+                    )]
                     let factor = desktop_scale_factor as u32;
                     self.0.borrow_mut().desktop_scale_factor = Some(factor);
                 } else {
@@ -340,7 +346,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             };
             |color_depth: f64| {
                 if [15.0, 16.0, 24.0, 32.0].contains(&color_depth) {
-                    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "the color depth is validated against the supported values"
+                    )]
                     let depth = color_depth as u32;
                     self.0.borrow_mut().color_depth = Some(depth);
                 } else {
@@ -527,15 +538,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             config.performance_flags = performance_flags;
         }
 
-        let (desktop_scale_factor, color_depth) = {
-            let inner = self.0.borrow();
-            (inner.desktop_scale_factor, inner.color_depth)
-        };
-        if let Some(factor) = desktop_scale_factor {
+        if let Some(factor) = self.0.borrow().desktop_scale_factor {
             config.desktop_scale_factor = factor;
-            config.device_scale_factor = Some(device_scale_factor(factor));
+            config.device_scale_factor = Some(DeviceScaleFactor::from_desktop_scale_factor(factor).value());
         }
-        if let (Some(depth), Some(bitmap)) = (color_depth, config.bitmap.as_mut()) {
+        if let (Some(depth), Some(bitmap)) = (self.0.borrow().color_depth, config.bitmap.as_mut()) {
             bitmap.color_depth = depth;
         }
 
@@ -1593,15 +1600,6 @@ fn parse_file_metadata_array(files: JsValue) -> Result<Vec<FileMetadata>, IronEr
     }
 
     Ok(file_list)
-}
-
-/// The device scale factor sent with a desktop scale factor: MS-RDPBCGR 2.2.1.3.2 allows only 100, 140 and 180.
-fn device_scale_factor(desktop_scale_factor: u32) -> u32 {
-    match desktop_scale_factor {
-        0..=119 => 100,
-        120..=159 => 140,
-        _ => 180,
-    }
 }
 
 fn build_config(
