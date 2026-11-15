@@ -415,6 +415,8 @@
     }
 
     canvas {
+        /* Not inline: an inline canvas sits on a text baseline, so its line box runs a few pixels past it. */
+        display: block;
         width: 100%;
         height: 100%;
     }
