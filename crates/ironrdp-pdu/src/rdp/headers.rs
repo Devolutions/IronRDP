@@ -26,6 +26,19 @@ use crate::slow_path;
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;
+/// Under-declared `totalLength` sent by VirtualBox's VRDP server on slow-path pointer shape updates.
+///
+/// Counts the "Share Control Header (TS_SHARECONTROLHEADER)" ([MS-RDPBCGR] 2.2.8.1.1.1.1),
+/// "Share Data Header (TS_SHAREDATAHEADER)" ([MS-RDPBCGR] 2.2.8.1.1.1.2), and 6-byte
+/// "Slow-Path Pointer Update (TS_POINTER_PDU)" ([MS-RDPBCGR] 2.2.9.1.1.4) prefix while omitting
+/// the pointer attribute body.
+///
+/// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+pub const VRDP_POINTER_DECLARED_LENGTH: usize = ShareControlHeader::FIXED_PART_SIZE
+    + ShareDataHeader::FIXED_PART_SIZE
+    + 2 /* messageType */
+    + 2 /* pad2Octets */
+    + 2 /* xorBpp */;
 const SHARE_CONTROL_HEADER_MASK: u16 = 0xF;
 const SHARE_CONTROL_HEADER_SIZE: usize = 2 * 3 + 4;
 /// On-the-wire Share Control Header per MS-RDPBCGR 2.2.8.1.1.1.1: totalLength,
@@ -386,34 +399,15 @@ impl<'de> Decode<'de> for ShareControlHeader {
                 );
 
             // VirtualBox's VRDP declares only the 24-byte pointer header on a complete slow-path
-            // Pointer Update PDU and omits the attribute body from `totalLength`.
-            // Accept that exact declaration only when the complete pointer payload decodes cleanly.
-            const VRDP_POINTER_DECLARED_LENGTH: usize = ShareControlHeader::FIXED_PART_SIZE
-                + ShareDataHeader::FIXED_PART_SIZE
-                + 2 /* messageType */
-                + 2 /* pad2Octets */
-                + 2 /* xorBpp */;
+            // pointer shape update and omits the attribute body from `totalLength`.
+            // Accept that exact declaration only when the complete pointer shape decodes cleanly.
             let is_vrdp_pointer_pdu = total_length == VRDP_POINTER_DECLARED_LENGTH
                 && matches!(
                     &header.share_control_pdu,
                     ShareControlPdu::Data(ShareDataHeader {
                         share_data_pdu: ShareDataPdu::Pointer(data),
                         ..
-                    }) if {
-                        let mut pointer_src = ReadCursor::new(data);
-                        slow_path::decode_slow_path_pointer(&mut pointer_src).is_ok_and(|pointer| {
-                            // Color, New, and Large pointer attributes allow one optional trailing
-                            // padding octet ([MS-RDPBCGR] 2.2.9.1.1.4.4, 2.2.9.1.1.4.5, 2.2.9.1.2.1.11).
-                            let has_optional_padding = pointer_src.len() == 1
-                                && matches!(
-                                    pointer,
-                                    PointerUpdateData::Color(_)
-                                        | PointerUpdateData::New(_)
-                                        | PointerUpdateData::Large(_)
-                                );
-                            pointer_src.is_empty() || has_optional_padding
-                        })
-                    }
+                    }) if decodes_as_complete_pointer_shape(data)
                 );
 
             if header_length < total_length {
@@ -433,6 +427,22 @@ impl<'de> Decode<'de> for ShareControlHeader {
 
         Ok(header)
     }
+}
+
+fn decodes_as_complete_pointer_shape(data: &[u8]) -> bool {
+    let mut pointer_src = ReadCursor::new(data);
+    slow_path::decode_slow_path_pointer(&mut pointer_src).is_ok_and(|pointer| {
+        let is_pointer_shape = matches!(
+            pointer,
+            PointerUpdateData::Color(_) | PointerUpdateData::New(_) | PointerUpdateData::Large(_)
+        );
+        // "Color Pointer Update (TS_COLORPOINTERATTRIBUTE)" ([MS-RDPBCGR] 2.2.9.1.1.4.4,
+        // encapsulated by `colorPtrAttr` in 2.2.9.1.1.4.5) and "Fast-Path Large Pointer Update
+        // (TS_FP_LARGEPOINTERATTRIBUTE)" ([MS-RDPBCGR] 2.2.9.1.2.1.11) each end with an optional
+        // 1-byte `pad` field ("An optional 8-bit, unsigned integer. Padding. Values in this field
+        // MUST be ignored.").
+        is_pointer_shape && pointer_src.len() <= 1
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

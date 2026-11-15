@@ -311,3 +311,60 @@ pub const CLIENT_DEMAND_ACTIVE_PDU_BUFFER: [u8; concat_arrays_size!(
     CLIENT_DEMAND_ACTIVE_PDU_HEADERS_BUFFER,
     CLIENT_DEMAND_ACTIVE_BUFFER
 )] = concat_arrays!(CLIENT_DEMAND_ACTIVE_PDU_HEADERS_BUFFER, CLIENT_DEMAND_ACTIVE_BUFFER);
+
+pub const VRDP_POINTER_WIDTH: u16 = 54;
+pub const VRDP_POINTER_HEIGHT: u16 = 38;
+
+/// Builds the 8550-byte slow-path `New` pointer update PDU for which VirtualBox's VRDP server
+/// declares `totalLength = 24`.
+///
+/// # Panics
+///
+/// Panics if encoding the fixed test pointer attribute fails.
+pub fn vrdp_pointer_pdu(hot_spot: ironrdp_pdu::pointer::Point16) -> Vec<u8> {
+    use ironrdp_core::encode_vec;
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, PointerAttribute};
+    use ironrdp_pdu::rdp::headers::VRDP_POINTER_DECLARED_LENGTH;
+
+    let xor_mask = [0x10, 0x20, 0x30, 0xFF].repeat(usize::from(VRDP_POINTER_WIDTH) * usize::from(VRDP_POINTER_HEIGHT));
+    let and_mask = vec![0x00; 8 /* aligned 54-bit scanline */ * usize::from(VRDP_POINTER_HEIGHT)];
+    let pointer = PointerAttribute {
+        xor_bpp: 32,
+        color_pointer: ColorPointerAttribute {
+            cache_index: 0,
+            hot_spot,
+            width: VRDP_POINTER_WIDTH,
+            height: VRDP_POINTER_HEIGHT,
+            xor_mask: &xor_mask,
+            and_mask: &and_mask,
+        },
+    };
+
+    let declared_length = u16::try_from(VRDP_POINTER_DECLARED_LENGTH).unwrap().to_le_bytes();
+    let mut encoded = vec![
+        declared_length[0],
+        declared_length[1], // totalLength (under-declared)
+        0x17,
+        0x00, // pduType (Data PDU) + protocolVersion
+        0xEA,
+        0x03, // pduSource
+        0x01,
+        0x00,
+        0x00,
+        0x00, // shareId
+        0x00, // pad1
+        0x04, // streamId (Medium)
+        0x00,
+        0x00, // uncompressedLength
+        0x1B, // pduType2 (PDUTYPE2_POINTER)
+        0x00, // compressedType
+        0x00,
+        0x00, // compressedLength
+        0x08,
+        0x00, // messageType (TS_PTRMSGTYPE_POINTER)
+        0x00,
+        0x00, // pad2Octets
+    ];
+    encoded.extend(encode_vec(&pointer).unwrap());
+    encoded
+}
