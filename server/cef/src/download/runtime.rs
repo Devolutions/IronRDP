@@ -14,7 +14,7 @@ use ironrdp_rdpdr::pdu::efs::*;
 use ironrdp_server::{RdpdrServerBackend, RdpdrServerFactory, RdpdrServerMessage, ServerEvent, ServerEventSender};
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::{Budget, Limits, collision_name, safe_name};
+use super::{Budget, Limits, collision_name, pdf_file_name, safe_name};
 
 const CHUNK: usize = 64 * 1024;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -54,6 +54,7 @@ struct State {
     enabled: bool,
     root: PathBuf,
     nonce: u128,
+    next_print_id: u32,
     budget: Budget,
     entries: BTreeMap<u32, Entry>,
     latest: String,
@@ -75,6 +76,7 @@ impl Downloads {
             enabled,
             root,
             nonce: SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
+            next_print_id: 0x8000_0000,
             budget,
             entries: BTreeMap::new(),
             latest: String::new(),
@@ -130,6 +132,23 @@ impl Downloads {
         self.available()?;
         let name = safe_name(name)?;
         let mut state = self.0.lock().unwrap();
+        Self::insert_entry(&mut state, id, name, "Browser download")
+    }
+
+    pub fn begin_print(&self, title: &str) -> anyhow::Result<(u32, PathBuf)> {
+        self.available()?;
+        let name = safe_name(&pdf_file_name(title))?;
+        let mut state = self.0.lock().unwrap();
+        let id = state.next_print_id;
+        let next = id
+            .checked_add(1)
+            .context("synthetic PDF download identifiers exhausted")?;
+        let path = Self::insert_entry(&mut state, id, name, "PDF print")?;
+        state.next_print_id = next;
+        Ok((id, path))
+    }
+
+    fn insert_entry(state: &mut State, id: u32, name: String, label: &str) -> anyhow::Result<PathBuf> {
         anyhow::ensure!(
             state.connection.device.is_some() && !state.connection.fenced && !state.stopping,
             "approved DL redirected drive is unavailable"
@@ -166,7 +185,7 @@ impl Downloads {
                 retired: false,
                 committed: false,
                 closed: false,
-                status: "Browser download".to_owned(),
+                status: label.to_owned(),
                 started: Instant::now(),
             },
         );

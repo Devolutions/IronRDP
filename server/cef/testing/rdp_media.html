@@ -1,0 +1,224 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Loopback redirected media fixture</title>
+<button id="interactive" style="cursor: pointer; position: fixed; left: 20px; top: 20px; width: 100px; height: 60px;">Touch</button>
+<video id="camera" muted playsinline></video>
+<script>
+const report = (name, value) =>
+    fetch('/report', { method: 'POST', body: JSON.stringify({name, value}) });
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const reconnect = location.search === '?reconnect';
+const hotplug = location.search === '?hotplug';
+async function attempt(name, run) {
+    try {
+        await report(name, await run());
+    } catch (error) {
+        await report(name, {error: String(error)});
+    }
+}
+async function cameraFrame(video, red) {
+    let result;
+    const deadline = performance.now() + 15000;
+    while (performance.now() < deadline) {
+        const received = await Promise.race([
+            new Promise(resolve => video.requestVideoFrameCallback(() => resolve(true))),
+            sleep(1000).then(() => false),
+        ]);
+        if (!received) continue;
+        const canvas = new OffscreenCanvas(video.videoWidth, video.videoHeight);
+        const context = canvas.getContext('2d');
+        context.drawImage(video, 0, 0);
+        const [r, g, b] = context.getImageData(canvas.width >> 1, canvas.height >> 1, 1, 1).data;
+        result = {r, g, b, width: video.videoWidth, height: video.videoHeight};
+        if ((red ? r > 200 && g < 60 : g > 200 && r < 60) && b < 60) break;
+    }
+    return result || {missingFrame: true};
+}
+async function camera() {
+    const stream = await navigator.mediaDevices.getUserMedia({video: {width: 320, height: 240}});
+    const video = document.getElementById('camera');
+    video.srcObject = stream;
+    const playing = await Promise.race([video.play().then(() => true), sleep(4000).then(() => false)]);
+    if (!playing) {
+        stream.getTracks().forEach(track => track.stop());
+        return {missingFrame: true};
+    }
+    const result = await cameraFrame(video, false);
+    if (reconnect || hotplug) {
+        await report('camera', result);
+        await fetch('/resume');
+        await report(reconnect ? 'camera-reconnected' : 'camera-replaced', await cameraFrame(video, true));
+    }
+    stream.getTracks().forEach(track => track.stop());
+    return result;
+}
+async function microphoneLevel(analyser, quiet) {
+    const samples = new Float32Array(analyser.fftSize);
+    let rms = 0;
+    let consecutive = 0;
+    for (let i = 0; i < 150; i++) {
+        await sleep(100);
+        analyser.getFloatTimeDomainData(samples);
+        rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+        if (quiet) {
+            consecutive = 0.09 < rms && rms < 0.22 ? consecutive + 1 : 0;
+            if (consecutive >= 10) break;
+        } else if (rms >= 0.25) {
+            break;
+        }
+    }
+    return {rms, stable: !quiet || consecutive >= 10};
+}
+async function microphone() {
+    const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false}
+    });
+    const audio = new AudioContext();
+    await audio.resume();
+    const analyser = audio.createAnalyser();
+    audio.createMediaStreamSource(stream).connect(analyser);
+    const {rms} = await microphoneLevel(analyser, false);
+    if (reconnect) {
+        await report('microphone', {rms, sampleRate: audio.sampleRate});
+        await fetch('/resume');
+        await report('microphone-reconnected', await microphoneLevel(analyser, true));
+    }
+    stream.getTracks().forEach(track => track.stop());
+    await audio.close();
+    return {rms, sampleRate: audio.sampleRate};
+}
+async function exercise(name, run) {
+    await attempt(name, run);
+    if (location.search === '?restart') {
+        await sleep(2000);
+        await attempt(name + '-restarted', run);
+    }
+}
+async function webauthn() {
+    let uvpaa = false;
+    for (let i = 0; i < 20; i++) {
+        uvpaa = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+        if (uvpaa) break;
+        await sleep(100);
+    }
+    const credential = await navigator.credentials.create({
+        publicKey: {
+            challenge: new Uint8Array(32).fill(7),
+            rp: {id: 'localhost', name: 'Loopback RBI'},
+            user: {id: new Uint8Array([1, 2, 3, 4]), name: 'user@localhost', displayName: 'User'},
+            pubKeyCredParams: [{type: 'public-key', alg: -7}],
+            authenticatorSelection: {
+                authenticatorAttachment: 'platform',
+                residentKey: 'required',
+                userVerification: 'required',
+            },
+            attestation: 'direct',
+            timeout: 15000,
+        },
+    });
+    const authData = new Uint8Array(credential.response.getAuthenticatorData());
+    const aaguid = new TextDecoder().decode(authData.slice(37, 53));
+    const assertionOutcome = await navigator.credentials.get({
+        publicKey: {
+            challenge: new Uint8Array(32).fill(8),
+            rpId: 'localhost',
+            allowCredentials: [{type: 'public-key', id: new Uint8Array(credential.rawId)}],
+            userVerification: 'preferred',
+            timeout: 15000,
+        },
+    }).then(() => 'resolved', error => error.name);
+    const abort = new AbortController();
+    const cancelled = navigator.credentials.create({
+        signal: abort.signal,
+        publicKey: {
+            challenge: new Uint8Array(32).fill(9),
+            rp: {id: 'localhost', name: 'Loopback RBI'},
+            user: {id: new Uint8Array([5, 6, 7, 8]), name: 'cancel@localhost', displayName: 'Cancel'},
+            pubKeyCredParams: [{type: 'public-key', alg: -7}],
+            timeout: 45678,
+        },
+    }).then(() => 'resolved', error => error.name);
+    await sleep(300);
+    abort.abort();
+    return {uvpaa, aaguid, assertionOutcome, abortError: await cancelled};
+}
+async function touchAndPlayback() {
+    const target = document.getElementById('interactive');
+    const touched = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('touch timeout')), 15000);
+        let point = null;
+        target.addEventListener('touchstart', event => {
+            event.preventDefault();
+            const contact = event.changedTouches[0];
+            point = {touched: true, x: Math.round(contact.clientX), y: Math.round(contact.clientY)};
+        }, {once: true});
+        target.addEventListener('touchend', async () => {
+            clearTimeout(timer);
+            // Scripted printing must fail silently without opening a modal host print dialog.
+            window.print();
+            const audio = new AudioContext();
+            await audio.resume();
+            const osc = audio.createOscillator();
+            const gain = audio.createGain();
+            osc.frequency.value = 440;
+            gain.gain.value = 0.5;
+            osc.connect(gain).connect(audio.destination);
+            osc.start();
+            await sleep(600);
+            osc.stop();
+            await audio.close();
+            resolve(point || {touched: false});
+        }, {once: true});
+    });
+    return touched;
+}
+async function penInput() {
+    const target = document.getElementById('interactive');
+    return await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('pen timeout')), 15000);
+        const listener = event => {
+            if (event.pointerType !== 'pen') return;
+            target.removeEventListener('pointerdown', listener);
+            clearTimeout(timer);
+            resolve({
+                pointerType: event.pointerType,
+                x: Math.round(event.clientX),
+                y: Math.round(event.clientY),
+                pressure: Number(event.pressure.toFixed(2)),
+            });
+        };
+        target.addEventListener('pointerdown', listener);
+    });
+}
+async function geolocation(connectedGate) {
+    await connectedGate;
+    for (let attemptIndex = 0; attemptIndex < 25; attemptIndex++) {
+        const outcome = await new Promise(resolve => {
+            navigator.geolocation.getCurrentPosition(
+                pos => resolve({
+                    ok: true,
+                    latitude: pos.coords.latitude,
+                    longitude: pos.coords.longitude,
+                    altitude: pos.coords.altitude,
+                }),
+                err => resolve({ok: false, code: err.code}),
+                {maximumAge: 0, timeout: 4000}
+            );
+        });
+        if (outcome.ok || attemptIndex >= 4) {
+            return {
+                ...outcome,
+                timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            };
+        }
+        await sleep(150);
+    }
+}
+exercise('camera', camera);
+exercise('microphone', microphone);
+attempt('webauthn', webauthn);
+const touchReady = touchAndPlayback();
+attempt('touch', () => touchReady);
+attempt('pen', penInput);
+attempt('location', () => geolocation(touchReady));
+</script>

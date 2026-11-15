@@ -18,13 +18,19 @@ resolver = "2"
 default = []
 runtime = [
     "dep:cef", "dep:async-trait", "dep:bytes", "dep:clap",
-    "dep:ironrdp-server", "dep:ironrdp-displaycontrol", "dep:ironrdp-rdpdr", "dep:ironrdp-cliprdr", "dep:ironrdp-cliprdr-format", "dep:ironrdp-core", "dep:ironrdp-pdu",
-    "dep:tokio", "dep:tokio-rustls", "dep:rcgen", "dep:nix", "dep:libc",
+    "dep:ironrdp-server", "dep:ironrdp-displaycontrol", "dep:ironrdp-egfx", "dep:ironrdp-rdpdr", "dep:ironrdp-cliprdr", "dep:ironrdp-cliprdr-format", "dep:ironrdp-core", "dep:ironrdp-pdu",
+    "dep:ironrdp-rdpeai", "dep:ironrdp-rdpecam", "dep:ironrdp-rdpel", "dep:ironrdp-rdpewa", "dep:ironrdp-dvc", "dep:ironrdp-rdpsnd",
+    "dep:ironrdp-svc", "dep:openh264", "dep:tokio", "dep:tokio-rustls", "dep:rcgen", "dep:nix", "dep:libc",
     "dep:tempfile", "dep:tracing", "dep:tracing-subscriber", "dep:windows-sys",
 ]
 bundle = ["runtime", "cef/build-util"]
 # Test-only stand-ins for the client's camera, microphone and authenticator.
 device-simulator = ["runtime", "dep:sha2"]
+media-fixture = [
+    "dep:ironrdp-client", "dep:ironrdp-tls", "dep:ironrdp-pdu",
+    "dep:ironrdp-core", "dep:ironrdp-dvc", "dep:ironrdp-egfx", "dep:ironrdp-rdpeai", "dep:ironrdp-rdpecam", "dep:ironrdp-rdpei", "dep:ironrdp-rdpel", "dep:ironrdp-rdpewa", "dep:ironrdp-rdpsnd",
+    "dep:openh264", "dep:sha2", "dep:tokio", "dep:tracing-subscriber",
+]
 
 [dependencies]
 anyhow = "1" # public
@@ -33,15 +39,27 @@ cef = { git = "https://github.com/tauri-apps/cef-rs", rev = "9aa78c450489eddb828
 async-trait = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
 clap = { version = "4.6", features = ["derive"], optional = true }
-ironrdp-server = { path = "../../crates/ironrdp-server", optional = true } # public
+ironrdp-server = { path = "../../crates/ironrdp-server", features = ["egfx"], optional = true } # public
+ironrdp-client = { path = "../../crates/ironrdp-client", features = ["rustls", "openh264"], optional = true }
+ironrdp-tls = { path = "../../crates/ironrdp-tls", optional = true }
 ironrdp-displaycontrol = { path = "../../crates/ironrdp-displaycontrol", optional = true }
+ironrdp-egfx = { path = "../../crates/ironrdp-egfx", optional = true }
 ironrdp-rdpdr = { path = "../../crates/ironrdp-rdpdr", optional = true }
 ironrdp-cliprdr = { path = "../../crates/ironrdp-cliprdr", optional = true }
 ironrdp-cliprdr-format = { path = "../../crates/ironrdp-cliprdr-format", optional = true }
 ironrdp-core = { path = "../../crates/ironrdp-core", optional = true }
 ironrdp-pdu = { path = "../../crates/ironrdp-pdu", optional = true }
+ironrdp-rdpeai = { path = "../../crates/ironrdp-rdpeai", optional = true }
+ironrdp-rdpecam = { path = "../../crates/ironrdp-rdpecam", optional = true }
+ironrdp-rdpei = { path = "../../crates/ironrdp-rdpei", optional = true }
+ironrdp-rdpel = { path = "../../crates/ironrdp-rdpel", optional = true }
+ironrdp-rdpewa = { path = "../../crates/ironrdp-rdpewa", optional = true }
+ironrdp-dvc = { path = "../../crates/ironrdp-dvc", optional = true }
+ironrdp-svc = { path = "../../crates/ironrdp-svc", optional = true }
+ironrdp-rdpsnd = { path = "../../crates/ironrdp-rdpsnd", optional = true }
 tokio = { version = "1", features = ["rt", "sync", "time", "signal", "net", "macros"], optional = true } # public (JoinHandle)
 tokio-rustls = { version = "0.26", optional = true }
+openh264 = { version = "0.9", default-features = false, features = ["source"], optional = true }
 rcgen = { version = "0.14", optional = true }
 sha2 = { version = "0.10", optional = true }
 tempfile = { version = "3", optional = true }
@@ -54,9 +72,6 @@ libc = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_LibraryLoader"], optional = true }
-
-[dev-dependencies]
-ironrdp-svc = { path = "../../crates/ironrdp-svc" }
 
 [[bin]]
 name = "ironrdp-cef-server"
@@ -80,6 +95,12 @@ test = false
 name = "rdpdr-policy-fixture"
 path = "testing/rdpdr_policy.rs"
 required-features = ["runtime"]
+test = false
+
+[[bin]]
+name = "rdp-media-fixture"
+path = "testing/rdp_media.rs"
+required-features = ["media-fixture"]
 test = false
 
 [package.metadata.cef.bundle]

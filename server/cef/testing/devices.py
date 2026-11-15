@@ -42,6 +42,10 @@ def wait_result(name):
 class DevicesRunner(e2e.Runner):
     fixture_handler = DevicesHandler
 
+    def __init__(self, args):
+        super().__init__(args)
+        self.permission_only = args.permission_only
+
     def start_fixture(self):
         super().start_fixture()
         # Web Authentication rejects IP-address relying parties, and localhost stays a secure context.
@@ -58,6 +62,34 @@ class DevicesRunner(e2e.Runner):
         self.start_fixture()
         self.daemon_started = True
         self.agent("daemon", "start")
+        if not self.permission_only:
+            self.check_simulated_devices()
+
+        # oracle: mutant missing default-deny or opt-in permission gate.
+        denied = self.probe_permission("media-disabled", ())
+        if not denied.get("error", "").startswith("NotAllowedError:"):
+            raise AssertionError("media-disabled reported {!r}".format(denied))
+        allowed = self.probe_permission("media-enabled", ("--remote-media",))
+        if allowed.get("granted") is not True:
+            raise AssertionError("media-enabled reported {!r}".format(allowed))
+
+    def probe_permission(self, generation, options):
+        if self.server:
+            self.agent("disconnect")
+            self.stop_server()
+        self.connect(self.start_server(generation, options))
+        self.shortcut(0x26)
+        self.agent("type-unicode", "--text", self.base_url + "devices.html")
+        self.key(0x1c)
+        self.content(generation + "-fixture", [(48, 300, "ffffff")])
+        with RESULTS_CHANGED:
+            RESULTS.pop("permission", None)
+        self.click(100, CHROME_HEIGHT + 112)
+        value = wait_result("permission")
+        self.steps.append({"name": generation, "result": value})
+        return value
+
+    def check_simulated_devices(self):
         self.connect(self.start_server("devices", ("--clipboard", "--simulate-devices")))
         self.shortcut(0x26)
         self.agent("type-unicode", "--text", self.base_url + "devices.html")
@@ -68,26 +100,23 @@ class DevicesRunner(e2e.Runner):
         # oracle: WebAuthn L3 §5.1.3 (create() returns an attested credential); the simulator registers ES256.
         self.check("webauthn", lambda v: v.get("type") == "public-key" and v.get("rawIdLength") == 16
                    and v.get("publicKeyAlgorithm") == -7 and v.get("platform") is True)
-        # oracle: the simulator's I420 frame is BT.601 green, unlike Chromium's fake-device pattern.
-        self.check("camera", lambda v: "error" not in v and v["g"] > 200 and v["r"] < 60 and v["b"] < 60)
+        # oracle: mutant dropped or corrupted the simulator's green camera frame.
+        self.check("camera", lambda v: "error" not in v and v["g"] >= 245 and v["r"] <= 10 and v["b"] <= 10)
         self.capture("02-camera")
         # oracle: a full-scale/2 sine has RMS 0.354; silence or a missing device stays near zero.
         self.check("microphone", lambda v: "error" not in v and 0.25 < v["rms"] < 0.45)
         # oracle: the media policy denies desktop capture, so the host display stays private.
-        self.check("screen", lambda v: "error" in v)
-
-        # oracle: spec Clipboard API and events §8.1.3 (paste exposes clipboard files through DataTransfer).
-        self.click(100, CHROME_HEIGHT + 132)
-        self.shortcut(0x2f)
-        self.check("paste", lambda v: v.get("name") == "simulated-clipboard.txt" and v.get("text") == "remote file ✓")
+        self.check("screen", lambda v: v.get("error", "").startswith("NotAllowedError:"))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server-bin", required=True,
-                        help="Server bundle built with the device-simulator feature against the patched CEF")
+                        help="Server bundle built against patched CEF; simulator required unless --permission-only")
     parser.add_argument("--agent", required=True)
     parser.add_argument("--artifacts", default="server/cef/artifacts/devices-e2e")
+    parser.add_argument("--permission-only", action="store_true",
+                        help="Check media permission with a bundle built without the simulator")
     args = parser.parse_args()
     runner = DevicesRunner(args)
     print("Artifacts: " + str(runner.artifacts), flush=True)

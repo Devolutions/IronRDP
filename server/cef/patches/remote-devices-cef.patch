@@ -21,10 +21,10 @@ index ec790bfc9..89d9e4bc7 100644
      "//printing/buildflags",
 diff --git a/libcef/browser/remote_devices.cc b/libcef/browser/remote_devices.cc
 new file mode 100644
-index 000000000..363b35345
+index 000000000..740733cf0
 --- /dev/null
 +++ b/libcef/browser/remote_devices.cc
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,239 @@
 +// Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
 +// reserved. Use of this source code is governed by a BSD-style license that
 +// can be found in the LICENSE file.
@@ -101,9 +101,24 @@ index 000000000..363b35345
 +  }
 +  content::SetRemoteWebAuthnHandler(
 +      base::BindRepeating(
-+          [](cef_remote_webauthn_request_fn request, void* context,
-+             uint64_t request_id, std::vector<uint8_t> bytes) {
-+            request(context, request_id, bytes.data(), bytes.size());
++          [](cef_remote_webauthn_request_fn callback, void* context,
++             uint64_t request_id, content::RemoteWebAuthnRequest incoming) {
++            const cef_remote_webauthn_request_t raw = {
++                incoming.relying_party_id.c_str(),
++                incoming.origin.c_str(),
++                reinterpret_cast<const uint8_t*>(
++                    incoming.client_data_json.data()),
++                incoming.client_data_json.size(),
++                incoming.ctap_request.data(),
++                incoming.ctap_request.size(),
++                incoming.timeout_ms,
++                incoming.attachment,
++                incoming.user_verification,
++                incoming.attestation,
++                incoming.require_resident_key ? 1 : 0,
++                incoming.prefer_resident_key ? 1 : 0,
++            };
++            callback(context, request_id, &raw);
 +          },
 +          request, context),
 +      cancel ? base::BindRepeating(
@@ -191,6 +206,12 @@ index 000000000..363b35345
 +             : CEF_REMOTE_DEVICE_INVALID;
 +}
 +
++void cef_remote_microphone_reset(void) {
++  if (RemoteMediaEnabled()) {
++    media::RemoteAudioSource::Reset();
++  }
++}
++
 +int cef_remote_webauthn_enabled(void) {
 +  return content::IsRemoteWebAuthnEnabled() ? 1 : 0;
 +}
@@ -198,13 +219,12 @@ index 000000000..363b35345
 +int cef_remote_webauthn_set_handler(cef_remote_webauthn_request_fn request,
 +                                    cef_remote_webauthn_cancel_fn cancel,
 +                                    void* context) {
-+  if (!content::IsRemoteWebAuthnEnabled()) {
++  if (!content::IsRemoteWebAuthnEnabled() || !UIThreadRunning() ||
++      !content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) {
 +    return CEF_REMOTE_DEVICE_DISABLED;
 +  }
-+  return RunOnUIThread(
-+             base::BindOnce(&InstallWebAuthnHandler, request, cancel, context))
-+             ? 0
-+             : CEF_REMOTE_DEVICE_DISABLED;
++  InstallWebAuthnHandler(request, cancel, context);
++  return 0;
 +}
 +
 +int cef_remote_webauthn_respond(uint64_t request_id,
@@ -246,10 +266,10 @@ index 000000000..363b35345
 +}
 diff --git a/libcef/browser/remote_devices.h b/libcef/browser/remote_devices.h
 new file mode 100644
-index 000000000..c213499a5
+index 000000000..f35d1d33f
 --- /dev/null
 +++ b/libcef/browser/remote_devices.h
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,130 @@
 +// Copyright (c) 2026 The Chromium Embedded Framework Authors. All rights
 +// reserved. Use of this source code is governed by a BSD-style license that
 +// can be found in the LICENSE file.
@@ -323,12 +343,32 @@ index 000000000..c213499a5
 +                                          int channels,
 +                                          int sample_rate);
 +
-+// Receives a CTAP2 request (command byte, then CBOR) on the browser UI
-+// thread. The request bytes are valid only during the call.
-+typedef void (*cef_remote_webauthn_request_fn)(void* context,
-+                                               uint64_t request_id,
-+                                               const uint8_t* request,
-+                                               size_t size);
++// Discards buffered microphone samples; readers skip audio queued before their
++// next read. Thread-safe.
++CEF_EXPORT void cef_remote_microphone_reset(void);
++
++// WebAuthn ceremony parameters delivered on the browser UI thread.
++// All pointers are valid only during the callback invocation.
++typedef struct _cef_remote_webauthn_request_t {
++  const char* rp_id;
++  const char* origin;
++  const uint8_t* client_data_json;
++  size_t client_data_json_size;
++  const uint8_t* ctap_request;
++  size_t ctap_request_size;
++  uint32_t timeout_ms;
++  uint32_t attachment;
++  uint32_t user_verification;
++  uint32_t attestation;
++  int require_resident_key;
++  int prefer_resident_key;
++} cef_remote_webauthn_request_t;
++
++// Receives a WebAuthn ceremony request on the browser UI thread.
++typedef void (*cef_remote_webauthn_request_fn)(
++    void* context,
++    uint64_t request_id,
++    const cef_remote_webauthn_request_t* request);
 +// Reports on the browser UI thread that |request_id| was cancelled.
 +typedef void (*cef_remote_webauthn_cancel_fn)(void* context,
 +                                              uint64_t request_id);
@@ -336,10 +376,10 @@ index 000000000..c213499a5
 +// Returns 1 when the remote authenticator is enabled, 0 otherwise.
 +CEF_EXPORT int cef_remote_webauthn_enabled(void);
 +
-+// Installs the authenticator callbacks, or removes them when |request| is
-+// null, which fails pending requests. |context| must stay valid until the
-+// callbacks are replaced. Takes effect asynchronously on the UI thread unless
-+// called there. Returns 0 or a negative error.
++// Installs the authenticator callbacks on the browser UI thread, or removes
++// them when |request| is null, which fails pending requests. |context| must
++// stay valid until the callbacks are replaced. Must be called on the browser UI
++// thread; returns 0 or CEF_REMOTE_DEVICE_DISABLED otherwise.
 +CEF_EXPORT int cef_remote_webauthn_set_handler(
 +    cef_remote_webauthn_request_fn request,
 +    cef_remote_webauthn_cancel_fn cancel,

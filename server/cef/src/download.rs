@@ -123,3 +123,68 @@ pub fn collision_name(name: &str, attempt: u32) -> String {
         None => format!("{name} ({attempt})"),
     }
 }
+
+pub fn pdf_file_name(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|ch| {
+            if ch.is_control()
+                || matches!(
+                    ch,
+                    '/' | '\\'
+                        | ':'
+                        | '*'
+                        | '?'
+                        | '"'
+                        | '<'
+                        | '>'
+                        | '|'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+            {
+                '-'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches(['.', ' ']);
+    let stem = trimmed
+        .rsplit_once('.')
+        .filter(|(_, ext)| ext.eq_ignore_ascii_case("pdf"))
+        .map_or(trimmed, |(base, _)| base.trim_end_matches(['.', ' ']));
+    let mut bounded = String::new();
+    for ch in stem.chars() {
+        if bounded.len() + ch.len_utf8() > 120 {
+            break;
+        }
+        bounded.push(ch);
+    }
+    let bounded = bounded.trim_end_matches(['.', ' ']);
+    if bounded.is_empty() {
+        return "page.pdf".to_owned();
+    }
+    let candidate = format!("{bounded}.pdf");
+    safe_name(&candidate).unwrap_or_else(|_| "page.pdf".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pdf_file_name_sanitizes_arbitrary_page_titles() {
+        // oracle: mutant rejecting titles with colons, reserved DOS stems, or empty/oversized strings during PrintToPDF.
+        assert_eq!(pdf_file_name("Quarterly: Report / Q1?"), "Quarterly- Report - Q1-.pdf");
+        assert_eq!(pdf_file_name("Receipt.PDF"), "Receipt.pdf");
+        assert_eq!(pdf_file_name("   ...   "), "page.pdf");
+        assert_eq!(pdf_file_name("PRN"), "page.pdf");
+        let long = "é".repeat(200);
+        let generated = pdf_file_name(&long);
+        assert!(safe_name(&generated).is_ok());
+        assert!(generated.ends_with(".pdf"));
+    }
+}

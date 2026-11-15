@@ -4,7 +4,7 @@
 //! microphones or authenticators: without client input, the camera has no frames,
 //! the microphone is silent, and Web Authentication requests fail.
 
-use std::ffi::{c_float, c_int, c_void};
+use std::ffi::{CStr, c_char, c_float, c_int, c_void};
 use std::time::Duration;
 
 use crate::patched_runtime::Library;
@@ -30,7 +30,10 @@ const UNKNOWN: c_int = -3;
 /// Pixel layouts accepted by [`RemoteMedia::push_camera_frame`], with tightly packed planes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
-#[expect(dead_code, reason = "client camera formats arrive with the RDP camera channel")]
+#[cfg_attr(
+    not(feature = "device-simulator"),
+    expect(dead_code, reason = "the CEF API also accepts BGRA camera frames")
+)]
 pub enum PixelFormat {
     I420 = 0,
     Nv12 = 1,
@@ -47,11 +50,28 @@ pub struct CameraFormat {
     pub frame_rate: f32,
 }
 
+#[repr(C)]
+struct RawAuthenticatorRequest {
+    rp_id: *const c_char,
+    origin: *const c_char,
+    client_data_json: *const u8,
+    client_data_json_size: usize,
+    ctap_request: *const u8,
+    ctap_request_size: usize,
+    timeout_ms: u32,
+    attachment: u32,
+    user_verification: u32,
+    attestation: u32,
+    require_resident_key: c_int,
+    prefer_resident_key: c_int,
+}
+
 type Enabled = unsafe extern "C" fn() -> c_int;
 type GetFormat = unsafe extern "C" fn(*mut c_int, *mut c_int, *mut c_float) -> c_int;
 type PushFrame = unsafe extern "C" fn(c_int, c_int, c_int, *const u8, usize, i64) -> c_int;
 type PushAudio = unsafe extern "C" fn(*const i16, usize, c_int, c_int) -> c_int;
-type RequestFn = unsafe extern "C" fn(*mut c_void, u64, *const u8, usize);
+type ResetAudio = unsafe extern "C" fn();
+type RequestFn = unsafe extern "C" fn(*mut c_void, u64, *const RawAuthenticatorRequest);
 type CancelFn = unsafe extern "C" fn(*mut c_void, u64);
 type SetHandler = unsafe extern "C" fn(Option<RequestFn>, Option<CancelFn>, *mut c_void) -> c_int;
 type Respond = unsafe extern "C" fn(u64, *const u8, usize) -> c_int;
@@ -64,19 +84,21 @@ pub struct RemoteMedia {
     push_frame: PushFrame,
     microphone_active: Enabled,
     push_audio: PushAudio,
+    reset_audio: ResetAudio,
 }
 
 impl RemoteMedia {
     pub fn load() -> anyhow::Result<Self> {
         let library = Library::open()?;
         // SAFETY: Each name is resolved to the signature the patched runtime declares for it.
-        let (enabled, get_format, push_frame, microphone_active, push_audio) = unsafe {
+        let (enabled, get_format, push_frame, microphone_active, push_audio, reset_audio) = unsafe {
             (
                 library.symbol::<Enabled>(c"cef_remote_media_enabled")?,
                 library.symbol::<GetFormat>(c"cef_remote_camera_get_format")?,
                 library.symbol::<PushFrame>(c"cef_remote_camera_push_frame")?,
                 library.symbol::<Enabled>(c"cef_remote_microphone_active")?,
                 library.symbol::<PushAudio>(c"cef_remote_microphone_push")?,
+                library.symbol::<ResetAudio>(c"cef_remote_microphone_reset")?,
             )
         };
         // SAFETY: The function takes no arguments and only reads the command line.
@@ -89,6 +111,7 @@ impl RemoteMedia {
             push_frame,
             microphone_active,
             push_audio,
+            reset_audio,
         })
     }
 
@@ -163,47 +186,73 @@ impl RemoteMedia {
         );
         Ok(())
     }
+
+    pub fn reset_microphone(&self) {
+        // SAFETY: The patched CEF function takes no arguments and resets its shared audio buffer.
+        unsafe { (self.reset_audio)() };
+    }
+}
+
+/// Parameters of one browser Web Authentication ceremony.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticatorRequest {
+    pub rp_id: String,
+    pub origin: String,
+    pub client_data_json: Vec<u8>,
+    /// CTAP2 command byte (`0x01` or `0x02`) followed by its CBOR parameter map.
+    pub ctap_request: Vec<u8>,
+    pub timeout_ms: u32,
+    pub attachment: u32,
+    pub user_verification: u32,
+    pub attestation: u32,
+    pub require_resident_key: bool,
+    pub prefer_resident_key: bool,
 }
 
 /// A message from the browser to the remote authenticator.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AuthenticatorEvent {
-    /// A CTAP2 request: command byte, then CBOR parameters.
-    Request {
-        id: u64,
-        message: Vec<u8>,
-    },
-    Cancel {
-        id: u64,
-    },
+    Request { id: u64, request: AuthenticatorRequest },
+    Cancel { id: u64 },
 }
 
 type Handler = Box<dyn Fn(AuthenticatorEvent)>;
 
-/// Answers authenticator requests from any thread.
+/// Answers authenticator requests and updates platform availability from any thread.
 #[derive(Clone, Copy)]
-pub struct AuthenticatorResponder(Respond);
+pub struct AuthenticatorResponder {
+    respond: Respond,
+    set_platform: SetPlatform,
+}
 
 impl AuthenticatorResponder {
     /// Completes request `id` with a CTAP2 response: status byte, then CBOR.
     /// An empty response fails the request.
     pub fn respond(&self, id: u64, response: &[u8]) -> anyhow::Result<()> {
         // SAFETY: `response` is readable for its length.
-        let status = unsafe { (self.0)(id, response.as_ptr(), response.len()) };
+        let status = unsafe { (self.respond)(id, response.as_ptr(), response.len()) };
         match status {
             0 | UNKNOWN => Ok(()),
             INVALID => anyhow::bail!("remote authenticator response was invalid"),
             _ => anyhow::bail!("remote authenticator response failed with {status}"),
         }
     }
+
+    /// Sets whether pages see a user-verifying platform authenticator.
+    pub fn set_platform_available(&self, available: bool) -> anyhow::Result<()> {
+        // SAFETY: The function takes a plain integer and schedules UI-thread state update.
+        let status = unsafe { (self.set_platform)(c_int::from(available)) };
+        anyhow::ensure!(status == 0, "remote platform authenticator update failed with {status}");
+        Ok(())
+    }
 }
 
 /// The remote Web Authentication authenticator. Create and drop it on the CEF UI thread.
 pub struct RemoteAuthenticator {
     set_handler: SetHandler,
-    set_platform: SetPlatform,
     responder: AuthenticatorResponder,
     handler: Option<Box<Handler>>,
+    _not_send: std::marker::PhantomData<*mut ()>,
 }
 
 impl RemoteAuthenticator {
@@ -225,9 +274,9 @@ impl RemoteAuthenticator {
         );
         Ok(Self {
             set_handler,
-            set_platform,
-            responder: AuthenticatorResponder(respond),
+            responder: AuthenticatorResponder { respond, set_platform },
             handler: None,
+            _not_send: std::marker::PhantomData,
         })
     }
 
@@ -256,10 +305,7 @@ impl RemoteAuthenticator {
 
     /// Sets whether pages see a user-verifying platform authenticator.
     pub fn set_platform_available(&self, available: bool) -> anyhow::Result<()> {
-        // SAFETY: The function takes a plain integer.
-        let status = unsafe { (self.set_platform)(c_int::from(available)) };
-        anyhow::ensure!(status == 0, "remote platform authenticator update failed with {status}");
-        Ok(())
+        self.responder.set_platform_available(available)
     }
 }
 
@@ -271,20 +317,95 @@ impl Drop for RemoteAuthenticator {
     }
 }
 
-unsafe extern "C" fn on_request(context: *mut c_void, id: u64, message: *const u8, size: usize) {
-    // SAFETY: `context` is the live handler installed by `set_handler`.
-    let handler = unsafe { &*context.cast::<Handler>() };
-    let message = if message.is_null() || size == 0 {
+unsafe fn copy_bytes(ptr: *const u8, len: usize) -> Vec<u8> {
+    if ptr.is_null() || len == 0 {
         Vec::new()
     } else {
-        // SAFETY: The runtime passes `size` readable bytes that stay valid during the call.
-        unsafe { std::slice::from_raw_parts(message, size) }.to_vec()
+        // SAFETY: Caller guarantees `ptr` points to `len` readable bytes for this call.
+        unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
+    }
+}
+
+unsafe fn copy_cstr(ptr: *const c_char) -> String {
+    if ptr.is_null() {
+        String::new()
+    } else {
+        // SAFETY: Caller guarantees `ptr` is a valid NUL-terminated string for this call.
+        unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
+    }
+}
+
+unsafe extern "C" fn on_request(context: *mut c_void, id: u64, raw: *const RawAuthenticatorRequest) {
+    // SAFETY: `context` is the live handler installed by `set_handler`.
+    let handler = unsafe { &*context.cast::<Handler>() };
+    if raw.is_null() {
+        return;
+    }
+    // SAFETY: The runtime passes a valid struct pointer whose fields stay valid during this call.
+    let raw = unsafe { &*raw };
+    let request = unsafe {
+        AuthenticatorRequest {
+            rp_id: copy_cstr(raw.rp_id),
+            origin: copy_cstr(raw.origin),
+            client_data_json: copy_bytes(raw.client_data_json, raw.client_data_json_size),
+            ctap_request: copy_bytes(raw.ctap_request, raw.ctap_request_size),
+            timeout_ms: raw.timeout_ms,
+            attachment: raw.attachment,
+            user_verification: raw.user_verification,
+            attestation: raw.attestation,
+            require_resident_key: raw.require_resident_key != 0,
+            prefer_resident_key: raw.prefer_resident_key != 0,
+        }
     };
-    handler(AuthenticatorEvent::Request { id, message });
+    handler(AuthenticatorEvent::Request { id, request });
 }
 
 unsafe extern "C" fn on_cancel(context: *mut c_void, id: u64) {
     // SAFETY: `context` is the live handler installed by `set_handler`.
     let handler = unsafe { &*context.cast::<Handler>() };
     handler(AuthenticatorEvent::Cancel { id });
+}
+
+#[cfg(test)]
+unsafe extern "C" fn no_op_reset_audio() {}
+
+#[cfg(test)]
+impl RemoteMedia {
+    pub(crate) fn for_test(
+        get_format: GetFormat,
+        push_frame: PushFrame,
+        microphone_active: Enabled,
+        push_audio: PushAudio,
+    ) -> Self {
+        Self {
+            get_format,
+            push_frame,
+            microphone_active,
+            push_audio,
+            reset_audio: no_op_reset_audio,
+        }
+    }
+
+    pub(crate) fn for_test_with_reset(
+        get_format: GetFormat,
+        push_frame: PushFrame,
+        microphone_active: Enabled,
+        push_audio: PushAudio,
+        reset_audio: ResetAudio,
+    ) -> Self {
+        Self {
+            get_format,
+            push_frame,
+            microphone_active,
+            push_audio,
+            reset_audio,
+        }
+    }
+}
+
+#[cfg(test)]
+impl AuthenticatorResponder {
+    pub(crate) fn for_test(respond: Respond, set_platform: SetPlatform) -> Self {
+        Self { respond, set_platform }
+    }
 }

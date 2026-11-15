@@ -23,7 +23,7 @@ The patches are in `server/cef/patches`:
 | --- | --- | --- |
 | `isolated-clipboard.patch` | CEF | Process-private clipboard and its C API, including pasted files |
 | `remote-devices-cef.patch` | CEF, after the clipboard patch | C API for remote camera, microphone, and WebAuthn |
-| `remote-devices-chromium.patch` | Chromium | Embedder-fed capture devices and WebAuthn authenticator |
+| `remote-devices-chromium.patch` | Chromium | Embedder-fed capture devices, WebAuthn authenticator, and off-UI-thread loopback worker teardown |
 | `in-process-audio-shutdown.patch` | Chromium | Stops the in-process audio service before its `AudioManager` |
 | `disable-chromium-shutdown-signals.patch` | Chromium, POSIX only | Lets Rust own shutdown cleanup |
 
@@ -83,17 +83,16 @@ $artifacts = Join-Path $PWD.Path "server/cef/artifacts/windows-run"
 
 On Linux, install a TrueType font such as DejaVu Sans and run as a non-root user with a working Chromium sandbox.
 The server selects the headless Ozone backend and loads its sibling helper, resources, locales, and libraries; the executables use an `$ORIGIN` library search path.
-With Xvfb and xauth installed, a private display can be started without a desktop session:
+Run it without an X11 server or desktop session:
 
 ```sh
-xvfb-run -a -s "-screen 0 1280x800x24 -nolisten tcp" \
-  server/cef/artifacts/bundle/ironrdp-cef-server \
+server/cef/artifacts/bundle/ironrdp-cef-server \
   --bind-addr 127.0.0.1:3399 --url https://devolutions.net \
   --artifacts server/cef/artifacts/linux-run
 ```
 
 Do not add `--no-sandbox` when user namespaces or sandbox installation are unavailable; fix the native runtime configuration instead.
-Running in Xvfb does not provide a container isolation boundary.
+The patched Linux build and its headless operation remain unverified.
 The Windows and Linux runtime and packager type-check with `cef/dox`, which skips native CEF linking.
 Linux architectures other than ARM64 remain unverified.
 The server chooses an installed platform font, or accepts an explicit TrueType file with `--font`.
@@ -124,17 +123,21 @@ If CEF shutdown, a worker, or log preservation fails, the server logs and retain
 A suspended CEF helper can outlive a successful server exit, so profile removal does not prove all helpers have stopped.
 
 The listener only accepts loopback addresses and rejects a second simultaneous client.
-It uses an ephemeral self-signed TLS identity and no credential authentication.
+It uses an ephemeral self-signed TLS identity, issues rotated `MS-RDPBCGR` auto-reconnect cookies for active-session recovery, and requires no credential authentication.
 Keep it local; TLS here is not a substitute for a production authorization boundary.
 The test runner computes the certificate's SHA-256 fingerprint independently and pins it in a dedicated agent certificate store.
 It does not bypass certificate validation or modify the user's agent daemon.
 
 The desktop starts at 1280x800.
 Validated client desktop sizes and single-monitor resizes are supported from 320x240 through 3840x2160.
+When the client negotiates `MS-RDPEGFX`, desktop frames stream over the graphics pipeline as `AVC420` H.264 (via OpenH264; see `THIRD_PARTY_NOTICES`) or dirty-rectangle surface updates, falling back to baseline `MS-RDPBCGR` bitmaps otherwise.
+Client `TS_TIME_ZONE_INFORMATION` overrides tab timezones through DevTools emulation, and negotiated `desktopScaleFactor` values adjust the base page zoom level.
 There are at most eight tabs.
-Ctrl/Cmd+L, T, W, R, and Tab select the address, create/close/reload/cycle tabs; F5 and Alt+Left/Right navigate.
-Mouse controls provide the same actions.
-Unicode text input and a subset of US keyboard scancodes are supported, not full IME, international-layout, or keypad behavior.
+Ctrl/Cmd+L, T, W, R, P, =/-, 0, and Tab select the address, create/close/reload tabs, export the active page to PDF, zoom in/out/reset, and cycle tabs; F5 and Alt+Left/Right navigate.
+Mouse controls and single-finger toolbar taps provide the navigation and tab actions.
+Standard CSS cursors, toolbar hover states, and custom BGRA cursors (scaled within 32x32 baseline RDP limits) update the client pointer shape.
+Multitouch and stylus/eraser pen contacts arrive over `MS-RDPEI` (with contact radii, rotation, and pressure) and cancel on channel close, tab switch, or disconnect.
+Unicode text input and US navigation, function (`F1`–`F12`), and alphanumeric scancodes are supported, not full IME, international-layout, or keypad behavior.
 The pinned macOS CEF build does not preserve the auto-repeat flag in synthetic key events.
 On Linux ARM64, a test client that sends consecutive RDP key-downs produced DOM repeat events.
 Windows repeat-flag delivery remains unverified with native CEF.
@@ -151,27 +154,45 @@ These checks are separate from the deterministic suite: public website availabil
 The custom CEF build provides an in-memory clipboard for each browser process.
 The server installs it before browser startup, so page reads and writes never use the host clipboard.
 With `--clipboard`, the CLIPRDR bridge redirects UTF-8 text, HTML, and PNG in both directions between the browser and RDP client.
+Encoded representations and queued outbound clipboard responses are each capped at 16 MiB.
+Client-copied files are fetched in bounded chunks and staged in the private browser profile for pages to paste.
+The server omits source paths and accepts at most 32 files, 16 MiB per file, and 64 MiB total per server run.
 Without RDP redirection, the private clipboard remains local to the browser process.
+An RDP disconnect clears browser clipboard contents, bridge state, and staged client files before the listener accepts another client; queued clipboard events from that connection are discarded.
 Stock CEF lacks the private API and is rejected at startup rather than falling back to the platform clipboard.
-The macOS ARM64 end-to-end test covers all three formats and confirms that the host pasteboard change count stays unchanged.
+The macOS ARM64 end-to-end test covers all three formats, file paste and replacement, and an unchanged host pasteboard change count.
 The private clipboard itself does not use X11 or a desktop clipboard service.
-The Linux runtime selects headless Ozone but has only been tested under Xvfb; private clipboard operation and rendering without Xvfb remain unverified.
+The patched Linux clipboard has not been tested without X11.
 
 ## Remote devices
 
 The patched runtime never enumerates host cameras, microphones, or authenticators.
 The server always starts CEF with `remote-media-capture`, which replaces capture devices with one camera and one microphone fed through the CEF C API.
-It also passes `remote-webauthn`, which sends every Web Authentication request to one embedder authenticator as raw CTAP2 and suppresses Chromium's authenticator UI.
+It also passes `remote-webauthn`, which sends every Web Authentication ceremony and its request metadata to one embedder authenticator and suppresses Chromium's authenticator UI.
 The audio and video capture services run in the browser process so the embedder can feed them.
 Echo cancellation stays in the renderer, and macOS camera frames use shared memory instead of IOSurfaces.
 
-No RDP channel feeds these devices yet.
-Without a feeder, the media permission handler denies camera and microphone requests, and WebAuthn requests fail as if no authenticator answered.
+Pass `--audio` to redirect active-tab browser audio playback to the client over `RDPSND` (`48 kHz` or `44.1 kHz` 16-bit PCM, capped at 32 unconfirmed waves).
+CEF's loopback audio capturer mutes tab output in-process, and tabs stay muted when `--audio` is omitted, so pages never play through host speakers.
+Pass `--remote-media` to allow websites to request the redirected microphone and camera.
+This grants every requesting site access without a per-site prompt; leave it disabled when that is not acceptable.
+RDPEAI opens an AUDIO_INPUT channel while CEF requests microphone capture, feeds client audio to CEF, and closes the channel when capture stops.
+The CEF microphone queue is reset on RDP disconnect so buffered audio cannot carry into a later connection.
+RDPECAM enumerates the client's cameras and forwards a compatible color stream to CEF, closing the device channel when capture stops or setup fails.
+The camera bridge supports H.264 (decoded to packed I420 via OpenH264; see `THIRD_PARTY_NOTICES`), MJPEG, YUY2, NV12, and I420.
+Raw camera frames default to limited-range Rec.709, so cameras using other color spaces can show shifted colors.
+If dynamic-channel creation or camera setup fails, capture may remain unavailable until capture restarts or the client reconnects.
+A declined AUDIO_INPUT open is not retried until capture restarts or the client reconnects.
+Pass `--location` to redirect client geographic coordinates over `Microsoft::Windows::RDS::Location` (`MS-RDPEL`) into CEF's DevTools geolocation emulation.
+Tabs always start with an empty geolocation override (`POSITION_UNAVAILABLE`) and clear client coordinates on channel close or disconnect, keeping host location services unreachable.
+Pass `--webauthn` to redirect Web Authentication ceremonies over `WebAuthN_Channel` (`MS-RDPEWA`).
+On connect, the bridge queries client platform-authenticator availability (`IUVPAA`), forwards registration, assertion, and cancellation with `clientDataJSON` and ceremony options, and clears availability and pending requests on disconnect.
+Without `--webauthn`, or when the client does not expose `WebAuthN_Channel`, Web Authentication requests fail closed without reaching host authenticators.
+A macOS ARM64 loopback test verified `MS-RDPEGFX` desktop streaming, synthetic client audio, `RDPSND` playback, camera frames (including H.264), `RDPEI` touch and pen input, `MS-RDPEL` geolocation, timezone emulation, pointer cursors, and WebAuthn ceremonies over RDP; physical devices and other platforms remain unverified.
 Desktop capture is always denied, so pages cannot capture the host display.
-Pasted files require absolute paths readable by the browser; CLIPRDR file transfer does not stage them yet.
 
 For tests, build with `--features device-simulator` and pass `--simulate-devices`.
-The simulator streams a green camera image and a 440 Hz tone, answers WebAuthn with a test CTAP2 authenticator, and replaces each client clipboard copy with one staged file.
+The simulator streams a green camera image and a 440 Hz tone and answers WebAuthn with a test CTAP2 authenticator.
 Its credentials are not secure; never enable it in a deployment.
 
 ## Redirected downloads
@@ -182,7 +203,8 @@ On Windows, use an absolute drive-letter path without reparse points, not a UNC 
 The folder must already exist, and untrusted local processes must not be able to modify the folder or hard-link its files.
 It is announced as the download-only RDPDR filesystem device `DL`; the browser server never receives its physical path.
 Existing files cannot be read, listed, changed, or overwritten through this device.
-Native file dialogs and browser uploads remain disabled.
+Native file dialogs, native print dialogs, and browser uploads remain disabled.
+Pressing Ctrl/Cmd+P renders the active tab to PDF inside the private staging directory and delivers `<title>.pdf` through the same bounded `DL` sink.
 On Windows, connections exposing this device reject other device redirection; ordinary drive redirection is not an equivalent restricted sink.
 
 Downloads are saved automatically, with collision-safe filenames.
@@ -241,6 +263,7 @@ python3 server/cef/testing/clipboard.py \
 ```
 
 The runner checks text, HTML, and PNG in both directions, unchanged host pasteboard state, and profile cleanup.
+It also reconnects with clipboard redirection disabled and verifies that the prior connection's private clipboard data is unavailable.
 
 Check remote devices with a simulator bundle built against the patched CEF:
 
@@ -252,9 +275,41 @@ python3 server/cef/testing/devices.py \
   --agent target/debug/ironrdp-agent
 ```
 
-The runner checks WebAuthn registration, camera pixels, microphone level, desktop-capture denial, a pasted file, and clean shutdown.
-It serves the fixture from `localhost` because WebAuthn rejects IP-address origins.
+The runner checks simulated WebAuthn registration, camera pixels, microphone level, desktop-capture denial, and clean shutdown.
+It also checks that microphone permission is denied by default and granted with `--remote-media`.
+To run only those checks, use a patched CEF bundle built without `device-simulator`:
+
+```sh
+python3 server/cef/testing/devices.py \
+  --server-bin server/cef/artifacts/bundle/ironrdp-cef-server.app/Contents/MacOS/ironrdp-cef-server \
+  --agent target/debug/ironrdp-agent \
+  --permission-only
+```
+
+The WebAuthn check serves the fixture from `localhost` because WebAuthn rejects IP-address origins.
 Reports and logs are under `server/cef/artifacts/devices-e2e/run-*/`.
+
+Test media over RDP with a patched bundle built without `device-simulator`:
+
+```sh
+cargo build --locked --manifest-path server/cef/Cargo.toml --features media-fixture --bin rdp-media-fixture
+python3 server/cef/testing/rdp_media.py \
+  --server-bin server/cef/artifacts/bundle/ironrdp-cef-server.app/Contents/MacOS/ironrdp-cef-server \
+  --client-bin server/cef/target/debug/rdp-media-fixture --restart
+python3 server/cef/testing/rdp_media.py \
+  --server-bin server/cef/artifacts/bundle/ironrdp-cef-server.app/Contents/MacOS/ironrdp-cef-server \
+  --client-bin server/cef/target/debug/rdp-media-fixture --without-devices
+```
+
+The client negotiates `MS-RDPEGFX` `AVC420`, sends a synthetic camera frame, microphone tone, `MS-RDPEL` location fix, mouse hover, and `RDPEI` touch and pen contacts, verifies `RDPSND` playback and pointer bitmaps, and answers `RDPEWA` WebAuthn ceremonies without accessing host devices, location services, or clipboards.
+The first run stops and restarts both capture channels on the same connection and verifies WebAuthn registration, assertion, and cancellation.
+Use `--camera-format h264`, `--camera-format nv12`, `--camera-format yuy2`, or `--camera-format mjpeg` to test those formats instead of I420.
+Use `--reconnect` instead of `--restart` to reconnect while capture remains active and check the new client's media.
+Use `--hotplug` instead of `--restart` to remove and re-advertise a camera while capture remains active and check the replacement's frames.
+The `--reconnect` and `--hotplug` checks require I420.
+The second run checks for silence, missing camera frames, and WebAuthn rejection when the client redirects no devices.
+The runner pins the server certificate and records results under `server/cef/artifacts/rdp-media-e2e/run-*/`.
+It does not check physical-device interoperability.
 
 Evidence is written under `server/cef/artifacts/e2e/run-*/`: `report.json`, screenshots, agent command/output logs, and per-server logs and certificates.
 On Unix, CEF logs are copied out of the profile on orderly shutdown; on Windows, CEF writes directly to `cef.log` in the artifact directory.
@@ -271,7 +326,7 @@ python3 server/cef/testing/downloads.py \
 
 This runner selects its own private client directory and enables downloads with small test limits.
 It retains the rendering checks and compares client bytes and SHA-256 hashes against independent loopback HTTP payloads.
-Coverage includes binary, empty, Unicode, duplicate, redirected, unknown-length, and multi-chunk downloads; concurrent transfers; exact file/session limits; interrupted responses; upload-dialog refusal; cancellation; missing or rejected devices; refused client writes; closing a download's tab and unloading its page; disconnects during browser downloads and RDPDR writes; and SIGINT during a browser download.
+Coverage includes binary, empty, Unicode, duplicate, redirected, unknown-length, multi-chunk, and Ctrl/Cmd+P PDF downloads; concurrent transfers; exact file/session limits; interrupted responses; upload-dialog refusal; cancellation; missing or rejected devices; refused client writes; closing a download's tab and unloading its page; disconnects during browser downloads and RDPDR writes; and SIGINT during a browser download.
 It checks terminal RDPDR acknowledgments, temporary-file cleanup, profile removal, persistence of completed files, and a fresh connection after interruption.
 The Windows write-denial case temporarily changes the test directory's ACL and restores it afterward.
 Status-bar-visible checks cover new tabs, desktop resizing, popup composition, and the browser's bottom-most controls.
@@ -339,7 +394,7 @@ CEF initialization, message pumping, callbacks, and browser commands stay on the
 Borrowed paint buffers are copied before callbacks return.
 Complete per-tab surfaces are composed with clipped popup surfaces and Rust chrome; the RDP thread receives only the latest complete desktop frame.
 Frames are rate-limited to 30 Hz, dimensions and callback/input queues are bounded, and queue exhaustion during normal operation is fatal rather than silently dropping key or button transitions.
-The implementation sends full frames rather than tracking CEF damage rectangles.
+When `MS-RDPEGFX` is negotiated without `AVC420`, unchanged pixels outside the changed bounding rectangle are omitted; baseline `MS-RDPBCGR` fallback sends full frames rather than tracking CEF damage rectangles.
 
 The helper initializes CEF's macOS sandbox, and the server does not disable browser web security, website certificate validation, or renderer sandboxing.
 In a Linux ARM64 VM, compositor-bearing CEF children ran unprivileged with seccomp and separate user and PID namespaces.
@@ -348,7 +403,7 @@ These observations do not enumerate every child or prove container isolation.
 GPU rendering, remote debugging, native context menus, and external-protocol launches are disabled.
 Downloads are disabled unless explicitly enabled and require the dedicated client device.
 CEF's process-private clipboard is always active; CLIPRDR redirection is opt-in.
-Audio output is muted, and no audio RDP backend is installed.
+Browser audio output never plays on the host; `--audio` streams active-tab PCM over `RDPSND`, and microphone input can arrive through `RDPEAI`.
 This isolates page clipboard operations from the host pasteboard but does not virtualize the host filesystem, network, keychain, permission prompts, or file pickers.
 On macOS, Chromium can read a [host Chrome brand][chromium-brand] and send an [RLZ request][chromium-rlz] that may include a machine identifier.
 Only HTTP, HTTPS, and `about:blank` navigations are supported; allowed new-window requests become tabs.
