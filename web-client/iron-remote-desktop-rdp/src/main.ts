@@ -122,8 +122,10 @@ export interface MonitorRect {
 }
 
 /**
- * Send the client's monitors (Client Monitor Data, MS-RDPBCGR 2.2.1.3.6) so one session spans up to 16 of them.
- * The primary monitor sits at 0,0, and the desktop size covers the union of the monitors.
+ * Request a session spanning up to 16 monitors (MS-RDPBCGR 2.2.1.3.6).
+ * Exactly one monitor must be primary at (0, 0), and the union must be between 200 and 32,766 pixels in each dimension.
+ * A valid layout sets the requested desktop size to the monitor union, overriding any configured desktop size.
+ * Invalid layouts are logged and ignored.
  */
 export function monitorLayout(monitors: MonitorRect[]): Extension {
     return new Extension(
@@ -132,7 +134,7 @@ export function monitorLayout(monitors: MonitorRect[]): Extension {
     );
 }
 
-/** Called with the monitor layout the server applies, when the session starts and whenever it changes. */
+/** Reports the server's layout at startup and when it changes, exposing only the primary flag. */
 export function monitorLayoutCallback(callback: (monitors: MonitorRect[]) => void): Extension {
     const unpack = (values: number[]) => {
         const monitors: MonitorRect[] = [];
@@ -147,7 +149,7 @@ export function monitorLayoutCallback(callback: (monitors: MonitorRect[]) => voi
         }
         callback(monitors);
     };
-    return new Extension('monitor_layout_callback', unpack as unknown);
+    return new Extension('monitor_layout_callback', unpack);
 }
 
 // --- RDCleanPath ---

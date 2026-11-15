@@ -106,7 +106,7 @@ struct SessionBuilderInner {
     performance_flags: Option<PerformanceFlags>,
     desktop_scale_factor: Option<u32>,
     color_depth: Option<u32>,
-    monitor_layout: Option<Vec<ironrdp::pdu::gcc::Monitor>>,
+    monitor_layout: Option<MonitorLayout>,
     monitor_layout_callback: Option<js_sys::Function>,
 }
 
@@ -363,11 +363,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 }
             };
             |monitor_layout: JsValue| {
-                let monitors = parse_monitor_layout(&monitor_layout);
-                if monitors.is_none() {
-                    warn!("Invalid monitor layout: want left, top, right, bottom and flags for 1 to 16 monitors; ignored");
+                if let Some(layout) = parse_monitor_layout(&monitor_layout) {
+                    self.0.borrow_mut().monitor_layout = Some(layout);
+                } else {
+                    warn!("Invalid monitor layout; ignored");
                 }
-                self.0.borrow_mut().monitor_layout = monitors;
             };
             |monitor_layout_callback: JsValue| {
                 self.0.borrow_mut().monitor_layout_callback = monitor_layout_callback.dyn_into::<js_sys::Function>().ok();
@@ -560,11 +560,14 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             bitmap.color_depth = depth;
         }
 
-        let (monitor_layout, monitor_layout_callback) = {
-            let inner = self.0.borrow();
-            (inner.monitor_layout.clone(), inner.monitor_layout_callback.clone())
-        };
-        config.monitor_layout = monitor_layout.map(|monitors| ironrdp::pdu::gcc::ClientMonitorData { monitors });
+        let monitor_layout = self.0.borrow().monitor_layout.clone();
+        let monitor_layout_callback = self.0.borrow().monitor_layout_callback.clone();
+        if let Some(layout) = monitor_layout {
+            config.desktop_size = layout.desktop_size;
+            config.monitor_layout = Some(ironrdp::pdu::gcc::ClientMonitorData {
+                monitors: layout.monitors,
+            });
+        }
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
@@ -694,34 +697,97 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     }
 }
 
-/// Five numbers per monitor: left, top, right and bottom (both inclusive), and flags.
-fn parse_monitor_layout(value: &JsValue) -> Option<Vec<ironrdp::pdu::gcc::Monitor>> {
-    let values = js_sys::Array::from(value)
-        .iter()
-        .map(|v| v.as_f64())
+#[derive(Clone)]
+struct MonitorLayout {
+    monitors: Vec<ironrdp::pdu::gcc::Monitor>,
+    desktop_size: connector::DesktopSize,
+}
+
+/// Parses the [Client Monitor Data] fields left, top, right, bottom and flags for each monitor.
+///
+/// [Client Monitor Data]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
+fn parse_monitor_layout(value: &JsValue) -> Option<MonitorLayout> {
+    if value.is_null() || value.is_undefined() {
+        return None;
+    }
+
+    const MONITOR_FIELDS: usize = 5;
+    const MAX_MONITOR_VALUES: usize = MONITOR_FIELDS * ironrdp::pdu::gcc::MONITOR_COUNT_MAX;
+    let values = js_sys::try_iter(value)
+        .ok()??
+        .take(MAX_MONITOR_VALUES + 1)
+        .map(|v| v.ok()?.as_f64())
         .collect::<Option<Vec<f64>>>()?;
-    if values.is_empty() || values.len() % 5 != 0 || values.len() / 5 > 16 {
+    if values.is_empty() || values.len() % MONITOR_FIELDS != 0 || MAX_MONITOR_VALUES < values.len() {
         return None;
     }
     let int = |v: f64| -> Option<i32> {
-        if v.fract() != 0.0 || v < f64::from(i32::MIN) || v > f64::from(i32::MAX) {
+        if v.fract() != 0.0 || !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&v) {
             return None;
         }
-        #[expect(clippy::as_conversions, clippy::cast_possible_truncation)]
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            reason = "the integral value is within the i32 range"
+        )]
         Some(v as i32)
     };
-    values
-        .chunks_exact(5)
+    let flags = |v: f64| -> Option<u32> {
+        if v.fract() != 0.0 || !(0.0..=f64::from(u32::MAX)).contains(&v) {
+            return None;
+        }
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the integral value is within the u32 range"
+        )]
+        Some(v as u32)
+    };
+    let monitors = values
+        .chunks_exact(MONITOR_FIELDS)
         .map(|m| {
             Some(ironrdp::pdu::gcc::Monitor {
                 left: int(m[0])?,
                 top: int(m[1])?,
                 right: int(m[2])?,
                 bottom: int(m[3])?,
-                flags: ironrdp::pdu::gcc::MonitorFlags::from_bits_retain(u32::try_from(int(m[4])?).ok()?),
+                flags: ironrdp::pdu::gcc::MonitorFlags::from_bits_retain(flags(m[4])?),
             })
         })
-        .collect()
+        .collect::<Option<Vec<_>>>()?;
+
+    let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    let mut has_primary = false;
+    for monitor in &monitors {
+        if !(monitor.left <= monitor.right && monitor.top <= monitor.bottom) {
+            return None;
+        }
+        if monitor.flags.contains(ironrdp::pdu::gcc::MonitorFlags::PRIMARY) {
+            if has_primary || monitor.left != 0 || monitor.top != 0 {
+                return None;
+            }
+            has_primary = true;
+        }
+        left = left.min(monitor.left);
+        top = top.min(monitor.top);
+        right = right.max(monitor.right);
+        bottom = bottom.max(monitor.bottom);
+    }
+
+    let width = i64::from(right).checked_sub(i64::from(left))?.checked_add(1)?;
+    let height = i64::from(bottom).checked_sub(i64::from(top))?.checked_add(1)?;
+    if !has_primary || !(200..=32_766).contains(&width) || !(200..=32_766).contains(&height) {
+        return None;
+    }
+
+    Some(MonitorLayout {
+        monitors,
+        desktop_size: connector::DesktopSize {
+            width: u16::try_from(width).ok()?,
+            height: u16::try_from(height).ok()?,
+        },
+    })
 }
 
 pub(crate) type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
@@ -776,6 +842,9 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    // UNTESTED: A registered callback receives server layouts on activation, reactivation and layout changes.
+    // A missed event leaves the application's monitor geometry stale.
+    // When changing these paths, verify all three with a live server.
     fn report_monitor_layout(&self, monitors: &[ironrdp::pdu::gcc::Monitor]) {
         let Some(callback) = &self.monitor_layout_callback else {
             return;
