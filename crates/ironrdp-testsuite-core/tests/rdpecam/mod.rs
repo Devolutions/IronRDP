@@ -1168,7 +1168,7 @@ fn negotiate_media_type(width: u32, height: u32) -> (Option<DevicePdu>, usize) {
     (response, failures.load(core::sync::atomic::Ordering::SeqCst))
 }
 
-// oracle: spec MS-RDPECAM §3.3.5.1, §3.3.5.3, §3.3.5.4
+// oracle: spec MS-RDPECAM §3.1.5, §3.3.5.1, §3.3.5.3, §3.3.5.4
 #[test]
 fn server_negotiates_version_and_processes_device_notifications() {
     let added = Arc::new(Mutex::new(Vec::new()));
@@ -1181,12 +1181,24 @@ fn server_negotiates_version_and_processes_device_notifications() {
     );
     server.start(0).unwrap();
 
+    // oracle: spec MS-RDPECAM §3.1.5
+    assert!(server.process(0, &[ProtocolVersion::V2.into()]).unwrap().is_empty());
+
     let request = encode_vec(&EnumerationPdu::SelectVersionRequest(ProtocolVersion::V2)).unwrap();
     let response = server.process(0, &request).unwrap();
     assert_eq!(
         decode_message::<EnumerationPdu>(&response),
         EnumerationPdu::SelectVersionResponse(ProtocolVersion::V2)
     );
+
+    // oracle: spec MS-RDPECAM §3.1.5
+    assert!(
+        server
+            .process(0, &[ProtocolVersion::V2.into(), 0x04])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(added.lock().unwrap().is_empty());
 
     let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
     let notification = encode_vec(&EnumerationPdu::DeviceAdded {
@@ -1217,7 +1229,7 @@ fn server_negotiates_version_and_processes_device_notifications() {
     );
 }
 
-// oracle: spec MS-RDPECAM §1.3.4, §1.3.5
+// oracle: spec MS-RDPECAM §1.3.4, §1.3.5, §3.1.5
 #[test]
 fn server_initializes_and_stops_camera_stream() {
     let device = DeviceDescriptor::new("Camera".into(), "RDCamera_Device_0".into()).unwrap();
@@ -1250,6 +1262,16 @@ fn server_initializes_and_stops_camera_stream() {
         decode_message::<DeviceMessage>(&streams_request).pdu,
         DevicePdu::StreamListRequest
     );
+
+    // oracle: spec MS-RDPECAM §3.1.5
+    assert!(
+        server
+            .process(1, &[ProtocolVersion::V2.into(), 0x06, 0x01])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!server.is_failed());
+    assert!(!server.is_terminated());
 
     let streams = encode_vec(&DeviceMessage::new(
         ProtocolVersion::V2,
@@ -1325,8 +1347,13 @@ fn server_initializes_and_stops_camera_stream() {
         decode_message::<DeviceMessage>(&deactivate_request).pdu,
         DevicePdu::DeactivateDeviceRequest
     );
+    assert!(!server.is_stopped());
+    assert!(!server.is_failed());
+    assert!(!server.is_terminated());
     assert!(server.process(1, &success).unwrap().is_empty());
     assert!(server.is_stopped());
+    assert!(!server.is_failed());
+    assert!(server.is_terminated());
 }
 
 // oracle: spec MS-RDPECAM §3.3.5.21
@@ -1383,6 +1410,9 @@ fn server_deactivates_a_device_when_stream_discovery_fails() {
         !*failed.lock().unwrap(),
         "failure closed the channel before deactivation"
     );
+    assert!(!server.is_stopped());
+    assert!(!server.is_failed());
+    assert!(!server.is_terminated());
 
     assert!(server.process(1, &success).unwrap().is_empty());
     // oracle: mutant fails to report setup failure after deactivation is acknowledged.
@@ -1390,6 +1420,9 @@ fn server_deactivates_a_device_when_stream_discovery_fails() {
         *failed.lock().unwrap(),
         "failed setup did not close the channel after deactivation"
     );
+    assert!(!server.is_stopped());
+    assert!(server.is_failed());
+    assert!(server.is_terminated());
 }
 
 // oracle: spec MS-RDPECAM §1.3.5, §3.3.5.21
@@ -1446,7 +1479,14 @@ fn server_stops_and_deactivates_a_stream_after_sample_failure() {
         decode_message::<DeviceMessage>(&deactivate).pdu,
         DevicePdu::DeactivateDeviceRequest
     );
+    assert!(!server.is_stopped());
+    assert!(!server.is_failed());
+    assert!(!server.is_terminated());
     assert!(server.process(1, &success).unwrap().is_empty());
+    // oracle: mutant omits terminal failure state on DeviceServer::new after failure cleanup completes.
+    assert!(!server.is_stopped());
+    assert!(server.is_failed());
+    assert!(server.is_terminated());
 }
 
 // oracle: spec MS-RDPECAM §1.3.5
@@ -1501,6 +1541,37 @@ fn server_stops_streams_that_start_after_capture_ends() {
     );
     assert!(server.process(1, &success).unwrap().is_empty());
     assert!(server.is_stopped());
+    assert!(!server.is_failed());
+    assert!(server.is_terminated());
+
+    let mut failed_stop = DeviceServer::new(
+        &device,
+        ProtocolVersion::V2,
+        DesiredCameraFormat {
+            width: 640,
+            height: 480,
+            frame_rate: 30.0,
+            max_width: 4096,
+            max_height: 4096,
+        },
+        Box::new(|_, _| {}),
+    );
+    failed_stop.start(1).unwrap();
+    assert!(failed_stop.stop().is_none());
+    assert_eq!(
+        decode_message::<DeviceMessage>(&failed_stop.process(1, &success).unwrap()).pdu,
+        DevicePdu::DeactivateDeviceRequest
+    );
+    let deactivate_error = encode_vec(&DeviceMessage::new(
+        ProtocolVersion::V2,
+        DevicePdu::ErrorResponse(ErrorCode::Unexpected),
+    ))
+    .unwrap();
+    assert!(failed_stop.process(1, &deactivate_error).unwrap().is_empty());
+    // oracle: mutant leaves DeviceServer non-terminated when DeactivateDeviceRequest receives ErrorResponse.
+    assert!(!failed_stop.is_stopped());
+    assert!(failed_stop.is_failed());
+    assert!(failed_stop.is_terminated());
 }
 
 // oracle: spec MS-RDPECAM §1.3.4, §3.3.5.21

@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use ironrdp_core::{decode, impl_as_any};
 use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
-use ironrdp_pdu::{PduResult, decode_err};
+use ironrdp_pdu::PduResult;
 use tracing::{debug, warn};
 
 use crate::ENUMERATION_CHANNEL_NAME;
@@ -88,7 +88,13 @@ impl DvcProcessor for EnumerationServer {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        let pdu: EnumerationPdu = decode(payload).map_err(|error| decode_err!(error))?;
+        let pdu: EnumerationPdu = match decode(payload) {
+            Ok(pdu) => pdu,
+            Err(error) => {
+                warn!(%error, "Ignoring malformed camera enumeration PDU");
+                return Ok(Vec::new());
+            }
+        };
         match (self.state, pdu) {
             (EnumerationState::AwaitVersion, EnumerationPdu::SelectVersionRequest(version)) => {
                 let version = version.min(ProtocolVersion::MAX);
@@ -243,6 +249,18 @@ impl DeviceServer {
     /// Close the dynamic channel after this returns `true`.
     pub fn is_stopped(&self) -> bool {
         self.state == DeviceState::Stopped
+    }
+
+    /// Returns whether the device reached its terminal failure state.
+    pub fn is_failed(&self) -> bool {
+        self.state == DeviceState::Failed
+    }
+
+    /// Returns whether the device reached a terminal stopped or failed state.
+    ///
+    /// Close the dynamic channel after this returns `true`.
+    pub fn is_terminated(&self) -> bool {
+        matches!(self.state, DeviceState::Stopped | DeviceState::Failed)
     }
 
     fn deactivate(&mut self) -> DevicePdu {
@@ -402,7 +420,13 @@ impl DvcProcessor for DeviceServer {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        let message: DeviceMessage = decode(payload).map_err(|error| decode_err!(error))?;
+        let message: DeviceMessage = match decode(payload) {
+            Ok(message) => message,
+            Err(error) => {
+                warn!(%error, "Ignoring malformed camera device PDU");
+                return Ok(Vec::new());
+            }
+        };
         if message.version != self.version || !message.pdu.is_client_message() {
             warn!("Ignoring invalid camera device response");
             return Ok(Vec::new());
