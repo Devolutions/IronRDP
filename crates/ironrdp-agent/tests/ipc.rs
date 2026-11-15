@@ -422,6 +422,50 @@ fn session_info_reports_no_active_session() {
     }
 }
 
+// oracle: regression Devolutions/IronRDP#2437
+#[test]
+fn session_info_for_activex_prints_the_backend_error() {
+    use ironrdp_rpc::ipc::{AgentErrorCategory, Request, Response};
+    use ironrdp_rpc::transport::{self, Listener};
+
+    let endpoint = test_endpoint("session-info-activex");
+    let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+    let output = runtime.block_on(async {
+        let mut listener =
+            Listener::bind(&transport::endpoint_from_string(endpoint.clone())).expect("bind ActiveX host");
+        let command = tokio::task::spawn_blocking(move || {
+            agent(
+                &endpoint,
+                &["--backend", "active-x", "session", "info", "--format", "json"],
+            )
+        });
+        let serve = async {
+            let mut stream = listener.accept().await.expect("accept session info request");
+            let request: Request = transport::read_message(&mut stream).await.expect("read request");
+            assert_eq!(request, Request::SessionInfo);
+            transport::write_message(
+                &mut stream,
+                &Response::typed_error(
+                    AgentErrorCategory::Unavailable,
+                    "session info is unavailable through ActiveX",
+                ),
+            )
+            .await
+            .expect("send unavailable response");
+            command.await.expect("run ActiveX session info command")
+        };
+        tokio::time::timeout(Duration::from_secs(30), serve)
+            .await
+            .expect("ActiveX session info command timeout")
+    });
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        r#"{"category":"unavailable","message":"session info is unavailable through ActiveX","type":"error"}"#
+    );
+}
+
 /// A session whose server reported every fact, the network characteristics only in part.
 fn reported_session() -> ironrdp_rpc::ipc::SessionInfo {
     ironrdp_rpc::ipc::SessionInfo {

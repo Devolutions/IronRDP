@@ -1109,7 +1109,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             };
         }
         Command::Session(command) => {
-            if cli.backend != Backend::Daemon {
+            if cli.backend != Backend::Daemon && !matches!(&command, SessionCommand::Info(_)) {
                 anyhow::bail!("session commands require --backend daemon");
             }
             return match command {
