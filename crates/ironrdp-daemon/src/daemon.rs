@@ -3712,6 +3712,33 @@ mod tests {
         (daemon, live)
     }
 
+    // oracle: mutant an output consumer that counts a frame without storing it, or stores one without counting it
+    #[tokio::test]
+    async fn frame_and_frame_number_change_together() {
+        let (daemon, _, live, _) = active_rail_session(false);
+        let (output_tx, output_rx) = output_channel(1);
+        let consumer = spawn_session_consumer(&daemon, output_rx);
+        let pointer_move = || ironrdp_client::rdp::RdpOutputEvent::PointerPosition { x: 713, y: 338 };
+        let frame_state = || {
+            let guard = live.lock().expect("session live state poisoned");
+            (guard.frame.is_some(), guard.frame_number)
+        };
+        assert_eq!(frame_state(), (false, 0));
+
+        // Each wait returns only once the consumer has handled its frame and the pointer move sent before it.
+        for expected in 1..=2 {
+            output_tx.send(pointer_move()).await.expect("send pointer move");
+            output_tx.send(frame_event()).await.expect("send frame");
+            frame_status(daemon.wait_frame(expected - 1, 60_000)).await;
+            assert_eq!(frame_state(), (true, expected));
+        }
+
+        output_tx.send(pointer_move()).await.expect("send pointer move");
+        drop(output_tx);
+        consumer.await.expect("consume output");
+        assert_eq!(frame_state(), (true, 2));
+    }
+
     // oracle: mutant an output consumer that stores a frame without counting it or waking frame waiters
     // oracle: mutant an output consumer that counts a non-frame event (a pointer move) as a frame
     // oracle: mutant a session whose output consumer signals a wake-up handle other than the session's
@@ -3844,6 +3871,21 @@ mod tests {
         let (daemon, ..) = active_rail_session(false);
         let request = Request::WaitFrame {
             after_frame: 0,
+            timeout_ms: 60_001,
+        };
+        assert!(matches!(
+            daemon.handle(request).await.response(),
+            Response::Err(error) if error.category == AgentErrorCategory::InvalidRequest
+        ));
+    }
+
+    // oracle: mutant a RAIL wait with no upper bound on its timeout
+    // oracle: mutant a request dispatch that doesn't forward the RAIL wait's timeout
+    #[tokio::test]
+    async fn rail_wait_rejects_a_timeout_over_the_cap() {
+        let (daemon, ..) = active_rail_session(false);
+        let request = Request::RailWait {
+            after_sequence: None,
             timeout_ms: 60_001,
         };
         assert!(matches!(
