@@ -1678,6 +1678,15 @@ pub enum ServerEvent {
     /// Completion also covers events handled without output, such as a refused request or a missing clipboard channel.
     /// It does not confirm that the peer accepted clipboard data.
     ClipboardWithCompletion(ClipboardMessage, oneshot::Sender<()>),
+    /// Drives `CLIPRDR` only while `is_current` holds, signaling completion when handled.
+    ///
+    /// Checked during event dispatch before mutating channel state or writing.
+    /// Discarded events drop `completion` without sending.
+    ClipboardWithValidity {
+        message: ClipboardMessage,
+        completion: oneshot::Sender<()>,
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
     /// Writes data to an open dynamic channel over the main RDP transport.
     ///
     /// Use [`dvc::encode_dvc_messages`] to fragment complete messages per [MS-RDPEDYC] section 2.2.3.1,
@@ -1762,8 +1771,25 @@ pub enum ServerEvent {
         is_current: Box<dyn Fn() -> bool + Send>,
     },
     Rdpsnd(RdpsndServerMessage),
+    /// Drives `RDPSND` only while `is_current` holds, retaining `permit` until sent or discarded.
+    RdpsndWithValidity {
+        message: RdpsndServerMessage,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+        /// Nonblocking check for the originating connection lifetime.
+        ///
+        /// Checked before `WAVE_KEEP` counting and during event dispatch before mutating channel state or writing.
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
     Rdpdr(RdpdrServerMessage),
     Rdpeai(RdpeaiServerMessage),
+    /// Drives an AUDIO_INPUT channel only while its originating request remains current.
+    RdpeaiWithValidity {
+        message: RdpeaiServerMessage,
+        /// A nonblocking predicate for the request lifetime.
+        ///
+        /// Checked during event dispatch before mutating channel state or writing.
+        is_current: Box<dyn Fn() -> bool + Send>,
+    },
     Echo(EchoServerMessage),
     SetCredentials(Credentials),
     /// Replace or clear the Server Auto-Reconnect Cookie.
@@ -1805,6 +1831,7 @@ impl fmt::Debug for ServerEvent {
             Self::Redirect(redirection) => f.debug_tuple("Redirect").field(redirection).finish(),
             Self::Clipboard(..) => f.write_str("Clipboard(..)"),
             Self::ClipboardWithCompletion(..) => f.write_str("ClipboardWithCompletion(..)"),
+            Self::ClipboardWithValidity { .. } => f.write_str("ClipboardWithValidity(..)"),
             Self::DynamicChannelWithCompletion { batch, .. } => f
                 .debug_tuple("DynamicChannelWithCompletion")
                 .field(&batch.channel_id())
@@ -1820,8 +1847,10 @@ impl fmt::Debug for ServerEvent {
                 f.debug_tuple("CloseDynamicChannel").field(channel_id).finish()
             }
             Self::Rdpsnd(..) => f.write_str("Rdpsnd(..)"),
+            Self::RdpsndWithValidity { .. } => f.write_str("RdpsndWithValidity(..)"),
             Self::Rdpdr(..) => f.write_str("Rdpdr(..)"),
             Self::Rdpeai(..) => f.write_str("Rdpeai(..)"),
+            Self::RdpeaiWithValidity { .. } => f.write_str("RdpeaiWithValidity(..)"),
             Self::Echo(..) => f.write_str("Echo(..)"),
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
@@ -4653,13 +4682,17 @@ impl RdpServer {
         writer: &mut impl FramedWrite,
         user_channel_id: u16,
         message: ClipboardMessage,
-    ) -> ServerResult<()> {
+        is_current: impl Fn() -> bool,
+    ) -> ServerResult<bool> {
+        if !is_current() {
+            return Ok(false);
+        }
         let (Some(channel_id), Some(cliprdr)) = (
             conn.get_channel_id_by_type::<CliprdrServer>(),
             conn.get_svc_processor::<CliprdrServer>(),
         ) else {
             warn!("No clipboard channel, dropping event");
-            return Ok(());
+            return Ok(true);
         };
         let messages = match message {
             ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
@@ -4670,7 +4703,7 @@ impl RdpServer {
             ClipboardMessage::SendFileContentsResponse(response) => cliprdr.submit_file_contents(response),
             ClipboardMessage::Error(error) => {
                 error!(?error, "Handling clipboard event");
-                return Ok(());
+                return Ok(true);
             }
         };
         // A refused clipboard request must not disconnect an otherwise healthy session.
@@ -4678,7 +4711,7 @@ impl RdpServer {
             Ok(messages) => messages,
             Err(error) => {
                 error!(?error, "Failed to send clipboard event");
-                return Ok(());
+                return Ok(true);
             }
         };
         let data =
@@ -4686,7 +4719,140 @@ impl RdpServer {
         writer
             .write_all(&data)
             .await
-            .map_err(|error| ServerError::io("write_all", error))
+            .map_err(|error| ServerError::io("write_all", error))?;
+        Ok(true)
+    }
+
+    async fn dispatch_rdpsnd_event(
+        conn: &mut ConnectionState,
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+        wave_skip: &mut usize,
+        message: RdpsndServerMessage,
+    ) -> ServerResult<()> {
+        let Some(rdpsnd) = conn.get_svc_processor::<RdpsndServer>() else {
+            warn!("No rdpsnd channel, dropping event");
+            return Ok(());
+        };
+        let msgs = match message {
+            RdpsndServerMessage::Wave(data, ts) => {
+                if *wave_skip > 0 {
+                    *wave_skip -= 1;
+                    debug!("Dropping stale wave");
+                    return Ok(());
+                }
+                // The event channel outlives a single connection, so a
+                // wave queued by the previous client's sound handler can
+                // be the first event a new connection dispatches, before
+                // its own rdpsnd channel has negotiated a format. There is
+                // no channel to carry it yet; failing the whole connection
+                // over it would turn every audio-enabled disconnect into a
+                // failed next connect.
+                if !rdpsnd.is_ready() {
+                    debug!("Dropping wave: rdpsnd channel not negotiated yet");
+                    return Ok(());
+                }
+                rdpsnd.wave(data, ts)
+            }
+            RdpsndServerMessage::SetVolume { left, right } => {
+                // Same stale-event case as a wave: set_volume needs the
+                // client's format flags, which a new connection does not
+                // have until its rdpsnd channel negotiates.
+                if !rdpsnd.is_ready() {
+                    debug!("Dropping volume change: rdpsnd channel not negotiated yet");
+                    return Ok(());
+                }
+                rdpsnd.set_volume(left, right)
+            }
+            RdpsndServerMessage::Close => rdpsnd.close(),
+            RdpsndServerMessage::Error(error) => {
+                error!(?error, "Handling rdpsnd event");
+                return Ok(());
+            }
+        }
+        .map_err_kind("failed to send rdpsnd event", ServerErrorKind::Pdu)?;
+        let channel_id = conn
+            .get_channel_id_by_type::<RdpsndServer>()
+            .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
+        let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id).map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("write_all", e))
+    }
+
+    async fn dispatch_rdpeai_event(
+        conn: &mut ConnectionState,
+        writer: &mut impl FramedWrite,
+        user_channel_id: u16,
+        msg: RdpeaiServerMessage,
+    ) -> ServerResult<()> {
+        let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>() else {
+            warn!("No drdynvc channel, dropping AUDIO_INPUT event");
+            return Ok(());
+        };
+        let channel_id = match &msg {
+            RdpeaiServerMessage::OpenOnChannel { channel_id, .. }
+            | RdpeaiServerMessage::ChangeFormatOnChannel { channel_id, .. } => Some(*channel_id),
+            _ => drdynvc.get_channel_id_by_type::<RdpeaiServer>(),
+        };
+        let Some(channel_id) = channel_id else {
+            warn!("No AUDIO_INPUT dynamic channel, dropping event");
+            return Ok(());
+        };
+        // dvc_by_id_mut already returns None for a channel that isn't yet
+        // Opened, and that case is handled just below; a separate
+        // is_channel_opened check here would only duplicate it.
+        let Some(mut rdpeai) = drdynvc.dvc_by_id_mut::<RdpeaiServer>(channel_id) else {
+            warn!("AUDIO_INPUT channel not opened or not found by id, dropping event");
+            return Ok(());
+        };
+        let result = match msg {
+            RdpeaiServerMessage::Open {
+                frames_per_packet,
+                initial_format,
+                capture_format,
+            }
+            | RdpeaiServerMessage::OpenOnChannel {
+                frames_per_packet,
+                initial_format,
+                capture_format,
+                ..
+            } => rdpeai
+                .processor_mut()
+                .open(frames_per_packet, initial_format, capture_format),
+            RdpeaiServerMessage::ChangeFormat { new_format }
+            | RdpeaiServerMessage::ChangeFormatOnChannel { new_format, .. } => {
+                rdpeai.processor_mut().change_format(new_format)
+            }
+            RdpeaiServerMessage::Error(error) => {
+                error!(?error, "Handling AUDIO_INPUT event");
+                return Ok(());
+            }
+        };
+        // open()/change_format() reject calls that race the channel's current
+        // state (e.g. Open before negotiation finishes); that is an expected,
+        // recoverable condition per their own doc comments, not a connection
+        // fault, so drop-and-warn like every other unavailability in this arm
+        // rather than tearing down the session.
+        let msgs = match result {
+            Ok(msgs) => msgs,
+            Err(error) => {
+                warn!(%error, "AUDIO_INPUT event rejected by current channel state, dropping");
+                return Ok(());
+            }
+        };
+        let dvc_messages =
+            dvc::encode_dvc_messages(channel_id, msgs, ChannelFlags::SHOW_PROTOCOL).map_err(ServerError::encode)?;
+        let drdynvc_channel_id = conn
+            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
+        let data = server_encode_svc_messages(dvc_messages, drdynvc_channel_id, user_channel_id)
+            .map_err(ServerError::encode)?;
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("write_all", e))
     }
 
     /// `conn.client_supports_errinfo` is the client's `RNS_UD_CS_SUPPORT_ERRINFO_PDU`
@@ -4727,7 +4893,15 @@ impl RdpServer {
         const WAVE_KEEP: usize = 4;
         let wave_total = events
             .iter()
-            .filter(|e| matches!(e, ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(..))))
+            .filter(|e| match e {
+                ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(..)) => true,
+                ServerEvent::RdpsndWithValidity {
+                    message: RdpsndServerMessage::Wave(..),
+                    is_current,
+                    ..
+                } => is_current(),
+                _ => false,
+            })
             .count();
         let mut wave_skip = wave_total.saturating_sub(WAVE_KEEP);
         for event in events.drain(..) {
@@ -4979,57 +5153,19 @@ impl RdpServer {
                     self.update_auto_reconnect_cookie(conn, cookie, writer, io_channel_id, user_channel_id)
                         .await?;
                 }
-                ServerEvent::Rdpsnd(s) => {
-                    let Some(rdpsnd) = conn.get_svc_processor::<RdpsndServer>() else {
-                        warn!("No rdpsnd channel, dropping event");
+                ServerEvent::Rdpsnd(message) => {
+                    Self::dispatch_rdpsnd_event(conn, writer, user_channel_id, &mut wave_skip, message).await?;
+                }
+                ServerEvent::RdpsndWithValidity {
+                    message,
+                    permit: _permit,
+                    is_current,
+                } => {
+                    if !is_current() {
+                        trace!("Discarding stale RDPSND event");
                         continue;
-                    };
-                    let msgs = match s {
-                        RdpsndServerMessage::Wave(data, ts) => {
-                            if wave_skip > 0 {
-                                wave_skip -= 1;
-                                debug!("Dropping stale wave");
-                                continue;
-                            }
-                            // The event channel outlives a single connection, so a
-                            // wave queued by the previous client's sound handler can
-                            // be the first event a new connection dispatches, before
-                            // its own rdpsnd channel has negotiated a format. There is
-                            // no channel to carry it yet; failing the whole connection
-                            // over it would turn every audio-enabled disconnect into a
-                            // failed next connect.
-                            if !rdpsnd.is_ready() {
-                                debug!("Dropping wave: rdpsnd channel not negotiated yet");
-                                continue;
-                            }
-                            rdpsnd.wave(data, ts)
-                        }
-                        RdpsndServerMessage::SetVolume { left, right } => {
-                            // Same stale-event case as a wave: set_volume needs the
-                            // client's format flags, which a new connection does not
-                            // have until its rdpsnd channel negotiates.
-                            if !rdpsnd.is_ready() {
-                                debug!("Dropping volume change: rdpsnd channel not negotiated yet");
-                                continue;
-                            }
-                            rdpsnd.set_volume(left, right)
-                        }
-                        RdpsndServerMessage::Close => rdpsnd.close(),
-                        RdpsndServerMessage::Error(error) => {
-                            error!(?error, "Handling rdpsnd event");
-                            continue;
-                        }
                     }
-                    .map_err_kind("failed to send rdpsnd event", ServerErrorKind::Pdu)?;
-                    let channel_id = conn
-                        .get_channel_id_by_type::<RdpsndServer>()
-                        .ok_or_else(|| ServerError::channel("SVC channel not found"))?;
-                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)
-                        .map_err(ServerError::encode)?;
-                    writer
-                        .write_all(&data)
-                        .await
-                        .map_err(|e| ServerError::io("write_all", e))?;
+                    Self::dispatch_rdpsnd_event(conn, writer, user_channel_id, &mut wave_skip, message).await?;
                 }
                 ServerEvent::Rdpdr(msg) => {
                     let Some(rdpdr) = conn.get_svc_processor::<RdpdrServer>() else {
@@ -5132,67 +5268,32 @@ impl RdpServer {
                         .map_err(|e| ServerError::io("write_all", e))?;
                 }
                 ServerEvent::Rdpeai(msg) => {
-                    let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>() else {
-                        warn!("No drdynvc channel, dropping AUDIO_INPUT event");
+                    Self::dispatch_rdpeai_event(conn, writer, user_channel_id, msg).await?;
+                }
+                ServerEvent::RdpeaiWithValidity { message, is_current } => {
+                    if !is_current() {
+                        trace!("Discarding stale AUDIO_INPUT event");
                         continue;
-                    };
-                    let Some(channel_id) = drdynvc.get_channel_id_by_type::<RdpeaiServer>() else {
-                        warn!("No AUDIO_INPUT dynamic channel, dropping event");
-                        continue;
-                    };
-                    // dvc_by_id_mut already returns None for a channel that isn't yet
-                    // Opened, and that case is handled just below; a separate
-                    // is_channel_opened check here would only duplicate it.
-                    let Some(mut rdpeai) = drdynvc.dvc_by_id_mut::<RdpeaiServer>(channel_id) else {
-                        warn!("AUDIO_INPUT channel not opened or not found by id, dropping event");
-                        continue;
-                    };
-                    let result = match msg {
-                        RdpeaiServerMessage::Open {
-                            frames_per_packet,
-                            initial_format,
-                            capture_format,
-                        } => rdpeai
-                            .processor_mut()
-                            .open(frames_per_packet, initial_format, capture_format),
-                        RdpeaiServerMessage::ChangeFormat { new_format } => {
-                            rdpeai.processor_mut().change_format(new_format)
-                        }
-                        RdpeaiServerMessage::Error(error) => {
-                            error!(?error, "Handling AUDIO_INPUT event");
-                            continue;
-                        }
-                    };
-                    // open()/change_format() reject calls that race the channel's current
-                    // state (e.g. Open before negotiation finishes); that is an expected,
-                    // recoverable condition per their own doc comments, not a connection
-                    // fault, so drop-and-warn like every other unavailability in this arm
-                    // rather than tearing down the session.
-                    let msgs = match result {
-                        Ok(msgs) => msgs,
-                        Err(error) => {
-                            warn!(%error, "AUDIO_INPUT event rejected by current channel state, dropping");
-                            continue;
-                        }
-                    };
-                    let dvc_messages = dvc::encode_dvc_messages(channel_id, msgs, ChannelFlags::SHOW_PROTOCOL)
-                        .map_err(ServerError::encode)?;
-                    let drdynvc_channel_id = conn
-                        .get_channel_id_by_type::<dvc::DrdynvcServer>()
-                        .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
-                    let data = server_encode_svc_messages(dvc_messages, drdynvc_channel_id, user_channel_id)
-                        .map_err(ServerError::encode)?;
-                    writer
-                        .write_all(&data)
-                        .await
-                        .map_err(|e| ServerError::io("write_all", e))?;
+                    }
+                    Self::dispatch_rdpeai_event(conn, writer, user_channel_id, message).await?;
                 }
                 ServerEvent::Clipboard(message) => {
-                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                    let _ = Self::dispatch_clipboard_event(conn, writer, user_channel_id, message, || true).await?;
                 }
                 ServerEvent::ClipboardWithCompletion(message, completion) => {
-                    Self::dispatch_clipboard_event(conn, writer, user_channel_id, message).await?;
+                    let _ = Self::dispatch_clipboard_event(conn, writer, user_channel_id, message, || true).await?;
                     if completion.send(()).is_err() {
+                        trace!("Clipboard producer stopped waiting for dispatch");
+                    }
+                }
+                ServerEvent::ClipboardWithValidity {
+                    message,
+                    completion,
+                    is_current,
+                } => {
+                    if Self::dispatch_clipboard_event(conn, writer, user_channel_id, message, is_current).await?
+                        && completion.send(()).is_err()
+                    {
                         trace!("Clipboard producer stopped waiting for dispatch");
                     }
                 }

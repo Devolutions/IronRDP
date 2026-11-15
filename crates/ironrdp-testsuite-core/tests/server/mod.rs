@@ -3,6 +3,7 @@ mod activation;
 mod audio_redirection;
 mod autodetect;
 mod bitmap_update;
+mod cliprdr;
 mod connection_policy;
 mod credential_validator;
 mod dynamic_channel_factory;
