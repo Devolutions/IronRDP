@@ -318,7 +318,7 @@ fn dropping_unanswered_server_rpc_aborts_pending_ceremony_once() {
     let mut drdynvc = DrdynvcServer::new().with_dynamic_channel(RdpewaServerRpc::iuvpaa(
         [0x44; 16],
         Box::new(move |result| {
-            recorded_declined.lock().unwrap().push(result);
+            recorded_declined.lock().unwrap_or_else(|e| e.into_inner()).push(result);
         }),
     ));
     drdynvc
@@ -339,33 +339,33 @@ fn dropping_unanswered_server_rpc_aborts_pending_ceremony_once() {
         )
         .unwrap();
     // oracle: spec MS-ERREF §2.1; E_ABORT (0x80004004).
-    assert_eq!(*declined_calls.lock().unwrap(), [Err(0x8000_4004)]);
+    assert_eq!(declined_calls.lock().unwrap().as_slice(), [Err(0x8000_4004)]);
     drop(drdynvc);
-    assert_eq!(*declined_calls.lock().unwrap(), [Err(0x8000_4004)]);
+    assert_eq!(declined_calls.lock().unwrap().as_slice(), [Err(0x8000_4004)]);
 
     let closed_calls = Arc::new(Mutex::new(Vec::new()));
     let recorded_closed = Arc::clone(&closed_calls);
     let mut closed_server = RdpewaServerRpc::iuvpaa(
         [0x45; 16],
         Box::new(move |result| {
-            recorded_closed.lock().unwrap().push(result);
+            recorded_closed.lock().unwrap_or_else(|e| e.into_inner()).push(result);
         }),
     );
     closed_server.close(12);
-    assert_eq!(*closed_calls.lock().unwrap(), [Err(0x8000_4004)]);
+    assert_eq!(closed_calls.lock().unwrap().as_slice(), [Err(0x8000_4004)]);
     drop(closed_server);
-    assert_eq!(*closed_calls.lock().unwrap(), [Err(0x8000_4004)]);
+    assert_eq!(closed_calls.lock().unwrap().as_slice(), [Err(0x8000_4004)]);
 
     let dropped_calls = Arc::new(Mutex::new(Vec::new()));
     let recorded_dropped = Arc::clone(&dropped_calls);
     let dropped_server = RdpewaServerRpc::iuvpaa(
         [0x46; 16],
         Box::new(move |result| {
-            recorded_dropped.lock().unwrap().push(result);
+            recorded_dropped.lock().unwrap_or_else(|e| e.into_inner()).push(result);
         }),
     );
     drop(dropped_server);
-    assert_eq!(*dropped_calls.lock().unwrap(), [Err(0x8000_4004)]);
+    assert_eq!(dropped_calls.lock().unwrap().as_slice(), [Err(0x8000_4004)]);
 }
 
 // oracle: spec RFC 8949 §4.2.3
@@ -397,4 +397,259 @@ fn cbor_map_encodes_positive_negative_and_text_keys_in_canonical_byte_order() {
             0x63, b'a', b'l', b'g', 0x00, // "alg": 0 (len 4 encoded key)
         ]
     );
+}
+
+// oracle: spec MS-RDPEWA §§2.2.1 and 2.2.1.1
+#[rstest::rstest]
+#[case::required(UserVerification::Required, 0x0040_0000, 1)]
+#[case::preferred(UserVerification::Preferred, 0x0080_0000, 2)]
+#[case::discouraged(UserVerification::Discouraged, 0x0100_0000, 3)]
+#[case::any(UserVerification::Any, 0, 0)]
+fn server_webauthn_rpc_maps_user_verification_and_prefer_resident_to_wire(
+    #[case] user_verification: UserVerification,
+    #[case] expected_flags: u32,
+    #[case] expected_uv_wire: u32,
+) {
+    use ironrdp_rdpewa::pdu::CborKey;
+
+    let seen_webauthn = Arc::new(Mutex::new(Vec::new()));
+    let mut client = RdpewaClient::new(Box::new(RecordingHandler {
+        uvpaa: true,
+        seen_webauthn: Arc::clone(&seen_webauthn),
+        seen_cancels: Arc::default(),
+        response: Err(E_ABORT),
+    }));
+    let mut server = RdpewaServerRpc::webauthn(
+        RdpewaWebAuthnRequest {
+            rp_id: Some("localhost".to_owned()),
+            timeout_ms: 15_000,
+            transaction_id: [0x51; 16],
+            client_data_json: b"{}".to_vec(),
+            para: WebAuthnPara {
+                attachment: Attachment::CrossPlatform,
+                require_resident_key: false,
+                prefer_resident_key: true,
+                user_verification,
+                attestation: Attestation::None,
+                cancellation_id: None,
+                ui_origin: None,
+                extra: Default::default(),
+            },
+            body: WebAuthnRequestBody {
+                subcommand: WebAuthnSubcommand::GetAssertion,
+                ctap_cbor: vec![0xA0],
+            },
+        },
+        Box::new(|_| {}),
+    );
+
+    client.start(21).unwrap();
+    let outbound = server.start(21).unwrap();
+    let wire_request = encode_vec(outbound[0].as_ref()).unwrap();
+    let decoded = decode_all(&wire_request).unwrap();
+    let map = decoded.as_map().unwrap();
+    assert_eq!(
+        map.get(&CborKey::text("flags")).unwrap().as_u32().unwrap(),
+        expected_flags
+    );
+    let para_map = map.get(&CborKey::text("webAuthNPara")).unwrap().as_map().unwrap();
+    assert!(
+        !para_map
+            .get(&CborKey::text("requireResident"))
+            .unwrap()
+            .as_bool()
+            .unwrap()
+    );
+    assert!(
+        para_map
+            .get(&CborKey::text("preferResident"))
+            .unwrap()
+            .as_bool()
+            .unwrap()
+    );
+    assert_eq!(
+        para_map
+            .get(&CborKey::text("userVerification"))
+            .unwrap()
+            .as_u32()
+            .unwrap(),
+        expected_uv_wire
+    );
+
+    let _ = client.process(21, &wire_request).unwrap();
+    let seen = seen_webauthn.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(!seen[0].para.require_resident_key);
+    assert!(seen[0].para.prefer_resident_key);
+    assert_eq!(seen[0].para.user_verification, user_verification);
+}
+
+// oracle: spec MS-RDPEWA §4.4.2.1
+#[test]
+fn server_webauthn_rpc_decodes_lowercase_device_info_keys_from_spec_example() {
+    use ironrdp_rdpewa::pdu::{CborKey, CborValue, RdpewaResponse, S_OK, encode_to_vec};
+    use std::collections::BTreeMap;
+
+    let outcome = Arc::new(Mutex::new(None));
+    let recorded = Arc::clone(&outcome);
+    let mut server = RdpewaServerRpc::webauthn(
+        RdpewaWebAuthnRequest {
+            rp_id: Some("localhost".to_owned()),
+            timeout_ms: 30_000,
+            transaction_id: [0x61; 16],
+            client_data_json: b"{}".to_vec(),
+            para: WebAuthnPara::default(),
+            body: WebAuthnRequestBody {
+                subcommand: WebAuthnSubcommand::GetAssertion,
+                ctap_cbor: vec![0xA0],
+            },
+        },
+        Box::new(move |result| {
+            *recorded.lock().unwrap() = Some(result);
+        }),
+    );
+
+    let _ = server.start(22).unwrap();
+    let mut device_info = BTreeMap::new();
+    device_info.insert(CborKey::text("manufacturer"), CborValue::Text("Contoso".to_owned()));
+    device_info.insert(CborKey::text("product"), CborValue::Text("Security Key".to_owned()));
+
+    let mut payload = BTreeMap::new();
+    payload.insert(CborKey::text("deviceInfo"), CborValue::Map(device_info));
+    payload.insert(CborKey::text("status"), CborValue::Unsigned(0));
+    payload.insert(CborKey::text("response"), CborValue::Bytes(vec![0x00, 0xA0]));
+
+    let wire_reply = RdpewaResponse::with_payload(S_OK, encode_to_vec(&CborValue::Map(payload)).unwrap()).to_bytes();
+    assert!(server.process(22, &wire_reply).unwrap().is_empty());
+
+    let completed = outcome.lock().unwrap().clone().unwrap().unwrap();
+    assert_eq!(completed.device_info.manufacturer, "Contoso");
+    assert_eq!(completed.device_info.product, "Security Key");
+}
+
+// oracle: mutant ignoring webAuthNPara.cancellationId when CANCEL_CUR_OP omits top-level request.
+#[test]
+fn client_cancel_falls_back_to_webauthn_para_cancellation_id() {
+    use ironrdp_rdpewa::{RdpewaRequest, RpcCommand};
+    use std::collections::BTreeMap;
+
+    let seen_cancels = Arc::new(Mutex::new(Vec::new()));
+    let mut client = RdpewaClient::new(Box::new(RecordingHandler {
+        uvpaa: false,
+        seen_webauthn: Arc::default(),
+        seen_cancels: Arc::clone(&seen_cancels),
+        response: Err(E_ABORT),
+    }));
+    let fallback_id = vec![0x99; 16];
+    let wire_request = RdpewaRequest {
+        command: RpcCommand::CancelCurOp,
+        flags: 0,
+        rp_id: None,
+        timeout_ms: 0,
+        transaction_id: vec![0x71; 16],
+        client_data_json: None,
+        webauthn_para: Some(WebAuthnPara {
+            cancellation_id: Some(fallback_id.clone()),
+            ..WebAuthnPara::default()
+        }),
+        request_body: Vec::new(),
+        raw: BTreeMap::new(),
+    }
+    .encode()
+    .unwrap();
+
+    client.start(23).unwrap();
+    let reply = client.process(23, &wire_request).unwrap();
+    assert_eq!(reply.len(), 1);
+    assert_eq!(*seen_cancels.lock().unwrap(), [fallback_id]);
+}
+
+// oracle: mutant sending a queued RDPEWA request after its start guard returns false.
+#[test]
+fn server_rpc_start_guard_aborts_without_sending_request() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&calls);
+    let mut server = RdpewaServerRpc::iuvpaa(
+        [0x81; 16],
+        Box::new(move |result| {
+            recorded.lock().unwrap_or_else(|e| e.into_inner()).push(result);
+        }),
+    )
+    .with_start_guard(Box::new(|| false));
+
+    let outbound = server.start(24).unwrap();
+    assert!(outbound.is_empty());
+    // oracle: spec MS-ERREF §2.1; E_ABORT (0x80004004).
+    assert_eq!(calls.lock().unwrap().as_slice(), [Err(0x8000_4004)]);
+    drop(server);
+    assert_eq!(calls.lock().unwrap().as_slice(), [Err(0x8000_4004)]);
+}
+
+// oracle: spec MS-RDPEWA §§2.2.2 and 2.2.2.1; MS-ERREF §2.1 E_FAIL (0x80004005).
+#[test]
+fn server_webauthn_rpc_propagates_client_hresult_and_rejects_invalid_responses() {
+    use ironrdp_rdpewa::pdu::{RdpewaResponse, S_OK, WebAuthnResponsePayload};
+
+    let make_request = || RdpewaWebAuthnRequest {
+        rp_id: Some("localhost".to_owned()),
+        timeout_ms: 30_000,
+        transaction_id: [0x91; 16],
+        client_data_json: b"{}".to_vec(),
+        para: WebAuthnPara::default(),
+        body: WebAuthnRequestBody {
+            subcommand: WebAuthnSubcommand::MakeCredential,
+            ctap_cbor: vec![0xA0],
+        },
+    };
+
+    let hresult_outcome = Arc::new(Mutex::new(Vec::new()));
+    let recorded_hresult = Arc::clone(&hresult_outcome);
+    let mut hresult_server = RdpewaServerRpc::webauthn(
+        make_request(),
+        Box::new(move |result| {
+            recorded_hresult.lock().unwrap_or_else(|e| e.into_inner()).push(result);
+        }),
+    );
+    let _ = hresult_server.start(25).unwrap();
+    let error_wire = RdpewaResponse::from_hresult(0x8009_0027).to_bytes();
+    assert!(hresult_server.process(25, &error_wire).unwrap().is_empty());
+    assert_eq!(hresult_outcome.lock().unwrap().as_slice(), [Err(0x8009_0027)]);
+
+    let empty_ctap_outcome = Arc::new(Mutex::new(Vec::new()));
+    let recorded_empty = Arc::clone(&empty_ctap_outcome);
+    let mut empty_ctap_server = RdpewaServerRpc::webauthn(
+        make_request(),
+        Box::new(move |result| {
+            recorded_empty.lock().unwrap_or_else(|e| e.into_inner()).push(result);
+        }),
+    );
+    let _ = empty_ctap_server.start(26).unwrap();
+    let empty_payload = WebAuthnResponsePayload {
+        device_info: DeviceInfo::default(),
+        status: 0,
+        response: Vec::new(),
+    }
+    .encode()
+    .unwrap();
+    let empty_wire = RdpewaResponse::with_payload(S_OK, empty_payload).to_bytes();
+    assert!(empty_ctap_server.process(26, &empty_wire).unwrap().is_empty());
+    // oracle: spec MS-ERREF §2.1; E_FAIL (0x80004005).
+    assert_eq!(empty_ctap_outcome.lock().unwrap().as_slice(), [Err(0x8000_4005)]);
+
+    let truncated_outcome = Arc::new(Mutex::new(Vec::new()));
+    let recorded_truncated = Arc::clone(&truncated_outcome);
+    let mut truncated_server = RdpewaServerRpc::webauthn(
+        make_request(),
+        Box::new(move |result| {
+            recorded_truncated
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(result);
+        }),
+    );
+    let _ = truncated_server.start(27).unwrap();
+    assert!(truncated_server.process(27, &[0x00, 0x00]).is_err());
+    assert_eq!(truncated_outcome.lock().unwrap().as_slice(), [Err(0x8000_4005)]);
+    drop(truncated_server);
+    assert_eq!(truncated_outcome.lock().unwrap().as_slice(), [Err(0x8000_4005)]);
 }
