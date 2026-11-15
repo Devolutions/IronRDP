@@ -95,6 +95,13 @@ impl DvcProcessor for GfxDvcBridge {
         ironrdp_egfx::CHANNEL_NAME
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        self.inner
+            .lock()
+            .expect("GfxServerHandle mutex poisoned")
+            .max_message_size()
+    }
+
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         self.inner
             .lock()

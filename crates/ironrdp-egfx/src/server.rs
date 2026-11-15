@@ -2724,6 +2724,10 @@ impl DvcProcessor for GraphicsPipelineServer {
         CHANNEL_NAME
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        Some(256 * 1024)
+    }
+
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         // The core capability clamp is applied before the dynamic channel opens,
         // so preserve it here. close() already clears the prior generation.
