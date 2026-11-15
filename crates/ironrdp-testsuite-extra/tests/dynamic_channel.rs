@@ -953,7 +953,9 @@ mod completion {
     }
 
     fn negotiated_audio_channel(server: &RdpServer, formats: Vec<AudioFormat>) -> (DrdynvcServer, u32, u32) {
-        let mut drdynvc = DrdynvcServer::new().with_dynamic_channel(EchoDvcBridge::new(server.echo_handle().clone()));
+        let mut drdynvc = DrdynvcServer::new()
+            .with_dynamic_channel(EchoDvcBridge::new(server.echo_handle().clone()))
+            .with_dynamic_channel(RdpeaiServer::new(Box::new(AudioBackend(formats.clone()))));
         drdynvc.start().unwrap();
         drdynvc
             .process(
@@ -964,17 +966,18 @@ mod completion {
             )
             .unwrap();
         let echo_channel_id = drdynvc.get_channel_id_by_type::<EchoDvcBridge>().unwrap();
-        let mut audio_channel_id = None;
+        let static_audio_channel_id = drdynvc.get_channel_id_by_type::<RdpeaiServer>().unwrap();
+        let mut runtime_audio_channel_id = None;
         let backend_formats = formats.clone();
         drdynvc
             .create_channel_with(|channel_id| {
-                audio_channel_id = Some(channel_id);
+                runtime_audio_channel_id = Some(channel_id);
                 PduResult::Ok(RdpeaiServer::new(Box::new(AudioBackend(backend_formats))))
             })
             .unwrap();
-        let audio_channel_id = audio_channel_id.unwrap();
-        assert_eq!(drdynvc.get_channel_id_by_type::<RdpeaiServer>(), None);
-        for channel_id in [echo_channel_id, audio_channel_id] {
+        let audio_channel_id = runtime_audio_channel_id.unwrap();
+        assert_ne!(audio_channel_id, static_audio_channel_id);
+        for channel_id in [echo_channel_id, static_audio_channel_id, audio_channel_id] {
             drdynvc
                 .process(
                     &encode_vec(&DrdynvcClientPdu::Create(CreateResponsePdu::new(
@@ -989,15 +992,17 @@ mod completion {
             RdpeaiPdu::Version(VersionPdu::new(Version::V1)),
             RdpeaiPdu::Formats(FormatsPdu::client(formats)),
         ] {
-            drdynvc
-                .process(
-                    &encode_vec(&DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
-                        audio_channel_id,
-                        encode_vec(&pdu).unwrap(),
-                    ))))
-                    .unwrap(),
-                )
-                .unwrap();
+            for channel_id in [static_audio_channel_id, audio_channel_id] {
+                drdynvc
+                    .process(
+                        &encode_vec(&DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+                            channel_id,
+                            encode_vec(&pdu).unwrap(),
+                        ))))
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
         }
         (drdynvc, echo_channel_id, audio_channel_id)
     }
@@ -1017,14 +1022,13 @@ mod completion {
         Some(pdu)
     }
 
-    // oracle: mutant stale AUDIO_INPUT Open or ChangeFormat is written after capture stops while waiting for an earlier event.
+    // oracle: mutant stale AUDIO_INPUT OpenOnChannel is written after capture stops while waiting for an earlier event.
     #[tokio::test]
     async fn stale_audio_open_is_discarded_after_preceding_event() {
         let server = server();
         let format_mono = pcm_format(1, 48_000, 16);
-        let format_stereo = pcm_format(2, 48_000, 16);
         let (drdynvc, blocker_channel_id, audio_channel_id) =
-            negotiated_audio_channel(&server, vec![format_mono.clone(), format_stereo]);
+            negotiated_audio_channel(&server, vec![format_mono.clone()]);
         let (current, is_current) = current_producer();
         let event = ServerEvent::RdpeaiWithValidity {
             message: RdpeaiServerMessage::OpenOnChannel {
@@ -1055,7 +1059,7 @@ mod completion {
             },
             is_current,
         };
-        let (mut channels, bytes) = behind_stalled_event(event, channels, blocker_channel_id, || {}).await;
+        let (_, bytes) = behind_stalled_event(event, channels, blocker_channel_id, || {}).await;
         assert_eq!(
             decode_audio_pdu(&bytes, audio_channel_id),
             Some(RdpeaiPdu::Open(OpenPdu {
@@ -1064,6 +1068,27 @@ mod completion {
                 capture_format: format_mono,
             }))
         );
+    }
+
+    // oracle: mutant stale AUDIO_INPUT ChangeFormatOnChannel is written after capture stops while waiting for an earlier event.
+    #[tokio::test]
+    async fn stale_audio_format_change_is_discarded_after_preceding_event() {
+        let server = server();
+        let format_mono = pcm_format(1, 48_000, 16);
+        let format_stereo = pcm_format(2, 48_000, 16);
+        let (drdynvc, blocker_channel_id, audio_channel_id) =
+            negotiated_audio_channel(&server, vec![format_mono.clone(), format_stereo]);
+        let (_current, is_current) = current_producer();
+        let open_event = ServerEvent::RdpeaiWithValidity {
+            message: RdpeaiServerMessage::OpenOnChannel {
+                channel_id: audio_channel_id,
+                frames_per_packet: 480,
+                initial_format: 0,
+                capture_format: format_mono,
+            },
+            is_current,
+        };
+        let (mut channels, _) = behind_stalled_event(open_event, channels(drdynvc), blocker_channel_id, || {}).await;
 
         for pdu in [
             RdpeaiPdu::FormatChange(FormatChangePdu::new(0)),
@@ -1085,6 +1110,23 @@ mod completion {
                 )
                 .unwrap();
         }
+
+        let (current, is_current) = current_producer();
+        let stale_change = ServerEvent::RdpeaiWithValidity {
+            message: RdpeaiServerMessage::ChangeFormatOnChannel {
+                channel_id: audio_channel_id,
+                new_format: 1,
+            },
+            is_current,
+        };
+        let (channels, bytes) = behind_stalled_event(stale_change, channels, blocker_channel_id, || {
+            current.store(false, Ordering::SeqCst);
+        })
+        .await;
+        assert!(
+            bytes.is_empty(),
+            "invalidated AUDIO_INPUT FormatChange escaped after the preceding event"
+        );
 
         let (_current, is_current) = current_producer();
         let change_event = ServerEvent::RdpeaiWithValidity {
