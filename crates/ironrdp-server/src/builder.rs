@@ -67,6 +67,8 @@ pub struct BuilderDone {
     remotefx_quant: Quant,
     remotefx_entropy_coder: Option<EntropyBits>,
     udp_bind_addr: Option<SocketAddr>,
+    max_static_channel_message_size: Option<usize>,
+    max_dynamic_channel_message_size: Option<usize>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -184,6 +186,8 @@ impl RdpServerBuilder<WantsDisplay> {
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
+                max_static_channel_message_size: None,
+                max_dynamic_channel_message_size: None,
             },
         }
     }
@@ -222,6 +226,8 @@ impl RdpServerBuilder<WantsDisplay> {
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
+                max_static_channel_message_size: None,
+                max_dynamic_channel_message_size: None,
             },
         }
     }
@@ -493,6 +499,49 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Bounds the messages a client sends on each static channel whose processor sets no limit of its own.
+    ///
+    /// A message over `max_message_size`, declared or received, ends the session, as any static channel error does;
+    /// see [`StaticChannelSet::set_max_message_size`](ironrdp_svc::StaticChannelSet::set_max_message_size).
+    /// The limit must be at least the largest legitimate message of every attached static channel.
+    /// A client sends whole clipboard content as one message, so content larger than the limit ends the session.
+    /// A drive read response is as large as the read the server application requests.
+    /// The DRDYNVC static channel is bounded at [`Self::with_max_dynamic_channel_message_size`] plus
+    /// [`MAX_CHANNEL_CHUNK_LENGTH`](ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH) when that is set, and at this limit
+    /// otherwise, which must then be at least 1,600 bytes, the largest DRDYNVC PDU a client following MS-RDPEDYC sends
+    /// ([2.2.3.1] DVC Data First PDU (`DYNVC_DATA_FIRST`)).
+    /// This limit does not bound dynamic channel messages, which a client splits into such PDUs.
+    ///
+    /// Unset by default: such messages are bounded only by their declared length, up to 4 GiB.
+    ///
+    /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
+    pub fn with_max_static_channel_message_size(mut self, max_message_size: usize) -> Self {
+        self.state.max_static_channel_message_size = Some(max_message_size);
+        self
+    }
+
+    /// Bounds the messages a client sends on each dynamic channel whose processor sets no limit of its own.
+    ///
+    /// A message over `max_message_size`, declared or received, closes its channel, and the session goes on without
+    /// that channel; see [`DrdynvcServer::with_max_message_size`](ironrdp_dvc::DrdynvcServer::with_max_message_size).
+    /// The limit must be at least the largest legitimate message of every attached dynamic channel: a full EGFX cache
+    /// import offer ([2.2.2.16] RDPGFX_CACHE_IMPORT_OFFER_PDU) is 65,542 bytes, and USB and audio input messages grow
+    /// with the transfers and formats in use.
+    /// A single DRDYNVC PDU larger than the limit plus
+    /// [`MAX_CHANNEL_CHUNK_LENGTH`](ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH) ends the session instead; a client following
+    /// MS-RDPEDYC never sends one, since its PDUs are at most 1,600 bytes ([2.2.3.1] DVC Data First PDU
+    /// (`DYNVC_DATA_FIRST`), [2.2.3.2] DVC Data PDU (`DYNVC_DATA`)).
+    ///
+    /// Unset by default: such messages are bounded only by their declared length, up to 4 GiB.
+    ///
+    /// [2.2.2.16]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/890f0077-dedb-4b22-8b20-ea69b9cfcacd
+    /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
+    /// [2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/15b59886-db44-47f1-8da3-47c8fcd82803
+    pub fn with_max_dynamic_channel_message_size(mut self, max_message_size: usize) -> Self {
+        self.state.max_dynamic_channel_message_size = Some(max_message_size);
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         let mut server = RdpServer::new(
             RdpServerOptions {
@@ -506,6 +555,8 @@ impl RdpServerBuilder<BuilderDone> {
                 remotefx_quant: self.state.remotefx_quant,
                 remotefx_entropy_coder: self.state.remotefx_entropy_coder,
                 udp_bind_addr: self.state.udp_bind_addr,
+                max_static_channel_message_size: self.state.max_static_channel_message_size,
+                max_dynamic_channel_message_size: self.state.max_dynamic_channel_message_size,
             },
             self.state.handler,
             self.state.display,

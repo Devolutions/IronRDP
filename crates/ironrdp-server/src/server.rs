@@ -899,6 +899,12 @@ pub struct RdpServerOptions {
     /// multitransport is offered. `None` disables the feature entirely. Set
     /// via [`RdpServerBuilder::with_udp_transport`](crate::RdpServerBuilder::with_udp_transport).
     pub udp_bind_addr: Option<SocketAddr>,
+    /// The message limit of a static channel whose processor sets none.
+    /// Set with `with_max_static_channel_message_size` on [`RdpServer::builder`].
+    pub max_static_channel_message_size: Option<usize>,
+    /// The message limit of a dynamic channel whose processor sets none.
+    /// Set with `with_max_dynamic_channel_message_size` on [`RdpServer::builder`].
+    pub max_dynamic_channel_message_size: Option<usize>,
 }
 
 impl RdpServerOptions {
@@ -3596,6 +3602,9 @@ impl RdpServer {
     /// Builds this connection's channel backends into `acceptor` and returns the
     /// connection's state, holding the handles those backends were given.
     async fn attach_channels(&self, acceptor: &mut Acceptor) -> ConnectionState {
+        if let Some(max_message_size) = self.opts.max_static_channel_message_size {
+            acceptor.set_max_static_message_size(max_message_size);
+        }
         let autodetect_handles = AutoDetectHandles::default();
 
         if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
@@ -3685,6 +3694,10 @@ impl RdpServer {
             .dynamic_channel_factories
             .iter()
             .fold(dvc, |channels, factory| factory.attach(channels));
+        let dvc = match self.opts.max_dynamic_channel_message_size {
+            Some(max_message_size) => dvc.with_max_message_size(max_message_size),
+            None => dvc,
+        };
         acceptor.attach_static_channel(dvc);
 
         for factory in &self.static_channel_factories {
@@ -7077,6 +7090,8 @@ mod preempt_tests {
                 remotefx_quant: Quant::default(),
                 remotefx_entropy_coder: None,
                 udp_bind_addr: None,
+                max_static_channel_message_size: None,
+                max_dynamic_channel_message_size: None,
             },
             creds: None,
             credssp_backend: CredsspBackend::default(),
