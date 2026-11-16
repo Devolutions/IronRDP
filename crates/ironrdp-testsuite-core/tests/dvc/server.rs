@@ -288,6 +288,15 @@ fn first_chunk(length: u32) -> Vec<u8> {
 /// The limit of the static channel set in which [`open_in_bounded_static_set`] puts the DRDYNVC static channel.
 const STATIC_LIMIT: usize = 15;
 
+/// The dynamic channel limit of [`with_dynamic_limit`], above [`STATIC_LIMIT`] so that a message at it fails the static
+/// set's limit, and different from it so that each bound shows which limit it came from.
+const DYNAMIC_LIMIT: usize = 20;
+
+/// A server whose dynamic channel limit is [`DYNAMIC_LIMIT`].
+fn with_dynamic_limit() -> DrdynvcServer {
+    DrdynvcServer::new().with_max_message_size(DYNAMIC_LIMIT)
+}
+
 /// The recorded channel, opened on `server`, which is then put in a static channel set bounded at [`STATIC_LIMIT`].
 fn open_in_bounded_static_set(server: DrdynvcServer) -> (StaticChannelSet, u32) {
     let (server, id) = open_recorded_server_on(server, None);
@@ -301,27 +310,27 @@ fn open_in_bounded_static_set(server: DrdynvcServer) -> (StaticChannelSet, u32) 
 // header.
 #[test]
 fn a_message_at_the_limit_passes_through_a_bounded_static_set() {
-    let (mut set, id) = open_in_bounded_static_set(DrdynvcServer::new().with_max_message_size(STATIC_LIMIT));
+    let (mut set, id) = open_in_bounded_static_set(with_dynamic_limit());
     let svc = set.get_by_type_mut::<DrdynvcServer>().unwrap();
     svc.process(&static_chunk(&DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(
-        DataPdu::new(id, vec![1; STATIC_LIMIT]),
+        DataPdu::new(id, vec![1; DYNAMIC_LIMIT]),
     ))))
     .expect("a message at the limit");
     let server = svc.channel_processor_downcast_ref::<DrdynvcServer>().unwrap();
     assert!(server.is_channel_opened(id));
     assert_eq!(
         server.dvc_by_id::<RecordedServerDvc>(id).unwrap().processor().received,
-        vec![vec![1; STATIC_LIMIT]]
+        vec![vec![1; DYNAMIC_LIMIT]]
     );
 }
 
 // oracle: mutant ignoring the server-wide message limit for an unfragmented message.
 #[test]
 fn a_message_over_the_limit_closes_only_its_channel_through_a_bounded_static_set() {
-    let (mut set, id) = open_in_bounded_static_set(DrdynvcServer::new().with_max_message_size(STATIC_LIMIT));
+    let (mut set, id) = open_in_bounded_static_set(with_dynamic_limit());
     let svc = set.get_by_type_mut::<DrdynvcServer>().unwrap();
     svc.process(&static_chunk(&DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(
-        DataPdu::new(id, vec![1; STATIC_LIMIT + 1]),
+        DataPdu::new(id, vec![1; DYNAMIC_LIMIT + 1]),
     ))))
     .expect("an oversized message closes only its channel");
     assert!(
@@ -338,7 +347,7 @@ fn a_full_size_pdu_passes_a_static_channel_bounded_below_it() {
     const CHANNEL_PDU_HEADER_SIZE: usize = 4 /* length */ + 4 /* flags */;
     const DATA_FIRST_HEADER_SIZE: usize = 1 /* cbId, Len, Cmd */ + 1 /* ChannelId */ + 4 /* Length */;
 
-    let (mut set, id) = open_in_bounded_static_set(DrdynvcServer::new().with_max_message_size(STATIC_LIMIT));
+    let (mut set, id) = open_in_bounded_static_set(with_dynamic_limit());
     let chunk = static_chunk(&DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(
         id,
         1_000_000,
@@ -360,7 +369,7 @@ fn a_full_size_pdu_passes_a_static_channel_bounded_below_it() {
 #[case::static_set_limit(DrdynvcServer::new, STATIC_LIMIT)]
 // oracle: mutant leaving the DRDYNVC static channel unbounded with a dynamic channel limit, or bounding it elsewhere
 // than at the limit plus one chunk.
-#[case::dynamic_limit_plus_one_chunk(|| DrdynvcServer::new().with_max_message_size(STATIC_LIMIT), STATIC_LIMIT + MAX_CHANNEL_CHUNK_LENGTH)]
+#[case::dynamic_limit_plus_one_chunk(with_dynamic_limit, DYNAMIC_LIMIT + MAX_CHANNEL_CHUNK_LENGTH)]
 fn the_drdynvc_static_channel_is_bounded(#[case] server: fn() -> DrdynvcServer, #[case] bound: usize) {
     let bound = u32::try_from(bound).unwrap();
 
