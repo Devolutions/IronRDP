@@ -321,11 +321,13 @@ pub struct DisplayContext {
     /// The connection's auto-detect measurements, for flow control.
     pub autodetect: AutoDetectHandles,
 
-    /// The connection's EGFX server, when a
-    /// [`GfxServerFactory`](crate::GfxServerFactory) is configured. This is also
-    /// available when the factory uses the `build_gfx_handler` fallback.
-    /// The display calls `send_avc420_frame()` / `send_avc444_frame()` on it
-    /// and then signals the event loop via `ServerEvent::Egfx`.
+    /// The connection's EGFX server, when a [`GfxServerFactory`](crate::GfxServerFactory) is configured and the client
+    /// set RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL in its MS-RDPBCGR [2.2.1.3.2] Client Core Data (TS_UD_CS_CORE).
+    /// This is also available when the factory uses the `build_gfx_handler` fallback.
+    /// The display calls `send_avc420_frame()` / `send_avc444_frame()` on it and then signals the event loop via
+    /// `ServerEvent::Egfx`.
+    ///
+    /// [2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
     #[cfg(feature = "egfx")]
     pub gfx_handle: Option<GfxServerHandle>,
 

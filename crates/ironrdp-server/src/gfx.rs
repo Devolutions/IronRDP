@@ -40,6 +40,13 @@ pub struct GfxContext {
 ///
 /// Implements `ServerEventSender` so the factory can signal the server event loop
 /// when EGFX frames are ready to be drained and sent.
+///
+/// The server builds a connection's handler before the client's MS-RDPBCGR [2.2.1.3.2] Client Core Data (TS_UD_CS_CORE)
+/// arrives.
+/// When the client didn't set RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL there, the channel is never offered and the server
+/// drops its references to what was built, without calling the handler.
+///
+/// [2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
 pub trait GfxServerFactory: ServerEventSender + Send {
     /// Create a handler for EGFX callbacks (caps negotiation, frame acks).
     fn build_gfx_handler(&self, ctx: GfxContext) -> Box<dyn GraphicsPipelineHandler>;

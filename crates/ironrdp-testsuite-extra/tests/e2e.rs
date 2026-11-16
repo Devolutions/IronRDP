@@ -1666,6 +1666,218 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
     )
 }
 
+/// A client that sets RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL gets the graphics pipeline channel, and the display gets the
+/// connection's EGFX server.
+/// This shows the probe sees the channel at all, which the test below relies on to mean anything.
+// oracle: mutant the graphics pipeline held back from a client that advertises it, or its server kept from the display
+#[tokio::test]
+async fn egfx_channel_is_created_for_a_client_that_advertises_it() {
+    let probe = run_egfx_probe(true, EgfxRegistration::GfxFactory).await;
+
+    assert!(
+        probe.echo_started,
+        "the echo channel must open for the probe to mean anything"
+    );
+    assert!(
+        probe.egfx_started,
+        "a client that advertises the graphics pipeline must get the channel created"
+    );
+    assert!(
+        probe.display_got_egfx_server,
+        "the display must get the EGFX server of a client that advertises the graphics pipeline"
+    );
+}
+
+/// A client implementing the graphics pipeline sets RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL in the earlyCapabilityFlags of
+/// its Client Core Data to indicate support, per MS-RDPEGFX [1.5.1] Client Implementation Requirements, so a client
+/// that leaves it clear isn't offered the channel, even with an EGFX factory configured and an EGFX listener on the
+/// client.
+///
+/// [1.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/f75a7d5c-141d-4bbc-8b27-3299378f8ac6
+// oracle: spec MS-RDPEGFX §1.5.1
+// oracle: spec MS-RDPBCGR §2.2.1.3.2
+#[tokio::test]
+async fn egfx_channel_is_not_created_for_a_client_that_does_not_advertise_it() {
+    let probe = run_egfx_probe(false, EgfxRegistration::GfxFactory).await;
+
+    assert!(
+        probe.echo_started,
+        "the echo channel must open for the probe to mean anything"
+    );
+    assert!(
+        !probe.egfx_started,
+        "a client that didn't advertise the graphics pipeline must not get the channel created"
+    );
+    // oracle: mutant handing the display an EGFX server whose channel is never offered
+    assert!(
+        !probe.display_got_egfx_server,
+        "the display must not get an EGFX server for a client that didn't advertise the graphics pipeline"
+    );
+}
+
+/// A client that sets RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL gets a GraphicsPipelineServer added as a plain dynamic
+/// channel, through a dynamic channel factory and with no EGFX factory.
+/// This shows the probe sees a channel registered this way at all, which the test below relies on to mean anything.
+// oracle: mutant the graphics pipeline held back from a client that advertises it when no EGFX factory registered it
+#[tokio::test]
+async fn egfx_registered_as_a_dynamic_channel_is_created_for_a_client_that_advertises_it() {
+    let probe = run_egfx_probe(true, EgfxRegistration::DynamicChannel).await;
+
+    assert!(
+        probe.echo_started,
+        "the echo channel must open for the probe to mean anything"
+    );
+    assert!(
+        probe.egfx_started,
+        "a client that advertises the graphics pipeline must get the dynamically registered channel"
+    );
+}
+
+/// The flag decides the channel whatever registered it, so a GraphicsPipelineServer added as a plain dynamic channel
+/// isn't offered to a client that leaves RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL clear either, per MS-RDPEGFX [1.5.1]
+/// Client Implementation Requirements.
+///
+/// [1.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/f75a7d5c-141d-4bbc-8b27-3299378f8ac6
+// oracle: spec MS-RDPEGFX §1.5.1
+// oracle: spec MS-RDPBCGR §2.2.1.3.2
+// oracle: mutant a graphics pipeline check that only finds the channel an EGFX factory registers
+#[tokio::test]
+async fn egfx_registered_as_a_dynamic_channel_is_not_created_for_a_client_that_does_not_advertise_it() {
+    let probe = run_egfx_probe(false, EgfxRegistration::DynamicChannel).await;
+
+    assert!(
+        probe.echo_started,
+        "the echo channel must open for the probe to mean anything"
+    );
+    assert!(
+        !probe.egfx_started,
+        "a client that didn't advertise the graphics pipeline must not get the dynamically registered channel"
+    );
+}
+
+/// How the server under test registers the graphics pipeline.
+enum EgfxRegistration {
+    /// Through an EGFX factory, which also hands the display the connection's EGFX server.
+    GfxFactory,
+    /// As a plain dynamic channel, through a dynamic channel factory.
+    DynamicChannel,
+}
+
+/// Adds a GraphicsPipelineServer to each connection's dynamic channels.
+struct DynamicEgfxChannel;
+
+impl server::DynamicChannelFactory for DynamicEgfxChannel {
+    fn attach(&self, channels: ironrdp_dvc::DrdynvcServer) -> ironrdp_dvc::DrdynvcServer {
+        channels.with_dynamic_channel(ironrdp_egfx::server::GraphicsPipelineServer::new(Box::new(
+            TestGfxHandler {
+                caps_tx: mpsc::unbounded_channel().0,
+            },
+        )))
+    }
+}
+
+/// What one connection showed of the graphics pipeline.
+struct EgfxProbe {
+    echo_started: bool,
+    egfx_started: bool,
+    display_got_egfx_server: bool,
+}
+
+/// Connects a real client that registers an EGFX channel and an echo channel, with `support_dyn_vc_gfx_protocol` as
+/// given, to a server that registers the graphics pipeline as `registration` says, and reports what the server
+/// created.
+///
+/// The server asks the display for updates before any dynamic channel exists, and sends the Create request for every
+/// dynamic channel together, in its reply to the client's capabilities.
+/// Once the echo channel has opened and the connection then goes quiet, both answers are final.
+async fn run_egfx_probe(support_dyn_vc_gfx_protocol: bool, registration: EgfxRegistration) -> EgfxProbe {
+    let echo_started = Arc::new(AtomicBool::new(false));
+    let egfx_started = Arc::new(AtomicBool::new(false));
+    let display_got_egfx_server = Arc::new(AtomicBool::new(false));
+
+    let connector_echo = Arc::clone(&echo_started);
+    let connector_egfx = Arc::clone(&egfx_started);
+    let observed_echo = Arc::clone(&echo_started);
+    let display_egfx_server = Arc::clone(&display_got_egfx_server);
+
+    client_server_with_display(
+        move |rx| EgfxServerRecorder {
+            display: TestDisplay {
+                rx,
+                offers_display_control: true,
+            },
+            got_egfx_server: display_egfx_server,
+        },
+        None,
+        connector::Config {
+            support_dyn_vc_gfx_protocol,
+            ..default_client_config()
+        },
+        Vec::new(),
+        match registration {
+            EgfxRegistration::GfxFactory => TestServerOptions {
+                gfx_factory: Some(Box::new(TestGfxFactory {
+                    caps_tx: mpsc::unbounded_channel().0,
+                })),
+                ..Default::default()
+            },
+            EgfxRegistration::DynamicChannel => TestServerOptions {
+                dynamic_channel_factory: Some(Box::new(DynamicEgfxChannel)),
+                ..Default::default()
+            },
+        },
+        move |connector| {
+            connector.with_static_channel(
+                DrdynvcClient::new()
+                    .with_dynamic_channel(StartRecorder::new(ironrdp_egfx::CHANNEL_NAME, connector_egfx))
+                    .with_dynamic_channel(StartRecorder::new(ironrdp::echo::CHANNEL_NAME, connector_echo)),
+            )
+        },
+        move |mut stage, _activation_factory, mut framed, display_tx, _echo_handle| async move {
+            let _display_tx = display_tx;
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut settled = false;
+            while !settled && Instant::now() < deadline {
+                settled =
+                    !serve_one_pdu(&mut stage, &mut framed, &mut image).await && observed_echo.load(Ordering::Relaxed);
+            }
+
+            (stage, framed)
+        },
+    )
+    .await;
+
+    EgfxProbe {
+        echo_started: echo_started.load(Ordering::Relaxed),
+        egfx_started: egfx_started.load(Ordering::Relaxed),
+        display_got_egfx_server: display_got_egfx_server.load(Ordering::Relaxed),
+    }
+}
+
+/// Test display that records whether the server handed it an EGFX server.
+struct EgfxServerRecorder {
+    display: TestDisplay,
+    got_egfx_server: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for EgfxServerRecorder {
+    async fn size(&mut self) -> DesktopSize {
+        self.display.size().await
+    }
+
+    async fn updates(&mut self, ctx: DisplayContext) -> ServerResult<Box<dyn RdpServerDisplayUpdates>> {
+        self.got_egfx_server.store(ctx.gfx_handle.is_some(), Ordering::Relaxed);
+        self.display.updates(ctx).await
+    }
+
+    async fn offers_display_control(&mut self) -> bool {
+        self.display.offers_display_control().await
+    }
+}
+
 /// A client that sets neither INFO_NOAUDIOPLAYBACK nor INFO_REMOTECONSOLEAUDIO gets its audio redirected, per
 /// MS-RDPBCGR [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET): "If the INFO_NOAUDIOPLAYBACK flag is not set, then audio
 /// redirection SHOULD take place if the INFO_REMOTECONSOLEAUDIO (0x00002000) flag is also not set."
@@ -2746,6 +2958,8 @@ struct TestServerOptions {
     max_static_channel_message_size: Option<usize>,
     max_dynamic_channel_message_size: Option<usize>,
     connection_handler: Option<Box<dyn server::ConnectionHandler>>,
+    gfx_factory: Option<Box<dyn GfxServerFactory>>,
+    dynamic_channel_factory: Option<Box<dyn server::DynamicChannelFactory>>,
 }
 
 async fn client_server_with_display<D, DF, F, Fut, C>(
@@ -2799,6 +3013,10 @@ async fn client_server_with_display<D, DF, F, Fut, C>(
         server_builder = server_builder.with_max_dynamic_channel_message_size(max_message_size);
     }
     server_builder = server_builder.with_connection_handler(server_options.connection_handler);
+    server_builder = server_builder.with_gfx_factory(server_options.gfx_factory);
+    if let Some(factory) = server_options.dynamic_channel_factory {
+        server_builder = server_builder.with_dynamic_channel_factory(factory);
+    }
     let mut server = server_builder.build();
     server.set_credentials(Some(server::Credentials {
         username: USERNAME.into(),
