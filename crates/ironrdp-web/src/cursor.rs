@@ -2,8 +2,7 @@
 //!
 //! A server may send its pointer inside a larger, mostly transparent bitmap:
 //! a Linux guest's virtio-gpu cursor is 64x64 with the arrow in its top-left corner.
-//! Cutting off the transparent margin keeps the arrow from shrinking when the pointer is scaled down
-//! (see [`fit`]).
+//! Cutting off the transparent margin keeps the arrow from shrinking when the pointer is scaled down (see [`fit`]).
 
 use anyhow::Context as _;
 use ironrdp::graphics::pointer::DecodedPointer;
@@ -76,8 +75,10 @@ pub(crate) fn fit(pointer: &DecodedPointer) -> anyhow::Result<Option<DecodedPoin
         return Ok(cropped);
     };
 
-    // Per invariants: width * height * 4 <= 32 * 32 * 4 < usize::MAX
-    #[expect(clippy::arithmetic_side_effects)]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "per the Scaled invariants, width * height * 4 <= 32 * 32 * 4 < usize::MAX"
+    )]
     let mut bitmap_data = vec![0u8; usize::from(scaled.width) * usize::from(scaled.height) * 4];
     resize::new(
         usize::from(source.width),
@@ -107,10 +108,10 @@ pub(crate) fn fit(pointer: &DecodedPointer) -> anyhow::Result<Option<DecodedPoin
 const MAX_CURSOR_SIZE: u16 = 32;
 
 /// A pointer's size and hotspot once scaled down to fit [`MAX_CURSOR_SIZE`].
-///
-/// INVARIANT: 1 <= width <= MAX_CURSOR_SIZE and 1 <= height <= MAX_CURSOR_SIZE
 struct Scaled {
+    /// INVARIANT: `1 <= width <= MAX_CURSOR_SIZE`
     width: u16,
+    /// INVARIANT: `1 <= height <= MAX_CURSOR_SIZE`
     height: u16,
     hotspot_x: u16,
     hotspot_y: u16,
