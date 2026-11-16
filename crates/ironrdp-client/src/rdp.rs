@@ -2946,37 +2946,27 @@ fn build_connector(
             .is_some_and(ironrdp_rdpdr::Rdpdr::drive_hotplug_available),
     );
 
-    // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
-    {
+    let rdpsnd_kind = {
         #[cfg(feature = "rdpdr")]
         let rdpdr_attached = rdpdr_channel.is_some();
         #[cfg(not(feature = "rdpdr"))]
         let rdpdr_attached = false;
 
-        if let Some(kind) = rdpsnd_backend_kind(audio_playback, rdpdr_attached) {
-            match kind {
-                #[cfg(feature = "sound")]
-                RdpsndBackendKind::Playback => {
-                    // INVARIANT: `audio_playback` is `config.channels.sound && connector.enable_audio_playback`,
-                    // the condition that created `playback`, so the static channel and the dynamic
-                    // channels drive the same backend.
-                    let playback = playback.expect("the shared playback backend exists when audio playback is enabled");
-                    connector = connector.with_static_channel(
-                        ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(playback))
-                            .with_quality_mode(config.audio_quality_mode.into_rdpsnd())
-                            .with_clock(crate::audio::clock()),
-                    );
-                }
-                #[cfg(feature = "rdpdr")]
-                RdpsndBackendKind::Noop => {
-                    connector = connector.with_static_channel(
-                        ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(ironrdp_rdpsnd::client::NoopRdpsndBackend))
-                            .with_quality_mode(config.audio_quality_mode.into_rdpsnd()),
-                    );
-                }
-            }
-        }
+        rdpsnd_backend_kind(audio_playback, rdpdr_attached)
+    };
+
+    #[cfg(feature = "sound")]
+    if matches!(rdpsnd_kind, Some(RdpsndBackendKind::Playback)) {
+        // INVARIANT: `audio_playback` is `config.channels.sound && connector.enable_audio_playback`,
+        // the condition that created `playback`, so the static channel and the dynamic
+        // channels drive the same backend.
+        let playback = playback.expect("the shared playback backend exists when audio playback is enabled");
+        connector = connector.with_static_channel(
+            ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(playback))
+                .with_quality_mode(config.audio_quality_mode.into_rdpsnd())
+                .with_clock(crate::audio::clock()),
+        );
     }
 
     #[cfg(feature = "rdpdr")]
@@ -2999,14 +2989,21 @@ fn build_connector(
     for attach_sc in &config.extensions.static_channels {
         attach_sc(&mut connector, &config.properties);
     }
-    if !rdpsnd_before_extensions
-        && config.connector.enable_audio_playback
-        && connector
-            .static_channels
-            .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
-            .is_some()
-    {
+    let rdpsnd_after_extensions = connector
+        .static_channels
+        .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
+        .is_some();
+    if !rdpsnd_before_extensions && config.connector.enable_audio_playback && rdpsnd_after_extensions {
         connector.config.enable_audio_playback = true;
+    }
+
+    // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
+    #[cfg(feature = "rdpdr")]
+    if !rdpsnd_after_extensions && matches!(rdpsnd_kind, Some(RdpsndBackendKind::Noop)) {
+        connector = connector.with_static_channel(
+            ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(ironrdp_rdpsnd::client::NoopRdpsndBackend))
+                .with_quality_mode(config.audio_quality_mode.into_rdpsnd()),
+        );
     }
 
     if let Some(cookie) = auto_reconnect_cookie {
@@ -8338,6 +8335,36 @@ mod tests {
             connector
                 .static_channels
                 .get_by_channel_name(&ChannelName::from_static(b"rdpsnd\0\0"))
+                .is_some()
+        );
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND, even when RDPDR is enabled)
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn custom_rdpsnd_with_rdpdr_keeps_audio_playback_enabled() {
+        let mut config = custom_rdpsnd_test_config_builder()
+            .with_rdpdr(true)
+            .with_static_channel(|_| {
+                Some(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
+                    ironrdp_rdpsnd::client::NoopRdpsndBackend,
+                )))
+            })
+            .build()
+            .expect("test configuration should build");
+        #[cfg(feature = "sound")]
+        {
+            config.channels.sound = false;
+        }
+        config.connector.enable_audio_playback = true;
+
+        let connector = build_test_connector(&config);
+
+        assert!(connector.config.enable_audio_playback);
+        assert!(
+            connector
+                .static_channels
+                .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
                 .is_some()
         );
     }
