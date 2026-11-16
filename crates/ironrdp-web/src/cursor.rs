@@ -15,7 +15,7 @@ use rgb::AsPixels as _;
 ///
 /// Alpha 0 means invisible here because the web client decodes pointers for hardware rendering,
 /// where an inverted pixel is drawn opaque.
-pub(crate) fn crop_transparent(pointer: &DecodedPointer) -> Option<DecodedPointer> {
+fn crop_transparent(pointer: &DecodedPointer) -> Option<DecodedPointer> {
     let (width, height) = (usize::from(pointer.width), usize::from(pointer.height));
     let (hot_x, hot_y) = (usize::from(pointer.hotspot_x), usize::from(pointer.hotspot_y));
     let row_len = width.checked_mul(4)?;
