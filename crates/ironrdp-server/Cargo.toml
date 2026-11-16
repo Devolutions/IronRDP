@@ -18,7 +18,7 @@ test = false
 
 [features]
 default = ["rayon", "qoi", "qoiz"]
-helper = ["dep:x509-cert", "dep:rustls-pemfile"]
+helper = ["dep:x509-cert"]
 rayon = ["dep:rayon"]
 qoi = ["dep:qoicoubeh", "ironrdp-pdu/qoi"]
 qoiz = ["dep:zstd-safe", "qoi", "ironrdp-pdu/qoiz"]
@@ -66,7 +66,6 @@ ironrdp-rdpeudp = { path = "../ironrdp-rdpeudp", version = "0.1" } # public
 ironrdp-rdpeudp-tokio = { path = "../ironrdp-rdpeudp-tokio", version = "0.2" } # public
 tracing = { version = "0.1", features = ["log"] }
 x509-cert = { version = "0.3", optional = true }
-rustls-pemfile = { version = "2.2", optional = true }
 rayon = { version = "1.12", optional = true }
 bytes = "1"
 visibility = { version = "0.1", optional = true }
