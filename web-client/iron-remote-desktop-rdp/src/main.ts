@@ -152,6 +152,22 @@ export function monitorLayoutCallback(callback: (monitors: MonitorRect[]) => voi
     return new Extension('monitor_layout_callback', unpack);
 }
 
+/**
+ * The client name the server sees, in place of `ironrdp-web`: Windows shows it as the session's client name.
+ * The protocol keeps the first 15 UTF-16 code units, so an emoji takes two. An empty name is ignored.
+ */
+export function clientName(name: string): Extension {
+    return new Extension('client_name', name);
+}
+
+/**
+ * The keyboard layout to ask for, as a Windows input locale identifier such as 0x409 (US) or 0x809 (UK).
+ * Without it, or with 0, the server uses its default layout.
+ */
+export function keyboardLayout(layoutId: number): Extension {
+    return new Extension('keyboard_layout', layoutId);
+}
+
 // --- RDCleanPath ---
 
 export { RDCleanPathErrorCode } from './RDCleanPathErrorCode';
