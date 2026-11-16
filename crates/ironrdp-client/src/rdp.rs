@@ -4742,6 +4742,7 @@ async fn active_session(
                 _ = graceful_close_receiver.changed() => {
                     let outputs = if *graceful_close_receiver.borrow_and_update() && !graceful_shutdown_sent {
                         graceful_shutdown_sent = true;
+                        resize_queue = ResizeQueue::default();
                         active_stage.graceful_shutdown()?
                     } else {
                         Vec::new()
@@ -4916,6 +4917,9 @@ async fn active_session(
                     }
 
                     match input_event {
+                    RdpInputEvent::Resize { .. } | RdpInputEvent::MonitorLayout(_) if graceful_shutdown_sent => {
+                        ActiveSessionIteration::outputs(Vec::new())
+                    }
                     resize_event @ (RdpInputEvent::Resize { .. } | RdpInputEvent::MonitorLayout(_)) => {
                         let request = match resize_event {
                             RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
@@ -5036,6 +5040,7 @@ async fn active_session(
                     RdpInputEvent::Close => {
                         let outputs = if !graceful_shutdown_sent {
                             graceful_shutdown_sent = true;
+                            resize_queue = ResizeQueue::default();
                             active_stage.graceful_shutdown()?
                         } else {
                             Vec::new()
@@ -5428,11 +5433,10 @@ async fn active_session(
                 .outputs
                 .iter()
                 .any(|output| matches!(output, ActiveStageOutput::Terminate(_)));
-            if !terminating {
-                iteration
-                    .outputs
-                    .retain(|output| !matches!(output, ActiveStageOutput::ResponseFrame(_)));
-            }
+            iteration.outputs.retain(|output| {
+                !matches!(output, ActiveStageOutput::DeactivateAll)
+                    && (terminating || !matches!(output, ActiveStageOutput::ResponseFrame(_)))
+            });
         }
 
         if let Some(batch) = iteration.dvc_batch {
