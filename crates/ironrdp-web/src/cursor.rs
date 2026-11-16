@@ -241,9 +241,8 @@ mod tests {
         pointer(width, height, hotspot, &block)
     }
 
-    // oracle: mutant scaling the uncropped pointer, which shrinks the block to 20x10 with its hotspot at (5, 5), or taking
-    // the size or hotspot from the uncropped pointer; 40x20 scaled by 32/40 is 32x16, and the hotspot (5, 5) inside the
-    // crop scales to (4, 4).
+    // oracle: the 40x20 crop scaled by 32/40 is 32x16, and its hotspot (5, 5) scales to (4, 4); mutant scaling the
+    // uncropped pointer, which makes it 32x32 with its hotspot at (5, 5), or taking the size or hotspot from it.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_pointer_is_cropped_before_it_is_scaled() {
@@ -276,6 +275,19 @@ mod tests {
         assert_eq!((p.width, p.height), (12, 19));
         assert_eq!((p.hotspot_x, p.hotspot_y), (1, 1));
         assert_eq!(pixel(&p, 0, 0), [1, 2, 0x80, 0xff]);
+    }
+
+    // oracle: mutant returning nothing for an oversized pointer with no margin to crop, which the browser then draws as
+    // the system cursor.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn an_oversized_pointer_without_a_margin_is_scaled() {
+        let p = fit(&pointer_with_block(64, 48, (10, 20), (0, 0), (63, 47)))
+            .unwrap()
+            .unwrap();
+        assert_eq!((p.width, p.height), (32, 24));
+        assert_eq!((p.hotspot_x, p.hotspot_y), (5, 10));
+        assert_eq!(p.bitmap_data.len(), 32 * 24 * 4);
     }
 
     // oracle: mutant copying a pointer that needs neither cropping nor scaling.
@@ -314,16 +326,9 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_long_thin_pointer_keeps_at_least_one_pixel_per_side() {
-        let s = scaled_to_fit(&pointer(64, 1, (0, 0), &[])).unwrap();
-        assert_eq!((s.width, s.height), (32, 1));
-        let resizer = resize::new(
-            64,
-            1,
-            usize::from(s.width),
-            usize::from(s.height),
-            resize::Pixel::RGBA8P,
-            resize::Type::Lanczos3,
-        );
-        assert!(resizer.is_ok(), "the session's resizer must accept the scaled size");
+        let p = fit(&pointer_with_block(64, 1, (0, 0), (0, 0), (63, 0)))
+            .expect("the resizer accepts the scaled size")
+            .unwrap();
+        assert_eq!((p.width, p.height), (32, 1));
     }
 }
