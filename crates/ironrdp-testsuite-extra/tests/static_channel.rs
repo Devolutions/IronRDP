@@ -436,38 +436,41 @@ async fn stale_session_events_close_replies_and_release_permits() {
     assert_eq!(permits.available_permits(), 1);
 }
 
-/// Counts the warnings `ironrdp_server` logs.
+/// The `max_message_size` of each warning `ironrdp_server` logs about the static channel message limit.
 #[derive(Clone, Default)]
-struct ServerWarnings(Arc<core::sync::atomic::AtomicUsize>);
+struct StaticLimitWarnings(Arc<std::sync::Mutex<Vec<u64>>>);
 
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ServerWarnings {
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for StaticLimitWarnings {
     fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        struct MaxMessageSize(Option<u64>);
+
+        impl tracing::field::Visit for MaxMessageSize {
+            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                if field.name() == "max_message_size" {
+                    self.0 = Some(value);
+                }
+            }
+
+            fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn core::fmt::Debug) {}
+        }
+
         let metadata = event.metadata();
-        if *metadata.level() == tracing::Level::WARN && metadata.target().starts_with("ironrdp_server") {
-            self.0.fetch_add(1, Ordering::Relaxed);
+        if *metadata.level() != tracing::Level::WARN || !metadata.target().starts_with("ironrdp_server") {
+            return;
+        }
+        let mut visitor = MaxMessageSize(None);
+        event.record(&mut visitor);
+        if let Some(max_message_size) = visitor.0 {
+            self.0.lock().unwrap().push(max_message_size);
         }
     }
 }
 
-#[rstest]
-// oracle: spec MS-RDPEDYC §2.2.3.1, a DYNVC_DATA_FIRST PDU may fill 1,600 bytes, and without a dynamic channel limit the
-// static limit bounds the DRDYNVC static channel; mutant building silently with a static limit that ends a conforming
-// client's session.
-#[case::below_a_full_drdynvc_pdu(Some(1599), None, 1)]
-// oracle: mutant warning about a static limit that admits every conforming DRDYNVC PDU.
-#[case::at_a_full_drdynvc_pdu(Some(1600), None, 0)]
-// oracle: mutant warning when a dynamic channel limit bounds the DRDYNVC static channel instead.
-#[case::with_a_dynamic_limit(Some(1599), Some(1 << 20), 0)]
-// oracle: mutant warning without a static limit.
-#[case::without_a_static_limit(None, None, 0)]
-fn a_static_limit_that_ends_conforming_sessions_is_logged(
-    #[case] max_static: Option<usize>,
-    #[case] max_dynamic: Option<usize>,
-    #[case] expected_warnings: usize,
-) {
+/// The static channel message limit warnings logged while building a server with these limits.
+fn static_limit_warnings(max_static: Option<usize>, max_dynamic: Option<usize>) -> Vec<u64> {
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let warnings = ServerWarnings::default();
+    let warnings = StaticLimitWarnings::default();
     tracing::subscriber::with_default(tracing_subscriber::registry().with(warnings.clone()), || {
         let mut builder = RdpServer::builder()
             .with_addr((Ipv4Addr::LOCALHOST, 0))
@@ -482,5 +485,27 @@ fn a_static_limit_that_ends_conforming_sessions_is_logged(
         }
         builder.build()
     });
-    assert_eq!(warnings.0.load(Ordering::Relaxed), expected_warnings);
+    warnings.0.lock().unwrap().clone()
+}
+
+// oracle: spec MS-RDPEDYC §2.2.3.1 and §2.2.3.2, DRDYNVC data PDUs may fill 1,600 bytes, and without a dynamic
+// channel limit the static limit bounds the DRDYNVC static channel; mutant building silently with a static limit that
+// refuses such a PDU.
+#[test]
+fn a_static_limit_below_a_full_drdynvc_pdu_is_logged() {
+    assert_eq!(static_limit_warnings(Some(1599), None), [1599]);
+}
+
+#[rstest]
+// oracle: mutant warning about a static limit that admits every conforming DRDYNVC PDU.
+#[case::at_a_full_drdynvc_pdu(Some(1600), None)]
+// oracle: mutant warning when a dynamic channel limit bounds the DRDYNVC static channel instead.
+#[case::with_a_dynamic_limit(Some(1599), Some(1 << 20))]
+// oracle: mutant warning without a static limit.
+#[case::without_a_static_limit(None, None)]
+fn a_static_limit_that_admits_full_drdynvc_pdus_is_not_logged(
+    #[case] max_static: Option<usize>,
+    #[case] max_dynamic: Option<usize>,
+) {
+    assert_eq!(static_limit_warnings(max_static, max_dynamic), Vec::<u64>::new());
 }
