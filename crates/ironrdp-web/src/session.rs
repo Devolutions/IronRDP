@@ -1159,7 +1159,7 @@ impl iron_remote_desktop::Session for Session {
                                 debug!(allow, "Display updates toggled");
                                 vec![ActiveStageOutput::ResponseFrame(active_stage.encode_suppress_output(resume)?)]
                             } else {
-                                debug!("Display updates toggle ignored: the server does not support Suppress Output");
+                                debug!("Display updates toggle not sent: the server does not support Suppress Output");
                                 Vec::new()
                             }
                         },
@@ -1385,7 +1385,7 @@ impl iron_remote_desktop::Session for Session {
                                     return Err(IronError::from(anyhow::anyhow!("invalid static channel chunk size")));
                                 }
                                 active_stage.set_window_support_level(window_support_level);
-                                // UNTESTED: no test drives this loop, so this send relies on the tests of `DisplayUpdates`.
+                                // UNTESTED: no test drives this send; `DisplayUpdates`, which decides it, is tested.
                                 if let Some(resume) = display_updates.reactivated(reactivated_suppress_output_support) {
                                     debug!("Display updates stopped again after reactivation");
                                     self.writer_tx
@@ -2358,7 +2358,7 @@ impl DisplayUpdates {
     }
 
     /// Reads the server's support again after a Deactivation-Reactivation Sequence.
-    /// Updates the app stopped are stopped again, since the server may have reset them.
+    /// Updates stopped by the app are stopped again, since the server may have reset them.
     fn reactivated(&mut self, server_support: bool) -> Option<Option<(u16, u16)>> {
         self.server_support = server_support;
         (server_support && !self.allowed).then_some(None)
@@ -3087,8 +3087,11 @@ mod tests {
         }
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn display_updates_toggle_is_sent_only_while_the_server_supports_it() {
+        // oracle: spec MS-RDPBCGR §2.2.7.1.1 - suppressOutputSupport tells whether the server supports the PDU.
+        // oracle: spec MS-RDPBCGR §2.2.11.3.1 - desktopRect is present only when updates are allowed.
         let mut supported = DisplayUpdates::new(true);
         assert_eq!(supported.toggle(false, (1024, 768)), Some(None));
         assert_eq!(supported.toggle(true, (1024, 768)), Some(Some((1024, 768))));
@@ -3098,8 +3101,10 @@ mod tests {
         assert_eq!(unsupported.toggle(true, (1024, 768)), None);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn display_updates_stopped_by_the_app_are_stopped_again_after_reactivation() {
+        // oracle: mutant the stop not sent again after reactivation, or sent without support or without a stop
         let mut display_updates = DisplayUpdates::new(true);
         assert_eq!(display_updates.reactivated(true), None);
 
