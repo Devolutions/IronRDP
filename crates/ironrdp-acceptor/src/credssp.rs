@@ -80,11 +80,11 @@ pub struct CredsspSequence<'a> {
 
 #[derive(Debug)]
 struct CredentialsProxyImpl<'a> {
-    credentials: &'a AuthIdentity,
+    credentials: &'a [AuthIdentity],
 }
 
 impl<'a> CredentialsProxyImpl<'a> {
-    fn new(credentials: &'a AuthIdentity) -> Self {
+    fn new(credentials: &'a [AuthIdentity]) -> Self {
         Self { credentials }
     }
 }
@@ -93,18 +93,22 @@ impl CredentialsProxy for CredentialsProxyImpl<'_> {
     type AuthenticationData = AuthIdentity;
 
     fn auth_data_by_user(&mut self, username: &Username) -> std::io::Result<Self::AuthenticationData> {
-        if !usernames_match(&self.credentials.username, username) {
+        let Some(credentials) = self
+            .credentials
+            .iter()
+            .find(|credentials| usernames_match(&credentials.username, username))
+        else {
             return Err(std::io::Error::other("invalid username"));
-        }
+        };
 
-        let mut data = self.credentials.clone();
+        let mut data = credentials.clone();
         // keep the original user/domain
         data.username = username.clone();
         Ok(data)
     }
 
     fn auth_data(&mut self) -> Result<Vec<Self::AuthenticationData>, std::io::Error> {
-        Ok(vec![self.credentials.clone()])
+        Ok(self.credentials.to_vec())
     }
 }
 
@@ -219,6 +223,22 @@ impl<'a> CredsspSequence<'a> {
     /// sspi matches it against the configured identity before the NTLM exchange completes.
     pub fn init(
         creds: &'a AuthIdentity,
+        client_computer_name: ServerName,
+        public_key: Vec<u8>,
+        krb_config: Option<KerberosServerConfig>,
+    ) -> ConnectorResult<Self> {
+        Self::init_with_identities(
+            core::slice::from_ref(creds),
+            client_computer_name,
+            public_key,
+            krb_config,
+        )
+    }
+
+    /// Like [`Self::init`], accepting any of several identities: the client's
+    /// user name picks the one its password is checked against.
+    pub fn init_with_identities(
+        creds: &'a [AuthIdentity],
         client_computer_name: ServerName,
         public_key: Vec<u8>,
         krb_config: Option<KerberosServerConfig>,
