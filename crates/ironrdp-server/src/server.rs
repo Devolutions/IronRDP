@@ -1067,6 +1067,8 @@ struct AInputHandler {
     owns_mouse: bool,
     /// Mouse events received since the connection last took them.
     mouse_events: Vec<MouseEvent>,
+    /// Whether the client opened the channel since the connection last checked.
+    opened: bool,
 }
 
 impl AInputHandler {
@@ -1074,11 +1076,16 @@ impl AInputHandler {
         Self {
             owns_mouse: false,
             mouse_events: Vec::new(),
+            opened: false,
         }
     }
 
     fn take_mouse_events(&mut self) -> Vec<MouseEvent> {
         core::mem::take(&mut self.mouse_events)
+    }
+
+    fn take_opened(&mut self) -> bool {
+        core::mem::take(&mut self.opened)
     }
 }
 
@@ -1092,10 +1099,7 @@ impl dvc::DvcProcessor for AInputHandler {
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::{ServerPdu, VersionPdu};
 
-        let handler = Arc::clone(&self.handler);
-        task::spawn_blocking(move || {
-            handler.blocking_lock().advanced_input_opened();
-        });
+        self.opened = true;
 
         let pdu = ServerPdu::Version(VersionPdu::default());
 
@@ -2349,6 +2353,8 @@ enum ConnectionOutput {
     Keyboard(KeyboardEvent),
     /// Mouse input from whichever input path owns the mouse.
     Mouse(MouseEvent),
+    /// The client opened the Advanced Input channel; comes before its first mouse event.
+    AdvancedInputOpened,
     DisplayLayout(DisplayControlMonitorLayout),
     ResponseFrame(Vec<u8>),
     TunnelData(Vec<u8>),
@@ -2457,13 +2463,11 @@ impl ConnectionState {
         if let Some(id) = drdynvc.get_channel_id_by_type::<AInputHandler>()
             && let Some(mut ainput) = drdynvc.dvc_by_id_mut::<AInputHandler>(id)
         {
-            outputs.extend(
-                ainput
-                    .processor_mut()
-                    .take_mouse_events()
-                    .into_iter()
-                    .map(ConnectionOutput::Mouse),
-            );
+            let ainput = ainput.processor_mut();
+            if ainput.take_opened() {
+                outputs.push(ConnectionOutput::AdvancedInputOpened);
+            }
+            outputs.extend(ainput.take_mouse_events().into_iter().map(ConnectionOutput::Mouse));
         }
         if let Some(id) = drdynvc.get_channel_id_by_type::<DisplayControlServer>()
             && let Some(mut display_control) = drdynvc.dvc_by_id_mut::<DisplayControlServer>(id)
@@ -6702,6 +6706,7 @@ impl RdpServer {
                     self.handler.lock().await.keyboard(event);
                 }
                 ConnectionOutput::Mouse(event) => self.handler.lock().await.mouse(event),
+                ConnectionOutput::AdvancedInputOpened => self.handler.lock().await.advanced_input_opened(),
                 ConnectionOutput::DisplayLayout(layout) => self.display.lock().await.request_layout(layout),
                 ConnectionOutput::Disconnect => return Ok(true),
             }
@@ -8634,27 +8639,6 @@ mod tests {
         }
     }
 
-    // oracle: mutant AInputHandler::start not telling the input handler
-    #[tokio::test]
-    async fn opening_ainput_tells_the_input_handler() {
-        let opened = Arc::new(AtomicBool::new(false));
-        let handler: Box<dyn RdpServerInputHandler> = Box::new(AdvancedInputRecorder(Arc::clone(&opened)));
-        let mut ainput = AInputHandler {
-            handler: Arc::new(Mutex::new(handler)),
-            active: Arc::new(AtomicBool::new(false)),
-        };
-
-        let messages = ainput.start(0).expect("start");
-        assert_eq!(messages.len(), 1, "the version PDU");
-        for _ in 0..200 {
-            if opened.load(Ordering::Acquire) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        assert!(opened.load(Ordering::Acquire));
-    }
-
     // oracle: mutant BoundInputSlot not forwarding advanced_input_opened
     #[test]
     fn the_bound_input_slot_forwards_advanced_input_opened() {
@@ -8864,9 +8848,22 @@ mod tests {
 
     /// A connection whose client opened the AInput and Display Control channels, with their IDs.
     fn connection_with_builtin_dvcs() -> (ConnectionState, u32, u32) {
-        use ironrdp_dvc::pdu::{
-            CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
-        };
+        use ironrdp_dvc::pdu::{CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
+
+        let (mut conn, ainput_id, display_control_id) = connection_offering_builtin_dvcs();
+        for id in [ainput_id, display_control_id] {
+            send_drdynvc(
+                &mut conn,
+                DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::OK)),
+            );
+        }
+        (conn, ainput_id, display_control_id)
+    }
+
+    /// A connection that has offered the AInput and Display Control channels, which the client has not opened yet,
+    /// with their IDs.
+    fn connection_offering_builtin_dvcs() -> (ConnectionState, u32, u32) {
+        use ironrdp_dvc::pdu::{CapabilitiesResponsePdu, CapsVersion, DrdynvcClientPdu};
 
         let mut conn = ConnectionState::default();
         conn.static_channels.insert(
@@ -8884,12 +8881,6 @@ mod tests {
         let drdynvc = conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap();
         let ainput_id = drdynvc.get_channel_id_by_type::<AInputHandler>().unwrap();
         let display_control_id = drdynvc.get_channel_id_by_type::<DisplayControlServer>().unwrap();
-        for id in [ainput_id, display_control_id] {
-            send_drdynvc(
-                &mut conn,
-                DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::OK)),
-            );
-        }
         (conn, ainput_id, display_control_id)
     }
 
@@ -8907,6 +8898,39 @@ mod tests {
             ainput_id,
             encode_vec(&mouse).unwrap(),
         )))
+    }
+
+    // oracle: mutant AInputHandler::start not reporting the opened channel, or reporting it more than once
+    #[test]
+    fn opening_ainput_comes_before_its_mouse_events() {
+        use ironrdp_dvc::pdu::{CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
+
+        let (mut conn, ainput_id, _) = connection_offering_builtin_dvcs();
+
+        let outputs = send_drdynvc(
+            &mut conn,
+            DrdynvcClientPdu::Create(CreateResponsePdu::new(ainput_id, CreationStatus::OK)),
+        );
+        // The server's Version PDU, then the notice.
+        assert!(
+            matches!(
+                outputs.as_slice(),
+                [
+                    ConnectionOutput::ResponseFrame(_),
+                    ConnectionOutput::AdvancedInputOpened
+                ]
+            ),
+            "{outputs:?}"
+        );
+
+        let outputs = send_drdynvc(&mut conn, ainput_mouse_move(ainput_id, 1, 2));
+        assert!(
+            matches!(
+                outputs.as_slice(),
+                [ConnectionOutput::Mouse(MouseEvent::Move { x: 1, y: 2 })]
+            ),
+            "{outputs:?}"
+        );
     }
 
     // oracle: mutant that does not take what the built-in dynamic channels received after DRDYNVC processing.
