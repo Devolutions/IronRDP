@@ -2994,7 +2994,7 @@ fn build_connector(
     // Attach user-defined static channels from the extension registry.
     let rdpsnd_before_extensions = connector
         .static_channels
-        .get_by_channel_name(&ChannelName::from_static(b"rdpsnd\0\0"))
+        .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
         .is_some();
     for attach_sc in &config.extensions.static_channels {
         attach_sc(&mut connector, &config.properties);
@@ -3003,7 +3003,7 @@ fn build_connector(
         && config.connector.enable_audio_playback
         && connector
             .static_channels
-            .get_by_channel_name(&ChannelName::from_static(b"rdpsnd\0\0"))
+            .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
             .is_some()
     {
         connector.config.enable_audio_playback = true;
@@ -8245,6 +8245,30 @@ mod tests {
             connector
                 .static_channels
                 .get_by_channel_name(&ChannelName::from_static(b"rdpsnd\0\0"))
+                .is_some()
+        );
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND)
+    #[test]
+    fn custom_rdpsnd_static_channel_instances_keeps_audio_playback_enabled() {
+        let mut config = custom_rdpsnd_test_config_builder()
+            .with_static_channel_instances(|_| vec![CustomRdpsndChannel])
+            .build()
+            .expect("test configuration should build");
+        #[cfg(feature = "sound")]
+        {
+            config.channels.sound = false;
+        }
+        config.connector.enable_audio_playback = true;
+
+        let connector = build_test_connector(&config);
+
+        assert!(connector.config.enable_audio_playback);
+        assert!(
+            connector
+                .static_channels
+                .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
                 .is_some()
         );
     }
