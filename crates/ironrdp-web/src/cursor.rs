@@ -228,6 +228,21 @@ mod tests {
         assert!(crop_transparent(&pointer(8, 8, (8, 0), &[(1, 1)])).is_none());
     }
 
+    // oracle: mutant treating a margin only on the right and bottom, or only on the left and top, as no margin; a
+    // virtio-gpu arrow in the top-left corner from (0, 0) to (11, 18) is cut to 12x19, and its mirror image from (52,
+    // 45) to the hotspot (63, 63) is cut to 12x19 with the hotspot at (11, 18).
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_margin_on_one_side_is_cut() {
+        let top_left = crop_transparent(&pointer(64, 64, (0, 0), &[(0, 0), (11, 18)])).unwrap();
+        assert_eq!((top_left.width, top_left.height), (12, 19));
+        assert_eq!((top_left.hotspot_x, top_left.hotspot_y), (0, 0));
+
+        let bottom_right = crop_transparent(&pointer(64, 64, (63, 63), &[(52, 45)])).unwrap();
+        assert_eq!((bottom_right.width, bottom_right.height), (12, 19));
+        assert_eq!((bottom_right.hotspot_x, bottom_right.hotspot_y), (11, 18));
+    }
+
     // oracle: mutant keeping only fully opaque pixels, which cuts off an anti-aliased edge; a pixel with alpha 1 at
     // (5, 6) is visible, so the crop runs from (1, 1) to (5, 6).
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
