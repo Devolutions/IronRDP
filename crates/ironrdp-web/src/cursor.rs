@@ -3,9 +3,11 @@
 //! A server may send its pointer inside a larger, mostly transparent bitmap:
 //! a Linux guest's virtio-gpu cursor is 64x64 with the arrow in its top-left corner.
 //! Cutting off the transparent margin keeps the arrow from shrinking when the pointer is scaled down
-//! (see the `PointerBitmap` handling in `session.rs`).
+//! (see [`fit`]).
 
+use anyhow::Context as _;
 use ironrdp::graphics::pointer::DecodedPointer;
+use rgb::AsPixels as _;
 
 /// `pointer` without its fully transparent margin.
 ///
@@ -64,33 +66,69 @@ pub(crate) fn crop_transparent(pointer: &DecodedPointer) -> Option<DecodedPointe
     }
 }
 
-/// Largest pointer side a browser draws as a CSS cursor without falling back to its own (see `session.rs`).
+/// `pointer` as the browser draws it: without its transparent margin, then scaled down to fit [`MAX_CURSOR_SIZE`].
+///
+/// Returns `None` when `pointer` needs neither.
+pub(crate) fn fit(pointer: &DecodedPointer) -> anyhow::Result<Option<DecodedPointer>> {
+    let cropped = crop_transparent(pointer);
+    let source = cropped.as_ref().unwrap_or(pointer);
+    let Some(scaled) = scaled_to_fit(source) else {
+        return Ok(cropped);
+    };
+
+    // Per invariants: width * height * 4 <= 32 * 32 * 4 < usize::MAX
+    #[expect(clippy::arithmetic_side_effects)]
+    let mut bitmap_data = vec![0u8; usize::from(scaled.width) * usize::from(scaled.height) * 4];
+    resize::new(
+        usize::from(source.width),
+        usize::from(source.height),
+        usize::from(scaled.width),
+        usize::from(scaled.height),
+        resize::Pixel::RGBA8P,
+        resize::Type::Lanczos3,
+    )
+    .context("failed to initialize cursor resizer")?
+    .resize(source.bitmap_data.as_pixels(), bitmap_data.as_pixels_mut())
+    .context("failed to resize cursor")?;
+
+    Ok(Some(DecodedPointer {
+        width: scaled.width,
+        height: scaled.height,
+        hotspot_x: scaled.hotspot_x,
+        hotspot_y: scaled.hotspot_y,
+        bitmap_data,
+    }))
+}
+
+/// Largest pointer side a browser draws well as a CSS cursor.
+///
+/// Browsers do not support cursors bigger than 128x128, and draw the system cursor instead of one bigger than 32x32
+/// whose sprite does not fit in the viewport, an abrupt change when the cursor reaches the edge of the window.
 const MAX_CURSOR_SIZE: u16 = 32;
 
 /// A pointer's size and hotspot once scaled down to fit [`MAX_CURSOR_SIZE`].
-pub(crate) struct Scaled {
-    pub(crate) width: u16,
-    pub(crate) height: u16,
-    pub(crate) hotspot_x: u16,
-    pub(crate) hotspot_y: u16,
+///
+/// INVARIANT: 1 <= width <= MAX_CURSOR_SIZE and 1 <= height <= MAX_CURSOR_SIZE
+struct Scaled {
+    width: u16,
+    height: u16,
+    hotspot_x: u16,
+    hotspot_y: u16,
 }
 
 /// The size and hotspot `pointer` is scaled to, or `None` when it already fits [`MAX_CURSOR_SIZE`].
-pub(crate) fn scaled_to_fit(pointer: &DecodedPointer) -> Option<Scaled> {
-    // INVARIANT: 0 < scale <= 1.0
+fn scaled_to_fit(pointer: &DecodedPointer) -> Option<Scaled> {
+    let longest = pointer.width.max(pointer.height);
+    if longest <= MAX_CURSOR_SIZE {
+        return None;
+    }
+    // INVARIANT: 0 < scale < 1.0
     // INVARIANT: pointer.width * scale <= MAX_CURSOR_SIZE
     // INVARIANT: pointer.height * scale <= MAX_CURSOR_SIZE
-    let scale = if pointer.width >= pointer.height && pointer.width > MAX_CURSOR_SIZE {
-        f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.width)
-    } else if pointer.height > MAX_CURSOR_SIZE {
-        f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.height)
-    } else {
-        return None;
-    };
+    let scale = f64::from(MAX_CURSOR_SIZE) / f64::from(longest);
 
     // Per invariants: Following conversions will never saturate.
     // A side is at least 1 pixel, which the resizer requires: a long, thin pointer would otherwise round to 0.
-    // INVARIANT: 1 <= width <= MAX_CURSOR_SIZE and 1 <= height <= MAX_CURSOR_SIZE
     Some(Scaled {
         width: f64_to_u16_saturating_cast(f64::from(pointer.width) * scale).max(1),
         height: f64_to_u16_saturating_cast(f64::from(pointer.height) * scale).max(1),
@@ -189,6 +227,64 @@ mod tests {
         assert!(crop_transparent(&pointer(8, 8, (8, 0), &[(1, 1)])).is_none());
     }
 
+    /// A `width` x `height` pointer, opaque in the rectangle from `start` to `end` inclusive and transparent elsewhere.
+    fn pointer_with_block(
+        width: u16,
+        height: u16,
+        hotspot: (u16, u16),
+        start: (u16, u16),
+        end: (u16, u16),
+    ) -> DecodedPointer {
+        let block: Vec<_> = (start.1..=end.1)
+            .flat_map(|y| (start.0..=end.0).map(move |x| (x, y)))
+            .collect();
+        pointer(width, height, hotspot, &block)
+    }
+
+    // oracle: mutant scaling the uncropped pointer, which shrinks the block to 20x10 with its hotspot at (5, 5), or taking
+    // the size or hotspot from the uncropped pointer; 40x20 scaled by 32/40 is 32x16, and the hotspot (5, 5) inside the
+    // crop scales to (4, 4).
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_pointer_is_cropped_before_it_is_scaled() {
+        let p = fit(&pointer_with_block(64, 64, (10, 10), (5, 5), (44, 24)))
+            .unwrap()
+            .unwrap();
+        assert_eq!((p.width, p.height), (32, 16));
+        assert_eq!((p.hotspot_x, p.hotspot_y), (4, 4));
+        assert_eq!(p.bitmap_data.len(), 32 * 16 * 4);
+    }
+
+    // oracle: mutant resizing the uncropped pixels, which brings the transparent margin into the cursor.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_pointer_scaled_after_cropping_keeps_only_its_pixels() {
+        let p = fit(&pointer_with_block(64, 64, (10, 10), (5, 5), (44, 24)))
+            .unwrap()
+            .unwrap();
+        assert!(
+            p.bitmap_data.chunks_exact(4).all(|pixel| pixel[3] == 0xff),
+            "a transparent pixel in the scaled cursor"
+        );
+    }
+
+    // oracle: mutant scaling a pointer that fits once cropped, or dropping the crop when no scaling follows.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_pointer_that_fits_once_cropped_is_only_cropped() {
+        let p = fit(&pointer(64, 64, (2, 3), &[(1, 2), (12, 20)])).unwrap().unwrap();
+        assert_eq!((p.width, p.height), (12, 19));
+        assert_eq!((p.hotspot_x, p.hotspot_y), (1, 1));
+        assert_eq!(pixel(&p, 0, 0), [1, 2, 0x80, 0xff]);
+    }
+
+    // oracle: mutant copying a pointer that needs neither cropping nor scaling.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_pointer_that_fits_without_a_margin_is_left_alone() {
+        assert!(fit(&pointer(32, 32, (0, 0), &[(0, 0), (31, 31)])).unwrap().is_none());
+    }
+
     // oracle: mutant the scale applied to only one side, or the hotspot left unscaled
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
@@ -196,6 +292,15 @@ mod tests {
         let s = scaled_to_fit(&pointer(64, 48, (10, 20), &[])).unwrap();
         assert_eq!((s.width, s.height), (32, 24));
         assert_eq!((s.hotspot_x, s.hotspot_y), (5, 10));
+    }
+
+    // oracle: mutant scaling by the width alone, which leaves a tall pointer unscaled
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_tall_pointer_is_scaled_by_its_height() {
+        let s = scaled_to_fit(&pointer(48, 64, (20, 10), &[])).unwrap();
+        assert_eq!((s.width, s.height), (24, 32));
+        assert_eq!((s.hotspot_x, s.hotspot_y), (10, 5));
     }
 
     // oracle: mutant a pointer that already fits scaled anyway
