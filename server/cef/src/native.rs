@@ -429,7 +429,8 @@ wrap_permission_handler! {
             requested: u32,
             callback: Option<&mut PermissionPromptCallback>,
         ) -> std::ffi::c_int {
-            let geolocation = PermissionRequestTypes::GEOLOCATION.get_raw();
+            // The raw enum is `u32` on Unix but `i32` with MSVC, so cast the discriminant rather than `get_raw()`.
+            let geolocation = cef::sys::cef_permission_request_types_t::CEF_PERMISSION_TYPE_GEOLOCATION as u32;
             let result = if self.permissions.location && self.geolocation_ready.get() && requested == geolocation {
                 PermissionRequestResult::ACCEPT
             } else {

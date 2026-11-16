@@ -2,14 +2,14 @@
 
 use std::ffi::{CStr, c_void};
 
-use anyhow::Context as _;
-
 pub(crate) struct Library(*mut c_void);
 
 impl Library {
     #[cfg(target_os = "macos")]
     pub(crate) fn open() -> anyhow::Result<Self> {
         use std::os::unix::ffi::OsStrExt as _;
+
+        use anyhow::Context as _;
 
         let path = std::env::current_exe()?
             .parent()
