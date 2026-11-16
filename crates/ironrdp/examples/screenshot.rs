@@ -246,6 +246,7 @@ fn build_config(
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
+        empty_client_info_password: false,
         enable_tls: tls_enabled,
         enable_credssp: credssp_enabled,
         enable_standard_rdp_security: false,

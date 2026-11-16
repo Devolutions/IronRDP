@@ -242,6 +242,7 @@ pub mod ffi {
             let connector = ironrdp::connector::Config {
                 credentials: self.credentials.clone().ok_or("credentials not set")?,
                 domain: self.domain.clone(),
+                empty_client_info_password: false,
                 enable_tls: self.enable_tls.unwrap_or(false),
                 enable_credssp: self.enable_credssp.unwrap_or(true),
                 enable_standard_rdp_security: false,
