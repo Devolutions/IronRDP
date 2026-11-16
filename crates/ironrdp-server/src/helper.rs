@@ -3,9 +3,8 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio_rustls::rustls::pki_types::pem::PemObject as _;
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio_rustls::{TlsAcceptor, rustls};
 
 use crate::error::{ServerError, ServerErrorExt as _, ServerResult};
@@ -27,23 +26,23 @@ impl TlsIdentityCtx {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| ServerError::custom("collecting server cert", e))?
         } else {
-            certs(&mut BufReader::new(
+            CertificateDer::pem_reader_iter(BufReader::new(
                 File::open(cert_path).map_err(|e| ServerError::io("opening server cert", e))?,
             ))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| ServerError::io("collecting server cert", e))?
+            .map_err(|e| ServerError::custom("collecting server cert", e))?
         };
 
         let priv_key = if key_path.extension().is_some_and(|ext| ext == "pem") {
             PrivateKeyDer::from_pem_file(key_path).map_err(|e| ServerError::custom("reading server key", e))?
         } else {
-            pkcs8_private_keys(&mut BufReader::new(
+            PrivatePkcs8KeyDer::pem_reader_iter(BufReader::new(
                 File::open(key_path).map_err(|e| ServerError::io("opening server key", e))?,
             ))
             .next()
             .ok_or_else(|| ServerError::reason("server key", "no private key"))?
             .map(PrivateKeyDer::from)
-            .map_err(|e| ServerError::io("reading server key", e))?
+            .map_err(|e| ServerError::custom("reading server key", e))?
         };
 
         let pub_key = {
