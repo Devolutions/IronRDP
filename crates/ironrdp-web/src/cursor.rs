@@ -228,6 +228,18 @@ mod tests {
         assert!(crop_transparent(&pointer(8, 8, (8, 0), &[(1, 1)])).is_none());
     }
 
+    // oracle: mutant keeping only fully opaque pixels, which cuts off an anti-aliased edge; a pixel with alpha 1 at
+    // (5, 6) is visible, so the crop runs from (1, 1) to (5, 6).
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_faint_pixel_is_kept() {
+        let mut faint = pointer(8, 8, (1, 1), &[(1, 1)]);
+        faint.bitmap_data[(6 * 8 + 5) * 4 + 3] = 1;
+        let p = crop_transparent(&faint).unwrap();
+        assert_eq!((p.width, p.height), (5, 6));
+        assert_eq!(pixel(&p, 4, 5)[3], 1);
+    }
+
     /// A `width` x `height` pointer, opaque in the rectangle from `start` to `end` inclusive and transparent elsewhere.
     fn pointer_with_block(
         width: u16,
