@@ -130,7 +130,8 @@ mod tests {
     }
 
     // oracle: mutant an off-by-one bound, a hotspot not moved with the crop, or pixels from the wrong rows or columns
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn an_arrow_in_a_large_transparent_bitmap_is_cut_to_its_pixels() {
         let p = crop_transparent(&pointer(64, 64, (2, 3), &[(1, 2), (12, 20)])).unwrap();
         assert_eq!((p.width, p.height), (12, 19));
@@ -142,7 +143,8 @@ mod tests {
     }
 
     // oracle: mutant the hotspot left out of the cropped area
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_hotspot_off_the_pixels_stays_inside() {
         let p = crop_transparent(&pointer(64, 64, (40, 0), &[(10, 10), (20, 30)])).unwrap();
         assert_eq!((p.width, p.height), (31, 31));
@@ -151,25 +153,29 @@ mod tests {
     }
 
     // oracle: mutant a pointer copied when there is nothing to cut
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_pointer_with_no_margin_is_left_alone() {
         assert!(crop_transparent(&pointer(4, 4, (0, 0), &[(0, 0), (3, 3)])).is_none());
     }
 
     // oracle: mutant a panic or an empty crop when no pixel is visible
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_fully_transparent_pointer_is_left_alone() {
         assert!(crop_transparent(&pointer(64, 64, (0, 0), &[])).is_none());
     }
 
     // oracle: mutant a panic on the empty pointer the decoder sends for a zero-size bitmap
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_zero_size_pointer_is_left_alone() {
         assert!(crop_transparent(&DecodedPointer::new_invisible()).is_none());
     }
 
     // oracle: mutant the bitmap length check removed
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_pointer_that_does_not_match_its_size_is_left_alone() {
         let mut p = pointer(64, 64, (0, 0), &[(1, 1)]);
         p.bitmap_data.pop();
@@ -177,13 +183,15 @@ mod tests {
     }
 
     // oracle: mutant the hotspot bounds check removed
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_hotspot_outside_the_bitmap_is_left_alone() {
         assert!(crop_transparent(&pointer(8, 8, (8, 0), &[(1, 1)])).is_none());
     }
 
     // oracle: mutant the scale applied to only one side, or the hotspot left unscaled
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_large_pointer_is_scaled_to_fit_with_its_hotspot() {
         let s = scaled_to_fit(&pointer(64, 48, (10, 20), &[])).unwrap();
         assert_eq!((s.width, s.height), (32, 24));
@@ -191,13 +199,15 @@ mod tests {
     }
 
     // oracle: mutant a pointer that already fits scaled anyway
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_pointer_that_fits_is_not_scaled() {
         assert!(scaled_to_fit(&pointer(32, 32, (0, 0), &[])).is_none());
     }
 
     // oracle: mutant a side rounded down to zero pixels, which the resizer refuses, ending the session
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_long_thin_pointer_keeps_at_least_one_pixel_per_side() {
         let s = scaled_to_fit(&pointer(64, 1, (0, 0), &[])).unwrap();
         assert_eq!((s.width, s.height), (32, 1));
