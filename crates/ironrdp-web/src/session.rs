@@ -100,6 +100,7 @@ struct SessionBuilderInner {
     audio_playback_callback: Option<js_sys::Function>,
     camera_callback: Option<js_sys::Function>,
     camera_name: Option<String>,
+    camera_h264: bool,
     enable_credssp: bool,
     enable_standard_rdp_security: bool,
     enable_server_pointer: bool,
@@ -155,6 +156,7 @@ impl Default for SessionBuilderInner {
             audio_playback_callback: None,
             camera_callback: None,
             camera_name: None,
+            camera_h264: false,
             enable_credssp: true,
             enable_standard_rdp_security: false,
             enable_server_pointer: true,
@@ -323,6 +325,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     self.0.borrow_mut().camera_name = Some(camera_name);
                 }
             };
+            |camera_h264: bool| { self.0.borrow_mut().camera_h264 = camera_h264 };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
             |enable_standard_rdp_security: bool| {
                 self.0.borrow_mut().enable_standard_rdp_security = enable_standard_rdp_security;
@@ -692,6 +695,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     input_events_tx.clone(),
                     sink.clone(),
                     self.0.borrow().camera_name.clone(),
+                    self.0.borrow().camera_h264,
                 )
             })
             .transpose()?;
@@ -901,6 +905,12 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    /// The camera's frame sink, when the `camera` extension turned the camera on.
+    fn camera(&self) -> Result<&crate::camera::CameraSink, IronError> {
+        self.camera
+            .as_ref()
+            .ok_or_else(|| IronError::from(anyhow::Error::msg("camera is not enabled")))
+    }
     // UNTESTED: The callback receives layouts from a live server.
     // Server interoperability failures can leave the application's monitor geometry stale.
     // When changing these paths, verify activation, reactivation and layout changes with a server.
@@ -1635,13 +1645,15 @@ impl iron_remote_desktop::Session for Session {
                 return Ok(JsValue::NULL);
             };
             |camera_sample: JsValue| {
-                let Some(camera) = &self.camera else {
-                    return Err(IronError::from(anyhow::Error::msg("camera is not enabled")));
-                };
+                let camera = self.camera()?;
                 let sample = camera_sample
                     .dyn_into::<js_sys::Uint8Array>()
                     .map_err(|_| IronError::from(anyhow::Error::msg("camera_sample expects a Uint8Array")))?;
-                return Ok(JsValue::from_bool(camera.push(|| sample.to_vec())));
+                return Ok(JsValue::from_bool(camera.push(sample.to_vec())));
+            };
+            |camera_wanted: JsValue| {
+                drop(camera_wanted);
+                return Ok(JsValue::from(self.camera()?.wanted()));
             };
         }
 
@@ -3104,6 +3116,17 @@ mod tests {
             }
             _ => panic!("Expected correct flags conversion"),
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn the_camera_h264_extension_sets_the_flag() {
+        // oracle: mutant the extension name `cameraH264` sends not matched
+        use iron_remote_desktop::SessionBuilder as _;
+
+        let builder = SessionBuilder::create().extension(Extension::create("camera_h264".to_owned(), JsValue::TRUE));
+
+        assert!(builder.0.borrow().camera_h264);
     }
 }
 
