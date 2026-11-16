@@ -242,8 +242,8 @@ mod tests {
         pointer(width, height, hotspot, &block)
     }
 
-    // oracle: the 40x20 crop scaled by 32/40 is 32x16, and its hotspot (5, 5) scales to (4, 4); mutant scaling the
-    // uncropped pointer, which makes it 32x32 with its hotspot at (5, 5), or taking the size or hotspot from it.
+    // oracle: mutant scaling the uncropped pointer, which makes it 32x32 with its hotspot at (5, 5), or taking the size
+    // or hotspot from it; the 40x20 crop scaled by 32/40 is 32x16, and its hotspot (5, 5) scales to (4, 4).
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_pointer_is_cropped_before_it_is_scaled() {
@@ -278,8 +278,8 @@ mod tests {
         assert_eq!(pixel(&p, 0, 0), [1, 2, 0x80, 0xff]);
     }
 
-    // oracle: mutant returning nothing for an oversized pointer with no margin to crop, which the browser then draws as
-    // the system cursor.
+    // oracle: mutant returning nothing for an oversized pointer with no margin to crop, which leaves it larger than
+    // MAX_CURSOR_SIZE.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn an_oversized_pointer_without_a_margin_is_scaled() {
@@ -327,9 +327,14 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_long_thin_pointer_keeps_at_least_one_pixel_per_side() {
-        let p = fit(&pointer_with_block(64, 1, (0, 0), (0, 0), (63, 0)))
+        let wide = fit(&pointer_with_block(64, 1, (0, 0), (0, 0), (63, 0)))
             .expect("the resizer accepts the scaled size")
             .unwrap();
-        assert_eq!((p.width, p.height), (32, 1));
+        assert_eq!((wide.width, wide.height), (32, 1));
+
+        let tall = fit(&pointer_with_block(1, 64, (0, 0), (0, 0), (0, 63)))
+            .expect("the resizer accepts the scaled size")
+            .unwrap();
+        assert_eq!((tall.width, tall.height), (1, 32));
     }
 }
