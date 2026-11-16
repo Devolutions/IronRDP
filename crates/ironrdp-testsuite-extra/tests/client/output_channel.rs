@@ -90,7 +90,7 @@ fn drop_policy_classification() {
     );
 }
 
-// oracle: regression Devolutions/IronRDP#2437
+// oracle: mutant a client that drops the connect-time measurement or changes it on the way to the output channel
 #[tokio::test]
 async fn connect_time_network_characteristics_are_delivered_on_activation() {
     use ironrdp_client::__test_send_connect_time_network_characteristics;

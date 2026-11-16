@@ -462,7 +462,7 @@ fn session_info_reports_no_active_session_in_json_format() {
     );
 }
 
-// oracle: regression Devolutions/IronRDP#2437
+// oracle: mutant an agent that replaces the ActiveX host's session info error with its own
 #[test]
 fn session_info_for_activex_prints_the_backend_error() {
     use ironrdp_rpc::ipc::{AgentErrorCategory, Request, Response};

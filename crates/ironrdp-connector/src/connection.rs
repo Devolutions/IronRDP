@@ -1318,9 +1318,12 @@ impl ClientConnector {
                 average_rtt_ms,
                 ..
             } => {
+                // [MS-RDPBCGR] 2.2.14.1.5 makes baseRTT and bandwidth optional in each result.
+                // A result without one keeps the value reported before, and averageRTT is in every result.
+                let previous = self.network_characteristics;
                 self.network_characteristics = Some(NetworkCharacteristics {
-                    base_rtt_ms,
-                    bandwidth_kbps,
+                    base_rtt_ms: base_rtt_ms.or_else(|| previous.and_then(|network| network.base_rtt_ms)),
+                    bandwidth_kbps: bandwidth_kbps.or_else(|| previous.and_then(|network| network.bandwidth_kbps)),
                     average_rtt_ms,
                 });
                 Ok(Written::Nothing)

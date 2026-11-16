@@ -50,8 +50,9 @@ ironrdp-agent session info --format json
 ```
 
 It reports the remote session ID, whether the logon completed, the network characteristics the server measured, its monitor layout and the last logon error, warning or status.
-A fact the server has not sent is left out, or `null` in JSON, and all of them are cleared when the server redirects the connection.
+A fact the server has not sent is left out, or `null` in JSON, and all of them are cleared when the server redirects the connection or a resize falls back to a new connection.
 An automatic reconnect keeps them, because it returns to the same session on the same server.
+If the server rejects the reconnect and logs on afresh, only what the new connection reports is kept, and the monitor layout reads empty until the server sends one.
 The logon reads as not completed until the server's logon notification arrives.
 A logon that is still continuing, or that has failed, is reported as the logon error or status instead.
 With one reply to print, `--format ndjson` prints the same single JSON line as `--format json`.

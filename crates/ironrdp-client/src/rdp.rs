@@ -1991,14 +1991,6 @@ async fn send_active_output_event(
         .map_err(|error| ironrdp_session::custom_err!("output_event_sender", error))
 }
 
-fn network_characteristics_output_event(network: ironrdp_connector::NetworkCharacteristics) -> RdpOutputEvent {
-    RdpOutputEvent::NetworkCharacteristics {
-        base_rtt_ms: network.base_rtt_ms,
-        bandwidth_kbps: network.bandwidth_kbps,
-        average_rtt_ms: network.average_rtt_ms,
-    }
-}
-
 async fn send_connect_time_network_characteristics(
     output_event_sender: &crate::output_channel::OutputEventSender,
     network: Option<ironrdp_connector::NetworkCharacteristics>,
@@ -2010,7 +2002,11 @@ async fn send_connect_time_network_characteristics(
 
     send_cancellable_output_event(
         output_event_sender,
-        network_characteristics_output_event(network),
+        RdpOutputEvent::NetworkCharacteristics {
+            base_rtt_ms: network.base_rtt_ms,
+            bandwidth_kbps: network.bandwidth_kbps,
+            average_rtt_ms: network.average_rtt_ms,
+        },
         close_receiver,
     )
     .await
