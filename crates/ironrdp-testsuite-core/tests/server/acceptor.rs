@@ -2167,7 +2167,7 @@ async fn credssp_logon(
 
 /// With several accepted credentials, CredSSP checks the password against the entry with the
 /// client's user name, and only that one.
-// oracle: derived from the accounts the test seeds with `set_credential_list` and the client's user name and password
+// oracle: mutant CredSSP checking only the first entry, or checking the password against any entry
 #[rstest::rstest]
 #[case::first_user("alice", "secret", true)]
 #[case::second_user("bob", "hunter2", true)]
@@ -2186,7 +2186,7 @@ async fn credssp_accepts_any_of_several_credentials(
 
 /// With HYBRID_EX the credentials CredSSP delegates reach the setup handler, and they are those of the account the
 /// client logged on as, not the first one listed.
-// oracle: derived from the second account the test seeds with `set_credential_list`
+// oracle: mutant CredSSP delegating the first entry instead of the one the client logged on as
 #[tokio::test]
 async fn credssp_hands_the_matching_account_to_the_handler() {
     let (result, handler) = credssp_logon(SecurityProtocol::HYBRID_EX, two_accounts(), "bob", "hunter2").await;
@@ -2198,7 +2198,7 @@ async fn credssp_hands_the_matching_account_to_the_handler() {
 }
 
 /// A logon refused against several accounts hands nothing to the setup handler.
-// oracle: derived from the accounts the test seeds with `set_credential_list`
+// oracle: mutant a refused CredSSP logon still reaching the setup handler
 #[rstest::rstest]
 #[tokio::test]
 async fn refused_credssp_logon_hands_nothing_to_the_handler(
@@ -2212,7 +2212,7 @@ async fn refused_credssp_logon_hands_nothing_to_the_handler(
 
 /// An empty credential list leaves CredSSP nothing to check a password against, so the logon fails, as it does with
 /// no credentials at all.
-// oracle: derived from the empty list the test seeds with `set_credential_list`
+// oracle: mutant an empty list falling back to the unchecked `None` behaviour, or CredSSP accepting anyone
 #[rstest::rstest]
 #[tokio::test]
 async fn an_empty_credential_list_fails_credssp(
@@ -2260,7 +2260,7 @@ fn client_info_logon_with(
 }
 
 /// Without CredSSP, the Client Info credentials must equal one of the accepted accounts.
-// oracle: derived from the accounts the test seeds with `set_credential_list` and the Client Info credentials
+// oracle: mutant ClientInfo matching only the first entry, or matching the user name without the password
 #[rstest::rstest]
 #[case::second_user("bob", "hunter2", true)]
 #[case::other_users_password("bob", "secret", false)]
@@ -2284,20 +2284,10 @@ fn client_info_credentials_must_match_an_accepted_account(
 
 /// An empty credential list refuses every Client Info logon: a list that has emptied, say after an account store
 /// reloads with no rows, must not open the server to anyone.
-// oracle: review of Devolutions/IronRDP#2356 (an empty list must refuse ClientInfo logons, unlike no credentials at
-// all, https://github.com/Devolutions/IronRDP/pull/2356)
+// oracle: mutant an empty list treated like no credentials at all, leaving ClientInfo logons unchecked
 #[test]
 fn an_empty_credential_list_refuses_client_info_credentials() {
-    let result = client_info_logon(
-        Vec::new(),
-        Credentials {
-            username: "anyone".to_owned(),
-            password: "anything".to_owned(),
-            domain: None,
-        },
-    );
-
-    result.unwrap_err();
+    client_info_logon(Vec::new(), anyone()).unwrap_err();
 }
 
 fn anyone() -> Credentials {
@@ -2316,11 +2306,34 @@ fn no_credentials_leave_client_info_credentials_unchecked() {
     client_info_logon_with(None, false, anyone()).unwrap();
 }
 
-/// When an external validator decides ClientInfo logons, an empty list does not refuse them first.
-// oracle: derived from `set_allow_unverified_credentials`, which hands ClientInfo credentials to the validator
-#[test]
-fn an_empty_credential_list_leaves_client_info_credentials_to_the_validator() {
-    client_info_logon_with(Some(Vec::new()), true, anyone()).unwrap();
+/// When an external validator decides ClientInfo logons, an empty list does not refuse them first: the Client Info
+/// credentials reach the setup handler, which stands in for the validator.
+// oracle: mutant an empty list refusing ClientInfo logons before the validator, or accepting them without handing the
+// credentials over
+#[tokio::test]
+async fn an_empty_credential_list_leaves_client_info_credentials_to_the_validator() {
+    let mut acceptor = negotiated_acceptor_expecting(SecurityProtocol::SSL, None);
+    acceptor.set_credential_list(Vec::new());
+    acceptor.set_allow_unverified_credentials(true);
+    // Stop the handshake once the credentials are handled, at the capability exchange.
+    let mut handler = SetupHandler {
+        reject_capabilities: true,
+        ..SetupHandler::default()
+    };
+    let framed = Framed::<HandshakeStream>::new(HandshakeStream {
+        incoming: post_credssp_messages(None),
+        ..HandshakeStream::default()
+    });
+
+    let error = accept_finalize_with(framed, &mut acceptor, &mut handler)
+        .await
+        .err()
+        .expect("the handler stops the handshake at the capability exchange");
+    assert!(error.to_string().contains("test capability rejection"), "{error}");
+    assert_eq!(handler.received.len(), 1);
+    let received = &handler.received[0];
+    assert_eq!(received.origin, ironrdp_acceptor::CredentialOrigin::ClientInfo);
+    assert_eq!(received.credentials, CLIENT_INFO_UNICODE.credentials);
 }
 
 /// The server Demand Active carries `RDP` as its source descriptor, as the FreeRDP
@@ -2482,7 +2495,15 @@ async fn accept_spnego_credssp(
     username: &str,
     password: &str,
 ) -> (ConnectorResult<()>, SetupHandler, Vec<Vec<u8>>) {
-    let mut acceptor = negotiated_acceptor(protocol);
+    accept_spnego_credssp_with(negotiated_acceptor(protocol), username, password).await
+}
+
+/// Like [`accept_spnego_credssp`], against `acceptor`.
+async fn accept_spnego_credssp_with(
+    mut acceptor: Acceptor,
+    username: &str,
+    password: &str,
+) -> (ConnectorResult<()>, SetupHandler, Vec<Vec<u8>>) {
     let public_key = vec![0x42; 32];
     let mut client = spnego_credssp_client(username, password, &public_key);
     let first_message = spnego_credssp_message(&mut client, TsRequest::default());
@@ -2523,6 +2544,32 @@ async fn credssp_authenticates_ntlm_wrapped_in_spnego() {
     assert_eq!(received.credentials.username, "alice");
     assert_eq!(received.credentials.domain, None);
     assert_eq!(received.credentials.password, "secret");
+}
+
+/// SPNEGO-wrapped NTLM, as mstsc sends it, is checked against every accepted account, not only the first.
+// oracle: mutant SPNEGO authenticating only against the first entry of the list
+#[rstest::rstest]
+#[case::first_user("alice", "secret", true)]
+#[case::second_user("bob", "hunter2", true)]
+#[case::other_users_password("bob", "secret", false)]
+#[tokio::test]
+async fn spnego_credssp_accepts_any_of_several_credentials(
+    #[case] username: &str,
+    #[case] password: &str,
+    #[case] accepted: bool,
+) {
+    let mut acceptor = negotiated_acceptor_expecting(SecurityProtocol::HYBRID_EX, None);
+    acceptor.set_credential_list(two_accounts());
+
+    let (result, handler, _) = accept_spnego_credssp_with(acceptor, username, password).await;
+
+    assert_eq!(result.is_ok(), accepted, "{result:?}");
+    if accepted {
+        assert_eq!(handler.received.len(), 1);
+        assert_eq!(handler.received[0].credentials.username, username);
+    } else {
+        assert!(handler.received.is_empty());
+    }
 }
 
 #[tokio::test]

@@ -4,7 +4,7 @@
 use ironrdp_async::{Framed, FramedRead, FramedWrite, NetworkClient, StreamWrapper, single_sequence_step_read};
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, KerberosServerConfig, Username};
-use ironrdp_connector::{ServerName, custom_err, general_err};
+use ironrdp_connector::{ServerName, custom_err, general_err, reason_err};
 use ironrdp_core::WriteBuf;
 use tracing::{debug, instrument, trace};
 
@@ -489,13 +489,20 @@ where
         }
         let identities = accepted
             .iter()
-            .map(|creds| {
+            .enumerate()
+            .map(|(index, creds)| {
                 let username = if creds.domain.is_none() && creds.username.contains(['\\', '@']) {
                     Username::parse(&creds.username)
                 } else {
                     Username::new(&creds.username, creds.domain.as_deref())
                 }
-                .map_err(|e| custom_err!("invalid username", e))?;
+                .map_err(|e| {
+                    reason_err!(
+                        "invalid username",
+                        "accepted credentials entry {index} ({:?}): {e}",
+                        creds.username
+                    )
+                })?;
                 Ok(AuthIdentity {
                     username,
                     password: creds.password.clone().into(),
