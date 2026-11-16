@@ -113,7 +113,9 @@ struct Scaled {
     width: u16,
     /// INVARIANT: `1 <= height <= MAX_CURSOR_SIZE`
     height: u16,
+    /// INVARIANT: `hotspot_x < width`
     hotspot_x: u16,
+    /// INVARIANT: `hotspot_y < height`
     hotspot_y: u16,
 }
 
@@ -127,24 +129,32 @@ fn scaled_to_fit(pointer: &DecodedPointer) -> Option<Scaled> {
     if !(MAX_CURSOR_SIZE < longest) {
         return None;
     }
-    // INVARIANT: 0 < scale < 1.0
-    // INVARIANT: pointer.width * scale <= MAX_CURSOR_SIZE
-    // INVARIANT: pointer.height * scale <= MAX_CURSOR_SIZE
-    let scale = f64::from(MAX_CURSOR_SIZE) / f64::from(longest);
 
-    // Per invariants: Following conversions will never saturate.
     // A side is at least 1 pixel, which the resizer requires: a long, thin pointer would otherwise round to 0.
+    let width = scale_down(pointer.width, longest).max(1);
+    let height = scale_down(pointer.height, longest).max(1);
+    // A scaled hotspot can equal a short side's length, or exceed it for a hotspot outside the pointer, so it is
+    // clamped to the side's last pixel.
     Some(Scaled {
-        width: f64_to_u16_saturating_cast(f64::from(pointer.width) * scale).max(1),
-        height: f64_to_u16_saturating_cast(f64::from(pointer.height) * scale).max(1),
-        hotspot_x: f64_to_u16_saturating_cast(f64::from(pointer.hotspot_x) * scale),
-        hotspot_y: f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale),
+        width,
+        height,
+        hotspot_x: scale_down(pointer.hotspot_x, longest).min(width - 1),
+        hotspot_y: scale_down(pointer.hotspot_y, longest).min(height - 1),
     })
 }
 
-#[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-fn f64_to_u16_saturating_cast(value: f64) -> u16 {
-    value as u16
+/// `value` scaled by `MAX_CURSOR_SIZE / longest`, rounded down.
+///
+/// `longest` must be greater than [`MAX_CURSOR_SIZE`].
+/// Integer arithmetic scales `longest` itself to exactly [`MAX_CURSOR_SIZE`], which floating point can round below.
+fn scale_down(value: u16, longest: u16) -> u16 {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "u16::MAX * MAX_CURSOR_SIZE fits in u32, and longest > MAX_CURSOR_SIZE is not 0"
+    )]
+    let scaled = u32::from(value) * u32::from(MAX_CURSOR_SIZE) / u32::from(longest);
+    // Since longest > MAX_CURSOR_SIZE, scaled <= value, so the conversion never saturates.
+    u16::try_from(scaled).unwrap_or(u16::MAX)
 }
 
 #[cfg(test)]
@@ -369,6 +379,30 @@ mod tests {
         let s = scaled_to_fit(&pointer(48, 64, (20, 10), &[])).unwrap();
         assert_eq!((s.width, s.height), (24, 32));
         assert_eq!((s.hotspot_x, s.hotspot_y), (10, 5));
+    }
+
+    // oracle: mutant computing 32 / 49 * 49 in floating point, which truncates to 31 and leaves the hotspot outside the
+    // cursor; the longest side scales to exactly MAX_CURSOR_SIZE, and the hotspot 48 to floor(48 * 32 / 49) = 31.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_scaled_pointer_fills_the_cursor_size() {
+        let s = scaled_to_fit(&pointer(49, 49, (48, 48), &[])).unwrap();
+        assert_eq!((s.width, s.height), (32, 32));
+        assert_eq!((s.hotspot_x, s.hotspot_y), (31, 31));
+    }
+
+    // oracle: mutant scaling the hotspot without keeping it inside the pointer; a 64x3 pointer scales by 1/2 to 32x1,
+    // whose only row is 0, though the hotspot row 2 scales to 1, and a 3x64 pointer likewise to 1x32 with column 0.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_hotspot_stays_inside_a_short_scaled_side() {
+        let wide = scaled_to_fit(&pointer(64, 3, (0, 2), &[])).unwrap();
+        assert_eq!((wide.width, wide.height), (32, 1));
+        assert_eq!((wide.hotspot_x, wide.hotspot_y), (0, 0));
+
+        let tall = scaled_to_fit(&pointer(3, 64, (2, 0), &[])).unwrap();
+        assert_eq!((tall.width, tall.height), (1, 32));
+        assert_eq!((tall.hotspot_x, tall.hotspot_y), (0, 0));
     }
 
     // oracle: mutant a pointer that already fits scaled anyway
