@@ -539,8 +539,8 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for HeartbeatCapabilityRewrite<S> {
 }
 
 fn rewrite_heartbeat_capability(buf: &[u8]) -> Option<Vec<u8>> {
-    let packet = ironrdp_core::decode::<pdu::x224::X224<pdu::x224::X224Data<'_>>>(buf).ok()?;
-    let mut initial = ironrdp_core::decode::<pdu::mcs::ConnectInitial>(&packet.0.data).ok()?;
+    let packet = decode::<X224<X224Data<'_>>>(buf).ok()?;
+    let mut initial = decode::<pdu::mcs::ConnectInitial>(&packet.0.data).ok()?;
     let mut blocks = initial.conference_create_request.into_gcc_blocks();
     blocks
         .core
@@ -550,8 +550,7 @@ fn rewrite_heartbeat_capability(buf: &[u8]) -> Option<Vec<u8>> {
         .insert(gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU);
     initial.conference_create_request = gcc::ConferenceCreateRequest::new(blocks).expect("GCC blocks");
     let data = encode_vec(&initial).expect("encode connect initial");
-    let replacement =
-        encode_vec(&pdu::x224::X224(pdu::x224::X224Data { data: data.into() })).expect("encode X.224 data");
+    let replacement = encode_vec(&X224(X224Data { data: data.into() })).expect("encode X.224 data");
     assert_eq!(replacement.len(), buf.len());
     Some(replacement)
 }
@@ -3873,7 +3872,7 @@ where
         let (_, frame) = framed.read_pdu().await.expect("read server PDU");
         if let Ok(indication) = pdu::mcs::decode_send_data_indication(&frame)
             && indication.channel_id == message_channel_id
-            && let Ok(heartbeat) = ironrdp_core::decode::<pdu::rdp::heartbeat::HeartbeatPdu>(indication.user_data)
+            && let Ok(heartbeat) = decode::<pdu::rdp::heartbeat::HeartbeatPdu>(indication.user_data)
         {
             return heartbeat;
         }
@@ -4250,7 +4249,7 @@ async fn the_final_flush_to_a_client_that_does_not_read_has_a_time_limit() {
                 }))
                 .unwrap();
                 wait_until_unread(framed.get_inner().0.get_ref().0, 2048).await;
-                let disconnect = pdu::x224::X224(pdu::mcs::DisconnectProviderUltimatum::from_reason(
+                let disconnect = X224(pdu::mcs::DisconnectProviderUltimatum::from_reason(
                     pdu::mcs::DisconnectReason::UserRequested,
                 ));
                 framed
