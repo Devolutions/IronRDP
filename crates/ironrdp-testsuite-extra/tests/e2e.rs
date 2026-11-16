@@ -4266,17 +4266,21 @@ where
                 server.run().await.unwrap();
             });
 
-            let client = tokio::task::spawn_local(async move {
-                let (tx, rx) = oneshot::channel();
-                ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
-                let server_addr = rx.await.unwrap().unwrap();
-                let result = client(server_addr, cookie_handle, server_handle, display_tx).await;
-                ev.send(ServerEvent::Quit("bye".into())).unwrap();
-                result
+            let client = tokio::task::spawn_local({
+                let ev = ev.clone();
+                async move {
+                    let (tx, rx) = oneshot::channel();
+                    ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
+                    let server_addr = rx.await.unwrap().unwrap();
+                    client(server_addr, cookie_handle, server_handle, display_tx).await
+                }
             });
 
-            let (server, client) = tokio::join!(server, client);
-            server.expect("server task");
+            // Stop the server once the client is done, also when it panicked, so a failing assertion fails the test
+            // instead of leaving it waiting on the server.
+            let client = client.await;
+            ev.send(ServerEvent::Quit("bye".into())).unwrap();
+            server.await.expect("server task");
             client.expect("client task")
         })
         .await
@@ -4293,8 +4297,16 @@ struct CookieProbe {
 impl CookieProbe {
     /// Connects to `server_addr`, presenting `cookie` as an auto-reconnect cookie if given.
     async fn connect(server_addr: SocketAddr, cookie: Option<ServerAutoReconnect>) -> Self {
-        let (stage, activation_factory, framed) =
-            connect_active_client(server_addr, default_client_config(), cookie).await;
+        Self::connect_with(server_addr, default_client_config(), cookie).await
+    }
+
+    /// [`Self::connect`] with `client_config`.
+    async fn connect_with(
+        server_addr: SocketAddr,
+        client_config: connector::Config,
+        cookie: Option<ServerAutoReconnect>,
+    ) -> Self {
+        let (stage, activation_factory, framed) = connect_active_client(server_addr, client_config, cookie).await;
 
         Self {
             stage,
@@ -4378,8 +4390,10 @@ impl CookieProbe {
         }
     }
 
-    /// Whether the server accepts the cookie this client presented. An accepted cookie is
-    /// answered with a fresh one at activation; a rejected cookie ends the connection.
+    /// Whether the server accepts the cookie this client presented.
+    /// An accepted cookie is answered with a fresh one at activation.
+    /// A cookie that doesn't verify is a normal logon, which on request gets no cookie until the embedder vouches for
+    /// it.
     async fn cookie_accepted(&mut self, window: Duration) -> bool {
         self.watch_for_cookie(window).await.unwrap_or(false)
     }
@@ -4448,7 +4462,8 @@ async fn an_auto_reconnect_cookie_the_embedder_issues_invalidates_the_previous_o
                 probe.disconnect().await;
             }
 
-            // A verified cookie is sent another one at activation; a rejected one ends the connection.
+            // A verified cookie is sent another one at activation.
+            // One that doesn't verify logs on normally, and on request that connection gets no cookie.
             let mut with_first = CookieProbe::connect(server_addr, Some(first)).await;
             let first_still_works = with_first.cookie_accepted(Duration::from_secs(1)).await;
             drop(with_first);
@@ -4515,6 +4530,121 @@ impl server::CredentialValidator for RejectingValidator {
     ) -> Result<server::CredentialDecision, server::CredentialValidationError> {
         Ok(server::CredentialDecision::Reject)
     }
+}
+
+/// A cookie the test server never issued, as one issued before a server restarted.
+fn stale_auto_reconnect_cookie() -> ServerAutoReconnect {
+    ServerAutoReconnect {
+        logon_id: 1,
+        random_bits: [0x77; 16],
+    }
+}
+
+/// A client that comes back with a cookie the server can't verify, such as one issued before the server restarted, logs
+/// on with its credentials instead, and is sent a fresh cookie at activation like any other connection.
+// oracle: spec MS-RDPBCGR §3.3.5.3.11
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_falls_back_to_a_normal_logon() {
+    let admitted = with_auto_reconnect_server(false, async |server_addr, _cookie_handle, _display_tx| {
+        let mut probe = CookieProbe::connect(server_addr, Some(stale_auto_reconnect_cookie())).await;
+        let admitted = probe.cookie_within(Duration::from_secs(5)).await;
+        probe.disconnect().await;
+        admitted
+    })
+    .await;
+
+    assert!(admitted, "the client logs on and receives a fresh cookie");
+}
+
+/// With a credential validator, a client whose cookie fails logs on when the validator accepts its Client Info
+/// credentials.
+// oracle: spec MS-RDPBCGR §3.3.5.3.11
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_logs_on_with_credentials_the_validator_accepts() {
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+        server::Credentials {
+            username: USERNAME.into(),
+            password: PASSWORD.into(),
+            domain: None,
+        },
+    ))));
+
+    let admitted = with_server(
+        server,
+        display_tx,
+        async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+            let mut probe = CookieProbe::connect(server_addr, Some(stale_auto_reconnect_cookie())).await;
+            let admitted = probe.cookie_within(Duration::from_secs(5)).await;
+            probe.disconnect().await;
+            admitted
+        },
+    )
+    .await;
+
+    assert!(admitted, "the validator accepts the credentials, so the client logs on");
+}
+
+/// The same under NLA: CredSSP with HYBRID_EX validates the delegated credentials before the cookie is read, and a
+/// cookie that then fails must not send the connection back to a validator with no Client Info credentials to check.
+// oracle: spec MS-RDPBCGR §3.3.5.3.11
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_logs_on_after_nla() {
+    let (mut server, display_tx) = hybrid_server();
+    server.set_auto_reconnect_cookie(Some(ServerAutoReconnect {
+        logon_id: 1,
+        random_bits: [0x5a; 16],
+    }));
+    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+        server::Credentials {
+            username: HYBRID_USER.into(),
+            password: HYBRID_PASSWORD.into(),
+            domain: None,
+        },
+    ))));
+
+    let admitted = with_server(
+        server,
+        display_tx,
+        async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+            let mut probe =
+                CookieProbe::connect_with(server_addr, hybrid_client_config(), Some(stale_auto_reconnect_cookie()))
+                    .await;
+            let admitted = probe.cookie_within(Duration::from_secs(5)).await;
+            probe.disconnect().await;
+            admitted
+        },
+    )
+    .await;
+
+    assert!(admitted, "the client logs on after NLA and receives a fresh cookie");
+}
+
+/// Falling back to a normal logon doesn't skip the credential validator.
+/// When it rejects the Client Info credentials, the connection is refused.
+// oracle: mutant the fallback admits a client whose credentials the validator rejects
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_is_refused_when_the_validator_rejects_the_credentials() {
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+        server::Credentials {
+            username: "someone-else".into(),
+            password: "other".into(),
+            domain: None,
+        },
+    ))));
+
+    let ended = with_server(
+        server,
+        display_tx,
+        async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+            let mut probe = CookieProbe::connect(server_addr, Some(stale_auto_reconnect_cookie())).await;
+            probe.watch_for_cookie(Duration::from_secs(5)).await.is_err()
+        },
+    )
+    .await;
+
+    assert!(ended, "the server ends the connection");
 }
 
 /// On request, a vouch belongs to the connection that was current when the embedder sent
