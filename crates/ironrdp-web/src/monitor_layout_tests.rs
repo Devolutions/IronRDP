@@ -182,6 +182,7 @@ async fn callback_receives_initial_changed_and_reactivated_layouts() {
             suppress_output_support: false,
             window_support_level: None,
             monitor_layout: Some(MonitorLayoutPdu { monitors: initial }),
+            network_characteristics: None,
             activation_factory: ConnectionActivationFactory::new(config, IO_CHANNEL_ID, USER_CHANNEL_ID),
             compression_type: None,
             server_rdp_version: RdpVersion::V5_PLUS,
