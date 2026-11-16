@@ -291,8 +291,14 @@ mod tests {
             .unwrap();
         let top_row: Vec<u8> = (0..32).map(|x| pixel(&p, x, 0)[0]).collect();
         let left_column: Vec<u8> = (0..16).map(|y| pixel(&p, 0, y)[1]).collect();
-        assert!(top_row.is_sorted() && top_row[31] >= 40, "red along the top row: {top_row:?}");
-        assert!(left_column.is_sorted() && left_column[15] >= 20, "green down the left column: {left_column:?}");
+        assert!(
+            top_row.is_sorted() && top_row[31] >= 40,
+            "red along the top row: {top_row:?}"
+        );
+        assert!(
+            left_column.is_sorted() && left_column[15] >= 20,
+            "green down the left column: {left_column:?}"
+        );
     }
 
     // oracle: mutant scaling a pointer that fits once cropped, or dropping the crop when no scaling follows.
