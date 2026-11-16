@@ -237,7 +237,7 @@ impl<'a> CredsspSequence<'a> {
 
     /// Like [`Self::init`], accepting any of several identities: the client's
     /// user name picks the one its password is checked against.
-    pub fn init_with_identities(
+    pub(crate) fn init_with_identities(
         creds: &'a [AuthIdentity],
         client_computer_name: ServerName,
         public_key: Vec<u8>,

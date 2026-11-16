@@ -573,10 +573,11 @@ impl Acceptor {
     /// Accept any of `creds`, replacing the credentials given to [`Self::new`].
     ///
     /// CredSSP checks the client's password against the entry with its user
-    /// name; ClientInfo credentials must match one of them. An empty list
-    /// accepts no one: CredSSP fails and ClientInfo logons are refused,
-    /// unless [`Self::set_allow_unverified_credentials`] hands them to an
-    /// external validator.
+    /// name, the first one if several share it; ClientInfo credentials must
+    /// match one of them. An empty list accepts no one: CredSSP fails and
+    /// ClientInfo logons are refused, unless
+    /// [`Self::set_allow_unverified_credentials`] hands them to an external
+    /// validator.
     pub fn set_credential_list(&mut self, creds: Vec<Credentials>) {
         self.creds = Some(creds);
     }

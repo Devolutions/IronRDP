@@ -6880,10 +6880,10 @@ impl RdpServer {
     }
 
     /// Accept any of `creds` from the next connection on: CredSSP checks the
-    /// client's password against the entry with its user name, and
-    /// ClientInfo credentials must match one of them. An empty list accepts
-    /// no one, unless a credential validator decides ClientInfo logons. A
-    /// running session is not affected.
+    /// client's password against the entry with its user name (the first one
+    /// if several share it), and ClientInfo credentials must match one of
+    /// them. An empty list accepts no one, unless a credential validator
+    /// decides ClientInfo logons. A running session is not affected.
     pub fn set_credential_list(&mut self, creds: Vec<Credentials>) {
         debug!(count = creds.len(), "Changing credentials");
         self.creds = Some(creds);
