@@ -1442,7 +1442,7 @@ pub struct RdpServer {
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     staged_events: Vec<ServerEvent>,
-    creds: Vec<Credentials>,
+    creds: Option<Vec<Credentials>>,
     credssp_backend: CredsspBackend,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
     connection_binder: Option<Arc<dyn ConnectionBinder>>,
@@ -2089,13 +2089,15 @@ impl PendingConnection {
         security: RdpServerSecurity,
         desktop_size: DesktopSize,
         capabilities: Vec<CapabilitySet>,
-        creds: Vec<Credentials>,
+        creds: Option<Vec<Credentials>>,
         honor_client_desktop_size: Option<DesktopSize>,
         udp_bind_addr: Option<SocketAddr>,
         credentials_handler: ServerCredentialsHandler,
     ) -> Self {
         let mut acceptor = Acceptor::new(security.flag(), desktop_size, capabilities, None);
-        acceptor.set_credential_list(creds);
+        if let Some(creds) = creds {
+            acceptor.set_credential_list(creds);
+        }
         acceptor.set_honor_client_desktop_size(honor_client_desktop_size);
         // Multitransport requires Enhanced Security: `RdpServerSecurity::None`
         // has nothing to authenticate the sideband transport's TLS with, and
@@ -3093,7 +3095,7 @@ fn refuse_reconnect_from_evicted(
 /// [`RdpServer::serve_negotiated`], from `self`.
 struct NegotiationContext {
     opts: RdpServerOptions,
-    creds: Vec<Credentials>,
+    creds: Option<Vec<Credentials>>,
     credssp_backend: CredsspBackend,
     display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     credential_validator: Option<Arc<dyn CredentialValidator>>,
@@ -3288,7 +3290,7 @@ impl RdpServer {
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             staged_events: Vec::new(),
-            creds: Vec::new(),
+            creds: None,
             credssp_backend: CredsspBackend::default(),
             credential_validator: None,
             connection_binder: None,
@@ -7052,16 +7054,17 @@ impl RdpServer {
 
     pub fn set_credentials(&mut self, creds: Option<Credentials>) {
         debug!(?creds, "Changing credentials");
-        self.creds = creds.into_iter().collect();
+        self.creds = creds.map(|creds| vec![creds]);
     }
 
     /// Accept any of `creds` from the next connection on: CredSSP checks the
     /// client's password against the entry with its user name, and
-    /// ClientInfo credentials must match one of them. A running session is
-    /// not affected.
+    /// ClientInfo credentials must match one of them. An empty list accepts
+    /// no one, unless a credential validator decides ClientInfo logons. A
+    /// running session is not affected.
     pub fn set_credential_list(&mut self, creds: Vec<Credentials>) {
         debug!(count = creds.len(), "Changing credentials");
-        self.creds = creds;
+        self.creds = Some(creds);
     }
 
     /// Selects the CredSSP authentication provider for subsequent connections.
@@ -7931,7 +7934,7 @@ mod preempt_tests {
                 max_static_channel_message_size: None,
                 max_dynamic_channel_message_size: None,
             },
-            creds: Vec::new(),
+            creds: None,
             credssp_backend: CredsspBackend::default(),
             display: Arc::new(Mutex::new(Box::new(NoDisplay))),
             credential_validator: None,
