@@ -280,6 +280,21 @@ mod tests {
         );
     }
 
+    // oracle: mutant reading the cropped pixels or writing the cursor with width and height swapped; the 40x20 crop's
+    // red channel is its column, 5 to 44, and its green channel its row, 5 to 24, so the 32x16 cursor's red rises along
+    // its top row to near 44 and its green down its left column to near 24.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_scaled_pointer_keeps_its_orientation() {
+        let p = fit(&pointer_with_block(64, 64, (10, 10), (5, 5), (44, 24)))
+            .unwrap()
+            .unwrap();
+        let top_row: Vec<u8> = (0..32).map(|x| pixel(&p, x, 0)[0]).collect();
+        let left_column: Vec<u8> = (0..16).map(|y| pixel(&p, 0, y)[1]).collect();
+        assert!(top_row.is_sorted() && top_row[31] >= 40, "red along the top row: {top_row:?}");
+        assert!(left_column.is_sorted() && left_column[15] >= 20, "green down the left column: {left_column:?}");
+    }
+
     // oracle: mutant scaling a pointer that fits once cropped, or dropping the crop when no scaling follows.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
