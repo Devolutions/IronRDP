@@ -488,9 +488,8 @@ fn static_limit_warnings(max_static: Option<usize>, max_dynamic: Option<usize>) 
     warnings.0.lock().unwrap().clone()
 }
 
-// oracle: spec MS-RDPEDYC §2.2.3.1 and §2.2.3.2, DRDYNVC data PDUs may fill 1,600 bytes, and without a dynamic
-// channel limit the static limit bounds the DRDYNVC static channel; mutant building silently with a static limit that
-// refuses such a PDU.
+// oracle: spec MS-RDPEDYC §2.2.3.1, a DYNVC_DATA_FIRST PDU may fill 1,600 bytes; mutant building silently with a static
+// limit that refuses such a PDU when no dynamic channel limit bounds the DRDYNVC static channel instead.
 #[test]
 fn a_static_limit_below_a_full_drdynvc_pdu_is_logged() {
     assert_eq!(static_limit_warnings(Some(1599), None), [1599]);
@@ -503,7 +502,7 @@ fn a_static_limit_below_a_full_drdynvc_pdu_is_logged() {
 #[case::with_a_dynamic_limit(Some(1599), Some(1 << 20))]
 // oracle: mutant warning without a static limit.
 #[case::without_a_static_limit(None, None)]
-fn a_static_limit_that_admits_full_drdynvc_pdus_is_not_logged(
+fn a_configuration_that_admits_full_drdynvc_pdus_is_not_logged(
     #[case] max_static: Option<usize>,
     #[case] max_dynamic: Option<usize>,
 ) {
