@@ -192,6 +192,13 @@ export function keyboardLayout(layoutId: number): Extension {
     return new Extension('keyboard_layout', layoutId);
 }
 
+// --- Session statistics ---
+
+/** Asks the session for its figures so far, through `invokeExtension`: see README.md, Session statistics. */
+export function stats(): Extension {
+    return new Extension('stats', null);
+}
+
 // --- RDCleanPath ---
 
 export { RDCleanPathErrorCode } from './RDCleanPathErrorCode';
