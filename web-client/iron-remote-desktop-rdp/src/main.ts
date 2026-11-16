@@ -55,6 +55,30 @@ export function audioPlayback(callback: (message: unknown) => void): Extension {
     return new Extension('audio_playback', callback);
 }
 
+/**
+ * Redirects a camera through the callback described in README.md, Camera.
+ * Start messages name the format the server picked; a stop message ends the capture.
+ * The page then pushes one JPEG per frame with `cameraSample`.
+ */
+export function camera(callback: (message: unknown) => void): Extension {
+    return new Extension('camera', callback);
+}
+
+/** The camera's name on the remote desktop, in place of `Browser camera`. An empty name is ignored. */
+export function cameraName(name: string): Extension {
+    return new Extension('camera_name', name);
+}
+
+/**
+ * One JPEG frame for `invokeExtension`, in the format of the last start message.
+ * `invokeExtension` returns true when the frame answered a pending request. It returns false when the frame is held
+ * for the next request, when no stream is running (the frame is dropped), or when the server refused the frame and
+ * got a Sample Error Response instead.
+ */
+export function cameraSample(frame: Uint8Array): Extension {
+    return new Extension('camera_sample', frame);
+}
+
 export function kdcProxyUrl(url: string): Extension {
     return new Extension('kdc_proxy_url', url);
 }
