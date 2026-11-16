@@ -59,8 +59,10 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  last logon error, warning or status. A fact the server has not
                                  sent is absent (`null` in JSON), except that the logon reads as
                                  not completed until the server's logon notification arrives. A
-                                 redirection clears them all; an automatic reconnect to the same
-                                 session keeps them.
+                                 redirection or a resize that falls back to a new connection
+                                 clears them all; an automatic reconnect to the same session
+                                 keeps them, and one the server rejects keeps only what the new
+                                 logon reports.
 - `session logoff [--timeout-secs N]`
                                  Log the user off the remote session, ending it on the host instead of
                                  leaving it disconnected. Requires Devolutions Agent (the NOW agent) in

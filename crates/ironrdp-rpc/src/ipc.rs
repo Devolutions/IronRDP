@@ -894,8 +894,12 @@ impl fmt::Debug for RailExecuteRequest {
 
 /// Facts the server reported about the session, returned by [`Request::SessionInfo`].
 ///
-/// Each one is absent until the server sends it, and all are cleared when the server redirects the connection.
+/// Each one is absent until the server sends it.
+/// All are cleared when the server redirects the connection, or a resize falls back to a new connection.
 /// A cookie-based auto-reconnect keeps them, because it returns to the same session on the same server.
+/// When the server rejects the cookie and logs on afresh, only what the new connection reports is kept.
+/// The monitor layout then reads empty until the server sends one.
+/// The client passes on the layout from connection setup only on a first connection.
 /// `logon_complete` reads `false` until the logon notification arrives.
 /// A logon that is still continuing, or that has failed, is reported as `logon_error` instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -907,6 +911,8 @@ pub struct SessionInfo {
     /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
     pub logon_complete: bool,
     /// The network characteristics the server last reported.
+    ///
+    /// A result without a base RTT or a bandwidth keeps the one reported before.
     pub network: Option<NetworkCharacteristicsInfo>,
     /// The monitor layout the server last reported, empty when it reported none.
     pub monitors: Vec<MonitorInfo>,

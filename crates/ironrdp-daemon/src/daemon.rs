@@ -498,6 +498,11 @@ struct Live {
     certificate_rejection: Arc<Mutex<Option<CertificateRejection>>>,
     /// What the server has reported about the session so far.
     session_info: SessionInfo,
+    /// What the server has reported since an automatic reconnect began, while that reconnect is in progress.
+    ///
+    /// The reconnect ends with `AutoReconnected` when the server accepts the cookie and returns to the same session.
+    /// It ends with `Connected` when the server rejects the cookie and logs on afresh, and then only these facts hold.
+    since_reconnecting: Option<SessionInfo>,
 }
 
 const MAX_PENDING_RAIL_LAUNCHES: usize = 64;
@@ -1150,6 +1155,7 @@ impl Daemon {
             ),
             certificate_rejection,
             session_info: SessionInfo::default(),
+            since_reconnecting: None,
         }));
 
         // Capture this session's logs into the ring buffer (queryable via `Request::QueryLogs`)
@@ -2369,6 +2375,14 @@ fn spawn_output_consumer(
     ))
 }
 
+/// Records a fact the server reported, and notes it as reported since an automatic reconnect began when one has.
+fn record_fact(live: &mut Live, apply: impl Fn(&mut SessionInfo)) {
+    apply(&mut live.session_info);
+    if let Some(reported_since) = live.since_reconnecting.as_mut() {
+        apply(reported_since);
+    }
+}
+
 /// Consumes the bounded output-event stream, keeping the live state current.
 async fn consume_output(
     mut output_rx: OutputEventReceiver,
@@ -2383,6 +2397,11 @@ async fn consume_output(
         let previous = guard.state;
         let rail_changed = match event {
             RdpOutputEvent::Connected => {
+                // A `Connected` that ends an automatic reconnect means the server rejected the cookie and logged on
+                // afresh, so the facts from before belong to a session this connection didn't return to.
+                if let Some(reported_since) = guard.since_reconnecting.take() {
+                    guard.session_info = reported_since;
+                }
                 guard.state = ConnState::Connected;
                 guard.error = None;
                 if previous != ConnState::Connected {
@@ -2390,16 +2409,26 @@ async fn consume_output(
                 }
                 false
             }
+            RdpOutputEvent::AutoReconnecting { .. } => {
+                // The facts so far stay reported until the reconnect ends and says whether they still hold.
+                guard.since_reconnecting = Some(SessionInfo::default());
+                false
+            }
+            RdpOutputEvent::AutoReconnected => {
+                // The server accepted the cookie and returned to the same session, so every fact still holds.
+                guard.since_reconnecting = None;
+                false
+            }
             RdpOutputEvent::LoginComplete => {
-                guard.session_info.logon_complete = true;
+                record_fact(&mut guard, |info| info.logon_complete = true);
                 false
             }
             RdpOutputEvent::RemoteSessionId(session_id) => {
-                guard.session_info.remote_session_id = Some(session_id);
+                record_fact(&mut guard, |info| info.remote_session_id = Some(session_id));
                 false
             }
             RdpOutputEvent::MonitorLayout(monitors) => {
-                guard.session_info.monitors = monitors
+                let monitors: Vec<_> = monitors
                     .iter()
                     .map(|monitor| crate::ipc::MonitorInfo {
                         left: monitor.left,
@@ -2409,6 +2438,7 @@ async fn consume_output(
                         primary: monitor.flags.contains(ironrdp_pdu::gcc::MonitorFlags::PRIMARY),
                     })
                     .collect();
+                record_fact(&mut guard, |info| info.monitors = monitors.clone());
                 false
             }
             RdpOutputEvent::NetworkCharacteristics {
@@ -2416,18 +2446,24 @@ async fn consume_output(
                 bandwidth_kbps,
                 average_rtt_ms,
             } => {
-                guard.session_info.network = Some(crate::ipc::NetworkCharacteristicsInfo {
-                    base_rtt_ms,
-                    bandwidth_kbps,
-                    average_rtt_ms,
+                // [MS-RDPBCGR] 2.2.14.1.5 makes baseRTT and bandwidth optional in each result.
+                // A result without one keeps the value reported before.
+                record_fact(&mut guard, |info| {
+                    let previous = info.network;
+                    info.network = Some(crate::ipc::NetworkCharacteristicsInfo {
+                        base_rtt_ms: base_rtt_ms.or_else(|| previous.and_then(|network| network.base_rtt_ms)),
+                        bandwidth_kbps: bandwidth_kbps.or_else(|| previous.and_then(|network| network.bandwidth_kbps)),
+                        average_rtt_ms,
+                    });
                 });
                 false
             }
             RdpOutputEvent::LogonError(error) => {
-                guard.session_info.logon_error = Some(crate::ipc::LogonErrorInfo {
+                let logon_error = crate::ipc::LogonErrorInfo {
                     notification_type: error.error_type.as_u32(),
                     notification_data: error.error_data.to_u32(),
-                });
+                };
+                record_fact(&mut guard, |info| info.logon_error = Some(logon_error));
                 false
             }
             RdpOutputEvent::WindowingOrders(orders) => {
@@ -2527,6 +2563,7 @@ async fn consume_output(
             }
             RdpOutputEvent::DisplayResizeFallback(_) => {
                 guard.session_info = SessionInfo::default();
+                guard.since_reconnecting = None;
                 let next_sequence = guard.rail.next_sequence;
                 guard.rail = RailLedger::new(
                     next_rail_generation.fetch_add(1, Ordering::Relaxed),
@@ -2595,6 +2632,7 @@ async fn consume_output(
                 info!(%target, "Session redirected by the server");
                 // What was reported so far describes the server that redirected, not the target.
                 guard.session_info = SessionInfo::default();
+                guard.since_reconnecting = None;
                 false
             }
             // With software pointer rendering the cursor is composited into the `Image` frames
@@ -2973,7 +3011,7 @@ mod tests {
 
     #[tokio::test]
     async fn resize_fallback_starts_a_new_rail_generation() {
-        let (daemon, _, live, _) = active_rail_session(false);
+        let (_, _, live, _) = active_rail_session(false);
         {
             let mut guard = live.lock().expect("session live state poisoned");
             guard.rail_initial_execute = Some((0, "notepad.exe".to_owned()));
@@ -2988,11 +3026,6 @@ mod tests {
                     flags: 0,
                 })
                 .expect("queue a dynamic launch");
-            guard.session_info = crate::ipc::SessionInfo {
-                remote_session_id: Some(2),
-                logon_complete: true,
-                ..Default::default()
-            };
         }
 
         let (output_tx, output_rx) = output_channel(1);
@@ -3021,12 +3054,6 @@ mod tests {
         assert!(guard.rail.status().pending_launches.is_empty());
         assert_eq!(guard.rail.status().next_sequence, 2);
         assert_eq!(guard.rail.take_launch(0, "notepad.exe"), None);
-        drop(guard);
-        // oracle: regression Devolutions/IronRDP#2437
-        assert_eq!(
-            daemon.session_info(),
-            Response::Ok(Payload::SessionInfo(crate::ipc::SessionInfo::default()))
-        );
     }
 
     fn active_rail_session(
@@ -3051,6 +3078,7 @@ mod tests {
             rail: RailLedger::new(1, 1, None),
             certificate_rejection: Arc::default(),
             session_info: Default::default(),
+            since_reconnecting: None,
         }));
         let rail_notify = Arc::new(tokio::sync::Notify::new());
         *daemon.state.lock().expect("daemon state poisoned") = Some(Session {
@@ -4603,8 +4631,9 @@ mod tests {
             SessionInfo {
                 remote_session_id: Some(2),
                 logon_complete: true,
+                // The second result leaves out the base RTT, so the one the first reported still stands.
                 network: Some(NetworkCharacteristicsInfo {
-                    base_rtt_ms: None,
+                    base_rtt_ms: Some(3),
                     bandwidth_kbps: Some(10_000),
                     average_rtt_ms: 7,
                 }),
@@ -4648,7 +4677,203 @@ mod tests {
         .await;
         assert_eq!(reported.remote_session_id, Some(2));
 
-        let reconnected = session_info_after(&daemon, &live, vec![RdpOutputEvent::AutoReconnected]).await;
+        let (response, _decision) = tokio::sync::oneshot::channel();
+        let reconnected = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::AutoReconnecting {
+                    disconnect_reason: 0,
+                    attempt: 1,
+                    maximum_attempts: 3,
+                    response,
+                },
+                RdpOutputEvent::AutoReconnected,
+            ],
+        )
+        .await;
         assert_eq!(reconnected, reported);
+    }
+
+    // oracle: mutant an output consumer that keeps the session facts across a resize fallback's new connection
+    #[tokio::test]
+    async fn session_info_is_cleared_by_a_resize_fallback() {
+        use ironrdp_client::rdp::{DisplayResizeFallbackReason, RdpOutputEvent};
+
+        let (daemon, _, live, _) = active_rail_session(false);
+        let cleared = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::RemoteSessionId(2),
+                RdpOutputEvent::LoginComplete,
+                RdpOutputEvent::DisplayResizeFallback(DisplayResizeFallbackReason::CapabilitiesTimedOut),
+            ],
+        )
+        .await;
+        assert_eq!(cleared, crate::ipc::SessionInfo::default());
+    }
+
+    // oracle: mutant an output consumer whose network fact a result without a bandwidth replaces whole
+    #[tokio::test]
+    async fn session_info_keeps_the_bandwidth_a_later_rtt_only_result_leaves_out() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+
+        let (daemon, _, live, _) = active_rail_session(false);
+        let reported = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::NetworkCharacteristics {
+                    base_rtt_ms: Some(3),
+                    bandwidth_kbps: Some(10_000),
+                    average_rtt_ms: 4,
+                },
+                RdpOutputEvent::NetworkCharacteristics {
+                    base_rtt_ms: Some(2),
+                    bandwidth_kbps: None,
+                    average_rtt_ms: 5,
+                },
+            ],
+        )
+        .await;
+        let network = crate::ipc::NetworkCharacteristicsInfo {
+            base_rtt_ms: Some(2),
+            bandwidth_kbps: Some(10_000),
+            average_rtt_ms: 5,
+        };
+        assert_eq!(reported.network, Some(network));
+    }
+
+    // oracle: mutant an output consumer that restores the redirecting server's facts when a reconnect is redirected
+    #[tokio::test]
+    async fn session_info_is_cleared_by_a_redirect_during_a_reconnect() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+
+        let (daemon, _, live, _) = active_rail_session(false);
+        let (response, _decision) = tokio::sync::oneshot::channel();
+        let redirected = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::AutoReconnecting {
+                    disconnect_reason: 0,
+                    attempt: 1,
+                    maximum_attempts: 3,
+                    response,
+                },
+                RdpOutputEvent::RemoteSessionId(3),
+                RdpOutputEvent::ServerRedirected {
+                    target: "target.example:3389".to_owned(),
+                },
+                RdpOutputEvent::Connected,
+            ],
+        )
+        .await;
+        assert_eq!(redirected, crate::ipc::SessionInfo::default());
+    }
+
+    // oracle: mutant an output consumer that restores the facts from before a resize fallback during a reconnect
+    #[tokio::test]
+    async fn session_info_is_cleared_by_a_resize_fallback_during_a_reconnect() {
+        use ironrdp_client::rdp::{DisplayResizeFallbackReason, RdpOutputEvent};
+
+        let (daemon, _, live, _) = active_rail_session(false);
+        let (response, _decision) = tokio::sync::oneshot::channel();
+        let cleared = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::AutoReconnecting {
+                    disconnect_reason: 0,
+                    attempt: 1,
+                    maximum_attempts: 3,
+                    response,
+                },
+                RdpOutputEvent::RemoteSessionId(3),
+                RdpOutputEvent::DisplayResizeFallback(DisplayResizeFallbackReason::CapabilitiesTimedOut),
+                RdpOutputEvent::Connected,
+            ],
+        )
+        .await;
+        assert_eq!(cleared, crate::ipc::SessionInfo::default());
+    }
+
+    // oracle: mutant an output consumer that still tracks a reconnect the server accepted
+    #[tokio::test]
+    async fn session_info_survives_a_connected_after_an_accepted_reconnect() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+
+        let (daemon, _, live, _) = active_rail_session(false);
+        let (response, _decision) = tokio::sync::oneshot::channel();
+        let reported = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::RemoteSessionId(2),
+                RdpOutputEvent::LoginComplete,
+                RdpOutputEvent::AutoReconnecting {
+                    disconnect_reason: 0,
+                    attempt: 1,
+                    maximum_attempts: 3,
+                    response,
+                },
+                RdpOutputEvent::AutoReconnected,
+                RdpOutputEvent::Connected,
+            ],
+        )
+        .await;
+        assert_eq!(
+            reported,
+            crate::ipc::SessionInfo {
+                remote_session_id: Some(2),
+                logon_complete: true,
+                ..crate::ipc::SessionInfo::default()
+            }
+        );
+    }
+
+    // oracle: mutant an output consumer that keeps the earlier session's facts after the server rejects the cookie
+    // oracle: mutant an output consumer that clears what the rejected reconnect's new connection reported
+    #[tokio::test]
+    async fn session_info_after_a_rejected_reconnect_keeps_only_what_the_new_connection_reported() {
+        use ironrdp_client::rdp::RdpOutputEvent;
+
+        let (daemon, _, live, _) = active_rail_session(false);
+        let (response, _decision) = tokio::sync::oneshot::channel();
+        let fresh_logon = session_info_after(
+            &daemon,
+            &live,
+            vec![
+                RdpOutputEvent::RemoteSessionId(2),
+                RdpOutputEvent::LoginComplete,
+                RdpOutputEvent::AutoReconnecting {
+                    disconnect_reason: 0,
+                    attempt: 1,
+                    maximum_attempts: 3,
+                    response,
+                },
+                RdpOutputEvent::NetworkCharacteristics {
+                    base_rtt_ms: Some(4),
+                    bandwidth_kbps: None,
+                    average_rtt_ms: 5,
+                },
+                // The client sends `Connected` instead of `AutoReconnected` when the server rejected the cookie.
+                RdpOutputEvent::Connected,
+            ],
+        )
+        .await;
+        let network = crate::ipc::NetworkCharacteristicsInfo {
+            base_rtt_ms: Some(4),
+            bandwidth_kbps: None,
+            average_rtt_ms: 5,
+        };
+        assert_eq!(
+            fresh_logon,
+            crate::ipc::SessionInfo {
+                network: Some(network),
+                ..crate::ipc::SessionInfo::default()
+            }
+        );
     }
 }
