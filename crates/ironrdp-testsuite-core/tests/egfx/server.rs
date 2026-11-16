@@ -1345,6 +1345,123 @@ fn delayed_suspend_ack_survives_graphics_reset(#[case] readvertise: bool) {
     assert!(server.should_backpressure());
 }
 
+// oracle: spec MS-RDPEGFX §2.2.2.13 (a suspended client sends no further acknowledgement until it opts back in)
+// oracle: reference FreeRDP/FreeRDP@97eff6ddfbbf:channels/rdpgfx/client/rdpgfx_main.c (sends SUSPEND_FRAME_ACKNOWLEDGEMENT for the first frame after CapsConfirm only, not after RDPGFX_RESET_GRAPHICS_PDU)
+#[test]
+fn suspension_survives_graphics_reset() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server.process(0, &encode_pdu(&caps)).unwrap();
+    server.set_max_frames_in_flight(1);
+    let surface = server.create_surface(64, 64).unwrap();
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    let first = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
+    server
+        .process(0, &encode_pdu(&ack_pdu(first, QueueDepth::Suspend)))
+        .unwrap();
+
+    server.resize(64, 64);
+    let surface = server.create_surface(64, 64).unwrap();
+    server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
+
+    assert_eq!(server.frames_in_flight(), 0);
+    assert!(!server.should_backpressure());
+}
+
+// oracle: mutant keeping a suspension across a new capability exchange, so a client that acknowledges again is never throttled
+#[test]
+fn capability_readvertise_ends_suspension() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server.process(0, &encode_pdu(&caps)).unwrap();
+    server.set_max_frames_in_flight(1);
+    let surface = server.create_surface(64, 64).unwrap();
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    let first = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
+    server
+        .process(0, &encode_pdu(&ack_pdu(first, QueueDepth::Suspend)))
+        .unwrap();
+
+    server.process(0, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
+
+    assert_eq!(server.frames_in_flight(), 1);
+    assert!(server.should_backpressure());
+}
+
+enum ResumingFrame {
+    OutstandingAtSuspension,
+    SentAfterReset,
+}
+
+// oracle: spec MS-RDPEGFX §2.2.2.13 (an acknowledgement with a queueDepth other than SUSPEND_FRAME_ACKNOWLEDGEMENT opts the client back in)
+#[rstest]
+#[case::outstanding_at_suspension(ResumingFrame::OutstandingAtSuspension)]
+#[case::sent_after_reset(ResumingFrame::SentAfterReset)]
+fn acknowledgement_after_graphics_reset_ends_suspension(#[case] resuming: ResumingFrame) {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server.process(0, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    let outstanding = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
+    let suspending = server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
+    server
+        .process(0, &encode_pdu(&ack_pdu(suspending, QueueDepth::Suspend)))
+        .unwrap();
+    server.set_max_frames_in_flight(1);
+
+    server.resize(64, 64);
+    let surface = server.create_surface(64, 64).unwrap();
+    let after_reset = server.send_avc420_frame(surface, &[3], &regions, 3).unwrap();
+    let frame_id = match resuming {
+        ResumingFrame::OutstandingAtSuspension => outstanding,
+        ResumingFrame::SentAfterReset => after_reset,
+    };
+    server
+        .process(0, &encode_pdu(&ack_pdu(frame_id, QueueDepth::AvailableBytes(8))))
+        .unwrap();
+    server.send_avc420_frame(surface, &[4], &regions, 4).unwrap();
+
+    assert_eq!(server.client_queue_depth(), 8);
+    assert_eq!(server.frames_in_flight(), 1);
+    assert!(server.should_backpressure());
+}
+
+// oracle: mutant keeping a suspension across a channel close, so a reopened channel that acknowledges frames is never throttled
+#[test]
+fn channel_close_ends_suspension() {
+    let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
+    let caps = GfxPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_typed(&[CapabilitySet::V8_1 {
+        flags: CapabilitiesV81Flags::AVC420_ENABLED,
+    }]));
+    server.start(7).unwrap();
+    server.process(7, &encode_pdu(&caps)).unwrap();
+    server.set_max_frames_in_flight(1);
+    let surface = server.create_surface(64, 64).unwrap();
+    let regions = [Avc420Region::full_frame(64, 64, 22)];
+    let first = server.send_avc420_frame(surface, &[1], &regions, 1).unwrap();
+    server
+        .process(7, &encode_pdu(&ack_pdu(first, QueueDepth::Suspend)))
+        .unwrap();
+
+    server.close(7);
+    server.start(8).unwrap();
+    server.process(8, &encode_pdu(&caps)).unwrap();
+    let surface = server.create_surface(64, 64).unwrap();
+    server.send_avc420_frame(surface, &[2], &regions, 2).unwrap();
+
+    assert_eq!(server.frames_in_flight(), 1);
+    assert!(server.should_backpressure());
+}
+
 #[test]
 fn closed_generation_cannot_resume_or_suspend_current_tracking() {
     let mut server = GraphicsPipelineServer::new(Box::new(TestHandler::new()));
