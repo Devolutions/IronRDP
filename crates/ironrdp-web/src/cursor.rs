@@ -118,9 +118,13 @@ struct Scaled {
 }
 
 /// The size and hotspot `pointer` is scaled to, or `None` when it already fits [`MAX_CURSOR_SIZE`].
+#[expect(
+    clippy::nonminimal_bool,
+    reason = "the check is written as the invariant it guards, `MAX_CURSOR_SIZE < longest`"
+)]
 fn scaled_to_fit(pointer: &DecodedPointer) -> Option<Scaled> {
     let longest = pointer.width.max(pointer.height);
-    if longest <= MAX_CURSOR_SIZE {
+    if !(MAX_CURSOR_SIZE < longest) {
         return None;
     }
     // INVARIANT: 0 < scale < 1.0
