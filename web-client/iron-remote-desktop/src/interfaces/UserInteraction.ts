@@ -43,7 +43,7 @@ export interface UserInteraction {
 
     sendClipboardData(): Promise<void>;
 
-    invokeExtension(ext: Extension): void;
+    invokeExtension(ext: Extension): unknown;
 
     /**
      * Enable file transfer support. Must be called before connect().
