@@ -546,8 +546,8 @@ impl RdpServerBuilder<BuilderDone> {
     }
 
     pub fn build(self) -> RdpServer {
-        // The largest DRDYNVC PDU a client following MS-RDPEDYC sends:
-        // 2.2.3.1 DVC Data First PDU (DYNVC_DATA_FIRST) and 2.2.3.2 DVC Data PDU (DYNVC_DATA).
+        // The size of the largest DRDYNVC PDUs a client following MS-RDPEDYC sends.
+        // These are 2.2.3.1 DVC Data First PDU (DYNVC_DATA_FIRST) and 2.2.3.2 DVC Data PDU (DYNVC_DATA).
         const MAX_DRDYNVC_PDU_SIZE: usize = 1600;
 
         if let Some(max_message_size) = self.state.max_static_channel_message_size

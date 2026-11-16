@@ -288,8 +288,9 @@ fn first_chunk(length: u32) -> Vec<u8> {
 /// The limit of the static channel set in which [`open_in_bounded_static_set`] puts the DRDYNVC static channel.
 const STATIC_LIMIT: usize = 15;
 
-/// The dynamic channel limit of [`with_dynamic_limit`], above [`STATIC_LIMIT`] so that a message at it fails the static
-/// set's limit, and different from it so that each bound shows which limit it came from.
+/// The dynamic channel limit of [`with_dynamic_limit`].
+/// It is above [`STATIC_LIMIT`], so a message at it exceeds the static set's limit, and each bound shows which limit it
+/// came from.
 const DYNAMIC_LIMIT: usize = 20;
 
 /// A server whose dynamic channel limit is [`DYNAMIC_LIMIT`].
