@@ -1368,15 +1368,7 @@ diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
 index 3162721b67..9c92ad2427 100644
 --- a/content/browser/BUILD.gn
 +++ b/content/browser/BUILD.gn
-@@ -494,6 +494,7 @@ source_set("browser") {
-     "ai/echo_ai_writer.cc",
-     "ai/echo_ai_writer.h",
-     "audio/audio_service.cc",
-+    "audio/in_process_audio_service.h",
-     "background_fetch/background_fetch_context.cc",
-     "background_fetch/background_fetch_context.h",
-     "background_fetch/background_fetch_cross_origin_filter.cc",
-@@ -3397,6 +3398,8 @@ source_set("browser") {
+@@ -3397,6 +3397,8 @@ source_set("browser") {
        "webauth/default_authenticator_request_client_delegate.h",
        "webauth/is_uvpaa.cc",
        "webauth/is_uvpaa.h",
