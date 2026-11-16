@@ -6557,16 +6557,23 @@ mod tests {
         core::marker::PhantomData
     }
 
-    #[cfg(feature = "rdpdr")]
-    fn test_config() -> Config {
-        crate::config::ConfigBuilder::new()
+    fn test_config_builder() -> crate::config::ConfigBuilder {
+        let builder = crate::config::ConfigBuilder::new()
             .with_destination(crate::config::Destination::from_parts("127.0.0.1", 3389))
             .with_username("user")
             .with_password("password")
             .with_client_build(1)
             .with_client_dir(r"C:\")
             .with_platform(ironrdp_pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
-            .with_client_name("client")
+            .with_client_name("client");
+        #[cfg(feature = "rdpdr")]
+        let builder = builder.with_rdpdr(false);
+        builder
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn test_config() -> Config {
+        test_config_builder()
             .with_rdpdr(true)
             .build()
             .expect("test configuration should build")
@@ -8181,7 +8188,17 @@ mod tests {
 
     impl ironrdp_svc::SvcClientProcessor for CustomRdpsndChannel {}
 
-    fn build_test_connector(config: &Config) -> ironrdp_connector::ClientConnector {
+    fn build_rdpsnd_test_connector(
+        builder: crate::config::ConfigBuilder,
+        enable_audio_playback: bool,
+    ) -> (ironrdp_connector::ClientConnector, bool) {
+        let mut config = builder.build().expect("test configuration should build");
+        #[cfg(feature = "sound")]
+        {
+            config.channels.sound = false;
+        }
+        config.connector.enable_audio_playback = enable_audio_playback;
+
         #[cfg(feature = "clipboard")]
         let cliprdr_factory: CliprdrFactoryRef<'static> = None;
         #[cfg(not(feature = "clipboard"))]
@@ -8194,8 +8211,8 @@ mod tests {
 
         let (input_sender, _input_receiver) = RdpInputSender::channel(1);
         let (output_sender, _output_receiver) = crate::output_channel::output_channel(1);
-        build_connector(
-            config,
+        let connector = build_connector(
+            &config,
             SocketAddr::from(([127, 0, 0, 1], 0)),
             (&input_sender, &output_sender),
             cliprdr_factory,
@@ -8205,167 +8222,84 @@ mod tests {
             false,
             None,
         )
-        .expect("test connector should build")
-    }
+        .expect("test connector should build");
+        let has_rdpsnd = connector
+            .static_channels
+            .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
+            .is_some();
 
-    fn custom_rdpsnd_test_config_builder() -> crate::config::ConfigBuilder {
-        let builder = crate::config::ConfigBuilder::new()
-            .with_destination(crate::config::Destination::from_parts("127.0.0.1", 3389))
-            .with_username("user")
-            .with_password("password")
-            .with_client_build(1)
-            .with_client_dir(r"C:\")
-            .with_platform(ironrdp_pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
-            .with_client_name("client");
-        #[cfg(feature = "rdpdr")]
-        let builder = builder.with_rdpdr(false);
-        builder
+        (connector, has_rdpsnd)
     }
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND)
     #[test]
     fn custom_rdpsnd_static_channel_keeps_audio_playback_enabled() {
-        let mut config = custom_rdpsnd_test_config_builder()
-            .with_static_channel(|_| Some(CustomRdpsndChannel))
-            .build()
-            .expect("test configuration should build");
-        #[cfg(feature = "sound")]
-        {
-            config.channels.sound = false;
-        }
-        config.connector.enable_audio_playback = true;
-
-        let connector = build_test_connector(&config);
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
+            test_config_builder().with_static_channel(|_| Some(CustomRdpsndChannel)),
+            true,
+        );
 
         assert!(connector.config.enable_audio_playback);
-        assert!(
-            connector
-                .static_channels
-                .get_by_channel_name(&ChannelName::from_static(b"rdpsnd\0\0"))
-                .is_some()
-        );
+        assert!(has_rdpsnd);
     }
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND)
     #[test]
     fn custom_rdpsnd_static_channel_instances_keeps_audio_playback_enabled() {
-        let mut config = custom_rdpsnd_test_config_builder()
-            .with_static_channel_instances(|_| vec![CustomRdpsndChannel])
-            .build()
-            .expect("test configuration should build");
-        #[cfg(feature = "sound")]
-        {
-            config.channels.sound = false;
-        }
-        config.connector.enable_audio_playback = true;
-
-        let connector = build_test_connector(&config);
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
+            test_config_builder().with_static_channel_instances(|_| vec![CustomRdpsndChannel]),
+            true,
+        );
 
         assert!(connector.config.enable_audio_playback);
-        assert!(
-            connector
-                .static_channels
-                .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
-                .is_some()
-        );
+        assert!(has_rdpsnd);
     }
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when playback is disabled)
     #[test]
     fn custom_rdpsnd_static_channel_respects_disabled_audio_playback() {
-        let mut config = custom_rdpsnd_test_config_builder()
-            .with_static_channel(|_| Some(CustomRdpsndChannel))
-            .build()
-            .expect("test configuration should build");
-        #[cfg(feature = "sound")]
-        {
-            config.channels.sound = false;
-        }
-        config.connector.enable_audio_playback = false;
-
-        let connector = build_test_connector(&config);
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
+            test_config_builder().with_static_channel(|_| Some(CustomRdpsndChannel)),
+            false,
+        );
 
         assert!(!connector.config.enable_audio_playback);
-        assert!(
-            connector
-                .static_channels
-                .get_by_channel_name(&ChannelName::from_static(b"rdpsnd\0\0"))
-                .is_some()
-        );
+        assert!(has_rdpsnd);
     }
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when no playback channel is registered)
     #[test]
     fn missing_rdpsnd_static_channel_disables_audio_playback() {
-        let mut config = custom_rdpsnd_test_config_builder()
-            .build()
-            .expect("test configuration should build");
-        #[cfg(feature = "sound")]
-        {
-            config.channels.sound = false;
-        }
-        config.connector.enable_audio_playback = true;
-
-        let connector = build_test_connector(&config);
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(test_config_builder(), true);
 
         assert!(!connector.config.enable_audio_playback);
-        assert!(
-            connector
-                .static_channels
-                .get_by_channel_name(&ChannelName::from_static(b"rdpsnd\0\0"))
-                .is_none()
-        );
+        assert!(!has_rdpsnd);
     }
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when only the no-op RDPDR companion channel is registered)
     #[cfg(feature = "rdpdr")]
     #[test]
     fn noop_rdpsnd_companion_keeps_audio_playback_disabled() {
-        let mut config = test_config();
-        #[cfg(feature = "sound")]
-        {
-            config.channels.sound = false;
-        }
-        config.connector.enable_audio_playback = true;
-
-        let connector = build_test_connector(&config);
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(test_config_builder().with_rdpdr(true), true);
 
         assert!(!connector.config.enable_audio_playback);
-        assert!(
-            connector
-                .static_channels
-                .get_by_channel_name(&ChannelName::from_static(b"rdpsnd\0\0"))
-                .is_some()
-        );
+        assert!(has_rdpsnd);
     }
 
     // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND, even when RDPDR is enabled)
     #[cfg(feature = "rdpdr")]
     #[test]
     fn custom_rdpsnd_with_rdpdr_keeps_audio_playback_enabled() {
-        let mut config = custom_rdpsnd_test_config_builder()
-            .with_rdpdr(true)
-            .with_static_channel(|_| {
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
+            test_config_builder().with_rdpdr(true).with_static_channel(|_| {
                 Some(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
                     ironrdp_rdpsnd::client::NoopRdpsndBackend,
                 )))
-            })
-            .build()
-            .expect("test configuration should build");
-        #[cfg(feature = "sound")]
-        {
-            config.channels.sound = false;
-        }
-        config.connector.enable_audio_playback = true;
-
-        let connector = build_test_connector(&config);
+            }),
+            true,
+        );
 
         assert!(connector.config.enable_audio_playback);
-        assert!(
-            connector
-                .static_channels
-                .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
-                .is_some()
-        );
+        assert!(has_rdpsnd);
     }
 }
