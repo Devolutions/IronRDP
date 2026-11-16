@@ -4685,6 +4685,7 @@ async fn active_session(
     let mut connection_telemetry = crate::telemetry::ConnectionTelemetry::new(connection_started);
 
     let disconnect_reason = 'outer: loop {
+        let shutting_down = graceful_shutdown_sent && initial_outputs.is_none();
         let resize_deadline = resize_queue.deadline();
         let input_batch_deadline = input_batcher.deadline();
         #[cfg(feature = "video")]
@@ -4737,6 +4738,7 @@ async fn active_session(
                 _ = graceful_close_receiver.changed() => {
                     let outputs = if *graceful_close_receiver.borrow_and_update() && !graceful_shutdown_sent {
                         graceful_shutdown_sent = true;
+                        resize_queue = ResizeQueue::default();
                         active_stage.graceful_shutdown()?
                     } else {
                         Vec::new()
@@ -4746,6 +4748,13 @@ async fn active_session(
                 frame = reader.read_pdu() => {
                     let (action, payload) = match frame {
                         Ok(frame) => frame,
+                        Err(error)
+                            if graceful_shutdown_sent
+                                && error.kind() == io::ErrorKind::UnexpectedEof
+                                && reader.peek().is_empty() =>
+                        {
+                            break 'outer GracefulDisconnectReason::UserInitiated;
+                        }
                         Err(error) if is_transport_read_error(&error) => {
                             return Ok(RdpControlFlow::TransportFailure(
                                 ironrdp_session::custom_err!("read frame", error),
@@ -4904,6 +4913,9 @@ async fn active_session(
                     }
 
                     match input_event {
+                    RdpInputEvent::Resize { .. } | RdpInputEvent::MonitorLayout(_) if graceful_shutdown_sent => {
+                        ActiveSessionIteration::outputs(Vec::new())
+                    }
                     resize_event @ (RdpInputEvent::Resize { .. } | RdpInputEvent::MonitorLayout(_)) => {
                         let request = match resize_event {
                             RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
@@ -5021,7 +5033,16 @@ async fn active_session(
                             None => ActiveSessionIteration::outputs(Vec::new()),
                         }
                     }
-                    RdpInputEvent::Close => ActiveSessionIteration::outputs(active_stage.graceful_shutdown()?),
+                    RdpInputEvent::Close => {
+                        let outputs = if !graceful_shutdown_sent {
+                            graceful_shutdown_sent = true;
+                            resize_queue = ResizeQueue::default();
+                            active_stage.graceful_shutdown()?
+                        } else {
+                            Vec::new()
+                        };
+                        ActiveSessionIteration::outputs(outputs)
+                    }
                     #[cfg(feature = "clipboard")]
                     RdpInputEvent::Clipboard(event) => {
                         ActiveSessionIteration::outputs(process_clipboard_message(&mut active_stage, event)?)
@@ -5401,6 +5422,19 @@ async fn active_session(
             iteration.reply_tunnel = None;
         }
 
+        if shutting_down {
+            // Only terminating responses may be written once ShutdownRequest has been sent.
+            iteration.dvc_batch = None;
+            let terminating = iteration
+                .outputs
+                .iter()
+                .any(|output| matches!(output, ActiveStageOutput::Terminate(_)));
+            iteration.outputs.retain(|output| {
+                !matches!(output, ActiveStageOutput::DeactivateAll)
+                    && (terminating || !matches!(output, ActiveStageOutput::ResponseFrame(_)))
+            });
+        }
+
         if let Some(batch) = iteration.dvc_batch {
             let channel_id = batch.channel_id();
             let messages = batch.into_messages();
@@ -5639,7 +5673,7 @@ async fn active_session(
                     }
                 }
                 ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
-                    if !post_logon_redraw_requested {
+                    if !post_logon_redraw_requested && !graceful_shutdown_sent {
                         post_logon_redraw_requested = true;
                         let redraw_frames = active_stage.request_full_redraw(
                             image.width(),
@@ -5919,7 +5953,9 @@ async fn active_session(
                         ironrdp_connector::MultitransportResult::Failure(MultitransportResponsePdu::E_ABORT)
                     };
 
-                    if let Some(response) = outcome.response_pdu(request.request_id, multitransport_soft_sync) {
+                    if !graceful_shutdown_sent
+                        && let Some(response) = outcome.response_pdu(request.request_id, multitransport_soft_sync)
+                    {
                         let frame = active_stage.encode_multitransport_response(&response)?;
                         let Some(result) = cancelable_operation(writer.write_all(&frame), close_receiver).await else {
                             return Ok(RdpControlFlow::TerminatedGracefully(
@@ -6067,7 +6103,8 @@ async fn active_session(
             ));
         }
 
-        if resize_queue.in_flight.is_none()
+        if !graceful_shutdown_sent
+            && resize_queue.in_flight.is_none()
             && let Some(pending) = resize_queue.pending.as_ref()
         {
             let mut request = pending.request.clone();
