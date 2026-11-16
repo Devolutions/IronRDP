@@ -334,7 +334,7 @@ mod tests {
         assert_eq!((s.hotspot_x, s.hotspot_y), (5, 10));
     }
 
-    // oracle: mutant scaling by the width alone, which leaves a tall pointer unscaled
+    // oracle: mutant scaling by the width alone, which leaves a tall pointer unscaled.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_tall_pointer_is_scaled_by_its_height() {
