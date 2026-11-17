@@ -816,6 +816,7 @@ trait BitmapUpdateHandler {
 #[derive(Clone)]
 struct BitmapHandler {
     bitmap: BitmapEncoder,
+    buffer: Vec<u8>,
 }
 
 impl fmt::Debug for BitmapHandler {
@@ -828,20 +829,24 @@ impl BitmapHandler {
     fn new() -> Self {
         Self {
             bitmap: BitmapEncoder::new(),
+            buffer: Vec::new(),
         }
     }
 }
 
 impl BitmapUpdateHandler for BitmapHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
-        let mut buffer = vec![0; bitmap.data.len() * 2]; // TODO: estimate bitmap encoded size
+        let min_len = bitmap.data.len() * 2; // TODO: estimate bitmap encoded size
+        if self.buffer.len() < min_len {
+            self.buffer.resize(min_len, 0);
+        }
         let len = loop {
-            match self.bitmap.encode(bitmap, buffer.as_mut_slice()) {
+            match self.bitmap.encode(bitmap, self.buffer.as_mut_slice()) {
                 Err(err) => match err {
                     BitmapEncodeError::Encode(e) => match e.kind() {
                         ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
-                            buffer.resize(buffer.len() * 2, 0);
-                            debug!("encoder buffer resized to: {}", buffer.len() * 2);
+                            self.buffer.resize(self.buffer.len() * 2, 0);
+                            debug!(len = self.buffer.len(), "Resized bitmap encoder buffer");
                         }
                         _ => return Err(ServerError::encode(e)).with_context("bitmap encode error"),
                     },
@@ -851,8 +856,8 @@ impl BitmapUpdateHandler for BitmapHandler {
             }
         };
 
-        buffer.truncate(len);
-        Ok(UpdateFragmenter::new(UpdateCode::Bitmap, buffer))
+        // The encoder writes every byte up to `len`, so what an earlier, larger update left past it is never sent.
+        Ok(UpdateFragmenter::new(UpdateCode::Bitmap, self.buffer[..len].to_vec()))
     }
 }
 
