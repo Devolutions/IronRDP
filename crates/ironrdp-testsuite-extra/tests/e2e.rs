@@ -4300,7 +4300,8 @@ impl CookieProbe {
         Self::connect_with(server_addr, default_client_config(), cookie).await
     }
 
-    /// [`Self::connect`] with `client_config`.
+    /// Connects to `server_addr` as [`Self::connect`] does, with `client_config` instead of the default client
+    /// configuration.
     async fn connect_with(
         server_addr: SocketAddr,
         client_config: connector::Config,
@@ -4444,7 +4445,7 @@ async fn an_auto_reconnect_cookie_the_embedder_issues_invalidates_the_previous_o
         random_bits: [0x22; 16],
     };
 
-    let (first_still_works, second_works) = with_auto_reconnect_server(true, {
+    let (first_cookie, second_works) = with_auto_reconnect_server(true, {
         let (first, second) = (first.clone(), second.clone());
         async move |server_addr, cookie_handle, _display_tx| {
             // The embedder vouches for one connection, then for another.
@@ -4465,19 +4466,25 @@ async fn an_auto_reconnect_cookie_the_embedder_issues_invalidates_the_previous_o
             // A verified cookie is sent another one at activation.
             // One that doesn't verify logs on normally, and on request that connection gets no cookie.
             let mut with_first = CookieProbe::connect(server_addr, Some(first)).await;
-            let first_still_works = with_first.cookie_accepted(Duration::from_secs(1)).await;
+            let first_cookie = with_first.watch_for_cookie(Duration::from_secs(1)).await;
             drop(with_first);
 
             let mut with_second = CookieProbe::connect(server_addr, Some(second)).await;
             let second_works = with_second.cookie_accepted(Duration::from_secs(1)).await;
             with_second.disconnect().await;
 
-            (first_still_works, second_works)
+            (first_cookie, second_works)
         }
     })
     .await;
 
-    assert!(!first_still_works, "the earlier client's cookie is no longer accepted");
+    // oracle: spec MS-RDPBCGR §3.3.5.3.11 (a cookie that fails falls back to a normal logon)
+    // oracle: mutant the fallback reported to the embedder as auto-reconnected
+    assert_eq!(
+        first_cookie,
+        Ok(false),
+        "the earlier client's cookie is no longer accepted, so it logs on normally and gets no cookie"
+    );
     assert!(second_works, "the newest cookie is accepted");
 }
 
@@ -4585,9 +4592,8 @@ async fn an_unverifiable_auto_reconnect_cookie_logs_on_with_credentials_the_vali
     assert!(admitted, "the validator accepts the credentials, so the client logs on");
 }
 
-/// The same under NLA: CredSSP with HYBRID_EX validates the delegated credentials before the cookie is read, and a
-/// cookie that then fails must not send the connection back to a validator with no Client Info credentials to check.
-// oracle: spec MS-RDPBCGR §3.3.5.3.11
+/// The same under NLA: CredSSP with HYBRID_EX runs the credential validator on the delegated credentials before the
+/// cookie is read, and a cookie that then fails doesn't run it again.
 #[tokio::test]
 async fn an_unverifiable_auto_reconnect_cookie_logs_on_after_nla() {
     let (mut server, display_tx) = hybrid_server();
@@ -4595,13 +4601,8 @@ async fn an_unverifiable_auto_reconnect_cookie_logs_on_after_nla() {
         logon_id: 1,
         random_bits: [0x5a; 16],
     }));
-    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
-        server::Credentials {
-            username: HYBRID_USER.into(),
-            password: HYBRID_PASSWORD.into(),
-            domain: None,
-        },
-    ))));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    server.set_credential_validator(Some(Arc::new(RecordingCredentialValidator(Arc::clone(&calls)))));
 
     let admitted = with_server(
         server,
@@ -4617,7 +4618,46 @@ async fn an_unverifiable_auto_reconnect_cookie_logs_on_after_nla() {
     )
     .await;
 
+    // oracle: spec MS-RDPBCGR §3.3.5.3.11
     assert!(admitted, "the client logs on after NLA and receives a fresh cookie");
+    // oracle: mutant the fallback running the validator again after HYBRID_EX
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [(HYBRID_USER.to_owned(), Some(server::CredentialOrigin::CredSspDelegated))],
+        "the validator runs once, during CredSSP"
+    );
+}
+
+/// A credential validator that accepts every call and records the user name, with the origin when the server passes one
+/// through [`validate_received`].
+///
+/// [`validate_received`]: server::CredentialValidator::validate_received
+struct RecordingCredentialValidator(ValidatorCalls);
+
+/// Each call a [`RecordingCredentialValidator`] saw, as the user name and the origin when the server passed one.
+type ValidatorCalls = Arc<StdMutex<Vec<(String, Option<server::CredentialOrigin>)>>>;
+
+#[async_trait::async_trait]
+impl server::CredentialValidator for RecordingCredentialValidator {
+    async fn validate(
+        &self,
+        credentials: &server::Credentials,
+    ) -> Result<server::CredentialDecision, server::CredentialValidationError> {
+        self.0.lock().unwrap().push((credentials.username.clone(), None));
+        Ok(server::CredentialDecision::Accept)
+    }
+
+    async fn validate_received(
+        &self,
+        credentials: &server::Credentials,
+        origin: server::CredentialOrigin,
+    ) -> Result<server::CredentialDecision, server::CredentialValidationError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((credentials.username.clone(), Some(origin)));
+        Ok(server::CredentialDecision::Accept)
+    }
 }
 
 /// Falling back to a normal logon doesn't skip the credential validator.

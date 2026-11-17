@@ -864,10 +864,19 @@ impl Acceptor {
 
     /// Returns credentials received during the current handshake, if any.
     ///
-    /// For a client that presented an auto-reconnect cookie they stay available after the result is taken, because the
-    /// server checks them only if the cookie fails to verify.
+    /// For a client that presented an auto-reconnect cookie they stay available after the result is taken, until
+    /// [`take_received_credentials`](Self::take_received_credentials), because the server checks them only if the
+    /// cookie fails to verify.
     pub fn received_credentials(&self) -> Option<&ReceivedCredentials> {
         self.received_credentials.as_ref()
+    }
+
+    /// Takes the credentials [`received_credentials`](Self::received_credentials) returns, leaving none.
+    ///
+    /// A server takes them once it has checked an auto-reconnect cookie, so they aren't kept for the rest of the
+    /// connection.
+    pub fn take_received_credentials(&mut self) -> Option<ReceivedCredentials> {
+        self.received_credentials.take()
     }
 
     /// Returns the received Client Info flags, preserving them across reactivation.
@@ -924,7 +933,7 @@ impl Acceptor {
 
     fn credentials_for_result(&mut self) -> Option<Credentials> {
         // An auto-reconnect attempt leaves its credentials to the server, which checks them only if the cookie fails.
-        // They stay readable through `received_credentials` so it can.
+        // They stay readable through `received_credentials` until the server takes them.
         let received = if self.is_auto_reconnect_attempt() {
             self.received_credentials.clone()
         } else {

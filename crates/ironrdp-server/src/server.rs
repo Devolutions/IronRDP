@@ -6429,7 +6429,7 @@ impl RdpServer {
         conn: &mut ConnectionState,
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
-        (result, acceptor): (AcceptorResult, &Acceptor),
+        (result, acceptor): (AcceptorResult, &mut Acceptor),
         udp_transport: &mut Option<multitransport::UdpTransportHandle>,
         pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
     ) -> ServerResult<RunState>
@@ -6453,6 +6453,10 @@ impl RdpServer {
             }
             Some(reconnect) if self.verify_auto_reconnect_cookie(reconnect) => {
                 debug!("Auto-reconnect cookie validation accepted");
+                // UNTESTED: The acceptor kept the client's credentials in case the cookie failed.
+                // This arm and the fallback below take them, so the acceptor doesn't hold them for the session.
+                // No test can see the acceptor from here, so when changing either arm, check that it still takes them.
+                drop(acceptor.take_received_credentials());
                 true
             }
             Some(_) => {
@@ -6462,19 +6466,22 @@ impl RdpServer {
                 // that auto-reconnects across a restart.
                 // The connection continues exactly like one that sent no cookie, so the credential validator decides.
                 // After CredSSP with HYBRID_EX it has already run on the delegated credentials.
-                // Otherwise the acceptor deferred it to the cookie, and it runs now on what the client sent.
+                // Otherwise the acceptor deferred it to the cookie, and it runs now on the credentials it would have
+                // checked without one, the delegated ones under plain HYBRID and the Client Info ones otherwise.
                 debug!("Auto-reconnect cookie not recognized; continuing with a normal logon");
                 let validated = self
                     .pending_authenticated_credentials
                     .lock()
                     .expect("authenticated credentials lock poisoned")
                     .is_some();
+                // Taken whether or not the validator runs, so the acceptor doesn't keep them for the session.
+                let received = acceptor.take_received_credentials();
+                // UNTESTED: Under plain HYBRID the validator runs here on the credentials CredSSP delegated, with their
+                // origin, as it does for a TLS client on the Client Info credentials.
+                // No IronRDP client negotiates plain HYBRID, because it always offers HYBRID_EX, so no test reaches it.
+                // When changing this arm or the acceptor's handling of received credentials, check that plain HYBRID
+                // still brings the delegated credentials here.
                 if self.credential_validator.is_some() && !validated {
-                    // UNTESTED: Under plain HYBRID the validator runs here on the CredSSP delegated credentials.
-                    // That only works because the acceptor keeps them after the result for a cookie attempt.
-                    // The IronRDP client always offers HYBRID_EX, so no test reaches this path; when changing the
-                    // acceptor's handling of received credentials, check that they still survive the result here.
-                    let received = acceptor.received_credentials().cloned();
                     if let Err(error) = self.prepare_authenticated_connection(received).await {
                         warn!(%error, "Normal logon after an unrecognized auto-reconnect cookie failed");
                         send_access_denied(acceptor, writer).await?;
@@ -7003,7 +7010,7 @@ impl RdpServer {
                     &mut conn,
                     &mut reader,
                     &mut writer,
-                    (result, &acceptor),
+                    (result, &mut acceptor),
                     &mut udp_transport,
                     pending_udp_accept.take(),
                 )
