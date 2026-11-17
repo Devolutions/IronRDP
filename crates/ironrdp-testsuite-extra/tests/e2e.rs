@@ -495,6 +495,66 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for MaxRequestSizeRewrite<S> {
     }
 }
 
+/// Advertises heartbeat support in the client's GCC data before TLS encryption.
+struct HeartbeatCapabilityRewrite<S> {
+    inner: S,
+    rewritten: Arc<AtomicBool>,
+    replacement: Option<(Vec<u8>, usize)>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for HeartbeatCapabilityRewrite<S> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for HeartbeatCapabilityRewrite<S> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if this.replacement.is_none() && !this.rewritten.load(Ordering::Relaxed) {
+            this.replacement = rewrite_heartbeat_capability(buf).map(|replacement| (replacement, 0));
+        }
+        let Some((replacement, offset)) = this.replacement.as_mut() else {
+            return Pin::new(&mut this.inner).poll_write(cx, buf);
+        };
+        let end = (*offset + buf.len()).min(replacement.len());
+        let written = Pin::new(&mut this.inner).poll_write(cx, &replacement[*offset..end]);
+        if let Poll::Ready(Ok(written)) = written {
+            *offset += written;
+            if *offset == replacement.len() {
+                this.rewritten.store(true, Ordering::Relaxed);
+                this.replacement = None;
+            }
+        }
+        written
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+fn rewrite_heartbeat_capability(buf: &[u8]) -> Option<Vec<u8>> {
+    let packet = decode::<X224<X224Data<'_>>>(buf).ok()?;
+    let mut initial = decode::<pdu::mcs::ConnectInitial>(&packet.0.data).ok()?;
+    let mut blocks = initial.conference_create_request.into_gcc_blocks();
+    blocks
+        .core
+        .optional_data
+        .early_capability_flags
+        .as_mut()?
+        .insert(gcc::ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU);
+    initial.conference_create_request = gcc::ConferenceCreateRequest::new(blocks).expect("GCC blocks");
+    let data = encode_vec(&initial).expect("encode connect initial");
+    let replacement = encode_vec(&X224(X224Data { data: data.into() })).expect("encode X.224 data");
+    assert_eq!(replacement.len(), buf.len());
+    Some(replacement)
+}
+
 /// A frame of pixels with no runs or repeats for an encoder to exploit.
 fn incompressible_frame(width: u16, height: u16) -> server::BitmapUpdate {
     let len = usize::from(width) * usize::from(height) * 4;
@@ -3541,6 +3601,20 @@ where
     Box::pin(client.finalize_result(wrap)).await
 }
 
+/// Connects like [`connect_client`], on a TCP connection the caller made.
+async fn connect_client_on<S>(
+    tcp_stream: TcpStream,
+    make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
+    wrap: impl FnOnce(TlsStream<TcpStream>) -> S,
+) -> (Framed<TokioStream<S>>, connector::ConnectionResult)
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    // Boxed, so the futures of the tests that connect stay under `clippy::large_futures`.
+    let client = Box::pin(UpgradedClient::connect_on(tcp_stream, make_connector)).await;
+    Box::pin(client.finalize(wrap)).await
+}
+
 /// A client that has done X.224 and the TLS upgrade, and not yet the rest of
 /// the connection sequence.
 struct UpgradedClient {
@@ -3704,6 +3778,14 @@ impl UpgradedClient {
         make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
     ) -> Self {
         let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+        Self::connect_on(tcp_stream, make_connector).await
+    }
+
+    /// Connects like [`Self::connect`], on a TCP connection the caller made.
+    async fn connect_on(
+        tcp_stream: TcpStream,
+        make_connector: impl FnOnce(SocketAddr) -> connector::ClientConnector,
+    ) -> Self {
         let client_addr = tcp_stream.local_addr().expect("local_addr");
         let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
         let mut connector = make_connector(client_addr);
@@ -3763,6 +3845,675 @@ impl UpgradedClient {
         .and_then(connector::ConnectionOutcome::into_connected)?;
         Ok((upgraded_framed, connection_result))
     }
+}
+
+/// Waits until at least `bytes` of server data wait unread on `tcp`. With
+/// small socket buffers, a server write larger than the buffers is then in
+/// progress and stays pending while the client does not read.
+async fn wait_until_unread(tcp: &TcpStream, bytes: usize) {
+    let mut buf = vec![0u8; bytes];
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while tcp.peek(&mut buf).await.expect("peek") < bytes {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the server's large write did not start");
+}
+
+async fn read_heartbeat<S>(
+    framed: &mut Framed<TokioStream<S>>,
+    message_channel_id: u16,
+) -> pdu::rdp::heartbeat::HeartbeatPdu
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    loop {
+        let (_, frame) = framed.read_pdu().await.expect("read server PDU");
+        if let Ok(indication) = pdu::mcs::decode_send_data_indication(&frame)
+            && indication.channel_id == message_channel_id
+            && let Ok(heartbeat) = decode::<pdu::rdp::heartbeat::HeartbeatPdu>(indication.user_data)
+        {
+            return heartbeat;
+        }
+    }
+}
+
+struct WriteGate<S> {
+    inner: S,
+    paused: Arc<AtomicBool>,
+    blocked: Arc<AtomicBool>,
+    unpaused: Arc<tokio::sync::Notify>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for WriteGate<S> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for WriteGate<S> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        if this.paused.load(Ordering::Acquire) {
+            this.blocked.store(true, Ordering::Release);
+            let notified = this.unpaused.notified();
+            tokio::pin!(notified);
+            let _ = notified.poll(cx);
+            if this.paused.load(Ordering::Acquire) {
+                return Poll::Pending;
+            }
+        }
+        Pin::new(&mut this.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+// oracle: spec MS-RDPBCGR §1.3.10, §2.2.16.1
+#[tokio::test]
+async fn idle_heartbeats_continue_after_a_queued_heartbeat_is_written() {
+    let (mut server, _display_tx) = hybrid_server();
+    server.enable_heartbeat(server::heartbeat::HeartbeatConfig {
+        period_secs: 1,
+        warning_count: 3,
+        reconnect_count: 5,
+    });
+    let handle = server.handle().clone();
+    let rewritten = Arc::new(AtomicBool::new(false));
+
+    let local = tokio::task::LocalSet::new();
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        local.run_until(async {
+            let server_task = tokio::task::spawn_local(async move { server.run().await });
+            let addr = handle
+                .local_addr()
+                .await
+                .expect("local address")
+                .expect("listener bound");
+            let (mut framed, result) = connect_client_with(
+                addr,
+                |client_addr| connector::ClientConnector::new(hybrid_client_config(), client_addr),
+                |stream| HeartbeatCapabilityRewrite {
+                    inner: stream,
+                    rewritten: Arc::clone(&rewritten),
+                    replacement: None,
+                },
+            )
+            .await
+            .expect("connect");
+            assert!(rewritten.load(Ordering::Relaxed), "heartbeat support was advertised");
+            let channel_id = result.message_channel_id.expect("message channel");
+
+            let first = read_heartbeat(&mut framed, channel_id).await;
+            assert_eq!((first.period, first.count1, first.count2), (1, 3, 5));
+            tokio::time::timeout(Duration::from_millis(3500), async {
+                let second = read_heartbeat(&mut framed, channel_id).await;
+                assert_eq!((second.period, second.count1, second.count2), (1, 3, 5));
+                let third = read_heartbeat(&mut framed, channel_id).await;
+                assert_eq!((third.period, third.count1, third.count2), (1, 3, 5));
+            })
+            .await
+            .expect("heartbeats continue at the configured cadence");
+            server_task.abort();
+        }),
+    )
+    .await
+    .expect("heartbeat test finished");
+}
+
+// oracle: spec MS-RDPBCGR §1.3.10, §2.2.16.1
+#[tokio::test]
+async fn stalled_writes_do_not_emit_redundant_or_burst_heartbeats() {
+    let (mut server, display_tx) = hybrid_server();
+    server.enable_heartbeat(server::heartbeat::HeartbeatConfig {
+        period_secs: 1,
+        warning_count: 3,
+        reconnect_count: 5,
+    });
+    let paused = Arc::new(AtomicBool::new(false));
+    let blocked = Arc::new(AtomicBool::new(false));
+    let unpaused = Arc::new(tokio::sync::Notify::new());
+    let rewritten = Arc::new(AtomicBool::new(false));
+    let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+    let gated_server_stream = WriteGate {
+        inner: server_stream,
+        paused: Arc::clone(&paused),
+        blocked: Arc::clone(&blocked),
+        unpaused: Arc::clone(&unpaused),
+    };
+
+    let local = tokio::task::LocalSet::new();
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        Box::pin(local.run_until(async {
+            let server_task = tokio::task::spawn_local(async move { server.run_connection(gated_server_stream).await });
+            let client_addr = SocketAddr::from(([127, 0, 0, 1], 40_000));
+            let mut initial_framed = ironrdp_tokio::TokioFramed::new(client_stream);
+            let mut connector = connector::ClientConnector::new(hybrid_client_config(), client_addr);
+            let should_upgrade = ironrdp_async::connect_begin(&mut initial_framed, &mut connector)
+                .await
+                .expect("begin connection");
+            let initial_stream = initial_framed.into_inner_no_leftover();
+            let (tls_stream, tls_cert) = ironrdp_tls::upgrade_with_certificate_validation(
+                initial_stream,
+                "localhost",
+                ironrdp_tls::CertificateValidation::DangerouslyAcceptInvalidCertificate,
+            )
+            .await
+            .expect("TLS upgrade");
+            let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
+            let server_public_key = ironrdp_tls::extract_tls_server_public_key(&tls_cert)
+                .expect("extract server public key")
+                .to_owned();
+            let mut framed = ironrdp_tokio::TokioFramed::new(HeartbeatCapabilityRewrite {
+                inner: tls_stream,
+                rewritten: Arc::clone(&rewritten),
+                replacement: None,
+            });
+            let result = Box::pin(ironrdp_async::connect_finalize(
+                upgraded,
+                connector,
+                &mut framed,
+                &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+                "localhost".into(),
+                server_public_key,
+                None,
+            ))
+            .await
+            .and_then(connector::ConnectionOutcome::into_connected)
+            .expect("finalize connection");
+            assert!(rewritten.load(Ordering::Relaxed), "heartbeat support was advertised");
+            let channel_id = result.message_channel_id.expect("message channel");
+
+            let first = read_heartbeat(&mut framed, channel_id).await;
+            assert_eq!((first.period, first.count1, first.count2), (1, 3, 5));
+
+            // Stall a non-heartbeat display update across a heartbeat tick: no Heartbeat PDU may be queued behind it,
+            // and idle heartbeats must still resume afterward.
+            blocked.store(false, Ordering::Release);
+            paused.store(true, Ordering::Release);
+            display_tx
+                .send(DisplayUpdate::HidePointer)
+                .expect("send pointer update");
+            assert!(
+                poll_until(|| blocked.load(Ordering::Acquire)).await,
+                "display update write stalled at the gate"
+            );
+            tokio::time::sleep(Duration::from_millis(1300)).await;
+            paused.store(false, Ordering::Release);
+            unpaused.notify_waiters();
+
+            let (action, _) = framed.read_pdu().await.expect("read pointer update");
+            assert_eq!(action, pdu::Action::FastPath);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(350), read_heartbeat(&mut framed, channel_id))
+                    .await
+                    .is_err(),
+                "a Heartbeat PDU was queued behind an in-flight display update"
+            );
+            let resumed = tokio::time::timeout(Duration::from_millis(2500), read_heartbeat(&mut framed, channel_id))
+                .await
+                .expect("idle heartbeat resumed after traffic completed");
+            assert_eq!((resumed.period, resumed.count1, resumed.count2), (1, 3, 5));
+
+            // Stall a Heartbeat PDU itself past the next tick deadline: draining it must not emit an immediate second
+            // Heartbeat PDU back-to-back.
+            blocked.store(false, Ordering::Release);
+            paused.store(true, Ordering::Release);
+            assert!(
+                poll_until(|| blocked.load(Ordering::Acquire)).await,
+                "heartbeat write stalled at the gate"
+            );
+            tokio::time::sleep(Duration::from_millis(1300)).await;
+            paused.store(false, Ordering::Release);
+            unpaused.notify_waiters();
+
+            let delayed = read_heartbeat(&mut framed, channel_id).await;
+            assert_eq!((delayed.period, delayed.count1, delayed.count2), (1, 3, 5));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(350), read_heartbeat(&mut framed, channel_id))
+                    .await
+                    .is_err(),
+                "a second Heartbeat PDU burst immediately after the stalled heartbeat drained"
+            );
+            let steady = tokio::time::timeout(Duration::from_millis(1600), read_heartbeat(&mut framed, channel_id))
+                .await
+                .expect("steady heartbeat cadence resumed");
+            assert_eq!((steady.period, steady.count1, steady.count2), (1, 3, 5));
+
+            server_task.abort();
+        })),
+    )
+    .await
+    .expect("stalled heartbeat test finished");
+}
+
+/// Input from the client is handled while the server is in a long write: a
+/// large EGFX batch to a client that does not read stays in the socket.
+// oracle: regression #2310
+#[tokio::test]
+async fn input_is_handled_while_a_large_write_is_pending() {
+    struct MouseRecorder(UnboundedSender<MouseEvent>);
+
+    impl RdpServerInputHandler for MouseRecorder {
+        fn keyboard(&mut self, _: KeyboardEvent) {}
+        fn mouse(&mut self, event: MouseEvent) {
+            let _ = self.0.send(event);
+        }
+    }
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (mouse_tx, mut mouse_rx) = mpsc::unbounded_channel();
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(MouseRecorder(mouse_tx))
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+                // A small receive buffer, so that the server's write stays pending.
+                let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+                socket.set_recv_buffer_size(4096).expect("SO_RCVBUF");
+                let tcp_stream = socket.connect(server_addr).await.expect("TCP connect");
+                let (mut framed, _) = connect_client_on(
+                    tcp_stream,
+                    |client_addr| {
+                        connector::ClientConnector::new(default_client_config(), client_addr)
+                            .with_static_channel(DrdynvcClient::new())
+                    },
+                    |stream| stream,
+                )
+                .await;
+
+                // 16 MiB on the DRDYNVC channel, more than the socket buffers hold.
+                // The client does not read it.
+                ev.send(ServerEvent::Egfx(ironrdp_server::EgfxServerMessage::SendMessages {
+                    messages: vec![SvcMessage::from(vec![0u8; 16 * 1024 * 1024])],
+                }))
+                .unwrap();
+                wait_until_unread(framed.get_inner().0.get_ref().0, 2048).await;
+
+                let input = pdu::input::fast_path::FastPathInput::new(vec![
+                    pdu::input::fast_path::FastPathInputEvent::MouseEvent(pdu::input::MousePdu {
+                        flags: pdu::input::mouse::PointerFlags::MOVE,
+                        number_of_wheel_rotation_units: 0,
+                        x_position: 12,
+                        y_position: 34,
+                    }),
+                ])
+                .expect("one event");
+                framed
+                    .write_all(&encode_vec(&input).expect("encode input"))
+                    .await
+                    .expect("write input");
+                let handled = tokio::time::timeout(Duration::from_secs(2), mouse_rx.recv()).await;
+                drop(framed);
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                handled
+            });
+            let handled = client.await.expect("client");
+            server_task.abort();
+            let event = handled
+                .expect("input handled while the write is pending")
+                .expect("a mouse event");
+            assert!(matches!(event, MouseEvent::Move { x: 12, y: 34 }), "{event:?}");
+        })
+        .await;
+}
+
+/// At a normal end (here the client's Disconnect Provider Ultimatum) the
+/// server writes what is still queued within a time limit, so a client that
+/// does not read cannot hold the connection open. The server drops the rest,
+/// and the client reads much less than was queued.
+// oracle: mutant the final flush waits for a client that does not read
+#[tokio::test]
+async fn the_final_flush_to_a_client_that_does_not_read_has_a_time_limit() {
+    // The server's flush limit, and a margin for a server that starts its
+    // flush later than the client starts to wait.
+    const FLUSH_WAIT: Duration = ironrdp_server::FINAL_FLUSH_TIMEOUT.saturating_add(Duration::from_secs(3));
+    const QUEUED: usize = 16 * 1024 * 1024;
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+                let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+                socket.set_recv_buffer_size(4096).expect("SO_RCVBUF");
+                let tcp_stream = socket.connect(server_addr).await.expect("TCP connect");
+                let (mut framed, _) = connect_client_on(
+                    tcp_stream,
+                    |client_addr| {
+                        connector::ClientConnector::new(default_client_config(), client_addr)
+                            .with_static_channel(DrdynvcClient::new())
+                    },
+                    |stream| stream,
+                )
+                .await;
+
+                ev.send(ServerEvent::Egfx(ironrdp_server::EgfxServerMessage::SendMessages {
+                    messages: vec![SvcMessage::from(vec![0u8; QUEUED])],
+                }))
+                .unwrap();
+                wait_until_unread(framed.get_inner().0.get_ref().0, 2048).await;
+                let disconnect = X224(pdu::mcs::DisconnectProviderUltimatum::from_reason(
+                    pdu::mcs::DisconnectReason::UserRequested,
+                ));
+                framed
+                    .write_all(&encode_vec(&disconnect).expect("encode disconnect"))
+                    .await
+                    .expect("write disconnect");
+
+                // Wait briefly after disconnecting so a server without a final flush would already have dropped its
+                // queued output, then verify queued bytes still arrive before the flush deadline expires.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let mut flushed = 0;
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while flushed < 2 * 1024 * 1024 {
+                        let (_, frame) = framed
+                            .read_pdu()
+                            .await
+                            .expect("queued output continues flushing before FINAL_FLUSH_TIMEOUT");
+                        flushed += frame.len();
+                    }
+                })
+                .await
+                .expect("read flushed bytes before FINAL_FLUSH_TIMEOUT");
+
+                // Stop reading until the server's flush limit expires, then verify the server closed the connection
+                // instead of waiting for the rest of `QUEUED`.
+                tokio::time::sleep(FLUSH_WAIT).await;
+                let mut read = flushed;
+                let end = tokio::time::timeout(Duration::from_secs(10), async {
+                    while let Ok((_, frame)) = framed.read_pdu().await {
+                        read += frame.len();
+                    }
+                })
+                .await;
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                (end.is_ok(), flushed, read)
+            });
+            let (ended, flushed, read) = client.await.expect("client");
+            server_task.abort();
+            assert!(
+                2 * 1024 * 1024 <= flushed,
+                "only {flushed} bytes flushed after disconnect"
+            );
+            assert!(ended, "the server closed the connection");
+            assert!(
+                read < QUEUED / 2,
+                "the client read {read} of {QUEUED} queued bytes: the server waited for it"
+            );
+        })
+        .await;
+}
+
+/// Server clipboard with no clipboard behind it: the channel only answers
+/// the client's PDUs.
+#[derive(Debug)]
+struct NoClipboard;
+
+impl_as_any!(NoClipboard);
+
+impl ironrdp::cliprdr::backend::CliprdrBackend for NoClipboard {
+    fn temporary_directory(&self) -> &str {
+        ".cliprdr"
+    }
+    fn client_capabilities(&self) -> ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags {
+        ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags::empty()
+    }
+    fn on_ready(&mut self) {}
+    fn on_request_format_list(&mut self) {}
+    fn on_process_negotiated_capabilities(&mut self, _: ironrdp::cliprdr::pdu::ClipboardGeneralCapabilityFlags) {}
+    fn on_remote_copy(&mut self, _: &[ironrdp::cliprdr::pdu::ClipboardFormat]) {}
+    fn on_format_data_request(&mut self, _: ironrdp::cliprdr::pdu::FormatDataRequest) {}
+    fn on_format_data_response(&mut self, _: ironrdp::cliprdr::pdu::FormatDataResponse<'_>) {}
+    fn on_file_contents_request(&mut self, _: ironrdp::cliprdr::pdu::FileContentsRequest) {}
+    fn on_file_contents_response(&mut self, _: ironrdp::cliprdr::pdu::FileContentsResponse<'_>) {}
+    fn on_lock(&mut self, _: ironrdp::cliprdr::pdu::LockDataId) {}
+    fn on_unlock(&mut self, _: ironrdp::cliprdr::pdu::LockDataId) {}
+}
+
+struct NoClipboardFactory;
+
+impl ironrdp::cliprdr::backend::CliprdrBackendFactory for NoClipboardFactory {
+    fn build_cliprdr_backend(&self) -> Box<dyn ironrdp::cliprdr::backend::CliprdrBackend> {
+        Box::new(NoClipboard)
+    }
+}
+
+impl ServerEventSender for NoClipboardFactory {
+    fn set_sender(&mut self, _: UnboundedSender<ServerEvent>) {}
+}
+
+impl server::CliprdrServerFactory for NoClipboardFactory {}
+
+/// Client side of the CLIPRDR static channel that ignores what it gets.
+#[derive(Debug)]
+struct RawCliprdrClient;
+
+impl_as_any!(RawCliprdrClient);
+
+impl SvcProcessor for RawCliprdrClient {
+    fn channel_name(&self) -> gcc::ChannelName {
+        gcc::ChannelName::from_static(b"cliprdr\0")
+    }
+
+    fn process(&mut self, _: &[u8]) -> pdu::PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
+    }
+}
+
+impl ironrdp::svc::SvcClientProcessor for RawCliprdrClient {}
+
+/// A client that sends requests and does not read the replies: the server
+/// stops reading from it once the queued replies reach their bound, so its
+/// memory does not grow without limit. Each Format List gets a Format List
+/// Response, as MS-RDPECLIP 3.1.5.2.2, ["Processing a Format List PDU"],
+/// requires. The Format Lists here are empty, so each response is about as
+/// large as its request.
+///
+/// ["Processing a Format List PDU"]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/4e414864-6880-4b0d-8af7-1838ca000c2d
+// oracle: mutant the server reads requests without a bound on the replies it queues
+#[tokio::test]
+async fn a_client_that_does_not_read_its_replies_is_not_read_further() {
+    struct MouseRecorder(UnboundedSender<MouseEvent>);
+
+    impl RdpServerInputHandler for MouseRecorder {
+        fn keyboard(&mut self, _: KeyboardEvent) {}
+        fn mouse(&mut self, event: MouseEvent) {
+            let _ = self.0.send(event);
+        }
+    }
+
+    // Replies the server may queue (`MAX_QUEUED_REPLY_BYTES`), plus what the
+    // socket buffers on both sides hold, is far below this.
+    const FLOOD_BYTES: usize = 64 * 1024 * 1024;
+
+    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
+    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
+    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
+    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+    let (mouse_tx, mut mouse_rx) = mpsc::unbounded_channel();
+    let (_display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(acceptor)
+        .with_input_handler(MouseRecorder(mouse_tx))
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: true,
+        })
+        .with_cliprdr_factory(Some(Box::new(NoClipboardFactory)))
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+            let client = tokio::task::spawn_local(async move {
+                let server_addr = local_addr_of(&ev).await;
+                let socket = tokio::net::TcpSocket::new_v4().expect("socket");
+                socket.set_recv_buffer_size(4096).expect("SO_RCVBUF");
+                socket.set_send_buffer_size(4096).expect("SO_SNDBUF");
+                let tcp_stream = socket.connect(server_addr).await.expect("TCP connect");
+                let (framed, result) = connect_client_on(
+                    tcp_stream,
+                    |client_addr| {
+                        connector::ClientConnector::new(default_client_config(), client_addr)
+                            .with_static_channel(RawCliprdrClient)
+                    },
+                    |stream| stream,
+                )
+                .await;
+                let (mut reader, mut writer) = ironrdp_tokio::split_tokio_framed(framed);
+                let channel_id = result
+                    .static_channels
+                    .get_channel_id_by_type::<RawCliprdrClient>()
+                    .expect("the CLIPRDR channel joined");
+
+                let format_list = ironrdp::cliprdr::pdu::ClipboardPdu::FormatList(
+                    ironrdp::cliprdr::pdu::FormatList::new_unicode(&[], false).expect("format list"),
+                );
+                let message = SvcMessage::from(format_list).with_flags(ironrdp::svc::ChannelFlags::SHOW_PROTOCOL);
+                let one = ironrdp::svc::client_encode_svc_messages(vec![message], channel_id, result.user_channel_id)
+                    .expect("encode format list");
+                let batch = one.repeat(1000);
+
+                let input = pdu::input::fast_path::FastPathInput::new(vec![
+                    pdu::input::fast_path::FastPathInputEvent::MouseEvent(pdu::input::MousePdu {
+                        flags: pdu::input::mouse::PointerFlags::MOVE,
+                        number_of_wheel_rotation_units: 0,
+                        x_position: 45,
+                        y_position: 67,
+                    }),
+                ])
+                .expect("mouse input");
+                let input_bytes = encode_vec(&input).expect("encode mouse input");
+
+                // The flood ends when the server reads nothing for 4 s, much longer than a slow moment of a busy host.
+                // Keep the write future alive so framing is not truncated mid-PDU before draining replies.
+                let sent = Arc::new(AtomicUsize::new(0));
+                let stop_flood = Arc::new(AtomicBool::new(false));
+                let mut send_task = core::pin::pin!(async {
+                    while !stop_flood.load(Ordering::Acquire) && sent.load(Ordering::Acquire) < FLOOD_BYTES {
+                        writer.write_all(&batch).await.expect("write format lists");
+                        sent.fetch_add(batch.len(), Ordering::Release);
+                    }
+                    writer.write_all(&input_bytes).await.expect("write mouse input");
+                });
+                loop {
+                    let before = sent.load(Ordering::Acquire);
+                    let stalled = tokio::select! {
+                        () = &mut send_task => panic!("flood finished all {FLOOD_BYTES} bytes without pausing"),
+                        () = tokio::time::sleep(Duration::from_secs(4)) => sent.load(Ordering::Acquire) == before,
+                    };
+                    if stalled {
+                        break;
+                    }
+                }
+                let paused_at = sent.load(Ordering::Acquire);
+                stop_flood.store(true, Ordering::Release);
+
+                // Drain queued replies so `queued_reply_bytes` falls back within `MAX_QUEUED_REPLY_BYTES`, and verify
+                // the server resumes reading client PDUs.
+                let ((), resumed_event) = tokio::time::timeout(Duration::from_secs(10), async {
+                    tokio::join!(&mut send_task, async {
+                        loop {
+                            tokio::select! {
+                                pdu = reader.read_pdu() => {
+                                    pdu.expect("read queued reply");
+                                }
+                                event = mouse_rx.recv() => break event.expect("mouse channel open"),
+                            }
+                        }
+                    })
+                })
+                .await
+                .expect("client reads resumed once queued replies drained");
+
+                ev.send(ServerEvent::Quit("bye".into())).unwrap();
+                (paused_at, resumed_event)
+            });
+            let (sent, resumed_event) = client.await.expect("client");
+            server_task.abort();
+            // The flood went past the reply bound, so the server stopped
+            // reading because of it, not because the flood ended early.
+            assert!(
+                ironrdp_server::MAX_QUEUED_REPLY_BYTES < sent,
+                "the flood stopped after {sent} bytes, before the reply bound"
+            );
+            assert!(
+                sent < 16 * 1024 * 1024,
+                "the server read {sent} bytes of requests from a client that reads no replies"
+            );
+            assert!(
+                matches!(resumed_event, MouseEvent::Move { x: 45, y: 67 }),
+                "{resumed_event:?}"
+            );
+        })
+        .await;
 }
 
 /// Counts how often each `ConnectionHandler` hook reached the handler.

@@ -1,6 +1,7 @@
 use core::any::TypeId;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicBool, Ordering};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{ReadCursor, decode, decode_cursor, encode_vec, impl_as_any};
@@ -13,7 +14,9 @@ use ironrdp_pdu::PduResult;
 use ironrdp_pdu::mcs::SendDataIndication;
 use ironrdp_pdu::rdp::vc::ChannelPduHeader;
 use ironrdp_pdu::x224::X224;
-use ironrdp_server::{ConnectionWriter, RdpServer, ServerEvent, dispatch_static_channel_events};
+use ironrdp_server::{
+    OutboundQueue, QueuedWriter, RdpServer, ServerEvent, ServerResult, dispatch_static_channel_events,
+};
 use ironrdp_svc::{StaticChannelSet, SvcProcessor as _};
 use ironrdp_tokio::TokioFramed;
 use rstest::rstest;
@@ -117,21 +120,32 @@ fn peer(channels: &mut StaticChannelSet, pdu: DrdynvcClientPdu) {
         .unwrap();
 }
 
-async fn dispatch(
+/// Queues `events` as the client loop does, then writes the queue to `transport`.
+async fn dispatch_and_write(
     server: &mut RdpServer,
     channels: StaticChannelSet,
     mut events: Vec<ServerEvent>,
+    transport: &mut TokioFramed<tokio::io::DuplexStream>,
+) -> ServerResult<StaticChannelSet> {
+    let queue = Rc::new(OutboundQueue::default());
+    let channels =
+        dispatch_static_channel_events(server, channels, &mut events, &mut QueuedWriter::new(Rc::clone(&queue)))
+            .await?;
+    queue.finish();
+    queue.write_queued(transport).await?;
+    Ok(channels)
+}
+
+async fn dispatch(
+    server: &mut RdpServer,
+    channels: StaticChannelSet,
+    events: Vec<ServerEvent>,
 ) -> (StaticChannelSet, Vec<DrdynvcServerPdu>) {
     let (stream, mut peer) = tokio::io::duplex(8192);
     let mut transport = TokioFramed::new(stream);
-    let channels = dispatch_static_channel_events(
-        server,
-        channels,
-        &mut events,
-        &mut ConnectionWriter::new(&mut transport),
-    )
-    .await
-    .unwrap();
+    let channels = dispatch_and_write(server, channels, events, &mut transport)
+        .await
+        .unwrap();
     drop(transport);
     let mut bytes = Vec::new();
     peer.read_to_end(&mut bytes).await.unwrap();
@@ -400,12 +414,14 @@ mod completion {
     };
     use ironrdp_rdpeai::server::{RdpeaiServer, RdpeaiServerBackend, RdpeaiServerMessage};
     use ironrdp_rdpsnd::pdu::AudioFormat;
-    use ironrdp_server::{ConnectionWriter, EchoDvcBridge, RdpServer, ServerEvent, dispatch_static_channel_events};
+    use ironrdp_server::{EchoDvcBridge, RdpServer, ServerEvent, drive_static_channel_events};
     use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor as _};
     use ironrdp_tokio::TokioFramed;
     use rstest::rstest;
     use tokio::io::AsyncReadExt as _;
     use tokio::sync::{Semaphore, oneshot};
+
+    use super::dispatch_and_write;
 
     const SVC_ID: u16 = 1004;
     const PAYLOAD: &[u8] = b"native channel data";
@@ -502,14 +518,9 @@ mod completion {
         let (event, processed) = write(channel_id);
         let (stream, mut peer) = tokio::io::duplex(128);
         let mut transport = TokioFramed::new(stream);
-        dispatch_static_channel_events(
-            &mut server,
-            channels(drdynvc),
-            &mut vec![event],
-            &mut ConnectionWriter::new(&mut transport),
-        )
-        .await
-        .unwrap();
+        dispatch_and_write(&mut server, channels(drdynvc), vec![event], &mut transport)
+            .await
+            .unwrap();
         processed.await.unwrap();
         drop(transport);
         let mut bytes = Vec::new();
@@ -583,14 +594,9 @@ mod completion {
         let (event, processed) = write(channel_id);
         let (stream, mut peer) = tokio::io::duplex(128);
         let mut transport = TokioFramed::new(stream);
-        dispatch_static_channel_events(
-            &mut server,
-            channels,
-            &mut vec![event],
-            &mut ConnectionWriter::new(&mut transport),
-        )
-        .await
-        .unwrap();
+        dispatch_and_write(&mut server, channels, vec![event], &mut transport)
+            .await
+            .unwrap();
         assert!(processed.await.is_err(), "an unsent batch was acknowledged");
         drop(transport);
         let mut bytes = Vec::new();
@@ -610,9 +616,7 @@ mod completion {
         let mut transport = TokioFramed::new(stream);
         let mut bytes = Vec::new();
         {
-            let mut writer = ConnectionWriter::new(&mut transport);
-            let mut events = vec![event];
-            let dispatch = dispatch_static_channel_events(&mut server, channels(drdynvc), &mut events, &mut writer);
+            let dispatch = dispatch_and_write(&mut server, channels(drdynvc), vec![event], &mut transport);
             tokio::pin!(dispatch);
             assert_pending(dispatch.as_mut()).await;
             assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
@@ -644,9 +648,7 @@ mod completion {
         let mut transport = TokioFramed::new(stream);
         let mut bytes = Vec::new();
         {
-            let mut writer = ConnectionWriter::new(&mut transport);
-            let mut events = vec![event];
-            let dispatch = dispatch_static_channel_events(&mut server, channels(drdynvc), &mut events, &mut writer);
+            let dispatch = dispatch_and_write(&mut server, channels(drdynvc), vec![event], &mut transport);
             tokio::pin!(dispatch);
             assert_pending(dispatch.as_mut()).await;
             let mut first_byte = [0];
@@ -711,15 +713,15 @@ mod completion {
     ) -> (StaticChannelSet, Vec<u8>) {
         let (stream, mut peer) = tokio::io::duplex(1);
         let mut transport = TokioFramed::new(stream);
-        let (blocker, blocker_done) = write(channel_id);
+        let (blocker, mut blocker_done) = write(channel_id);
         let mut bytes = Vec::new();
         let channels = {
-            let mut writer = ConnectionWriter::new(&mut transport);
             let mut server = server();
             let mut events = vec![blocker, event];
-            let dispatch = dispatch_static_channel_events(&mut server, channels, &mut events, &mut writer);
+            let dispatch = drive_static_channel_events(&mut server, channels, &mut events, &mut transport);
             tokio::pin!(dispatch);
             assert_pending(dispatch.as_mut()).await;
+            assert_eq!(blocker_done.try_recv(), Err(oneshot::error::TryRecvError::Empty));
             after_wait();
 
             drain_write(&mut peer, &mut bytes, dispatch.as_mut()).await
@@ -749,14 +751,9 @@ mod completion {
 
         let (stream, mut peer) = tokio::io::duplex(128);
         let mut transport = TokioFramed::new(stream);
-        dispatch_static_channel_events(
-            &mut server,
-            channels(current_drdynvc),
-            &mut vec![event],
-            &mut ConnectionWriter::new(&mut transport),
-        )
-        .await
-        .unwrap();
+        dispatch_and_write(&mut server, channels(current_drdynvc), vec![event], &mut transport)
+            .await
+            .unwrap();
         assert!(processed.await.is_err(), "a stale producer was acknowledged");
         // oracle: mutant retaining a discarded stale event's permit.
         assert_eq!(permits.available_permits(), 1);
@@ -808,14 +805,9 @@ mod completion {
         drop(peer);
         let mut transport = TokioFramed::new(stream);
         assert!(
-            dispatch_static_channel_events(
-                &mut server,
-                channels(drdynvc),
-                &mut vec![event],
-                &mut ConnectionWriter::new(&mut transport),
-            )
-            .await
-            .is_err()
+            dispatch_and_write(&mut server, channels(drdynvc), vec![event], &mut transport)
+                .await
+                .is_err()
         );
         assert!(processed.await.is_err());
         // oracle: mutant retaining a failed write's permit.
@@ -922,16 +914,16 @@ mod completion {
         let permits = Arc::new(Semaphore::new(1));
         let (stream, mut peer) = tokio::io::duplex(128);
         let mut transport = TokioFramed::new(stream);
-        dispatch_static_channel_events(
+        dispatch_and_write(
             server,
             channels(drdynvc),
-            &mut vec![ServerEvent::DynamicChannelWithCompletion {
+            vec![ServerEvent::DynamicChannelWithCompletion {
                 batch,
                 completion,
                 permit: permits.try_acquire_owned().unwrap(),
                 is_current: Box::new(|| true),
             }],
-            &mut ConnectionWriter::new(&mut transport),
+            &mut transport,
         )
         .await
         .unwrap();
