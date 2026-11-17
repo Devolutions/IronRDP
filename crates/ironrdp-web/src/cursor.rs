@@ -273,6 +273,7 @@ mod tests {
         pointer(width, height, hotspot, &block)
     }
 
+    // oracle: regression #2427, a 64x64 virtio-gpu pointer scaled whole showed its arrow at half size.
     // oracle: mutant scaling the uncropped pointer, which makes it 32x32 with its hotspot at (5, 5), or taking the size
     // or hotspot from it; the 40x20 crop scaled by 32/40 is 32x16, and its hotspot (5, 5) scales to (4, 4).
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
@@ -286,6 +287,7 @@ mod tests {
         assert_eq!(p.bitmap_data.len(), 32 * 16 * 4);
     }
 
+    // oracle: regression #2427, a 64x64 virtio-gpu pointer scaled whole showed its arrow at half size.
     // oracle: mutant resizing the uncropped pixels, which brings the transparent margin into the cursor.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
@@ -320,6 +322,7 @@ mod tests {
         );
     }
 
+    // oracle: regression #2427, a 64x64 virtio-gpu pointer scaled whole showed its arrow at half size.
     // oracle: mutant scaling a pointer that fits once cropped, or dropping the crop when no scaling follows.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
@@ -375,7 +378,7 @@ mod tests {
         assert!(scaled_to_fit(&pointer(32, 32, (0, 0), &[])).is_none());
     }
 
-    // oracle: mutant a side rounded down to zero pixels, which the resizer refuses, ending the session
+    // oracle: regression #2427, a 64x1 pointer scaled to 32x0, which the resizer refuses, ending the session.
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_long_thin_pointer_keeps_at_least_one_pixel_per_side() {
