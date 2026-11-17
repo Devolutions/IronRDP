@@ -856,7 +856,8 @@ impl BitmapUpdateHandler for BitmapHandler {
             }
         };
 
-        // The encoder writes every byte up to `len`, so what an earlier, larger update left past it is never sent.
+        // INVARIANT: The encoder writes every byte up to `len`, so what an earlier, larger update left past it is never
+        // sent.
         Ok(UpdateFragmenter::new(UpdateCode::Bitmap, self.buffer[..len].to_vec()))
     }
 }
