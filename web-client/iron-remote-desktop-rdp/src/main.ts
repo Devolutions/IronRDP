@@ -55,6 +55,30 @@ export function audioPlayback(callback: (message: unknown) => void): Extension {
     return new Extension('audio_playback', callback);
 }
 
+/**
+ * Redirects a camera through the callback described in README.md, Camera.
+ * Start messages name the format the server picked; a stop message ends the capture.
+ * The page then pushes one JPEG per frame with `cameraSample`.
+ */
+export function camera(callback: (message: unknown) => void): Extension {
+    return new Extension('camera', callback);
+}
+
+/** The camera's name on the remote desktop, in place of `Browser camera`. An empty name is ignored. */
+export function cameraName(name: string): Extension {
+    return new Extension('camera_name', name);
+}
+
+/**
+ * One JPEG frame for `invokeExtension`, in the format of the last start message.
+ * `invokeExtension` returns true when the frame answered a pending request. It returns false when the frame is held
+ * for the next request, when no stream is running (the frame is dropped), or when the server refused the frame and
+ * got a Sample Error Response instead.
+ */
+export function cameraSample(frame: Uint8Array): Extension {
+    return new Extension('camera_sample', frame);
+}
+
 export function kdcProxyUrl(url: string): Extension {
     return new Extension('kdc_proxy_url', url);
 }
@@ -150,6 +174,22 @@ export function monitorLayoutCallback(callback: (monitors: MonitorRect[]) => voi
         callback(monitors);
     };
     return new Extension('monitor_layout_callback', unpack);
+}
+
+/**
+ * The client name the server sees, in place of `ironrdp-web`: Windows shows it as the session's client name.
+ * The protocol keeps the first 15 UTF-16 code units, so an emoji takes two. An empty name is ignored.
+ */
+export function clientName(name: string): Extension {
+    return new Extension('client_name', name);
+}
+
+/**
+ * The keyboard layout to ask for, as a Windows input locale identifier such as 0x409 (US) or 0x809 (UK).
+ * Without it, or with 0, the server uses its default layout.
+ */
+export function keyboardLayout(layoutId: number): Extension {
+    return new Extension('keyboard_layout', layoutId);
 }
 
 // --- Session extensions (pass to `Session.invokeExtension`) ---

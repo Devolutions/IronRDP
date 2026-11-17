@@ -6,6 +6,7 @@ use ironrdp_testsuite_core::core_data::*;
 use ironrdp_testsuite_core::gcc::*;
 use ironrdp_testsuite_core::network_data::*;
 use ironrdp_testsuite_core::security_data::*;
+use proptest::prelude::*;
 
 #[test]
 fn from_buffer_correctly_parses_client_gcc_blocks_without_optional_data_blocks() {
@@ -392,6 +393,77 @@ fn buffer_length_is_correct_for_client_core_data_with_all_optional_fields() {
     let len = data.size();
 
     assert_eq!(expected_buffer_len, len);
+}
+
+const CLIENT_NAME_OFFSET: usize = 4 /* version */
+    + 2 /* desktopWidth */
+    + 2 /* desktopHeight */
+    + 2 /* colorDepth */
+    + 2 /* SASSequence */
+    + 4 /* keyboardLayout */
+    + 4 /* clientBuild */;
+const CLIENT_NAME_UNITS: usize = 15;
+const IME_FILE_NAME_OFFSET: usize = CLIENT_NAME_OFFSET
+    + 32 /* clientName */
+    + 4 /* keyboardType */
+    + 4 /* keyboardSubType */
+    + 4 /* keyboardFunctionKey */;
+const IME_FILE_NAME_UNITS: usize = 31;
+
+/// The last UTF-16 unit a name field keeps, before its terminator.
+fn last_name_unit(buffer: &[u8], offset: usize, units: usize) -> u16 {
+    let at = offset + (units - 1) * 2;
+    u16::from_le_bytes([buffer[at], buffer[at + 1]])
+}
+
+/// What a field keeps of `value`: its first `units` UTF-16 units, minus a high surrogate the cut leaves unpaired.
+fn kept(value: &str, units: usize) -> String {
+    let mut kept: Vec<u16> = value.encode_utf16().take(units).collect();
+    if matches!(kept.last(), Some(0xD800..=0xDBFF)) {
+        kept.pop();
+    }
+    String::from_utf16(&kept).unwrap()
+}
+
+/// Names mixing one- and two-unit characters, long enough to be cut by either field.
+fn names() -> impl Strategy<Value = String> {
+    "[A-Za-z\u{E9}\u{4E2D}\u{1F600}\u{1F4A9}]{0,40}"
+}
+
+#[test]
+fn names_are_not_cut_inside_a_surrogate_pair() {
+    // oracle: spec MS-RDPBCGR §2.2.1.3.2 (clientName keeps 15 UTF-16 units, imeFileName 31)
+    // oracle: spec RFC 2781 §2.2 (a high surrogate must be followed by a low one)
+    let mut data = CLIENT_CORE_DATA_WITHOUT_OPTIONAL_FIELDS.clone();
+    data.client_name = format!("{}\u{1F600}", "A".repeat(14));
+    data.ime_file_name = format!("{}\u{1F600}", "B".repeat(30));
+
+    let buffer = encode_vec(&data).unwrap();
+    assert_eq!(last_name_unit(&buffer, CLIENT_NAME_OFFSET, CLIENT_NAME_UNITS), 0);
+    assert_eq!(last_name_unit(&buffer, IME_FILE_NAME_OFFSET, IME_FILE_NAME_UNITS), 0);
+    let decoded: ClientCoreData = decode(buffer.as_slice()).unwrap();
+
+    assert_eq!("A".repeat(14), decoded.client_name);
+    assert_eq!("B".repeat(30), decoded.ime_file_name);
+}
+
+// oracle: reference str::encode_utf16 models the cut at 15 and 31 units (MS-RDPBCGR §2.2.1.3.2)
+// oracle: spec RFC 2781 §2.2 (no field ends in an unpaired high surrogate)
+proptest! {
+    #[test]
+    fn names_keep_their_longest_well_formed_prefix((client_name, ime_file_name) in (names(), names())) {
+        let mut data = CLIENT_CORE_DATA_WITHOUT_OPTIONAL_FIELDS.clone();
+        data.client_name = client_name.clone();
+        data.ime_file_name = ime_file_name.clone();
+
+        let buffer = encode_vec(&data).unwrap();
+        prop_assert!(!(0xD800..=0xDBFF).contains(&last_name_unit(&buffer, CLIENT_NAME_OFFSET, CLIENT_NAME_UNITS)));
+        prop_assert!(!(0xD800..=0xDBFF).contains(&last_name_unit(&buffer, IME_FILE_NAME_OFFSET, IME_FILE_NAME_UNITS)));
+        let decoded: ClientCoreData = decode(buffer.as_slice()).unwrap();
+
+        prop_assert_eq!(decoded.client_name, kept(&client_name, CLIENT_NAME_UNITS));
+        prop_assert_eq!(decoded.ime_file_name, kept(&ime_file_name, IME_FILE_NAME_UNITS));
+    }
 }
 
 #[test]

@@ -3,14 +3,18 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 use core::time::Duration;
+use std::rc::Rc;
 use std::sync::Arc;
 
+use ironrdp_async::FramedWrite as _;
 use ironrdp_core::{ReadCursor, decode_cursor, impl_as_any};
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::mcs::SendDataIndication;
 use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
-use ironrdp_server::{ConnectionWriter, RdpServer, ServerEvent, dispatch_static_channel_events};
+use ironrdp_server::{
+    OutboundQueue, QueuedWriter, RdpServer, ServerEvent, ServerResult, dispatch_static_channel_events,
+};
 use ironrdp_svc::{StaticChannelSet, SvcMessage, SvcProcessor, SvcServerProcessor};
 use ironrdp_tokio::TokioFramed;
 use rstest::rstest;
@@ -69,6 +73,24 @@ fn write(payload: Vec<u8>, permits: &Arc<Semaphore>) -> (ServerEvent, oneshot::R
     )
 }
 
+/// Queues `events` as the client loop does, then writes the queue to `transport`.
+async fn dispatch_and_write(
+    channels: StaticChannelSet,
+    mut events: Vec<ServerEvent>,
+    transport: &mut TokioFramed<tokio::io::DuplexStream>,
+) -> ServerResult<()> {
+    let queue = Rc::new(OutboundQueue::default());
+    dispatch_static_channel_events(
+        &mut server(),
+        channels,
+        &mut events,
+        &mut QueuedWriter::new(Rc::clone(&queue)),
+    )
+    .await?;
+    queue.finish();
+    queue.write_queued(transport).await
+}
+
 fn chunks(bytes: &[u8]) -> Vec<(ChannelPduHeader, Vec<u8>)> {
     let mut frames = ReadCursor::new(bytes);
     let mut chunks = Vec::new();
@@ -95,14 +117,9 @@ async fn writes_to_the_named_joined_channel(#[case] length: u32) {
     let (event, processed) = write(payload.clone(), &permits);
     let (stream, mut peer) = tokio::io::duplex(8192);
     let mut transport = TokioFramed::new(stream);
-    dispatch_static_channel_events(
-        &mut server(),
-        channels(true),
-        &mut vec![event],
-        &mut ConnectionWriter::new(&mut transport),
-    )
-    .await
-    .unwrap();
+    dispatch_and_write(channels(true), vec![event], &mut transport)
+        .await
+        .unwrap();
     drop(transport);
     let mut bytes = Vec::new();
     peer.read_to_end(&mut bytes).await.unwrap();
@@ -132,19 +149,46 @@ async fn behind_event(event: ServerEvent, after_wait: impl FnOnce(), permits: &S
     let (stream, mut peer) = tokio::io::duplex(1);
     let mut transport = TokioFramed::new(stream);
     let blocker_permits = Arc::new(Semaphore::new(1));
-    let (blocker, blocker_done) = write(b"blocker".to_vec(), &blocker_permits);
+    let (blocker, mut blocker_done) = write(b"blocker".to_vec(), &blocker_permits);
     {
-        let mut writer = ConnectionWriter::new(&mut transport);
+        // Queue events during a stalled write, then cancel or invalidate the second while the first is stalled.
+        let queue = Rc::new(OutboundQueue::default());
+        let mut writer = QueuedWriter::new(Rc::clone(&queue));
+        let mut competing_writer = writer.clone();
+        competing_writer.write_all(b"ahead").await.unwrap();
+        let writing = queue.write_queued(&mut transport);
+        tokio::pin!(writing);
+        assert_pending(writing.as_mut()).await;
+
         let mut server = server();
         let mut events = vec![blocker, event];
-        let dispatch = dispatch_static_channel_events(&mut server, channels(true), &mut events, &mut writer);
-        tokio::pin!(dispatch);
-        assert_pending(dispatch.as_mut()).await;
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            dispatch_static_channel_events(&mut server, channels(true), &mut events, &mut writer),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_pending(writing.as_mut()).await;
         assert_eq!(permits.available_permits(), 0);
+
+        let mut ahead = [0; 5];
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut writing => panic!("writer stopped before the preceding event: {result:?}"),
+                result = peer.read_exact(&mut ahead) => { result.unwrap(); }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(ahead, *b"ahead");
+        assert_pending(writing.as_mut()).await;
+        assert_eq!(blocker_done.try_recv(), Err(oneshot::error::TryRecvError::Empty));
         after_wait();
 
+        queue.finish();
         tokio::time::timeout(Duration::from_secs(5), async {
-            let (sent, bytes) = tokio::join!(&mut dispatch, read_frame(&mut peer));
+            let (sent, bytes) = tokio::join!(&mut writing, read_frame(&mut peer));
             sent.unwrap();
             assert_eq!(chunks(&bytes)[0].1, b"blocker");
         })
@@ -204,11 +248,10 @@ async fn query_reports_the_named_channel_join(
     let (reply, answer) = oneshot::channel();
     let (stream, mut peer) = tokio::io::duplex(128);
     let mut transport = TokioFramed::new(stream);
-    dispatch_static_channel_events(
-        &mut server(),
+    dispatch_and_write(
         channels(joined),
-        &mut vec![ServerEvent::StaticChannelJoined(queried, reply)],
-        &mut ConnectionWriter::new(&mut transport),
+        vec![ServerEvent::StaticChannelJoined(queried, reply)],
+        &mut transport,
     )
     .await
     .unwrap();
@@ -247,14 +290,9 @@ async fn fragmented_pdus_preserve_payload_and_queue_order(
     let (second, second_done) = write(b"next".to_vec(), &permits);
     let (stream, mut peer) = tokio::io::duplex(8192);
     let mut transport = TokioFramed::new(stream);
-    dispatch_static_channel_events(
-        &mut server(),
-        channels(true),
-        &mut vec![first, second],
-        &mut ConnectionWriter::new(&mut transport),
-    )
-    .await
-    .unwrap();
+    dispatch_and_write(channels(true), vec![first, second], &mut transport)
+        .await
+        .unwrap();
     // oracle: mutant closing completion on a successful fragmented or subsequent write.
     first_done.await.unwrap();
     second_done.await.unwrap();
@@ -294,7 +332,7 @@ async fn read_frame(peer: &mut tokio::io::DuplexStream) -> Vec<u8> {
     bytes
 }
 
-// oracle: mutant acknowledging a stalled write, releasing its permit, or sending the next event between its chunks.
+// oracle: mutant acknowledging a stalled write, releasing its permit, or interleaving queued writes between its chunks.
 #[tokio::test]
 async fn completion_and_permit_wait_for_all_chunks_without_interleaving() {
     let permits = Arc::new(Semaphore::new(2));
@@ -303,24 +341,34 @@ async fn completion_and_permit_wait_for_all_chunks_without_interleaving() {
     let (next, mut next_done) = write(b"next".to_vec(), &permits);
     let (stream, mut peer) = tokio::io::duplex(1);
     let mut transport = TokioFramed::new(stream);
-    let mut writer = ConnectionWriter::new(&mut transport);
+    let queue = Rc::new(OutboundQueue::default());
+    let mut writer = QueuedWriter::new(Rc::clone(&queue));
+    let mut competing_writer = writer.clone();
     let mut server = server();
     let mut events = vec![event, next];
-    let dispatch = dispatch_static_channel_events(&mut server, channels(true), &mut events, &mut writer);
-    tokio::pin!(dispatch);
-    assert_pending(dispatch.as_mut()).await;
+    dispatch_static_channel_events(&mut server, channels(true), &mut events, &mut writer)
+        .await
+        .unwrap();
+    competing_writer.write_all(b"writer").await.unwrap();
+    queue.finish();
+    let writing = queue.write_queued(&mut transport);
+    tokio::pin!(writing);
+    assert_pending(writing.as_mut()).await;
     assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));
     assert_eq!(next_done.try_recv(), Err(oneshot::error::TryRecvError::Empty));
     assert!(Arc::clone(&permits).try_acquire_owned().is_err());
 
     let bytes = tokio::time::timeout(Duration::from_secs(5), async {
-        let (sent, bytes) = tokio::join!(&mut dispatch, async {
+        let (sent, bytes) = tokio::join!(&mut writing, async {
             let mut bytes = Vec::new();
             for _ in 0..3 {
                 bytes.extend(read_frame(&mut peer).await);
             }
             let next = read_frame(&mut peer).await;
             assert_eq!(chunks(&next)[0].1, b"next");
+            let mut competing = [0; 6];
+            peer.read_exact(&mut competing).await.unwrap();
+            assert_eq!(competing, *b"writer");
             bytes
         });
         sent.unwrap();
@@ -342,18 +390,23 @@ async fn cancellation_after_transmission_starts_finishes_the_frame() {
     let (event, processed) = write(b"finish this frame".to_vec(), &permits);
     let (stream, mut peer) = tokio::io::duplex(1);
     let mut transport = TokioFramed::new(stream);
-    let mut writer = ConnectionWriter::new(&mut transport);
+    let queue = Rc::new(OutboundQueue::default());
+    let mut writer = QueuedWriter::new(Rc::clone(&queue));
     let mut server = server();
     let mut events = vec![event];
-    let dispatch = dispatch_static_channel_events(&mut server, channels(true), &mut events, &mut writer);
-    tokio::pin!(dispatch);
-    assert_pending(dispatch.as_mut()).await;
+    dispatch_static_channel_events(&mut server, channels(true), &mut events, &mut writer)
+        .await
+        .unwrap();
+    queue.finish();
+    let writing = queue.write_queued(&mut transport);
+    tokio::pin!(writing);
+    assert_pending(writing.as_mut()).await;
     drop(processed);
-    assert_pending(dispatch.as_mut()).await;
+    assert_pending(writing.as_mut()).await;
     assert_eq!(permits.available_permits(), 0);
 
     let bytes = tokio::time::timeout(Duration::from_secs(5), async {
-        let (sent, bytes) = tokio::join!(&mut dispatch, read_frame(&mut peer));
+        let (sent, bytes) = tokio::join!(&mut writing, read_frame(&mut peer));
         sent.unwrap();
         bytes
     })
@@ -380,14 +433,9 @@ async fn unjoined_destination_is_rejected(#[case] joined: bool, #[case] name: Ch
     };
     let (stream, mut peer) = tokio::io::duplex(128);
     let mut transport = TokioFramed::new(stream);
-    dispatch_static_channel_events(
-        &mut server(),
-        channels(joined),
-        &mut vec![event],
-        &mut ConnectionWriter::new(&mut transport),
-    )
-    .await
-    .unwrap();
+    dispatch_and_write(channels(joined), vec![event], &mut transport)
+        .await
+        .unwrap();
     assert!(processed.await.is_err());
     assert_eq!(permits.available_permits(), 1);
     drop(transport);
@@ -405,14 +453,9 @@ async fn transport_failure_closes_completion_and_releases_the_permit() {
     drop(peer);
     let mut transport = TokioFramed::new(stream);
     assert!(
-        dispatch_static_channel_events(
-            &mut server(),
-            channels(true),
-            &mut vec![event],
-            &mut ConnectionWriter::new(&mut transport),
-        )
-        .await
-        .is_err()
+        dispatch_and_write(channels(true), vec![event], &mut transport)
+            .await
+            .is_err()
     );
     assert!(processed.await.is_err());
     assert_eq!(permits.available_permits(), 1);

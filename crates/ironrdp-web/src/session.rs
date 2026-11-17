@@ -98,6 +98,8 @@ struct SessionBuilderInner {
 
     use_display_control: bool,
     audio_playback_callback: Option<js_sys::Function>,
+    camera_callback: Option<js_sys::Function>,
+    camera_name: Option<String>,
     enable_credssp: bool,
     enable_standard_rdp_security: bool,
     enable_server_pointer: bool,
@@ -108,6 +110,7 @@ struct SessionBuilderInner {
     color_depth: Option<u32>,
     monitor_layout: Option<MonitorLayout>,
     monitor_layout_callback: Option<js_sys::Function>,
+    keyboard_layout: u32,
 }
 
 impl Default for SessionBuilderInner {
@@ -150,6 +153,8 @@ impl Default for SessionBuilderInner {
 
             use_display_control: false,
             audio_playback_callback: None,
+            camera_callback: None,
+            camera_name: None,
             enable_credssp: true,
             enable_standard_rdp_security: false,
             enable_server_pointer: true,
@@ -160,6 +165,7 @@ impl Default for SessionBuilderInner {
             color_depth: None,
             monitor_layout: None,
             monitor_layout_callback: None,
+            keyboard_layout: 0,
         }
     }
 }
@@ -308,6 +314,15 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 // A function receiving the audio (see audio::to_js); anything else turns playback off.
                 self.0.borrow_mut().audio_playback_callback = audio_playback.dyn_into::<js_sys::Function>().ok();
             };
+            |camera: JsValue| {
+                // A function told when to capture (see camera::to_js); anything else turns the camera off.
+                self.0.borrow_mut().camera_callback = camera.dyn_into::<js_sys::Function>().ok();
+            };
+            |camera_name: String| {
+                if !camera_name.is_empty() {
+                    self.0.borrow_mut().camera_name = Some(camera_name);
+                }
+            };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
             |enable_standard_rdp_security: bool| {
                 self.0.borrow_mut().enable_standard_rdp_security = enable_standard_rdp_security;
@@ -371,6 +386,25 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             };
             |monitor_layout_callback: JsValue| {
                 self.0.borrow_mut().monitor_layout_callback = monitor_layout_callback.dyn_into::<js_sys::Function>().ok();
+            };
+            |client_name: String| {
+                if !client_name.is_empty() {
+                    self.0.borrow_mut().client_name = client_name;
+                }
+            };
+            |keyboard_layout: f64| {
+                if keyboard_layout.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&keyboard_layout) {
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "the integral layout is validated in the u32 range"
+                    )]
+                    let layout = keyboard_layout as u32;
+                    self.0.borrow_mut().keyboard_layout = layout;
+                } else {
+                    warn!(keyboard_layout, "Invalid keyboard layout; ignored");
+                }
             };
             // File transfer callbacks - protocol-specific, routed through extension()
             // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
@@ -547,6 +581,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let enable_server_pointer = self.0.borrow().enable_server_pointer;
         config.enable_server_pointer = enable_server_pointer;
+        config.keyboard_layout = self.0.borrow().keyboard_layout;
 
         if let Some(performance_flags) = self.0.borrow().performance_flags {
             config.performance_flags = performance_flags;
@@ -647,6 +682,20 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let use_display_control = self.0.borrow().use_display_control;
 
+        // Camera redirection (RDPECAM) when a callback takes the capture requests.
+        let camera_callback = self.0.borrow().camera_callback.clone();
+        let camera = camera_callback.as_ref().map(|_| crate::camera::CameraSink::default());
+        let camera_channels = camera
+            .as_ref()
+            .map(|sink| {
+                crate::camera::channels(
+                    input_events_tx.clone(),
+                    sink.clone(),
+                    self.0.borrow().camera_name.clone(),
+                )
+            })
+            .transpose()?;
+
         let (connection_result, ws) = connect(ConnectParams {
             ws,
             config,
@@ -665,6 +714,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             audio_backend: audio_playback_callback
                 .is_some()
                 .then(|| crate::audio::WasmAudioBackend::new(input_events_tx.clone())),
+            camera_channels,
         })
         .await?;
 
@@ -686,6 +736,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             set_cursor_style_callback,
             set_cursor_style_callback_context,
             audio_playback_callback,
+            camera_callback,
+            camera,
             monitor_layout_callback,
 
             input_events_rx: RefCell::new(Some(input_events_rx)),
@@ -801,6 +853,10 @@ pub(crate) enum RdpInputEvent {
     Printer(crate::printer::PrinterBackendMessage),
     /// RDPSND backend → event loop: audio for the JS callback. See [`crate::audio::AudioMessage`].
     Audio(crate::audio::AudioMessage),
+    /// Camera backend → event loop: a capture request for the JS callback. See [`crate::camera::CameraMessage`].
+    Camera(crate::camera::CameraMessage),
+    /// Camera backend → event loop: device channel PDUs for the server, already encoded.
+    CameraUplink(crate::camera::CameraUplink),
     FastPath(FastPathInputEvents),
     Resize {
         width: u32,
@@ -835,6 +891,9 @@ pub(crate) struct Session {
     set_cursor_style_callback: js_sys::Function,
     set_cursor_style_callback_context: JsValue,
     audio_playback_callback: Option<js_sys::Function>,
+    camera_callback: Option<js_sys::Function>,
+    /// Takes the frames JS pushes with `camera_sample`, when the camera is on.
+    camera: Option<crate::camera::CameraSink>,
     monitor_layout_callback: Option<js_sys::Function>,
 
     // Consumed when `run` is called
@@ -1183,6 +1242,17 @@ impl iron_remote_desktop::Session for Session {
                                 }
                             }
                             Vec::new()
+                        }
+                        RdpInputEvent::Camera(message) => {
+                            if let Some(callback) = &self.camera_callback {
+                                if let Err(error) = callback.call1(&JsValue::NULL, &crate::camera::to_js(message)) {
+                                    warn!(?error, "Camera callback failed");
+                                }
+                            }
+                            Vec::new()
+                        }
+                        RdpInputEvent::CameraUplink(uplink) => {
+                            vec![ActiveStageOutput::ResponseFrame(active_stage.encode_dvc_messages(uplink.into_messages())?)]
                         }
                         RdpInputEvent::TerminateSession => {
                             active_stage.graceful_shutdown()
@@ -1595,6 +1665,15 @@ impl iron_remote_desktop::Session for Session {
 
                 return Ok(JsValue::NULL);
             };
+            |camera_sample: JsValue| {
+                let Some(camera) = &self.camera else {
+                    return Err(IronError::from(anyhow::Error::msg("camera is not enabled")));
+                };
+                let sample = camera_sample
+                    .dyn_into::<js_sys::Uint8Array>()
+                    .map_err(|_| IronError::from(anyhow::Error::msg("camera_sample expects a Uint8Array")))?;
+                return Ok(JsValue::from_bool(camera.push(|| sample.to_vec())));
+            };
         }
 
         Err(
@@ -1915,6 +1994,7 @@ struct ConnectParams {
     computer_name: String,
     use_display_control: bool,
     audio_backend: Option<crate::audio::WasmAudioBackend>,
+    camera_channels: Option<crate::camera::CameraChannels>,
 }
 
 fn default_printer_driver_name() -> String {
@@ -2009,6 +2089,7 @@ async fn connect(
         computer_name,
         use_display_control,
         audio_backend,
+        camera_channels,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
@@ -2032,10 +2113,15 @@ async fn connect(
         computer_name,
     );
 
-    if use_display_control {
-        connector.attach_static_channel(
-            DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        );
+    if use_display_control || camera_channels.is_some() {
+        let mut drdynvc = DrdynvcClient::new();
+        if use_display_control {
+            drdynvc = drdynvc.with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+        }
+        if let Some((enumeration, device)) = camera_channels {
+            drdynvc = drdynvc.with_dynamic_channel(enumeration).with_listener(device);
+        }
+        connector.attach_static_channel(drdynvc);
     }
 
     let kerberos_config = url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str())
