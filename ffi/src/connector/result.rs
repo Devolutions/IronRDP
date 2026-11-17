@@ -33,7 +33,10 @@ pub mod ffi {
     }
 
     #[diplomat::opaque_mut]
-    pub struct ConnectionResult(pub Option<ironrdp::connector::ConnectionResult>);
+    pub struct ConnectionResult(
+        pub(crate) Option<ironrdp::connector::ConnectionResult>,
+        pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
+    );
 
     impl ConnectionResult {
         #[diplomat::attr(auto, getter = "io_channel_id")]

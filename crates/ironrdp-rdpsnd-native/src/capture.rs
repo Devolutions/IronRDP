@@ -5,19 +5,21 @@ use std::thread::{self, JoinHandle};
 
 use cpal::traits::{DeviceTrait as _, StreamTrait as _};
 use cpal::{Stream, StreamConfig};
-use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler};
+use ironrdp_rdpeai::client::{AudioPacketSink, PduResult, RdpeaiCaptureHandler};
 use ironrdp_rdpeai::pdu::{MAX_DATA_PACKET_SIZE, OpenReplyPdu, pcm_format};
 use ironrdp_rdpsnd::codec::AudioEncoder;
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use tracing::{debug, error, info, warn};
 
+use crate::AudioErrorHandler;
 use crate::device::{self, DeviceSelector, Direction};
 
-/// Upper bound for waiting on CPAL input stream startup from the session task.
+/// Deadline for receiving CPAL input stream readiness from the session task.
 ///
 /// Open must report a real HRESULT, but the client session loop is single-threaded.
-/// Keep this short so a slow/hung device does not stall the whole RDP session.
-const STREAM_START_TIMEOUT: Duration = Duration::from_millis(250);
+/// Allow cold CoreAudio startup to exceed 250 ms without reporting a spurious Open failure.
+/// Cleanup still joins the worker, so a blocked driver can exceed this deadline.
+const STREAM_START_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// `KSDATAFORMAT_SUBTYPE_PCM` (`{00000001-0000-0010-8000-00aa00389b71}`).
 ///
@@ -51,6 +53,7 @@ pub struct RdpeaiCaptureBackend {
     open_capture_format: Option<AudioFormat>,
     /// Shared sink + packet size for the capture callback thread.
     sink_state: Arc<Mutex<Option<SinkState>>>,
+    error_handler: Option<AudioErrorHandler>,
 }
 
 struct SinkState {
@@ -82,6 +85,20 @@ impl RdpeaiCaptureBackend {
             stream_ended: Arc::new(AtomicBool::new(false)),
             open_capture_format: None,
             sink_state: Arc::new(Mutex::new(None)),
+            error_handler: None,
+        }
+    }
+
+    /// Observes audio failures through a handler that must not block audio callback threads.
+    #[must_use]
+    pub fn with_error_handler(mut self, handler: AudioErrorHandler) -> Self {
+        self.error_handler = Some(handler);
+        self
+    }
+
+    fn report_error(&self, error: core::fmt::Arguments<'_>) {
+        if let Some(handler) = &self.error_handler {
+            handler(error.to_string());
         }
     }
 
@@ -126,13 +143,25 @@ impl RdpeaiCaptureBackend {
         let stream_ended = Arc::new(AtomicBool::new(false));
         self.stream_ended = Arc::clone(&stream_ended);
         let sink_state = Arc::clone(&self.sink_state);
+        let error_handler = self.error_handler.clone();
 
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
 
         self.stream_handle = Some(thread::spawn(move || {
-            run_capture(&selector, &config, &sink_state, &stream_ended, ready_tx);
+            run_capture(
+                &selector,
+                &config,
+                &sink_state,
+                &stream_ended,
+                ready_tx,
+                error_handler.as_ref(),
+            );
         }));
 
+        self.wait_for_stream_start(ready_rx)
+    }
+
+    fn wait_for_stream_start(&mut self, ready_rx: mpsc::Receiver<Result<(), String>>) -> Result<(), String> {
         match ready_rx.recv_timeout(STREAM_START_TIMEOUT) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => {
@@ -141,9 +170,67 @@ impl RdpeaiCaptureBackend {
             }
             Err(error) => {
                 self.stop_worker();
-                Err(format!("capture stream startup timed out: {error}"))
+                Err(format!("capture stream startup did not complete: {error}"))
             }
         }
+    }
+
+    fn change_format(
+        &mut self,
+        encode_format: &AudioFormat,
+        confirm: &mut dyn FnMut() -> PduResult<()>,
+    ) -> PduResult<bool> {
+        let Some(capture_format) = self.open_capture_format.clone() else {
+            return Ok(false);
+        };
+        let restart = !same_rate_and_channels(&capture_format, encode_format);
+        let capture_format = if restart {
+            pcm_format(encode_format.n_channels, encode_format.n_samples_per_sec, 16)
+        } else {
+            capture_format
+        };
+        let encoder = match encoder_for(&capture_format, encode_format) {
+            Ok(encoder) => encoder,
+            Err(reason) => {
+                warn!(?encode_format, reason, "Rejecting FormatChange");
+                self.report_error(format_args!(
+                    "audio capture format change failed: {reason}; select a supported audio format"
+                ));
+                return Ok(false);
+            }
+        };
+
+        if restart {
+            self.stop_worker();
+        }
+        {
+            let Ok(mut guard) = self.sink_state.lock() else {
+                self.report_error(format_args!(
+                    "audio capture format change failed: capture state is poisoned; recreate the capture backend"
+                ));
+                return Ok(false);
+            };
+            let Some(state) = guard.as_mut() else {
+                return Ok(false);
+            };
+            state.buffer.clear();
+            state.encoder = encoder;
+            // The sink uses this lock too, so no new-format packet can overtake confirmation.
+            confirm()?;
+        }
+        if restart {
+            if let Err(error) = self.start_stream(&capture_format) {
+                warn!(%error, "AUDIO_INPUT capture restart for FormatChange failed");
+                self.report_error(format_args!(
+                        "audio capture restart failed: {error}; check microphone permissions, device availability and support for {} Hz with {} channels",
+                        capture_format.n_samples_per_sec, capture_format.n_channels
+                    ));
+                return Ok(false);
+            }
+            self.open_capture_format = Some(capture_format);
+        }
+        debug!(?encode_format, "AUDIO_INPUT capture encoding changed");
+        Ok(true)
     }
 }
 
@@ -182,6 +269,9 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
     ) -> i32 {
         if packet_size == 0 || packet_size > MAX_DATA_PACKET_SIZE {
             warn!(packet_size, "Refusing capture open with invalid packet size");
+            self.report_error(format_args!(
+                "audio capture open failed: invalid packet size {packet_size}; select a valid capture packet size"
+            ));
             return OpenReplyPdu::E_FAIL;
         }
 
@@ -189,6 +279,9 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
             Ok(encoder) => encoder,
             Err(reason) => {
                 warn!(?capture_format, ?encode_format, reason, "Refusing capture open");
+                self.report_error(format_args!(
+                    "audio capture open failed: {reason}; select a supported audio format"
+                ));
                 return OpenReplyPdu::E_FAIL;
             }
         };
@@ -196,11 +289,17 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         let mut buffer = Vec::new();
         if buffer.try_reserve_exact(packet_size.saturating_mul(2)).is_err() {
             warn!(packet_size, "Refusing capture open: packet buffer allocation failed");
+            self.report_error(format_args!(
+                "audio capture open failed: could not allocate the packet buffer; reduce the capture packet size"
+            ));
             return OpenReplyPdu::E_FAIL;
         }
 
         {
             let Ok(mut guard) = self.sink_state.lock() else {
+                self.report_error(format_args!(
+                    "audio capture open failed: capture state is poisoned; recreate the capture backend"
+                ));
                 return OpenReplyPdu::E_FAIL;
             };
             *guard = Some(SinkState {
@@ -220,6 +319,10 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
             }
             Err(error) => {
                 warn!(%error, "AUDIO_INPUT capture open failed");
+                self.report_error(format_args!(
+                    "audio capture open failed: {error}; the server may retry; check microphone permissions, device availability and support for {} Hz with {} channels",
+                    capture_format.n_samples_per_sec, capture_format.n_channels
+                ));
                 self.clear_sink();
                 self.open_capture_format = None;
                 OpenReplyPdu::E_FAIL
@@ -228,51 +331,19 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
     }
 
     fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool {
-        // FormatChange switches encoding. Capture packet size stays at the Open value.
         let _ = packet_size;
-        let Some(capture_format) = self.open_capture_format.clone() else {
-            return false;
-        };
+        self.change_format(encode_format, &mut || Ok(()))
+            .expect("an empty confirmation cannot fail")
+    }
 
-        let restart = !same_rate_and_channels(&capture_format, encode_format);
-        let capture_format = if restart {
-            // Capture at the new rate and channel count so the confirmation is honest.
-            pcm_format(encode_format.n_channels, encode_format.n_samples_per_sec, 16)
-        } else {
-            capture_format
-        };
-        let encoder = match encoder_for(&capture_format, encode_format) {
-            Ok(encoder) => encoder,
-            Err(reason) => {
-                warn!(?encode_format, reason, "Rejecting FormatChange");
-                return false;
-            }
-        };
-
-        if restart {
-            // Stop the old stream before switching, so none of its samples meet the new encoder.
-            self.stop_worker();
-        }
-        {
-            let Ok(mut guard) = self.sink_state.lock() else {
-                return false;
-            };
-            let Some(state) = guard.as_mut() else {
-                return false;
-            };
-            // Leftover samples of the old format must not start a packet of the new one.
-            state.buffer.clear();
-            state.encoder = encoder;
-        }
-        if restart {
-            if let Err(error) = self.start_stream(&capture_format) {
-                warn!(%error, "AUDIO_INPUT capture restart for FormatChange failed");
-                return false;
-            }
-            self.open_capture_format = Some(capture_format);
-        }
-        debug!(?encode_format, "AUDIO_INPUT capture encoding changed");
-        true
+    fn set_format_ordered(
+        &mut self,
+        encode_format: &AudioFormat,
+        packet_size: usize,
+        confirm: &mut dyn FnMut() -> PduResult<()>,
+    ) -> PduResult<bool> {
+        let _ = packet_size;
+        self.change_format(encode_format, confirm)
     }
 
     fn close(&mut self) {
@@ -362,24 +433,27 @@ pub fn take_capture_packets(buffer: &mut Vec<u8>, packet_size: usize) -> Vec<Vec
 
 /// Body of the capture thread: keeps an input stream open on the selected device until `ended`.
 ///
-/// The first open reports its outcome through `ready`; later reopens (device lost, or the default
-/// input device changed) are only logged.
+/// The first open reports its outcome through `ready`; reopen failures also notify the observer.
 fn run_capture(
     selector: &DeviceSelector,
     config: &StreamConfig,
     sink_state: &Arc<Mutex<Option<SinkState>>>,
     ended: &Arc<AtomicBool>,
     ready: mpsc::SyncSender<Result<(), String>>,
+    error_handler: Option<&AudioErrorHandler>,
 ) {
     let mut ready = Some(ready);
     let device_lost = Arc::new(AtomicBool::new(false));
+    let mut reported_failure = false;
 
     while !ended.load(Ordering::Relaxed) {
         let opened = device::open_device(selector, Direction::Input)
             .ok_or_else(|| format!("audio input device {selector} not found"))
             .and_then(|device| {
-                let stream = build_input_stream(&device, config, sink_state, &device_lost)?;
-                stream.play().map_err(|error| error.to_string())?;
+                let stream = build_input_stream(&device, config, sink_state, &device_lost, error_handler.cloned())?;
+                stream
+                    .play()
+                    .map_err(|error| format!("could not start the audio input stream: {error}"))?;
                 Ok((device::device_id(&device), stream))
             });
         let (device_id, stream) = match opened {
@@ -390,10 +464,19 @@ fn run_capture(
                     return;
                 }
                 warn!(%error, "Failed to reopen the audio input device; retrying");
+                if !reported_failure {
+                    if let Some(handler) = error_handler {
+                        handler(format!(
+                            "audio capture could not reopen input device {selector}: {error}; check microphone permissions and device availability; retrying"
+                        ));
+                    }
+                    reported_failure = true;
+                }
                 thread::park_timeout(device::DEVICE_RETRY_INTERVAL);
                 continue;
             }
         };
+        reported_failure = false;
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok(()));
         }
@@ -429,16 +512,29 @@ fn build_input_stream(
     config: &StreamConfig,
     sink_state: &Arc<Mutex<Option<SinkState>>>,
     device_lost: &Arc<AtomicBool>,
+    error_handler: Option<AudioErrorHandler>,
 ) -> Result<Stream, String> {
     let capture_thread = thread::current();
     let err_fn = {
         let device_lost = Arc::clone(device_lost);
-        move |error| match error {
-            cpal::StreamError::DeviceNotAvailable | cpal::StreamError::StreamInvalidated => {
-                device_lost.store(true, Ordering::Relaxed);
-                capture_thread.unpark();
+        let mut reported_error = false;
+        move |error| {
+            if !reported_error {
+                if let Some(handler) = &error_handler {
+                    // UNTESTED: device errors run on a CPAL thread; handlers must remain nonblocking to avoid audio stalls.
+                    handler(format!(
+                        "audio capture stream failed: {error}; check microphone permissions or reconnect the input device"
+                    ));
+                }
+                reported_error = true;
             }
-            error => error!(%error, "CPAL input stream error"),
+            match error {
+                cpal::StreamError::DeviceNotAvailable | cpal::StreamError::StreamInvalidated => {
+                    device_lost.store(true, Ordering::Relaxed);
+                    capture_thread.unpark();
+                }
+                error => error!(%error, "CPAL input stream error"),
+            }
         }
     };
 
@@ -465,7 +561,9 @@ fn build_input_stream(
                     err_fn,
                     None,
                 )
-                .map_err(|f32_error| format!("i16: {i16_error}; f32: {f32_error}"))
+                .map_err(|f32_error| {
+                    format!("could not build the audio input stream (i16: {i16_error}; f32: {f32_error})")
+                })
         }
     }
 }
@@ -489,6 +587,7 @@ fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactS
     for sample in samples {
         state.buffer.extend_from_slice(&sample.to_le_bytes());
     }
+
     for packet in take_capture_packets(&mut state.buffer, state.packet_size) {
         let packet = match state.encoder.as_mut() {
             None => packet,
@@ -509,5 +608,79 @@ fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactS
             }
         };
         (state.sink)(packet);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // oracle: scaffold
+    // Cold CoreAudio startup has been observed to exceed 250 ms before succeeding.
+    #[test]
+    fn cold_stream_start_is_not_rejected_after_250_ms() {
+        let mut backend = RdpeaiCaptureBackend::new();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        backend.stream_handle = Some(thread::spawn(move || {
+            thread::sleep(Duration::from_millis(400));
+            let _ = ready_tx.send(Ok(()));
+        }));
+
+        assert!(backend.wait_for_stream_start(ready_rx).is_ok());
+    }
+
+    // oracle: scaffold
+    #[test]
+    fn stream_start_preserves_device_failure() {
+        let mut backend = RdpeaiCaptureBackend::new();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        ready_tx.send(Err("device unavailable".to_owned())).unwrap();
+
+        assert_eq!(
+            backend.wait_for_stream_start(ready_rx),
+            Err("device unavailable".to_owned())
+        );
+    }
+
+    // oracle: spec MS-RDPEAI §3.2.5.3.1
+    #[test]
+    fn format_confirmation_precedes_concurrent_capture() {
+        let format = pcm_format(1, 16000, 16);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let packet_events = Arc::clone(&events);
+        let mut backend = RdpeaiCaptureBackend::new();
+        backend.open_capture_format = Some(format.clone());
+        *backend.sink_state.lock().unwrap() = Some(SinkState {
+            sink: Box::new(move |_| packet_events.lock().unwrap().push("data")),
+            packet_size: 4,
+            buffer: Vec::new(),
+            encoder: None,
+            pcm: Vec::new(),
+        });
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+        let mut worker = None;
+        let sink_state = Arc::clone(&backend.sink_state);
+        let mut confirm = || {
+            let sink_state = Arc::clone(&sink_state);
+            let started_tx = started_tx.clone();
+            let finished_tx = finished_tx.clone();
+            worker = Some(thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                push_samples(&sink_state, [1i16, 2].into_iter());
+                finished_tx.send(()).unwrap();
+            }));
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(matches!(
+                finished_rx.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            events.lock().unwrap().push("confirmation");
+            Ok(())
+        };
+
+        assert!(backend.set_format_ordered(&format, 4, &mut confirm).unwrap());
+        worker.unwrap().join().unwrap();
+        assert_eq!(*events.lock().unwrap(), ["confirmation", "data"]);
     }
 }

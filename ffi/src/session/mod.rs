@@ -25,6 +25,7 @@ pub mod ffi {
     use std::collections::VecDeque;
 
     use super::image::ffi::DecodedImage;
+    use crate::audio::ffi::NativeAudio;
     use crate::clipboard::message::ffi::{
         ClipboardFormatId, ClipboardFormatIterator, ClipboardMessage, FormatDataResponse,
     };
@@ -41,8 +42,9 @@ pub mod ffi {
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
     pub struct ActiveStage(
-        pub ironrdp::session::ActiveStage,
-        pub ironrdp::connector::connection_activation::ConnectionActivationFactory,
+        pub(crate) ironrdp::session::ActiveStage,
+        pub(crate) ironrdp::connector::connection_activation::ConnectionActivationFactory,
+        pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
     );
 
     #[diplomat::attr(dotnet, manually_disposable)]
@@ -127,6 +129,7 @@ pub mod ffi {
 
     impl ActiveStage {
         pub fn new(connection_result: &mut ConnectionResult) -> Result<Box<Self>, Box<IronRdpError>> {
+            let audio = connection_result.1.take();
             let connection_result = connection_result
                 .0
                 .take()
@@ -149,7 +152,7 @@ pub mod ffi {
             .build();
             stage.set_window_support_level(window_support_level);
 
-            Ok(Box::new(ActiveStage(stage, activation_factory)))
+            Ok(Box::new(ActiveStage(stage, activation_factory, audio)))
         }
 
         /// Produces a fresh connection activation sequence to drive the Deactivation-Reactivation
@@ -194,6 +197,32 @@ pub mod ffi {
         /// not call it concurrently with other methods of this `ActiveStage`.
         pub fn poll_rdpdr_deferred(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             let outputs = self.poll_rdpdr_deferred_output()?;
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
+        }
+
+        /// Drains captured audio and audio channel closures into transport frames.
+        pub fn poll_audio(&mut self, audio: &NativeAudio) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            if !self
+                .2
+                .as_ref()
+                .is_some_and(|attached| std::sync::Arc::ptr_eq(attached, &audio.0))
+            {
+                return Err("native audio belongs to another connection".into());
+            }
+            let outputs = crate::audio::poll_audio(&mut self.0, &audio.0)?;
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
+        }
+
+        /// Stops native playback and capture for this connection.
+        pub fn stop_audio(&mut self, audio: &NativeAudio) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            if !self
+                .2
+                .as_ref()
+                .is_some_and(|attached| std::sync::Arc::ptr_eq(attached, &audio.0))
+            {
+                return Err("native audio belongs to another connection".into());
+            }
+            let outputs = crate::audio::stop_audio(&mut self.0, &audio.0)?;
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 

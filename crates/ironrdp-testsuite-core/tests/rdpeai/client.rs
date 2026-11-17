@@ -386,6 +386,197 @@ fn format_change_confirmation_follows_already_queued_data() {
     );
 }
 
+struct EagerFormatCapture {
+    formats: Vec<AudioFormat>,
+    sink: Option<AudioPacketSink>,
+}
+
+impl RdpeaiCaptureHandler for EagerFormatCapture {
+    fn supported_formats(&self) -> &[AudioFormat] {
+        &self.formats
+    }
+
+    fn open(
+        &mut self,
+        _capture_format: &AudioFormat,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        sink: AudioPacketSink,
+    ) -> i32 {
+        self.sink = Some(sink);
+        OpenReplyPdu::S_OK
+    }
+
+    fn set_format(&mut self, _encode_format: &AudioFormat, _packet_size: usize) -> bool {
+        (self.sink.as_mut().expect("open sink"))(vec![5, 6, 7, 8]);
+        true
+    }
+
+    fn set_format_ordered(
+        &mut self,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        confirm: &mut dyn FnMut() -> ironrdp_rdpeai::client::PduResult<()>,
+    ) -> ironrdp_rdpeai::client::PduResult<bool> {
+        confirm()?;
+        (self.sink.as_mut().expect("open sink"))(vec![5, 6, 7, 8]);
+        Ok(true)
+    }
+
+    fn close(&mut self) {}
+}
+
+// oracle: spec MS-RDPEAI §3.2.5.3.1
+#[test]
+fn format_change_confirmation_precedes_new_format_data() {
+    let fmt_a = pcm_format(1, 16000, 16);
+    let fmt_b = pcm_format(1, 48000, 16);
+    let (client, uplinked) = client_with_uplink(EagerFormatCapture {
+        formats: vec![fmt_a.clone(), fmt_b.clone()],
+        sink: None,
+    });
+    let mut client = client.with_ordered_replies();
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt_a.clone(), fmt_b])),
+    );
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 2,
+            initial_format: 0,
+            capture_format: fmt_a,
+        }),
+    );
+    uplinked.lock().unwrap().clear();
+
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::FormatChange(FormatChangePdu::new(1)));
+    let uplinked: Vec<RdpeaiPdu> = uplinked.lock().unwrap().iter().map(decode_uplinked).collect();
+    assert!(
+        matches!(
+            uplinked.as_slice(),
+            [RdpeaiPdu::FormatChange(change), RdpeaiPdu::DataIncoming, RdpeaiPdu::Data(_)] if change.new_format == 1
+        ),
+        "the confirmation must precede new-format data, got {uplinked:?}"
+    );
+}
+
+struct EagerOpenCapture {
+    formats: Vec<AudioFormat>,
+    sink: Arc<Mutex<Option<AudioPacketSink>>>,
+}
+
+impl RdpeaiCaptureHandler for EagerOpenCapture {
+    fn supported_formats(&self) -> &[AudioFormat] {
+        &self.formats
+    }
+
+    fn open(
+        &mut self,
+        _capture_format: &AudioFormat,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        mut sink: AudioPacketSink,
+    ) -> i32 {
+        sink(vec![1, 2, 3, 4]);
+        *self.sink.lock().unwrap() = Some(sink);
+        OpenReplyPdu::S_OK
+    }
+
+    fn set_format(&mut self, _encode_format: &AudioFormat, _packet_size: usize) -> bool {
+        true
+    }
+
+    fn close(&mut self) {}
+}
+
+// oracle: spec MS-RDPEAI §3.2.5.1.7
+#[test]
+fn ordered_open_and_reopen_keep_responses_and_capture_data_in_order() {
+    let fmt = pcm_format(1, 16000, 16);
+    let sink = Arc::new(Mutex::new(None));
+    let (client, uplinked) = client_with_uplink(EagerOpenCapture {
+        formats: vec![fmt.clone()],
+        sink: Arc::clone(&sink),
+    });
+    let mut client = client.with_ordered_replies();
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt.clone()])),
+    );
+    uplinked.lock().unwrap().clear();
+    let open = || {
+        RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 2,
+            initial_format: 0,
+            capture_format: fmt.clone(),
+        })
+    };
+
+    assert!(process_encoded(&mut client, 3, open()).is_empty());
+    (sink.lock().unwrap().as_mut().unwrap())(vec![5, 6, 7, 8]);
+    assert!(process_encoded(&mut client, 3, open()).is_empty());
+
+    let uplinked: Vec<RdpeaiPdu> = uplinked.lock().unwrap().iter().map(decode_uplinked).collect();
+    assert!(
+        matches!(
+            uplinked.as_slice(),
+            [
+                RdpeaiPdu::FormatChange(_),
+                RdpeaiPdu::OpenReply(_),
+                RdpeaiPdu::DataIncoming,
+                RdpeaiPdu::Data(_),
+                RdpeaiPdu::FormatChange(_),
+                RdpeaiPdu::OpenReply(_)
+            ]
+        ),
+        "Open replies must be ordered with capture data, got {uplinked:?}"
+    );
+}
+
+// oracle: scaffold
+#[test]
+fn capture_uplink_failure_is_reported() {
+    let fmt = pcm_format(1, 16000, 16);
+    let sink = Arc::new(Mutex::new(None));
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let reported = Arc::clone(&errors);
+    let mut client = RdpeaiClient::new(
+        Box::new(SinkKeepingCapture {
+            formats: vec![fmt.clone()],
+            sink: Arc::clone(&sink),
+        }),
+        Box::new(|_, _| Err(ironrdp_pdu::pdu_other_err!("uplink unavailable"))),
+    )
+    .with_uplink_error_handler(Arc::new(move |error| reported.lock().unwrap().push(error)));
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt.clone()])),
+    );
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 2,
+            initial_format: 0,
+            capture_format: fmt,
+        }),
+    );
+
+    (sink.lock().unwrap().as_mut().unwrap())(vec![1, 2, 3, 4]);
+    assert!(errors.lock().unwrap()[0].contains("uplink unavailable"));
+}
+
 // oracle: spec MS-RDPEAI §3.2.5.1.5 (the client replies with formats it supports among those the server sent)
 #[test]
 fn negotiated_formats_keep_client_order_and_only_offered_formats() {

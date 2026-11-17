@@ -4,6 +4,8 @@
 
 Currently, only the .NET target is officially supported.
 
+See the [FFI capability matrix](CAPABILITIES.md) for the current surface and its coverage relative to the Rust client.
+
 ## How to build
 
 - Install required tools: `cargo xtask ffi install`
@@ -25,6 +27,65 @@ The server opens it and sends its capabilities some time after the connection is
 Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from `Pending` to `Ready` when the capabilities arrive, which is when to send the first resize.
 `Unavailable` means the channel was not requested.
 `ActiveStage.DisplayControlCapabilities` exposes the server's monitor count and area limits once `Ready`.
+
+## Native audio
+
+Attach native playback and, optionally, microphone capture before starting the connector.
+Each connection needs its own `NativeAudio` object.
+Native playback also joins RDPDR when it is absent, because Windows servers require that channel before starting playback.
+The added RDPDR channel redirects no devices and does not replace an existing RDPDR configuration.
+Empty device selectors follow the system default; otherwise supply a device ID or name.
+The latency is in milliseconds; zero selects the native default.
+
+```csharp
+using var audio = NativeAudio.New(
+    playback: true, capture: true, outputDevice: "", inputDevice: "", latencyMs: 0);
+connector.WithNativeAudio(audio);
+```
+
+In the serialized active-stage loop, call `PollAudio(audio)` before and after processing an incoming PDU and at least every 50 ms while the connection is idle.
+Write each returned `ResponseFrame` to the same transport, in order, and dispose the output iterator and frames.
+Also drain `audio.NextStatus()` and report each status to the user; `IsCapture()` identifies capture errors and `Message()` describes the failure.
+An overflow of the status queue is reported as a general status with `IsCapture()` false.
+Device errors may be recoverable.
+An Open failure describes one capture attempt, not permanent microphone unavailability: the server can reopen the channel and retry.
+Cold microphone startup waits two seconds for the device-ready response before attempting cleanup; this synchronous wait pauses session processing, and cleanup can take longer if a driver blocks.
+If the capture queue fills, capture is stopped and its dynamic channel is closed rather than continuing with missing messages.
+Capture samples received before the client's Open reply is queued are discarded so they cannot overtake the reply.
+
+```csharp
+async Task SendAudioOutputs(ActiveStageOutputIterator outputs)
+{
+    using (outputs)
+    {
+        while (outputs.Next() is { } output)
+        {
+            using (output)
+            using (var frame = output.ResponseFrame)
+            {
+                var bytes = new byte[frame.Size];
+                frame.Fill(bytes);
+                await framed.Write(bytes);
+            }
+        }
+    }
+}
+
+await SendAudioOutputs(stage.PollAudio(audio));
+while (audio.NextStatus() is { } status)
+    ReportAudioError(status.IsCapture(), status.Message());
+
+// Stop audio without disconnecting the desktop.
+await SendAudioOutputs(stage.StopAudio(audio));
+```
+
+Serialize `PollAudio`, `StopAudio`, and `Process` on the same `ActiveStage`.
+Stopping audio is permanent for that connection; dispose the stage on disconnect to release device streams, and create new audio settings when reconnecting.
+Disposing `NativeAudio` releases its handle but does not stop an attached stage.
+Microphone capture requires operating-system permission; iOS applications must provide a microphone usage description and request access.
+Linux builds require ALSA development headers.
+The native FFI library requires `libasound` at runtime to load, even when audio is disabled.
+Android audio is unsupported so that the existing Android API 21 baseline remains usable.
 
 ## Touch and pen input (MS-RDPEI)
 

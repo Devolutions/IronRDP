@@ -456,6 +456,59 @@ internal static class SmokeTests
             True(stage.EncodedResize(1024, 768) is null, "no resize frame");
         });
 
+        yield return ("native audio requires an enabled direction", () =>
+        {
+            var error = Throws<IronRdpException>(() => NativeAudio.New(false, false, "", "", 0));
+            True(error.Message.Contains("playback or capture"), $"error message: {error.Message}");
+        });
+
+        yield return ("native audio is attached to one connector", () =>
+        {
+            using var audio = NativeAudio.New(true, true, "", "", 0);
+            var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            first.WithNativeAudio(audio);
+            Throws<IronRdpException>(() => second.WithNativeAudio(audio));
+            Throws<IronRdpException>(() => first.WithStaticChannelRdpSnd());
+        });
+
+        yield return ("stopping capture closes the channel and prevents it reopening", () =>
+        {
+            using var audio = NativeAudio.New(false, true, "", "", 0);
+            var connected = ConnectedStage(8, 4, audio: audio);
+            using var stage = connected.Stage;
+            using var image = connected.Image;
+            ProcessFrame(stage, image, DrdynvcAudioInputCreateRequest);
+            using (var closed = stage.StopAudio(audio))
+            {
+                Equal(1ul, (ulong)closed.Len(), "capture close frame");
+                True(closed.Next() is { EnumType: ActiveStageOutputType.ResponseFrame }, "close is a response frame");
+            }
+            ProcessFrame(stage, image, DrdynvcAudioInputCreateRequest);
+            using var stoppedAgain = stage.StopAudio(audio);
+            Equal(0ul, (ulong)stoppedAgain.Len(), "capture cannot reopen after stop");
+        });
+
+        yield return ("audio polling rejects a different connection", () =>
+        {
+            using var attached = NativeAudio.New(false, true, "", "", 0);
+            using var other = NativeAudio.New(false, true, "", "", 0);
+            var connected = ConnectedStage(8, 4, audio: attached);
+            using var stage = connected.Stage;
+            using var image = connected.Image;
+            Throws<IronRdpException>(() => stage.PollAudio(other));
+            Throws<IronRdpException>(() => stage.StopAudio(other));
+        });
+
+        yield return ("disposing a stage prevents further audio operations", () =>
+        {
+            using var audio = NativeAudio.New(false, true, "", "", 0);
+            var connected = ConnectedStage(8, 4, audio: audio);
+            using var image = connected.Image;
+            connected.Stage.Dispose();
+            Throws<ObjectDisposedException>(() => connected.Stage.PollAudio(audio));
+        });
+
         // oracle: spec MS-RDPEDISP §1.3 (the client sends a monitor layout only after the server's DISPLAYCONTROL_CAPS_PDU)
         // and §2.2.2.1 (MaxNumMonitors=2, MaxMonitorAreaFactorA=3840, MaxMonitorAreaFactorB=2400 in DisplayControlCapsPdu)
         yield return ("display control becomes ready when the server capabilities arrive", () =>
@@ -932,6 +985,14 @@ internal static class SmokeTests
         0x3a, 0x44, 0x69, 0x73, 0x70, 0x6c, 0x61, 0x79, 0x43, 0x6f, 0x6e, 0x74, 0x72, 0x6f, 0x6c, 0x00,
     };
 
+    // DYNVC_CREATE_REQ for "AUDIO_INPUT" on channel 1, carried by static channel 1004.
+    private static readonly byte[] DrdynvcAudioInputCreateRequest =
+    {
+        0x03, 0x00, 0x00, 0x24, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x16, 0x0e, 0x00,
+        0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x10, 0x01, 0x41, 0x55, 0x44, 0x49, 0x4f, 0x5f, 0x49, 0x4e,
+        0x50, 0x55, 0x54, 0x00,
+    };
+
     // DISPLAYCONTROL_CAPS_PDU with MaxNumMonitors=2, MaxMonitorAreaFactorA=3840, MaxMonitorAreaFactorB=2400
     // (MS-RDPEDISP §2.2.2.1) as DRDYNVC data on channel 1.
     private static readonly byte[] DisplayControlCapsPdu =
@@ -968,7 +1029,7 @@ internal static class SmokeTests
         },
     };
 
-    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false)
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false, NativeAudio? audio = null)
     {
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
         var serverPdus = HandshakeServerPdus.ToArray();
@@ -982,7 +1043,12 @@ internal static class SmokeTests
             connector.WithDynamicChannelRdpei(10, false);
         }
 
-        if (displayControl || rdpei)
+        if (audio is not null)
+        {
+            connector.WithNativeAudio(audio);
+        }
+
+        if (displayControl || rdpei || audio is not null)
         {
             serverPdus[1] = McsConnectResponseWithDrdynvc;
         }

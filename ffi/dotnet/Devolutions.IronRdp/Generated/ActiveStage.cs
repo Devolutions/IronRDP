@@ -258,6 +258,66 @@ public partial class ActiveStage: IDisposable
     /// <returns>
     /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
     /// </returns>
+    public ActiveStageOutputIterator PollAudio(NativeAudio audio)
+    {
+        unsafe
+        {
+            if (audio == null) throw new ArgumentNullException(nameof(audio));
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            BorrowLease<Raw.NativeAudio>? audioLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                audioLease = audio._diplomatHandle.Lease(BorrowKind.Shared);
+                var result = Raw.ActiveStage.PollAudio(selfLease!.Ptr, audioLease!.Ptr);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return new ActiveStageOutputIterator(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+                audioLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
+    /// </returns>
+    public ActiveStageOutputIterator StopAudio(NativeAudio audio)
+    {
+        unsafe
+        {
+            if (audio == null) throw new ArgumentNullException(nameof(audio));
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            BorrowLease<Raw.NativeAudio>? audioLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                audioLease = audio._diplomatHandle.Lease(BorrowKind.Shared);
+                var result = Raw.ActiveStage.StopAudio(selfLease!.Ptr, audioLease!.Ptr);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return new ActiveStageOutputIterator(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+                audioLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
+    /// </returns>
     public ActiveStageOutputIterator ProcessFastpathInput(DecodedImage image, FastPathInputEventIterator fastpathInput)
     {
         unsafe
