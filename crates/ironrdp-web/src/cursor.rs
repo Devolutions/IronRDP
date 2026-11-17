@@ -393,10 +393,18 @@ mod tests {
         assert_eq!((tall.width, tall.height), (1, 32));
     }
 
-    /// Every pointer size whose sides are each 1 to 300 or `u16::MAX`.
+    /// Every pointer size whose sides are each 1 to 300 or `u16::MAX`, and every side from 1 to `u16::MAX` beside a
+    /// side of 1, 31, 32, 33, 300 or `u16::MAX`, either way round.
     fn sizes() -> impl Iterator<Item = (u16, u16)> {
-        let sides = || (1..=300).chain([u16::MAX]);
-        sides().flat_map(move |width| sides().map(move |height| (width, height)))
+        const PARTNERS: [u16; 6] = [1, 31, 32, 33, 300, u16::MAX];
+        let grid_sides = || (1..=300).chain([u16::MAX]);
+        let grid = grid_sides().flat_map(move |width| grid_sides().map(move |height| (width, height)));
+        let lines = (1..=u16::MAX).flat_map(|side| {
+            PARTNERS
+                .into_iter()
+                .flat_map(move |partner| [(side, partner), (partner, side)])
+        });
+        grid.chain(lines)
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
