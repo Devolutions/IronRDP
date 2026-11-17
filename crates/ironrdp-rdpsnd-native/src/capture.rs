@@ -378,12 +378,9 @@ pub fn take_capture_packets(buffer: &mut Vec<u8>, packet_size: usize) -> Vec<Vec
     if packet_size == 0 {
         return Vec::new();
     }
-    let mut packets = Vec::new();
-    while buffer.len() >= packet_size {
-        let rest = buffer.split_off(packet_size);
-        let packet = core::mem::replace(buffer, rest);
-        packets.push(packet);
-    }
+    let packets = buffer.chunks_exact(packet_size).map(<[u8]>::to_vec).collect();
+    let complete_len = buffer.len() - buffer.len() % packet_size;
+    buffer.drain(..complete_len);
     packets
 }
 

@@ -12,11 +12,11 @@ use ironrdp_dvc::pdu::{
 };
 use ironrdp_dvc::{DrdynvcClient, DvcMessage, DvcProcessor as _};
 use ironrdp_rdpsnd::client::{
-    DVC_CHANNEL_NAME, LOSSY_DVC_CHANNEL_NAME, Rdpsnd, RdpsndClientHandler, RdpsndDvc, RdpsndDvcState,
+    DVC_CHANNEL_NAME, LOSSY_DVC_CHANNEL_NAME, NoopRdpsndBackend, Rdpsnd, RdpsndClientHandler, RdpsndDvc, RdpsndDvcState,
 };
 use ironrdp_rdpsnd::codec;
 use ironrdp_rdpsnd::pdu::{self, AudioFormat, PitchPdu, VolumePdu, WaveFormat};
-use ironrdp_svc::{SvcMessage, SvcProcessor as _};
+use ironrdp_svc::{StaticVirtualChannel, SvcMessage, SvcProcessor as _};
 use rstest::rstest;
 
 fn pcm(rate: u32, channels: u16) -> AudioFormat {
@@ -57,6 +57,13 @@ fn wave2(timestamp: u16, block_no: u8, format_no: u16, data: &[u8]) -> Vec<u8> {
         data: Cow::Borrowed(data),
     }))
     .unwrap()
+}
+
+fn svc_fragment(total_length: u32, flags: u32, data: &[u8]) -> Vec<u8> {
+    let mut fragment = total_length.to_le_bytes().to_vec();
+    fragment.extend_from_slice(&flags.to_le_bytes());
+    fragment.extend_from_slice(data);
+    fragment
 }
 
 fn decode_svc(message: &SvcMessage) -> pdu::ClientAudioOutputPdu {
@@ -122,6 +129,120 @@ impl RdpsndClientHandler for TimedBackend {
     fn set_pitch(&mut self, _pitch: PitchPdu) {}
 
     fn close(&mut self) {}
+}
+
+// oracle: spec MS-RDPEA §2.2.1 and §2.2.3.10 (four-byte header, 16-bit BodySize, variable Wave2 data)
+#[test]
+fn playback_reassembly_limit_includes_concatenated_pre_v8_wave() {
+    let maximum_message_size = 8 + usize::from(u16::MAX);
+    let static_channel = Rdpsnd::new(Box::new(NoopRdpsndBackend));
+    assert_eq!(static_channel.max_message_size(), Some(maximum_message_size));
+
+    let state = RdpsndDvcState::new(Box::new(NoopRdpsndBackend));
+    assert_eq!(state.channel().max_message_size(), Some(maximum_message_size));
+    assert_eq!(state.lossy_channel().max_message_size(), Some(maximum_message_size));
+}
+
+// oracle: spec MS-RDPEA §2.2.1 (16-bit BodySize rejects a first fragment advertising a larger message)
+#[test]
+fn static_playback_rejects_oversized_fragmented_message_at_first_chunk() {
+    const FIRST: u32 = 1;
+    let maximum_message_size = 8 + usize::from(u16::MAX);
+    let mut channel = StaticVirtualChannel::new(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
+    let fragment = svc_fragment(
+        u32::try_from(maximum_message_size + 1).expect("message size fits the SVC length field"),
+        FIRST,
+        &[0x5a; 32],
+    );
+
+    channel
+        .process(&fragment)
+        .expect_err("the oversized first fragment must fail before reassembly");
+}
+
+// oracle: spec MS-RDPEA §2.2.1 (16-bit BodySize rejects a first fragment advertising a larger message)
+#[test]
+fn dynamic_playback_rejects_oversized_fragmented_message_at_first_chunk() {
+    use ironrdp_dvc::pdu::{DataFirstPdu, DrdynvcDataPdu};
+
+    let maximum_message_size = 8 + usize::from(u16::MAX);
+    let mut channel = DrdynvcClient::new();
+    channel
+        .attach_established_dynamic_channel(7, RdpsndDvc::new(Box::new(NoopRdpsndBackend)))
+        .expect("audio DVC channel attaches");
+    let first = DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(
+        7,
+        u32::try_from(maximum_message_size + 1).expect("message size fits the DVC length field"),
+        vec![0x5a; 32],
+    )));
+
+    channel
+        .process(&encode_vec(&first).expect("encode DVC first fragment"))
+        .expect_err("the oversized first fragment must fail before reassembly");
+}
+
+// oracle: spec MS-RDPEA §2.2.1, §2.2.3.3, and §2.2.3.4 (WaveInfo BodySize permits a full sample that exceeds the ordinary PDU ceiling when concatenated)
+#[test]
+fn static_playback_reassembles_largest_compatible_concatenated_wave() {
+    const FIRST: u32 = 1;
+    const LAST: u32 = 2;
+    const CHUNK_DATA_SIZE: usize = 1_000;
+
+    let audio_length = u16::MAX - 8;
+    let format = codec::alaw_format(1, 8_000);
+    let backend = TimedBackend::new(vec![format.clone()]);
+    let waves = Arc::clone(&backend.waves);
+    let mut processor = Rdpsnd::new(Box::new(backend));
+    let formats = encode_vec(&pdu::ServerAudioOutputPdu::AudioFormat(pdu::ServerAudioFormatPdu {
+        version: pdu::Version::V5,
+        formats: vec![format.clone()],
+    }))
+    .expect("encode server formats");
+    processor.process(&formats).expect("negotiate server formats");
+    processor.process(&training()).expect("complete training");
+    let mut channel = StaticVirtualChannel::new(processor);
+
+    let mut message = encode_vec(&pdu::ServerAudioOutputPdu::Wave(pdu::WavePdu {
+        timestamp: 0x1234,
+        format_no: 0,
+        block_no: 1,
+        data_prefix: [0x11; 4],
+        audio_length,
+    }))
+    .expect("encode WaveInfo");
+    message.extend_from_slice(
+        &encode_vec(&pdu::WaveDataPdu {
+            data: vec![0x22; usize::from(audio_length) - 4],
+        })
+        .expect("encode Wave data"),
+    );
+    assert_eq!(message.len(), 16 + usize::from(audio_length));
+    assert_eq!(message.len(), 8 + usize::from(u16::MAX));
+    assert!(message.len() > 4 + usize::from(u16::MAX));
+
+    let message_length = u32::try_from(message.len()).expect("message length fits SVC field");
+    let chunk_count = message.len().div_ceil(CHUNK_DATA_SIZE);
+    let mut replies = Vec::new();
+    for (index, chunk) in message.chunks(CHUNK_DATA_SIZE).enumerate() {
+        let mut flags = 0;
+        if index == 0 {
+            flags |= FIRST;
+        }
+        if index + 1 == chunk_count {
+            flags |= LAST;
+        }
+        replies = channel
+            .process(&svc_fragment(message_length, flags, chunk))
+            .expect("within-schema fragmented WaveInfo and Wave message");
+    }
+
+    assert_eq!(wave_confirm(decode_svc(&replies[0])).block_no, 1);
+    let waves = waves.lock().unwrap();
+    assert_eq!(waves.len(), 1);
+    assert_eq!(waves[0].0, format);
+    assert_eq!(waves[0].1.len(), usize::from(audio_length));
+    assert_eq!(&waves[0].1[..4], &[0x11; 4]);
+    assert!(waves[0].1[4..].iter().all(|byte| *byte == 0x22));
 }
 
 // ============================================================================

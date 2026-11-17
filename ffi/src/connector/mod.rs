@@ -211,6 +211,15 @@ pub mod ffi {
             &mut self,
             config: &DvcPipeProxyConfig,
         ) -> Result<(), Box<IronRdpError>> {
+            if self.1.as_ref().is_some_and(|audio| {
+                config
+                    .descriptors
+                    .iter()
+                    .any(|descriptor| audio.reserves_dynamic_channel(&descriptor.channel_name))
+            }) {
+                return Err("native audio dynamic channel is reserved".into());
+            }
+
             for descriptor in &config.descriptors {
                 let sink = config.message_sink.0.clone();
                 let proxy = DvcNamedPipeProxy::new(
@@ -618,6 +627,94 @@ mod tests {
             .map_err(|_| "attach capture-only audio")?;
 
         assert!(!attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
+        Ok(())
+    }
+
+    // oracle: regression Devolutions/IronRDP#2469, review comment 4604743100
+    #[test]
+    fn reserved_pipe_proxy_rejects_all_descriptors_without_mutation() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        let queue = DvcPipeProxyMessageQueue::new(1);
+        let mut config = DvcPipeProxyConfig::new(&queue.get_sink());
+        config.add_pipe_proxy(&DvcPipeProxyDescriptor::new(
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME,
+            "playback-pipe",
+        ));
+        config.add_pipe_proxy(&DvcPipeProxyDescriptor::new(ironrdp_rdpeai::CHANNEL_NAME, "input-pipe"));
+
+        assert!(connector.with_dynamic_channel_pipe_proxy(&config).is_err());
+        let inner = connector.0.as_mut().ok_or("connector")?;
+        assert!(!inner.config.enable_audio_playback);
+        let drdynvc = inner
+            .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+            .ok_or("dynamic channels")?;
+        assert!(!drdynvc.has_channel_name(ironrdp::rdpsnd::client::DVC_CHANNEL_NAME));
+        assert!(drdynvc.has_channel_name(ironrdp_rdpeai::CHANNEL_NAME));
+        Ok(())
+    }
+
+    // oracle: regression Devolutions/IronRDP#2469, review comment 4604743100
+    #[test]
+    fn rejected_proxy_batch_preserves_proxy_attached_before_audio() -> Result<(), &'static str> {
+        use std::sync::mpsc::{self, TryRecvError};
+
+        use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessageSink;
+
+        let mut connector = connector_without_playback()?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let sink = DvcPipeProxyMessageSink(sender);
+        let mut original = DvcPipeProxyConfig::new(&sink);
+        original.add_pipe_proxy(&DvcPipeProxyDescriptor::new("other", "original-pipe"));
+        connector
+            .with_dynamic_channel_pipe_proxy(&original)
+            .map_err(|_| "attach original proxy")?;
+        drop(original);
+        drop(sink);
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        let queue = DvcPipeProxyMessageQueue::new(1);
+        let mut replacement = DvcPipeProxyConfig::new(&queue.get_sink());
+        replacement.add_pipe_proxy(&DvcPipeProxyDescriptor::new("other", "replacement-pipe"));
+        replacement.add_pipe_proxy(&DvcPipeProxyDescriptor::new(ironrdp_rdpeai::CHANNEL_NAME, "input-pipe"));
+
+        assert!(connector.with_dynamic_channel_pipe_proxy(&replacement).is_err());
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+        Ok(())
+    }
+
+    // oracle: regression Devolutions/IronRDP#2469, review comment 4604743100
+    #[test]
+    fn valid_proxy_batch_attaches_all_descriptors_after_audio() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        let queue = DvcPipeProxyMessageQueue::new(1);
+        let mut config = DvcPipeProxyConfig::new(&queue.get_sink());
+        config.add_pipe_proxy(&DvcPipeProxyDescriptor::new("first", "first-pipe"));
+        config.add_pipe_proxy(&DvcPipeProxyDescriptor::new("second", "second-pipe"));
+
+        connector
+            .with_dynamic_channel_pipe_proxy(&config)
+            .map_err(|_| "attach proxies")?;
+        let drdynvc = connector
+            .0
+            .as_mut()
+            .ok_or("connector")?
+            .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+            .ok_or("dynamic channels")?;
+        assert!(drdynvc.has_channel_name("first"));
+        assert!(drdynvc.has_channel_name("second"));
+        assert!(drdynvc.has_channel_name(ironrdp_rdpeai::CHANNEL_NAME));
         Ok(())
     }
 

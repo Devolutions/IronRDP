@@ -47,10 +47,12 @@ In the serialized active-stage loop, call `PollAudio(audio)` before and after pr
 The bounded queue holds at least 100 ms at up to 48 kHz and two channels, including after a mono-to-stereo format change, and each poll drains the queued batches.
 If the session loop stalls long enough to exhaust that buffer, capture is stopped and its dynamic channel is closed rather than continuing with missing messages.
 Write each returned `ResponseFrame` to the same transport, in order, and dispose the output iterator and frames.
+Each audio response can contain multiple complete RDP packets.
 Device and stream failures are logged through Rust tracing rather than returned as managed status events.
 An Open failure describes one capture attempt, not permanent microphone unavailability: the server can reopen the channel and retry.
 Opening capture and a FormatChange that changes rate or channels wait up to two seconds for device readiness in the serialized session loop.
 This pauses session processing, and cleanup can take longer if a driver blocks.
+Stopping audio closes capture before waiting for playback cleanup.
 Capture samples received before the client's Open reply is queued are discarded so they cannot overtake the reply.
 
 ```csharp

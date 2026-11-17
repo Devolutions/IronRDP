@@ -128,6 +128,20 @@ fn take_capture_packets_splits_exact_frames() {
     assert_eq!(buffer, vec![8, 9]);
 }
 
+// oracle: regression #2469, a 4,096-frame stereo callback with two-byte packets
+#[test]
+fn capture_callback_packets_do_not_retain_oversized_allocations() {
+    let data: Vec<u8> = (0..=250u8).cycle().take(16_385).collect();
+    let mut buffer = data.clone();
+
+    let packets = take_capture_packets(&mut buffer, 2);
+
+    assert_eq!(packets.len(), 8_192);
+    assert!(packets.iter().map(Vec::capacity).sum::<usize>() <= 2 * data.len());
+    assert!(packets.iter().flatten().copied().eq(data[..16_384].iter().copied()));
+    assert_eq!(buffer, data[16_384..]);
+}
+
 #[test]
 fn take_capture_packets_zero_size_is_noop() {
     let mut buffer = vec![1, 2, 3];

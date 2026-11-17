@@ -31,6 +31,25 @@ pub const DVC_CHANNEL_NAME: &str = "AUDIO_PLAYBACK_DVC";
 /// [MS-RDPEA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/bea2d5cf-e3b9-4419-92e5-0e074ff9bc5b
 pub const LOSSY_DVC_CHANNEL_NAME: &str = "AUDIO_PLAYBACK_LOSSY_DVC";
 
+/// This limit includes a concatenated pre-v8 [WaveInfo PDU][wave-info] and [Wave PDU][wave-pdu],
+/// which the client accepts as one message.
+///
+/// Their 16-byte WaveInfo PDU permits a sample up to `u16::MAX - 8` bytes, yielding
+/// `u16::MAX + 8` total message bytes.
+///
+/// Other PDUs, including [Wave2 PDU][wave2-pdu], fit within the four-byte
+/// [RDPSND PDU Header (SNDPROLOG)][rdpsnd-header] and its 16-bit `BodySize`.
+///
+/// [rdpsnd-header]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/863d154b-dbe0-4781-979d-fa48daed721e
+/// [wave-info]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/c53cd81c-0d7f-4e68-8b95-1c1da68dbaac
+/// [wave-pdu]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/81841793-f5d3-4305-aa22-ddcbd81a96b5
+/// [wave2-pdu]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/25cebccb-d679-4302-8dd0-df7fb9a4f9b5
+#[expect(
+    clippy::as_conversions,
+    reason = "widen the 16-bit BodySize maximum and include the accepted pre-v8 Wave concatenation"
+)]
+const MAX_RDPSND_MESSAGE_SIZE: usize = 8 + u16::MAX as usize;
+
 /// Size of the signature that starts every `AUDIO_FRAGDATA` structure.
 const FRAGDATA_SIGNATURE_SIZE: usize = 8;
 
@@ -827,6 +846,10 @@ impl SvcProcessor for Rdpsnd {
         Self::NAME
     }
 
+    fn max_message_size(&self) -> Option<usize> {
+        Some(MAX_RDPSND_MESSAGE_SIZE)
+    }
+
     fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::Never
     }
@@ -929,6 +952,10 @@ impl_as_any!(RdpsndDvc);
 impl DvcProcessor for RdpsndDvc {
     fn channel_name(&self) -> &str {
         self.name()
+    }
+
+    fn max_message_size(&self) -> Option<usize> {
+        Some(MAX_RDPSND_MESSAGE_SIZE)
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
