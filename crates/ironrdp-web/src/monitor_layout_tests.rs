@@ -163,6 +163,8 @@ async fn callback_receives_initial_changed_and_reactivated_layouts() {
         set_cursor_style_callback: js_sys::Function::new_no_args(""),
         set_cursor_style_callback_context: JsValue::NULL,
         audio_playback_callback: None,
+        camera_callback: None,
+        camera: None,
         monitor_layout_callback: Some(callback),
         input_events_rx: RefCell::new(Some(input_events_rx)),
         rdp_reader: RefCell::new(Some(reader)),

@@ -78,6 +78,31 @@ It does not mean the RDP session ended, and subsequent wave messages can resume 
 [MS-RDPEA §2.2.4.1 Volume PDU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/d13a7930-00cc-4cdb-a17d-7bda00f6edb7
 [§2.2.2.2 Client Audio Formats and Version PDU]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/d58d4d57-cb36-453a-866f-86beacc6d79b
 
+## Camera
+
+Register `camera(callback)` before connecting to redirect one camera to the remote desktop, shown there as `Browser camera` or the name given with `cameraName(name)`.
+The device offers MJPEG at 640x480 (30 and 15 fps), 320x240 (15 fps) and 1280x720 (15 fps), in that preference order.
+Its current media type is the first offered until the server selects one, and stays the last selected across stops.
+The embedding application owns the capture and the JPEG encoding.
+
+The callback receives these message shapes.
+
+| Message                                 | Fields                                                                           |
+| --------------------------------------- | -------------------------------------------------------------------------------- |
+| `{ type: 'start', width, height, fps }` | The format the server started the stream in; capture in it until a stop message. |
+| `{ type: 'stop' }`                      | The server stopped the stream, deactivated the device or closed its channel.     |
+
+A stream restarted in another format gets a stop message before its start message.
+No stop message follows the end of the session itself; the session's end is that signal.
+
+After a start message, push each frame as one JPEG with `session.invokeExtension(cameraSample(frame))`.
+The server asks for frames one Sample Request at a time ([MS-RDPECAM §2.2.3.13 Sample Request]).
+A frame answers the oldest pending request at once, and `invokeExtension` returns `true`; with no request pending the frame is held, in place of any older held frame, until the next request, and `invokeExtension` returns `false`.
+It also returns `false` when no stream is running, in which case the frame is dropped, and when the server refused the frame and got a Sample Error Response instead.
+A held frame is discarded when the stream stops or restarts, so a new stream never gets a frame of the old size.
+
+[MS-RDPECAM §2.2.3.13 Sample Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
+
 ## Virtual Printer
 
 Register `printJobStreamCallbacks` before connecting to enable the browser-side

@@ -3944,6 +3944,7 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
+ "ironrdp-rdpecam",
  "ironrdp-rdpfile",
  "ironrdp-svc",
  "ironrdp-vmconnect",
