@@ -541,42 +541,6 @@ fn ordered_open_and_reopen_keep_responses_and_capture_data_in_order() {
     );
 }
 
-// oracle: scaffold
-#[test]
-fn capture_uplink_failure_is_reported() {
-    let fmt = pcm_format(1, 16000, 16);
-    let sink = Arc::new(Mutex::new(None));
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let reported = Arc::clone(&errors);
-    let mut client = RdpeaiClient::new(
-        Box::new(SinkKeepingCapture {
-            formats: vec![fmt.clone()],
-            sink: Arc::clone(&sink),
-        }),
-        Box::new(|_, _| Err(ironrdp_pdu::pdu_other_err!("uplink unavailable"))),
-    )
-    .with_uplink_error_handler(Arc::new(move |error| reported.lock().unwrap().push(error)));
-    client.start(3).unwrap();
-    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
-    let _ = process_encoded(
-        &mut client,
-        3,
-        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt.clone()])),
-    );
-    let _ = process_encoded(
-        &mut client,
-        3,
-        RdpeaiPdu::Open(OpenPdu {
-            frames_per_packet: 2,
-            initial_format: 0,
-            capture_format: fmt,
-        }),
-    );
-
-    (sink.lock().unwrap().as_mut().unwrap())(vec![1, 2, 3, 4]);
-    assert!(errors.lock().unwrap()[0].contains("uplink unavailable"));
-}
-
 // oracle: spec MS-RDPEAI §3.2.5.1.5 (the client replies with formats it supports among those the server sent)
 #[test]
 fn negotiated_formats_keep_client_order_and_only_offered_formats() {

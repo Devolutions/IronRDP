@@ -21,11 +21,6 @@ pub type DvcUplink = Box<dyn FnMut(u32, Vec<SvcMessage>) -> PduResult<()> + Send
 /// Sink for one complete capture packet (raw audio bytes, no RDPEAI header).
 pub type AudioPacketSink = Box<dyn FnMut(Vec<u8>) + Send>;
 
-/// Observer for failures to encode or enqueue captured audio.
-///
-/// The observer may run on an audio callback thread and must not block.
-pub type UplinkErrorHandler = Arc<dyn Fn(String) + Send + Sync>;
-
 /// Capture device backend driven by the AUDIO_INPUT client processor.
 pub trait RdpeaiCaptureHandler: Send {
     /// Formats this backend can negotiate as encoding formats, in preferred order.
@@ -110,7 +105,6 @@ pub struct RdpeaiClient {
     capture_epoch: Arc<AtomicU32>,
     ordered_replies: bool,
     pending_open: Option<Arc<AtomicBool>>,
-    uplink_error_handler: Option<UplinkErrorHandler>,
 }
 
 impl RdpeaiClient {
@@ -127,7 +121,6 @@ impl RdpeaiClient {
             capture_epoch: Arc::new(AtomicU32::new(0)),
             ordered_replies: false,
             pending_open: None,
-            uplink_error_handler: None,
         }
     }
 
@@ -141,20 +134,12 @@ impl RdpeaiClient {
         self
     }
 
-    /// Observe failures from the asynchronous capture uplink.
-    #[must_use]
-    pub fn with_uplink_error_handler(mut self, handler: UplinkErrorHandler) -> Self {
-        self.uplink_error_handler = Some(handler);
-        self
-    }
-
     fn build_packet_sink(&self) -> AudioPacketSink {
         let channel_id = self.channel_id.expect("open only after start");
         let uplink = Arc::clone(&self.uplink);
         let epoch = Arc::clone(&self.capture_epoch);
         let expected = epoch.load(Ordering::Acquire);
         let open = self.pending_open.clone();
-        let error_handler = self.uplink_error_handler.clone();
 
         Box::new(move |packet: Vec<u8>| {
             if epoch.load(Ordering::Acquire) != expected
@@ -170,23 +155,15 @@ impl RdpeaiClient {
                 Ok(v) => v,
                 Err(error) => {
                     warn!(%error, "Failed to encode AUDIO_INPUT data PDUs");
-                    if let Some(handler) = &error_handler {
-                        handler(format!("failed to encode audio capture data: {error}"));
-                    }
                     return;
                 }
             };
             let Ok(mut uplink) = uplink.lock() else {
-                if let Some(handler) = &error_handler {
-                    handler("audio capture uplink lock poisoned".to_owned());
-                }
+                warn!("AUDIO_INPUT uplink lock poisoned");
                 return;
             };
             if let Err(error) = uplink(channel_id, svc) {
                 warn!(%error, "Failed to uplink AUDIO_INPUT data");
-                if let Some(handler) = &error_handler {
-                    handler(format!("failed to enqueue audio capture data: {error}"));
-                }
             }
         })
     }

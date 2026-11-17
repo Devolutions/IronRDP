@@ -45,9 +45,7 @@ connector.WithNativeAudio(audio);
 
 In the serialized active-stage loop, call `PollAudio(audio)` before and after processing an incoming PDU and at least every 50 ms while the connection is idle.
 Write each returned `ResponseFrame` to the same transport, in order, and dispose the output iterator and frames.
-Also drain `audio.NextStatus()` and report each status to the user; `IsCapture()` identifies capture errors and `Message()` describes the failure.
-An overflow of the status queue is reported as a general status with `IsCapture()` false.
-Device errors may be recoverable.
+Device and stream failures are logged through Rust tracing rather than returned as managed status events.
 An Open failure describes one capture attempt, not permanent microphone unavailability: the server can reopen the channel and retry.
 Cold microphone startup waits two seconds for the device-ready response before attempting cleanup; this synchronous wait pauses session processing, and cleanup can take longer if a driver blocks.
 If the capture queue fills, capture is stopped and its dynamic channel is closed rather than continuing with missing messages.
@@ -72,8 +70,6 @@ async Task SendAudioOutputs(ActiveStageOutputIterator outputs)
 }
 
 await SendAudioOutputs(stage.PollAudio(audio));
-while (audio.NextStatus() is { } status)
-    ReportAudioError(status.IsCapture(), status.Message());
 
 // Stop audio without disconnecting the desktop.
 await SendAudioOutputs(stage.StopAudio(audio));

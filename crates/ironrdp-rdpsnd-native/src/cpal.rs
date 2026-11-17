@@ -26,7 +26,6 @@ use ringbuf::traits::{Consumer as _, Observer as _, Producer as _, Split as _};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tracing::{debug, error, info, trace, warn};
 
-use crate::AudioErrorHandler;
 use crate::device::{self, DeviceSelector, Direction};
 use crate::error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};
 
@@ -181,15 +180,11 @@ impl Decoder {
     }
 
     /// Decodes `data`, appending interleaved samples to `out`.
-    fn decode(&mut self, data: &[u8], out: &mut Vec<i16>) -> RdpsndNativeResult<()> {
+    fn decode(&mut self, data: &[u8], out: &mut Vec<i16>) {
         match self {
             Self::Codec(decoder) => {
                 if let Err(error) = decoder.decode(data, out) {
                     warn!(%error, "Failed to decode a wave block");
-                    return Err(
-                        RdpsndNativeError::new("decoding a wave block", RdpsndNativeErrorKind::Decoder)
-                            .with_source(error),
-                    );
                 }
             }
             #[cfg(feature = "opus")]
@@ -198,11 +193,7 @@ impl Decoder {
                     Ok(frames) => frames,
                     Err(error) => {
                         warn!(?error, "Failed to get the number of samples of an Opus packet");
-                        return Err(RdpsndNativeError::new(
-                            "reading the Opus packet sample count",
-                            RdpsndNativeErrorKind::Decoder,
-                        )
-                        .with_source(error));
+                        return;
                     }
                 };
                 let start = out.len();
@@ -212,10 +203,6 @@ impl Decoder {
                     Err(error) => {
                         warn!(?error, "Failed to decode an Opus packet");
                         out.truncate(start);
-                        return Err(
-                            RdpsndNativeError::new("decoding an Opus packet", RdpsndNativeErrorKind::Decoder)
-                                .with_source(error),
-                        );
                     }
                 }
             }
@@ -223,11 +210,9 @@ impl Decoder {
             Self::Aac(decoder) => {
                 if let Err(error) = decoder.decode(data, out) {
                     warn!(error = %error.report(), "Failed to decode an AAC frame");
-                    return Err(error);
                 }
             }
         }
-        Ok(())
     }
 }
 
@@ -302,7 +287,6 @@ struct ActiveStream {
     shared: Arc<StreamShared>,
     thread: JoinHandle<()>,
     decoded: Vec<i16>,
-    decode_failure_reported: bool,
 }
 
 impl core::fmt::Debug for ActiveStream {
@@ -315,6 +299,7 @@ impl core::fmt::Debug for ActiveStream {
     }
 }
 
+#[derive(Debug)]
 pub struct RdpsndBackend {
     config: PlaybackConfig,
     stream: Option<ActiveStream>,
@@ -323,20 +308,6 @@ pub struct RdpsndBackend {
     volume_received: bool,
     /// Formats the [`RdpsndClientHandler::get_formats`] fallback advertises.
     formats: Vec<AudioFormat>,
-    error_handler: Option<AudioErrorHandler>,
-    open_failure_reported: bool,
-}
-
-impl core::fmt::Debug for RdpsndBackend {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RdpsndBackend")
-            .field("config", &self.config)
-            .field("stream", &self.stream)
-            .field("volume", &self.volume)
-            .field("volume_received", &self.volume_received)
-            .field("formats", &self.formats)
-            .finish_non_exhaustive()
-    }
 }
 
 impl Default for RdpsndBackend {
@@ -359,16 +330,7 @@ impl RdpsndBackend {
             volume: Arc::new(AtomicU32::new(pack_volume(0xFFFF, 0xFFFF))),
             volume_received: false,
             formats: fallback_formats(),
-            error_handler: None,
-            open_failure_reported: false,
         }
-    }
-
-    /// Observes audio failures through a handler that must not block audio callback threads.
-    #[must_use]
-    pub fn with_error_handler(mut self, handler: AudioErrorHandler) -> Self {
-        self.error_handler = Some(handler);
-        self
     }
 
     fn open(&mut self, format: &AudioFormat) -> RdpsndNativeResult<()> {
@@ -404,7 +366,6 @@ impl RdpsndBackend {
             let shared = Arc::clone(&shared);
             let volume = Arc::clone(&self.volume);
             let selector = self.config.device.clone();
-            let error_handler = self.error_handler.clone();
             let config = StreamConfig {
                 channels: format.n_channels,
                 sample_rate,
@@ -412,7 +373,7 @@ impl RdpsndBackend {
             };
             thread::Builder::new()
                 .name("rdpsnd-playback".to_owned())
-                .spawn(move || run_stream(&selector, &config, playout, &shared, &volume, error_handler.as_ref()))
+                .spawn(move || run_stream(&selector, &config, playout, &shared, &volume))
                 .map_err(|e| {
                     RdpsndNativeError::new("spawning the playback thread", RdpsndNativeErrorKind::StreamBuild)
                         .with_source(e)
@@ -429,7 +390,6 @@ impl RdpsndBackend {
             shared,
             thread,
             decoded: Vec::new(),
-            decode_failure_reported: false,
         });
         Ok(())
     }
@@ -560,36 +520,13 @@ impl RdpsndClientHandler for RdpsndBackend {
             if let Err(e) = self.open(format) {
                 // Soft-fail: the next wave block retries.
                 error!(error = %e.report().with_locations(), "Failed to open the playback stream");
-                if !self.open_failure_reported {
-                    if let Some(handler) = &self.error_handler {
-                        handler(format!(
-                            "audio playback initialization failed: {}; check the negotiated audio format and output device",
-                            e.report()
-                        ));
-                    }
-                    self.open_failure_reported = true;
-                }
                 return;
             }
-            self.open_failure_reported = false;
         }
         let stream = self.stream.as_mut().expect("opened above");
 
         stream.decoded.clear();
-        match stream.decoder.decode(&data, &mut stream.decoded) {
-            Ok(()) => stream.decode_failure_reported = false,
-            Err(error) => {
-                if !stream.decode_failure_reported {
-                    if let Some(handler) = &self.error_handler {
-                        handler(format!(
-                            "audio playback decode failed: {}; check the server's audio encoding or select another audio format",
-                            error.report()
-                        ));
-                    }
-                    stream.decode_failure_reported = true;
-                }
-            }
-        }
+        stream.decoder.decode(&data, &mut stream.decoded);
         let written = stream.producer.push_slice(&stream.decoded);
         if written < stream.decoded.len() {
             warn!(
@@ -629,7 +566,6 @@ impl RdpsndClientHandler for RdpsndBackend {
     }
 
     fn close(&mut self) {
-        self.open_failure_reported = false;
         if let Some(stream) = self.stream.take() {
             stream.shared.ended.store(true, Ordering::Relaxed);
             stream.thread.thread().unpark();
@@ -647,7 +583,6 @@ fn run_stream(
     playout: Playout,
     shared: &Arc<StreamShared>,
     volume: &Arc<AtomicU32>,
-    error_handler: Option<&AudioErrorHandler>,
 ) {
     let playout = Arc::new(Mutex::new(playout));
     let mut reported_failure = false;
@@ -656,11 +591,6 @@ fn run_stream(
         let Some(device) = device::open_device(selector, Direction::Output) else {
             if !reported_failure {
                 warn!(device = %selector, "Audio output device not found; retrying");
-                if let Some(handler) = error_handler {
-                    handler(format!(
-                        "audio playback output device {selector} not found; reconnect or select an available output device; retrying"
-                    ));
-                }
                 reported_failure = true;
             }
             thread::park_timeout(device::DEVICE_RETRY_INTERVAL);
@@ -668,19 +598,11 @@ fn run_stream(
         };
         let device_id = device::device_id(&device);
 
-        let stream = match build_stream(&device, config, &playout, shared, volume, error_handler.cloned()) {
+        let stream = match build_stream(&device, config, &playout, shared, volume) {
             Ok(stream) => stream,
             Err(e) => {
                 if !reported_failure {
                     warn!(error = %e.report().with_locations(), "Failed to open the audio output device; retrying");
-                    if let Some(handler) = error_handler {
-                        handler(format!(
-                            "audio playback could not open output device {selector}: {}; check device availability and support for {} Hz with {} channels; retrying",
-                            e.report(),
-                            config.sample_rate,
-                            config.channels
-                        ));
-                    }
                     reported_failure = true;
                 }
                 thread::park_timeout(device::DEVICE_RETRY_INTERVAL);
@@ -696,33 +618,16 @@ fn run_stream(
                 Ok(session_volume) => Some(session_volume),
                 Err(error) => {
                     warn!(%error, "Audio session volume unavailable; scaling samples instead");
-                    if let Some(handler) = error_handler {
-                        handler(format!(
-                            "audio playback session volume unavailable: {error}; using software volume instead"
-                        ));
-                    }
                     None
                 }
             });
         #[cfg(windows)]
-        let mut volume_failure_reported = false;
-        #[cfg(windows)]
-        let mut apply_session_volume = |session_volume: &Option<crate::session_volume::SessionVolume>| {
+        let apply_session_volume = |session_volume: &Option<crate::session_volume::SessionVolume>| {
             if let Some(session_volume) = session_volume {
                 let (left, right) = unpack_volume(volume.load(Ordering::Relaxed));
                 let (master, _, _) = split_volume(left, right);
                 if let Err(error) = session_volume.set(master) {
                     warn!(%error, "Failed to set the audio session volume");
-                    if !volume_failure_reported {
-                        if let Some(handler) = error_handler {
-                            handler(format!(
-                                "audio playback session volume update failed: {error}; check the application's volume in the system mixer"
-                            ));
-                        }
-                        volume_failure_reported = true;
-                    }
-                } else {
-                    volume_failure_reported = false;
                 }
             }
         };
@@ -775,7 +680,6 @@ fn build_stream(
     playout: &Arc<Mutex<Playout>>,
     shared: &Arc<StreamShared>,
     volume: &Arc<AtomicU32>,
-    error_handler: Option<AudioErrorHandler>,
 ) -> RdpsndNativeResult<cpal::Stream> {
     let channels = usize::from(config.channels);
     let stream_thread = thread::current();
@@ -785,7 +689,6 @@ fn build_stream(
         let shared = Arc::clone(shared);
         let volume = Arc::clone(volume);
         let error_shared = Arc::clone(&shared);
-        let mut reported_error = false;
         device.build_output_stream_raw(
             config,
             SampleFormat::I16,
@@ -815,24 +718,14 @@ fn build_stream(
                     shared.device_latency_us.store(micros, Ordering::Relaxed);
                 }
             },
-            move |error| {
-                if !matches!(error, cpal::StreamError::BufferUnderrun) && !reported_error {
-                    if let Some(handler) = &error_handler {
-                        // UNTESTED: device errors run on a CPAL thread; handlers must remain nonblocking to avoid audio stalls.
-                        handler(format!(
-                            "audio playback stream failed: {error}; check or reconnect the output device"
-                        ));
-                    }
-                    reported_error = true;
+            move |error| match error {
+                cpal::StreamError::DeviceNotAvailable | cpal::StreamError::StreamInvalidated => {
+                    warn!(%error, "Audio output device lost; reopening");
+                    error_shared.device_lost.store(true, Ordering::Relaxed);
+                    stream_thread.unpark();
                 }
-                match error {
-                    cpal::StreamError::DeviceNotAvailable | cpal::StreamError::StreamInvalidated => {
-                        error_shared.device_lost.store(true, Ordering::Relaxed);
-                        stream_thread.unpark();
-                    }
-                    cpal::StreamError::BufferUnderrun => trace!("Audio device underrun"),
-                    error => error!(%error, "Audio output stream error"),
-                }
+                cpal::StreamError::BufferUnderrun => trace!("Audio device underrun"),
+                error => error!(%error, "Audio output stream error"),
             },
             None,
         )

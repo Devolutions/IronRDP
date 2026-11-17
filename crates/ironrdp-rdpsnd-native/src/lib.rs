@@ -20,8 +20,3 @@ mod session_volume;
 pub use capture::{RdpeaiCaptureBackend, is_pcm_capture_format, take_capture_packets};
 pub use device::{AudioDeviceInfo, DeviceSelector, Direction, list_devices};
 pub use error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};
-
-/// Observes audio failures without terminating the desktop connection.
-///
-/// The handler may run on an audio callback thread and must not block.
-pub type AudioErrorHandler = std::sync::Arc<dyn Fn(String) + Send + Sync>;

@@ -82,27 +82,6 @@ public partial class NativeAudio: IDisposable
         }
     }
 
-    /// <returns>
-    /// A <c>AudioStatus</c> allocated on Rust side.
-    /// </returns>
-    public AudioStatus? NextStatus()
-    {
-        unsafe
-        {
-            BorrowLease<Raw.NativeAudio>? selfLease = null;
-            try
-            {
-                selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
-                Raw.AudioStatus* result = Raw.NativeAudio.NextStatus(selfLease!.Ptr);
-                return result == null ? null : new AudioStatus(result);
-            }
-            finally
-            {
-                selfLease?.Release();
-            }
-        }
-    }
-
     private void Cleanup()
     {
         unsafe

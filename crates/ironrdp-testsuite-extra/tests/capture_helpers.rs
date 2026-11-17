@@ -116,18 +116,12 @@ fn capture_offers_encodable_formats_compressed_first() {
 // oracle: mutant capture opened with an encoder for another rate
 #[test]
 fn capture_refuses_an_encode_format_with_other_rate_or_channels() {
-    use std::sync::{Arc, Mutex};
-
     use ironrdp_rdpeai::client::RdpeaiCaptureHandler as _;
     use ironrdp_rdpeai::pdu::{OpenReplyPdu, pcm_format};
     use ironrdp_rdpsnd::codec;
     use ironrdp_rdpsnd_native::RdpeaiCaptureBackend;
 
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = RdpeaiCaptureBackend::new().with_error_handler({
-        let errors = Arc::clone(&errors);
-        Arc::new(move |error| errors.lock().unwrap().push(error))
-    });
+    let mut backend = RdpeaiCaptureBackend::new();
 
     // Refused before any device is opened.
     let result = backend.open(
@@ -138,82 +132,6 @@ fn capture_refuses_an_encode_format_with_other_rate_or_channels() {
     );
 
     assert_eq!(result, OpenReplyPdu::E_FAIL);
-    // oracle: mutant capture startup failures do not reach the observer.
-    let errors = errors.lock().unwrap();
-    assert_eq!(errors.len(), 1);
-    assert!(errors[0].contains("capture"));
-    assert!(errors[0].contains("sample rate or channel count"));
-}
-
-// oracle: mutant lazy playback failures are silent, flood on every wave, or stay suppressed after close.
-#[test]
-fn playback_reports_lazy_initialization_failure_once_until_closed() {
-    use std::borrow::Cow;
-    use std::sync::{Arc, Mutex};
-
-    use ironrdp_rdpsnd::client::RdpsndClientHandler as _;
-    use ironrdp_rdpsnd_native::AudioErrorHandler;
-    use ironrdp_rdpsnd_native::cpal::RdpsndBackend;
-
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let handler: AudioErrorHandler = {
-        let errors = Arc::clone(&errors);
-        Arc::new(move |error| errors.lock().unwrap().push(error))
-    };
-    let mut backend = RdpsndBackend::new().with_error_handler(handler);
-    let unsupported = gsm();
-
-    backend.wave(&unsupported, 0, Cow::Borrowed(&[]));
-    backend.wave(&unsupported, 0, Cow::Borrowed(&[]));
-
-    {
-        let errors = errors.lock().unwrap();
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("playback"));
-        assert!(errors[0].contains("decoder"));
-    }
-
-    backend.close();
-    backend.wave(&unsupported, 0, Cow::Borrowed(&[]));
-    assert_eq!(errors.lock().unwrap().len(), 2);
-}
-
-// oracle: mutant malformed ADPCM errors are silent, flood on every wave, or stay suppressed after recovery.
-#[test]
-fn playback_reports_decode_failure_and_recovers_without_an_audio_device() {
-    use std::borrow::Cow;
-    use std::sync::{Arc, Mutex};
-
-    use ironrdp_rdpsnd::client::RdpsndClientHandler as _;
-    use ironrdp_rdpsnd::codec;
-    use ironrdp_rdpsnd_native::DeviceSelector;
-    use ironrdp_rdpsnd_native::cpal::{PlaybackConfig, RdpsndBackend};
-
-    let errors = Arc::new(Mutex::new(Vec::new()));
-    let mut backend = RdpsndBackend::with_config(PlaybackConfig {
-        device: DeviceSelector::Id("invalid-device-id".to_owned()),
-        ..PlaybackConfig::default()
-    })
-    .with_error_handler({
-        let errors = Arc::clone(&errors);
-        Arc::new(move |error| {
-            if error.contains("decode failed") {
-                errors.lock().unwrap().push(error);
-            }
-        })
-    });
-    let format = codec::ima_adpcm_format(1, 16_000, 8);
-
-    // A one-byte block cannot contain the four-byte mono IMA ADPCM header.
-    backend.wave(&format, 0, Cow::Borrowed(&[0]));
-    backend.wave(&format, 0, Cow::Borrowed(&[0]));
-    assert_eq!(errors.lock().unwrap().len(), 1);
-
-    // A whole block with a zero predictor, step index and codes decodes successfully.
-    backend.wave(&format, 0, Cow::Borrowed(&[0; 8]));
-    backend.wave(&format, 0, Cow::Borrowed(&[0]));
-    assert_eq!(errors.lock().unwrap().len(), 2);
-    backend.close();
 }
 
 // oracle: mutant undecodable formats advertised or the server's order lost

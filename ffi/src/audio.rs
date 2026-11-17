@@ -1,12 +1,6 @@
-pub(crate) struct AudioStatusInner {
-    capture: bool,
-    message: String,
-}
-
 #[cfg(not(target_os = "android"))]
 mod native {
-    use super::AudioStatusInner;
-    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
     use core::time::Duration;
     use std::borrow::Cow;
     use std::sync::{Arc, Mutex, PoisonError, Weak, mpsc};
@@ -17,12 +11,12 @@ mod native {
     use ironrdp::rdpsnd::pdu::{AudioFormat, AudioFormatFlags, PitchPdu, VolumePdu};
     use ironrdp::svc::SvcMessage;
     use ironrdp_rdpeai::client::RdpeaiClient;
+    use ironrdp_rdpsnd_native::DeviceSelector;
     use ironrdp_rdpsnd_native::capture::{CaptureConfig, RdpeaiCaptureBackend};
     use ironrdp_rdpsnd_native::cpal::{PlaybackConfig, RdpsndBackend};
-    use ironrdp_rdpsnd_native::{AudioErrorHandler, DeviceSelector};
+    use tracing::warn;
 
     pub(super) const CAPTURE_QUEUE_CAPACITY: usize = 64;
-    pub(super) const STATUS_QUEUE_CAPACITY: usize = 32;
 
     pub(super) struct CaptureMessages {
         token: u64,
@@ -44,25 +38,11 @@ mod native {
         pub(super) failed_capture: AtomicU64,
         pub(super) capture_tx: mpsc::SyncSender<CaptureMessages>,
         pub(super) capture_rx: Mutex<mpsc::Receiver<CaptureMessages>>,
-        pub(super) status_tx: mpsc::SyncSender<AudioStatusInner>,
-        pub(super) status_rx: Mutex<mpsc::Receiver<AudioStatusInner>>,
-        pub(super) dropped_status: AtomicUsize,
     }
 
     impl AudioShared {
         pub(crate) fn has_playback(&self) -> bool {
             self.playback
-        }
-
-        fn report(&self, capture: bool, message: String) {
-            if self.status_tx.try_send(AudioStatusInner { capture, message }).is_err() {
-                self.dropped_status.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        fn error_handler(self: &Arc<Self>, capture: bool) -> AudioErrorHandler {
-            let shared = Arc::clone(self);
-            Arc::new(move |message| shared.report(capture, message))
         }
 
         fn enqueue_capture(&self, token: u64, messages: Vec<SvcMessage>) -> PduResult<()> {
@@ -73,7 +53,7 @@ mod native {
             }
             if self.capture_tx.try_send(CaptureMessages { token, messages }).is_err() {
                 self.failed_capture.store(token, Ordering::Release);
-                self.report(true, "audio capture uplink overflow; stopping capture".to_owned());
+                warn!("Audio capture uplink overflow; stopping capture");
                 return Err(ironrdp::pdu::pdu_other_err!("audio capture uplink overflow"));
             }
             Ok(())
@@ -138,7 +118,7 @@ mod native {
                     device: self.output_device.clone(),
                     latency: self.latency,
                 };
-                let backend = RdpsndBackend::with_config(config).with_error_handler(self.error_handler(false));
+                let backend = RdpsndBackend::with_config(config);
                 let formats = backend.get_formats().to_vec().into();
                 let backend = Arc::new(Mutex::new(backend));
                 *self.playback_backend.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::downgrade(&backend));
@@ -267,19 +247,13 @@ mod native {
             let config = CaptureConfig {
                 device: shared.input_device.clone(),
             };
-            let backend = RdpeaiCaptureBackend::with_config(config).with_error_handler(shared.error_handler(true));
+            let backend = RdpeaiCaptureBackend::with_config(config);
             let sender = Arc::clone(shared);
-            let failures = Arc::clone(shared);
             let client = RdpeaiClient::new(
                 Box::new(backend),
                 Box::new(move |_, messages| sender.enqueue_capture(token, messages)),
             )
-            .with_ordered_replies()
-            .with_uplink_error_handler(Arc::new(move |message| {
-                if failures.failed_capture.swap(token, Ordering::AcqRel) != token {
-                    failures.report(true, message);
-                }
-            }));
+            .with_ordered_replies();
             Some(CaptureChannel {
                 client,
                 token,
@@ -322,8 +296,7 @@ mod native {
             match self.client.process(channel_id, payload) {
                 Ok(messages) => Ok(messages),
                 Err(error) => {
-                    self.shared
-                        .report(true, format!("audio capture channel failed: {error}"));
+                    warn!(%error, "Audio capture channel failed; stopping capture");
                     self.shared.failed_capture.store(self.token, Ordering::Release);
                     Ok(Vec::new())
                 }
@@ -372,10 +345,7 @@ mod native {
                 Ok(frame) => outputs.push(ironrdp::session::ActiveStageOutput::ResponseFrame(frame)),
                 Err(error) => {
                     shared.capture_enabled.store(false, Ordering::Release);
-                    shared.report(
-                        true,
-                        format!("failed to encode audio capture frame: {}", error.report()),
-                    );
+                    warn!(error = %error.report(), "Failed to encode audio capture frame; stopping capture");
                     outputs.extend(close_capture(stage, shared, next.token)?);
                     return Ok(outputs);
                 }
@@ -511,7 +481,7 @@ mod native {
 
         // oracle: scaffold
         #[test]
-        fn full_capture_queue_reports_failure_and_rejects_later_messages() {
+        fn full_capture_queue_rejects_later_messages() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
             let token = (1u64 << 32) | 7;
             for _ in 0..CAPTURE_QUEUE_CAPACITY {
@@ -520,15 +490,6 @@ mod native {
             assert!(audio.0.enqueue_capture(token, Vec::new()).is_err());
             assert!(audio.0.enqueue_capture(token, Vec::new()).is_err());
             assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), token);
-            let status = audio
-                .0
-                .status_rx
-                .lock()
-                .expect("status lock")
-                .try_recv()
-                .expect("overflow status");
-            assert!(status.capture);
-            assert!(status.message.contains("overflow"));
         }
 
         // oracle: scaffold
@@ -547,7 +508,7 @@ mod native {
 
         // oracle: scaffold
         #[test]
-        fn malformed_capture_pdu_reports_failure_without_failing_the_session() {
+        fn malformed_capture_pdu_stops_capture_without_failing_the_session() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
             let listener = CaptureListener(Arc::clone(&audio.0));
             let mut channel = listener.create_channel(7).expect("capture channel");
@@ -555,9 +516,6 @@ mod native {
 
             assert!(channel.process(7, &[]).expect("capture failure is isolated").is_empty());
             assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), channel.token);
-            let status = audio.0.status_rx.lock().unwrap().try_recv().expect("capture status");
-            assert!(status.capture);
-            assert!(status.message.contains("audio capture channel failed"));
         }
 
         // oracle: scaffold
@@ -585,7 +543,6 @@ mod native {
                     .is_empty()
             );
             assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), channel.token);
-            assert!(audio.0.status_rx.lock().unwrap().try_recv().is_ok());
         }
 
         // oracle: scaffold
@@ -670,22 +627,14 @@ pub(crate) use android::{AudioShared, poll_audio, stop_audio};
 
 #[diplomat::bridge]
 pub mod ffi {
-    use core::fmt::Write as _;
-    #[cfg(not(target_os = "android"))]
-    use core::sync::atomic::Ordering;
     use std::sync::Arc;
 
-    use diplomat_runtime::DiplomatWrite;
-
-    use super::{AudioShared, AudioStatusInner};
+    use super::AudioShared;
     use crate::error::ffi::IronRdpError;
 
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct NativeAudio(pub(crate) Arc<AudioShared>);
-
-    #[diplomat::opaque]
-    pub struct AudioStatus(pub(crate) AudioStatusInner);
 
     impl NativeAudio {
         /// Creates session-local audio settings.
@@ -711,7 +660,6 @@ pub mod ffi {
                     return Err("native audio needs playback or capture enabled".into());
                 }
                 let (capture_tx, capture_rx) = std::sync::mpsc::sync_channel(super::native::CAPTURE_QUEUE_CAPACITY);
-                let (status_tx, status_rx) = std::sync::mpsc::sync_channel(super::native::STATUS_QUEUE_CAPACITY);
                 let latency = if latency_ms == 0 {
                     ironrdp_rdpsnd_native::cpal::DEFAULT_PLAYBACK_LATENCY
                 } else {
@@ -732,47 +680,8 @@ pub mod ffi {
                     failed_capture: 0.into(),
                     capture_tx,
                     capture_rx: capture_rx.into(),
-                    status_tx,
-                    status_rx: status_rx.into(),
-                    dropped_status: 0.into(),
                 }))))
             }
-        }
-
-        /// Returns the next device or stream error, if any.
-        pub fn next_status(&self) -> Option<Box<AudioStatus>> {
-            #[cfg(target_os = "android")]
-            {
-                None
-            }
-            #[cfg(not(target_os = "android"))]
-            {
-                let dropped = self.0.dropped_status.swap(0, Ordering::AcqRel);
-                if dropped != 0 {
-                    return Some(Box::new(AudioStatus(AudioStatusInner {
-                        capture: false,
-                        message: format!("{dropped} audio status events were dropped"),
-                    })));
-                }
-                self.0
-                    .status_rx
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .try_recv()
-                    .ok()
-                    .map(AudioStatus)
-                    .map(Box::new)
-            }
-        }
-    }
-
-    impl AudioStatus {
-        pub fn is_capture(&self) -> bool {
-            self.0.capture
-        }
-        pub fn message(&self, write: &mut DiplomatWrite) -> Result<(), Box<IronRdpError>> {
-            write!(write, "{}", self.0.message)?;
-            Ok(())
         }
     }
 }
