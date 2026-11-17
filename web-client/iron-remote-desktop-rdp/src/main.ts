@@ -237,5 +237,9 @@ export {
     printerDeviceId,
     printerDriverName,
     printers,
+    drives,
+    driveRequestCallback,
+    driveReply,
 } from './extensions';
+export type { RedirectedDrive, DriveRequest, DriveReply, DriveFileInfo } from './extensions';
 export type { PrintJobStreamCallbacks, RedirectedPrinter } from './extensions';
