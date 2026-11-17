@@ -1,6 +1,6 @@
 #[cfg(not(target_os = "android"))]
 mod native {
-    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
     use core::time::Duration;
     use std::borrow::Cow;
     use std::sync::{Arc, Mutex, PoisonError, Weak, mpsc};
@@ -11,18 +11,24 @@ mod native {
     use ironrdp::rdpsnd::client::{Clock, RdpsndClientHandler};
     use ironrdp::rdpsnd::pdu::{AudioFormat, AudioFormatFlags, PitchPdu, VolumePdu};
     use ironrdp::svc::SvcMessage;
-    use ironrdp_rdpeai::client::RdpeaiClient;
+    use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler, RdpeaiClient};
     use ironrdp_rdpsnd_native::DeviceSelector;
     use ironrdp_rdpsnd_native::capture::{CaptureConfig, RdpeaiCaptureBackend};
     use ironrdp_rdpsnd_native::cpal::{PlaybackConfig, RdpsndBackend};
     use tracing::warn;
 
-    /// Buffers 100 ms at the native capture backend's highest sample rate with one frame per packet.
-    pub(super) const CAPTURE_QUEUE_CAPACITY: usize = 4_800;
+    const MAX_CAPTURE_SAMPLE_RATE: u32 = 48_000;
+    const MAX_CAPTURE_CHANNELS: u16 = 2;
+    // A mono Open with one frame per packet can become stereo on FormatChange.
+    pub(super) const CAPTURE_QUEUE_CAPACITY: usize = 12_000;
+    const CAPTURE_QUEUE_BYTE_LIMIT: usize = 8 * 1024 * 1024;
+    // Account for each message's allocation as well as its encoded bytes.
+    const MESSAGE_ALLOCATION_OVERHEAD: usize = 64;
 
     pub(super) struct CaptureMessages {
         token: u64,
         messages: Vec<SvcMessage>,
+        charge: usize,
     }
 
     pub(crate) struct AudioShared {
@@ -38,6 +44,7 @@ mod native {
         pub(super) next_generation: AtomicU32,
         pub(super) active_capture: AtomicU64,
         pub(super) failed_capture: AtomicU64,
+        pub(super) queued_bytes: AtomicUsize,
         pub(super) capture_tx: mpsc::SyncSender<CaptureMessages>,
         pub(super) capture_rx: Mutex<mpsc::Receiver<CaptureMessages>>,
     }
@@ -62,12 +69,53 @@ mod native {
             if self.failed_capture.load(Ordering::Acquire) == token {
                 return Err(ironrdp::pdu::pdu_other_err!("audio capture uplink is stopped"));
             }
-            if self.capture_tx.try_send(CaptureMessages { token, messages }).is_err() {
+            let charge = messages
+                .iter()
+                .try_fold(size_of::<CaptureMessages>(), |total, message| {
+                    total
+                        .checked_add(size_of::<SvcMessage>() + MESSAGE_ALLOCATION_OVERHEAD)?
+                        .checked_add(message.unframed_pdu_size())
+                });
+            let reserved = charge.is_some_and(|charge| {
+                self.queued_bytes
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                        current
+                            .checked_add(charge)
+                            .filter(|next| *next <= CAPTURE_QUEUE_BYTE_LIMIT)
+                    })
+                    .is_ok()
+            });
+            if !reserved {
+                self.failed_capture.store(token, Ordering::Release);
+                warn!("Audio capture uplink overflow; stopping capture");
+                return Err(ironrdp::pdu::pdu_other_err!("audio capture uplink overflow"));
+            }
+            let charge = charge.expect("reservation requires a valid charge");
+            if self
+                .capture_tx
+                .try_send(CaptureMessages {
+                    token,
+                    messages,
+                    charge,
+                })
+                .is_err()
+            {
+                self.queued_bytes.fetch_sub(charge, Ordering::AcqRel);
                 self.failed_capture.store(token, Ordering::Release);
                 warn!("Audio capture uplink overflow; stopping capture");
                 return Err(ironrdp::pdu::pdu_other_err!("audio capture uplink overflow"));
             }
             Ok(())
+        }
+
+        fn try_recv_capture(&self) -> Result<CaptureMessages, mpsc::TryRecvError> {
+            let message = self
+                .capture_rx
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .try_recv()?;
+            self.queued_bytes.fetch_sub(message.charge, Ordering::AcqRel);
+            Ok(message)
         }
 
         pub(crate) fn attach(
@@ -252,6 +300,57 @@ mod native {
 
     struct CaptureListener(Arc<AudioShared>);
 
+    struct BoundedCapture(RdpeaiCaptureBackend);
+
+    impl RdpeaiCaptureHandler for BoundedCapture {
+        fn supported_formats(&self) -> &[AudioFormat] {
+            self.0.supported_formats()
+        }
+
+        fn choose_formats(&self, server_formats: &[AudioFormat]) -> Vec<AudioFormat> {
+            self.0
+                .choose_formats(server_formats)
+                .into_iter()
+                .filter(capture_format_fits_queue)
+                .collect()
+        }
+
+        fn open(
+            &mut self,
+            capture_format: &AudioFormat,
+            encode_format: &AudioFormat,
+            packet_size: usize,
+            sink: AudioPacketSink,
+        ) -> i32 {
+            if !capture_format_fits_queue(capture_format) {
+                warn!("Refusing capture format beyond the audio queue limit");
+                return ironrdp_rdpeai::pdu::OpenReplyPdu::fail().result;
+            }
+            self.0.open(capture_format, encode_format, packet_size, sink)
+        }
+
+        fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool {
+            self.0.set_format(encode_format, packet_size)
+        }
+
+        fn set_format_ordered(
+            &mut self,
+            encode_format: &AudioFormat,
+            packet_size: usize,
+            confirm: &mut dyn FnMut() -> PduResult<()>,
+        ) -> PduResult<bool> {
+            self.0.set_format_ordered(encode_format, packet_size, confirm)
+        }
+
+        fn close(&mut self) {
+            self.0.close();
+        }
+    }
+
+    fn capture_format_fits_queue(format: &AudioFormat) -> bool {
+        format.n_channels <= MAX_CAPTURE_CHANNELS && format.n_samples_per_sec <= MAX_CAPTURE_SAMPLE_RATE
+    }
+
     impl CaptureListener {
         fn create_channel(&self, channel_id: u32) -> Option<CaptureChannel> {
             let shared = &self.0;
@@ -274,7 +373,7 @@ mod native {
             let backend = RdpeaiCaptureBackend::with_config(config);
             let sender = Arc::clone(shared);
             let client = RdpeaiClient::new(
-                Box::new(backend),
+                Box::new(BoundedCapture(backend)),
                 Box::new(move |_, messages| sender.enqueue_capture(token, messages)),
             )
             .with_ordered_replies();
@@ -347,18 +446,20 @@ mod native {
         shared: &Arc<AudioShared>,
     ) -> Result<Vec<ironrdp::session::ActiveStageOutput>, Box<crate::error::ffi::IronRdpError>> {
         let mut outputs = Vec::new();
-        for _ in 0..CAPTURE_QUEUE_CAPACITY {
-            if let Some(failure) = take_active_capture_failure(shared) {
-                shared.capture_enabled.store(false, Ordering::Release);
-                outputs.extend(close_capture(stage, shared, failure)?);
-                return Ok(outputs);
-            }
-            let next = shared
-                .capture_rx
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .try_recv();
+        // A failure can follow a queued confirmation, which must be sent before the channel closes.
+        for _ in 0..=CAPTURE_QUEUE_CAPACITY {
+            let failed = shared.failed_capture.load(Ordering::Acquire);
+            let next = shared.try_recv_capture();
             let Ok(next) = next else {
+                if failed != 0
+                    && let Some(failure) = active_capture_failure(shared)
+                {
+                    shared.capture_enabled.store(false, Ordering::Release);
+                    outputs.extend(close_capture(stage, shared, failure)?);
+                    let _ = shared
+                        .failed_capture
+                        .compare_exchange(failure, 0, Ordering::AcqRel, Ordering::Acquire);
+                }
                 break;
             };
             if shared.active_capture.load(Ordering::Acquire) != next.token {
@@ -374,16 +475,18 @@ mod native {
                 }
             }
         }
-        if let Some(failure) = take_active_capture_failure(shared) {
-            shared.capture_enabled.store(false, Ordering::Release);
-            outputs.extend(close_capture(stage, shared, failure)?);
-        }
         Ok(outputs)
     }
 
-    fn take_active_capture_failure(shared: &AudioShared) -> Option<u64> {
-        let failure = shared.failed_capture.swap(0, Ordering::AcqRel);
-        (failure != 0 && shared.active_capture.load(Ordering::Acquire) == failure).then_some(failure)
+    fn active_capture_failure(shared: &AudioShared) -> Option<u64> {
+        let failure = shared.failed_capture.load(Ordering::Acquire);
+        if failure != 0 && shared.active_capture.load(Ordering::Acquire) == failure {
+            return Some(failure);
+        }
+        let _ = shared
+            .failed_capture
+            .compare_exchange(failure, 0, Ordering::AcqRel, Ordering::Acquire);
+        None
     }
 
     pub(crate) fn stop_audio(
@@ -401,11 +504,12 @@ mod native {
         {
             backend.lock().unwrap_or_else(PoisonError::into_inner).close();
         }
+        let mut outputs = poll_audio(stage, shared)?;
         let token = shared.active_capture.load(Ordering::Acquire);
-        if token == 0 {
-            return Ok(Vec::new());
+        if token != 0 {
+            outputs.extend(close_capture(stage, shared, token)?);
         }
-        close_capture(stage, shared, token)
+        Ok(outputs)
     }
 
     fn close_capture(
@@ -436,7 +540,6 @@ mod native {
     mod tests {
         use super::*;
         use crate::audio::ffi::NativeAudio;
-        use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler};
 
         #[derive(Debug)]
         struct DelayedPlayback {
@@ -643,20 +746,13 @@ mod native {
 
         // oracle: regression #2469
         #[test]
-        fn documented_poll_interval_accepts_maximum_50ms_capture_burst() {
+        fn capture_queue_accepts_100ms_after_mono_to_stereo_change() {
             use ironrdp::svc::ChannelFlags;
-            use ironrdp_rdpeai::pdu::RdpeaiPdu;
+            use ironrdp_rdpeai::pdu::{DataPdu, RdpeaiPdu};
 
-            let backend = RdpeaiCaptureBackend::new();
-            let max_sample_rate = backend
-                .supported_formats()
-                .iter()
-                .map(|format| format.n_samples_per_sec)
-                .max()
-                .expect("capture formats");
-            let max_sample_rate = usize::try_from(max_sample_rate).expect("sample rate");
-            let poll_batch_count = max_sample_rate / 20;
-            assert!(CAPTURE_QUEUE_CAPACITY >= max_sample_rate / 10);
+            // A mono Open with one frame per packet fixes the packet size at two bytes.
+            // At 48 kHz stereo, each frame produces two such packets.
+            let poll_batch_count = 48_000 * 2 / 10;
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
             let listener = CaptureListener(Arc::clone(&audio.0));
             let channel = listener.create_channel(7).expect("capture channel");
@@ -683,18 +779,70 @@ mod native {
             for _ in 0..poll_batch_count {
                 let messages = ironrdp::dvc::encode_dvc_messages(
                     7,
-                    vec![Box::new(RdpeaiPdu::DataIncoming)],
+                    vec![
+                        Box::new(RdpeaiPdu::DataIncoming),
+                        Box::new(RdpeaiPdu::Data(DataPdu::new(vec![0; 2]))),
+                    ],
                     ChannelFlags::empty(),
                 )
                 .expect("encode capture batch");
                 audio
                     .0
                     .enqueue_capture(token, messages)
-                    .expect("50 ms of maximum-rate capture fits");
+                    .expect("100 ms of maximum-rate capture fits");
             }
 
             let outputs = poll_audio(&mut stage, &audio.0).unwrap_or_else(|_| panic!("poll audio"));
             assert_eq!(outputs.len(), poll_batch_count);
+            assert_eq!(audio.0.queued_bytes.load(Ordering::Acquire), 0);
+        }
+
+        // oracle: regression #2469
+        #[test]
+        fn capture_queue_bounds_large_packets_and_releases_capacity() {
+            use ironrdp::svc::ChannelFlags;
+            use ironrdp_rdpeai::pdu::{DataPdu, MAX_DATA_PACKET_SIZE, RdpeaiPdu};
+
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let token = (1u64 << 32) | 7;
+            let packet = || {
+                ironrdp::dvc::encode_dvc_messages(
+                    7,
+                    vec![
+                        Box::new(RdpeaiPdu::DataIncoming),
+                        Box::new(RdpeaiPdu::Data(DataPdu::new(vec![0; MAX_DATA_PACKET_SIZE]))),
+                    ],
+                    ChannelFlags::empty(),
+                )
+                .expect("encode capture batch")
+            };
+            let mut accepted = 0;
+            while audio.0.enqueue_capture(token, packet()).is_ok() {
+                accepted += 1;
+            }
+            assert!(accepted > 0 && accepted < 100);
+            assert!(audio.0.queued_bytes.load(Ordering::Acquire) <= CAPTURE_QUEUE_BYTE_LIMIT);
+            while audio.0.try_recv_capture().is_ok() {}
+            assert_eq!(audio.0.queued_bytes.load(Ordering::Acquire), 0);
+        }
+
+        // oracle: regression #2469
+        #[test]
+        fn ffi_capture_limits_server_formats_and_open_capture_format() {
+            use ironrdp_rdpeai::pdu::{OpenReplyPdu, pcm_format};
+
+            let mut backend = BoundedCapture(RdpeaiCaptureBackend::new());
+            let supported = pcm_format(2, 48_000, 16);
+            let too_fast = pcm_format(1, 192_000, 16);
+            let too_many_channels = pcm_format(3, 48_000, 16);
+            assert_eq!(
+                backend.choose_formats(&[supported.clone(), too_fast.clone(), too_many_channels]),
+                [supported.clone()]
+            );
+            assert_eq!(
+                backend.open(&too_fast, &supported, 2, Box::new(|_| {})),
+                OpenReplyPdu::E_FAIL
+            );
         }
 
         // oracle: regression #2469
@@ -783,6 +931,131 @@ mod native {
             }
         }
 
+        struct FailedRestartCapture {
+            formats: Vec<AudioFormat>,
+        }
+
+        impl RdpeaiCaptureHandler for FailedRestartCapture {
+            fn supported_formats(&self) -> &[AudioFormat] {
+                &self.formats
+            }
+
+            fn open(&mut self, _: &AudioFormat, _: &AudioFormat, _: usize, _: AudioPacketSink) -> i32 {
+                ironrdp_rdpeai::pdu::OpenReplyPdu::S_OK
+            }
+
+            fn set_format(&mut self, _: &AudioFormat, _: usize) -> bool {
+                false
+            }
+
+            fn set_format_ordered(
+                &mut self,
+                _: &AudioFormat,
+                _: usize,
+                confirm: &mut dyn FnMut() -> PduResult<()>,
+            ) -> PduResult<bool> {
+                confirm()?;
+                Ok(false)
+            }
+
+            fn close(&mut self) {}
+        }
+
+        // oracle: regression #2469
+        #[test]
+        fn failed_restart_sends_confirmation_before_closing_capture() {
+            assert_failed_restart_confirmation_precedes_close(false);
+        }
+
+        // oracle: regression #2469
+        #[test]
+        fn stopping_after_failed_restart_sends_confirmation_before_closing_capture() {
+            assert_failed_restart_confirmation_precedes_close(true);
+        }
+
+        fn assert_failed_restart_confirmation_precedes_close(stop: bool) {
+            use ironrdp::svc::ChannelFlags;
+            use ironrdp_rdpeai::pdu::{
+                FormatChangePdu, FormatsPdu, OpenPdu, RdpeaiPdu, Version, VersionPdu, pcm_format,
+            };
+
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let token = (1u64 << 32) | 7;
+            audio.0.active_capture.store(token, Ordering::Release);
+            let formats = vec![pcm_format(1, 16_000, 16), pcm_format(1, 48_000, 16)];
+            let sender = Arc::clone(&audio.0);
+            let client = RdpeaiClient::new(
+                Box::new(FailedRestartCapture {
+                    formats: formats.clone(),
+                }),
+                Box::new(move |_, messages| sender.enqueue_capture(token, messages)),
+            )
+            .with_ordered_replies();
+            let mut channel = CaptureChannel {
+                client,
+                token,
+                shared: Arc::clone(&audio.0),
+            };
+            channel.start(7).expect("start capture channel");
+            for pdu in [
+                RdpeaiPdu::Version(VersionPdu::new(Version::V1)),
+                RdpeaiPdu::Formats(FormatsPdu::server(formats.clone())),
+                RdpeaiPdu::Open(OpenPdu {
+                    frames_per_packet: 2,
+                    initial_format: 0,
+                    capture_format: formats[0].clone(),
+                }),
+            ] {
+                channel
+                    .process(7, &ironrdp_core::encode_vec(&pdu).expect("encode PDU"))
+                    .expect("process PDU");
+            }
+            while audio.0.try_recv_capture().is_ok() {}
+            let change = RdpeaiPdu::FormatChange(FormatChangePdu::new(1));
+            channel
+                .process(7, &ironrdp_core::encode_vec(&change).expect("encode PDU"))
+                .expect("isolate failed restart");
+            assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), token);
+
+            let mut drdynvc = ironrdp::dvc::DrdynvcClient::new();
+            drdynvc
+                .attach_established_dynamic_channel(7, channel)
+                .expect("attach capture channel");
+            let mut channels = ironrdp::svc::StaticChannelSet::new();
+            channels.insert(drdynvc);
+            channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), 1004);
+            let mut stage = ironrdp::session::ActiveStageBuilder {
+                static_channels: channels,
+                user_channel_id: 1002,
+                io_channel_id: 1003,
+                message_channel_id: None,
+                share_id: 1,
+                compression_type: None,
+                enable_server_pointer: false,
+                pointer_software_rendering: false,
+            }
+            .build();
+            let confirmation = ironrdp::dvc::encode_dvc_messages(7, vec![Box::new(change)], ChannelFlags::empty())
+                .expect("encode confirmation");
+            let expected = stage.encode_dvc_messages(confirmation).expect("frame confirmation");
+
+            let outputs = if stop {
+                stop_audio(&mut stage, &audio.0)
+            } else {
+                poll_audio(&mut stage, &audio.0)
+            }
+            .unwrap_or_else(|_| panic!("flush audio"));
+            let [
+                ironrdp::session::ActiveStageOutput::ResponseFrame(first),
+                ironrdp::session::ActiveStageOutput::ResponseFrame(_close),
+            ] = outputs.as_slice()
+            else {
+                panic!("expected confirmation and close frames");
+            };
+            assert_eq!(first, &expected);
+            assert!(stage.get_dvc_by_channel_id::<CaptureChannel>(7).is_none());
+        }
+
         // oracle: regression #2469
         #[test]
         fn failed_format_confirmation_closes_capture_when_polled() {
@@ -823,14 +1096,7 @@ mod native {
                 let payload = ironrdp_core::encode_vec(&pdu).expect("encode capture PDU");
                 channel.process(7, &payload).expect("process capture PDU");
             }
-            while audio
-                .0
-                .capture_rx
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .try_recv()
-                .is_ok()
-            {}
+            while audio.0.try_recv_capture().is_ok() {}
 
             for _ in 0..CAPTURE_QUEUE_CAPACITY {
                 audio.0.enqueue_capture(token, Vec::new()).expect("queue has space");
@@ -866,8 +1132,8 @@ mod native {
 
             let outputs = poll_audio(&mut stage, &audio.0).unwrap_or_else(|_| panic!("poll audio"));
             assert!(matches!(
-                outputs.as_slice(),
-                [ironrdp::session::ActiveStageOutput::ResponseFrame(_)]
+                outputs.last(),
+                Some(ironrdp::session::ActiveStageOutput::ResponseFrame(_))
             ));
             assert!(stage.get_dvc_by_channel_id::<CaptureChannel>(7).is_none());
             assert_eq!(audio.0.active_capture.load(Ordering::Acquire), 0);
@@ -904,8 +1170,8 @@ mod native {
             assert!(audio.0.enqueue_capture(token, Vec::new()).is_err());
             let outputs = poll_audio(&mut stage, &audio.0).unwrap_or_else(|_| panic!("poll audio"));
             assert!(matches!(
-                outputs.as_slice(),
-                [ironrdp::session::ActiveStageOutput::ResponseFrame(_)]
+                outputs.last(),
+                Some(ironrdp::session::ActiveStageOutput::ResponseFrame(_))
             ));
             assert!(stage.get_dvc_by_channel_id::<CaptureChannel>(7).is_none());
             assert!(listener.create_channel(7).is_none());
@@ -1015,6 +1281,7 @@ pub mod ffi {
                     next_generation: 0.into(),
                     active_capture: 0.into(),
                     failed_capture: 0.into(),
+                    queued_bytes: 0.into(),
                     capture_tx,
                     capture_rx: capture_rx.into(),
                 }))))

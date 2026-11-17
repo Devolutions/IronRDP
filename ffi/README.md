@@ -44,7 +44,7 @@ connector.WithNativeAudio(audio);
 ```
 
 In the serialized active-stage loop, call `PollAudio(audio)` before and after processing an incoming PDU and at least every 50 ms while the connection is idle.
-The bounded queue holds 100 ms of capture even at the highest offered rate (48 kHz with one frame per packet), and each poll drains the queued batches.
+The bounded queue holds at least 100 ms at up to 48 kHz and two channels, including after a mono-to-stereo format change, and each poll drains the queued batches.
 If the session loop stalls long enough to exhaust that buffer, capture is stopped and its dynamic channel is closed rather than continuing with missing messages.
 Write each returned `ResponseFrame` to the same transport, in order, and dispose the output iterator and frames.
 Device and stream failures are logged through Rust tracing rather than returned as managed status events.

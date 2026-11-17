@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::device::{self, DeviceSelector, Direction};
 
-/// Highest sample rate offered by the native capture backend, in samples per second.
+/// Highest default sample rate offered by the native capture backend, in samples per second.
 pub const MAX_CAPTURE_SAMPLE_RATE: u32 = 48_000;
 
 /// Deadline for receiving CPAL input stream readiness from the session task.
@@ -221,10 +221,7 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         let mut chosen: Vec<AudioFormat> = server_formats
             .iter()
             .filter(|format| {
-                format.n_channels <= 2
-                    && format.n_samples_per_sec <= MAX_CAPTURE_SAMPLE_RATE
-                    && ((is_pcm_capture_format(format) && format.bits_per_sample == 16)
-                        || AudioEncoder::supports(format))
+                (is_pcm_capture_format(format) && format.bits_per_sample == 16) || AudioEncoder::supports(format)
             })
             .cloned()
             .collect();
@@ -616,11 +613,14 @@ mod tests {
 
     // oracle: regression #2469
     #[test]
-    fn format_negotiation_rejects_rates_above_the_capture_queue_bound() {
+    fn format_negotiation_preserves_high_rate_and_multichannel_pcm() {
         let backend = RdpeaiCaptureBackend::new();
-        let supported = pcm_format(2, 48_000, 16);
-        let too_fast = pcm_format(1, 192_000, 16);
+        let high_rate = pcm_format(1, 192_000, 16);
+        let multichannel = pcm_format(6, 48_000, 16);
 
-        assert_eq!(backend.choose_formats(&[supported.clone(), too_fast]), [supported]);
+        assert_eq!(
+            backend.choose_formats(&[high_rate.clone(), multichannel.clone()]),
+            [high_rate, multichannel]
+        );
     }
 }

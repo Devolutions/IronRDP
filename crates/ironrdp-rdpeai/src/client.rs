@@ -135,6 +135,9 @@ impl RdpeaiClient {
     ///
     /// Samples received before the Open reply is queued are discarded rather than sent ahead of it.
     /// Capture handlers must implement [`RdpeaiCaptureHandler::set_format_ordered`].
+    /// When a format change fails, the client attempts to queue its confirmation before returning
+    /// an error.
+    /// The owner must send queued messages before closing the channel.
     ///
     /// [ms-rdpeai-format-change]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeai/74e22a5c-535c-481b-a99b-ca30cbd40fd2
     #[must_use]
@@ -149,6 +152,7 @@ impl RdpeaiClient {
         let epoch = Arc::clone(&self.capture_epoch);
         let expected = epoch.load(Ordering::Acquire);
         let open = self.pending_open.clone();
+        let mut uplink_failed = false;
 
         Box::new(move |packet: Vec<u8>| {
             if epoch.load(Ordering::Acquire) != expected
@@ -171,8 +175,13 @@ impl RdpeaiClient {
                 warn!("AUDIO_INPUT uplink lock poisoned");
                 return;
             };
-            if let Err(error) = uplink(channel_id, svc) {
-                warn!(%error, "Failed to uplink AUDIO_INPUT data");
+            match uplink(channel_id, svc) {
+                Err(error) if !uplink_failed => {
+                    warn!(%error, "Failed to uplink AUDIO_INPUT data");
+                    uplink_failed = true;
+                }
+                Err(_) => {}
+                Ok(()) => uplink_failed = false,
             }
         })
     }
@@ -338,6 +347,11 @@ impl RdpeaiClient {
                     return Err(pdu_other_err!("failed to queue AUDIO_INPUT Format Change confirmation"));
                 }
                 confirm()?;
+            }
+            match changed {
+                Err(error) => return Err(error),
+                Ok(false) => return Err(pdu_other_err!("audio capture format change failed")),
+                Ok(true) => {}
             }
             return Ok(Vec::new());
         }

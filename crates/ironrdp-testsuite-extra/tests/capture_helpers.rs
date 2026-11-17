@@ -1,6 +1,120 @@
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp_rdpsnd_native::{is_pcm_capture_format, take_capture_packets};
 
+// oracle: regression #2469
+#[test]
+fn consecutive_capture_uplink_failures_warn_once_until_recovery() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::DvcProcessor as _;
+    use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler, RdpeaiClient};
+    use ironrdp_rdpeai::pdu::{FormatsPdu, OpenPdu, OpenReplyPdu, RdpeaiPdu, Version, VersionPdu, pcm_format};
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    struct Capture {
+        formats: Vec<AudioFormat>,
+        sink: Arc<Mutex<Option<AudioPacketSink>>>,
+    }
+
+    impl RdpeaiCaptureHandler for Capture {
+        fn supported_formats(&self) -> &[AudioFormat] {
+            &self.formats
+        }
+
+        fn open(&mut self, _: &AudioFormat, _: &AudioFormat, _: usize, sink: AudioPacketSink) -> i32 {
+            *self.sink.lock().unwrap() = Some(sink);
+            OpenReplyPdu::S_OK
+        }
+
+        fn set_format(&mut self, _: &AudioFormat, _: usize) -> bool {
+            true
+        }
+
+        fn close(&mut self) {
+            *self.sink.lock().unwrap() = None;
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Warnings(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Warnings {
+        fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+            struct Message(String);
+            impl tracing::field::Visit for Message {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn core::fmt::Debug) {
+                    if field.name() == "message" {
+                        self.0 = format!("{value:?}");
+                    }
+                }
+            }
+            if event.metadata().target() == "ironrdp_rdpeai::client"
+                && *event.metadata().level() == tracing::Level::WARN
+            {
+                let mut message = Message(String::new());
+                event.record(&mut message);
+                self.0.lock().unwrap().push(message.0);
+            }
+        }
+    }
+
+    let warnings = Warnings::default();
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(warnings.clone()));
+    let format = pcm_format(1, 16_000, 16);
+    let sink = Arc::new(Mutex::new(None));
+    let failing = Arc::new(AtomicBool::new(true));
+    let uplink_failing = Arc::clone(&failing);
+    let mut client = RdpeaiClient::new(
+        Box::new(Capture {
+            formats: vec![format.clone()],
+            sink: Arc::clone(&sink),
+        }),
+        Box::new(move |_, _| {
+            if uplink_failing.load(Ordering::Acquire) {
+                Err(ironrdp_pdu::pdu_other_err!("capture queue full"))
+            } else {
+                Ok(())
+            }
+        }),
+    );
+    client.start(3).unwrap();
+    for pdu in [
+        RdpeaiPdu::Version(VersionPdu::new(Version::V1)),
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![format.clone()])),
+    ] {
+        client.process(3, &encode_vec(&pdu).unwrap()).unwrap();
+    }
+
+    for expected in [2, 4] {
+        failing.store(true, Ordering::Release);
+        let open = RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 2,
+            initial_format: 0,
+            capture_format: format.clone(),
+        });
+        client.process(3, &encode_vec(&open).unwrap()).unwrap();
+        for _ in 0..3 {
+            sink.lock().unwrap().as_mut().unwrap()(vec![0; 4]);
+        }
+        failing.store(false, Ordering::Release);
+        sink.lock().unwrap().as_mut().unwrap()(vec![0; 4]);
+        failing.store(true, Ordering::Release);
+        sink.lock().unwrap().as_mut().unwrap()(vec![0; 4]);
+        assert_eq!(
+            warnings
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|message| message.as_str() == "Failed to uplink AUDIO_INPUT data")
+                .count(),
+            expected
+        );
+    }
+}
+
 #[test]
 fn take_capture_packets_splits_exact_frames() {
     let mut buffer = vec![0u8; 10];

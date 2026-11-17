@@ -261,6 +261,7 @@ enum OrderedFormatBehavior {
     ErrorBeforeConfirmation,
     SucceedWithoutConfirmation,
     Confirm,
+    FailAfterConfirmation,
 }
 
 struct OrderedFormatCapture {
@@ -303,12 +304,42 @@ impl RdpeaiCaptureHandler for OrderedFormatCapture {
                 confirm()?;
                 Ok(true)
             }
+            OrderedFormatBehavior::FailAfterConfirmation => {
+                confirm()?;
+                Ok(false)
+            }
         }
     }
 
     fn close(&mut self) {
         self.closed.store(true, Ordering::Release);
     }
+}
+
+// oracle: regression #2469
+#[test]
+fn ordered_restart_failure_after_confirmation_notifies_owner() {
+    let formats = vec![pcm_format(1, 16000, 16), pcm_format(1, 48000, 16)];
+    let closed = Arc::new(AtomicBool::new(false));
+    let (client, uplinked) = client_with_uplink(OrderedFormatCapture {
+        formats: formats.clone(),
+        closed: Arc::clone(&closed),
+        behavior: OrderedFormatBehavior::FailAfterConfirmation,
+    });
+    let mut client = open_ordered_capture(client.with_ordered_replies(), &formats);
+    uplinked.lock().unwrap().clear();
+
+    let payload = encode_vec(&RdpeaiPdu::FormatChange(FormatChangePdu::new(1))).unwrap();
+    assert!(client.process(3, &payload).is_err());
+    assert!(closed.load(Ordering::Acquire));
+    let uplinked = uplinked.lock().unwrap();
+    let [confirmation] = uplinked.as_slice() else {
+        panic!("expected one queued Format Change confirmation");
+    };
+    assert!(matches!(
+        decode_uplinked(confirmation),
+        RdpeaiPdu::FormatChange(change) if change.new_format == 1
+    ));
 }
 
 // oracle: spec MS-RDPEAI §3.2.5.3.2
@@ -324,8 +355,8 @@ fn ordered_format_failure_before_confirmation_still_queues_confirmation() {
     let mut client = open_ordered_capture(client.with_ordered_replies(), &formats);
     uplinked.lock().unwrap().clear();
 
-    let replies = process_encoded(&mut client, 3, RdpeaiPdu::FormatChange(FormatChangePdu::new(1)));
-    assert!(replies.is_empty());
+    let payload = encode_vec(&RdpeaiPdu::FormatChange(FormatChangePdu::new(1))).unwrap();
+    assert!(client.process(3, &payload).is_err());
     assert!(closed.load(Ordering::Acquire));
     let uplinked = uplinked.lock().unwrap();
     let [confirmation] = uplinked.as_slice() else {

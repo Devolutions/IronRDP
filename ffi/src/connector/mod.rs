@@ -88,6 +88,13 @@ pub mod ffi {
                 return Err("native audio must be attached before connecting".into());
             }
             audio.0.attach(connector)?;
+            if let Some(drdynvc) = connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
+                let playback = drdynvc.has_channel_name(ironrdp::rdpsnd::client::DVC_CHANNEL_NAME)
+                    || drdynvc.has_channel_name(ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME);
+                let capture = drdynvc.has_channel_name(ironrdp_rdpeai::CHANNEL_NAME);
+                connector.config.enable_audio_playback |= playback;
+                connector.config.enable_audio_capture |= capture;
+            }
             self.1 = Some(std::sync::Arc::clone(&audio.0));
             Ok(())
         }
@@ -145,6 +152,11 @@ pub mod ffi {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
 
+            let playback = matches!(
+                processor.channel_name(),
+                ironrdp::rdpsnd::client::DVC_CHANNEL_NAME | ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+            );
+            let capture = processor.channel_name() == ironrdp_rdpeai::CHANNEL_NAME;
             let drdynvc = match connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
                 Some(processor) => processor,
                 None => {
@@ -156,6 +168,8 @@ pub mod ffi {
             };
 
             drdynvc.attach_dynamic_channel(processor);
+            connector.config.enable_audio_playback |= playback;
+            connector.config.enable_audio_capture |= capture;
 
             Ok(())
         }
@@ -412,6 +426,117 @@ mod tests {
         config.add_pipe_proxy(&descriptor);
 
         connector.with_dynamic_channel_pipe_proxy(&config).is_ok()
+    }
+
+    // oracle: regression #2469
+    #[test]
+    fn playback_proxy_attached_after_capture_advertises_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: regression #2469
+    #[test]
+    fn playback_proxy_attached_before_capture_advertises_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: regression #2469
+    #[test]
+    fn lossy_playback_proxy_before_capture_advertises_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+        ));
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: regression #2469
+    #[test]
+    fn lossy_playback_proxy_after_capture_advertises_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+        ));
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: regression #2469
+    #[test]
+    fn input_proxy_attached_before_playback_advertises_capture() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_capture);
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+        connector
+            .with_native_audio(&playback)
+            .map_err(|_| "attach playback-only audio")?;
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_capture);
+        Ok(())
+    }
+
+    // oracle: regression #2469
+    #[test]
+    fn input_proxy_attached_after_playback_advertises_capture() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+        connector
+            .with_native_audio(&playback)
+            .map_err(|_| "attach playback-only audio")?;
+        assert!(attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_capture);
+        Ok(())
+    }
+
+    // oracle: regression #2469
+    #[test]
+    fn unrelated_proxy_does_not_advertise_audio() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(&mut connector, "unrelated"));
+
+        let config = &connector.0.as_ref().ok_or("connector")?.config;
+        assert!(!config.enable_audio_playback);
+        assert!(!config.enable_audio_capture);
+        Ok(())
     }
 
     // oracle: regression #2469
