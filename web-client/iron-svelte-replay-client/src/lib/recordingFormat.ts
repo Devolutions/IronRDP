@@ -13,6 +13,11 @@ export const INDEX_ROW_SIZE = 17;
 /** Maximum number of PDUs we'll accept (~17 MB index table). */
 export const MAX_PDUS = 1_000_000;
 
+/** Maximum framed RDP PDU size and maximum PDU data fetched in one request. */
+export const MAX_PDU_SIZE = 65_535;
+export const MAX_PDU_RANGE_SIZE = 8 * 1024 * 1024;
+export const MAX_FETCH_SIZE = 64 * 1024 * 1024;
+
 /** Only version we support. */
 export const SUPPORTED_VERSION = 1;
 

@@ -1,6 +1,13 @@
 type milliseconds = number;
 
-import { HEADER_SIZE, INDEX_ROW_SIZE, MAX_PDUS, SUPPORTED_VERSION, toSafeNumber } from './recordingFormat.js';
+import {
+    HEADER_SIZE,
+    INDEX_ROW_SIZE,
+    MAX_PDUS,
+    MAX_PDU_SIZE,
+    SUPPORTED_VERSION,
+    toSafeNumber,
+} from './recordingFormat.js';
 
 /** Error thrown when the server returns a non-2xx HTTP status code.
  * Carries the status code so upstream catch blocks can distinguish auth
@@ -101,14 +108,32 @@ export async function fetchFileRanges(
         throw new FetchHttpError(response.status);
     }
 
-    if (!response.headers.has('content-range')) {
-        throw new Error(
-            `server returned 206 without a Content-Range header, ` +
-                `the server may not support HTTP Range requests correctly`,
-        );
+    const range = response.headers.get('content-range')?.match(/^bytes (\d+)-(\d+)\/(\d+|\*)$/i);
+    if (!range || Number(range[1]) !== startBytes || Number(range[2]) !== endBytes) {
+        throw new Error('server returned an invalid Content-Range header');
     }
 
-    return response.arrayBuffer();
+    const size = endBytes - startBytes + 1;
+    if (!response.body) throw new Error('server returned an empty range response');
+    const reader = response.body.getReader();
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    try {
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value.length > size - offset) {
+                await reader.cancel();
+                throw new Error('server returned more bytes than requested');
+            }
+            bytes.set(value, offset);
+            offset += value.length;
+        }
+    } finally {
+        reader.releaseLock();
+    }
+    if (offset !== size) throw new Error('server returned fewer bytes than requested');
+    return bytes.buffer;
 }
 
 function parseHeader(buffer: ArrayBuffer): Header {
@@ -127,6 +152,8 @@ function parseIndexTable(buffer: ArrayBuffer, startOffset: number, count: number
     const view = new DataView(buffer);
     const entries: IndexTableRow[] = [];
 
+    let expectedOffset = BigInt(HEADER_SIZE + INDEX_ROW_SIZE * count);
+    let previousTime = 0;
     for (let i = 0; i < count; i++) {
         const entryOffset = startOffset + i * INDEX_ROW_SIZE;
 
@@ -135,6 +162,13 @@ function parseIndexTable(buffer: ArrayBuffer, startOffset: number, count: number
         const byteOffset = view.getBigUint64(entryOffset + 8, false);
         const direction = view.getUint8(entryOffset + 16);
 
+        if (pduLength === 0 || pduLength > MAX_PDU_SIZE) throw new Error(`invalid PDU length at index ${i}`);
+        if (byteOffset !== expectedOffset) throw new Error(`invalid PDU offset at index ${i}`);
+        if (timeOffset < previousTime) throw new Error(`unsorted PDU timestamp at index ${i}`);
+        if (direction !== 0 && direction !== 1) throw new Error(`invalid PDU direction at index ${i}`);
+        expectedOffset = byteOffset + BigInt(pduLength);
+        toSafeNumber(expectedOffset, 'PDU end offset');
+        previousTime = timeOffset;
         entries.push({ timeOffset, pduLength, byteOffset, direction });
     }
 

@@ -11,13 +11,13 @@
     let playerEl: IronReplayPlayerElement | null = $state(null);
 
     async function load() {
-        if (!url.trim()) return;
+        if (url.trim() === '') return;
 
         error = '';
         loaded = true;
 
         const err = await initPlayer(() => playerEl, new HttpRangeDataSource(url.trim()));
-        if (err) {
+        if (err !== null) {
             error = err;
             loaded = false;
         }

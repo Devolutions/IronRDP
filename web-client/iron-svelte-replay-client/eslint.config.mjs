@@ -51,6 +51,12 @@ export default [
     },
     {
         files: ['**/*.svelte'],
+        rules: {
+            'prettier/prettier': [
+                'error',
+                { parser: 'svelte', plugins: ['prettier-plugin-svelte'], endOfLine: 'auto' },
+            ],
+        },
         languageOptions: {
             parser: svelteParser,
             ecmaVersion: 5,

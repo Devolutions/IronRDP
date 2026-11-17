@@ -81,8 +81,8 @@ The server runs at `http://localhost:5173`.
 The HTTP Byte-Range demo (`/http`) requires a server that supports
 [HTTP Range requests](https://developer.mozilla.org/en-US/docs/Web/HTTP/Range_requests) —
 it must return `206 Partial Content` with a `Content-Range` header for `Range` requests.
-A `200 OK` response to a Range request will cause the player to reject the response for
-non-zero byte offsets.
+For cross-origin requests, the server must expose `Content-Range` using
+`Access-Control-Expose-Headers`. The player rejects `200 OK` responses to Range requests.
 
 A sample recording and a zero-dependency server script are included:
 
@@ -90,9 +90,9 @@ A sample recording and a zero-dependency server script are included:
 npm run replay-server
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--port` | `8000` | Port to listen on |
+| Flag     | Default              | Description             |
+| -------- | -------------------- | ----------------------- |
+| `--port` | `8000`               | Port to listen on       |
 | `--file` | `samples/sample.bin` | Recording file to serve |
 
 Custom usage:
@@ -106,16 +106,16 @@ S3 presigned URLs).
 
 ### npm scripts
 
-| Script | Description |
-|--------|-------------|
-| `dev-all` | Full build (WASM + adapter + component) then start dev server |
-| `dev-no-wasm` | Rebuild adapter + component only, then start dev server |
-| `dev` | Start dev server (assumes everything is already built) |
-| `build` | Full production build |
-| `build-no-wasm` | Production build, skip WASM recompile |
-| `check` | Run `svelte-check` for TypeScript diagnostics |
-| `lint` | Prettier + ESLint |
-| `replay-server` | Serve a sample recording with HTTP Range support (port 8000) |
+| Script          | Description                                                   |
+| --------------- | ------------------------------------------------------------- |
+| `dev-all`       | Full build (WASM + adapter + component) then start dev server |
+| `dev-no-wasm`   | Rebuild adapter + component only, then start dev server       |
+| `dev`           | Start dev server (assumes everything is already built)        |
+| `build`         | Full production build                                         |
+| `build-no-wasm` | Production build, skip WASM recompile                         |
+| `check`         | Run `svelte-check` for TypeScript diagnostics                 |
+| `lint`          | Prettier + ESLint                                             |
+| `replay-server` | Serve a sample recording with HTTP Range support (port 8000)  |
 
 ## Recording file format
 
@@ -124,29 +124,33 @@ All multi-byte integers are **big-endian**.
 
 ### Header (20 bytes)
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 4 bytes | `version` | Header format version (`uint32`, must be `1`) |
-| 4 | 8 bytes | `totalPdus` | Total number of PDUs in the recording (`uint64`) |
-| 12 | 8 bytes | `duration` | Total session duration in milliseconds (`uint64`). May be `0` — the player falls back to the last index entry's timestamp. |
+| Offset | Size    | Field       | Description                                                                                                                |
+| ------ | ------- | ----------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 0      | 4 bytes | `version`   | Header format version (`uint32`, must be `1`)                                                                              |
+| 4      | 8 bytes | `totalPdus` | Total number of PDUs in the recording (`uint64`)                                                                           |
+| 12     | 8 bytes | `duration`  | Total session duration in milliseconds (`uint64`). May be `0` — the player falls back to the last index entry's timestamp. |
 
 ### Index table (17 bytes × `totalPdus`)
 
 Immediately follows the header. Each row describes one PDU, enabling random-access
 byte-range fetching without scanning the full file.
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 4 bytes | `timeOffset` | Milliseconds since session start (`uint32`) |
-| 4 | 4 bytes | `pduLength` | Length of this PDU in bytes (`uint32`) |
-| 8 | 8 bytes | `byteOffset` | Absolute byte offset of this PDU in the file (`uint64`) |
-| 16 | 1 byte | `direction` | `0x00` = client→server, `0x01` = server→client |
+| Offset | Size    | Field        | Description                                             |
+| ------ | ------- | ------------ | ------------------------------------------------------- |
+| 0      | 4 bytes | `timeOffset` | Milliseconds since session start (`uint32`)             |
+| 4      | 4 bytes | `pduLength`  | Length of this PDU in bytes (`uint32`)                  |
+| 8      | 8 bytes | `byteOffset` | Absolute byte offset of this PDU in the file (`uint64`) |
+| 16     | 1 byte  | `direction`  | `0x00` = client→server, `0x01` = server→client          |
 
 ### PDU data (variable)
 
 Raw RDP PDU bytes, concatenated in index order. Each PDU's position and length
-are described by its index table entry. The PDUs are the same wire-format bytes
-that `ironrdp-web-replay` expects — FastPath, X224/MCS, etc.
+are described by its index table entry. Capture PDUs after transport and RDP
+security-layer decryption; FastPath security flags must be cleared, signatures
+removed, and lengths adjusted. Encrypted or signed FastPath PDUs are rejected.
+The HTTP source requires contiguous, ordered index entries with valid directions
+and framed PDU lengths of 1–65535 bytes. It fetches at most 8 MiB per HTTP data
+request and rejects playback fetches exceeding 64 MiB in total.
 
 This library is part of the [IronRDP] project.
 

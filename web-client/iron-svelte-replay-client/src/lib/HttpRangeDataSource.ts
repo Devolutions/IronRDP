@@ -7,7 +7,7 @@ import {
     type Header,
     type IndexTableRow,
 } from './fetchRecording.js';
-import { searchByTime, toSafeNumber } from './recordingFormat.js';
+import { MAX_FETCH_SIZE, MAX_PDU_RANGE_SIZE, searchByTime, toSafeNumber } from './recordingFormat.js';
 
 export class HttpRangeDataSource implements ReplayDataSource {
     private url: string;
@@ -45,25 +45,38 @@ export class HttpRangeDataSource implements ReplayDataSource {
         }
         if (endIdx === startIdx) return [];
 
-        const firstEntry = this.indexTable[startIdx];
-        const lastEntry = this.indexTable[endIdx - 1];
-        const startByte = toSafeNumber(firstEntry.byteOffset, 'byteOffset');
-        const endByte = toSafeNumber(lastEntry.byteOffset, 'byteOffset') + lastEntry.pduLength - 1;
-
-        const buffer = await fetchFileRanges(this.url, startByte, endByte, this.fetchOptions, signal);
+        const totalBytes =
+            toSafeNumber(this.indexTable[endIdx - 1].byteOffset, 'byteOffset') +
+            this.indexTable[endIdx - 1].pduLength -
+            toSafeNumber(this.indexTable[startIdx].byteOffset, 'byteOffset');
+        if (totalBytes > MAX_FETCH_SIZE) throw new Error('requested PDU data exceeds the 64 MiB fetch limit');
 
         const pdus: ReplayPdu[] = [];
-        const baseOffset = toSafeNumber(firstEntry.byteOffset, 'byteOffset');
-        const view = new Uint8Array(buffer);
-
-        for (let i = startIdx; i < endIdx; i++) {
-            const entry = this.indexTable[i];
-            const offset = toSafeNumber(entry.byteOffset, 'byteOffset') - baseOffset;
-            pdus.push({
-                timestampMs: entry.timeOffset,
-                source: entry.direction as PduDirection,
-                data: view.subarray(offset, offset + entry.pduLength),
-            });
+        for (let batchStart = startIdx; batchStart < endIdx; ) {
+            let batchEnd = batchStart;
+            let size = 0;
+            while (batchEnd < endIdx && size + this.indexTable[batchEnd].pduLength <= MAX_PDU_RANGE_SIZE) {
+                size += this.indexTable[batchEnd++].pduLength;
+            }
+            const baseOffset = toSafeNumber(this.indexTable[batchStart].byteOffset, 'byteOffset');
+            const buffer = await fetchFileRanges(
+                this.url,
+                baseOffset,
+                baseOffset + size - 1,
+                this.fetchOptions,
+                signal,
+            );
+            const view = new Uint8Array(buffer);
+            for (let i = batchStart; i < batchEnd; i++) {
+                const entry = this.indexTable[i];
+                const offset = toSafeNumber(entry.byteOffset, 'byteOffset') - baseOffset;
+                pdus.push({
+                    timestampMs: entry.timeOffset,
+                    source: entry.direction as PduDirection,
+                    data: view.subarray(offset, offset + entry.pduLength),
+                });
+            }
+            batchStart = batchEnd;
         }
 
         return pdus;

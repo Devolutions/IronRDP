@@ -22,11 +22,7 @@ async function drainFetches(ds: MockDS, pdus: ReplayPdu[] = []): Promise<void> {
 /**
  * Drain all pending fetches until a promise settles.
  */
-async function drainFetchesUntilSettled(
-    ds: MockDS,
-    promise: Promise<void>,
-    pdus: ReplayPdu[] = [],
-): Promise<void> {
+async function drainFetchesUntilSettled(ds: MockDS, promise: Promise<void>, pdus: ReplayPdu[] = []): Promise<void> {
     let settled = false;
     promise.then(
         () => {
@@ -304,9 +300,7 @@ describe('Keyboard shortcuts — seek', () => {
         const playerDiv = screen.container.querySelector('.__irp-replay-player')! as HTMLElement;
         playerDiv.focus();
 
-        playerDiv.dispatchEvent(
-            new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-        );
+        playerDiv.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
 
         // Wait for 150ms debounce + margin.
         await new Promise((r) => setTimeout(r, 250));
@@ -327,9 +321,7 @@ describe('Keyboard shortcuts — seek', () => {
         const playerDiv = screen.container.querySelector('.__irp-replay-player')! as HTMLElement;
         playerDiv.focus();
 
-        playerDiv.dispatchEvent(
-            new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }),
-        );
+        playerDiv.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
 
         // Wait for debounce.
         await new Promise((r) => setTimeout(r, 250));
@@ -414,15 +406,9 @@ describe('Keyboard shortcuts — seek', () => {
         playerDiv.focus();
 
         // Press ArrowRight 3x rapidly (all within 150ms debounce window).
-        playerDiv.dispatchEvent(
-            new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-        );
-        playerDiv.dispatchEvent(
-            new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-        );
-        playerDiv.dispatchEvent(
-            new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }),
-        );
+        playerDiv.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+        playerDiv.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+        playerDiv.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
 
         // Wait for debounce to fire (150ms + margin).
         await new Promise((r) => setTimeout(r, 300));

@@ -248,6 +248,9 @@ byte-range fetching without scanning the full file.
 
 Raw binary PDU data, concatenated in index order. Each PDU's position and length
 are described by its index table entry.
+The IronRDP replay backend requires PDUs captured after transport and RDP
+security-layer decryption. FastPath security flags must be cleared, signatures
+removed, and lengths adjusted; encrypted or signed FastPath PDUs are rejected.
 
 ## Sequence Diagram
 

@@ -15,7 +15,7 @@
         loaded = true;
 
         const err = await initPlayer(() => playerEl, new LocalFileDataSource(file));
-        if (err) {
+        if (err !== null) {
             error = err;
             loaded = false;
         }

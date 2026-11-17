@@ -24,15 +24,15 @@ async function waitAndResolveFetch(ds: MockDS, pdus: ReplayPdu[] = []): Promise<
  * Drain all pending fetches until a promise settles.
  * Returns when the promise resolves.
  */
-async function drainFetchesUntilSettled(
-    ds: MockDS,
-    promise: Promise<void>,
-    pdus: ReplayPdu[] = [],
-): Promise<void> {
+async function drainFetchesUntilSettled(ds: MockDS, promise: Promise<void>, pdus: ReplayPdu[] = []): Promise<void> {
     let settled = false;
     promise.then(
-        () => { settled = true; },
-        () => { settled = true; },
+        () => {
+            settled = true;
+        },
+        () => {
+            settled = true;
+        },
     );
 
     for (let i = 0; i < 500 && !settled; i++) {
@@ -82,10 +82,7 @@ describe('Playback controls', () => {
         const { api, mockDataSource } = await mountPlayer();
 
         // Seek to 10_000 via api. Drain fetches until the seek completes.
-        await drainFetchesUntilSettled(
-            mockDataSource,
-            api.seek(10_000),
-        );
+        await drainFetchesUntilSettled(mockDataSource, api.seek(10_000));
 
         expect(api.getElapsedMs()).toBe(10_000);
 

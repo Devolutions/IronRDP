@@ -17,9 +17,9 @@ npm run test:browser:headed       # visible browser for debugging
 
 ## Test tiers
 
-| Tier | Environment | Config | What it tests |
-|------|-------------|--------|---------------|
-| Unit | jsdom + fake timers | `vitest.config.ts` | Store state machine, pure functions |
+| Tier    | Environment             | Config                     | What it tests                                  |
+| ------- | ----------------------- | -------------------------- | ---------------------------------------------- |
+| Unit    | jsdom + fake timers     | `vitest.config.ts`         | Store state machine, pure functions            |
 | Browser | Chromium via Playwright | `vitest.browser.config.ts` | UI interactions, DOM rendering, pointer events |
 
 Unit tests mock the WASM engine and data source entirely (no real decoding or network calls). Browser tests render the full Svelte component in a real browser with the same mocks.
@@ -39,11 +39,11 @@ All store tests run under `vi.useFakeTimers()`. Time does not advance unless you
 
 Every store test starts from one of these entry points:
 
-| Helper | What it does | State after |
-|--------|-------------|-------------|
-| `initStore()` | Opens the data source + wires in the WASM mock | `loadState: ready`, `paused: true`, `elapsed: 0` |
-| `startPlayback()` | `initStore()` → `play()` → resolve initial fetch | `paused: false`, rAF loop scheduled, `fetchedUntilMs = 15_000` |
-| `seekTo(ms)` | Seek to a position, resolving all chunks with empty PDUs | `elapsed: ms`, `fetchedUntilMs: ms` |
+| Helper            | What it does                                             | State after                                                    |
+| ----------------- | -------------------------------------------------------- | -------------------------------------------------------------- |
+| `initStore()`     | Opens the data source + wires in the WASM mock           | `loadState: ready`, `paused: true`, `elapsed: 0`               |
+| `startPlayback()` | `initStore()` → `play()` → resolve initial fetch         | `paused: false`, rAF loop scheduled, `fetchedUntilMs = 15_000` |
+| `seekTo(ms)`      | Seek to a position, resolving all chunks with empty PDUs | `elapsed: ms`, `fetchedUntilMs: ms`                            |
 
 `startPlayback()` resolves the initial fetch with `makePdus(0, 15_000, 100)`, producing 150 PDUs at 100ms intervals from 0 to 14_900. `fetchedUntilMs` advances to 15_000 (the requested range end, not the last PDU timestamp). The rAF loop is scheduled but no frame has fired yet, so `elapsed` is still 0.
 
@@ -52,12 +52,13 @@ Every store test starts from one of these entry points:
 `createMockDataSource()` returns a data source where every `fetch()` call returns a **pending promise**. The test controls when it resolves:
 
 ```ts
-store.play();                              // triggers fetchAndPush → fetch() called → promise pending
+store.play(); // triggers fetchAndPush → fetch() called → promise pending
 ds.resolveFetch(makePdus(0, 15_000, 100)); // test resolves it with PDU data
-await vi.advanceTimersByTimeAsync(0);       // flush so the store processes the result
+await vi.advanceTimersByTimeAsync(0); // flush so the store processes the result
 ```
 
 Key methods:
+
 - `ds.resolveFetch(pdus)`: resolve the oldest pending fetch
 - `ds.rejectFetch(error)`: reject the oldest pending fetch
 - `ds.pendingCount`: how many fetches are waiting to be resolved
@@ -91,10 +92,10 @@ Browser tests use [`vitest-browser-svelte`](https://github.com/nicolo-ribaudo/vi
 
 ### Setup helpers
 
-| Helper | What it does | State after |
-|--------|-------------|-------------|
-| `mountPlayer()` | Renders the component, wires mocks, resolves `open()`, captures `PlayerApi` from the `ready` event | Fully initialized, `paused: true` |
-| `mountPlayerPartial()` | Renders the component but does **not** resolve `open()` | Loading state. Use for testing loading UI or error injection. |
+| Helper                 | What it does                                                                                       | State after                                                   |
+| ---------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `mountPlayer()`        | Renders the component, wires mocks, resolves `open()`, captures `PlayerApi` from the `ready` event | Fully initialized, `paused: true`                             |
+| `mountPlayerPartial()` | Renders the component but does **not** resolve `open()`                                            | Loading state. Use for testing loading UI or error injection. |
 
 Both helpers return `{ screen, mockDataSource, mockWasm }`. `mountPlayer` also returns `{ api }`.
 
@@ -127,7 +128,7 @@ const seekbar = screen.container.querySelector('.__irp-seekbar')! as HTMLElement
 
 seekbar.dispatchEvent(new PointerEvent('pointerdown', { clientX, clientY, pointerId: 1, bubbles: true }));
 seekbar.dispatchEvent(new PointerEvent('pointermove', { clientX: newX, clientY, pointerId: 1, bubbles: true }));
-seekbar.dispatchEvent(new PointerEvent('pointerup',   { clientX: newX, clientY, pointerId: 1, bubbles: true }));
+seekbar.dispatchEvent(new PointerEvent('pointerup', { clientX: newX, clientY, pointerId: 1, bubbles: true }));
 ```
 
 Note: programmatically dispatched events are untrusted, so `setPointerCapture` does not actually activate. The tests validate handler logic by dispatching directly on the element. Real pointer capture behavior is validated by the out-of-bounds drag test, which dispatches at coordinates beyond the element's bounding rect.

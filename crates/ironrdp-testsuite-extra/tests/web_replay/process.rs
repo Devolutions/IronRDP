@@ -211,6 +211,48 @@ fn process_till_collects_malformed_pdu_errors_and_continues() {
 const X224_SERVER_DEMAND_ACTIVE: &[u8] = include_bytes!("../../test_data/pdu/web_replay/x224_server_demand_active.bin");
 
 #[test]
+fn client_direction_demand_active_does_not_change_resolution() {
+    let mut proc = test_processor();
+    let mut buffer = PduBuffer::new();
+    let mut image = test_image();
+    buffer.push_pdu(0.0, PduSource::Client, X224_SERVER_DEMAND_ACTIVE);
+
+    let result = proc.process_till(&mut buffer, &mut image, 0.0);
+    assert!(!result.resolution_changed);
+    assert_eq!((image.width(), image.height()), (64, 64));
+}
+
+#[test]
+fn oversized_demand_active_is_rejected_without_reallocating() {
+    let mut pdu = X224_SERVER_DEMAND_ACTIVE.to_vec();
+    assert_eq!(&pdu[125..129], &[0xbe, 0x05, 0x22, 0x03]);
+    pdu[125..127].copy_from_slice(&8193u16.to_le_bytes());
+    let mut proc = test_processor();
+    let mut buffer = PduBuffer::new();
+    let mut image = test_image();
+    buffer.push_pdu(0.0, PduSource::Server, &pdu);
+
+    let result = proc.process_till(&mut buffer, &mut image, 0.0);
+    assert_eq!(result.errors.len(), 1);
+    assert!(!result.resolution_changed);
+    assert_eq!((image.width(), image.height()), (64, 64));
+}
+
+#[test]
+fn encrypted_fastpath_is_rejected_for_both_directions_even_during_seek() {
+    let mut proc = test_processor();
+    let mut image = test_image();
+    proc.set_update_canvas(false);
+    for source in [PduSource::Client, PduSource::Server] {
+        for flag in [0x40, 0x80] {
+            let mut pdu = FASTPATH_CLIENT_INPUT;
+            pdu[0] |= flag;
+            assert!(proc.process_pdu(&mut image, source, &pdu).is_err());
+        }
+    }
+}
+
+#[test]
 fn process_x224_demand_active_returns_resolution() {
     let mut proc = test_processor();
     let mut image = test_image();

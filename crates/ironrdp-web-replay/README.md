@@ -4,6 +4,12 @@ WebAssembly replay engine for pre-recorded RDP sessions. Decodes FastPath
 PDUs into an RGBA framebuffer and blits the result onto an HTML `<canvas>`
 with cursor compositing.
 
+Recordings must contain plaintext PDUs captured after transport and RDP
+security-layer decryption. FastPath headers must have both security flags
+cleared, with any security signature removed and lengths adjusted accordingly;
+encrypted or signed FastPath PDUs are rejected. Desktop dimensions are limited
+to 8192 by 8192 pixels.
+
 Reuses IronRDP's existing `ironrdp-session` FastPath processor and
 `ironrdp-graphics` pipeline.
 

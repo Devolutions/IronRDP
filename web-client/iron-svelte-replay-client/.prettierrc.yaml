@@ -4,6 +4,8 @@ singleQuote: true
 semi: true
 trailingComma: all
 printWidth: 120
+plugins:
+  - prettier-plugin-svelte
 
 overrides:
   - files:

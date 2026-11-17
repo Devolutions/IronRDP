@@ -56,10 +56,9 @@ describe('overlay visibility', () => {
         try {
             // The {#if} block removes the element from DOM entirely.
             // Use expect.poll to check that the element is gone.
-            await expect.poll(
-                () => screen.container.querySelector('.__irp-buffering-overlay'),
-                { timeout: 5000 },
-            ).toBeNull();
+            await expect
+                .poll(() => screen.container.querySelector('.__irp-buffering-overlay'), { timeout: 5000 })
+                .toBeNull();
         } finally {
             clearInterval(drainInterval);
         }

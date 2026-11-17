@@ -20,6 +20,8 @@ use ironrdp_session::image::DecodedImage;
 use crate::PduSource;
 use crate::buffer::PduBuffer;
 
+const MAX_DESKTOP_DIM: u16 = 8192;
+
 /// Configuration for building a [`ReplayProcessor`].
 ///
 /// Defaults reflect the most common values found in RDP recordings.
@@ -199,7 +201,6 @@ impl ReplayProcessor {
             share_id: config.share_id,
             enable_server_pointer: true,
             pointer_software_rendering: false,
-            bulk_decompressor: None,
         }
         .build();
 
@@ -320,15 +321,26 @@ impl ReplayProcessor {
                     "find_size",
                     pdu.len(),
                     2, // minimum bytes needed to determine PDU size
+                    None,
                 )));
             }
             Err(e) => return Err(ReplayError::decode(e)),
         };
 
+        if action == Action::FastPath && pdu[0] & 0xc0 != 0 {
+            return Err(ReplayError::decode(ironrdp_core::invalid_field_err(
+                "replay",
+                "fast-path security flags",
+                "encrypted or signed fast-path data is not supported",
+                None,
+            )));
+        }
+
         match (action, source) {
             (Action::FastPath, PduSource::Server) => self.process_server_pdu(image, pdu),
             (Action::FastPath, PduSource::Client) => self.process_client_pdu(pdu),
-            (Action::X224, _) => Self::process_x224(pdu),
+            (Action::X224, PduSource::Server) => Self::process_x224(pdu),
+            (Action::X224, PduSource::Client) => Ok(Vec::new()),
         }
     }
 
@@ -337,7 +349,7 @@ impl ReplayProcessor {
         self.response_buffer.clear();
         let updates = self
             .fast_path_processor
-            .process(image, pdu, &mut self.response_buffer)
+            .process(image, pdu, &mut self.response_buffer, &mut None)
             .map_err(ReplayError::session)?;
 
         let mut results = Vec::new();
@@ -415,6 +427,14 @@ impl ReplayProcessor {
                             CapabilitySet::Bitmap(b) => Some((b.desktop_width, b.desktop_height)),
                             _ => None,
                         }) {
+                            if width == 0 || height == 0 || width > MAX_DESKTOP_DIM || height > MAX_DESKTOP_DIM {
+                                return Err(ReplayError::decode(ironrdp_core::invalid_field_err(
+                                    "replay",
+                                    "desktop size",
+                                    "desktop dimensions exceed replay limits",
+                                    None,
+                                )));
+                            }
                             // Always emit ResolutionChanged (even during seeking)
                             Ok(vec![ProcessResult::ResolutionChanged { width, height }])
                         } else {

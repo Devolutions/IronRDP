@@ -32,10 +32,10 @@
 
     $effect(() => {
         return () => {
-            if (controlsTimeout) clearTimeout(controlsTimeout);
-            if (seekDebounce) clearTimeout(seekDebounce);
-            if (actionOverlayTimeout) clearTimeout(actionOverlayTimeout);
-            if (seekOverlayTimeout) clearTimeout(seekOverlayTimeout);
+            if (controlsTimeout !== null) clearTimeout(controlsTimeout);
+            if (seekDebounce !== null) clearTimeout(seekDebounce);
+            if (actionOverlayTimeout !== null) clearTimeout(actionOverlayTimeout);
+            if (seekOverlayTimeout !== null) clearTimeout(seekOverlayTimeout);
             // Cancel RAF loop and abort any in-flight seek before freeing WASM memory.
             // This ensures the seek's finally block sees signal.aborted = true and does
             // not call setUpdateCanvas() on the freed instance.
@@ -45,7 +45,7 @@
 
     function showControls(): void {
         controlsVisible = true;
-        if (controlsTimeout) clearTimeout(controlsTimeout);
+        if (controlsTimeout !== null) clearTimeout(controlsTimeout);
         if (!store.playbackState.paused) {
             controlsTimeout = setTimeout(() => {
                 controlsVisible = false;
@@ -60,7 +60,7 @@
         // re-trigger itself on every store mutation, causing
         // effect_update_depth_exceeded.
         const ds = dataSource;
-        if (ds) untrack(() => store.initialiseRecording(ds));
+        if (typeof ds !== 'undefined') untrack(() => store.initialiseRecording(ds));
     });
 
     // Reset wasmReady when a new load starts so WASM re-initializes for the new recording.
@@ -72,7 +72,7 @@
 
     $effect(() => {
         if (store.loadState.status !== 'ready') return;
-        if (!canvas || wasmReady) return;
+        if (typeof canvas === 'undefined' || wasmReady) return;
 
         // new module.Replay(canvas) calls a Rust constructor returning Result<Replay, JsValue>.
         // wasm-bindgen converts Err into a JS throw, so wrap in try/catch.
@@ -139,7 +139,7 @@
 
     $effect(() => {
         if (store.playbackState.paused) {
-            if (controlsTimeout) {
+            if (controlsTimeout !== null) {
                 clearTimeout(controlsTimeout);
                 controlsTimeout = null;
             }
@@ -167,7 +167,7 @@
 
     function showActionOverlay(kind: 'play' | 'pause'): void {
         actionOverlay = kind;
-        if (actionOverlayTimeout) clearTimeout(actionOverlayTimeout);
+        if (actionOverlayTimeout !== null) clearTimeout(actionOverlayTimeout);
         actionOverlayTimeout = setTimeout(() => {
             actionOverlay = null;
         }, 600);
@@ -179,7 +179,7 @@
 
     function showSeekOverlay(direction: 'forward' | 'backward'): void {
         seekOverlay = direction;
-        if (seekOverlayTimeout) clearTimeout(seekOverlayTimeout);
+        if (seekOverlayTimeout !== null) clearTimeout(seekOverlayTimeout);
         seekOverlayTimeout = setTimeout(() => {
             seekOverlay = null;
         }, 600);
@@ -203,7 +203,8 @@
 
     function handleReplay(e: MouseEvent): void {
         e.stopPropagation();
-        store.reset()
+        store
+            .reset()
             .then(() => store.play())
             .catch((err) => console.error('[replay] restart failed:', err));
     }
@@ -266,23 +267,14 @@
     }
 </script>
 
-<div
-    class="__irp-replay-player"
-    bind:this={playerDiv}
-    tabindex={canPlay ? 0 : -1}
-    onkeydown={handlePlayerKeydown}
->
+<div class="__irp-replay-player" bind:this={playerDiv} tabindex={canPlay ? 0 : -1} onkeydown={handlePlayerKeydown}>
     {#if store.loadState.status === 'loading' || (store.loadState.status === 'ready' && !wasmReady)}
         <p class="__irp-loading-text">Loading recording...</p>
     {:else if store.loadState.status === 'error'}
         <p class="__irp-error">Error: {store.loadState.message}</p>
     {/if}
 
-    <div
-        class="__irp-canvas-container"
-        onmousemove={showControls}
-        onclick={handleCanvasClick}
-    >
+    <div class="__irp-canvas-container" onmousemove={showControls} onclick={handleCanvasClick}>
         {#if isBuffering}
             <div class="__irp-buffering-overlay">
                 <span class="__irp-buffering-label">Buffering...</span>
@@ -318,7 +310,11 @@
 
         {#if store.loadState.status === 'ready' && wasmReady}
             <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events (propagation barrier -- not an interactive element) -->
-            <div class="__irp-controls-overlay" class:__irp-hidden={!controlsVisible} onclick={(e) => e.stopPropagation()}>
+            <div
+                class="__irp-controls-overlay"
+                class:__irp-hidden={!controlsVisible}
+                onclick={(e) => e.stopPropagation()}
+            >
                 <SeekBar
                     elapsed={store.elapsed}
                     duration={store.duration}
@@ -331,11 +327,11 @@
                 <PlaybackControls
                     paused={store.playbackState.paused}
                     waiting={store.playbackState.waiting}
-                    canPlay={canPlay}
+                    {canPlay}
                     elapsed={store.elapsed}
                     duration={store.duration}
                     speed={store.speed}
-                    isFullscreen={isFullscreen}
+                    {isFullscreen}
                     onplay={() => store.play()}
                     onpause={() => store.pause()}
                     onreset={() => store.reset()}
@@ -357,7 +353,10 @@
     :global(.__irp-replay-player) {
         background: #000;
         position: relative;
-        font-family: system-ui, -apple-system, sans-serif;
+        font-family:
+            system-ui,
+            -apple-system,
+            sans-serif;
         width: 100%;
         height: 100%;
         display: flex;
@@ -410,9 +409,15 @@
 
     :global {
         @keyframes __irp-fade-out {
-            0% { opacity: 0.9; }
-            70% { opacity: 0.9; }
-            100% { opacity: 0; }
+            0% {
+                opacity: 0.9;
+            }
+            70% {
+                opacity: 0.9;
+            }
+            100% {
+                opacity: 0;
+            }
         }
     }
 
@@ -463,7 +468,9 @@
         align-items: center;
         justify-content: center;
         cursor: pointer;
-        transition: background 0.15s ease, border-color 0.15s ease;
+        transition:
+            background 0.15s ease,
+            border-color 0.15s ease;
     }
 
     :global(.__irp-restart-btn:hover) {
@@ -526,7 +533,9 @@
         opacity: 0;
         pointer-events: none;
         visibility: hidden;
-        transition: opacity 0.3s ease, visibility 0s linear 0.3s;
+        transition:
+            opacity 0.3s ease,
+            visibility 0s linear 0.3s;
     }
 
     /* Seekbar */
@@ -594,7 +603,10 @@
         border-radius: 50%;
         transform: translate(-50%, -50%);
         pointer-events: none;
-        transition: opacity 0.15s ease, width 0.15s ease, height 0.15s ease;
+        transition:
+            opacity 0.15s ease,
+            width 0.15s ease,
+            height 0.15s ease;
         box-shadow: 0 0 4px rgba(74, 158, 255, 0.6);
     }
 
@@ -673,7 +685,9 @@
         padding: 3px 8px;
         cursor: pointer;
         white-space: nowrap;
-        transition: border-color 0.15s ease, color 0.15s ease;
+        transition:
+            border-color 0.15s ease,
+            color 0.15s ease;
     }
 
     :global(.__irp-speed-btn:hover) {
