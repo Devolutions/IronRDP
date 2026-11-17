@@ -145,15 +145,15 @@ fn scaled_to_fit(pointer: &DecodedPointer) -> Option<Scaled> {
 
 /// `value` scaled by `MAX_CURSOR_SIZE / longest`, rounded down.
 ///
-/// `longest` must be greater than [`MAX_CURSOR_SIZE`].
+/// Requires `MAX_CURSOR_SIZE < longest`.
 /// Integer arithmetic scales `longest` itself to exactly [`MAX_CURSOR_SIZE`], which floating point can round below.
 fn scale_down(value: u16, longest: u16) -> u16 {
     #[expect(
         clippy::arithmetic_side_effects,
-        reason = "u16::MAX * MAX_CURSOR_SIZE fits in u32, and longest > MAX_CURSOR_SIZE is not 0"
+        reason = "u16::MAX * MAX_CURSOR_SIZE fits in u32, and MAX_CURSOR_SIZE < longest, so longest is not 0"
     )]
     let scaled = u32::from(value) * u32::from(MAX_CURSOR_SIZE) / u32::from(longest);
-    // Since longest > MAX_CURSOR_SIZE, scaled <= value, so the conversion never fails.
+    // Since MAX_CURSOR_SIZE < longest, scaled <= value, so the conversion never fails.
     u16::try_from(scaled).expect("scaled <= value")
 }
 
