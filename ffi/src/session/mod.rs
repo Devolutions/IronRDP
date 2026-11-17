@@ -1,5 +1,16 @@
 pub mod image;
 
+fn ensure_native_audio_attached(
+    attached: Option<&std::sync::Arc<crate::audio::AudioShared>>,
+    audio: &std::sync::Arc<crate::audio::AudioShared>,
+) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
+    if attached.is_some_and(|attached| std::sync::Arc::ptr_eq(attached, audio)) {
+        Ok(())
+    } else {
+        Err("native audio belongs to another connection".into())
+    }
+}
+
 /// Encodes windowing orders as a complete slow-path Orders update ([MS-RDPBCGR] 2.2.9.1.1.3.1
 /// Slow-Path Graphics Update carrying an [MS-RDPEGDI] 2.2.2.1 Orders Update), the byte form this
 /// API exposed before orders were decoded.
@@ -202,26 +213,14 @@ pub mod ffi {
 
         /// Drains captured audio and audio channel closures into transport frames.
         pub fn poll_audio(&mut self, audio: &NativeAudio) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
-            if !self
-                .2
-                .as_ref()
-                .is_some_and(|attached| std::sync::Arc::ptr_eq(attached, &audio.0))
-            {
-                return Err("native audio belongs to another connection".into());
-            }
+            super::ensure_native_audio_attached(self.2.as_ref(), &audio.0)?;
             let outputs = crate::audio::poll_audio(&mut self.0, &audio.0)?;
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
         /// Stops native playback and capture for this connection.
         pub fn stop_audio(&mut self, audio: &NativeAudio) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
-            if !self
-                .2
-                .as_ref()
-                .is_some_and(|attached| std::sync::Arc::ptr_eq(attached, &audio.0))
-            {
-                return Err("native audio belongs to another connection".into());
-            }
+            super::ensure_native_audio_attached(self.2.as_ref(), &audio.0)?;
             let outputs = crate::audio::stop_audio(&mut self.0, &audio.0)?;
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }

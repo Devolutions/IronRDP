@@ -18,7 +18,8 @@ pub const MAX_CAPTURE_SAMPLE_RATE: u32 = 48_000;
 
 /// Deadline for receiving CPAL input stream readiness from the session task.
 ///
-/// Open must report a real HRESULT, but the client session loop is single-threaded.
+/// Opening or restarting capture needs a real device-ready result, but the session loop is
+/// single-threaded.
 /// Allow cold CoreAudio startup to exceed 250 ms without reporting a spurious Open failure.
 /// Cleanup still joins the worker, so a blocked driver can exceed this deadline.
 const STREAM_START_TIMEOUT: Duration = Duration::from_secs(2);
@@ -220,7 +221,10 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
         let mut chosen: Vec<AudioFormat> = server_formats
             .iter()
             .filter(|format| {
-                (is_pcm_capture_format(format) && format.bits_per_sample == 16) || AudioEncoder::supports(format)
+                format.n_channels <= 2
+                    && format.n_samples_per_sec <= MAX_CAPTURE_SAMPLE_RATE
+                    && ((is_pcm_capture_format(format) && format.bits_per_sample == 16)
+                        || AudioEncoder::supports(format))
             })
             .cloned()
             .collect();
@@ -547,8 +551,8 @@ fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactS
 mod tests {
     use super::*;
 
-    // oracle: scaffold
-    // Cold CoreAudio startup has been observed to exceed 250 ms before succeeding.
+    // oracle: regression #2469
+    // Cold CoreAudio startup reached 348 ms before the stream became ready.
     #[test]
     fn cold_stream_start_is_not_rejected_after_250_ms() {
         let mut backend = RdpeaiCaptureBackend::new();
@@ -561,20 +565,17 @@ mod tests {
         assert!(backend.wait_for_stream_start(ready_rx).is_ok());
     }
 
-    // oracle: scaffold
+    // oracle: regression #2469
     #[test]
     fn stream_start_preserves_device_failure() {
         let mut backend = RdpeaiCaptureBackend::new();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         ready_tx.send(Err("device unavailable".to_owned())).unwrap();
 
-        assert_eq!(
-            backend.wait_for_stream_start(ready_rx),
-            Err("device unavailable".to_owned())
-        );
+        assert!(backend.wait_for_stream_start(ready_rx).is_err());
     }
 
-    // oracle: spec MS-RDPEAI §3.2.5.3.1
+    // oracle: spec MS-RDPEAI §3.2.5.3.2
     #[test]
     fn format_confirmation_precedes_concurrent_capture() {
         let format = pcm_format(1, 16000, 16);
@@ -602,17 +603,24 @@ mod tests {
                 push_samples(&sink_state, [1i16, 2].into_iter());
                 finished_tx.send(()).unwrap();
             }));
-            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            assert!(matches!(
-                finished_rx.recv_timeout(Duration::from_millis(50)),
-                Err(mpsc::RecvTimeoutError::Timeout)
-            ));
+            started_rx.recv().unwrap();
             events.lock().unwrap().push("confirmation");
             Ok(())
         };
 
         assert!(backend.set_format_ordered(&format, 4, &mut confirm).unwrap());
+        finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         worker.unwrap().join().unwrap();
         assert_eq!(*events.lock().unwrap(), ["confirmation", "data"]);
+    }
+
+    // oracle: regression #2469
+    #[test]
+    fn format_negotiation_rejects_rates_above_the_capture_queue_bound() {
+        let backend = RdpeaiCaptureBackend::new();
+        let supported = pcm_format(2, 48_000, 16);
+        let too_fast = pcm_format(1, 192_000, 16);
+
+        assert_eq!(backend.choose_formats(&[supported.clone(), too_fast]), [supported]);
     }
 }

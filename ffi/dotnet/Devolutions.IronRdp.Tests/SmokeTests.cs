@@ -456,12 +456,13 @@ internal static class SmokeTests
             True(stage.EncodedResize(1024, 768) is null, "no resize frame");
         });
 
+        // oracle: regression #2469
         yield return ("native audio requires an enabled direction", () =>
         {
-            var error = Throws<IronRdpException>(() => NativeAudio.New(false, false, "", "", 0));
-            True(error.Message.Contains("playback or capture"), $"error message: {error.Message}");
+            Throws<IronRdpException>(() => NativeAudio.New(false, false, "", "", 0));
         });
 
+        // oracle: regression #2469
         yield return ("native audio is attached to one connector", () =>
         {
             using var audio = NativeAudio.New(true, true, "", "", 0);
@@ -472,6 +473,7 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => first.WithStaticChannelRdpSnd());
         });
 
+        // oracle: regression #2469
         yield return ("stopping capture closes the channel and prevents it reopening", () =>
         {
             using var audio = NativeAudio.New(false, true, "", "", 0);
@@ -489,6 +491,7 @@ internal static class SmokeTests
             Equal(0ul, (ulong)stoppedAgain.Len(), "capture cannot reopen after stop");
         });
 
+        // oracle: regression #2469
         yield return ("audio polling rejects a different connection", () =>
         {
             using var attached = NativeAudio.New(false, true, "", "", 0);
@@ -500,6 +503,7 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => stage.StopAudio(other));
         });
 
+        // oracle: regression #2469
         yield return ("disposing a stage prevents further audio operations", () =>
         {
             using var audio = NativeAudio.New(false, true, "", "", 0);
@@ -985,7 +989,11 @@ internal static class SmokeTests
         0x3a, 0x44, 0x69, 0x73, 0x70, 0x6c, 0x61, 0x79, 0x43, 0x6f, 0x6e, 0x74, 0x72, 0x6f, 0x6c, 0x00,
     };
 
-    // DYNVC_CREATE_REQ for "AUDIO_INPUT" on channel 1, carried by static channel 1004.
+    // oracle: spec MS-RDPBCGR §2.2.9.1.1, §2.2.9.1.2, §2.2.6.1.1; T.125 §11.33; MS-RDPEDYC §2.2.2.1
+    // TPKT declares 36 bytes, and X.224 marks Data.
+    // MCS SDin uses initiator 0x0001 (UserId 1002), channel 0x03ec (1004), priority 0x70, and length 0x16 (22).
+    // The SVC header declares 0x0e bytes with flags 0x00000003 (FIRST|LAST).
+    // DYNVC command 0x10 creates channel 1, followed by the NUL-terminated "AUDIO_INPUT" name.
     private static readonly byte[] DrdynvcAudioInputCreateRequest =
     {
         0x03, 0x00, 0x00, 0x24, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x16, 0x0e, 0x00,

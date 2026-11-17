@@ -49,7 +49,8 @@ If the session loop stalls long enough to exhaust that buffer, capture is stoppe
 Write each returned `ResponseFrame` to the same transport, in order, and dispose the output iterator and frames.
 Device and stream failures are logged through Rust tracing rather than returned as managed status events.
 An Open failure describes one capture attempt, not permanent microphone unavailability: the server can reopen the channel and retry.
-Cold microphone startup waits two seconds for the device-ready response before attempting cleanup; this synchronous wait pauses session processing, and cleanup can take longer if a driver blocks.
+Opening capture and a FormatChange that changes rate or channels wait up to two seconds for device readiness in the serialized session loop.
+This pauses session processing, and cleanup can take longer if a driver blocks.
 Capture samples received before the client's Open reply is queued are discarded so they cannot overtake the reply.
 
 ```csharp

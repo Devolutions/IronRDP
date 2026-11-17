@@ -51,20 +51,26 @@ pub trait RdpeaiCaptureHandler: Send {
         sink: AudioPacketSink,
     ) -> i32;
 
-    /// Switch the negotiated encoding format while capture stays open.
+    /// Switch the negotiated encoding format while capture stays open, as required by
+    /// [Processing a Format Change PDU][ms-rdpeai-format-change].
     ///
     /// `packet_size` remains the capture packet size established by Open; it must not be
     /// recalculated from `encode_format`.
     ///
     /// PCM-only backends may restart the capture device when `encode_format` differs from
     /// the Open capture WAVEFORMATEX so FormatChange can be confirmed honestly.
+    ///
+    /// [ms-rdpeai-format-change]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeai/bd3b5bb5-9b81-41cb-bff0-ce4eaabd2dad
     fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool;
 
-    /// Switch formats and enqueue the confirmation at the boundary between old and new packets.
+    /// Switch formats and enqueue the confirmation at the boundary between old and new packets, as
+    /// required by [Processing a Format Change PDU][ms-rdpeai-format-change].
     ///
     /// Implementations must serialize `confirm` with delivery to the packet sink.
     /// A successful switch must call `confirm` exactly once before delivering new-format packets.
     /// The default rejects ordered changes rather than allowing packets to overtake the confirmation.
+    ///
+    /// [ms-rdpeai-format-change]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeai/bd3b5bb5-9b81-41cb-bff0-ce4eaabd2dad
     fn set_format_ordered(
         &mut self,
         _encode_format: &AudioFormat,
@@ -124,10 +130,13 @@ impl RdpeaiClient {
         }
     }
 
-    /// Enqueue control replies with capture packets instead of returning them directly.
+    /// Enqueue control replies with capture packets instead of returning them directly, preserving
+    /// the order required by [Sending a Format Change PDU][ms-rdpeai-format-change].
     ///
     /// Samples received before the Open reply is queued are discarded rather than sent ahead of it.
     /// Capture handlers must implement [`RdpeaiCaptureHandler::set_format_ordered`].
+    ///
+    /// [ms-rdpeai-format-change]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeai/74e22a5c-535c-481b-a99b-ca30cbd40fd2
     #[must_use]
     pub fn with_ordered_replies(mut self) -> Self {
         self.ordered_replies = true;
@@ -297,23 +306,37 @@ impl RdpeaiClient {
                 .channel_id
                 .ok_or_else(|| pdu_other_err!("AUDIO_INPUT channel not started"))?;
             let confirmed = Cell::new(false);
+            let confirm_failed = Cell::new(false);
             let mut confirm = || {
                 let messages: Vec<DvcMessage> = vec![Box::new(RdpeaiPdu::FormatChange(FormatChangePdu::new(
                     change.new_format,
                 )))];
-                queue_messages(&uplink, channel_id, messages)?;
+                if let Err(error) = queue_messages(&uplink, channel_id, messages) {
+                    confirm_failed.set(true);
+                    return Err(error);
+                }
                 confirmed.set(true);
                 Ok(())
             };
             let changed = self.handler.set_format_ordered(&encode_fmt, packet_size, &mut confirm);
-            if !matches!(changed, Ok(true)) {
+            let succeeded = matches!(&changed, Ok(true));
+            if !succeeded {
                 self.stop_capture();
             }
-            if changed? && !confirmed.get() {
+            match &changed {
+                Err(error) => warn!(%error, "AUDIO_INPUT ordered format change failed"),
+                Ok(false) => warn!("AUDIO_INPUT capture backend rejected the format change"),
+                Ok(true) => {}
+            }
+            if succeeded && !confirmed.get() {
                 self.stop_capture();
                 return Err(pdu_other_err!("audio format changed without confirming the transition"));
             }
             if !confirmed.get() {
+                if confirm_failed.get() {
+                    changed?;
+                    return Err(pdu_other_err!("failed to queue AUDIO_INPUT Format Change confirmation"));
+                }
                 confirm()?;
             }
             return Ok(Vec::new());
