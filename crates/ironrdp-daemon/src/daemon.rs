@@ -3922,6 +3922,25 @@ mod tests {
         ));
     }
 
+    // oracle: mutant a RAIL wait that rejects a timeout at the cap
+    #[tokio::test]
+    async fn rail_wait_accepts_a_timeout_at_the_cap() {
+        let (daemon, _, live, _) = active_rail_session(false);
+        // An event is already recorded, so a wait that accepts the timeout answers at once.
+        live.lock()
+            .expect("session live state poisoned")
+            .rail
+            .record(RailEventKind::WindowingOrders { byte_count: 1 });
+        let request = Request::RailWait {
+            after_sequence: None,
+            timeout_ms: 60_000,
+        };
+        assert!(matches!(
+            daemon.handle(request).await.response(),
+            Response::Ok(Payload::RailEvents(_))
+        ));
+    }
+
     // oracle: mutant a frame wait that waits with no session
     #[tokio::test]
     async fn wait_frame_without_a_session_is_unavailable() {
