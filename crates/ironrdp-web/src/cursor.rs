@@ -392,4 +392,31 @@ mod tests {
             .unwrap();
         assert_eq!((tall.width, tall.height), (1, 32));
     }
+
+    /// Every pointer size whose sides are each 1 to 300 or `u16::MAX`.
+    fn sizes() -> impl Iterator<Item = (u16, u16)> {
+        let sides = || (1..=300).chain([u16::MAX]);
+        sides().flat_map(move |width| sides().map(move |height| (width, height)))
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn every_oversized_pointer_is_scaled_to_between_one_pixel_and_the_cursor_size() {
+        for (width, height) in sizes().filter(|&(width, height)| MAX_CURSOR_SIZE < width.max(height)) {
+            let pointer = DecodedPointer {
+                width,
+                height,
+                hotspot_x: 0,
+                hotspot_y: 0,
+                bitmap_data: Vec::new(),
+            };
+            // oracle: mutant an oversized pointer left unscaled, for a size the examples miss.
+            let s = scaled_to_fit(&pointer).expect("an oversized pointer is scaled");
+            let scaled = || format!("{width}x{height} scaled to {}x{}", s.width, s.height);
+            // oracle: regression #2427, a 64x1 pointer scaled to 32x0, which the resizer refuses, ending the session.
+            assert!(1 <= s.width.min(s.height), "{}", scaled());
+            // oracle: mutant a side scaled above MAX_CURSOR_SIZE, for a size the examples miss.
+            assert!(s.width.max(s.height) <= MAX_CURSOR_SIZE, "{}", scaled());
+        }
+    }
 }
