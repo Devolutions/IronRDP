@@ -504,6 +504,9 @@ struct Live {
     ///
     /// The reconnect ends with `AutoReconnected` when the server accepts the cookie and returns to the same session.
     /// It ends with `Connected` when the server rejects the cookie and logs on afresh, and then only these facts hold.
+    ///
+    /// INVARIANT: While this is `Some`, `record_fact` records every fact into it as well as into `session_info`, so it
+    /// holds only what the server reported since the reconnect began.
     since_reconnecting: Option<SessionInfo>,
 }
 
