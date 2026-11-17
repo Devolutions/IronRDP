@@ -153,8 +153,8 @@ fn scale_down(value: u16, longest: u16) -> u16 {
         reason = "u16::MAX * MAX_CURSOR_SIZE fits in u32, and longest > MAX_CURSOR_SIZE is not 0"
     )]
     let scaled = u32::from(value) * u32::from(MAX_CURSOR_SIZE) / u32::from(longest);
-    // Since longest > MAX_CURSOR_SIZE, scaled <= value, so the conversion never saturates.
-    u16::try_from(scaled).unwrap_or(u16::MAX)
+    // Since longest > MAX_CURSOR_SIZE, scaled <= value, so the conversion never fails.
+    u16::try_from(scaled).expect("scaled <= value")
 }
 
 #[cfg(test)]
