@@ -284,6 +284,13 @@ impl RdpServerBuilder<BuilderDone> {
     }
 
     /// Configure EGFX (Graphics Pipeline Extension) for H.264 video streaming.
+    ///
+    /// With a factory, the server advertises the graphics pipeline in its [\[MS-RDPBCGR\] 2.2.1.2.1] RDP Negotiation
+    /// Response (RDP_NEG_RSP).
+    /// A graphics pipeline registered through a [`DynamicChannelFactory`] isn't advertised, because that response goes
+    /// out before any channel is attached.
+    ///
+    /// [\[MS-RDPBCGR\] 2.2.1.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b2975bdc-6d56-49ee-9c57-f2ff3a0b6817
     #[cfg(feature = "egfx")]
     pub fn with_gfx_factory(mut self, gfx_factory: Option<Box<dyn GfxServerFactory>>) -> Self {
         self.state.gfx_factory = gfx_factory;
