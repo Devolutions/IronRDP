@@ -97,9 +97,6 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// `ok = false` means it rejected it (`CB_RESPONSE_FAIL`), and
     /// [`crate::Cliprdr`] has already cleared
     /// `local_file_list` / `local_file_list_format_id` per MS-RDPECLIP 3.1.5.2.4.
-    /// From then until the remote accepts a list, its Format Data Requests are answered with
-    /// `CB_RESPONSE_FAIL` without reaching [`Self::on_format_data_request`], and its File Contents
-    /// Requests that name no locked `clipDataId` fail the same way.
     ///
     /// Backends can use this to retry on `Fail` (e.g. ride out a transient
     /// rejection caused by the remote window being inactive at the instant we
@@ -128,8 +125,8 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// Clipboard endpoint implementation should keep track of available formats prior
     /// to requesting data from the server.
     ///
-    /// An empty list means the remote clipboard changed to nothing this side can take, as when its Format List is
-    /// refused.
+    /// The channel delivers at most the first 1024 entries of a remote offer.
+    /// It stops before the first name longer than 1024 UTF-16 code units or ANSI bytes, excluding the terminator.
     fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]);
 
     /// Processes remote's request to send format data.
@@ -139,9 +136,6 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// This method only signals the client that server requests data in the given format.
     /// Implementors should respond by compiling a [`FormatDataResponse`] and calling
     /// [`crate::Cliprdr::submit_format_data`]
-    ///
-    /// Not called while the remote's last answer to our `FormatList` was `CB_RESPONSE_FAIL` (see
-    /// [`Self::on_format_list_response`]): such requests are answered with failure inline.
     fn on_format_data_request(&mut self, request: FormatDataRequest);
 
     /// Called by [`crate::Cliprdr`] when server sends data to the client clipboard as a response to
