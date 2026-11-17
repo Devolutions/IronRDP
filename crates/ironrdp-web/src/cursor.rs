@@ -313,11 +313,11 @@ mod tests {
         let top_row: Vec<u8> = (0..32).map(|x| pixel(&p, x, 0)[0]).collect();
         let left_column: Vec<u8> = (0..16).map(|y| pixel(&p, 0, y)[1]).collect();
         assert!(
-            top_row.is_sorted() && top_row[31] >= 40,
+            top_row.is_sorted() && 40 <= top_row[31],
             "red along the top row: {top_row:?}"
         );
         assert!(
-            left_column.is_sorted() && left_column[15] >= 20,
+            left_column.is_sorted() && 20 <= left_column[15],
             "green down the left column: {left_column:?}"
         );
     }
