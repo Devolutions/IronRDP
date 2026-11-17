@@ -111,6 +111,14 @@ struct SessionBuilderInner {
     monitor_layout_callback: Option<js_sys::Function>,
 }
 
+impl SessionBuilderInner {
+    /// The bulk compression to request: MPPC 64K, the native client's default, when the app enabled it.
+    fn compression_type(&self) -> Option<ironrdp::pdu::rdp::client_info::CompressionType> {
+        self.enable_compression
+            .then_some(ironrdp::pdu::rdp::client_info::CompressionType::K64)
+    }
+}
+
 impl Default for SessionBuilderInner {
     fn default() -> Self {
         Self {
@@ -572,11 +580,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             });
         }
 
-        // MPPC 64K, the native client's default when compression is on.
-        // UNTESTED: the extension must reach `config.compression_type`; no test builds a session.
-        if self.0.borrow().enable_compression {
-            config.compression_type = Some(ironrdp::pdu::rdp::client_info::CompressionType::K64);
-        }
+        // UNTESTED: no test observes the Client Info PDU this ends up in.
+        config.compression_type = self.0.borrow().compression_type();
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
@@ -3027,6 +3032,24 @@ mod tests {
             }
             _ => panic!("Expected correct flags conversion"),
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn enable_compression_extension_selects_mppc_64k() {
+        // oracle: reference crates/ironrdp-client/src/config.rs - MPPC 64K is its type when compression is on.
+        // oracle: mutant the extension not dispatched by its name, compression on by default, or not turned off
+        use iron_remote_desktop::SessionBuilder as _;
+        use ironrdp::pdu::rdp::client_info::CompressionType;
+
+        let builder = SessionBuilder::create();
+        assert_eq!(builder.0.borrow().compression_type(), None);
+
+        let builder = builder.extension(Extension::create("enable_compression".to_owned(), JsValue::TRUE));
+        assert_eq!(builder.0.borrow().compression_type(), Some(CompressionType::K64));
+
+        let builder = builder.extension(Extension::create("enable_compression".to_owned(), JsValue::FALSE));
+        assert_eq!(builder.0.borrow().compression_type(), None);
     }
 }
 
