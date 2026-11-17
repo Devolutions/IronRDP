@@ -53,6 +53,15 @@ fn process_pdu_returns_error_for_garbage_bytes() {
 }
 
 #[test]
+fn process_client_fastpath_rejects_length_that_cannot_contain_extended_event_count() {
+    // oracle: spec MS-RDPBCGR §2.2.8.1.2 defines the overall PDU length and optional numEvents field.
+    let mut proc = test_processor();
+    let mut image = test_image();
+    let result = proc.process_pdu(&mut image, PduSource::Client, &[0x00, 0x02, 0x00]);
+    assert!(result.is_err(), "PDU length must include the extended event-count byte");
+}
+
+#[test]
 fn process_client_fastpath_extracts_mouse_positions() {
     let mut proc = test_processor();
     let mut image = test_image();

@@ -289,8 +289,6 @@ impl ReplayProcessor {
     /// [2.2.8.1.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
     /// [2.2.1.13.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
     /// [2.2.7.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
-    // UNTESTED: Arbitrary malformed PDU bytes must never panic because recordings are untrusted.
-    // Run the web_replay_pdu_processing fuzz target when changing this dispatcher or its decoders.
     pub fn process_pdu(
         &mut self,
         image: &mut DecodedImage,
