@@ -178,6 +178,7 @@ fn bitmap_update_of_odd_width_has_scan_width_divisible_by_4() {
 fn bitmap_update_after_a_larger_one_is_sent_as_on_its_own() {
     let small = bitmap(8, 4, 67, 3);
     let sent = encode_in_turn(&[bitmap(0, 0, 136, 70), small.clone()]);
+    // oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.2 (destLeft..destBottom are the inclusive bounds drawn)
     // oracle: property round-trip (RDP 6.0 planar bitmaps without color loss decode to the pixels encoded)
     assert_draws_exactly(&sent[1], &small);
     // oracle: mutant a bitmap encoder that sends what its reused buffer kept from a larger update
@@ -207,5 +208,16 @@ proptest! {
         assert_tiles_fit_64x64(&pdus);
         assert_scan_widths_divisible_by_4(&pdus);
         assert_draws_exactly(&pdus, &update);
+    }
+
+    // Same oracles as bitmap_update_after_a_larger_one_is_sent_as_on_its_own, over generated sequences of updates
+    // sent through one encoder.
+    #[test]
+    fn bitmap_updates_in_turn_are_sent_as_on_their_own(updates in prop::collection::vec(updates(), 1..=4)) {
+        let sent = encode_in_turn(&updates);
+        for (pdus, update) in sent.iter().zip(&updates) {
+            assert_draws_exactly(pdus, update);
+            prop_assert_eq!(pdus, &encode(update.clone()));
+        }
     }
 }
