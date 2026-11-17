@@ -44,11 +44,12 @@ connector.WithNativeAudio(audio);
 ```
 
 In the serialized active-stage loop, call `PollAudio(audio)` before and after processing an incoming PDU and at least every 50 ms while the connection is idle.
+The bounded queue holds 100 ms of capture even at the highest offered rate (48 kHz with one frame per packet), and each poll drains the queued batches.
+If the session loop stalls long enough to exhaust that buffer, capture is stopped and its dynamic channel is closed rather than continuing with missing messages.
 Write each returned `ResponseFrame` to the same transport, in order, and dispose the output iterator and frames.
 Device and stream failures are logged through Rust tracing rather than returned as managed status events.
 An Open failure describes one capture attempt, not permanent microphone unavailability: the server can reopen the channel and retry.
 Cold microphone startup waits two seconds for the device-ready response before attempting cleanup; this synchronous wait pauses session processing, and cleanup can take longer if a driver blocks.
-If the capture queue fills, capture is stopped and its dynamic channel is closed rather than continuing with missing messages.
 Capture samples received before the client's Open reply is queued are discarded so they cannot overtake the reply.
 
 ```csharp

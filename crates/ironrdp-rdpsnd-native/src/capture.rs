@@ -13,6 +13,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::device::{self, DeviceSelector, Direction};
 
+/// Highest sample rate offered by the native capture backend, in samples per second.
+pub const MAX_CAPTURE_SAMPLE_RATE: u32 = 48_000;
+
 /// Deadline for receiving CPAL input stream readiness from the session task.
 ///
 /// Open must report a real HRESULT, but the client session loop is single-threaded.
@@ -328,12 +331,12 @@ fn encoder_for(capture_format: &AudioFormat, encode_format: &AudioFormat) -> Cap
 fn default_capture_formats() -> Vec<AudioFormat> {
     // Prefer common VoIP / Windows mic rates, mono first.
     vec![
-        pcm_format(1, 48000, 16),
+        pcm_format(1, MAX_CAPTURE_SAMPLE_RATE, 16),
         pcm_format(1, 44100, 16),
         pcm_format(1, 22050, 16),
         pcm_format(1, 16000, 16),
         pcm_format(1, 8000, 16),
-        pcm_format(2, 48000, 16),
+        pcm_format(2, MAX_CAPTURE_SAMPLE_RATE, 16),
         pcm_format(2, 44100, 16),
         pcm_format(2, 16000, 16),
     ]

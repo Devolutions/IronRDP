@@ -4,10 +4,11 @@ mod native {
     use core::time::Duration;
     use std::borrow::Cow;
     use std::sync::{Arc, Mutex, PoisonError, Weak, mpsc};
+    use std::time::Instant;
 
     use ironrdp::dvc::{DvcChannelListener, DvcClientProcessor, DvcMessage, DvcProcessor};
     use ironrdp::pdu::PduResult;
-    use ironrdp::rdpsnd::client::RdpsndClientHandler;
+    use ironrdp::rdpsnd::client::{Clock, RdpsndClientHandler};
     use ironrdp::rdpsnd::pdu::{AudioFormat, AudioFormatFlags, PitchPdu, VolumePdu};
     use ironrdp::svc::SvcMessage;
     use ironrdp_rdpeai::client::RdpeaiClient;
@@ -16,7 +17,8 @@ mod native {
     use ironrdp_rdpsnd_native::cpal::{PlaybackConfig, RdpsndBackend};
     use tracing::warn;
 
-    pub(super) const CAPTURE_QUEUE_CAPACITY: usize = 64;
+    /// Buffers 100 ms at the native capture backend's highest sample rate with one frame per packet.
+    pub(super) const CAPTURE_QUEUE_CAPACITY: usize = 4_800;
 
     pub(super) struct CaptureMessages {
         token: u64,
@@ -43,6 +45,15 @@ mod native {
     impl AudioShared {
         pub(crate) fn has_playback(&self) -> bool {
             self.playback
+        }
+
+        pub(crate) fn reserves_dynamic_channel(&self, channel_name: &str) -> bool {
+            (self.playback
+                && matches!(
+                    channel_name,
+                    ironrdp::rdpsnd::client::DVC_CHANNEL_NAME | ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+                ))
+                || (self.capture && channel_name == ironrdp_rdpeai::CHANNEL_NAME)
         }
 
         fn enqueue_capture(&self, token: u64, messages: Vec<SvcMessage>) -> PduResult<()> {
@@ -105,8 +116,8 @@ mod native {
             }
 
             connector.config.enable_audio_capture = self.capture;
+            connector.config.enable_audio_playback = self.playback || playback_type;
             if self.playback {
-                connector.config.enable_audio_playback = true;
                 if !rdpdr_type {
                     // Windows servers require RDPDR to start playback, even without redirected devices.
                     connector.attach_static_channel(ironrdp::rdpdr::Rdpdr::new(
@@ -127,8 +138,8 @@ mod native {
                     formats,
                     shared: Arc::clone(self),
                 };
-                connector.attach_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new(Box::new(playback.clone())));
-                let state = ironrdp::rdpsnd::client::RdpsndDvcState::new(Box::new(playback));
+                connector.attach_static_channel(rdpsnd_with_clock(Box::new(playback.clone())));
+                let state = rdpsnd_dvc_with_clock(Box::new(playback));
                 let drdynvc = drdynvc(connector);
                 let channel = state.clone();
                 drdynvc.attach_listener(PlaybackListener {
@@ -154,6 +165,19 @@ mod native {
         connector
             .get_static_channel_processor_mut()
             .expect("DRDYNVC was attached")
+    }
+
+    fn playback_clock() -> Clock {
+        let origin = Instant::now();
+        Box::new(move || origin.elapsed())
+    }
+
+    fn rdpsnd_with_clock(handler: Box<dyn RdpsndClientHandler>) -> ironrdp::rdpsnd::client::Rdpsnd {
+        ironrdp::rdpsnd::client::Rdpsnd::new(handler).with_clock(playback_clock())
+    }
+
+    fn rdpsnd_dvc_with_clock(handler: Box<dyn RdpsndClientHandler>) -> ironrdp::rdpsnd::client::RdpsndDvcState {
+        ironrdp::rdpsnd::client::RdpsndDvcState::new(handler).with_clock(playback_clock())
     }
 
     #[derive(Clone)]
@@ -409,6 +433,71 @@ mod native {
     mod tests {
         use super::*;
         use crate::audio::ffi::NativeAudio;
+        use ironrdp_rdpeai::client::RdpeaiCaptureHandler as _;
+
+        #[derive(Debug)]
+        struct DelayedPlayback {
+            formats: Vec<AudioFormat>,
+        }
+
+        impl DelayedPlayback {
+            fn new() -> Self {
+                Self {
+                    formats: vec![AudioFormat {
+                        format: ironrdp::rdpsnd::pdu::WaveFormat::PCM,
+                        n_channels: 2,
+                        n_samples_per_sec: 48_000,
+                        n_avg_bytes_per_sec: 192_000,
+                        n_block_align: 4,
+                        bits_per_sample: 16,
+                        data: None,
+                    }],
+                }
+            }
+        }
+
+        impl RdpsndClientHandler for DelayedPlayback {
+            fn get_formats(&self) -> &[AudioFormat] {
+                &self.formats
+            }
+
+            fn wave(&mut self, _: &AudioFormat, _: u32, _: Cow<'_, [u8]>) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+
+            fn set_volume(&mut self, _: VolumePdu) {}
+
+            fn set_pitch(&mut self, _: PitchPdu) {}
+
+            fn close(&mut self) {}
+        }
+
+        fn server_audio_payload(pdu: ironrdp::rdpsnd::pdu::ServerAudioOutputPdu<'_>) -> Vec<u8> {
+            ironrdp_core::encode_vec(&pdu).expect("encode audio test PDU")
+        }
+
+        fn audio_negotiation_payloads() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+            use ironrdp::rdpsnd::pdu::{ServerAudioFormatPdu, ServerAudioOutputPdu, TrainingPdu, Version, Wave2Pdu};
+
+            let format = DelayedPlayback::new().formats[0].clone();
+            let formats = server_audio_payload(ServerAudioOutputPdu::AudioFormat(ServerAudioFormatPdu {
+                version: Version::V8,
+                formats: vec![format],
+            }));
+            let training = server_audio_payload(ServerAudioOutputPdu::Training(TrainingPdu {
+                timestamp: 0,
+                data: Vec::new(),
+            }));
+            let wave = server_audio_payload(ServerAudioOutputPdu::Wave2(Wave2Pdu {
+                timestamp: 100,
+                format_no: 0,
+                block_no: 1,
+                audio_timestamp: 0,
+                data: Cow::Borrowed(&[0; 4]),
+            }));
+
+            (formats, training, wave)
+        }
 
         fn connector() -> ironrdp::connector::ClientConnector {
             use crate::connector::config::ffi::{ConfigBuilder, PerformanceFlags};
@@ -490,6 +579,119 @@ mod native {
             assert!(audio.0.enqueue_capture(token, Vec::new()).is_err());
             assert!(audio.0.enqueue_capture(token, Vec::new()).is_err());
             assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), token);
+        }
+
+        // oracle: regression #2469
+        #[test]
+        fn capture_only_disables_playback_advertisement() {
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let mut connector = connector();
+            audio.0.attach(&mut connector).expect("attach native capture");
+
+            assert!(!connector.config.enable_audio_playback);
+        }
+
+        // oracle: spec MS-RDPEA §3.2.5.2.1.6
+        #[test]
+        fn static_playback_wave_confirm_includes_processing_time() {
+            use ironrdp::rdpsnd::pdu::ClientAudioOutputPdu;
+            use ironrdp::svc::SvcProcessor as _;
+
+            let (formats, training, wave) = audio_negotiation_payloads();
+            let mut client = rdpsnd_with_clock(Box::new(DelayedPlayback::new()));
+            client.process(&formats).expect("negotiate formats");
+            client.process(&training).expect("finish training");
+            let replies = client.process(&wave).expect("process wave");
+            let [reply] = replies.as_slice() else {
+                panic!("expected one Wave Confirm response");
+            };
+            let encoded = reply.encode_unframed_pdu().expect("encode response");
+            let response: ClientAudioOutputPdu = ironrdp_core::decode(&encoded).expect("decode response");
+            let ClientAudioOutputPdu::WaveConfirm(confirm) = response else {
+                panic!("expected Wave Confirm");
+            };
+
+            assert!(confirm.timestamp > 100);
+        }
+
+        // oracle: spec MS-RDPEA §3.2.5.2.1.6
+        #[test]
+        fn dynamic_playback_wave_confirm_includes_processing_time() {
+            use ironrdp::dvc::DvcProcessor as _;
+            use ironrdp::rdpsnd::pdu::ClientAudioOutputPdu;
+
+            let (formats, training, wave) = audio_negotiation_payloads();
+            let mut client = rdpsnd_dvc_with_clock(Box::new(DelayedPlayback::new())).channel();
+            client.start(7).expect("start playback channel");
+            client.process(7, &formats).expect("negotiate formats");
+            client.process(7, &training).expect("finish training");
+            let replies = client.process(7, &wave).expect("process wave");
+            let [reply] = replies.as_slice() else {
+                panic!("expected one Wave Confirm response");
+            };
+            let encoded = ironrdp_core::encode_vec(reply.as_ref()).expect("encode response");
+            let response: ClientAudioOutputPdu = ironrdp_core::decode(&encoded).expect("decode response");
+            let ClientAudioOutputPdu::WaveConfirm(confirm) = response else {
+                panic!("expected Wave Confirm");
+            };
+
+            assert!(confirm.timestamp > 100);
+        }
+
+        // oracle: regression #2469
+        #[test]
+        fn documented_poll_interval_accepts_maximum_50ms_capture_burst() {
+            use ironrdp::svc::ChannelFlags;
+            use ironrdp_rdpeai::pdu::RdpeaiPdu;
+
+            let backend = RdpeaiCaptureBackend::new();
+            let max_sample_rate = backend
+                .supported_formats()
+                .iter()
+                .map(|format| format.n_samples_per_sec)
+                .max()
+                .expect("capture formats");
+            let max_sample_rate = usize::try_from(max_sample_rate).expect("sample rate");
+            let poll_batch_count = max_sample_rate / 20;
+            assert!(CAPTURE_QUEUE_CAPACITY >= max_sample_rate / 10);
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let listener = CaptureListener(Arc::clone(&audio.0));
+            let channel = listener.create_channel(7).expect("capture channel");
+            let token = channel.token;
+            let mut drdynvc = ironrdp::dvc::DrdynvcClient::new();
+            drdynvc
+                .attach_established_dynamic_channel(7, channel)
+                .expect("attach capture channel");
+            let mut channels = ironrdp::svc::StaticChannelSet::new();
+            channels.insert(drdynvc);
+            channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), 1004);
+            let mut stage = ironrdp::session::ActiveStageBuilder {
+                static_channels: channels,
+                user_channel_id: 1002,
+                io_channel_id: 1003,
+                message_channel_id: None,
+                share_id: 1,
+                compression_type: None,
+                enable_server_pointer: false,
+                pointer_software_rendering: false,
+            }
+            .build();
+
+            for _ in 0..poll_batch_count {
+                let messages = ironrdp::dvc::encode_dvc_messages(
+                    7,
+                    vec![Box::new(RdpeaiPdu::DataIncoming)],
+                    ChannelFlags::empty(),
+                )
+                .expect("encode capture batch");
+                audio
+                    .0
+                    .enqueue_capture(token, messages)
+                    .expect("50 ms of maximum-rate capture fits");
+            }
+
+            let outputs = poll_audio(&mut stage, &audio.0).unwrap_or_else(|_| panic!("poll audio"));
+            assert_eq!(outputs.len(), poll_batch_count);
         }
 
         // oracle: scaffold
@@ -599,6 +801,10 @@ mod android {
             false
         }
 
+        pub(crate) fn reserves_dynamic_channel(&self, _channel_name: &str) -> bool {
+            false
+        }
+
         pub(crate) fn attach(
             self: &Arc<Self>,
             _connector: &mut ironrdp::connector::ClientConnector,
@@ -659,7 +865,12 @@ pub mod ffi {
                 if !playback && !capture {
                     return Err("native audio needs playback or capture enabled".into());
                 }
-                let (capture_tx, capture_rx) = std::sync::mpsc::sync_channel(super::native::CAPTURE_QUEUE_CAPACITY);
+                let capture_queue_capacity = if capture {
+                    super::native::CAPTURE_QUEUE_CAPACITY
+                } else {
+                    0
+                };
+                let (capture_tx, capture_rx) = std::sync::mpsc::sync_channel(capture_queue_capacity);
                 let latency = if latency_ms == 0 {
                     ironrdp_rdpsnd_native::cpal::DEFAULT_PLAYBACK_LATENCY
                 } else {
