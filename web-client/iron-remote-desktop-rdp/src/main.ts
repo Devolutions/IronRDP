@@ -236,5 +236,6 @@ export {
     printerName,
     printerDeviceId,
     printerDriverName,
+    printers,
 } from './extensions';
-export type { PrintJobStreamCallbacks } from './extensions';
+export type { PrintJobStreamCallbacks, RedirectedPrinter } from './extensions';

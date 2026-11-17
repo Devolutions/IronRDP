@@ -50,8 +50,11 @@ const MAX_QUEUED_PRINT_DATA_BYTES: usize = MAX_PRINT_JOB_BYTES;
 /// Messages sent from the printer backend to the session event loop.
 #[derive(Debug)]
 pub(crate) enum PrinterBackendMessage {
-    /// A server-created printer file handle started a new print job.
-    Created { file_id: u32 },
+    /// A server-created printer file handle started a new print job on the
+    /// announced printer `device_id`.
+    Created { file_id: u32, device_id: u32 },
+    /// The server answered the announcement of device `device_id`.
+    Announced { device_id: u32, result_code: u32 },
     /// A print job data chunk produced by the announced server-side driver.
     Data {
         file_id: u32,
@@ -96,8 +99,12 @@ impl WasmPrinterMessageProxy {
         Self::new_with_limit(tx, MAX_QUEUED_PRINT_DATA_BYTES)
     }
 
-    fn send_job_created(&self, file_id: u32) -> bool {
-        self.send_message(PrinterBackendMessage::Created { file_id })
+    fn send_job_created(&self, file_id: u32, device_id: u32) -> bool {
+        self.send_message(PrinterBackendMessage::Created { file_id, device_id })
+    }
+
+    fn send_device_announced(&self, device_id: u32, result_code: u32) {
+        let _ = self.send_message(PrinterBackendMessage::Announced { device_id, result_code });
     }
 
     fn send_job_data(&self, file_id: u32, document_bytes: Vec<u8>) -> bool {
@@ -227,6 +234,8 @@ impl RdpdrBackend for WasmPrinterBackend {
                 "RDPDR device announce rejected by server; redirected device will not appear in session"
             );
         }
+        self.proxy
+            .send_device_announced(pdu.device_id, u32::from(pdu.result_code));
         Ok(())
     }
 
@@ -248,7 +257,8 @@ impl RdpdrBackend for WasmPrinterBackend {
         match req {
             PrinterIoRequest::Create(create) => {
                 let file_id = self.allocate_file_id();
-                let io_status = if self.proxy.send_job_created(file_id) {
+                let device_id = create.device_io_request.device_id;
+                let io_status = if self.proxy.send_job_created(file_id, device_id) {
                     self.open_files.insert(file_id, OpenPrintJob { bytes_written: 0 });
                     trace!(file_id, path = %create.path, "IRP_MJ_CREATE: opened print handle");
                     NtStatus::SUCCESS
@@ -385,7 +395,7 @@ pub(crate) struct WasmPrinter {
 
 #[derive(Debug, Clone)]
 pub(crate) struct JsPrinterStreamCallbacks {
-    /// Optional `function(fileId: number): void`.
+    /// Optional `function(fileId: number, deviceId: number): void`.
     pub(crate) on_job_start: Option<js_sys::Function>,
     /// Required `function(fileId: number, chunk: Uint8Array): void`.
     pub(crate) on_job_data: js_sys::Function,
@@ -393,6 +403,8 @@ pub(crate) struct JsPrinterStreamCallbacks {
     pub(crate) on_job_complete: js_sys::Function,
     /// Optional `function(fileId: number): void`.
     pub(crate) on_job_error: Option<js_sys::Function>,
+    /// Optional `function(deviceId: number, accepted: boolean, resultCode: number): void`.
+    pub(crate) on_printer_announced: Option<js_sys::Function>,
 }
 
 impl WasmPrinter {
@@ -403,11 +415,25 @@ impl WasmPrinter {
     pub(crate) fn process_message(&self, message: PrinterBackendMessage) {
         let this = JsValue::NULL;
         match message {
-            PrinterBackendMessage::Created { file_id } => {
+            PrinterBackendMessage::Created { file_id, device_id } => {
                 if let Some(on_job_start) = &self.callbacks.on_job_start {
                     let file_id = JsValue::from(file_id);
-                    if let Err(err) = on_job_start.call1(&this, &file_id) {
+                    let device_id = JsValue::from(device_id);
+                    if let Err(err) = on_job_start.call2(&this, &file_id, &device_id) {
                         error!(?err, "on_job_start JS callback threw");
+                    }
+                }
+            }
+            PrinterBackendMessage::Announced { device_id, result_code } => {
+                if let Some(on_printer_announced) = &self.callbacks.on_printer_announced {
+                    let accepted = JsValue::from(result_code == u32::from(NtStatus::SUCCESS));
+                    if let Err(err) = on_printer_announced.call3(
+                        &this,
+                        &JsValue::from(device_id),
+                        &accepted,
+                        &JsValue::from(result_code),
+                    ) {
+                        error!(?err, "on_printer_announced JS callback threw");
                     }
                 }
             }
@@ -532,8 +558,9 @@ mod tests {
 
     fn expect_job_created(rx: &mut mpsc::UnboundedReceiver<RdpInputEvent>, expected_file_id: u32) {
         match rx.try_recv().unwrap() {
-            RdpInputEvent::Printer(PrinterBackendMessage::Created { file_id }) => {
+            RdpInputEvent::Printer(PrinterBackendMessage::Created { file_id, device_id }) => {
                 assert_eq!(file_id, expected_file_id);
+                assert_eq!(device_id, DEVICE_ID);
             }
             other => panic!("unexpected event: {other:?}"),
         }
