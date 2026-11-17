@@ -405,6 +405,16 @@ mod tests {
         assert_eq!((tall.hotspot_x, tall.hotspot_y), (0, 0));
     }
 
+    // oracle: mutant dropping the clamp, or clamping both coordinates when only one is outside; the 64x48 pointer
+    // scales by 1/2 to 32x24, its hotspot x 100 to 50, clamped to the last column 31, and its hotspot y 20 to 10.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_hotspot_outside_a_scaled_pointer_is_clamped_to_it() {
+        let s = scaled_to_fit(&pointer(64, 48, (100, 20), &[])).unwrap();
+        assert_eq!((s.width, s.height), (32, 24));
+        assert_eq!((s.hotspot_x, s.hotspot_y), (31, 10));
+    }
+
     // oracle: mutant a pointer that already fits scaled anyway
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
@@ -443,22 +453,35 @@ mod tests {
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn every_oversized_pointer_is_scaled_to_between_one_pixel_and_the_cursor_size() {
+    fn every_oversized_pointer_fills_the_cursor_size_with_its_hotspot_inside() {
         for (width, height) in sizes().filter(|&(width, height)| MAX_CURSOR_SIZE < width.max(height)) {
-            let pointer = DecodedPointer {
-                width,
-                height,
-                hotspot_x: 0,
-                hotspot_y: 0,
-                bitmap_data: Vec::new(),
-            };
-            // oracle: mutant an oversized pointer left unscaled, for a size the examples miss.
-            let s = scaled_to_fit(&pointer).expect("an oversized pointer is scaled");
-            let scaled = || format!("{width}x{height} scaled to {}x{}", s.width, s.height);
-            // oracle: regression #2427, a 64x1 pointer scaled to 32x0, which the resizer refuses, ending the session.
-            assert!(1 <= s.width.min(s.height), "{}", scaled());
-            // oracle: mutant a side scaled above MAX_CURSOR_SIZE, for a size the examples miss.
-            assert!(s.width.max(s.height) <= MAX_CURSOR_SIZE, "{}", scaled());
+            for (hotspot_x, hotspot_y) in [(0, 0), (width - 1, height - 1), (u16::MAX, u16::MAX)] {
+                let pointer = DecodedPointer {
+                    width,
+                    height,
+                    hotspot_x,
+                    hotspot_y,
+                    bitmap_data: Vec::new(),
+                };
+                // oracle: mutant an oversized pointer left unscaled, for a size the examples miss.
+                let s = scaled_to_fit(&pointer).expect("an oversized pointer is scaled");
+                let scaled = || {
+                    format!(
+                        "{width}x{height} at ({hotspot_x}, {hotspot_y}) scaled to {}x{} at ({}, {})",
+                        s.width, s.height, s.hotspot_x, s.hotspot_y
+                    )
+                };
+                // oracle: regression #2427, a 64x1 pointer scaled to 32x0, which the resizer refuses, ending the
+                // session.
+                assert!(1 <= s.width.min(s.height), "{}", scaled());
+                // oracle: mutant the longest side scaled to a length other than MAX_CURSOR_SIZE, or a hotspot scaled
+                // outside the cursor, for a size or hotspot the examples miss.
+                assert!(
+                    s.width.max(s.height) == MAX_CURSOR_SIZE && s.hotspot_x < s.width && s.hotspot_y < s.height,
+                    "{}",
+                    scaled()
+                );
+            }
         }
     }
 }
