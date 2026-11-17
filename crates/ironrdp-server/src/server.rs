@@ -6571,8 +6571,8 @@ impl RdpServer {
         // A client implementing the graphics pipeline sets RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL in its Client Core Data
         // (MS-RDPEGFX 1.5.1), so a client that didn't set it isn't offered the channel, and the display gets no EGFX
         // server to wait on.
-        // DRDYNVC hasn't started yet, so the channel is still pending, and closing it only unregisters it without putting
-        // anything on the wire.
+        // INVARIANT: DRDYNVC hasn't started yet, so the channel is still pending, and closing it only unregisters it
+        // without putting anything on the wire.
         // The flags come from the Basic Settings Exchange, which a reactivation doesn't repeat (MS-RDPBCGR 1.3.1.3), so
         // this happens once per connection.
         #[cfg(feature = "egfx")]

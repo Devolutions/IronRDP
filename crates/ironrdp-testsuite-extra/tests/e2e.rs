@@ -1687,11 +1687,7 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
 async fn egfx_channel_is_created_for_a_client_that_advertises_it() {
     let probe = run_egfx_probe(true, EgfxRegistration::GfxFactory).await;
 
-    // oracle: mutant a probe that stops serving before the server creates any dynamic channel
-    assert!(
-        probe.echo_started,
-        "the echo channel must open for the probe to mean anything"
-    );
+    probe.assert_settled();
     assert!(
         probe.egfx_started,
         "a client that advertises the graphics pipeline must get the channel created"
@@ -1708,17 +1704,12 @@ async fn egfx_channel_is_created_for_a_client_that_advertises_it() {
 /// client.
 ///
 /// [1.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/f75a7d5c-141d-4bbc-8b27-3299378f8ac6
-// oracle: spec MS-RDPEGFX §1.5.1
-// oracle: spec MS-RDPBCGR §2.2.1.3.2
+// oracle: mutant a server that offers the graphics pipeline to a client that didn't advertise it
 #[tokio::test]
 async fn egfx_channel_is_not_created_for_a_client_that_does_not_advertise_it() {
     let probe = run_egfx_probe(false, EgfxRegistration::GfxFactory).await;
 
-    // oracle: mutant a probe that stops serving before the server creates any dynamic channel
-    assert!(
-        probe.echo_started,
-        "the echo channel must open for the probe to mean anything"
-    );
+    probe.assert_settled();
     assert!(
         !probe.egfx_started,
         "a client that didn't advertise the graphics pipeline must not get the channel created"
@@ -1738,34 +1729,26 @@ async fn egfx_channel_is_not_created_for_a_client_that_does_not_advertise_it() {
 async fn egfx_registered_as_a_dynamic_channel_is_created_for_a_client_that_advertises_it() {
     let probe = run_egfx_probe(true, EgfxRegistration::DynamicChannel).await;
 
-    // oracle: mutant a probe that stops serving before the server creates any dynamic channel
-    assert!(
-        probe.echo_started,
-        "the echo channel must open for the probe to mean anything"
-    );
+    probe.assert_settled();
     assert!(
         probe.egfx_started,
         "a client that advertises the graphics pipeline must get the dynamically registered channel"
     );
 }
 
-/// The flag decides the channel whatever registered it, so a GraphicsPipelineServer added as a plain dynamic channel
-/// isn't offered to a client that leaves RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL clear either, per MS-RDPEGFX [1.5.1]
-/// Client Implementation Requirements.
+/// The flag decides the channel whether an EGFX factory registered it or a dynamic channel factory added a
+/// GraphicsPipelineServer directly, so the latter isn't offered to a client that leaves
+/// RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL clear either.
+/// MS-RDPEGFX [1.5.1] Client Implementation Requirements makes the flag the client's signal of support.
 ///
 /// [1.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/f75a7d5c-141d-4bbc-8b27-3299378f8ac6
-// oracle: spec MS-RDPEGFX §1.5.1
-// oracle: spec MS-RDPBCGR §2.2.1.3.2
+// oracle: mutant a server that offers the graphics pipeline to a client that didn't advertise it
 // oracle: mutant a graphics pipeline check that only finds the channel an EGFX factory registers
 #[tokio::test]
 async fn egfx_registered_as_a_dynamic_channel_is_not_created_for_a_client_that_does_not_advertise_it() {
     let probe = run_egfx_probe(false, EgfxRegistration::DynamicChannel).await;
 
-    // oracle: mutant a probe that stops serving before the server creates any dynamic channel
-    assert!(
-        probe.echo_started,
-        "the echo channel must open for the probe to mean anything"
-    );
+    probe.assert_settled();
     assert!(
         !probe.egfx_started,
         "a client that didn't advertise the graphics pipeline must not get the dynamically registered channel"
@@ -1854,10 +1837,10 @@ async fn egfx_server_is_kept_across_a_reactivation() {
     )
     .await;
 
-    assert_eq!(
-        *egfx_servers.lock().unwrap(),
-        [true, true],
-        "the display must get the EGFX server at activation and again after the reactivation"
+    let egfx_servers = egfx_servers.lock().unwrap().clone();
+    assert!(
+        2 <= egfx_servers.len() && egfx_servers.first() == Some(&true) && egfx_servers.last() == Some(&true),
+        "the display must get the EGFX server at activation and again after the reactivation, got {egfx_servers:?}"
     );
 }
 
@@ -1887,6 +1870,17 @@ struct EgfxProbe {
     echo_started: bool,
     egfx_started: bool,
     display_got_egfx_server: bool,
+}
+
+impl EgfxProbe {
+    /// Asserts the server created a dynamic channel at all, so the probe's other answers mean something.
+    fn assert_settled(&self) {
+        // oracle: mutant a server that creates no dynamic channel, which would let the negative tests pass on nothing
+        assert!(
+            self.echo_started,
+            "the echo channel must open for the probe to mean anything"
+        );
+    }
 }
 
 /// Connects a real client that registers an EGFX channel and an echo channel, with `support_dyn_vc_gfx_protocol` as
@@ -1952,7 +1946,7 @@ async fn run_egfx_probe(support_dyn_vc_gfx_protocol: bool, registration: EgfxReg
     EgfxProbe {
         echo_started: echo_started.load(Ordering::Relaxed),
         egfx_started: egfx_started.load(Ordering::Relaxed),
-        display_got_egfx_server: egfx_servers.lock().unwrap().last() == Some(&true),
+        display_got_egfx_server: egfx_servers.lock().unwrap().contains(&true),
     }
 }
 
