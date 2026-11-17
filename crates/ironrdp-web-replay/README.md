@@ -26,8 +26,8 @@ The crate exposes these types to JavaScript via `wasm-bindgen`:
 
 - **`renderTill(elapsedMs)`** — Drain all buffered PDUs up to `elapsedMs`,
   decode each through the FastPath processor, and blit dirty frames to the
-  canvas with cursor compositing. Returns a `RenderResult` with
-  `pdus_processed`, `resolution_changed`, and `session_ended` flags.
+  canvas with cursor compositing. Returns a `RenderResult` with the count of
+  skipped PDUs and whether the session ended.
 
 - **`setUpdateCanvas(bool)`** — When `false`, `renderTill()` still decodes
   PDUs and tracks pointer state but skips canvas blits. Used during forward
@@ -61,23 +61,19 @@ Tests live in `ironrdp-testsuite-extra`, which is the home for extra-tier integr
 cargo test -p ironrdp-testsuite-extra -- web_replay
 
 # Run a specific test
-cargo test -p ironrdp-testsuite-extra -- web_replay::pdu_buffer_clear_empties_buffer
+cargo test -p ironrdp-testsuite-extra -- web_replay::pdu_buffer_empty_timestamp_is_none
 ```
 
-Covered so far:
-
-- `PduBuffer` — FIFO ordering, push/peek/clear lifecycle, source direction
-- `ReplayProcessor::process_pdu` — error cases (empty, truncated, garbage), client FastPath mouse extraction, seek suppression
-- `ReplayProcessor::process_till` — timestamp-gated consumption, mouse position tracking, seek suppression, malformed-PDU error collection
-- X224 Server Demand Active — resolution change detection and image reallocation
-- Seek contract — `update_canvas` toggle, pointer state defaults
+The tests cover PDU buffering, malformed input, client mouse extraction,
+seek suppression, skipped-PDU error collection, Fast-Path security flags, and
+resolution changes.
 
 ## Known limitations
 
-- **Hardcoded channel IDs** — `io_channel_id` (1003), `user_channel_id`
-  (1002), and `share_id` (0x0001_0000) are common defaults. A fully correct
-  implementation should extract these from the recorded MCS Connect Response
-  and Server Demand Active exchange.
+- **Negotiated IDs** — `io_channel_id` (1003), `user_channel_id`
+  (1002), and `share_id` (0x0001_0000) use common defaults unless supplied
+  by the recording source. The demo recording format does not store them;
+  recordings using other values need a source that supplies the negotiated IDs.
 
 - **Client input limited to mouse** — Only `MouseEvent` and `MouseEventEx`
   are decoded from client→server FastPath PDUs. Keyboard events are skipped.

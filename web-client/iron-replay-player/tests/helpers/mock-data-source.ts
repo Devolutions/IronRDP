@@ -9,8 +9,6 @@ import type {
 export interface MockDataSourceOptions {
     durationMs: number;
     totalPdus?: number;
-    initialWidth?: number;
-    initialHeight?: number;
     /** When true, open() returns a pending promise resolved via resolveOpen(). */
     deferOpen?: boolean;
 }
@@ -29,8 +27,6 @@ export function createMockDataSource(options: MockDataSourceOptions) {
     const metadata: ReplayMetadata = {
         durationMs: options.durationMs,
         totalPdus: options.totalPdus ?? 0,
-        initialWidth: options.initialWidth,
-        initialHeight: options.initialHeight,
     };
 
     const pendingFetches: PendingFetch[] = [];

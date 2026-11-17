@@ -123,6 +123,56 @@ describe('fetchAndPush', () => {
 // =============================================================================
 
 describe('play', () => {
+    test('reuses the pending fetch after pause and resume', async () => {
+        await initStore();
+        const first = store.play();
+        store.pause();
+        const second = store.play();
+        expect(ds.dataSource.fetch).toHaveBeenCalledTimes(1);
+
+        ds.resolveFetch([makePdu(100)]);
+        await Promise.all([first, second]);
+        expect(mock.wasm.pushPdu).toHaveBeenCalledTimes(1);
+        expect(store.playbackState.paused).toBe(false);
+    });
+
+    test('an aborted play cannot clear the waiting state of a new seek', async () => {
+        await initStore();
+        const playing = store.play();
+        const seeking = store.seek(20_000);
+        ds.resolveFetch([]);
+        await playing;
+        expect(store.playbackState.seeking).toBe(true);
+        expect(store.playbackState.waiting).toBe(true);
+        while (store.playbackState.seeking) {
+            while (ds.pendingCount > 0) ds.resolveFetch([]);
+            await vi.advanceTimersByTimeAsync(1);
+        }
+        await seeking;
+    });
+
+    test('reports skipped PDU errors during playback', async () => {
+        await startPlayback();
+        vi.mocked(mock.wasm.renderTill).mockReturnValue({
+            pdu_errors: 2,
+            session_ended: false,
+        });
+        vi.advanceTimersToNextFrame();
+        expect(store.playerError?.phase).toBe('playback');
+        expect(store.playerError?.message).toContain('2 PDU(s)');
+    });
+
+    test('reports skipped PDU errors during seek', async () => {
+        await startPlayback();
+        vi.mocked(mock.wasm.renderTill).mockReturnValue({
+            pdu_errors: 1,
+            session_ended: false,
+        });
+        await seekTo(1000);
+        expect(store.playerError?.phase).toBe('seek');
+        expect(store.playerError?.message).toContain('1 PDU(s)');
+    });
+
     test('sets state, fetches, then starts rAF loop', async () => {
         await initStore();
         store.play();

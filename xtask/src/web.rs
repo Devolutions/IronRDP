@@ -16,9 +16,9 @@ const IRONRDP_WEB_REPLAY_PACKAGE_JS_PATH: &str = "./crates/ironrdp-web-replay/pk
 
 /// Patch wasm-pack's generated JS to use a Vite-compatible import for the `.wasm` file.
 ///
-/// wasm-pack emits `new URL('<name>_bg.wasm', import.meta.url)` which Vite cannot
-/// resolve at build time. This replaces it with a static `import ... from '...'`
-/// so the bundler can handle the asset.
+/// wasm-pack emits `new URL('<name>_bg.wasm', import.meta.url)`.
+/// Vite cannot resolve this form at build time.
+/// This helper replaces it with a static import that the bundler can handle.
 fn patch_vite_wasm_url(js_path: &std::path::Path, wasm_filename: &str) -> anyhow::Result<()> {
     let content = fs::read_to_string(js_path)?;
     let import_line = format!("import wasmUrl from './{wasm_filename}?url';");
@@ -29,6 +29,17 @@ fn patch_vite_wasm_url(js_path: &std::path::Path, wasm_filename: &str) -> anyhow
     };
     let content = content.replace(&format!("new URL('{wasm_filename}', import.meta.url)"), "wasmUrl");
     fs::write(js_path, content)?;
+    Ok(())
+}
+
+fn build_wasm_pack(sh: &Shell, crate_path: &str, wasm_pack_dev: bool, release_rustflags: &str) -> anyhow::Result<()> {
+    if wasm_pack_dev {
+        run_cmd_in!(sh, crate_path, "wasm-pack build --dev --target web")?;
+    } else {
+        let _env_guard = sh.push_env("RUSTFLAGS", release_rustflags);
+        run_cmd_in!(sh, crate_path, "wasm-pack build --target web")?;
+    }
+
     Ok(())
 }
 
@@ -84,16 +95,12 @@ pub fn run(sh: &Shell) -> anyhow::Result<()> {
 }
 
 pub fn build(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
-    if wasm_pack_dev {
-        run_cmd_in!(sh, IRONRDP_WEB_PATH, "wasm-pack build --dev --target web")?;
-    } else {
-        let _env_guard = sh.push_env(
-            "RUSTFLAGS",
-            "-Ctarget-feature=+simd128,+bulk-memory --cfg getrandom_backend=\"wasm_js\"
-                -Copt-level=s -Ccodegen-units=1 -Cllvm-args=-enable-dfa-jump-thread",
-        );
-        run_cmd_in!(sh, IRONRDP_WEB_PATH, "wasm-pack build --target web")?;
-    }
+    build_wasm_pack(
+        sh,
+        IRONRDP_WEB_PATH,
+        wasm_pack_dev,
+        "-Ctarget-feature=+simd128,+bulk-memory --cfg getrandom_backend=\"wasm_js\" -Copt-level=s -Ccodegen-units=1 -Cllvm-args=-enable-dfa-jump-thread",
+    )?;
 
     let ironrdp_web_js_file_path = sh.current_dir().join(IRONRDP_WEB_PACKAGE_JS_PATH);
     patch_vite_wasm_url(&ironrdp_web_js_file_path, "ironrdp_web_bg.wasm")?;
@@ -106,15 +113,12 @@ pub fn build(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
 pub fn build_replay(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
     let _s = Section::new("WEB-BUILD-REPLAY");
 
-    if wasm_pack_dev {
-        run_cmd_in!(sh, IRONRDP_WEB_REPLAY_PATH, "wasm-pack build --dev --target web")?;
-    } else {
-        let _env_guard = sh.push_env(
-            "RUSTFLAGS",
-            "-Ctarget-feature=+simd128,+bulk-memory --cfg getrandom_backend=\"wasm_js\"",
-        );
-        run_cmd_in!(sh, IRONRDP_WEB_REPLAY_PATH, "wasm-pack build --target web")?;
-    }
+    build_wasm_pack(
+        sh,
+        IRONRDP_WEB_REPLAY_PATH,
+        wasm_pack_dev,
+        "-Ctarget-feature=+simd128,+bulk-memory --cfg getrandom_backend=\"wasm_js\"",
+    )?;
 
     let js_path = sh.current_dir().join(IRONRDP_WEB_REPLAY_PACKAGE_JS_PATH);
     patch_vite_wasm_url(&js_path, "ironrdp_web_replay_bg.wasm")?;
@@ -125,7 +129,7 @@ pub fn build_replay(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
     // Build the UI component library.
     run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} run build")?;
 
-    // Build the demo app (build-no-wasm: libs already built above)
+    // Build the demo app; the libraries have already been built above.
     run_cmd_in!(sh, IRON_SVELTE_REPLAY_CLIENT_PATH, "{NPM} run build-no-wasm")?;
 
     Ok(())

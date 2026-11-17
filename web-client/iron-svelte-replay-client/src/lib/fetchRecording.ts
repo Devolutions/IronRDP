@@ -39,14 +39,7 @@ export type FetchOptions =
  * Spreading a Headers instance or string[][] directly produces incorrect results.
  */
 function normalizeHeaders(headers: HeadersInit): Record<string, string> {
-    if (headers instanceof Headers) {
-        const result: Record<string, string> = {};
-        headers.forEach((value, key) => {
-            result[key] = value;
-        });
-        return result;
-    }
-    if (Array.isArray(headers)) {
+    if (headers instanceof Headers || Array.isArray(headers)) {
         return Object.fromEntries(headers);
     }
     return headers as Record<string, string>;
@@ -136,7 +129,7 @@ export async function fetchFileRanges(
     return bytes.buffer;
 }
 
-function parseHeader(buffer: ArrayBuffer): Header {
+export function parseHeader(buffer: ArrayBuffer): Header {
     const view = new DataView(buffer);
 
     const version = view.getUint32(0, false);
@@ -148,7 +141,7 @@ function parseHeader(buffer: ArrayBuffer): Header {
     return { version, totalPdus, duration };
 }
 
-function parseIndexTable(buffer: ArrayBuffer, startOffset: number, count: number): IndexTableRow[] {
+export function parseIndexTable(buffer: ArrayBuffer, startOffset: number, count: number): IndexTableRow[] {
     const view = new DataView(buffer);
     const entries: IndexTableRow[] = [];
 

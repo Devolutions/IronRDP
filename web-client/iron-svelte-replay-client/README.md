@@ -12,6 +12,9 @@ Two data source modes are included:
   The entire file is read into memory once.
 
 Both modes use a custom binary recording format described at the end of this document.
+It does not store negotiated channel or share IDs, so the demo uses the replay
+engine's defaults. A custom source must provide these IDs for sessions that use
+different values.
 
 ## Library modules
 
@@ -30,14 +33,14 @@ All functions accept an `AbortSignal` for cancellation on seek, speed change, or
 
 Implements `ReplayDataSource` for HTTP-hosted recordings. On `open()`, fetches the header
 and full index table in two Range requests. On `fetch(fromMs, toMs)`, uses binary search
-to find the relevant PDU range, then issues a single Range request for the contiguous byte
-span and slices the response into individual PDUs.
+to find the relevant PDU range, then issues bounded Range requests for the contiguous byte
+span and slices the responses into individual PDUs.
 
 ### `LocalFileDataSource.ts`
 
 Implements `ReplayDataSource` for local `File`, `Blob`, or `ArrayBuffer` inputs. On `open()`,
-reads the entire file into memory and parses the header and index table in-place with
-validation (version check, PDU count cap, boundary checks). On `fetch(fromMs, toMs)`,
+reads the entire file into memory and validates the header and index table using the same
+rules as the HTTP source, with additional file-boundary checks. On `fetch(fromMs, toMs)`,
 returns zero-copy `Uint8Array` subviews into the original buffer.
 
 ### `ReplayDataSource.types.ts`
@@ -148,9 +151,8 @@ Raw RDP PDU bytes, concatenated in index order. Each PDU's position and length
 are described by its index table entry. Capture PDUs after transport and RDP
 security-layer decryption; FastPath security flags must be cleared, signatures
 removed, and lengths adjusted. Encrypted or signed FastPath PDUs are rejected.
-The HTTP source requires contiguous, ordered index entries with valid directions
-and framed PDU lengths of 1–65535 bytes. It fetches at most 8 MiB per HTTP data
-request and rejects playback fetches exceeding 64 MiB in total.
+Both data sources require contiguous, ordered index entries with valid directions and framed PDU lengths of 1–65535 bytes.
+The HTTP source fetches at most 8 MiB per data request and rejects playback fetches exceeding 64 MiB in total.
 
 This library is part of the [IronRDP] project.
 

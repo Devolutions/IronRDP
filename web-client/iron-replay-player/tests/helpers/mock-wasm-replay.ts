@@ -21,18 +21,14 @@ export function createMockWasmReplay() {
         switch (renderBehavior.type) {
             case 'session_ended':
                 return {
-                    current_time_ms: targetMs,
-                    pdus_processed: 0,
-                    resolution_changed: false,
+                    pdu_errors: 0,
                     session_ended: true,
                 };
             case 'error':
                 throw renderBehavior.error;
             default:
                 return {
-                    current_time_ms: targetMs,
-                    pdus_processed: 0,
-                    resolution_changed: false,
+                    pdu_errors: 0,
                     session_ended: false,
                 };
         }

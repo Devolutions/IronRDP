@@ -1,20 +1,18 @@
 export interface ReplayMetadata {
     durationMs: number;
     totalPdus: number;
-    initialWidth?: number;
-    initialHeight?: number;
     /**
-     * MCS I/O channel ID extracted from the recording's MCS Connect Response.
+     * Negotiated MCS I/O channel ID, if available from the recording source.
      * If omitted, the replay engine uses the protocol-common default (1003).
      */
     ioChannelId?: number;
     /**
-     * MCS user channel ID extracted from the recording's MCS Attach-User exchange.
+     * Negotiated MCS user channel ID, if available from the recording source.
      * If omitted, the replay engine uses the protocol-common default (1002).
      */
     userChannelId?: number;
     /**
-     * Share ID extracted from the recording's Server Demand Active PDU.
+     * Negotiated share ID, if available from the recording source.
      * If omitted, the replay engine uses the protocol-common default (0x10000).
      */
     shareId?: number;

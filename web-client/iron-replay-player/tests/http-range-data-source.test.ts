@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HttpRangeDataSource } from '../../iron-svelte-replay-client/src/lib/HttpRangeDataSource.js';
+import { LocalFileDataSource } from '../../iron-svelte-replay-client/src/lib/LocalFileDataSource.js';
 import { fetchFileRanges } from '../../iron-svelte-replay-client/src/lib/fetchRecording.js';
 
-function recording(lengths: number[]): Uint8Array {
+function recording(lengths: number[]): Uint8Array<ArrayBuffer> {
     const dataStart = 20 + lengths.length * 17;
     const bytes = new Uint8Array(dataStart + lengths.reduce((sum, length) => sum + length, 0));
     const view = new DataView(bytes.buffer);
@@ -49,6 +50,33 @@ describe('HTTP replay ranges', () => {
 
         await expect(source.open()).rejects.toThrow('invalid PDU length');
         expect(ranges).toHaveLength(2);
+    });
+
+    describe('local recording index validation', () => {
+        it.each([
+            ['zero length', (view: DataView) => view.setUint32(24, 0), 'invalid PDU length'],
+            ['index alias', (view: DataView) => view.setBigUint64(28, 20n), 'invalid PDU offset'],
+            ['invalid direction', (view: DataView) => view.setUint8(36, 2), 'invalid PDU direction'],
+            ['unsorted timestamps', (view: DataView) => view.setUint32(20, 2), 'unsorted PDU timestamp'],
+        ])('rejects %s', async (_name, corrupt, message) => {
+            const bytes = recording([1, 1]);
+            corrupt(new DataView(bytes.buffer));
+            await expect(new LocalFileDataSource(bytes.buffer).open()).rejects.toThrow(message);
+        });
+
+        it('rejects a PDU extending beyond the local file', async () => {
+            const bytes = recording([1]);
+            new DataView(bytes.buffer).setUint32(24, 2);
+            await expect(new LocalFileDataSource(bytes.buffer).open()).rejects.toThrow('beyond file boundary');
+        });
+
+        it('reads valid local PDUs', async () => {
+            const bytes = recording([1, 2]);
+            const source = new LocalFileDataSource(bytes.buffer);
+            await source.open();
+            const pdus = await source.fetch(0, 2);
+            expect(pdus.map((pdu) => [...pdu.data])).toEqual([[0], [1, 1]]);
+        });
     });
 
     it('splits large valid data into bounded requests without changing PDUs', async () => {

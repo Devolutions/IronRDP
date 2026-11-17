@@ -189,16 +189,12 @@
     let seekDebounce: ReturnType<typeof setTimeout> | null = null;
     let pendingSeekTarget: number | null = null;
 
-    function handleCanvasClick(): void {
+    function toggleWithOverlay(): void {
         if (!canPlay) return;
         const wasEnded = store.playbackState.ended;
         const wasPaused = store.playbackState.paused;
         store.togglePlayback();
-        if (wasEnded) {
-            showActionOverlay('play');
-        } else {
-            showActionOverlay(wasPaused ? 'play' : 'pause');
-        }
+        showActionOverlay(wasEnded || wasPaused ? 'play' : 'pause');
     }
 
     function handleReplay(e: MouseEvent): void {
@@ -217,14 +213,7 @@
             case 'Enter':
             case 'k': {
                 e.preventDefault();
-                const wasEnded = store.playbackState.ended;
-                const wasPaused = store.playbackState.paused;
-                store.togglePlayback();
-                if (wasEnded) {
-                    showActionOverlay('play');
-                } else {
-                    showActionOverlay(wasPaused ? 'play' : 'pause');
-                }
+                toggleWithOverlay();
                 break;
             }
             case 'ArrowRight':
@@ -274,7 +263,7 @@
         <p class="__irp-error">Error: {store.loadState.message}</p>
     {/if}
 
-    <div class="__irp-canvas-container" onmousemove={showControls} onclick={handleCanvasClick}>
+    <div class="__irp-canvas-container" onmousemove={showControls} onclick={toggleWithOverlay}>
         {#if isBuffering}
             <div class="__irp-buffering-overlay">
                 <span class="__irp-buffering-label">Buffering...</span>
@@ -553,7 +542,8 @@
         background: rgba(255, 255, 255, 0.15);
         border-radius: 2px;
         overflow: visible;
-        transition: height 0.15s ease;
+        transform-origin: center;
+        transition: transform 0.15s ease;
     }
 
     :global(.__irp-seekbar.__irp-interactive) {
@@ -571,7 +561,7 @@
     }
 
     :global(.__irp-seekbar.__irp-interactive:hover .__irp-seekbar-track) {
-        height: 6px;
+        transform: scaleY(1.5);
     }
 
     :global(.__irp-seekbar-buffer) {

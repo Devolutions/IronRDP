@@ -49,20 +49,9 @@ impl PduBuffer {
         self.peek_timestamp().unwrap_or(f64::NAN)
     }
 
-    /// Returns the timestamp of the last (back) PDU, or `NAN` if empty.
-    #[wasm_bindgen(js_name = peekLastTimestamp)]
-    pub fn peek_last_timestamp_js(&self) -> f64 {
-        self.peek_last_timestamp().unwrap_or(f64::NAN)
-    }
-
     /// Returns the timestamp of the next (front) PDU, or `None` if empty.
     pub fn peek_timestamp(&self) -> Option<f64> {
         self.entries.front().map(|e| e.timestamp_ms)
-    }
-
-    /// Returns the timestamp of the last (back) PDU, or `None` if empty.
-    pub fn peek_last_timestamp(&self) -> Option<f64> {
-        self.entries.back().map(|e| e.timestamp_ms)
     }
 
     /// Removes and returns the front PDU, or `None` if empty.

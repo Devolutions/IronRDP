@@ -1,4 +1,4 @@
-import * as fs from 'fs-extra';
+import { cp, rm } from 'node:fs/promises';
 import { spawn } from 'child_process';
 import { argv } from 'node:process';
 
@@ -34,15 +34,15 @@ const wasmBinarySource = '../../crates/ironrdp-web-replay/pkg/ironrdp_web_replay
 
 const copyDistFiles = async () => {
     console.log('Copying dist files…');
-    await fs.remove(assetReplayPlayerFolder);
-    await fs.remove(assetReplayPlayerWasmFolder);
+    await rm(assetReplayPlayerFolder, { recursive: true, force: true });
+    await rm(assetReplayPlayerWasmFolder, { recursive: true, force: true });
 
-    await fs.copy('../iron-replay-player/dist', assetReplayPlayerFolder);
-    await fs.copy('../iron-replay-player-wasm/dist', assetReplayPlayerWasmFolder);
+    await cp('../iron-replay-player/dist', assetReplayPlayerFolder, { recursive: true });
+    await cp('../iron-replay-player-wasm/dist', assetReplayPlayerWasmFolder, { recursive: true });
 
     // The .wasm binary is referenced via ?url import in the JS bundle but is not
     // inlined — it must be served alongside the JS from the same directory.
-    await fs.copy(wasmBinarySource, `${assetReplayPlayerWasmFolder}/ironrdp_web_replay_bg.wasm`);
+    await cp(wasmBinarySource, `${assetReplayPlayerWasmFolder}/ironrdp_web_replay_bg.wasm`);
     console.log('Dist files copied successfully');
 };
 

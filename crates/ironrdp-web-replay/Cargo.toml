@@ -11,15 +11,12 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-ironrdp-session = { path = "../ironrdp-session" }
-ironrdp-graphics = { path = "../ironrdp-graphics" }
+ironrdp-session = { path = "../ironrdp-session" } # public
+ironrdp-graphics = { path = "../ironrdp-graphics" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu" }
-ironrdp-core = { path = "../ironrdp-core" }
-ironrdp-error = { path = "../ironrdp-error" }
+ironrdp-core = { path = "../ironrdp-core" } # public
+ironrdp-error = { path = "../ironrdp-error" } # public
 wasm-bindgen = "0.2"
-getrandom2 = { package = "getrandom", version = "0.2", features = ["js"] }
-getrandom = { version = "0.3", features = ["wasm_js"] }
-getrandom4 = { package = "getrandom", version = "0.4.0-rc.0", features = ["wasm_js"] }
 
 [dependencies.web-sys]
 version = "0.3"

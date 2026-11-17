@@ -10,31 +10,28 @@ use web_sys::{
     CanvasRenderingContext2d, HtmlCanvasElement, ImageData, OffscreenCanvas, OffscreenCanvasRenderingContext2d, console,
 };
 
-/// Default desktop resolution used until the server sends ResolutionChanged
+/// Default desktop resolution used until the server sends ResolutionChanged.
 const DEFAULT_WIDTH: u16 = 1920;
 const DEFAULT_HEIGHT: u16 = 1080;
 
-/// Result returned to JS after render_till() completes
+/// Result returned to JavaScript after `render_till()` completes.
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
 pub struct RenderResult {
-    /// Current playhead position after rendering
-    pub current_time_ms: f64,
-    /// Number of PDUs processed in this call
-    pub pdus_processed: u32,
-    /// Whether the desktop resolution changed during this render
-    pub resolution_changed: bool,
-    /// Whether a SessionEnded PDU was encountered — caller should stop the playback loop
+    /// The number of PDUs skipped because processing failed.
+    pub pdu_errors: u32,
+    /// Whether a SessionEnded PDU was encountered.
+    /// The caller should stop playback when this is true.
     pub session_ended: bool,
 }
 
 /// JS-facing configuration for replay initialization.
 ///
-/// All fields are optional. Unset fields use protocol-common defaults
-/// from [`ReplayProcessorConfig::default()`].
-/// Narrowing to `u16` for channel IDs happens in [`Replay::init()`].
+/// All fields are optional.
+/// Unset fields use protocol-common defaults from [`ReplayProcessorConfig::default()`].
+/// Channel IDs are narrowed to `u16` in [`Replay::init()`].
 ///
-/// Construct in JS: `const cfg = new ReplayConfig(); cfg.io_channel_id = 1005;`
+/// For example, construct a config in JavaScript with `const cfg = new ReplayConfig(); cfg.io_channel_id = 1005;`.
 #[derive(Default)]
 #[wasm_bindgen]
 pub struct ReplayConfig {
@@ -57,14 +54,13 @@ impl ReplayConfig {
 #[wasm_bindgen]
 pub struct Replay {
     pdu_buffer: PduBuffer,
-    current_time_ms: f64,
     canvas: HtmlCanvasElement,
     ctx: CanvasRenderingContext2d,
     /// INVARIANT: `None` before `init()` is called, `Some` after.
     processor: Option<ReplayProcessor>,
     config: ReplayProcessorConfig,
     image: DecodedImage,
-    // Cursor state
+    // Cursor state.
     pointer_hidden: bool,
     pointer_hotspot_x: u16,
     pointer_hotspot_y: u16,
@@ -86,7 +82,6 @@ impl Replay {
 
         Ok(Self {
             pdu_buffer: PduBuffer::new(),
-            current_time_ms: 0.0,
             canvas,
             ctx,
             processor: None,
@@ -104,17 +99,18 @@ impl Replay {
 
     /// Initialize the replay processor, optionally with custom channel configuration.
     ///
-    /// Must be called exactly once before `render_till()` or `set_update_canvas()`.
-    /// Errors if already initialized. To replay with the same config, use `reset()`.
-    /// To use a different config, create a new `Replay` instance.
+    /// Call exactly once before `render_till()` or `set_update_canvas()`.
+    /// The method returns an error if already initialized.
+    /// To replay with the same configuration, call `reset()`.
+    /// To use a different configuration, create a new `Replay` instance.
     pub fn init(&mut self, config: Option<ReplayConfig>) -> Result<(), JsValue> {
         if self.processor.is_some() {
             return Err(JsValue::from_str("replay already initialized"));
         }
 
-        // Merge JS config onto stored defaults.
-        // Channel IDs are narrowed from u32 to u16 here; out-of-range values
-        // are rejected rather than silently clamped.
+        // Merge the JS configuration onto the stored defaults.
+        // Channel IDs are narrowed from u32 to u16 here.
+        // Reject out-of-range values rather than silently clamping them.
         if let Some(cfg) = config {
             if let Some(v) = cfg.io_channel_id {
                 self.config.io_channel_id =
@@ -133,40 +129,41 @@ impl Replay {
         Ok(())
     }
 
-    /// Process all PDUs up to `target_ms` and blit the resulting framebuffer to canvas.
+    /// Processes all PDUs up to `target_ms` and blits the resulting framebuffer to the canvas.
     ///
     /// Returns a JS error if `init()` has not been called.
     ///
     /// # Panics
     ///
     /// Panics if called after `init()` succeeds but the processor is somehow `None`.
-    /// This is unreachable in normal use.
+    /// This state is unreachable during normal use.
     #[wasm_bindgen(js_name = renderTill)]
     pub fn render_till(&mut self, target_ms: f64) -> Result<RenderResult, JsValue> {
         if self.processor.is_none() {
             return Err(JsValue::from_str("replay not initialized -- call init() first"));
         }
 
-        // Narrow the processor borrow so self.pdu_buffer and self.image remain accessible.
+        // Narrow the processor borrow so `self.pdu_buffer` and `self.image` remain accessible.
         let result = {
             #[expect(clippy::unwrap_used, reason = "processor is Some per is_none() early return")]
             let processor = self.processor.as_mut().unwrap();
             processor.process_till(&mut self.pdu_buffer, &mut self.image, target_ms)
         };
 
-        // Log any processing errors (non-fatal — offending PDUs were skipped).
-        // Cap individual messages to avoid flooding the browser console on
-        // corrupted recordings; emit a summary count for the remainder.
+        // Log any processing errors because the offending PDUs were skipped without aborting playback.
+        // Cap individual messages to avoid flooding the browser console on corrupted recordings.
         const MAX_LOGGED_ERRORS: usize = 20;
 
-        for error in result.errors.iter().take(MAX_LOGGED_ERRORS) {
-            console::error_1(&format!("pdu processing error: {error}").into());
+        let logged_error_count = result.errors.len().min(MAX_LOGGED_ERRORS);
+        for error in result.errors.iter().take(logged_error_count) {
+            console::error_1(&format!("PDU processing error: {error}").into());
         }
-        if result.errors.len() > MAX_LOGGED_ERRORS {
+        let suppressed_errors = &result.errors[logged_error_count..];
+        if !suppressed_errors.is_empty() {
             console::error_1(
                 &format!(
-                    "...and {} more pdu processing errors suppressed",
-                    result.errors.len() - MAX_LOGGED_ERRORS
+                    "Suppressed {} additional PDU processing errors",
+                    suppressed_errors.len()
                 )
                 .into(),
             );
@@ -178,7 +175,7 @@ impl Replay {
             self.canvas.set_height(u32::from(height));
         }
 
-        // Sync cursor state from processor (clone to release the borrow).
+        // Synchronize cursor state from the processor and release the borrow.
         let pointer_state = {
             #[expect(clippy::unwrap_used, reason = "processor is Some per is_none() early return")]
             self.processor.as_ref().unwrap().current_pointer_state().clone()
@@ -216,29 +213,24 @@ impl Replay {
             self.draw_to_canvas();
         }
 
-        self.current_time_ms = target_ms;
-
         Ok(RenderResult {
-            current_time_ms: self.current_time_ms,
-            pdus_processed: result.pdus_processed,
-            resolution_changed: result.resolution_changed,
+            pdu_errors: u32::try_from(result.errors.len()).unwrap_or(u32::MAX),
             session_ended: result.session_ended,
         })
     }
 
-    /// Push a single PDU into the internal buffer.
-    /// Called by JS (PduFetcher) to feed PDU data before calling renderTill().
+    /// Pushes a single PDU into the internal buffer.
+    /// JavaScript calls this method to feed PDU data before calling `renderTill()`.
     #[wasm_bindgen(js_name = pushPdu)]
     pub fn push_pdu(&mut self, timestamp_ms: f64, source: crate::PduSource, data: &[u8]) {
         self.pdu_buffer.push_pdu(timestamp_ms, source, data);
     }
 
-    /// Reset playback state to the beginning, rebuilding the processor
-    /// from the stored configuration.
+    /// Resets playback state to the beginning and rebuilds the processor from the stored configuration.
     ///
     /// # Caller contract
-    /// The canvas is not cleared by this method. The caller is responsible for
-    /// not displaying the canvas between reset() and the first render_till() call.
+    /// This method does not clear the canvas.
+    /// Do not display the canvas between `reset()` and the first `render_till()` call.
     ///
     /// Returns a JS error if `init()` has not been called.
     pub fn reset(&mut self) -> Result<(), JsValue> {
@@ -246,7 +238,6 @@ impl Replay {
             return Err(JsValue::from_str("replay not initialized -- call init() first"));
         }
 
-        self.current_time_ms = 0.0;
         self.pdu_buffer.clear();
         self.image = DecodedImage::new(PixelFormat::RgbA32, DEFAULT_WIDTH, DEFAULT_HEIGHT);
         self.processor = Some(ReplayProcessor::new(&self.config));
@@ -255,14 +246,14 @@ impl Replay {
         self.pointer_hotspot_y = 0;
         self.mouse_x = 0;
         self.mouse_y = 0;
-        // Drop the cached OffscreenCanvas to free the JS object reference.
+        // Drop the cached OffscreenCanvas to free the JavaScript object reference.
         self.cursor_canvas = None;
         self.cached_pointer = None;
         Ok(())
     }
 
-    /// Enable or disable canvas updates during rendering.
-    /// Set to false during seek fast-forward to suppress intermediate frame blits.
+    /// Enables or disables canvas updates during rendering.
+    /// Set this to false during seek fast-forward to suppress intermediate frame blits.
     ///
     /// Returns a JS error if `init()` has not been called.
     #[wasm_bindgen(js_name = setUpdateCanvas)]
@@ -271,16 +262,15 @@ impl Replay {
         Ok(())
     }
 
-    /// Blit the current in-memory framebuffer to the canvas without processing any PDUs.
+    /// Blits the current in-memory framebuffer to the canvas without processing any PDUs.
     ///
-    /// Intended for use after a seek, where PDUs have already been processed
-    /// but the final frame has not yet been drawn.
+    /// Use this after a seek when PDUs have been processed but the final frame has not been drawn.
     #[wasm_bindgen(js_name = forceRedraw)]
     pub fn force_redraw(&self) {
         self.draw_to_canvas();
     }
 
-    /// Blit framebuffer to canvas using putImageData, then composite cursor on top.
+    /// Blits the framebuffer to the canvas with `putImageData()` and composites the cursor on top.
     fn draw_to_canvas(&self) {
         let width = u32::from(self.image.width());
         let height = u32::from(self.image.height());
@@ -296,8 +286,8 @@ impl Replay {
         }
     }
 
-    /// Build a cached OffscreenCanvas from a cursor bitmap.
-    /// Called once per PointerBitmap change. Returns None on any failure.
+    /// Builds a cached OffscreenCanvas from a cursor bitmap.
+    /// This method runs once per `PointerBitmap` change and returns `None` on failure.
     fn build_cursor_canvas(pointer: &DecodedPointer) -> Option<OffscreenCanvas> {
         if pointer.width == 0 || pointer.height == 0 {
             return None;

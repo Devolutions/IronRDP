@@ -3,9 +3,7 @@
  * Matches crates/ironrdp-web-replay/src/replay.rs RenderResult fields.
  */
 export interface RenderResult {
-    current_time_ms: number;
-    pdus_processed: number;
-    resolution_changed: boolean;
+    pdu_errors: number;
     session_ended: boolean;
 }
 

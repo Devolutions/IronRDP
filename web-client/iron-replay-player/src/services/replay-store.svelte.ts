@@ -153,6 +153,15 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
         };
     }
 
+    function renderTill(targetMs: number, phase: 'seek' | 'playback') {
+        if (!wasmReplay) throw new Error('replay is not initialized');
+        const result = wasmReplay.renderTill(targetMs);
+        if (result.pdu_errors > 0) {
+            setPlayerError(phase, new Error(`${result.pdu_errors} PDU(s) could not be decoded`));
+        }
+        return result;
+    }
+
     function clearError(): void {
         if (playerError !== null) {
             loadState = playerError.phase === 'init' ? { status: 'idle' } : { status: 'ready' };
@@ -187,6 +196,15 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
         }
 
         fetchedUntilMs = Math.max(fetchedUntilMs, toMs);
+    }
+
+    function prefetch(signal: AbortSignal): Promise<void> {
+        if (prefetchPromise !== null) return prefetchPromise;
+        const request = fetchAndPush(fetchedUntilMs, fetchedUntilMs + bufferConfig.targetMs, signal).finally(() => {
+            if (prefetchPromise === request) prefetchPromise = null;
+        });
+        prefetchPromise = request;
+        return request;
     }
 
     // --- Load recording metadata ---
@@ -320,7 +338,7 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
             // Fast-forward WASM through already-buffered region (no fetch needed)
             if (processFrom < fetchedUntilMs) {
                 const renderTo = Math.min(fetchedUntilMs, targetMs);
-                wasmReplay.renderTill(renderTo);
+                renderTill(renderTo, 'seek');
             }
 
             // Fetch + render only the unbuffered remainder in seekChunkMs-sized
@@ -337,7 +355,7 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
                 await fetchAndPush(current, chunkEnd, signal);
                 if (signal.aborted) return; // new seek arrived during fetch
 
-                wasmReplay.renderTill(chunkEnd);
+                renderTill(chunkEnd, 'seek');
                 current = chunkEnd;
 
                 await yieldToEventLoop(); // let UI process (e.g. another seek)
@@ -382,7 +400,7 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
 
         const signal = prefetchAbort.signal;
         try {
-            await fetchAndPush(fetchedUntilMs, fetchedUntilMs + bufferConfig.targetMs, signal);
+            await prefetch(signal);
         } catch (e) {
             if (signal.aborted) return; // superseded by seek or destroy
             loadState = {
@@ -394,7 +412,7 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
             return;
         }
 
-        updatePlaybackState({ waiting: false });
+        if (!signal.aborted) updatePlaybackState({ waiting: false });
     }
 
     // --- Pause: record intent, cancel rAF loop (fetch continues unaffected) ---
@@ -475,12 +493,9 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
 
                 /* Re-check: the awaited prefetch may have filled the buffer. */
                 if (fetchedUntilMs - elapsed <= bufferConfig.criticallyLowMs) {
-                    /* Still need data — fetch directly and await.
-                     * No prefetchPromise tracking needed here: the loop is
-                     * stopped (waiting: true), so no ticks can read it.
-                     * seek() nulls prefetchPromise explicitly if it interrupts. */
+                    /* Still need data — share the fetch with any concurrent play(). */
                     try {
-                        await fetchAndPush(fetchedUntilMs, fetchedUntilMs + bufferConfig.targetMs, signal);
+                        await prefetch(signal);
                     } catch (e) {
                         if (signal.aborted) return;
                         setPlayerError('playback', e);
@@ -511,7 +526,7 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
         /* ── 3. RENDER ─────────────────────────────────────────────────── */
         let renderResult;
         try {
-            renderResult = wasmReplay.renderTill(elapsed);
+            renderResult = renderTill(elapsed, 'playback');
         } catch (e) {
             setPlayerError('playback', e);
             updatePlaybackState({ paused: true });
@@ -532,19 +547,10 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
          */
         const currentBufferAhead = fetchedUntilMs - elapsed;
         if (currentBufferAhead < bufferConfig.lowThresholdMs && prefetchPromise === null) {
-            // Identity check: only clear prefetchPromise if it's still this fetch.
-            const inflightFetch = fetchAndPush(
-                fetchedUntilMs,
-                fetchedUntilMs + bufferConfig.targetMs,
-                prefetchAbort.signal,
-            )
-                .catch((e) => {
-                    if (!prefetchAbort.signal.aborted) setPlayerError('playback', e);
-                })
-                .finally(() => {
-                    if (prefetchPromise === inflightFetch) prefetchPromise = null;
-                });
-            prefetchPromise = inflightFetch;
+            const signal = prefetchAbort.signal;
+            prefetch(signal).catch((e) => {
+                if (!signal.aborted) setPlayerError('playback', e);
+            });
         }
 
         /* ── 6. SCHEDULE NEXT TICK ─────────────────────────────────────── */

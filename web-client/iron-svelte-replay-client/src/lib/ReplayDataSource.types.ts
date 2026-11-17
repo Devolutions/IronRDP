@@ -4,8 +4,6 @@
 export interface ReplayMetadata {
     durationMs: number;
     totalPdus: number;
-    initialWidth?: number;
-    initialHeight?: number;
     ioChannelId?: number;
     userChannelId?: number;
     shareId?: number;

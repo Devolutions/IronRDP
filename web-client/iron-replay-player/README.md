@@ -51,11 +51,11 @@ interface ReplayDataSource {
 }
 ```
 
-| Method  | Description                                                                                                              |
-| ------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `open`  | Returns `ReplayMetadata { durationMs, totalPdus, initialWidth?, initialHeight? }`. Called once when playback is started. |
-| `fetch` | Returns `ReplayPdu[]` for the half-open interval `[fromMs, toMs)`, sorted ascending by timestamp.                        |
-| `close` | Fire-and-forget cleanup. Called when the component unmounts or when a new recording replaces the current data source.    |
+| Method  | Description                                                                                                                             |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `open`  | Returns `ReplayMetadata` with duration, PDU count, and optional negotiated channel and share IDs. Called once when playback is started. |
+| `fetch` | Returns `ReplayPdu[]` for the half-open interval `[fromMs, toMs)`, sorted ascending by timestamp.                                       |
+| `close` | Fire-and-forget cleanup. Called when the component unmounts or when a new recording replaces the current data source.                   |
 
 > `close()` may be called after an aborted or rejected `open()` during reload/re-init.
 > Implementations should make cleanup idempotent and no-op safely if no resources were allocated.
@@ -158,7 +158,7 @@ import type {
   ReplayModule, // interface for the WASM backend
   WasmReplayInstance, // interface for a single Replay engine instance
   ReplayDataSource, // interface for supplying recording data
-  ReplayMetadata, // { durationMs, totalPdus, initialWidth?, initialHeight? }
+  ReplayMetadata, // { durationMs, totalPdus, ioChannelId?, userChannelId?, shareId? }
   ReplayPdu, // a single PDU with timestamp, direction, and data
   PduDirection, // 0 | 1 — literal union type for PDU direction
   PlayerError, // { message, phase, cause? } — detail of the 'error' event

@@ -1,6 +1,6 @@
 //! PDU processing for RDP session replay.
 //!
-//! Provides a simplified processing pipeline for replay
+//! Provides a simplified processing pipeline for replay.
 
 use std::sync::Arc;
 
@@ -24,9 +24,8 @@ const MAX_DESKTOP_DIM: u16 = 8192;
 
 /// Configuration for building a [`ReplayProcessor`].
 ///
-/// Defaults reflect the most common values found in RDP recordings.
-/// A fully correct implementation should extract these from the recorded
-/// MCS Connect Response and Server Demand Active exchange.
+/// Defaults reflect common RDP session values.
+/// Supply negotiated values when available; the demo recording format does not contain them.
 #[derive(Debug, Clone)]
 pub struct ReplayProcessorConfig {
     /// MCS I/O channel ID from the server's MCS Connect Response.
@@ -56,16 +55,13 @@ impl Default for ReplayProcessorConfig {
 }
 
 /// Current pointer state for UI synchronization after seeking.
-///
-/// Defined locally because [`DecodedImage`] does not currently expose pointer
-/// state. Could be upstreamed to `ironrdp-session` in the future.
 #[derive(Debug, Clone)]
 pub enum PointerState {
-    /// Custom pointer bitmap
+    /// A custom pointer bitmap.
     Bitmap(Arc<DecodedPointer>),
-    /// Use system default pointer
+    /// The system default pointer.
     Default,
-    /// Pointer is hidden
+    /// A hidden pointer.
     Hidden,
 }
 
@@ -73,9 +69,9 @@ pub enum PointerState {
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum ReplayErrorKind {
-    /// Wraps a decode error from `ironrdp_core`
+    /// A decode error from `ironrdp_core`.
     Decode(ironrdp_core::DecodeError),
-    /// Wraps a session processing error
+    /// A session processing error.
     Session(Box<ironrdp_session::SessionError>),
 }
 
@@ -103,44 +99,28 @@ pub type ReplayError = ironrdp_error::Error<ReplayErrorKind>;
 /// Convenience result alias for replay operations.
 pub type ReplayResult<T> = Result<T, ReplayError>;
 
-/// Extension trait providing named constructors for [`ReplayError`].
-pub trait ReplayErrorExt {
-    fn decode(error: ironrdp_core::DecodeError) -> Self;
-    fn session(error: ironrdp_session::SessionError) -> Self;
-}
-
-impl ReplayErrorExt for ReplayError {
-    fn decode(error: ironrdp_core::DecodeError) -> Self {
-        Self::new("replay", ReplayErrorKind::Decode(error))
-    }
-
-    fn session(error: ironrdp_session::SessionError) -> Self {
-        Self::new("replay", ReplayErrorKind::Session(Box::new(error)))
-    }
-}
-
-/// Outcome of processing a single PDU
+/// Outcome of processing a single PDU.
 #[derive(Debug)]
 pub enum ProcessResult {
-    /// FastPath result (graphics, pointers) - delegates to upstream type
+    /// A Fast-Path result for graphics or pointers.
     FastPath(UpdateKind),
 
-    /// Pointer position from client input recording
+    /// A pointer position from client input.
     ClientPointerPosition { x: u16, y: u16 },
 
-    /// Desktop resolution changed - caller should resize framebuffer
+    /// A desktop resolution change that requires resizing the framebuffer.
     ResolutionChanged { width: u16, height: u16 },
 
-    /// Session deactivated - expect reactivation with new resolution
+    /// The session was deactivated and may reactivate with a new resolution.
     SessionDeactivated,
 
-    /// Session ended
+    /// The session ended.
     SessionEnded,
 }
 
 impl ProcessResult {
-    /// Whether this result represents a visual change (graphics, pointer, resolution).
-    /// Non-visual results (e.g. session lifecycle) don't require canvas redraws.
+    /// Whether this result represents a visual change such as graphics, pointer, or resolution.
+    /// Non-visual results such as session lifecycle events do not require canvas redraws.
     pub fn is_visual(&self) -> bool {
         !matches!(
             self,
@@ -151,45 +131,41 @@ impl ProcessResult {
 
 /// Accumulated result of processing PDUs up to a target timestamp.
 ///
-/// Returned by [`ReplayProcessor::process_till()`]. Contains all state
-/// changes from the processed PDUs, allowing the caller to apply
-/// canvas-specific side effects (resize, blit, cursor compositing).
+/// Contains all state changes from the processed PDUs.
+/// The caller applies canvas-specific side effects such as resize, blit, and cursor compositing.
 #[derive(Debug)]
 pub struct ProcessTillResult {
-    /// Number of PDUs successfully processed from the buffer.
-    /// Errored PDUs are consumed but counted in `errors.len()` instead.
-    /// Total PDUs drained from the buffer = `pdus_processed + errors.len()`.
+    /// The number of PDUs successfully processed from the buffer.
+    /// Errored PDUs are consumed and counted in `errors.len()` instead.
+    /// The total drained count is `pdus_processed + errors.len()`.
     pub pdus_processed: u32,
-    /// Whether any PDU triggered a resolution change.
-    pub resolution_changed: bool,
-    /// New resolution if `resolution_changed` is true.
+    /// A new resolution reported by a processed PDU, if any.
     pub new_resolution: Option<(u16, u16)>,
     /// Whether a SessionEnded PDU was encountered.
     pub session_ended: bool,
-    /// Whether any visual result was produced (requires canvas redraw).
+    /// Whether any visual result was produced and requires a canvas redraw.
     pub frame_dirty: bool,
-    /// Last mouse position from client or server pointer events, if any.
+    /// The last mouse position from client or server pointer events, if any.
     pub last_mouse_position: Option<(u16, u16)>,
-    /// Accumulated processing errors (logged, not fatal — PDU skipped).
+    /// Accumulated processing errors. Failed PDUs are skipped.
     pub errors: Vec<ReplayError>,
 }
 
-/// Stateful processor for replay PDU handling
+/// A stateful processor for replay PDU handling.
 pub struct ReplayProcessor {
-    /// FastPath processor for graphics/pointer handling
+    /// The Fast-Path processor for graphics and pointer handling.
     fast_path_processor: fast_path::Processor,
 
-    /// When false, suppresses visual results (GraphicsUpdate, Pointer*) during seeking.
-    /// Session state results (ResolutionChanged, SessionDeactivated, SessionEnded) are always emitted.
+    /// Whether to suppress visual results such as graphics and pointer updates during seeking.
+    /// Session state results are always emitted.
     update_canvas: bool,
 
-    /// Current pointer state, tracked for post-seek UI synchronization
+    /// The current pointer state for post-seek UI synchronization.
     current_pointer: PointerState,
 
     /// Reusable response buffer for `fast_path_processor.process()`.
     ///
-    /// In replay mode, no responses are sent, so this is cleared and reused
-    /// on each call to avoid repeated allocation.
+    /// Replay mode sends no responses, so the buffer is cleared and reused to avoid repeated allocations.
     response_buffer: WriteBuf,
 }
 
@@ -231,18 +207,14 @@ impl ReplayProcessor {
     /// Process all buffered PDUs up to `target_ms`.
     ///
     /// Drains the buffer, processes each PDU, and returns accumulated results.
-    /// Errors from individual PDUs are collected in `ProcessTillResult::errors`
-    /// and the offending PDU is skipped — processing continues with the next PDU.
+    /// Errors from individual PDUs are collected in `ProcessTillResult::errors`.
+    /// The offending PDU is skipped, and processing continues with the next PDU.
     ///
-    /// The caller is responsible for:
-    /// - Resizing the canvas to match `new_resolution` (if `resolution_changed`).
-    ///   The `DecodedImage` is already reallocated internally.
-    /// - Blitting the framebuffer to the canvas (if `frame_dirty && update_canvas`)
-    /// - Updating cursor visual state from pointer results
+    /// The caller resizes the canvas to `new_resolution`, blits the framebuffer when `frame_dirty && update_canvas`, and updates the cursor.
     ///
-    /// `pdus_processed` counts only successfully processed PDUs. Errored PDUs
-    /// are consumed from the buffer but counted in `errors.len()` instead.
-    /// Total PDUs drained = `pdus_processed + errors.len()`.
+    /// `pdus_processed` counts only successfully processed PDUs.
+    /// Errored PDUs are consumed from the buffer and counted in `errors.len()` instead.
+    /// The total drained count is `pdus_processed + errors.len()`.
     pub fn process_till(
         &mut self,
         buffer: &mut PduBuffer,
@@ -250,7 +222,6 @@ impl ReplayProcessor {
         target_ms: f64,
     ) -> ProcessTillResult {
         let mut pdus_processed: u32 = 0;
-        let mut resolution_changed = false;
         let mut new_resolution = None;
         let mut session_ended = false;
         let mut frame_dirty = false;
@@ -275,7 +246,6 @@ impl ReplayProcessor {
                 match result {
                     ProcessResult::ResolutionChanged { width, height } => {
                         *image = DecodedImage::new(PixelFormat::RgbA32, *width, *height);
-                        resolution_changed = true;
                         new_resolution = Some((*width, *height));
                     }
                     ProcessResult::FastPath(UpdateKind::PointerPosition { x, y })
@@ -295,7 +265,6 @@ impl ReplayProcessor {
 
         ProcessTillResult {
             pdus_processed,
-            resolution_changed,
             new_resolution,
             session_ended,
             frame_dirty,
@@ -306,8 +275,22 @@ impl ReplayProcessor {
 
     /// Dispatch a raw PDU to the appropriate processing function.
     ///
-    /// Uses `source` from the recording to route between client/server FastPath and X224.
-    /// Malformed PDUs are skipped with a console warning.
+    /// Uses the recording direction to route client/server Fast-Path and X.224 PDUs.
+    /// Malformed PDUs return an error to the caller.
+    ///
+    /// [2.2.8.1.2] "Client Fast-Path Input Event PDU" in MS-RDPBCGR defines input security flags.
+    /// [2.2.9.1.2] "Server Fast-Path Update PDU" defines output security flags.
+    /// [2.2.8.1.2.2.3] "Fast-Path Mouse Event" defines the mouse coordinate fields.
+    /// [2.2.1.13.1] "Server Demand Active PDU" defines the server X.224 control PDU.
+    /// [2.2.7.1.2] "Bitmap Capability Set" defines the desktop dimensions.
+    ///
+    /// [2.2.8.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    /// [2.2.9.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    /// [2.2.8.1.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    /// [2.2.1.13.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    /// [2.2.7.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    // UNTESTED: Arbitrary malformed PDU bytes must never panic because recordings are untrusted.
+    // Run the web_replay_pdu_processing fuzz target when changing this dispatcher or its decoders.
     pub fn process_pdu(
         &mut self,
         image: &mut DecodedImage,
@@ -317,23 +300,29 @@ impl ReplayProcessor {
         let action = match ironrdp_pdu::find_size(pdu) {
             Ok(Some(info)) => info.action,
             Ok(None) => {
-                return Err(ReplayError::decode(ironrdp_core::not_enough_bytes_err(
-                    "find_size",
-                    pdu.len(),
-                    2, // minimum bytes needed to determine PDU size
-                    None,
-                )));
+                return Err(ReplayError::new(
+                    "replay",
+                    ReplayErrorKind::Decode(ironrdp_core::not_enough_bytes_err(
+                        "find_size",
+                        pdu.len(),
+                        2, // Minimum bytes needed to determine PDU size.
+                        Some(0),
+                    )),
+                ));
             }
-            Err(e) => return Err(ReplayError::decode(e)),
+            Err(error) => return Err(ReplayError::new("replay", ReplayErrorKind::Decode(error))),
         };
 
         if action == Action::FastPath && pdu[0] & 0xc0 != 0 {
-            return Err(ReplayError::decode(ironrdp_core::invalid_field_err(
+            return Err(ReplayError::new(
                 "replay",
-                "fast-path security flags",
-                "encrypted or signed fast-path data is not supported",
-                None,
-            )));
+                ReplayErrorKind::Decode(ironrdp_core::invalid_field_err(
+                    "replay",
+                    "fast-path security flags",
+                    "encrypted or signed fast-path data is not supported",
+                    Some(0),
+                )),
+            ));
         }
 
         match (action, source) {
@@ -344,17 +333,17 @@ impl ReplayProcessor {
         }
     }
 
-    /// Process a server PDU (graphics, pointers)
+    /// Processes a server PDU for graphics and pointers.
     fn process_server_pdu(&mut self, image: &mut DecodedImage, pdu: &[u8]) -> ReplayResult<Vec<ProcessResult>> {
         self.response_buffer.clear();
         let updates = self
             .fast_path_processor
             .process(image, pdu, &mut self.response_buffer, &mut None)
-            .map_err(ReplayError::session)?;
+            .map_err(|error| ReplayError::new("replay", ReplayErrorKind::Session(Box::new(error))))?;
 
         let mut results = Vec::new();
         for update in updates {
-            // Track pointer state changes (always, even during seeking).
+            // Track pointer state changes even during seeking.
             match &update {
                 UpdateKind::PointerBitmap(pointer) => {
                     self.current_pointer = PointerState::Bitmap(Arc::clone(pointer));
@@ -368,7 +357,7 @@ impl ReplayProcessor {
                 _ => {}
             }
 
-            // During seeking, skip visual results to avoid unnecessary rendering.
+            // Skip visual results during seeking to avoid unnecessary rendering.
             // Non-visual results are always emitted for state tracking.
             let result = ProcessResult::FastPath(update);
             if !result.is_visual() || self.update_canvas {
@@ -379,14 +368,15 @@ impl ReplayProcessor {
         Ok(results)
     }
 
-    /// Process a client PDU (mouse/keyboard input)
+    /// Processes a client PDU for mouse or keyboard input.
     fn process_client_pdu(&self, pdu: &[u8]) -> ReplayResult<Vec<ProcessResult>> {
-        // Client input PDUs are stateless; skip during seeking.
+        // Client input PDUs are stateless, so skip them during seeking.
         if !self.update_canvas {
             return Ok(Vec::new());
         }
 
-        let input = decode::<FastPathInput>(pdu).map_err(ReplayError::decode)?;
+        let input =
+            decode::<FastPathInput>(pdu).map_err(|error| ReplayError::new("replay", ReplayErrorKind::Decode(error)))?;
 
         let mut results = Vec::new();
         for event in input.input_events() {
@@ -411,9 +401,15 @@ impl ReplayProcessor {
         Ok(results)
     }
 
-    /// Process an X224 PDU (session control, resolution changes)
+    /// Processes an X.224 PDU for session control and resolution changes.
+    ///
+    /// [MS-RDPBCGR] [section 2.2.1.13.1, "Server Demand Active PDU"] carries the resolution capability set.
+    /// [MS-RDPBCGR] [section 2.2.7.1.2, "Bitmap Capability Set"] defines the desktop dimensions.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
     fn process_x224(pdu: &[u8]) -> ReplayResult<Vec<ProcessResult>> {
-        let x224 = decode::<X224<McsMessage<'_>>>(pdu).map_err(ReplayError::decode)?;
+        let x224 = decode::<X224<McsMessage<'_>>>(pdu)
+            .map_err(|error| ReplayError::new("replay", ReplayErrorKind::Decode(error)))?;
 
         match x224.0 {
             McsMessage::SendDataIndication(sdi) => {
@@ -427,15 +423,19 @@ impl ReplayProcessor {
                             CapabilitySet::Bitmap(b) => Some((b.desktop_width, b.desktop_height)),
                             _ => None,
                         }) {
-                            if width == 0 || height == 0 || width > MAX_DESKTOP_DIM || height > MAX_DESKTOP_DIM {
-                                return Err(ReplayError::decode(ironrdp_core::invalid_field_err(
+                            if !(0 < width && width <= MAX_DESKTOP_DIM && 0 < height && height <= MAX_DESKTOP_DIM) {
+                                return Err(ReplayError::new(
                                     "replay",
-                                    "desktop size",
-                                    "desktop dimensions exceed replay limits",
-                                    None,
-                                )));
+                                    ReplayErrorKind::Decode(ironrdp_core::invalid_field_err(
+                                        "replay",
+                                        "desktop size",
+                                        "invalid desktop dimensions for replay",
+                                        // The decoded structure does not retain its byte cursor.
+                                        None,
+                                    )),
+                                ));
                             }
-                            // Always emit ResolutionChanged (even during seeking)
+                            // Resolution changes update session state during seeking too.
                             Ok(vec![ProcessResult::ResolutionChanged { width, height }])
                         } else {
                             Ok(vec![])
