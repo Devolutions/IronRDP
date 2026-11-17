@@ -86,3 +86,33 @@ fn connect_time_network_characteristics_keep_what_a_partial_result_leaves_out() 
         })
     );
 }
+
+// oracle: mutant a measurement that drops the bandwidth a later result without one leaves out
+#[test]
+fn connect_time_network_characteristics_keep_the_bandwidth_a_later_rtt_only_result_leaves_out() {
+    let network_characteristics = connect_time_measurement(vec![
+        AutoDetectRequest::NetworkCharacteristicsResult {
+            sequence_number: 1,
+            request_type: NETCHAR_RESULT_ALL,
+            base_rtt_ms: Some(3),
+            bandwidth_kbps: Some(10_000),
+            average_rtt_ms: 4,
+        },
+        AutoDetectRequest::NetworkCharacteristicsResult {
+            sequence_number: 2,
+            request_type: NETCHAR_RESULT_RTT,
+            base_rtt_ms: Some(2),
+            bandwidth_kbps: None,
+            average_rtt_ms: 5,
+        },
+    ]);
+
+    assert_eq!(
+        network_characteristics,
+        Some(NetworkCharacteristics {
+            base_rtt_ms: Some(2),
+            bandwidth_kbps: Some(10_000),
+            average_rtt_ms: 5,
+        })
+    );
+}
