@@ -23,10 +23,10 @@ std = ["ironrdp-str/std", "dep:ironrdp-dvc", "dep:ironrdp-pdu", "dep:ironrdp-svc
 
 [dependencies]
 ironrdp-core = { version = "0.3.1", path = "../ironrdp-core", features = ["alloc"] } # public
-ironrdp-dvc = { version = "0.10.0", path = "../ironrdp-dvc", optional = true } # public
-ironrdp-pdu = { version = "0.11.0", path = "../ironrdp-pdu", features = ["alloc"], optional = true } # public
+ironrdp-dvc = { version = "0.10.1", path = "../ironrdp-dvc", optional = true } # public
+ironrdp-pdu = { version = "0.11.1", path = "../ironrdp-pdu", features = ["alloc"], optional = true } # public
 ironrdp-str = { version = "0.2.1", path = "../ironrdp-str", default-features = false, features = ["alloc"] } # public
-ironrdp-svc = { version = "0.10.0", path = "../ironrdp-svc", optional = true } # public
+ironrdp-svc = { version = "0.10.1", path = "../ironrdp-svc", optional = true } # public
 tracing = { version = "0.1", features = ["log"], optional = true }
 
 [lints]
