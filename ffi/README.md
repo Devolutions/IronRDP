@@ -30,6 +30,11 @@ Pass both IDs to `ActiveStage.SendDirectDvcData` or `CloseDirectDvcChannel` so s
 After overflow, `NextEvent()` returns queued events before reporting the error; close the session because the event stream is desynchronized.
 Both methods return an encoded frame for the main RDP connection and fail if the channel was moved to a multitransport tunnel.
 
+Use one serialized pipeline for `ActiveStage.Process`, direct send and close encoding, and the resulting transport writes.
+Write the responses from `Process`, including the channel create response, before acting on the resulting DVC events in that pipeline.
+Write each encoded direct DVC frame before processing another inbound PDU that could close or reopen the channel.
+Locking individual `ActiveStage` calls is not enough: endpoint IDs are checked at encoding time, not when the returned bytes are written.
+
 ```csharp
 var events = DirectDvcEventQueue.New(256);
 var directDvc = DirectDvcConfig.New(events.Sink);
