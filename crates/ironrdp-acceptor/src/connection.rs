@@ -873,7 +873,8 @@ impl Acceptor {
 
     /// Takes the credentials [`received_credentials`](Self::received_credentials) returns, leaving none.
     ///
-    /// A server takes them when it checks an auto-reconnect cookie, so they aren't kept for the rest of the connection.
+    /// A server takes them when it checks an auto-reconnect cookie, so the acceptor doesn't keep them for the rest of
+    /// the connection.
     pub fn take_received_credentials(&mut self) -> Option<ReceivedCredentials> {
         self.received_credentials.take()
     }

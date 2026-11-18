@@ -6442,8 +6442,11 @@ impl RdpServer {
         let is_auto_reconnect = {
             // UNTESTED: For a client that presented an auto-reconnect cookie, the acceptor keeps its credentials past
             // the result in case the cookie fails.
-            // They're taken here whatever the cookie's outcome, and dropped at the end of this block, so neither the
-            // acceptor nor this function, which runs the whole session, holds them after the cookie is checked.
+            // They're taken here whatever the cookie's outcome, and dropped at the end of this block, so the acceptor
+            // ends up holding none, as for a connection without a cookie, and neither does this function, which runs
+            // the whole session.
+            // The result's own copy of the Client Info credentials, which the server doesn't read, stays with it as it
+            // does for every connection.
             // No test can see the server's acceptor, so when changing this, check that they're still taken here.
             let received = acceptor.take_received_credentials();
             match result.auto_reconnect.as_ref() {

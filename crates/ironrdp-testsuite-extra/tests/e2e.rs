@@ -4279,7 +4279,7 @@ where
             // Stop the server once the client is done, also when it panicked, so a failing assertion fails the test
             // instead of leaving it waiting on the server.
             let client = client.await;
-            ev.send(ServerEvent::Quit("bye".into())).unwrap();
+            let _ = ev.send(ServerEvent::Quit("bye".into()));
             server.await.expect("server task");
             client.expect("client task")
         })
@@ -4696,6 +4696,69 @@ async fn an_unverifiable_auto_reconnect_cookie_is_refused_when_the_validator_rej
     .await;
 
     assert!(ended, "the server ends the connection");
+}
+
+/// With a connection binder, the server refuses every auto-reconnect attempt, whether its cookie verifies or not,
+/// because the acceptor skips capability-exchange binding for one, so admitting it would start a session no binder
+/// bound.
+/// The validator accepts the client's credentials, so nothing else refuses a fallback logon.
+// oracle: mutant a server with a connection binder admitting an auto-reconnect attempt it never binds
+#[rstest::rstest]
+#[case::stale_cookie(stale_auto_reconnect_cookie())]
+#[case::verified_cookie(ServerAutoReconnect {
+    logon_id: 1,
+    random_bits: [0x5a; 16],
+})]
+#[tokio::test]
+async fn an_auto_reconnect_attempt_is_refused_with_a_connection_binder(#[case] cookie: ServerAutoReconnect) {
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+        server::Credentials {
+            username: USERNAME.into(),
+            password: PASSWORD.into(),
+            domain: None,
+        },
+    ))));
+    let (_bound_tx, bound_rx) = mpsc::unbounded_channel();
+    server.set_connection_binder(Some(Arc::new(TestBinder(Arc::new(Mutex::new(bound_rx))))));
+
+    // A server that admits the attempt doesn't always end the run, so the run is bounded and running out of time counts
+    // as admitted.
+    let ended = tokio::time::timeout(
+        Duration::from_secs(20),
+        with_server(
+            server,
+            display_tx,
+            async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+                let mut probe = CookieProbe::connect(server_addr, Some(cookie)).await;
+                probe.watch_for_cookie(Duration::from_secs(5)).await.is_err()
+            },
+        ),
+    )
+    .await
+    .unwrap_or(false);
+
+    assert!(ended, "the server ends the connection instead of admitting it");
+}
+
+/// A connection binder that hands every connection the test display and input handler.
+struct TestBinder(DisplayUpdatesRx);
+
+#[async_trait::async_trait]
+impl server::ConnectionBinder for TestBinder {
+    async fn bind_connection(
+        &self,
+        _credentials: &server::Credentials,
+        _desktop_size: DesktopSize,
+    ) -> ServerResult<server::BoundConnection> {
+        Ok(server::BoundConnection {
+            display: Box::new(TestDisplay {
+                rx: Arc::clone(&self.0),
+                offers_display_control: true,
+            }),
+            input: Box::new(TestInputHandler),
+        })
+    }
 }
 
 /// On request, a vouch belongs to the connection that was current when the embedder sent
