@@ -150,8 +150,9 @@ pub struct Acceptor {
     static_channels: StaticChannelSet,
     pending_input_events: InputEventBuffer,
     saved_for_reactivation: AcceptorState,
-    /// Accepted credentials. `None` (nothing configured) leaves ClientInfo
-    /// credentials unchecked; a list, even an empty one, requires a match.
+    /// Accepted credentials.
+    /// `None` (nothing configured) leaves ClientInfo credentials unchecked; a list, even an empty one, requires a
+    /// match.
     /// CredSSP fails without an entry.
     pub(crate) creds: Option<Vec<Credentials>>,
     pub(crate) credssp_backend: crate::CredsspBackend,
@@ -572,12 +573,15 @@ impl Acceptor {
 
     /// Accept any of `creds`, replacing the credentials given to [`Self::new`].
     ///
-    /// CredSSP checks the client's password against the entry with its user
-    /// name, the first one if several share it; ClientInfo credentials must
-    /// match one of them. An empty list accepts no one: CredSSP fails and
-    /// ClientInfo logons are refused, unless
-    /// [`Self::set_allow_unverified_credentials`] hands them to an external
-    /// validator.
+    /// CredSSP checks the client's password against the entry with its user name.
+    /// ClientInfo credentials must match one of the entries.
+    /// Give each user name one entry: with several, CredSSP checks only the first, while a ClientInfo logon matches
+    /// any of them.
+    /// An empty list accepts no one: CredSSP fails and ClientInfo logons are refused, unless
+    /// [`Self::set_allow_unverified_credentials`] hands them to an external validator.
+    ///
+    /// With `CredsspBackend::Windows`, the operating system checks CredSSP logons and the list applies to
+    /// ClientInfo logons only.
     pub fn set_credential_list(&mut self, creds: Vec<Credentials>) {
         self.creds = Some(creds);
     }

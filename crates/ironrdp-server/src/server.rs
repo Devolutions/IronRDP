@@ -6879,11 +6879,18 @@ impl RdpServer {
         self.creds = creds.map(|creds| vec![creds]);
     }
 
-    /// Accept any of `creds` from the next connection on: CredSSP checks the
-    /// client's password against the entry with its user name (the first one
-    /// if several share it), and ClientInfo credentials must match one of
-    /// them. An empty list accepts no one, unless a credential validator
-    /// decides ClientInfo logons. A running session is not affected.
+    /// Accept any of `creds` from the next connection on; a running session is not affected.
+    ///
+    /// CredSSP checks the client's password against the entry with its user name.
+    /// ClientInfo credentials must match one of the entries.
+    /// Give each user name one entry: with several, CredSSP checks only the first, while a ClientInfo logon matches
+    /// any of them.
+    /// An empty list accepts no one.
+    ///
+    /// A [`CredentialValidator`] runs after this check, not instead of it.
+    /// To leave ClientInfo logons to the validator alone, use [`Self::set_credentials`] with `None`.
+    /// With `CredsspBackend::Windows`, the operating system checks CredSSP logons and the list applies to
+    /// ClientInfo logons only.
     pub fn set_credential_list(&mut self, creds: Vec<Credentials>) {
         debug!(count = creds.len(), "Changing credentials");
         self.creds = Some(creds);
