@@ -341,6 +341,13 @@ pub mod ffi {
             Ok(Box::new(VecU8(frame)))
         }
 
+        /// Encodes `data` in a DYNVC_DATA PDU ([MS-RDPEDYC] section 2.2.3.2, "DVC Data (DYNVC_DATA)").
+        ///
+        /// Rejects an inactive endpoint or a channel moved to a multitransport tunnel.
+        /// The endpoint is checked during encoding.
+        /// Serialize inbound processing, encoding, and transport writes, and write this frame before processing a later close or reopen.
+        ///
+        /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/11402a8d-7ad8-49a7-a7d4-1458b7ac3fea
         pub fn send_direct_dvc_data(
             &mut self,
             channel_id: u32,
@@ -358,6 +365,13 @@ pub mod ffi {
             Ok(Box::new(VecU8(frame)))
         }
 
+        /// Encodes a DYNVC_CLOSE PDU ([MS-RDPEDYC] section 2.2.4, "Closing a DVC (DYNVC_CLOSE)").
+        ///
+        /// Rejects an inactive endpoint, a channel moved to a multitransport tunnel, or a channel that is not open.
+        /// The endpoint is checked during encoding.
+        /// Serialize inbound processing, encoding, and transport writes, and write this frame before processing a later close or reopen.
+        ///
+        /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/c02dfd21-ccbc-4254-985b-3ef6dd115dec
         pub fn close_direct_dvc_channel(
             &mut self,
             channel_id: u32,

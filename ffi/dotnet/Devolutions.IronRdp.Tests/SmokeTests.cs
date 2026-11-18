@@ -476,6 +476,50 @@ internal static class SmokeTests
             connector.WithDynamicChannelDisplayControl();
         });
 
+        // oracle: mutant allow a pipe proxy to replace a direct listener and suppress its events
+        yield return ("pipe-proxy registration rejects a direct DVC name", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var pipeQueue = DvcPipeProxyMessageQueue.New(4);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "shared-channel"));
+            Throws<IronRdpException>(() => connector.WithDynamicChannelPipeProxy(NewPipeProxyConfig(pipeQueue, "shared-channel")));
+        });
+
+        // oracle: mutant allow a direct listener to replace a pipe proxy
+        yield return ("direct registration rejects a pipe-proxy name", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var pipeQueue = DvcPipeProxyMessageQueue.New(4);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelPipeProxy(NewPipeProxyConfig(pipeQueue, "shared-channel"));
+            Throws<IronRdpException>(() => connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "shared-channel")));
+        });
+
+        // oracle: mutant partially register a pipe-proxy batch before rejecting a direct-name conflict
+        yield return ("pipe-proxy collision rejection leaves the batch unregistered", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var pipeQueue = DvcPipeProxyMessageQueue.New(4);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "conflict"));
+            Throws<IronRdpException>(() => connector.WithDynamicChannelPipeProxy(
+                NewPipeProxyConfig(pipeQueue, "first-in-batch", "conflict")));
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "first-in-batch"));
+        });
+
+        // oracle: mutant partially register duplicate direct names before rejecting the configuration
+        yield return ("direct registration rejects duplicate names without registering either", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var duplicate = DirectDvcConfig.New(events.Sink);
+            duplicate.AddChannel("duplicate");
+            duplicate.AddChannel("duplicate");
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            Throws<IronRdpException>(() => connector.WithDynamicChannelDirect(duplicate));
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "duplicate"));
+        });
+
         // oracle: mutant preserve event payload and reject stale endpoint IDs after channel reuse
         yield return ("direct DVC events retain payloads and reject endpoints from a previous opening", () =>
         {
@@ -514,6 +558,7 @@ internal static class SmokeTests
                 Throws<IronRdpException>(() => stage.SendDirectDvcData(opened.ChannelId, opened.EndpointId, expected));
                 var outbound = stage.SendDirectDvcData(reopened.ChannelId, reopened.EndpointId, expected);
                 var outboundFrame = ToArray(outbound);
+                // oracle: spec MS-RDPBCGR §2.2.9.1.1 (TPKT Header)
                 Equal(0x03, outboundFrame[0], "TPKT version");
                 Equal(0x00, outboundFrame[1], "TPKT reserved byte");
                 Equal(outboundFrame.Length, (int)BinaryPrimitives.ReadUInt16BigEndian(outboundFrame.AsSpan(2, 2)), "TPKT length");
@@ -1069,6 +1114,23 @@ internal static class SmokeTests
         var config = DirectDvcConfig.New(events.Sink);
         config.AddChannel("Microsoft::Windows::RDS::DisplayControl");
         config.AddChannel("Microsoft::Windows::RDS::Input");
+        return config;
+    }
+
+    private static DirectDvcConfig NewDirectDvcConfig(DirectDvcEventQueue events, string channelName)
+    {
+        var config = DirectDvcConfig.New(events.Sink);
+        config.AddChannel(channelName);
+        return config;
+    }
+
+    private static DvcPipeProxyConfig NewPipeProxyConfig(DvcPipeProxyMessageQueue queue, params string[] channelNames)
+    {
+        var config = DvcPipeProxyConfig.New(queue.Sink);
+        foreach (var channelName in channelNames)
+        {
+            config.AddPipeProxy(DvcPipeProxyDescriptor.New(channelName, "unused"));
+        }
         return config;
     }
 

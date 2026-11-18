@@ -185,6 +185,12 @@ pub mod ffi {
             Ok(())
         }
 
+        /// Registers event-driven listeners for dynamic virtual channels ([MS-RDPEDYC]).
+        ///
+        /// Rejects duplicate names and names already registered by another listener.
+        /// This includes built-in channels and pipe proxies.
+        ///
+        /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
         pub fn with_dynamic_channel_direct(&mut self, config: &DirectDvcConfig) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
