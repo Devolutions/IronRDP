@@ -448,6 +448,89 @@ internal static class SmokeTests
             True(!state.IsTerminal(), "state is not terminal");
         });
 
+        // oracle: regression Devolutions/IronRDP#2476
+        yield return ("built-in DVC registration cannot replace a direct listener", () =>
+        {
+            using var events = DirectDvcEventQueue.New(1);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events));
+            Throws<IronRdpException>(() => connector.WithDynamicChannelDisplayControl());
+            Throws<IronRdpException>(() => connector.WithDynamicChannelRdpei(10, false));
+        });
+
+        // oracle: regression Devolutions/IronRDP#2476
+        yield return ("direct DVC registration cannot replace a built-in listener", () =>
+        {
+            using var events = DirectDvcEventQueue.New(1);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDisplayControl();
+            Throws<IronRdpException>(() => connector.WithDynamicChannelDirect(NewDirectDvcConfig(events)));
+        });
+
+        // oracle: regression Devolutions/IronRDP#2476
+        yield return ("built-in DVC registration can replace a non-direct listener", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDisplayControl();
+            connector.WithDynamicChannelDisplayControl();
+        });
+
+        // oracle: regression Devolutions/IronRDP#2476
+        yield return ("direct DVC events retain payloads and reject endpoints from a previous opening", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var (stage, image) = ConnectedStage(8, 4, directDvc: NewDirectDvcConfig(events));
+            using (stage)
+            using (image)
+            {
+                ProcessFrame(stage, image, DrdynvcDisplayControlCreateRequest);
+                using var opened = events.NextEvent() ?? throw new InvalidOperationException("missing open event");
+                Equal(DirectDvcEventKind.Opened, opened.Kind, "event kind");
+                Equal("Microsoft::Windows::RDS::DisplayControl", opened.ChannelName, "channel name");
+                Equal(1u, opened.ChannelId, "channel ID");
+
+                var frame = DisplayControlCapsPdu.ToArray();
+                var expected = frame[24..];
+                ProcessFrame(stage, image, frame);
+                Array.Clear(frame);
+                using var data = events.NextEvent() ?? throw new InvalidOperationException("missing data event");
+                Equal(DirectDvcEventKind.Data, data.Kind, "event kind");
+                Equal(opened.EndpointId, data.EndpointId, "data endpoint");
+                True(expected.SequenceEqual(ToArray(data.TakeData())), "data event owns its payload");
+
+                using var closeFrame = stage.CloseDirectDvcChannel(opened.ChannelId, opened.EndpointId);
+                using var closed = events.NextEvent() ?? throw new InvalidOperationException("missing close event");
+                Equal(DirectDvcEventKind.Closed, closed.Kind, "event kind");
+                Equal(opened.EndpointId, closed.EndpointId, "closed endpoint");
+                Throws<IronRdpException>(() => stage.SendDirectDvcData(opened.ChannelId, opened.EndpointId, expected));
+
+                ProcessFrame(stage, image, DrdynvcDisplayControlCreateRequest);
+                using var reopened = events.NextEvent() ?? throw new InvalidOperationException("missing reopen event");
+                Equal(DirectDvcEventKind.Opened, reopened.Kind, "event kind");
+                Equal(opened.ChannelId, reopened.ChannelId, "reused channel ID");
+                True(opened.EndpointId != reopened.EndpointId, "endpoint ID changes on reopen");
+                Throws<IronRdpException>(() => stage.SendDirectDvcData(opened.ChannelId, opened.EndpointId, expected));
+                using var outbound = stage.SendDirectDvcData(reopened.ChannelId, reopened.EndpointId, expected);
+                True(outbound.Size > 0, "current endpoint encodes an outbound frame");
+            }
+        });
+
+        // oracle: regression Devolutions/IronRDP#2476
+        yield return ("direct DVC queue reports overflow after draining queued events", () =>
+        {
+            using var events = DirectDvcEventQueue.New(1);
+            var (stage, image) = ConnectedStage(8, 4, directDvc: NewDirectDvcConfig(events));
+            using (stage)
+            using (image)
+            {
+                ProcessFrame(stage, image, DrdynvcDisplayControlCreateRequest);
+                Throws<IronRdpException>(() => ProcessFrame(stage, image, DisplayControlCapsPdu));
+                using var opened = events.NextEvent() ?? throw new InvalidOperationException("missing queued open event");
+                Equal(DirectDvcEventKind.Opened, opened.Kind, "queued event kind");
+                Throws<IronRdpException>(() => events.NextEvent());
+            }
+        });
+
         yield return ("display control is unavailable without its dynamic channel", () =>
         {
             var (stage, _) = ConnectedStage(8, 4);
@@ -968,7 +1051,15 @@ internal static class SmokeTests
         },
     };
 
-    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false)
+    private static DirectDvcConfig NewDirectDvcConfig(DirectDvcEventQueue events)
+    {
+        var config = DirectDvcConfig.New(events.Sink);
+        config.AddChannel("Microsoft::Windows::RDS::DisplayControl");
+        config.AddChannel("Microsoft::Windows::RDS::Input");
+        return config;
+    }
+
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false, DirectDvcConfig? directDvc = null)
     {
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
         var serverPdus = HandshakeServerPdus.ToArray();
@@ -982,7 +1073,12 @@ internal static class SmokeTests
             connector.WithDynamicChannelRdpei(10, false);
         }
 
-        if (displayControl || rdpei)
+        if (directDvc is not null)
+        {
+            connector.WithDynamicChannelDirect(directDvc);
+        }
+
+        if (displayControl || rdpei || directDvc is not null)
         {
             serverPdus[1] = McsConnectResponseWithDrdynvc;
         }
