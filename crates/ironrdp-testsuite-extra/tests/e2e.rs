@@ -225,25 +225,60 @@ async fn server_handle_local_addr_fails_if_the_queued_request_is_dropped() {
     assert!(query.await.is_err());
 }
 
-// oracle: mutant init_from_paths not reading PEM certificates or PKCS#8 keys from files without a .pem extension
+/// The DER inside the one PEM block of `pem`, decoded by hand rather than by the parser under test.
+fn pem_body(pem: &str) -> Vec<u8> {
+    use base64::Engine as _;
+
+    let body: String = pem
+        .lines()
+        .skip_while(|line| !line.starts_with("-----BEGIN "))
+        .skip(1)
+        .take_while(|line| !line.starts_with("-----END "))
+        .collect();
+    base64::engine::general_purpose::STANDARD.decode(body).unwrap()
+}
+
+/// A directory of its own under the system temporary directory, removed when dropped, even by a failing test.
+struct ScratchDir(std::path::PathBuf);
+
+impl ScratchDir {
+    fn new(name: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{name}-{}-{nanos}", std::process::id()));
+        // `create_dir`, not `create_dir_all`: a path that already exists fails the test instead of being reused.
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+// oracle: spec RFC 7468 §2 (a PEM block is the base64 of the DER between its labels), decoded by `pem_body`
+// oracle: mutant init_from_paths reading PEM only from files with a .pem extension
 #[test]
 fn tls_identity_reads_pem_files_whatever_their_extension() {
     let certs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs");
-    let dir = std::env::temp_dir().join(format!("ironrdp-tls-identity-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let (cert, key) = (dir.join("server.crt"), dir.join("server.key"));
-    std::fs::copy(certs.join("server-cert.pem"), &cert).unwrap();
-    std::fs::copy(certs.join("server-key.pem"), &key).unwrap();
+    let cert_pem = std::fs::read_to_string(certs.join("server-cert.pem")).unwrap();
+    let key_pem = std::fs::read_to_string(certs.join("server-key.pem")).unwrap();
+    let dir = ScratchDir::new("ironrdp-tls-identity");
+    let (cert, key) = (dir.0.join("server.crt"), dir.0.join("server.key"));
+    std::fs::write(&cert, &cert_pem).unwrap();
+    std::fs::write(&key, &key_pem).unwrap();
 
-    let pem = TlsIdentityCtx::init_from_paths(&certs.join("server-cert.pem"), &certs.join("server-key.pem")).unwrap();
-    let other = TlsIdentityCtx::init_from_paths(&cert, &key);
-    std::fs::remove_dir_all(&dir).unwrap();
-    let other = other.unwrap();
+    let identity = TlsIdentityCtx::init_from_paths(&cert, &key).unwrap();
 
-    assert_eq!(other.certs, pem.certs);
-    assert_eq!(other.pub_key, pem.pub_key);
-    assert_eq!(other.priv_key.secret_der(), pem.priv_key.secret_der());
-    other.make_acceptor().unwrap();
+    assert_eq!(identity.certs.len(), 1);
+    assert_eq!(identity.certs[0].as_ref(), pem_body(&cert_pem).as_slice());
+    assert_eq!(identity.priv_key.secret_der(), pem_body(&key_pem).as_slice());
+    // rustls checks that the key belongs to the certificate.
+    identity.make_acceptor().unwrap();
 }
 
 fn server_for_handle_tests(connection_handler: Option<Box<dyn server::ConnectionHandler>>) -> RdpServer {
