@@ -1611,9 +1611,8 @@ async fn display_control_channel_is_not_created_when_the_display_declines_it() {
 
 /// Serves the client until the echo channel has opened and the connection then goes quiet, for at most 5 seconds.
 ///
-/// The server sends the Create request for every dynamic channel together, in its reply to the client's
-/// capabilities, so once the echo channel has opened and the connection goes quiet, every one of them has been
-/// processed.
+/// The server sends the Create request for every dynamic channel together, in its reply to the client's capabilities,
+/// so once the echo channel has opened and the connection goes quiet, every one of them has been processed.
 async fn serve_until_dynamic_channels_settle(
     stage: &mut ActiveStage,
     framed: &mut Framed<TokioStream<TlsStream<TcpStream>>>,
@@ -1685,7 +1684,7 @@ async fn run_display_control_probe(offers_display_control: bool) -> (bool, bool)
 // oracle: mutant the graphics pipeline held back from a client that advertises it, or its server kept from the display
 #[tokio::test]
 async fn egfx_channel_is_created_for_a_client_that_advertises_it() {
-    let probe = run_egfx_probe(true, EgfxRegistration::GfxFactory).await;
+    let probe = run_egfx_probe(true, EgfxRegistration::GfxFactory, false).await;
 
     probe.assert_settled();
     assert!(
@@ -1693,7 +1692,7 @@ async fn egfx_channel_is_created_for_a_client_that_advertises_it() {
         "a client that advertises the graphics pipeline must get the channel created"
     );
     assert!(
-        probe.display_got_egfx_server,
+        probe.egfx_servers.contains(&true),
         "the display must get the EGFX server of a client that advertises the graphics pipeline"
     );
 }
@@ -1707,7 +1706,7 @@ async fn egfx_channel_is_created_for_a_client_that_advertises_it() {
 // oracle: mutant a server that offers the graphics pipeline to a client that didn't advertise it
 #[tokio::test]
 async fn egfx_channel_is_not_created_for_a_client_that_does_not_advertise_it() {
-    let probe = run_egfx_probe(false, EgfxRegistration::GfxFactory).await;
+    let probe = run_egfx_probe(false, EgfxRegistration::GfxFactory, false).await;
 
     probe.assert_settled();
     assert!(
@@ -1716,7 +1715,7 @@ async fn egfx_channel_is_not_created_for_a_client_that_does_not_advertise_it() {
     );
     // oracle: mutant handing the display an EGFX server whose channel is never offered
     assert!(
-        !probe.display_got_egfx_server,
+        !probe.egfx_servers.contains(&true),
         "the display must not get an EGFX server for a client that didn't advertise the graphics pipeline"
     );
 }
@@ -1727,7 +1726,7 @@ async fn egfx_channel_is_not_created_for_a_client_that_does_not_advertise_it() {
 // oracle: mutant the graphics pipeline held back from a client that advertises it when no EGFX factory registered it
 #[tokio::test]
 async fn egfx_registered_as_a_dynamic_channel_is_created_for_a_client_that_advertises_it() {
-    let probe = run_egfx_probe(true, EgfxRegistration::DynamicChannel).await;
+    let probe = run_egfx_probe(true, EgfxRegistration::DynamicChannel, false).await;
 
     probe.assert_settled();
     assert!(
@@ -1746,7 +1745,7 @@ async fn egfx_registered_as_a_dynamic_channel_is_created_for_a_client_that_adver
 // oracle: mutant a graphics pipeline check that only finds the channel an EGFX factory registers
 #[tokio::test]
 async fn egfx_registered_as_a_dynamic_channel_is_not_created_for_a_client_that_does_not_advertise_it() {
-    let probe = run_egfx_probe(false, EgfxRegistration::DynamicChannel).await;
+    let probe = run_egfx_probe(false, EgfxRegistration::DynamicChannel, false).await;
 
     probe.assert_settled();
     assert!(
@@ -1756,88 +1755,14 @@ async fn egfx_registered_as_a_dynamic_channel_is_not_created_for_a_client_that_d
 }
 
 /// A client that sets RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL keeps its graphics pipeline when the server reactivates it.
-/// A Deactivation-Reactivation Sequence doesn't repeat the Basic Settings Exchange that carried the flag
-/// (MS-RDPBCGR 1.3.1.3), so the display gets the connection's EGFX server again after one.
+/// A Deactivation-Reactivation Sequence (MS-RDPBCGR 1.3.1.3) doesn't repeat the Basic Settings Exchange that carried
+/// the flag, so the display gets the connection's EGFX server again after one.
 // oracle: mutant a server that drops the graphics pipeline when it reactivates a client that advertised it
 #[tokio::test]
 async fn egfx_server_is_kept_across_a_reactivation() {
-    let echo_started = Arc::new(AtomicBool::new(false));
-    let egfx_servers = Arc::new(StdMutex::new(Vec::new()));
+    let probe = run_egfx_probe(true, EgfxRegistration::GfxFactory, true).await;
 
-    let connector_echo = Arc::clone(&echo_started);
-    let observed_echo = Arc::clone(&echo_started);
-    let display_egfx_servers = Arc::clone(&egfx_servers);
-    let observed_egfx_servers = Arc::clone(&egfx_servers);
-
-    client_server_with_display(
-        move |rx| EgfxServerRecorder {
-            display: TestDisplay {
-                rx,
-                offers_display_control: true,
-            },
-            egfx_servers: display_egfx_servers,
-        },
-        None,
-        connector::Config {
-            support_dyn_vc_gfx_protocol: true,
-            ..default_client_config()
-        },
-        Vec::new(),
-        TestServerOptions {
-            gfx_factory: Some(Box::new(TestGfxFactory {
-                caps_tx: mpsc::unbounded_channel().0,
-            })),
-            ..Default::default()
-        },
-        move |connector| {
-            connector.with_static_channel(
-                DrdynvcClient::new()
-                    .with_dynamic_channel(StartRecorder::new(
-                        ironrdp_egfx::CHANNEL_NAME,
-                        Arc::new(AtomicBool::new(false)),
-                    ))
-                    .with_dynamic_channel(StartRecorder::new(ironrdp::echo::CHANNEL_NAME, connector_echo)),
-            )
-        },
-        move |mut stage, activation_factory, mut framed, display_tx, _echo_handle| async move {
-            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
-            serve_until_dynamic_channels_settle(&mut stage, &mut framed, &mut image, &observed_echo).await;
-
-            display_tx
-                .send(DisplayUpdate::Resize(DesktopSize {
-                    width: 2048,
-                    height: 2048,
-                }))
-                .unwrap();
-            'deactivated: loop {
-                let (action, frame) = tokio::time::timeout(Duration::from_secs(10), framed.read_pdu())
-                    .await
-                    .expect("the server deactivated the session")
-                    .expect("read PDU");
-                for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
-                    match output {
-                        ActiveStageOutput::ResponseFrame(frame) => {
-                            framed.write_all(&frame).await.expect("write response frame");
-                        }
-                        ActiveStageOutput::DeactivateAll => break 'deactivated,
-                        _ => {}
-                    }
-                }
-            }
-            run_reactivation(&mut stage, &activation_factory, &mut framed).await;
-
-            let mut image = DecodedImage::new(PixelFormat::RgbA32, 2048, 2048);
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while observed_egfx_servers.lock().unwrap().len() < 2 && Instant::now() < deadline {
-                serve_one_pdu(&mut stage, &mut framed, &mut image).await;
-            }
-
-            (stage, framed)
-        },
-    )
-    .await;
-
-    let egfx_servers = egfx_servers.lock().unwrap().clone();
+    let egfx_servers = &probe.egfx_servers;
     assert!(
         2 <= egfx_servers.len() && egfx_servers.first() == Some(&true) && egfx_servers.last() == Some(&true),
         "the display must get the EGFX server at activation and again after the reactivation, got {egfx_servers:?}"
@@ -1869,7 +1794,8 @@ impl server::DynamicChannelFactory for DynamicEgfxChannel {
 struct EgfxProbe {
     echo_started: bool,
     egfx_started: bool,
-    display_got_egfx_server: bool,
+    /// Whether the display was handed an EGFX server, each time the server asked it for updates.
+    egfx_servers: Vec<bool>,
 }
 
 impl EgfxProbe {
@@ -1884,12 +1810,17 @@ impl EgfxProbe {
 }
 
 /// Connects a real client that registers an EGFX channel and an echo channel, with `support_dyn_vc_gfx_protocol` as
-/// given, to a server that registers the graphics pipeline as `registration` says, and reports what the server
-/// created.
+/// given, to a server that registers the graphics pipeline as `registration` says, and reports what the server created.
 ///
 /// The server asks the display for updates before any dynamic channel exists, so both answers are final once the
 /// dynamic channels have settled.
-async fn run_egfx_probe(support_dyn_vc_gfx_protocol: bool, registration: EgfxRegistration) -> EgfxProbe {
+/// With `reactivate`, the probe then resizes the display, which makes the server deactivate and reactivate the session,
+/// and serves the client for at most 5 seconds until the server asks the display for updates again.
+async fn run_egfx_probe(
+    support_dyn_vc_gfx_protocol: bool,
+    registration: EgfxRegistration,
+    reactivate: bool,
+) -> EgfxProbe {
     let echo_started = Arc::new(AtomicBool::new(false));
     let egfx_started = Arc::new(AtomicBool::new(false));
     let egfx_servers = Arc::new(StdMutex::new(Vec::new()));
@@ -1898,6 +1829,7 @@ async fn run_egfx_probe(support_dyn_vc_gfx_protocol: bool, registration: EgfxReg
     let connector_egfx = Arc::clone(&egfx_started);
     let observed_echo = Arc::clone(&echo_started);
     let display_egfx_servers = Arc::clone(&egfx_servers);
+    let observed_egfx_servers = Arc::clone(&egfx_servers);
 
     client_server_with_display(
         move |rx| EgfxServerRecorder {
@@ -1932,11 +1864,41 @@ async fn run_egfx_probe(support_dyn_vc_gfx_protocol: bool, registration: EgfxReg
                     .with_dynamic_channel(StartRecorder::new(ironrdp::echo::CHANNEL_NAME, connector_echo)),
             )
         },
-        move |mut stage, _activation_factory, mut framed, display_tx, _echo_handle| async move {
-            let _display_tx = display_tx;
+        move |mut stage, activation_factory, mut framed, display_tx, _echo_handle| async move {
             let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
             serve_until_dynamic_channels_settle(&mut stage, &mut framed, &mut image, &observed_echo).await;
+
+            if reactivate {
+                display_tx
+                    .send(DisplayUpdate::Resize(DesktopSize {
+                        width: 2048,
+                        height: 2048,
+                    }))
+                    .unwrap();
+                'deactivated: loop {
+                    let (action, frame) = tokio::time::timeout(Duration::from_secs(10), framed.read_pdu())
+                        .await
+                        .expect("the server deactivated the session")
+                        .expect("read PDU");
+                    for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
+                        match output {
+                            ActiveStageOutput::ResponseFrame(frame) => {
+                                framed.write_all(&frame).await.expect("write response frame");
+                            }
+                            ActiveStageOutput::DeactivateAll => break 'deactivated,
+                            _ => {}
+                        }
+                    }
+                }
+                run_reactivation(&mut stage, &activation_factory, &mut framed).await;
+
+                let mut image = DecodedImage::new(PixelFormat::RgbA32, 2048, 2048);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while observed_egfx_servers.lock().unwrap().len() < 2 && Instant::now() < deadline {
+                    serve_one_pdu(&mut stage, &mut framed, &mut image).await;
+                }
+            }
 
             (stage, framed)
         },
@@ -1946,7 +1908,7 @@ async fn run_egfx_probe(support_dyn_vc_gfx_protocol: bool, registration: EgfxReg
     EgfxProbe {
         echo_started: echo_started.load(Ordering::Relaxed),
         egfx_started: egfx_started.load(Ordering::Relaxed),
-        display_got_egfx_server: egfx_servers.lock().unwrap().contains(&true),
+        egfx_servers: egfx_servers.lock().unwrap().clone(),
     }
 }
 
