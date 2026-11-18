@@ -171,8 +171,8 @@ impl RdpeaiCaptureBackend {
         };
         let encoder = match encoder_for(&capture_format, encode_format) {
             Ok(encoder) => encoder,
-            Err(reason) => {
-                warn!(?encode_format, reason, "Rejecting FormatChange");
+            Err(error) => {
+                warn!(?encode_format, error, "Rejecting FormatChange");
                 return Ok(false);
             }
         };
@@ -190,7 +190,7 @@ impl RdpeaiCaptureBackend {
             };
             state.buffer.clear();
             state.encoder = encoder;
-            // The sink uses this lock too, so no new-format packet can overtake confirmation.
+            // INVARIANT: No new-format packet is enqueued before confirmation completes.
             confirm()?;
         }
         if restart {

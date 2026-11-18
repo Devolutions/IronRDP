@@ -1,5 +1,6 @@
 #[cfg(not(target_os = "android"))]
 mod native {
+    use super::{AudioChannelKind, audio_channel_kind};
     use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
     use core::time::Duration;
     use std::borrow::Cow;
@@ -17,7 +18,8 @@ mod native {
     use ironrdp_rdpsnd_native::cpal::{PlaybackConfig, RdpsndBackend};
     use tracing::warn;
 
-    const MAX_CAPTURE_SAMPLE_RATE: u32 = 48_000;
+    // Keep this FFI ceiling independent; the capture queue is sized for this rate.
+    const MAX_FFI_CAPTURE_SAMPLE_RATE: u32 = 48_000;
     const MAX_CAPTURE_CHANNELS: u16 = 2;
     // A mono Open with one frame per packet can become stereo on FormatChange.
     pub(super) const CAPTURE_QUEUE_CAPACITY: usize = 12_000;
@@ -41,12 +43,14 @@ mod native {
         pub(super) attached: AtomicBool,
         pub(super) playback_enabled: AtomicBool,
         pub(super) capture_enabled: AtomicBool,
+        /// INVARIANT: This slot lets StopAudio close playback without owning the backend.
         pub(super) playback_backend: Mutex<Option<Weak<Mutex<RdpsndBackend>>>>,
         pub(super) next_generation: AtomicU32,
         pub(super) active_capture: AtomicU64,
         pub(super) failed_capture: AtomicU64,
         pub(super) queued_bytes: AtomicUsize,
         pub(super) capture_tx: mpsc::SyncSender<CaptureMessages>,
+        /// INVARIANT: Polling is the sole receiver; the mutex lets AudioShared cross callback threads.
         pub(super) capture_rx: Mutex<mpsc::Receiver<CaptureMessages>>,
     }
 
@@ -56,12 +60,11 @@ mod native {
         }
 
         pub(crate) fn reserves_dynamic_channel(&self, channel_name: &str) -> bool {
-            (self.playback
-                && matches!(
-                    channel_name,
-                    ironrdp::rdpsnd::client::DVC_CHANNEL_NAME | ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
-                ))
-                || (self.capture && channel_name == ironrdp_rdpeai::CHANNEL_NAME)
+            match audio_channel_kind(channel_name) {
+                Some(AudioChannelKind::Playback) => self.playback,
+                Some(AudioChannelKind::Capture) => self.capture,
+                None => false,
+            }
         }
 
         fn enqueue_capture(&self, token: u64, messages: Vec<SvcMessage>) -> PduResult<()> {
@@ -154,9 +157,16 @@ mod native {
             }
             if let Some(drdynvc) = connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
                 let playback_in_use = self.playback
-                    && (drdynvc.has_channel_name(ironrdp::rdpsnd::client::DVC_CHANNEL_NAME)
-                        || drdynvc.has_channel_name(ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME));
-                if playback_in_use || (self.capture && drdynvc.has_channel_name(ironrdp_rdpeai::CHANNEL_NAME)) {
+                    && AudioChannelKind::Playback
+                        .channel_names()
+                        .iter()
+                        .any(|name| drdynvc.has_channel_name(name));
+                let capture_in_use = self.capture
+                    && AudioChannelKind::Capture
+                        .channel_names()
+                        .iter()
+                        .any(|name| drdynvc.has_channel_name(name));
+                if playback_in_use || capture_in_use {
                     return Err("native audio dynamic channel is already registered");
                 }
             }
@@ -231,6 +241,7 @@ mod native {
 
     #[derive(Clone)]
     struct SharedPlayback {
+        /// INVARIANT: Session processing, device callbacks, and shutdown serialize access to the backend.
         backend: Arc<Mutex<RdpsndBackend>>,
         formats: Arc<[AudioFormat]>,
         shared: Arc<AudioShared>,
@@ -349,7 +360,7 @@ mod native {
     }
 
     fn capture_format_fits_queue(format: &AudioFormat) -> bool {
-        format.n_channels <= MAX_CAPTURE_CHANNELS && format.n_samples_per_sec <= MAX_CAPTURE_SAMPLE_RATE
+        format.n_channels <= MAX_CAPTURE_CHANNELS && format.n_samples_per_sec <= MAX_FFI_CAPTURE_SAMPLE_RATE
     }
 
     impl CaptureListener {
@@ -453,9 +464,20 @@ mod native {
             let failed = shared.failed_capture.load(Ordering::Acquire);
             let next = shared.try_recv_capture();
             let Ok(next) = next else {
-                if failed != 0
-                    && let Some(failure) = active_capture_failure(shared)
-                {
+                let failure = if failed != 0 {
+                    let failure = shared.failed_capture.load(Ordering::Acquire);
+                    if failure != 0 && shared.active_capture.load(Ordering::Acquire) == failure {
+                        Some(failure)
+                    } else {
+                        let _ = shared
+                            .failed_capture
+                            .compare_exchange(failure, 0, Ordering::AcqRel, Ordering::Acquire);
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(failure) = failure {
                     shared.capture_enabled.store(false, Ordering::Release);
                     flush_capture_output(&mut outputs, &mut pending);
                     outputs.extend(close_capture(stage, shared, failure)?);
@@ -468,23 +490,16 @@ mod native {
             if shared.active_capture.load(Ordering::Acquire) != next.token {
                 continue;
             }
-            match stage.encode_dvc_messages(next.messages) {
-                Ok(frame) => {
-                    if let Err(error) = append_capture_output(&mut outputs, &mut pending, &frame) {
-                        shared.capture_enabled.store(false, Ordering::Release);
-                        warn!(%error, "Invalid encoded audio frame; stopping capture");
-                        flush_capture_output(&mut outputs, &mut pending);
-                        outputs.extend(close_capture(stage, shared, next.token)?);
-                        return Ok(outputs);
-                    }
-                }
-                Err(error) => {
-                    shared.capture_enabled.store(false, Ordering::Release);
-                    warn!(error = %error.report(), "Failed to encode audio capture frame; stopping capture");
-                    flush_capture_output(&mut outputs, &mut pending);
-                    outputs.extend(close_capture(stage, shared, next.token)?);
-                    return Ok(outputs);
-                }
+            let result = stage
+                .encode_dvc_messages(next.messages)
+                .map_err(|error| error.report().to_string())
+                .and_then(|frame| append_capture_output(&mut outputs, &mut pending, &frame).map_err(str::to_owned));
+            if let Err(error) = result {
+                shared.capture_enabled.store(false, Ordering::Release);
+                warn!(error, "Failed to process audio capture frame; stopping capture");
+                flush_capture_output(&mut outputs, &mut pending);
+                outputs.extend(close_capture(stage, shared, next.token)?);
+                return Ok(outputs);
             }
         }
         flush_capture_output(&mut outputs, &mut pending);
@@ -518,17 +533,6 @@ mod native {
                 pending,
             )));
         }
-    }
-
-    fn active_capture_failure(shared: &AudioShared) -> Option<u64> {
-        let failure = shared.failed_capture.load(Ordering::Acquire);
-        if failure != 0 && shared.active_capture.load(Ordering::Acquire) == failure {
-            return Some(failure);
-        }
-        let _ = shared
-            .failed_capture
-            .compare_exchange(failure, 0, Ordering::AcqRel, Ordering::Acquire);
-        None
     }
 
     pub(crate) fn stop_audio(
@@ -674,6 +678,27 @@ mod native {
             ironrdp::connector::ClientConnector::new(config.connector.clone(), "127.0.0.1:0".parse().unwrap())
         }
 
+        fn stage_with_capture_channel(channel: CaptureChannel) -> ironrdp::session::ActiveStage {
+            let mut drdynvc = ironrdp::dvc::DrdynvcClient::new();
+            drdynvc
+                .attach_established_dynamic_channel(7, channel)
+                .expect("attach capture channel");
+            let mut channels = ironrdp::svc::StaticChannelSet::new();
+            channels.insert(drdynvc);
+            channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), 1004);
+            ironrdp::session::ActiveStageBuilder {
+                static_channels: channels,
+                user_channel_id: 1002,
+                io_channel_id: 1003,
+                message_channel_id: None,
+                share_id: 1,
+                compression_type: None,
+                enable_server_pointer: false,
+                pointer_software_rendering: false,
+            }
+            .build()
+        }
+
         // oracle: regression #2469
         // Windows servers need the device-redirection channel joined before starting playback.
         #[test]
@@ -813,24 +838,7 @@ mod native {
             let listener = CaptureListener(Arc::clone(&audio.0));
             let channel = listener.create_channel(7).expect("capture channel");
             let token = channel.token;
-            let mut drdynvc = ironrdp::dvc::DrdynvcClient::new();
-            drdynvc
-                .attach_established_dynamic_channel(7, channel)
-                .expect("attach capture channel");
-            let mut channels = ironrdp::svc::StaticChannelSet::new();
-            channels.insert(drdynvc);
-            channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), 1004);
-            let mut stage = ironrdp::session::ActiveStageBuilder {
-                static_channels: channels,
-                user_channel_id: 1002,
-                io_channel_id: 1003,
-                message_channel_id: None,
-                share_id: 1,
-                compression_type: None,
-                enable_server_pointer: false,
-                pointer_software_rendering: false,
-            }
-            .build();
+            let mut stage = stage_with_capture_channel(channel);
 
             let mut expected = Vec::new();
             for index in 0..poll_batch_count {
@@ -1106,24 +1114,7 @@ mod native {
                 token,
                 shared: Arc::clone(&audio.0),
             };
-            let mut drdynvc = ironrdp::dvc::DrdynvcClient::new();
-            drdynvc
-                .attach_established_dynamic_channel(7, channel)
-                .expect("attach capture channel");
-            let mut channels = ironrdp::svc::StaticChannelSet::new();
-            channels.insert(drdynvc);
-            channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), 1004);
-            let mut stage = ironrdp::session::ActiveStageBuilder {
-                static_channels: channels,
-                user_channel_id: 1002,
-                io_channel_id: 1003,
-                message_channel_id: None,
-                share_id: 1,
-                compression_type: None,
-                enable_server_pointer: false,
-                pointer_software_rendering: false,
-            }
-            .build();
+            let mut stage = stage_with_capture_channel(channel);
             let backend = Arc::new(Mutex::new(RdpsndBackend::with_config(PlaybackConfig::default())));
             *audio.0.playback_backend.lock().unwrap() = Some(Arc::downgrade(&backend));
             let playback_guard = backend.lock().unwrap();
@@ -1178,24 +1169,7 @@ mod native {
                 .expect("isolate failed restart");
             assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), token);
 
-            let mut drdynvc = ironrdp::dvc::DrdynvcClient::new();
-            drdynvc
-                .attach_established_dynamic_channel(7, channel)
-                .expect("attach capture channel");
-            let mut channels = ironrdp::svc::StaticChannelSet::new();
-            channels.insert(drdynvc);
-            channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), 1004);
-            let mut stage = ironrdp::session::ActiveStageBuilder {
-                static_channels: channels,
-                user_channel_id: 1002,
-                io_channel_id: 1003,
-                message_channel_id: None,
-                share_id: 1,
-                compression_type: None,
-                enable_server_pointer: false,
-                pointer_software_rendering: false,
-            }
-            .build();
+            let mut stage = stage_with_capture_channel(channel);
             let confirmation = ironrdp::dvc::encode_dvc_messages(7, vec![Box::new(change)], ChannelFlags::empty())
                 .expect("encode confirmation");
             let expected = stage.encode_dvc_messages(confirmation).expect("frame confirmation");
@@ -1272,24 +1246,7 @@ mod native {
             );
             assert!(closed.load(Ordering::Acquire));
 
-            let mut drdynvc = ironrdp::dvc::DrdynvcClient::new();
-            drdynvc
-                .attach_established_dynamic_channel(7, channel)
-                .expect("attach capture channel");
-            let mut channels = ironrdp::svc::StaticChannelSet::new();
-            channels.insert(drdynvc);
-            channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), 1004);
-            let mut stage = ironrdp::session::ActiveStageBuilder {
-                static_channels: channels,
-                user_channel_id: 1002,
-                io_channel_id: 1003,
-                message_channel_id: None,
-                share_id: 1,
-                compression_type: None,
-                enable_server_pointer: false,
-                pointer_software_rendering: false,
-            }
-            .build();
+            let mut stage = stage_with_capture_channel(channel);
 
             let outputs = poll_audio(&mut stage, &audio.0).unwrap_or_else(|_| panic!("poll audio"));
             assert!(matches!(
@@ -1307,24 +1264,7 @@ mod native {
             let listener = CaptureListener(Arc::clone(&audio.0));
             let channel = listener.create_channel(7).expect("capture channel");
             let token = channel.token;
-            let mut drdynvc = ironrdp::dvc::DrdynvcClient::new();
-            drdynvc
-                .attach_established_dynamic_channel(7, channel)
-                .expect("attach capture channel");
-            let mut channels = ironrdp::svc::StaticChannelSet::new();
-            channels.insert(drdynvc);
-            channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), 1004);
-            let mut stage = ironrdp::session::ActiveStageBuilder {
-                static_channels: channels,
-                user_channel_id: 1002,
-                io_channel_id: 1003,
-                message_channel_id: None,
-                share_id: 1,
-                compression_type: None,
-                enable_server_pointer: false,
-                pointer_software_rendering: false,
-            }
-            .build();
+            let mut stage = stage_with_capture_channel(channel);
             for _ in 0..CAPTURE_QUEUE_CAPACITY {
                 audio.0.enqueue_capture(token, Vec::new()).expect("queue has space");
             }
@@ -1384,6 +1324,30 @@ mod android {
 #[cfg(target_os = "android")]
 pub(crate) use android::{AudioShared, poll_audio, stop_audio};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioChannelKind {
+    Playback,
+    Capture,
+}
+
+impl AudioChannelKind {
+    pub(crate) fn channel_names(self) -> &'static [&'static str] {
+        match self {
+            Self::Playback => &[
+                ironrdp::rdpsnd::client::DVC_CHANNEL_NAME,
+                ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME,
+            ],
+            Self::Capture => &[ironrdp_rdpeai::CHANNEL_NAME],
+        }
+    }
+}
+
+pub(crate) fn audio_channel_kind(channel_name: &str) -> Option<AudioChannelKind> {
+    [AudioChannelKind::Playback, AudioChannelKind::Capture]
+        .into_iter()
+        .find(|kind| kind.channel_names().contains(&channel_name))
+}
+
 #[diplomat::bridge]
 pub mod ffi {
     use std::sync::Arc;
@@ -1391,6 +1355,8 @@ pub mod ffi {
     use super::AudioShared;
     use crate::error::ffi::IronRdpError;
 
+    /// This type owns a bounded capture queue when capture is enabled.
+    /// The .NET garbage collector cannot see that allocation.
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque]
     pub struct NativeAudio(pub(crate) Arc<AudioShared>);

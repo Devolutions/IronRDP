@@ -20,6 +20,7 @@ pub mod ffi {
     use super::result::ffi::Written;
     use super::state::ffi::ClientConnectorState;
     use crate::audio::ffi::NativeAudio;
+    use crate::audio::{AudioChannelKind, audio_channel_kind};
     use crate::clipboard::ffi::Cliprdr;
     use crate::dvc::dvc_pipe_proxy_message_queue::DvcPipeProxyMessageInner;
     use crate::dvc::ffi::DvcPipeProxyConfig;
@@ -88,13 +89,19 @@ pub mod ffi {
                 return Err("native audio must be attached before connecting".into());
             }
             audio.0.attach(connector)?;
-            if let Some(drdynvc) = connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
-                let playback = drdynvc.has_channel_name(ironrdp::rdpsnd::client::DVC_CHANNEL_NAME)
-                    || drdynvc.has_channel_name(ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME);
-                let capture = drdynvc.has_channel_name(ironrdp_rdpeai::CHANNEL_NAME);
-                connector.config.enable_audio_playback |= playback;
-                connector.config.enable_audio_capture |= capture;
-            }
+            let (playback, capture) = connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .map(|drdynvc| {
+                    let has_kind =
+                        |kind: AudioChannelKind| kind.channel_names().iter().any(|name| drdynvc.has_channel_name(name));
+                    (
+                        has_kind(AudioChannelKind::Playback),
+                        has_kind(AudioChannelKind::Capture),
+                    )
+                })
+                .unwrap_or_default();
+            connector.config.enable_audio_playback |= playback;
+            connector.config.enable_audio_capture |= capture;
             self.1 = Some(std::sync::Arc::clone(&audio.0));
             Ok(())
         }
@@ -152,11 +159,9 @@ pub mod ffi {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
 
-            let playback = matches!(
-                processor.channel_name(),
-                ironrdp::rdpsnd::client::DVC_CHANNEL_NAME | ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
-            );
-            let capture = processor.channel_name() == ironrdp_rdpeai::CHANNEL_NAME;
+            let kind = audio_channel_kind(processor.channel_name());
+            let playback = kind == Some(AudioChannelKind::Playback);
+            let capture = kind == Some(AudioChannelKind::Capture);
             let drdynvc = match connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
                 Some(processor) => processor,
                 None => {
