@@ -1330,10 +1330,12 @@ fn timezone_info_is_kept_and_survives_reactivation() {
 }
 
 /// The `AlternateShell` and `WorkingDir` of the client's Info Packet, MS-RDPBCGR [2.2.1.11.1.1], reach the
-/// `AcceptorResult` as sent, and survive a reactivation like the flags.
+/// `AcceptorResult` as sent, and survive a reactivation like the flags, since the client does not send its Client Info
+/// PDU again, MS-RDPBCGR [1.3.1.3].
 ///
 /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
-// oracle: spec MS-RDPBCGR §2.2.1.11.1.1
+/// [1.3.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1 and §1.3.1.3
 #[test]
 fn alternate_shell_and_work_dir_are_kept_as_sent() {
     let mut client_info = CLIENT_INFO_UNICODE.clone();
@@ -1356,6 +1358,8 @@ fn alternate_shell_and_work_dir_are_kept_as_sent() {
     let mut acceptor = Acceptor::new_deactivation_reactivation(acceptor, result.static_channels, DESKTOP_SIZE)
         .expect("rebuild the acceptor for reactivation");
     let result = result_after_activation(&mut acceptor, user_channel_id, io_channel_id);
+
+    assert!(result.reactivation);
     assert_eq!(result.alternate_shell, "curtain");
     assert_eq!(result.work_dir, "C:\\work");
 }

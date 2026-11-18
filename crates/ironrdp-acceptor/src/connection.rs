@@ -468,13 +468,15 @@ pub struct AcceptorResult {
     /// The program the client asked the session to run instead of the shell, from the `alternateShell` field of its
     /// Info Packet, MS-RDPBCGR [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET).
     ///
-    /// Empty when the client asked for none. A server that runs no such programs may read it as a client preference.
+    /// Empty when the client asked for none.
+    /// A server that runs no such programs may read it as a client preference.
     /// After a reactivation it is still the value of the connection's Client Info PDU.
     ///
     /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
     pub alternate_shell: String,
     /// The working directory for [`Self::alternate_shell`], from the `workingDir` field of the client's Info Packet,
-    /// MS-RDPBCGR [2.2.1.11.1.1]. Empty when the client sent none.
+    /// MS-RDPBCGR [2.2.1.11.1.1].
+    /// Empty when the client sent none.
     ///
     /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
     pub work_dir: String,
@@ -1545,9 +1547,8 @@ impl Sequence for Acceptor {
                 let client_info: rdp::ClientInfoPdu =
                     decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
                 self.client_info_flags = Some(client_info.client_info.flags);
-                self.alternate_shell
-                    .clone_from(&client_info.client_info.alternate_shell);
-                self.work_dir.clone_from(&client_info.client_info.work_dir);
+                self.alternate_shell = client_info.client_info.alternate_shell;
+                self.work_dir = client_info.client_info.work_dir;
                 self.performance_flags = client_info
                     .client_info
                     .extra_info
