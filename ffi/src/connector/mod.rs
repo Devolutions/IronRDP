@@ -20,6 +20,7 @@ pub mod ffi {
     use super::result::ffi::Written;
     use super::state::ffi::ClientConnectorState;
     use crate::clipboard::ffi::Cliprdr;
+    use crate::dvc::direct_channel::{DirectDvcChannelProcessor, ffi::DirectDvcConfig};
     use crate::dvc::dvc_pipe_proxy_message_queue::DvcPipeProxyMessageInner;
     use crate::dvc::ffi::DvcPipeProxyConfig;
     use crate::error::ValueConsumedError;
@@ -153,6 +154,18 @@ pub mod ffi {
             &mut self,
             config: &DvcPipeProxyConfig,
         ) -> Result<(), Box<IronRdpError>> {
+            if self.0.as_mut().is_some_and(|connector| {
+                connector
+                    .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                    .is_some_and(|drdynvc| {
+                        config.descriptors.iter().any(|descriptor| {
+                            drdynvc.has_channel_name_of_type::<DirectDvcChannelProcessor>(&descriptor.channel_name)
+                        })
+                    })
+            }) {
+                return Err("dynamic channel name is already registered as a direct DVC".into());
+            }
+
             for descriptor in &config.descriptors {
                 let sink = config.message_sink.0.clone();
                 let proxy = DvcNamedPipeProxy::new(
@@ -164,6 +177,36 @@ pub mod ffi {
                     },
                 );
                 self.with_dvc(proxy)?;
+            }
+            Ok(())
+        }
+
+        pub fn with_dynamic_channel_direct(&mut self, config: &DirectDvcConfig) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+
+            let mut channel_names = std::collections::BTreeSet::new();
+            for channel_name in &config.channel_names {
+                if !channel_names.insert(channel_name) {
+                    return Err("direct DVC channel name is registered more than once".into());
+                }
+            }
+
+            if connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .is_some_and(|drdynvc| {
+                    config
+                        .channel_names
+                        .iter()
+                        .any(|channel_name| drdynvc.has_channel_name(channel_name))
+                })
+            {
+                return Err("dynamic channel name is already registered".into());
+            }
+
+            for channel_name in &config.channel_names {
+                self.with_dvc(DirectDvcChannelProcessor::new(channel_name, &config.event_sink))?;
             }
             Ok(())
         }

@@ -18,6 +18,25 @@ At this point, you may build and run the examples for .NET:
 - `dotnet run --project Devolutions.IronRdp.ConnectExample`
 - `dotnet run --project Devolutions.IronRdp.AvaloniaExample`
 
+## Direct dynamic virtual channels
+
+Register channel names with `DirectDvcConfig` and set `ConfigBuilder.DirectDvc`, or attach it with `ClientConnector.WithDynamicChannelDirect`.
+Create its `DirectDvcEventQueue` with a positive event capacity and poll `NextEvent()` for `Opened`, `Data` and `Closed` events.
+The capacity limits event count, not aggregate payload bytes.
+`NextEvent()` returns null when the queue is empty.
+Each event carries the channel name, server channel ID and per-opening endpoint ID; call `TakeData()` to transfer a data event's owned bytes into `VecU8`.
+Dispose the queue, each returned event and every `VecU8` from `TakeData()` when finished to release native memory promptly.
+Pass both IDs to `ActiveStage.SendDirectDvcData` or `CloseDirectDvcChannel` so stale endpoint writes are rejected after a channel closes or reopens.
+After overflow, `NextEvent()` returns queued events before reporting the error; close the session because the event stream is desynchronized.
+Both methods return an encoded frame for the main RDP connection and fail if the channel was moved to a multitransport tunnel.
+
+```csharp
+var events = DirectDvcEventQueue.New(256);
+var directDvc = DirectDvcConfig.New(events.Sink);
+directDvc.AddChannel("my-channel");
+builder.DirectDvc = directDvc;
+```
+
 ## Dynamic resize
 
 `ClientConnector.WithDynamicChannelDisplayControl()` requests the Display Control channel ([MS-RDPEDISP]).

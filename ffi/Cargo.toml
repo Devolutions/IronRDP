@@ -8,7 +8,7 @@ publish = false
 name = "ironrdp"
 crate-type = ["staticlib", "cdylib"]
 doc = false
-test = false
+test = true
 doctest = false
 
 [dependencies]

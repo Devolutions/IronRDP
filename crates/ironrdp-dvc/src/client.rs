@@ -214,6 +214,14 @@ impl DrdynvcClient {
                 .any(|channel| channel.channel_name() == name)
     }
 
+    /// Checks whether a registered listener has the given name and processor type.
+    pub fn has_channel_name_of_type<T: DvcClientProcessor + 'static>(&self, name: &str) -> bool {
+        self.dynamic_channels
+            .listeners
+            .get(name)
+            .is_some_and(|entry| entry.type_id == Some(TypeId::of::<T>()))
+    }
+
     /// Registers a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
@@ -966,6 +974,36 @@ mod tests {
     }
 
     impl DvcClientProcessor for TestDvc {}
+
+    struct OtherDvc;
+
+    impl_as_any!(OtherDvc);
+
+    impl DvcProcessor for OtherDvc {
+        fn channel_name(&self) -> &str {
+            "test"
+        }
+
+        fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+
+        fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl DvcClientProcessor for OtherDvc {}
+
+    // oracle: mutant distinguish registered channel types for backward-compatible name checks
+    #[test]
+    fn channel_name_lookup_checks_processor_type() {
+        let client = DrdynvcClient::new().with_dynamic_channel(TestDvc);
+
+        assert!(client.has_channel_name_of_type::<TestDvc>("test"));
+        assert!(!client.has_channel_name_of_type::<OtherDvc>("test"));
+        assert!(!client.has_channel_name_of_type::<TestDvc>("missing"));
+    }
 
     #[test]
     fn factory_channel_is_recreated_and_found_by_type() {

@@ -466,6 +466,62 @@ public partial class ActiveStage: IDisposable
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 SendDirectDvcData(uint channelId, ulong endpointId, byte[] data)
+    {
+        unsafe
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                fixed (byte* dataPtr = data)
+                {
+                    var result = Raw.ActiveStage.SendDirectDvcData(selfLease!.Ptr, channelId, endpointId, new DiplomatSliceU8 { Ptr = dataPtr, Len = (nuint)data.Length });
+                    if (!result.IsOk)
+                    {
+                        throw new IronRdpException(new IronRdpError(result.Err));
+                    }
+                    return new VecU8(result.Ok);
+                }
+            }
+            finally
+            {
+                selfLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 CloseDirectDvcChannel(uint channelId, ulong endpointId)
+    {
+        unsafe
+        {
+            BorrowLease<Raw.ActiveStage>? selfLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                var result = Raw.ActiveStage.CloseDirectDvcChannel(selfLease!.Ptr, channelId, endpointId);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return new VecU8(result.Ok);
+            }
+            finally
+            {
+                selfLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
     /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
     /// </returns>
     public ActiveStageOutputIterator GracefulShutdown()
