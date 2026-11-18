@@ -8861,23 +8861,38 @@ mod tests {
         }
     }
 
-    // oracle: mutant BoundInputSlot not forwarding advanced_input_opened
-    #[test]
-    fn the_bound_input_slot_forwards_advanced_input_opened() {
+    type BoundInput = Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>;
+
+    /// A `BoundInputSlot` whose default handler records `advanced_input_opened`, with its bound slot and the flag.
+    fn recording_input_slot() -> (BoundInputSlot, BoundInput, Arc<AtomicBool>) {
         let default_opened = Arc::new(AtomicBool::new(false));
-        let bound_opened = Arc::new(AtomicBool::new(false));
         let bound = Arc::new(StdMutex::new(None));
-        let mut slot = BoundInputSlot::new(
+        let slot = BoundInputSlot::new(
             Box::new(AdvancedInputRecorder(Arc::clone(&default_opened))),
             Arc::clone(&bound),
         );
+        (slot, bound, default_opened)
+    }
+
+    // oracle: mutant BoundInputSlot not forwarding advanced_input_opened to its default handler
+    #[test]
+    fn an_unbound_input_slot_forwards_advanced_input_opened_to_the_default_handler() {
+        let (mut slot, _, default_opened) = recording_input_slot();
 
         slot.advanced_input_opened();
+
         assert!(default_opened.load(Ordering::Acquire));
+    }
 
-        default_opened.store(false, Ordering::Release);
+    // oracle: mutant BoundInputSlot forwarding advanced_input_opened to the default handler while one is bound
+    #[test]
+    fn a_bound_input_slot_forwards_advanced_input_opened_to_the_bound_handler() {
+        let (mut slot, bound, default_opened) = recording_input_slot();
+        let bound_opened = Arc::new(AtomicBool::new(false));
         *bound.lock().expect("bound input lock") = Some(Box::new(AdvancedInputRecorder(Arc::clone(&bound_opened))));
+
         slot.advanced_input_opened();
+
         assert!(bound_opened.load(Ordering::Acquire));
         assert!(!default_opened.load(Ordering::Acquire));
     }
@@ -8936,6 +8951,66 @@ mod tests {
     impl RdpServerInputHandler for NoopInput {
         fn keyboard(&mut self, _event: KeyboardEvent) {}
         fn mouse(&mut self, _event: MouseEvent) {}
+    }
+
+    // oracle: mutant RdpServer dropping ConnectionOutput::AdvancedInputOpened instead of telling the input handler
+    #[tokio::test]
+    async fn opening_ainput_reaches_the_input_handler() {
+        use ironrdp_dvc::pdu::{
+            CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
+        };
+
+        const IO_CHANNEL_ID: u16 = 1003;
+        const DRDYNVC_CHANNEL_ID: u16 = 1004;
+        const USER_CHANNEL_ID: u16 = 1007;
+
+        let opened = Arc::new(AtomicBool::new(false));
+        let mut server = RdpServer::builder()
+            .with_addr(([127, 0, 0, 1], 0))
+            .with_no_security()
+            .with_input_handler(AdvancedInputRecorder(Arc::clone(&opened)))
+            .with_display_handler(PendingDisplay)
+            .build();
+        let mut conn = ConnectionState::default();
+        conn.static_channels
+            .insert(dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler::new()));
+        conn.static_channels
+            .attach_channel_id(core::any::TypeId::of::<dvc::DrdynvcServer>(), DRDYNVC_CHANNEL_ID);
+        conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap().start().unwrap();
+        let mut writer = cliprdr_error_tests::CapturingWriter::default();
+        let mut send = async |server: &mut RdpServer, conn: &mut ConnectionState, pdu: DrdynvcClientPdu| {
+            let frame = ironrdp_svc::client_encode_svc_messages(
+                vec![SvcMessage::from(pdu)],
+                DRDYNVC_CHANNEL_ID,
+                USER_CHANNEL_ID,
+            )
+            .unwrap();
+            server
+                .handle_x224(conn, &mut writer, IO_CHANNEL_ID, USER_CHANNEL_ID, None, &frame, None)
+                .await
+                .unwrap()
+        };
+
+        send(
+            &mut server,
+            &mut conn,
+            DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
+        )
+        .await;
+        let channel_id = conn
+            .get_svc_processor::<dvc::DrdynvcServer>()
+            .unwrap()
+            .get_channel_id_by_type::<AInputHandler>()
+            .unwrap();
+        assert!(!opened.load(Ordering::Acquire));
+        send(
+            &mut server,
+            &mut conn,
+            DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, CreationStatus::OK)),
+        )
+        .await;
+
+        assert!(opened.load(Ordering::Acquire));
     }
 
     // oracle: spec MS-RDPEDISP §3.1.5.2 has the server apply each layout; take_monitor_layouts() keeps arrival order.
@@ -9133,17 +9208,11 @@ mod tests {
             &mut conn,
             DrdynvcClientPdu::Create(CreateResponsePdu::new(ainput_id, CreationStatus::OK)),
         );
-        // The server's Version PDU, then the notice.
-        assert!(
-            matches!(
-                outputs.as_slice(),
-                [
-                    ConnectionOutput::ResponseFrame(_),
-                    ConnectionOutput::AdvancedInputOpened
-                ]
-            ),
-            "{outputs:?}"
-        );
+        let notices = outputs
+            .iter()
+            .filter(|output| matches!(output, ConnectionOutput::AdvancedInputOpened))
+            .count();
+        assert_eq!(notices, 1, "{outputs:?}");
 
         let outputs = send_drdynvc(&mut conn, ainput_mouse_move(ainput_id, 1, 2));
         assert!(

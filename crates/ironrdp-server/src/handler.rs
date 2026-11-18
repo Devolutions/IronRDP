@@ -112,10 +112,10 @@ pub trait RdpServerInputHandler: Send {
     fn keyboard(&mut self, event: KeyboardEvent);
     fn mouse(&mut self, event: MouseEvent);
 
-    /// The client opened the advanced input channel (`FreeRDP::Advanced::Input`,
-    /// [`ironrdp_ainput`]), which FreeRDP-based clients have and the Microsoft
-    /// clients do not. Its mouse events arrive through [`Self::mouse`], after
-    /// this call.
+    /// The client opened the advanced input channel (`FreeRDP::Advanced::Input`, [`ironrdp_ainput`]), which
+    /// FreeRDP-based clients have and the Microsoft clients do not.
+    /// Its mouse events arrive through [`Self::mouse`], after this call.
+    /// A client that closes the channel and opens it again causes another call.
     fn advanced_input_opened(&mut self) {}
 }
 
