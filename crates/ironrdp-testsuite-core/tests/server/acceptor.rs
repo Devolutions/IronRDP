@@ -2282,6 +2282,45 @@ fn client_info_credentials_must_match_an_accepted_account(
     assert_eq!(result.is_ok(), accepted, "{result:?}");
 }
 
+/// Two entries for one user name, as `set_credential_list` documents them: CredSSP checks only the first entry's
+/// password, while a Client Info logon matches either.
+fn one_user_twice() -> Vec<Credentials> {
+    ["alpha", "beta"]
+        .into_iter()
+        .map(|password| Credentials {
+            username: "user".to_owned(),
+            password: password.to_owned(),
+            domain: None,
+        })
+        .collect()
+}
+
+// oracle: mutant CredSSP picking the last entry for a user name, or trying every entry with it
+#[rstest::rstest]
+#[case::first_entry("alpha", true)]
+#[case::second_entry("beta", false)]
+#[tokio::test]
+async fn credssp_checks_the_first_entry_of_a_repeated_user_name(#[case] password: &str, #[case] accepted: bool) {
+    let (result, _) = credssp_logon(SecurityProtocol::HYBRID_EX, one_user_twice(), "user", password).await;
+    assert_eq!(result.is_ok(), accepted, "{result:?}");
+}
+
+// oracle: mutant ClientInfo matching only the first entry for a user name
+#[rstest::rstest]
+#[case::first_entry("alpha")]
+#[case::second_entry("beta")]
+fn client_info_matches_any_entry_of_a_repeated_user_name(#[case] password: &str) {
+    client_info_logon(
+        one_user_twice(),
+        Credentials {
+            username: "user".to_owned(),
+            password: password.to_owned(),
+            domain: None,
+        },
+    )
+    .unwrap();
+}
+
 /// An empty credential list refuses every Client Info logon: a list that has emptied, say after an account store
 /// reloads with no rows, must not open the server to anyone.
 // oracle: mutant an empty list treated like no credentials at all, leaving ClientInfo logons unchecked
@@ -2546,7 +2585,20 @@ async fn credssp_authenticates_ntlm_wrapped_in_spnego() {
     assert_eq!(received.credentials.password, "secret");
 }
 
-/// SPNEGO-wrapped NTLM, as mstsc sends it, is checked against every accepted account, not only the first.
+/// Runs an SPNEGO-wrapped NTLM logon, as mstsc sends it, as `username` / `password` against an acceptor that accepts
+/// `accounts`.
+async fn spnego_logon(
+    accounts: Vec<Credentials>,
+    username: &str,
+    password: &str,
+) -> (ConnectorResult<()>, SetupHandler) {
+    let mut acceptor = negotiated_acceptor_expecting(SecurityProtocol::HYBRID_EX, None);
+    acceptor.set_credential_list(accounts);
+    let (result, handler, _) = accept_spnego_credssp_with(acceptor, username, password).await;
+    (result, handler)
+}
+
+/// SPNEGO-wrapped NTLM is checked against every accepted account, not only the first.
 // oracle: mutant SPNEGO authenticating only against the first entry of the list
 #[rstest::rstest]
 #[case::first_user("alice", "secret", true)]
@@ -2558,18 +2610,30 @@ async fn spnego_credssp_accepts_any_of_several_credentials(
     #[case] password: &str,
     #[case] accepted: bool,
 ) {
-    let mut acceptor = negotiated_acceptor_expecting(SecurityProtocol::HYBRID_EX, None);
-    acceptor.set_credential_list(two_accounts());
-
-    let (result, handler, _) = accept_spnego_credssp_with(acceptor, username, password).await;
-
+    let (result, _) = spnego_logon(two_accounts(), username, password).await;
     assert_eq!(result.is_ok(), accepted, "{result:?}");
-    if accepted {
-        assert_eq!(handler.received.len(), 1);
-        assert_eq!(handler.received[0].credentials.username, username);
-    } else {
-        assert!(handler.received.is_empty());
-    }
+}
+
+/// The credentials SPNEGO delegates are those of the account the client logged on as, not the first one listed.
+// oracle: mutant SPNEGO delegating the first entry instead of the one the client logged on as
+#[tokio::test]
+async fn spnego_credssp_hands_the_matching_account_to_the_handler() {
+    let (result, handler) = spnego_logon(two_accounts(), "bob", "hunter2").await;
+
+    result.unwrap();
+    assert_eq!(handler.received.len(), 1);
+    assert_eq!(handler.received[0].credentials.username, "bob");
+    assert_eq!(handler.received[0].credentials.password, "hunter2");
+}
+
+/// An SPNEGO logon refused against several accounts hands nothing to the setup handler.
+// oracle: mutant a refused SPNEGO logon still reaching the setup handler
+#[tokio::test]
+async fn refused_spnego_credssp_logon_hands_nothing_to_the_handler() {
+    let (result, handler) = spnego_logon(two_accounts(), "bob", "secret").await;
+
+    assert!(result.is_err());
+    assert!(handler.received.is_empty());
 }
 
 #[tokio::test]
