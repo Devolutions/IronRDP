@@ -1663,10 +1663,13 @@ pub enum ServerEvent {
     ///
     /// The PDU is only sent to a client that set
     /// `RNS_UD_CS_SUPPORT_ERRINFO_PDU` in its Client Core Data (MS-RDPBCGR
-    /// 3.3.5.7.1 forbids it otherwise); one that did not is dropped without
-    /// the reason, and the anti-storm cooldown on [`RdpServer::run`] is then
-    /// the only thing standing between it and the ping-pong above. (mstsc and
-    /// FreeRDP both set the flag.)
+    /// 3.3.5.7.1 forbids it otherwise).
+    /// Either way the connection ends with a provider-initiated MCS Disconnect
+    /// Provider Ultimatum, so a client without the reason still learns that the
+    /// server ended the session; FreeRDP 3, which leaves the flag unset by
+    /// default, then stays away too.
+    /// The anti-storm cooldown on [`RdpServer::run`] covers a client that
+    /// reconnects anyway.
     ///
     /// A more general version of the same PDU/mechanism exists as
     /// [`Self::Disconnect`] (upstream, `ErrorInfoDisconnectHandle`) for an
@@ -5146,7 +5149,7 @@ impl RdpServer {
                     // Best-effort: if the evicted peer's socket is already
                     // half-dead the write fails, which is fine — it is leaving
                     // either way, and the caller falls back to cancelling it.
-                    send_error_info(
+                    send_reason_and_ultimatum(
                         conn,
                         writer,
                         io_channel_id,
@@ -5160,21 +5163,8 @@ impl RdpServer {
                 }
                 ServerEvent::Disconnect(error) => {
                     debug!(?error, "Got disconnect event");
-                    if conn.client_supports_errinfo {
-                        let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error));
-                        // pduSource=0, not user_channel_id -- same MS-RDPBCGR
-                        // 2.2.5.1.1 requirement as the EvictedByOtherConnection
-                        // arm above.
-                        let data = encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id)?;
-                        writer
-                            .write_all(&data)
-                            .await
-                            .map_err(|e| ServerError::io("send server set error info", e))?;
-                    } else {
-                        // Same MS-RDPBCGR 3.3.5.7.1 rule as the eviction arm.
-                        debug!("client did not opt into Set Error Info PDUs; disconnecting without the reason");
-                    }
-                    send_disconnect_ultimatum(writer).await;
+                    send_reason_and_ultimatum(conn, writer, io_channel_id, user_channel_id, error, "disconnect reason")
+                        .await;
                     *events = pending.collect();
                     return Ok(RunState::Disconnect);
                 }
@@ -5995,7 +5985,7 @@ impl RdpServer {
             Ok(display_updates) => display_updates,
             Err(error) => {
                 if let ServerErrorKind::ErrorInfo(error_info) = *error.kind() {
-                    send_error_info(
+                    send_reason_and_ultimatum(
                         conn,
                         &mut writer,
                         io_channel_id,
@@ -6004,7 +5994,6 @@ impl RdpServer {
                         "display error reason",
                     )
                     .await;
-                    send_disconnect_ultimatum(writer).await;
                 }
                 return Err(error);
             }
@@ -7127,11 +7116,30 @@ async fn send_error_info(
     }
 }
 
-/// Ends a server-initiated disconnection with an MCS Disconnect Provider Ultimatum, reason rn-provider-initiated
-/// (MS-RDPBCGR 1.3.1.4.3 and 3.1.5.1.1), best-effort.
+/// Ends a server-initiated disconnection as [MS-RDPBCGR 1.3.1.4.3] describes, best-effort: `error_info` in a Set
+/// Error Info PDU for a client that opted into it (see [`send_error_info`]), then the MCS Disconnect Provider Ultimatum.
+/// `reason` names the reason in the logs.
 ///
-/// It tells a client that gets no Set Error Info PDU that the server ended the session on purpose. FreeRDP takes a
-/// connection that closes without it for a network failure and reconnects.
+/// [MS-RDPBCGR 1.3.1.4.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/43ad66ef-67ac-4034-ad70-8fda54eb5115
+async fn send_reason_and_ultimatum(
+    conn: &ConnectionState,
+    writer: &mut impl FramedWrite,
+    io_channel_id: u16,
+    user_channel_id: u16,
+    error_info: ErrorInfo,
+    reason: &str,
+) {
+    send_error_info(conn, writer, io_channel_id, user_channel_id, error_info, reason).await;
+    send_disconnect_ultimatum(writer).await;
+}
+
+/// Sends an MCS Disconnect Provider Ultimatum with reason rn-provider-initiated, as [MS-RDPBCGR 3.1.5.1.1] Sending of
+/// MCS Disconnect Provider Ultimatum PDU requires for an administrator-initiated disconnection, best-effort.
+///
+/// It tells a client that gets no Set Error Info PDU that the server ended the session on purpose.
+/// FreeRDP takes a connection that closes without it for a network failure and reconnects.
+///
+/// [MS-RDPBCGR 3.1.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/3efcb3f7-8fa5-488b-8388-bf4d32004b8c
 async fn send_disconnect_ultimatum(writer: &mut impl FramedWrite) {
     let ultimatum = mcs::DisconnectProviderUltimatum::from_reason(mcs::DisconnectReason::ProviderInitiated);
     match encode_vec(&X224(mcs::McsMessage::DisconnectProviderUltimatum(ultimatum))) {
