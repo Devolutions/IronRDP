@@ -221,9 +221,13 @@ impl Replay {
 
     /// Pushes a single PDU into the internal buffer.
     /// JavaScript calls this method to feed PDU data before calling `renderTill()`.
+    ///
+    /// Returns a JavaScript error and does not enqueue the PDU when the timestamp is not finite.
     #[wasm_bindgen(js_name = pushPdu)]
-    pub fn push_pdu(&mut self, timestamp_ms: f64, source: crate::PduSource, data: &[u8]) {
-        self.pdu_buffer.push_pdu(timestamp_ms, source, data);
+    pub fn push_pdu(&mut self, timestamp_ms: f64, source: crate::PduSource, data: &[u8]) -> Result<(), JsValue> {
+        self.pdu_buffer
+            .push_pdu(timestamp_ms, source, data)
+            .map_err(|error| JsValue::from_str(&error.to_string()))
     }
 
     /// Resets playback state to the beginning and rebuilds the processor from the stored configuration.

@@ -73,6 +73,8 @@ pub enum ReplayErrorKind {
     Decode(ironrdp_core::DecodeError),
     /// A session processing error.
     Session(Box<ironrdp_session::SessionError>),
+    /// A PDU timestamp is not finite.
+    InvalidTimestamp,
 }
 
 impl core::fmt::Display for ReplayErrorKind {
@@ -80,6 +82,7 @@ impl core::fmt::Display for ReplayErrorKind {
         match self {
             Self::Decode(_) => write!(f, "decode error"),
             Self::Session(_) => write!(f, "session error"),
+            Self::InvalidTimestamp => write!(f, "invalid PDU timestamp"),
         }
     }
 }
@@ -89,6 +92,7 @@ impl core::error::Error for ReplayErrorKind {
         match self {
             Self::Decode(e) => Some(e),
             Self::Session(e) => Some(e.as_ref()),
+            Self::InvalidTimestamp => None,
         }
     }
 }
@@ -411,9 +415,8 @@ impl ReplayProcessor {
 
         match x224.0 {
             McsMessage::SendDataIndication(sdi) => {
-                let Ok(header) = decode::<ShareControlHeader>(&sdi.user_data) else {
-                    return Ok(vec![]);
-                };
+                let header = decode::<ShareControlHeader>(&sdi.user_data)
+                    .map_err(|error| ReplayError::new("replay", ReplayErrorKind::Decode(error)))?;
 
                 match &header.share_control_pdu {
                     ShareControlPdu::ServerDemandActive(demand_active) => {

@@ -98,6 +98,7 @@ player.addEventListener('ready', (e: CustomEvent) => {
 Fired when a data source or WASM operation fails — covers initial load failures,
 WASM init failures, and mid-playback fetch/seek failures.
 `event.detail` is a `PlayerError`.
+Malformed PDUs are skipped and logged by the replay engine without stopping playback or emitting a player error.
 
 ```ts
 player.addEventListener('error', (e: CustomEvent<PlayerError>) => {

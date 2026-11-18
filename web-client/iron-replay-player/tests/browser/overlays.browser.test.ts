@@ -12,14 +12,15 @@ describe('overlay visibility', () => {
     });
 
     it('loading text disappears after init completes', async () => {
-        const { mockDataSource } = await mountPlayerPartial();
+        const { screen, mockDataSource } = await mountPlayerPartial();
 
         const loading = page.getByText('Loading recording...');
         await expect.element(loading).toBeVisible();
 
         mockDataSource.resolveOpen();
 
-        await expect.element(loading).not.toBeVisible();
+        // oracle: mutant The loading overlay remains in the DOM after initialization completes.
+        await expect.poll(() => screen.container.querySelector('.__irp-loading-text')).toBeNull();
     });
 
     it('buffering overlay appears when data source delays', async () => {

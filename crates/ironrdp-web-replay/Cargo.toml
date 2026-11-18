@@ -16,18 +16,17 @@ ironrdp-graphics = { path = "../ironrdp-graphics" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu" }
 ironrdp-core = { path = "../ironrdp-core" } # public
 ironrdp-error = { path = "../ironrdp-error" } # public
-wasm-bindgen = "0.2"
 
-[dependencies.web-sys]
-version = "0.3"
-features = [
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
     "console",
     "HtmlCanvasElement",
     "CanvasRenderingContext2d",
     "ImageData",
     "OffscreenCanvas",
     "OffscreenCanvasRenderingContext2d",
-]
+] }
 
 [lib]
 doctest = false

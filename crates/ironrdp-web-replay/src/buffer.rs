@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
-use wasm_bindgen::prelude::*;
 
-use crate::PduSource;
+use crate::{
+    PduSource,
+    process::{ReplayError, ReplayErrorKind, ReplayResult},
+};
 
 /// A single timestamped PDU stored in [`PduBuffer`].
 pub(crate) struct PduEntry {
@@ -10,7 +12,6 @@ pub(crate) struct PduEntry {
     pub(crate) data: Box<[u8]>,
 }
 
-#[wasm_bindgen]
 pub struct PduBuffer {
     entries: VecDeque<PduEntry>,
 }
@@ -21,32 +22,27 @@ impl Default for PduBuffer {
     }
 }
 
-#[wasm_bindgen]
 impl PduBuffer {
-    #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         PduBuffer {
             entries: VecDeque::new(),
         }
     }
 
-    /// Append a PDU to the back of the buffer.
-    #[wasm_bindgen]
-    pub fn push_pdu(&mut self, timestamp_ms: f64, source: PduSource, data: &[u8]) {
-        self.entries.push_back(PduEntry {
-            timestamp_ms,
-            source,
-            data: data.into(),
-        });
-    }
-
-    /// Returns the timestamp of the next (front) PDU, or `NAN` if empty.
+    /// Appends a PDU to the back of the buffer.
     ///
-    /// `NAN` comparisons are always false, so JS callers using `<= target_ms`
-    /// naturally stop when the buffer is empty.
-    #[wasm_bindgen(js_name = peekTimestamp)]
-    pub fn peek_timestamp_js(&self) -> f64 {
-        self.peek_timestamp().unwrap_or(f64::NAN)
+    /// Returns an error and leaves the buffer unchanged when `timestamp_ms` is not finite.
+    pub fn push_pdu(&mut self, timestamp_ms: f64, source: PduSource, data: &[u8]) -> ReplayResult<()> {
+        if timestamp_ms.is_finite() {
+            self.entries.push_back(PduEntry {
+                timestamp_ms,
+                source,
+                data: data.into(),
+            });
+            Ok(())
+        } else {
+            Err(ReplayError::new("replay", ReplayErrorKind::InvalidTimestamp))
+        }
     }
 
     /// Returns the timestamp of the next (front) PDU, or `None` if empty.

@@ -153,13 +153,9 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
         };
     }
 
-    function renderTill(targetMs: number, phase: 'seek' | 'playback') {
+    function renderTill(targetMs: number) {
         if (!wasmReplay) throw new Error('replay is not initialized');
-        const result = wasmReplay.renderTill(targetMs);
-        if (result.pdu_errors > 0) {
-            setPlayerError(phase, new Error(`${result.pdu_errors} PDU(s) could not be decoded`));
-        }
-        return result;
+        return wasmReplay.renderTill(targetMs);
     }
 
     function clearError(): void {
@@ -338,7 +334,7 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
             // Fast-forward WASM through already-buffered region (no fetch needed)
             if (processFrom < fetchedUntilMs) {
                 const renderTo = Math.min(fetchedUntilMs, targetMs);
-                renderTill(renderTo, 'seek');
+                renderTill(renderTo);
             }
 
             // Fetch + render only the unbuffered remainder in seekChunkMs-sized
@@ -355,17 +351,15 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
                 await fetchAndPush(current, chunkEnd, signal);
                 if (signal.aborted) return; // new seek arrived during fetch
 
-                renderTill(chunkEnd, 'seek');
+                renderTill(chunkEnd);
                 current = chunkEnd;
 
                 await yieldToEventLoop(); // let UI process (e.g. another seek)
                 if (signal.aborted) return;
             }
 
-            // Final render with canvas updates re-enabled.
             // All PDUs up to targetMs were processed by the chunk loop above.
-            // Re-enable canvas updates and force a single blit of the final frame.
-            wasmReplay.setUpdateCanvas(true);
+            // The `forceRedraw` method blits the final frame; the finally block restores canvas updates.
             wasmReplay.forceRedraw();
         } catch (e) {
             if (signal.aborted) return; // superseded — discard error silently
@@ -526,7 +520,7 @@ export function createReplayStore(bufferOverrides?: Partial<BufferConfig>) {
         /* ── 3. RENDER ─────────────────────────────────────────────────── */
         let renderResult;
         try {
-            renderResult = renderTill(elapsed, 'playback');
+            renderResult = renderTill(elapsed);
         } catch (e) {
             setPlayerError('playback', e);
             updatePlaybackState({ paused: true });

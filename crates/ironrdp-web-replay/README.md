@@ -23,6 +23,7 @@ The crate exposes these types to JavaScript via `wasm-bindgen`:
 - **`pushPdu(timestampMs, source, data)`** — Enqueue a raw PDU with its
   recording-time offset (ms from session start) and direction
   (client→server / server→client) into an internal FIFO buffer.
+  Throws a JavaScript error when `timestampMs` is not finite.
 
 - **`renderTill(elapsedMs)`** — Drain all buffered PDUs up to `elapsedMs`,
   decode each through the FastPath processor, and blit dirty frames to the

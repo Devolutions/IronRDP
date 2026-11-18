@@ -36,7 +36,10 @@ export interface WasmReplayInstance {
      * @throws If already initialized.
      */
     init(config?: ReplayConfigInstance): void;
-    /** source: 0 = Client, 1 = Server (matches PduSource enum wire values) */
+    /**
+     * source: 0 = Client, 1 = Server (matches PduSource enum wire values).
+     * @throws If timestamp_ms is not finite.
+     */
     pushPdu(timestamp_ms: number, source: number, data: Uint8Array): void;
     /**
      * Process PDUs up to target_ms and blit to canvas.

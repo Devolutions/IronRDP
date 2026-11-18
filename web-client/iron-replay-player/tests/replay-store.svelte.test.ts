@@ -151,26 +151,27 @@ describe('play', () => {
         await seeking;
     });
 
-    test('reports skipped PDU errors during playback', async () => {
+    // oracle: mutant The store turns recoverable PDU errors into sticky player errors.
+    test('skips PDU errors without stopping playback', async () => {
         await startPlayback();
         vi.mocked(mock.wasm.renderTill).mockReturnValue({
             pdu_errors: 2,
             session_ended: false,
         });
         vi.advanceTimersToNextFrame();
-        expect(store.playerError?.phase).toBe('playback');
-        expect(store.playerError?.message).toContain('2 PDU(s)');
+        expect(store.playerError).toBeNull();
+        expect(store.playbackState.paused).toBe(false);
     });
 
-    test('reports skipped PDU errors during seek', async () => {
+    // oracle: mutant The store turns recoverable PDU errors into sticky player errors.
+    test('skips PDU errors without setting a player error during seek', async () => {
         await startPlayback();
         vi.mocked(mock.wasm.renderTill).mockReturnValue({
             pdu_errors: 1,
             session_ended: false,
         });
         await seekTo(1000);
-        expect(store.playerError?.phase).toBe('seek');
-        expect(store.playerError?.message).toContain('1 PDU(s)');
+        expect(store.playerError).toBeNull();
     });
 
     test('sets state, fetches, then starts rAF loop', async () => {

@@ -1,17 +1,18 @@
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_web_replay::{PduBuffer, PduSource, PointerState, ProcessResult, ReplayProcessor, ReplayProcessorConfig};
+use rstest::rstest;
 
 /// Fast-Path client input PDU fixture (44 bytes, 6 mouse events).
 // The fixture's capture provenance is unknown; expected mouse positions are decoded from its event fields.
-// oracle: spec MS-RDPBCGR §Section_2.2.8.1.2 and §Section_2.2.8.1.2.2.3.
+// oracle: spec MS-RDPBCGR §Section_2.2.8.1.2 and §Section_2.2.8.1.2.2.3. These sections define the event count and mouse coordinates.
 const FASTPATH_CLIENT_INPUT: [u8; 44] = [
     0x18, 0x2c, 0x20, 0x0, 0x90, 0x1a, 0x0, 0x26, 0x4, 0x20, 0x0, 0x8, 0x1b, 0x0, 0x26, 0x4, 0x20, 0x0, 0x10, 0x1b,
     0x0, 0x26, 0x4, 0x20, 0x0, 0x8, 0x1a, 0x0, 0x27, 0x4, 0x20, 0x0, 0x8, 0x19, 0x0, 0x27, 0x4, 0x20, 0x0, 0x8, 0x19,
     0x0, 0x28, 0x4,
 ];
 
-// oracle: spec MS-RDPBCGR §Section_2.2.9.1.2 and §Section_2.2.9.1.2.1.6.
+// oracle: spec MS-RDPBCGR §Section_2.2.9.1.2 and §Section_2.2.9.1.2.1.6. These sections define the update header and PTR_DEFAULT body.
 const FASTPATH_SERVER_POINTER_DEFAULT: [u8; 5] = [0x00, 0x05, 0x06, 0x00, 0x00];
 
 fn test_processor() -> ReplayProcessor {
@@ -26,7 +27,7 @@ fn test_image() -> DecodedImage {
 
 #[test]
 fn process_pdu_returns_error_for_empty_input() {
-    // oracle: mutant accept an empty PDU as a no-op.
+    // oracle: mutant The mutant accepts an empty PDU as a no-op.
     let mut proc = test_processor();
     let mut image = test_image();
     let result = proc.process_pdu(&mut image, PduSource::Server, &[]);
@@ -35,7 +36,7 @@ fn process_pdu_returns_error_for_empty_input() {
 
 #[test]
 fn process_pdu_returns_error_for_truncated_pdu() {
-    // oracle: mutant accept a truncated PDU as an incomplete no-op.
+    // oracle: mutant The mutant accepts a truncated PDU as an incomplete no-op.
     let mut proc = test_processor();
     let mut image = test_image();
     // A single byte is insufficient for find_size to determine the PDU length.
@@ -45,7 +46,7 @@ fn process_pdu_returns_error_for_truncated_pdu() {
 
 #[test]
 fn process_pdu_returns_error_for_garbage_bytes() {
-    // oracle: mutant ignore unrecognized PDU headers instead of returning a decode error.
+    // oracle: mutant The mutant ignores an unrecognized PDU header instead of returning a decode error.
     let mut proc = test_processor();
     let mut image = test_image();
     let result = proc.process_pdu(&mut image, PduSource::Server, &[0xFF, 0xFF, 0xFF, 0xFF]);
@@ -54,7 +55,7 @@ fn process_pdu_returns_error_for_garbage_bytes() {
 
 #[test]
 fn process_client_fastpath_rejects_length_that_cannot_contain_extended_event_count() {
-    // oracle: spec MS-RDPBCGR §2.2.8.1.2 defines the overall PDU length and optional numEvents field.
+    // oracle: spec MS-RDPBCGR §Section_2.2.8.1.2. This section defines the overall PDU length and optional numEvents field.
     let mut proc = test_processor();
     let mut image = test_image();
     let result = proc.process_pdu(&mut image, PduSource::Client, &[0x00, 0x02, 0x00]);
@@ -77,9 +78,9 @@ fn process_client_fastpath_extracts_mouse_positions() {
         })
         .collect();
 
-    // oracle: spec MS-RDPBCGR §Section_2.2.8.1.2 for the event count.
+    // oracle: spec MS-RDPBCGR §Section_2.2.8.1.2. The header encodes six input events.
     assert_eq!(positions.len(), 6);
-    // oracle: spec MS-RDPBCGR §Section_2.2.8.1.2.2.3 for the mouse coordinates.
+    // oracle: spec MS-RDPBCGR §Section_2.2.8.1.2.2.3. The mouse-event body encodes these coordinates.
     // Decode the first and last coordinate pairs independently from the fixture's event fields.
     assert_eq!(positions[0], (26, 1062));
     assert_eq!(positions[5], (25, 1064));
@@ -87,7 +88,7 @@ fn process_client_fastpath_extracts_mouse_positions() {
 
 #[test]
 fn process_server_fastpath_routes_as_output() {
-    // oracle: spec MS-RDPBCGR §Section_2.2.9.1.2.1.6.
+    // oracle: spec MS-RDPBCGR §Section_2.2.9.1.2.1.6. PTR_DEFAULT has a zero-size body.
     let mut proc = test_processor();
     let mut image = test_image();
 
@@ -103,7 +104,7 @@ fn process_server_fastpath_routes_as_output() {
 
 #[test]
 fn process_client_pdu_suppressed_during_seek() {
-    // oracle: mutant emit client pointer events while the canvas is suppressed.
+    // oracle: mutant The mutant emits client pointer events while the canvas is suppressed.
     let mut proc = test_processor();
     let mut image = test_image();
     proc.set_update_canvas(false);
@@ -122,14 +123,14 @@ fn process_client_pdu_suppressed_during_seek() {
 
 #[test]
 fn update_canvas_defaults_to_true() {
-    // oracle: mutant initialize canvas updates as disabled.
+    // oracle: mutant The mutant initializes canvas updates as disabled.
     let proc = test_processor();
     assert!(proc.update_canvas());
 }
 
 #[test]
 fn set_update_canvas_toggles_flag() {
-    // oracle: mutant ignore requested update_canvas state changes.
+    // oracle: mutant The mutant ignores requested update_canvas state changes.
     let mut proc = test_processor();
     proc.set_update_canvas(false);
     assert!(!proc.update_canvas());
@@ -139,7 +140,7 @@ fn set_update_canvas_toggles_flag() {
 
 #[test]
 fn pointer_state_defaults_to_default() {
-    // oracle: mutant initialize the pointer state as Hidden.
+    // oracle: mutant The mutant initializes the pointer state as Hidden.
     let proc = test_processor();
     assert!(
         matches!(proc.current_pointer_state(), PointerState::Default),
@@ -151,7 +152,7 @@ fn pointer_state_defaults_to_default() {
 
 #[test]
 fn process_till_empty_buffer_returns_zero_pdus() {
-    // oracle: mutant count an empty buffer as processed.
+    // oracle: mutant The mutant counts an empty buffer as processed.
     let mut proc = test_processor();
     let mut buffer = PduBuffer::new();
     let mut image = test_image();
@@ -167,15 +168,21 @@ fn process_till_empty_buffer_returns_zero_pdus() {
 
 #[test]
 fn process_till_consumes_pdus_up_to_target() {
-    // oracle: mutant process a PDU whose timestamp is after the target.
+    // oracle: mutant The mutant processes a PDU whose timestamp is after the target.
     let mut proc = test_processor();
     let mut buffer = PduBuffer::new();
     let mut image = test_image();
 
     // Push three client PDUs at different timestamps.
-    buffer.push_pdu(100.0, PduSource::Client, &FASTPATH_CLIENT_INPUT);
-    buffer.push_pdu(200.0, PduSource::Client, &FASTPATH_CLIENT_INPUT);
-    buffer.push_pdu(300.0, PduSource::Client, &FASTPATH_CLIENT_INPUT);
+    buffer
+        .push_pdu(100.0, PduSource::Client, &FASTPATH_CLIENT_INPUT)
+        .unwrap();
+    buffer
+        .push_pdu(200.0, PduSource::Client, &FASTPATH_CLIENT_INPUT)
+        .unwrap();
+    buffer
+        .push_pdu(300.0, PduSource::Client, &FASTPATH_CLIENT_INPUT)
+        .unwrap();
 
     // Processing up to 250 ms consumes the PDUs at 100 and 200 ms but not the one at 300 ms.
     let result = proc.process_till(&mut buffer, &mut image, 250.0);
@@ -187,13 +194,19 @@ fn process_till_consumes_pdus_up_to_target() {
 
 #[test]
 fn process_till_preserves_insertion_order_for_out_of_order_timestamps() {
-    // oracle: mutant reorder buffered PDUs by timestamp instead of preserving insertion order.
+    // oracle: mutant The mutant reorders buffered PDUs by timestamp instead of preserving insertion order.
     let mut proc = test_processor();
     let mut buffer = PduBuffer::new();
     let mut image = test_image();
-    buffer.push_pdu(100.0, PduSource::Client, &FASTPATH_CLIENT_INPUT);
-    buffer.push_pdu(200.0, PduSource::Client, &FASTPATH_CLIENT_INPUT);
-    buffer.push_pdu(50.0, PduSource::Client, &FASTPATH_CLIENT_INPUT);
+    buffer
+        .push_pdu(100.0, PduSource::Client, &FASTPATH_CLIENT_INPUT)
+        .unwrap();
+    buffer
+        .push_pdu(200.0, PduSource::Client, &FASTPATH_CLIENT_INPUT)
+        .unwrap();
+    buffer
+        .push_pdu(50.0, PduSource::Client, &FASTPATH_CLIENT_INPUT)
+        .unwrap();
 
     let first = proc.process_till(&mut buffer, &mut image, 100.0);
 
@@ -209,12 +222,14 @@ fn process_till_preserves_insertion_order_for_out_of_order_timestamps() {
 
 #[test]
 fn process_till_tracks_mouse_position() {
-    // oracle: spec MS-RDPBCGR §Section_2.2.8.1.2.2.3.
+    // oracle: spec MS-RDPBCGR §Section_2.2.8.1.2.2.3. The mouse-event body encodes these coordinates.
     let mut proc = test_processor();
     let mut buffer = PduBuffer::new();
     let mut image = test_image();
 
-    buffer.push_pdu(100.0, PduSource::Client, &FASTPATH_CLIENT_INPUT);
+    buffer
+        .push_pdu(100.0, PduSource::Client, &FASTPATH_CLIENT_INPUT)
+        .unwrap();
 
     let result = proc.process_till(&mut buffer, &mut image, 200.0);
 
@@ -224,14 +239,16 @@ fn process_till_tracks_mouse_position() {
 
 #[test]
 fn process_till_with_seek_suppression() {
-    // oracle: mutant emit visual output from client PDUs during seek.
+    // oracle: mutant The mutant emits visual output from client PDUs during seek.
     let mut proc = test_processor();
     let mut buffer = PduBuffer::new();
     let mut image = test_image();
 
     proc.set_update_canvas(false);
 
-    buffer.push_pdu(100.0, PduSource::Client, &FASTPATH_CLIENT_INPUT);
+    buffer
+        .push_pdu(100.0, PduSource::Client, &FASTPATH_CLIENT_INPUT)
+        .unwrap();
 
     let result = proc.process_till(&mut buffer, &mut image, 200.0);
 
@@ -245,7 +262,7 @@ fn process_till_with_seek_suppression() {
 
 #[test]
 fn process_till_collects_malformed_pdu_errors_and_continues() {
-    // oracle: mutant discard a malformed-PDU error instead of continuing with later PDUs.
+    // oracle: mutant The mutant discards a malformed-PDU error instead of continuing with later PDUs.
     let mut proc = test_processor();
     let mut buffer = PduBuffer::new();
     let mut image = test_image();
@@ -253,8 +270,10 @@ fn process_till_collects_malformed_pdu_errors_and_continues() {
     // Push a garbage PDU followed by a valid client PDU.
     // The garbage bytes fail in process_pdu and produce a ReplayError.
     // process_till captures the error and continues to the next PDU.
-    buffer.push_pdu(100.0, PduSource::Server, &[0xFF, 0xFF]);
-    buffer.push_pdu(200.0, PduSource::Client, &FASTPATH_CLIENT_INPUT);
+    buffer.push_pdu(100.0, PduSource::Server, &[0xFF, 0xFF]).unwrap();
+    buffer
+        .push_pdu(200.0, PduSource::Client, &FASTPATH_CLIENT_INPUT)
+        .unwrap();
 
     let result = proc.process_till(&mut buffer, &mut image, 300.0);
 
@@ -272,16 +291,18 @@ fn process_till_collects_malformed_pdu_errors_and_continues() {
 
 /// Server Demand Active X.224 PDU fixture with a bitmap capability for 1470x802.
 // The fixture's capture provenance is unknown; expected dimensions are decoded from its capability fields.
-// oracle: spec MS-RDPBCGR §Section_2.2.1.13.1.1 and §Section_2.2.7.1.2.
+// oracle: spec MS-RDPBCGR §Section_2.2.1.13.1.1 and §Section_2.2.7.1.2. These sections define the Demand Active PDU and bitmap dimensions.
 const X224_SERVER_DEMAND_ACTIVE: &[u8] = include_bytes!("../../test_data/pdu/web_replay/x224_server_demand_active.bin");
 
 #[test]
 fn client_direction_demand_active_does_not_change_resolution() {
-    // oracle: spec MS-RDPBCGR §Section_2.2.1.13.1.1.
+    // oracle: mutant The mutant routes a Demand Active PDU by message type instead of its recorded direction.
     let mut proc = test_processor();
     let mut buffer = PduBuffer::new();
     let mut image = test_image();
-    buffer.push_pdu(0.0, PduSource::Client, X224_SERVER_DEMAND_ACTIVE);
+    buffer
+        .push_pdu(0.0, PduSource::Client, X224_SERVER_DEMAND_ACTIVE)
+        .unwrap();
 
     let result = proc.process_till(&mut buffer, &mut image, 0.0);
     assert!(result.new_resolution.is_none());
@@ -290,14 +311,14 @@ fn client_direction_demand_active_does_not_change_resolution() {
 
 #[test]
 fn oversized_demand_active_is_rejected_without_reallocating() {
-    // oracle: mutant accept desktop dimensions above the replay limit.
+    // oracle: mutant The mutant accepts desktop dimensions above the replay limit.
     let mut pdu = X224_SERVER_DEMAND_ACTIVE.to_vec();
     assert_eq!(&pdu[125..129], &[0xbe, 0x05, 0x22, 0x03]);
     pdu[125..127].copy_from_slice(&8193u16.to_le_bytes());
     let mut proc = test_processor();
     let mut buffer = PduBuffer::new();
     let mut image = test_image();
-    buffer.push_pdu(0.0, PduSource::Server, &pdu);
+    buffer.push_pdu(0.0, PduSource::Server, &pdu).unwrap();
 
     let result = proc.process_till(&mut buffer, &mut image, 0.0);
     assert_eq!(result.errors.len(), 1);
@@ -307,7 +328,7 @@ fn oversized_demand_active_is_rejected_without_reallocating() {
 
 #[test]
 fn zero_desktop_width_is_rejected_without_reallocating() {
-    // oracle: mutant accept zero desktop width in the Bitmap Capability Set.
+    // oracle: mutant The mutant accepts zero desktop width in the Bitmap Capability Set.
     let mut pdu = X224_SERVER_DEMAND_ACTIVE.to_vec();
     pdu[125..127].copy_from_slice(&0u16.to_le_bytes());
     let mut proc = test_processor();
@@ -318,7 +339,7 @@ fn zero_desktop_width_is_rejected_without_reallocating() {
 
 #[test]
 fn zero_desktop_height_is_rejected_without_reallocating() {
-    // oracle: mutant accept zero desktop height in the Bitmap Capability Set.
+    // oracle: mutant The mutant accepts zero desktop height in the Bitmap Capability Set.
     let mut pdu = X224_SERVER_DEMAND_ACTIVE.to_vec();
     pdu[127..129].copy_from_slice(&0u16.to_le_bytes());
     let mut proc = test_processor();
@@ -329,7 +350,7 @@ fn zero_desktop_height_is_rejected_without_reallocating() {
 
 #[test]
 fn maximum_desktop_dimensions_are_accepted() {
-    // oracle: mutant reject the largest desktop dimensions accepted by the replay limit.
+    // oracle: mutant The mutant rejects the largest desktop dimensions accepted by the replay limit.
     let mut pdu = X224_SERVER_DEMAND_ACTIVE.to_vec();
     pdu[125..127].copy_from_slice(&8192u16.to_le_bytes());
     pdu[127..129].copy_from_slice(&8192u16.to_le_bytes());
@@ -345,28 +366,21 @@ fn maximum_desktop_dimensions_are_accepted() {
     )));
 }
 
-#[test]
-fn encrypted_fastpath_flag_is_rejected_for_client_during_seek() {
-    // oracle: mutant accept an encrypted client Fast-Path PDU.
-    assert_fastpath_security_flags_rejected(PduSource::Client, 0x80);
+#[repr(u8)]
+#[derive(Clone, Copy, Debug)]
+enum SecurityFlag {
+    Encrypted = 0x80,
+    SecureChecksum = 0x40,
 }
 
-#[test]
-fn encrypted_fastpath_flag_is_rejected_for_server_during_seek() {
-    // oracle: mutant accept an encrypted server Fast-Path PDU.
-    assert_fastpath_security_flags_rejected(PduSource::Server, 0x80);
-}
-
-#[test]
-fn secure_checksum_fastpath_flag_is_rejected_for_client_during_seek() {
-    // oracle: mutant accept a client Fast-Path PDU with the secure-checksum flag.
-    assert_fastpath_security_flags_rejected(PduSource::Client, 0x40);
-}
-
-#[test]
-fn secure_checksum_fastpath_flag_is_rejected_for_server_during_seek() {
-    // oracle: mutant accept a server Fast-Path PDU with the secure-checksum flag.
-    assert_fastpath_security_flags_rejected(PduSource::Server, 0x40);
+#[rstest]
+#[case::client_encrypted(PduSource::Client, SecurityFlag::Encrypted)]
+#[case::server_encrypted(PduSource::Server, SecurityFlag::Encrypted)]
+#[case::client_secure_checksum(PduSource::Client, SecurityFlag::SecureChecksum)]
+#[case::server_secure_checksum(PduSource::Server, SecurityFlag::SecureChecksum)]
+fn fastpath_security_flags_are_rejected_during_seek(#[case] source: PduSource, #[case] flag: SecurityFlag) {
+    // oracle: mutant The mutant accepts security-flagged Fast-Path PDUs in either source direction.
+    assert_fastpath_security_flags_rejected(source, flag as u8);
 }
 
 fn assert_fastpath_security_flags_rejected(source: PduSource, flag: u8) {
@@ -383,7 +397,7 @@ fn assert_fastpath_security_flags_rejected(source: PduSource, flag: u8) {
 
 #[test]
 fn process_x224_demand_active_returns_resolution() {
-    // oracle: spec MS-RDPBCGR §Section_2.2.1.13.1.1 and §Section_2.2.7.1.2.
+    // oracle: spec MS-RDPBCGR §Section_2.2.1.13.1.1 and §Section_2.2.7.1.2. These sections define the Demand Active PDU and bitmap dimensions.
     let mut proc = test_processor();
     let mut image = test_image();
 
@@ -405,18 +419,34 @@ fn process_x224_demand_active_returns_resolution() {
 }
 
 #[test]
+fn process_x224_returns_malformed_share_control_header_error() {
+    // oracle: mutant The mutant discards a Share Control header decode error.
+    let mut pdu = X224_SERVER_DEMAND_ACTIVE.to_vec();
+    // The fixture's Share Control PDU type occupies bytes 17 and 18.
+    pdu[17..19].copy_from_slice(&u16::MAX.to_le_bytes());
+    let mut proc = test_processor();
+    let mut image = test_image();
+
+    let result = proc.process_pdu(&mut image, PduSource::Server, &pdu);
+
+    assert!(result.is_err(), "malformed Share Control header should return an error");
+}
+
+#[test]
 fn process_till_x224_resolution_change_reallocates_image() {
     let mut proc = test_processor();
     let mut buffer = PduBuffer::new();
     let mut image = test_image(); // The image starts at 64x64.
 
-    buffer.push_pdu(100.0, PduSource::Server, X224_SERVER_DEMAND_ACTIVE);
+    buffer
+        .push_pdu(100.0, PduSource::Server, X224_SERVER_DEMAND_ACTIVE)
+        .unwrap();
 
     let result = proc.process_till(&mut buffer, &mut image, 200.0);
 
-    // oracle: spec MS-RDPBCGR §Section_2.2.1.13.1.1 and §Section_2.2.7.1.2.
+    // oracle: spec MS-RDPBCGR §Section_2.2.1.13.1.1 and §Section_2.2.7.1.2. These sections define the Demand Active PDU and bitmap dimensions.
     assert_eq!(result.new_resolution, Some((1470, 802)));
-    // oracle: mutant report the new resolution without reallocating the framebuffer.
+    // oracle: mutant The mutant reports the new resolution without reallocating the framebuffer.
     assert_eq!(image.width(), 1470);
     assert_eq!(image.height(), 802);
 }
@@ -429,12 +459,14 @@ fn process_till_x224_resolution_emitted_regardless_of_update_canvas() {
 
     proc.set_update_canvas(false);
 
-    buffer.push_pdu(100.0, PduSource::Server, X224_SERVER_DEMAND_ACTIVE);
+    buffer
+        .push_pdu(100.0, PduSource::Server, X224_SERVER_DEMAND_ACTIVE)
+        .unwrap();
 
     let result = proc.process_till(&mut buffer, &mut image, 200.0);
 
-    // oracle: mutant suppress session-state resolution changes during seek.
-    // oracle: spec MS-RDPBCGR §Section_2.2.1.13.1.1 and §Section_2.2.7.1.2.
+    // oracle: mutant The mutant suppresses session-state resolution changes during seek.
+    // oracle: spec MS-RDPBCGR §Section_2.2.1.13.1.1 and §Section_2.2.7.1.2. These sections define the Demand Active PDU and bitmap dimensions.
     assert_eq!(
         result.new_resolution,
         Some((1470, 802)),
