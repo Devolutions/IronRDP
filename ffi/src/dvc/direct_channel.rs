@@ -11,6 +11,7 @@ use ironrdp::pdu::pdu_other_err;
 
 use crate::error::ffi::IronRdpError;
 
+/// INVARIANT: Each successful update assigns a monotonically increasing ID that is never reused.
 static NEXT_DIRECT_DVC_ENDPOINT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,11 +32,16 @@ pub struct DirectDvcEventInner {
 #[derive(Clone)]
 pub struct DirectDvcEventSinkInner {
     tx: SyncSender<DirectDvcEventInner>,
+    /// INVARIANT: This remains set after event loss so the queue cannot resume with a desynchronized stream.
     overflowed: Arc<AtomicBool>,
 }
 
 impl DirectDvcEventSinkInner {
     fn send(&self, event: DirectDvcEventInner) -> PduResult<()> {
+        if self.overflowed.load(Ordering::Acquire) {
+            return Err(pdu_other_err!("direct DVC event queue overflowed"));
+        }
+
         match self.tx.try_send(event) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
@@ -47,12 +53,11 @@ impl DirectDvcEventSinkInner {
     }
 
     fn record_close(&self, event: DirectDvcEventInner) {
-        if matches!(self.tx.try_send(event), Err(TrySendError::Full(_))) {
-            self.overflowed.store(true, Ordering::Release);
-        }
+        let _ = self.send(event);
     }
 
     fn next_endpoint_id() -> PduResult<u64> {
+        // Relaxed ordering is sufficient because this counter only assigns unique IDs and publishes no other state.
         NEXT_DIRECT_DVC_ENDPOINT_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| pdu_other_err!("direct DVC endpoint ID space exhausted"))
@@ -76,9 +81,15 @@ impl DirectDvcEventQueueInner {
     }
 
     fn next_event(&mut self) -> Result<Option<DirectDvcEventInner>, Box<IronRdpError>> {
+        if self.overflowed.load(Ordering::Acquire) {
+            return Err("direct DVC event queue overflowed".into());
+        }
+
         match self.rx.try_recv() {
+            // Recheck after dequeue so an event racing with a producer's overflow is not returned.
+            Ok(_) if self.overflowed.load(Ordering::Acquire) => Err("direct DVC event queue overflowed".into()),
             Ok(event) => Ok(Some(event)),
-            Err(TryRecvError::Empty) if self.overflowed.swap(false, Ordering::AcqRel) => {
+            Err(TryRecvError::Empty) if self.overflowed.load(Ordering::Acquire) => {
                 Err("direct DVC event queue overflowed".into())
             }
             Err(TryRecvError::Empty) => Ok(None),
@@ -190,11 +201,12 @@ pub mod ffi {
 pub struct DirectDvcChannelProcessor {
     channel_name: String,
     event_sink: DirectDvcEventSinkInner,
+    /// INVARIANT: This is `Some` only for the current channel opening and is cleared by `close`.
     active_endpoint_id: Option<u64>,
 }
 
 impl DirectDvcChannelProcessor {
-    pub fn new(channel_name: &str, event_sink: &ffi::DirectDvcEventSink) -> Self {
+    pub fn new(event_sink: &ffi::DirectDvcEventSink, channel_name: &str) -> Self {
         Self {
             channel_name: channel_name.to_owned(),
             event_sink: event_sink.0.clone(),

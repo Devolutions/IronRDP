@@ -127,6 +127,19 @@ pub mod ffi {
     }
 
     impl ActiveStage {
+        fn validate_direct_dvc_endpoint(&self, channel_id: u32, endpoint_id: u64) -> Result<(), Box<IronRdpError>> {
+            let Some(channel) = self.0.get_dvc_by_channel_id::<DirectDvcChannelProcessor>(channel_id) else {
+                return Err("direct DVC channel is not open".into());
+            };
+            if !channel.processor().is_active_endpoint(endpoint_id) {
+                return Err("direct DVC endpoint is no longer active".into());
+            }
+            if self.0.dvc_tunnel_for_channel(channel_id).is_some() {
+                return Err("direct DVC channel is routed through a multitransport tunnel".into());
+            }
+            Ok(())
+        }
+
         pub fn new(connection_result: &mut ConnectionResult) -> Result<Box<Self>, Box<IronRdpError>> {
             let connection_result = connection_result
                 .0
@@ -334,15 +347,7 @@ pub mod ffi {
             endpoint_id: u64,
             data: &[u8],
         ) -> Result<Box<VecU8>, Box<IronRdpError>> {
-            let Some(channel) = self.0.get_dvc_by_channel_id::<DirectDvcChannelProcessor>(channel_id) else {
-                return Err("direct DVC channel is not open".into());
-            };
-            if !channel.processor().is_active_endpoint(endpoint_id) {
-                return Err("direct DVC endpoint is no longer active".into());
-            }
-            if self.0.dvc_tunnel_for_channel(channel_id).is_some() {
-                return Err("direct DVC channel is routed through a multitransport tunnel".into());
-            }
+            self.validate_direct_dvc_endpoint(channel_id, endpoint_id)?;
 
             let messages = ironrdp::dvc::encode_dvc_messages(
                 channel_id,
@@ -358,15 +363,7 @@ pub mod ffi {
             channel_id: u32,
             endpoint_id: u64,
         ) -> Result<Box<VecU8>, Box<IronRdpError>> {
-            let Some(channel) = self.0.get_dvc_by_channel_id::<DirectDvcChannelProcessor>(channel_id) else {
-                return Err("direct DVC channel is not open".into());
-            };
-            if !channel.processor().is_active_endpoint(endpoint_id) {
-                return Err("direct DVC endpoint is no longer active".into());
-            }
-            if self.0.dvc_tunnel_for_channel(channel_id).is_some() {
-                return Err("direct DVC channel is routed through a multitransport tunnel".into());
-            }
+            self.validate_direct_dvc_endpoint(channel_id, endpoint_id)?;
 
             let close = self
                 .0

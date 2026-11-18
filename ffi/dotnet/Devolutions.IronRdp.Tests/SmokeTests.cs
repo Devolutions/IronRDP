@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 
 namespace Devolutions.IronRdp.Tests;
@@ -448,7 +449,7 @@ internal static class SmokeTests
             True(!state.IsTerminal(), "state is not terminal");
         });
 
-        // oracle: regression Devolutions/IronRDP#2476
+        // oracle: mutant reject built-in channel replacement that would suppress direct events
         yield return ("built-in DVC registration cannot replace a direct listener", () =>
         {
             using var events = DirectDvcEventQueue.New(1);
@@ -458,7 +459,7 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => connector.WithDynamicChannelRdpei(10, false));
         });
 
-        // oracle: regression Devolutions/IronRDP#2476
+        // oracle: mutant reject direct listener replacement that would suppress built-in handling
         yield return ("direct DVC registration cannot replace a built-in listener", () =>
         {
             using var events = DirectDvcEventQueue.New(1);
@@ -467,7 +468,7 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => connector.WithDynamicChannelDirect(NewDirectDvcConfig(events)));
         });
 
-        // oracle: regression Devolutions/IronRDP#2476
+        // oracle: mutant preserve overwrite behavior between non-direct channel listeners
         yield return ("built-in DVC registration can replace a non-direct listener", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
@@ -475,7 +476,7 @@ internal static class SmokeTests
             connector.WithDynamicChannelDisplayControl();
         });
 
-        // oracle: regression Devolutions/IronRDP#2476
+        // oracle: mutant preserve event payload and reject stale endpoint IDs after channel reuse
         yield return ("direct DVC events retain payloads and reject endpoints from a previous opening", () =>
         {
             using var events = DirectDvcEventQueue.New(4);
@@ -496,7 +497,8 @@ internal static class SmokeTests
                 using var data = events.NextEvent() ?? throw new InvalidOperationException("missing data event");
                 Equal(DirectDvcEventKind.Data, data.Kind, "event kind");
                 Equal(opened.EndpointId, data.EndpointId, "data endpoint");
-                True(expected.SequenceEqual(ToArray(data.TakeData())), "data event owns its payload");
+                using var receivedData = data.TakeData();
+                True(expected.SequenceEqual(ToArray(receivedData)), "data event owns its payload");
 
                 using var closeFrame = stage.CloseDirectDvcChannel(opened.ChannelId, opened.EndpointId);
                 using var closed = events.NextEvent() ?? throw new InvalidOperationException("missing close event");
@@ -510,13 +512,23 @@ internal static class SmokeTests
                 Equal(opened.ChannelId, reopened.ChannelId, "reused channel ID");
                 True(opened.EndpointId != reopened.EndpointId, "endpoint ID changes on reopen");
                 Throws<IronRdpException>(() => stage.SendDirectDvcData(opened.ChannelId, opened.EndpointId, expected));
-                using var outbound = stage.SendDirectDvcData(reopened.ChannelId, reopened.EndpointId, expected);
-                True(outbound.Size > 0, "current endpoint encodes an outbound frame");
+                var outbound = stage.SendDirectDvcData(reopened.ChannelId, reopened.EndpointId, expected);
+                var outboundFrame = ToArray(outbound);
+                Equal(0x03, outboundFrame[0], "TPKT version");
+                Equal(0x00, outboundFrame[1], "TPKT reserved byte");
+                Equal(outboundFrame.Length, (int)BinaryPrimitives.ReadUInt16BigEndian(outboundFrame.AsSpan(2, 2)), "TPKT length");
+                var expectedDvcData = new byte[expected.Length + 2];
+                // oracle: spec MS-RDPEDYC §2.2.3.2 (DYNVC_DATA has no length field)
+                expectedDvcData[0] = 0x30;
+                expectedDvcData[1] = 0x01;
+                expected.CopyTo(expectedDvcData, 2);
+                True(outboundFrame.AsSpan(outboundFrame.Length - expectedDvcData.Length).SequenceEqual(expectedDvcData),
+                    "DYNVC_DATA command, channel ID and full payload");
             }
         });
 
-        // oracle: regression Devolutions/IronRDP#2476
-        yield return ("direct DVC queue reports overflow after draining queued events", () =>
+        // oracle: mutant stop event delivery permanently after overflow, before draining queued events
+        yield return ("direct DVC queue stops event delivery after overflow", () =>
         {
             using var events = DirectDvcEventQueue.New(1);
             var (stage, image) = ConnectedStage(8, 4, directDvc: NewDirectDvcConfig(events));
@@ -525,8 +537,9 @@ internal static class SmokeTests
             {
                 ProcessFrame(stage, image, DrdynvcDisplayControlCreateRequest);
                 Throws<IronRdpException>(() => ProcessFrame(stage, image, DisplayControlCapsPdu));
-                using var opened = events.NextEvent() ?? throw new InvalidOperationException("missing queued open event");
-                Equal(DirectDvcEventKind.Opened, opened.Kind, "queued event kind");
+                Throws<IronRdpException>(() => events.NextEvent());
+                Throws<IronRdpException>(() => events.NextEvent());
+                Throws<IronRdpException>(() => ProcessFrame(stage, image, DisplayControlCapsPdu));
                 Throws<IronRdpException>(() => events.NextEvent());
             }
         });

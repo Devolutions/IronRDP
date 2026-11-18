@@ -210,7 +210,7 @@ pub mod ffi {
             }
 
             for channel_name in &config.channel_names {
-                self.with_dvc(DirectDvcChannelProcessor::new(channel_name, &config.event_sink))?;
+                self.with_dvc(DirectDvcChannelProcessor::new(&config.event_sink, channel_name))?;
             }
             Ok(())
         }
