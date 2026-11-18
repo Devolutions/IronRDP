@@ -261,7 +261,7 @@ jobs:
       - name: Test native audio integration
         run: |
           cargo test -p ffi --lib
-          cargo test -p ironrdp-rdpsnd-native --features capture --lib capture::tests
+          cargo test -p ironrdp-rdpsnd-native --features capture --lib
 
       - name: Generate bindings
         run: cargo xtask ffi bindings -v
