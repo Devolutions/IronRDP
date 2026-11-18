@@ -48,7 +48,8 @@ pub const LOSSY_DVC_CHANNEL_NAME: &str = "AUDIO_PLAYBACK_LOSSY_DVC";
     clippy::as_conversions,
     reason = "widen the 16-bit BodySize maximum and include the accepted pre-v8 Wave concatenation"
 )]
-const MAX_RDPSND_MESSAGE_SIZE: usize = 8 + u16::MAX as usize;
+const MAX_RDPSND_MESSAGE_SIZE: usize =
+    16 /* WaveInfo PDU */ + u16::MAX as usize /* BodySize maximum */ - 8 /* WaveInfo BodySize overhead */;
 
 /// Size of the signature that starts every `AUDIO_FRAGDATA` structure.
 const FRAGDATA_SIGNATURE_SIZE: usize = 8;

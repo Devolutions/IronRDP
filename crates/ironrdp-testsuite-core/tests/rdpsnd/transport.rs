@@ -134,7 +134,8 @@ impl RdpsndClientHandler for TimedBackend {
 // oracle: spec MS-RDPEA §2.2.1 and §2.2.3.10 (four-byte header, 16-bit BodySize, variable Wave2 data)
 #[test]
 fn playback_reassembly_limit_includes_concatenated_pre_v8_wave() {
-    let maximum_message_size = 8 + usize::from(u16::MAX);
+    let maximum_message_size =
+        16 /* WaveInfo PDU */ + usize::from(u16::MAX) /* BodySize maximum */ - 8 /* WaveInfo BodySize overhead */;
     let static_channel = Rdpsnd::new(Box::new(NoopRdpsndBackend));
     assert_eq!(static_channel.max_message_size(), Some(maximum_message_size));
 
@@ -147,7 +148,8 @@ fn playback_reassembly_limit_includes_concatenated_pre_v8_wave() {
 #[test]
 fn static_playback_rejects_oversized_fragmented_message_at_first_chunk() {
     const FIRST: u32 = 1;
-    let maximum_message_size = 8 + usize::from(u16::MAX);
+    let maximum_message_size =
+        16 /* WaveInfo PDU */ + usize::from(u16::MAX) /* BodySize maximum */ - 8 /* WaveInfo BodySize overhead */;
     let mut channel = StaticVirtualChannel::new(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
     let fragment = svc_fragment(
         u32::try_from(maximum_message_size + 1).expect("message size fits the SVC length field"),
@@ -165,7 +167,8 @@ fn static_playback_rejects_oversized_fragmented_message_at_first_chunk() {
 fn dynamic_playback_rejects_oversized_fragmented_message_at_first_chunk() {
     use ironrdp_dvc::pdu::{DataFirstPdu, DrdynvcDataPdu};
 
-    let maximum_message_size = 8 + usize::from(u16::MAX);
+    let maximum_message_size =
+        16 /* WaveInfo PDU */ + usize::from(u16::MAX) /* BodySize maximum */ - 8 /* WaveInfo BodySize overhead */;
     let mut channel = DrdynvcClient::new();
     channel
         .attach_established_dynamic_channel(7, RdpsndDvc::new(Box::new(NoopRdpsndBackend)))

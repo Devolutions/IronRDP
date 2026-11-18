@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 use crate::device::{self, DeviceSelector, Direction};
 
 /// Highest default sample rate offered by the native capture backend, in samples per second.
-pub const MAX_CAPTURE_SAMPLE_RATE: u32 = 48_000;
+const MAX_CAPTURE_SAMPLE_RATE: u32 = 48_000;
 
 /// Deadline for receiving CPAL input stream readiness from the session task.
 ///

@@ -90,9 +90,7 @@ mod native {
                     .is_ok()
             });
             if !reserved {
-                self.failed_capture.store(token, Ordering::Release);
-                warn!("Audio capture uplink overflow; stopping capture");
-                return Err(ironrdp::pdu::pdu_other_err!("audio capture uplink overflow"));
+                return self.fail_capture_uplink(token);
             }
             let charge = charge.expect("reservation requires a valid charge");
             if self
@@ -105,11 +103,15 @@ mod native {
                 .is_err()
             {
                 self.queued_bytes.fetch_sub(charge, Ordering::AcqRel);
-                self.failed_capture.store(token, Ordering::Release);
-                warn!("Audio capture uplink overflow; stopping capture");
-                return Err(ironrdp::pdu::pdu_other_err!("audio capture uplink overflow"));
+                return self.fail_capture_uplink(token);
             }
             Ok(())
+        }
+
+        fn fail_capture_uplink(&self, token: u64) -> PduResult<()> {
+            self.failed_capture.store(token, Ordering::Release);
+            warn!("Audio capture uplink overflow; stopping capture");
+            Err(ironrdp::pdu::pdu_other_err!("audio capture uplink overflow"))
         }
 
         fn try_recv_capture(&self) -> Result<CaptureMessages, mpsc::TryRecvError> {
@@ -479,29 +481,23 @@ mod native {
         let mut pending = Vec::new();
         // A failure can follow a queued confirmation, which must be sent before the channel closes.
         for _ in 0..=CAPTURE_QUEUE_CAPACITY {
-            let failed = shared.failed_capture.load(Ordering::Acquire);
             let next = shared.try_recv_capture();
             let Ok(next) = next else {
-                let failure = if failed != 0 {
-                    let failure = shared.failed_capture.load(Ordering::Acquire);
-                    if failure != 0 && shared.active_capture.load(Ordering::Acquire) == failure {
-                        Some(failure)
-                    } else {
+                let failed = shared.failed_capture.load(Ordering::Acquire);
+                let failure = match failed {
+                    0 => None,
+                    failed if shared.active_capture.load(Ordering::Acquire) == failed => Some(failed),
+                    failed => {
                         let _ = shared
                             .failed_capture
-                            .compare_exchange(failure, 0, Ordering::AcqRel, Ordering::Acquire);
+                            .compare_exchange(failed, 0, Ordering::AcqRel, Ordering::Acquire);
                         None
                     }
-                } else {
-                    None
                 };
                 if let Some(failure) = failure {
                     shared.capture_enabled.store(false, Ordering::Release);
                     flush_capture_output(&mut outputs, &mut pending);
-                    outputs.extend(close_capture(stage, shared, failure)?);
-                    let _ = shared
-                        .failed_capture
-                        .compare_exchange(failure, 0, Ordering::AcqRel, Ordering::Acquire);
+                    append_capture_close(&mut outputs, shared, failure, close_capture(stage, shared, failure))?;
                 }
                 break;
             };
@@ -514,14 +510,43 @@ mod native {
                 .and_then(|frame| append_capture_output(&mut outputs, &mut pending, &frame).map_err(str::to_owned));
             if let Err(error) = result {
                 shared.capture_enabled.store(false, Ordering::Release);
+                shared.failed_capture.store(next.token, Ordering::Release);
                 warn!(error, "Failed to process audio capture frame; stopping capture");
                 flush_capture_output(&mut outputs, &mut pending);
-                outputs.extend(close_capture(stage, shared, next.token)?);
+                append_capture_close(
+                    &mut outputs,
+                    shared,
+                    next.token,
+                    close_capture(stage, shared, next.token),
+                )?;
                 return Ok(outputs);
             }
         }
         flush_capture_output(&mut outputs, &mut pending);
         Ok(outputs)
+    }
+
+    fn append_capture_close(
+        outputs: &mut Vec<ironrdp::session::ActiveStageOutput>,
+        shared: &AudioShared,
+        token: u64,
+        close_result: Result<Vec<ironrdp::session::ActiveStageOutput>, Box<crate::error::ffi::IronRdpError>>,
+    ) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
+        match close_result {
+            Ok(close_outputs) => {
+                outputs.extend(close_outputs);
+                let _ = shared
+                    .failed_capture
+                    .compare_exchange(token, 0, Ordering::AcqRel, Ordering::Acquire);
+                Ok(())
+            }
+            Err(_) if !outputs.is_empty() => {
+                warn!("Failed to close audio capture channel; retrying after queued output");
+                // INVARIANT: Keep the failure token set so the next poll retries the channel close.
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn append_capture_output(
@@ -604,13 +629,17 @@ mod native {
         if !matches {
             return Ok(Vec::new());
         }
+        // Encode the same PDU as close_channel before removing the channel so a failure can be retried.
+        let close = SvcMessage::from(ironrdp::dvc::pdu::DrdynvcClientPdu::Close(
+            ironrdp::dvc::pdu::ClosePdu::new(channel_id),
+        ));
+        let frame = stage.encode_dvc_messages(vec![close])?;
         let drdynvc = stage
             .get_svc_processor_mut::<ironrdp::dvc::DrdynvcClient>()
             .ok_or("DRDYNVC channel is not available")?;
-        let message = drdynvc
+        drdynvc
             .close_channel(channel_id)
             .ok_or("audio capture channel is not available")?;
-        let frame = stage.encode_dvc_messages(vec![message])?;
         Ok(vec![ironrdp::session::ActiveStageOutput::ResponseFrame(frame)])
     }
 
@@ -697,13 +726,22 @@ mod native {
         }
 
         fn stage_with_capture_channel(channel: CaptureChannel) -> ironrdp::session::ActiveStage {
+            stage_with_capture_channel_id(channel, Some(1004))
+        }
+
+        fn stage_with_capture_channel_id(
+            channel: CaptureChannel,
+            channel_id: Option<u16>,
+        ) -> ironrdp::session::ActiveStage {
             let mut drdynvc = ironrdp::dvc::DrdynvcClient::new();
             drdynvc
                 .attach_established_dynamic_channel(7, channel)
                 .expect("attach capture channel");
             let mut channels = ironrdp::svc::StaticChannelSet::new();
             channels.insert(drdynvc);
-            channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), 1004);
+            if let Some(channel_id) = channel_id {
+                channels.attach_channel_id(core::any::TypeId::of::<ironrdp::dvc::DrdynvcClient>(), channel_id);
+            }
             ironrdp::session::ActiveStageBuilder {
                 static_channels: channels,
                 user_channel_id: 1002,
@@ -715,6 +753,20 @@ mod native {
                 pointer_software_rendering: false,
             }
             .build()
+        }
+
+        // oracle: user decision to retry closing after queued output is returned
+        #[test]
+        fn failed_capture_close_encoding_keeps_channel_for_retry() {
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let listener = CaptureListener(Arc::clone(&audio.0));
+            let channel = listener.create_channel(7).expect("capture channel");
+            let token = channel.token;
+            let mut stage = stage_with_capture_channel_id(channel, None);
+
+            assert!(close_capture(&mut stage, &audio.0, token).is_err());
+            assert_eq!(audio.0.active_capture.load(Ordering::Acquire), token);
+            assert!(stage.get_dvc_by_channel_id::<CaptureChannel>(7).is_some());
         }
 
         // oracle: regression #2469
@@ -1310,6 +1362,42 @@ mod native {
             ));
             assert!(stage.get_dvc_by_channel_id::<CaptureChannel>(7).is_none());
             assert_eq!(audio.0.active_capture.load(Ordering::Acquire), 0);
+        }
+
+        // oracle: user decision to return queued output before retrying capture close
+        #[test]
+        fn capture_close_failure_preserves_queued_output_for_retry() {
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let token = (1u64 << 32) | 7;
+            audio.0.failed_capture.store(token, Ordering::Release);
+            let frame = ironrdp::session::ActiveStageOutput::ResponseFrame(vec![0x01, 0x02]);
+            let mut outputs = vec![frame];
+
+            let result = append_capture_close(&mut outputs, &audio.0, token, Err("DVC close encoding failed".into()));
+            match result {
+                Ok(()) => {}
+                Err(_) => panic!("queued output defers capture close failure"),
+            };
+
+            assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), token);
+            assert!(matches!(
+                outputs.as_slice(),
+                [ironrdp::session::ActiveStageOutput::ResponseFrame(frame)] if frame == &[0x01, 0x02]
+            ));
+        }
+
+        // oracle: user decision to surface capture close errors when no output is ready
+        #[test]
+        fn capture_close_failure_is_returned_without_queued_output() {
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let token = (1u64 << 32) | 7;
+            audio.0.failed_capture.store(token, Ordering::Release);
+            let mut outputs = Vec::new();
+
+            assert!(
+                append_capture_close(&mut outputs, &audio.0, token, Err("DVC close encoding failed".into()),).is_err()
+            );
+            assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), token);
         }
 
         // oracle: regression #2469
