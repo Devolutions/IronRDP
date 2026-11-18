@@ -57,10 +57,31 @@ fn fast_path_ctrl_and_num_lock_have_no_e1_prefix() {
     // The Pause sequence above without EXTENDED1: Ctrl down, Num Lock down, Ctrl up, Num Lock up.
     let events = fast_path_keys(&[0x10, 0x0a, 0x00, 0x1d, 0x00, 0x45, 0x01, 0x1d, 0x01, 0x45]);
 
-    assert!(events.iter().all(|event| matches!(
-        event,
-        KeyboardEvent::Pressed { extended1: false, .. } | KeyboardEvent::Released { extended1: false, .. }
-    )));
+    assert!(matches!(
+        events.as_slice(),
+        [
+            KeyboardEvent::Pressed {
+                code: 0x1d,
+                extended: false,
+                extended1: false
+            },
+            KeyboardEvent::Pressed {
+                code: 0x45,
+                extended: false,
+                extended1: false
+            },
+            KeyboardEvent::Released {
+                code: 0x1d,
+                extended: false,
+                extended1: false
+            },
+            KeyboardEvent::Released {
+                code: 0x45,
+                extended: false,
+                extended1: false
+            },
+        ]
+    ));
 }
 
 // oracle: regression #2376
@@ -118,4 +139,30 @@ fn ainput_side_buttons_are_x1_and_x2_at_the_pdu_position(
         panic!("{flags:?} decoded as {event:?}");
     };
     assert_eq!((x, y, button, pressed), (100, 200, expected_button, expected_pressed));
+}
+
+// oracle: reference FreeRDP/FreeRDP@d0f30f8a1f2f:client/common/client.c (freerdp_client_send_button_event and freerdp_client_send_extended_button_event set AINPUT_FLAGS_REL on a button event in relative mode, with x/y the motion delta)
+#[rstest]
+#[case::left_down(MouseEventFlags::BUTTON1 | MouseEventFlags::DOWN, MouseButton::Left, true)]
+#[case::right_up(MouseEventFlags::BUTTON2, MouseButton::Right, false)]
+#[case::middle_down(MouseEventFlags::BUTTON3 | MouseEventFlags::DOWN, MouseButton::Middle, true)]
+#[case::x1_up(MouseEventFlags::XBUTTON1, MouseButton::X1, false)]
+#[case::x2_down(MouseEventFlags::XBUTTON2 | MouseEventFlags::DOWN, MouseButton::X2, true)]
+fn ainput_relative_buttons_carry_their_delta(
+    #[case] flags: MouseEventFlags,
+    #[case] expected_button: MouseButton,
+    #[case] expected_pressed: bool,
+) {
+    let event: MouseEvent = AinputMousePdu {
+        time: 0,
+        flags: flags | MouseEventFlags::REL,
+        x: -3,
+        y: 4,
+    }
+    .into();
+
+    let MouseEvent::ButtonRel { x, y, button, pressed } = event else {
+        panic!("{flags:?} decoded as {event:?}");
+    };
+    assert_eq!((x, y, button, pressed), (-3, 4, expected_button, expected_pressed));
 }

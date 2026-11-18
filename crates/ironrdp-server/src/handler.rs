@@ -348,61 +348,42 @@ impl From<ainput::MousePdu> for MouseEvent {
         // Unlike MousePdu/MouseXPdu, this PDU carries x/y on every event
         // regardless of which flag is set, including button events — so
         // buttons get position here too, not just Move.
+        // With REL set, x/y are a motion delta, for buttons too.
         let pos = || -> (u16, u16) {
             // assume positions are 0 <= u16::MAX
             (value.x.try_into().unwrap_or(0), value.y.try_into().unwrap_or(0))
         };
         let pressed = value.flags.contains(MouseEventFlags::DOWN);
+        let relative = value.flags.contains(MouseEventFlags::REL);
+        let button = [
+            (MouseEventFlags::BUTTON1, MouseButton::Left),
+            (MouseEventFlags::BUTTON2, MouseButton::Right),
+            (MouseEventFlags::BUTTON3, MouseButton::Middle),
+            (MouseEventFlags::XBUTTON1, MouseButton::X1),
+            (MouseEventFlags::XBUTTON2, MouseButton::X2),
+        ]
+        .into_iter()
+        .find(|(flag, _)| value.flags.contains(*flag))
+        .map(|(_, button)| button);
 
-        if value.flags.contains(MouseEventFlags::BUTTON1) {
-            let (x, y) = pos();
-            MouseEvent::Button {
-                x,
-                y,
-                button: MouseButton::Left,
+        match button {
+            Some(button) if relative => MouseEvent::ButtonRel {
+                x: value.x,
+                y: value.y,
+                button,
                 pressed,
+            },
+            Some(button) => {
+                let (x, y) = pos();
+                MouseEvent::Button { x, y, button, pressed }
             }
-        } else if value.flags.contains(MouseEventFlags::BUTTON2) {
-            let (x, y) = pos();
-            MouseEvent::Button {
-                x,
-                y,
-                button: MouseButton::Right,
-                pressed,
+            None if value.flags.contains(MouseEventFlags::WHEEL) => MouseEvent::Scroll { x: value.x, y: value.y },
+            None if relative => MouseEvent::RelMove { x: value.x, y: value.y },
+            None if value.flags.contains(MouseEventFlags::MOVE) => {
+                let (x, y) = pos();
+                MouseEvent::Move { x, y }
             }
-        } else if value.flags.contains(MouseEventFlags::BUTTON3) {
-            let (x, y) = pos();
-            MouseEvent::Button {
-                x,
-                y,
-                button: MouseButton::Middle,
-                pressed,
-            }
-        } else if value.flags.contains(MouseEventFlags::XBUTTON1) {
-            let (x, y) = pos();
-            MouseEvent::Button {
-                x,
-                y,
-                button: MouseButton::X1,
-                pressed,
-            }
-        } else if value.flags.contains(MouseEventFlags::XBUTTON2) {
-            let (x, y) = pos();
-            MouseEvent::Button {
-                x,
-                y,
-                button: MouseButton::X2,
-                pressed,
-            }
-        } else if value.flags.contains(MouseEventFlags::WHEEL) {
-            MouseEvent::Scroll { x: value.x, y: value.y }
-        } else if value.flags.contains(MouseEventFlags::REL) {
-            MouseEvent::RelMove { x: value.x, y: value.y }
-        } else if value.flags.contains(MouseEventFlags::MOVE) {
-            let (x, y) = pos();
-            MouseEvent::Move { x, y }
-        } else {
-            MouseEvent::Move { x: 0, y: 0 }
+            None => MouseEvent::Move { x: 0, y: 0 },
         }
     }
 }
