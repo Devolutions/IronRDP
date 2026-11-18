@@ -18,11 +18,15 @@ use ironrdp::echo::client::EchoClient;
 use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
 use ironrdp::pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
-use ironrdp::pdu::rdp::capability_sets::{InputFlags, MajorPlatformType};
+use ironrdp::pdu::rdp::capability_sets::{GeneralExtraFlags, InputFlags, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::{ClientInfoFlags, CompressionType as PduCompressionType, PerformanceFlags};
-use ironrdp::pdu::rdp::headers::CompressionFlags;
+use ironrdp::pdu::rdp::headers::{
+    CompressionFlags, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu,
+};
 use ironrdp::pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode};
-use ironrdp::pdu::rdp::session_info::ServerAutoReconnect;
+use ironrdp::pdu::rdp::session_info::{
+    InfoData, InfoType, LogonInfoVersion1, LogonInfoVersion2, SaveSessionInfoPdu, ServerAutoReconnect,
+};
 use ironrdp::pdu::x224::{X224, X224Data};
 use ironrdp::pdu::{self, gcc};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
@@ -596,17 +600,18 @@ async fn test_deactivation_reactivation() {
                     height: 2048,
                 }))
                 .unwrap();
-            {
+            // The logon notification sent at activation may come first.
+            loop {
                 let (action, payload) = framed.read_pdu().await.expect("valid PDU");
                 let outputs = stage
                     .process(&mut image, action, &payload, None)
                     .expect("stage process");
-                let out = outputs.into_iter().next().unwrap();
-                match out {
-                    ActiveStageOutput::DeactivateAll => {
-                        run_reactivation(&mut stage, &activation_factory, &mut framed).await;
-                    }
-                    _ => unreachable!(),
+                if outputs
+                    .iter()
+                    .any(|output| matches!(output, ActiveStageOutput::DeactivateAll))
+                {
+                    run_reactivation(&mut stage, &activation_factory, &mut framed).await;
+                    break;
                 }
             }
             (stage, framed)
@@ -3159,6 +3164,301 @@ async fn the_hourly_auto_reconnect_update_skips_a_connection_that_was_never_issu
     assert!(!update, "no cookie goes to a connection the embedder never vouched for");
 }
 
+const LOGON_USER: &str = "alice";
+const LOGON_PASSWORD: &str = "secret";
+const LOGON_DOMAIN: &str = "CORP";
+
+/// Rewrites a frame the client writes, returning `None` for a frame it leaves alone.
+type FrameRewrite = fn(&[u8]) -> Option<Vec<u8>>;
+
+/// The server tells every client that the user logged on, in the form the client asked for: logon information
+/// for a client that set INFO_LOGONNOTIFY, in the long form when it also set LONG_CREDENTIALS_SUPPORTED, and a
+/// plain notification otherwise, including when the logon information cannot hold the domain.
+// oracle: spec MS-RDPBCGR §3.3.5.10.1
+// oracle: spec MS-RDPBCGR §2.2.10.1.1.1 (the 52-byte Domain field holds 25 UTF-16 characters and the terminator)
+// The IronRDP client sets INFO_LOGONNOTIFY and not LONG_CREDENTIALS_SUPPORTED, so the other cases rewrite what it sends.
+#[rstest::rstest]
+#[case::logon_notify(None, LOGON_DOMAIN, InfoType::Logon, Some((LOGON_USER, LOGON_DOMAIN)))]
+#[case::logon_notify_with_long_credentials(
+    Some::<FrameRewrite>(confirm_active_with_long_credentials),
+    LOGON_DOMAIN,
+    InfoType::LogonLong,
+    Some((LOGON_USER, LOGON_DOMAIN))
+)]
+#[case::no_logon_notify(
+    Some::<FrameRewrite>(client_info_without_logon_notify),
+    LOGON_DOMAIN,
+    InfoType::PlainNotify,
+    None
+)]
+#[case::domain_too_long_for_logon_info(None, "CONTOSO-RESEARCH-DIVISIONS", InfoType::PlainNotify, None)]
+#[tokio::test]
+async fn the_logon_notification_follows_the_client_flags(
+    #[case] rewrite: Option<FrameRewrite>,
+    #[case] domain: &'static str,
+    #[case] info_type: InfoType,
+    #[case] logon: Option<(&str, &str)>,
+) {
+    let identity = test_tls_identity();
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(identity.make_acceptor().expect("failed to build TLS acceptor"))
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: LOGON_USER.into(),
+        password: LOGON_PASSWORD.into(),
+        domain: Some(domain.into()),
+    }));
+    let ev = server.event_sender().clone();
+    let rewritten = Arc::new(AtomicBool::new(false));
+
+    let local = tokio::task::LocalSet::new();
+    let infos = Box::pin(local.run_until({
+        let rewritten = Arc::clone(&rewritten);
+        async move {
+            let server_task = tokio::task::spawn_local(async move {
+                let _ = server.run().await;
+            });
+
+            let server_addr = local_addr_of(&ev).await;
+            let make_connector = |client_addr| {
+                connector::ClientConnector::new(
+                    connector::Config {
+                        credentials: connector::Credentials::UsernamePassword {
+                            username: LOGON_USER.into(),
+                            password: LOGON_PASSWORD.into(),
+                        },
+                        domain: Some(domain.into()),
+                        ..default_client_config()
+                    },
+                    client_addr,
+                )
+            };
+            let (mut framed, connection_result) =
+                connect_client_with(server_addr, make_connector, |stream| ClientFrameRewrite {
+                    inner: stream,
+                    rewrite,
+                    rewritten,
+                })
+                .await
+                .expect("finalize connection");
+            let mut stage = ActiveStageBuilder {
+                static_channels: connection_result.static_channels,
+                user_channel_id: connection_result.user_channel_id,
+                io_channel_id: connection_result.io_channel_id,
+                message_channel_id: connection_result.message_channel_id,
+                share_id: connection_result.share_id,
+                compression_type: connection_result.compression_type,
+                enable_server_pointer: connection_result.enable_server_pointer,
+                pointer_software_rendering: connection_result.pointer_software_rendering,
+            }
+            .build();
+            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+            let infos = save_session_infos_within(&mut stage, &mut image, &mut framed, Duration::from_secs(1)).await;
+
+            drop(display_tx);
+            server_task.abort();
+            infos
+        }
+    }))
+    .await;
+
+    assert_eq!(
+        rewritten.load(Ordering::Relaxed),
+        rewrite.is_some(),
+        "the client's frame was not rewritten"
+    );
+    let expected = (
+        info_type,
+        logon.map(|(user, domain)| (user.to_owned(), domain.to_owned())),
+    );
+    assert_eq!(
+        infos.iter().map(logon_notification).collect::<Vec<_>>(),
+        [Some(expected)]
+    );
+}
+
+/// The logon notification goes out once per connection alongside the auto-reconnect cookie, and not again when a
+/// Deactivation-Reactivation Sequence activates the same connection again.
+// oracle: spec MS-RDPBCGR §3.3.5.10.1 (the client is notified after the user has logged on, which happens once
+// per connection)
+#[tokio::test]
+async fn the_logon_notification_is_sent_once_per_connection() {
+    let (at_activation, after_reactivation) =
+        with_auto_reconnect_server(false, async |server_addr, _cookie_handle, display_tx| {
+            let mut probe = CookieProbe::connect(server_addr, None).await;
+            let at_activation = probe.save_session_infos_within(Duration::from_secs(1)).await;
+            probe.reactivate(&display_tx).await;
+            let after_reactivation = probe.save_session_infos_within(Duration::from_secs(1)).await;
+            probe.disconnect().await;
+            (at_activation, after_reactivation)
+        })
+        .await;
+
+    let logon_notifications =
+        |infos: &[SaveSessionInfoPdu]| infos.iter().filter(|info| logon_notification(info).is_some()).count();
+    assert_eq!(
+        logon_notifications(&at_activation),
+        1,
+        "one logon notification at activation"
+    );
+    assert_eq!(logon_notifications(&after_reactivation), 0, "none after a reactivation");
+    assert!(
+        after_reactivation
+            .iter()
+            .any(|info| info.info_type == InfoType::LogonExtended),
+        "the reactivation is observed through the cookie it carries"
+    );
+}
+
+/// The type of a logon notification, with the user and domain it reports, or `None` for another Save Session
+/// Info PDU.
+fn logon_notification(info: &SaveSessionInfoPdu) -> Option<(InfoType, Option<(String, String)>)> {
+    let logon = match &info.info_data {
+        InfoData::LogonInfoV1(LogonInfoVersion1 { logon_info })
+        | InfoData::LogonInfoV2(LogonInfoVersion2 { logon_info }) => {
+            Some((logon_info.user_name.clone(), logon_info.domain_name.clone()))
+        }
+        InfoData::PlainNotify => None,
+        InfoData::LogonExtended(_) => return None,
+    };
+    Some((info.info_type, logon))
+}
+
+/// The Save Session Info PDU `frame` carries, if it is one.
+fn save_session_info(frame: &[u8]) -> Option<SaveSessionInfoPdu> {
+    let indication = decode::<X224<pdu::mcs::SendDataIndication<'_>>>(frame).ok()?.0;
+    match decode::<ShareControlHeader>(&indication.user_data)
+        .ok()?
+        .share_control_pdu
+    {
+        ShareControlPdu::Data(ShareDataHeader {
+            share_data_pdu: ShareDataPdu::SaveSessionInfo(info),
+            ..
+        }) => Some(info),
+        _ => None,
+    }
+}
+
+/// Reads for `window` and returns the Save Session Info PDUs the server sent, in order, answering what the
+/// client must answer meanwhile.
+async fn save_session_infos_within<S>(
+    stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    framed: &mut Framed<TokioStream<S>>,
+    window: Duration,
+) -> Vec<SaveSessionInfoPdu>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    let mut infos = Vec::new();
+    let deadline = tokio::time::Instant::now() + window;
+    while let Ok(read) = tokio::time::timeout_at(deadline, framed.read_pdu()).await {
+        let (action, frame) = read.expect("read PDU");
+        infos.extend(save_session_info(&frame));
+        for output in stage.process(image, action, &frame, None).expect("stage process") {
+            if let ActiveStageOutput::ResponseFrame(response) = output {
+                framed.write_all(&response).await.expect("write response frame");
+            }
+        }
+    }
+    infos
+}
+
+/// Re-encodes `frame` with INFO_LOGONNOTIFY cleared, if it is a Client Info PDU that sets it.
+fn client_info_without_logon_notify(frame: &[u8]) -> Option<Vec<u8>> {
+    let request = decode::<X224<pdu::mcs::SendDataRequest<'_>>>(frame).ok()?.0;
+    let mut info = decode::<pdu::rdp::ClientInfoPdu>(&request.user_data).ok()?;
+    if !info.client_info.flags.contains(ClientInfoFlags::LOGON_NOTIFY) {
+        return None;
+    }
+    info.client_info.flags.remove(ClientInfoFlags::LOGON_NOTIFY);
+    let user_data = encode_vec(&info).ok()?;
+    encode_vec(&X224(pdu::mcs::SendDataRequest {
+        user_data: user_data.into(),
+        ..request
+    }))
+    .ok()
+}
+
+/// Re-encodes `frame` with LONG_CREDENTIALS_SUPPORTED set in its General Capability Set, if it is a Confirm Active
+/// PDU.
+fn confirm_active_with_long_credentials(frame: &[u8]) -> Option<Vec<u8>> {
+    let request = decode::<X224<pdu::mcs::SendDataRequest<'_>>>(frame).ok()?.0;
+    let mut header = decode::<ShareControlHeader>(&request.user_data).ok()?;
+    let ShareControlPdu::ClientConfirmActive(confirm) = &mut header.share_control_pdu else {
+        return None;
+    };
+    let general = confirm
+        .pdu
+        .capability_sets
+        .iter_mut()
+        .find_map(|capability| match capability {
+            pdu::rdp::capability_sets::CapabilitySet::General(general) => Some(general),
+            _ => None,
+        })?;
+    general
+        .extra_flags
+        .insert(GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED);
+    let user_data = encode_vec(&header).ok()?;
+    encode_vec(&X224(pdu::mcs::SendDataRequest {
+        user_data: user_data.into(),
+        ..request
+    }))
+    .ok()
+}
+
+/// Replaces the first frame the client writes that `rewrite` changes, before TLS encrypts it.
+///
+/// The replacement keeps the frame's length, so the byte counts the writer sees stay true.
+struct ClientFrameRewrite<S> {
+    inner: S,
+    rewrite: Option<FrameRewrite>,
+    rewritten: Arc<AtomicBool>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for ClientFrameRewrite<S> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for ClientFrameRewrite<S> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let patched = this
+            .rewrite
+            .filter(|_| !this.rewritten.load(Ordering::Relaxed))
+            .and_then(|rewrite| rewrite(buf))
+            .filter(|patched| patched.len() == buf.len());
+        let Some(patched) = patched else {
+            return Pin::new(&mut this.inner).poll_write(cx, buf);
+        };
+        let written = Pin::new(&mut this.inner).poll_write(cx, &patched);
+        if let Poll::Ready(Ok(written)) = written
+            && written == patched.len()
+        {
+            this.rewritten.store(true, Ordering::Relaxed);
+        }
+        written
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 /// Connects a client to `server_addr` and completes the handshake, returning the state
 /// needed to drive the connection.
 ///
@@ -3320,6 +3620,11 @@ impl CookieProbe {
             }
         }
         Ok(false)
+    }
+
+    /// The Save Session Info PDUs that arrive while reading for `window`, in order.
+    async fn save_session_infos_within(&mut self, window: Duration) -> Vec<SaveSessionInfoPdu> {
+        save_session_infos_within(&mut self.stage, &mut self.image, &mut self.framed, window).await
     }
 
     /// Whether a cookie arrives while reading for `window`. A connection that ends first fails
@@ -3758,7 +4063,7 @@ async fn hybrid_ex_handshake_preserves_early_authorization_across_validator_chan
         .await
         .expect("HYBRID_EX session finalized despite validator change after handshake");
         ev.send(ServerEvent::Quit("bye".into())).unwrap();
-        let _ = framed.read_pdu().await;
+        while framed.read_pdu().await.is_ok() {}
     };
     tokio::time::timeout(
         Duration::from_secs(10),
@@ -5401,6 +5706,10 @@ async fn assert_refused_and_incumbent_alive(
 ) {
     use tokio::io::AsyncReadExt as _;
 
+    incumbent
+        .read_pdu()
+        .await
+        .expect("the incumbent's logon notification, sent at activation");
     let mut stream = TcpStream::connect(server_addr).await.expect("TCP connect");
     let mut buf = [0u8; 16];
     assert!(

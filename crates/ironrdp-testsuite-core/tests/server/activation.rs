@@ -11,7 +11,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
-use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu};
+use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu};
 use ironrdp_pdu::x224::{X224, X224Data};
 use ironrdp_server::{
     DesktopSize, DisplayContext, DisplayUpdate, KeyboardEvent, MouseEvent, RdpServer, RdpServerDisplay,
@@ -326,6 +326,21 @@ async fn play_client_after_connection_request_with_network(
         CLIENT_SIZE,
     )
     .await;
+    let (_, logon) = framed.read_frame().await.unwrap();
+    let logon = mcs::decode_send_data_indication(&logon)
+        .unwrap()
+        .decode_user_data::<ShareControlHeader>()
+        .unwrap();
+    assert!(
+        matches!(
+            logon.share_control_pdu,
+            ShareControlPdu::Data(ShareDataHeader {
+                share_data_pdu: ShareDataPdu::SaveSessionInfo(_),
+                ..
+            })
+        ),
+        "expected the logon notification"
+    );
     ClientActivation {
         capabilities: demand.pdu.capability_sets,
         user_channel_id,

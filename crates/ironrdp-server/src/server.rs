@@ -3495,6 +3495,77 @@ impl RdpServer {
         Ok(())
     }
 
+    /// Tells the client that the user has logged on, as [MS-RDPBCGR 3.3.5.10.1] "Sending Save Session Info PDU"
+    /// asks after every logon.
+    ///
+    /// A client that set INFO_LOGONNOTIFY gets the logged-on user and domain, in the long form when it supports
+    /// long credentials.
+    /// Any other client gets a plain notification, as does one whose user this server does not know or whose user
+    /// or domain does not fit the logon information.
+    ///
+    /// [MS-RDPBCGR 3.3.5.10.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/3061e2df-ae7c-41fe-8743-650a9cb70365
+    async fn send_logon_notification(
+        &self,
+        writer: &mut impl FramedWrite,
+        client_info_flags: rdp::client_info::ClientInfoFlags,
+        long_credentials: bool,
+        io_channel_id: u16,
+        user_channel_id: u16,
+    ) -> ServerResult<()> {
+        use rdp::session_info::{InfoData, InfoType, LogonInfo, LogonInfoVersion1, LogonInfoVersion2};
+
+        let encode = |info_type, info_data| {
+            let pdu = rdp::headers::ShareDataPdu::SaveSessionInfo(rdp::session_info::SaveSessionInfoPdu {
+                info_type,
+                info_data,
+            });
+            encode_share_data_pdu(pdu, user_channel_id, io_channel_id, user_channel_id)
+        };
+
+        let logon_info = if client_info_flags.contains(rdp::client_info::ClientInfoFlags::LOGON_NOTIFY) {
+            self.pending_authenticated_credentials
+                .lock()
+                .expect("authenticated credentials lock poisoned")
+                .as_ref()
+                .map(|credentials| LogonInfo {
+                    // The auto-reconnect logon ID is the only session identifier this server has.
+                    session_id: self.auto_reconnect_cookie.as_ref().map_or(0, |cookie| cookie.logon_id),
+                    user_name: credentials.username.clone(),
+                    domain_name: credentials.domain.clone().unwrap_or_default(),
+                })
+        } else {
+            None
+        };
+
+        let logon = logon_info.map(|logon_info| {
+            if long_credentials {
+                (
+                    InfoType::LogonLong,
+                    InfoData::LogonInfoV2(LogonInfoVersion2 { logon_info }),
+                )
+            } else {
+                (InfoType::Logon, InfoData::LogonInfoV1(LogonInfoVersion1 { logon_info }))
+            }
+        });
+        let plain = || encode(InfoType::PlainNotify, InfoData::PlainNotify).map(|data| (InfoType::PlainNotify, data));
+        let (info_type, data) = match logon.map(|(info_type, info_data)| (info_type, encode(info_type, info_data))) {
+            Some((info_type, Ok(data))) => (info_type, data),
+            Some((_, Err(error))) => {
+                debug!(%error, "Logon information does not fit, sending a plain logon notification");
+                plain()?
+            }
+            None => plain()?,
+        };
+
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("send logon notification", e))?;
+        debug!(?info_type, "Sent logon notification (Save Session Info PDU)");
+
+        Ok(())
+    }
+
     async fn send_next_auto_reconnect_cookie(
         &mut self,
         conn: &mut ConnectionState,
@@ -6381,6 +6452,25 @@ impl RdpServer {
         conn.client_supports_errinfo = result
             .client_early_capability_flags
             .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
+        // The user logs on once per connection, so a reactivation does not notify the client again.
+        if !result.reactivation {
+            let long_credentials = result.capabilities.iter().any(|capability| {
+                matches!(
+                    capability,
+                    CapabilitySet::General(general)
+                        if general.extra_flags.contains(GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED)
+                )
+            });
+            self.send_logon_notification(
+                writer,
+                result.client_info_flags,
+                long_credentials,
+                result.io_channel_id,
+                result.user_channel_id,
+            )
+            .await?;
+        }
+
         // A client can join the rdpsnd channel although it asked for no audio redirection, as some do for device
         // redirection, so the channel is left joined but never started: no Server Audio Formats PDU goes out, and the
         // sound handler is never asked to start.
