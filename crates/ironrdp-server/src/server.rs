@@ -6439,59 +6439,64 @@ impl RdpServer {
     {
         debug!("Client accepted");
 
-        let is_auto_reconnect = match result.auto_reconnect.as_ref() {
-            None => false,
-            Some(_) if self.connection_binder.is_some() => {
-                // The acceptor skips capability-exchange binding for every auto-reconnect attempt, so neither a
-                // verified cookie nor a fallback logon can be bound.
-                warn!("Auto-reconnect cannot restore a credential-bound connection safely");
-                send_access_denied(acceptor, writer).await?;
-                return Err(ServerError::reason(
-                    "auto-reconnect validation",
-                    "unsupported with a connection binder",
-                ));
-            }
-            Some(reconnect) if self.verify_auto_reconnect_cookie(reconnect) => {
-                debug!("Auto-reconnect cookie validation accepted");
-                // UNTESTED: The acceptor kept the client's credentials in case the cookie failed.
-                // This arm and the fallback below take them, so the acceptor doesn't hold them for the session.
-                // No test can see the acceptor from here, so when changing either arm, check that it still takes them.
-                drop(acceptor.take_received_credentials());
-                true
-            }
-            Some(_) => {
-                // MS-RDPBCGR 3.3.5.3.11: "If logon with the cookie fails, the credentials supplied in the Client Info
-                // PDU SHOULD be used".
-                // A cookie issued before the server restarted never verifies, so refusing here locks out every client
-                // that auto-reconnects across a restart.
-                // The connection continues exactly like one that sent no cookie, so the credential validator decides.
-                // After CredSSP with HYBRID_EX it has already run on the delegated credentials.
-                // Otherwise the acceptor deferred it to the cookie, and it runs now on the credentials it would have
-                // checked without one, the delegated ones under plain HYBRID and the Client Info ones otherwise.
-                debug!("Auto-reconnect cookie not recognized; continuing with a normal logon");
-                let validated = self
-                    .pending_authenticated_credentials
-                    .lock()
-                    .expect("authenticated credentials lock poisoned")
-                    .is_some();
-                // Taken whether or not the validator runs, so the acceptor doesn't keep them for the session.
-                let received = acceptor.take_received_credentials();
-                // UNTESTED: Under plain HYBRID the validator runs here on the credentials CredSSP delegated, with their
-                // origin, as it does for a TLS client on the Client Info credentials.
-                // No IronRDP client negotiates plain HYBRID, because it always offers HYBRID_EX, so no test reaches it.
-                // When changing this arm or the acceptor's handling of received credentials, check that plain HYBRID
-                // still brings the delegated credentials here.
-                if self.credential_validator.is_some() && !validated {
-                    if let Err(error) = self.prepare_authenticated_connection(received).await {
-                        warn!(%error, "Normal logon after an unrecognized auto-reconnect cookie failed");
-                        send_access_denied(acceptor, writer).await?;
-                        return Err(ServerError::reason(
-                            "auto-reconnect validation",
-                            "cookie rejected and the credentials did not validate",
-                        ));
-                    }
+        let is_auto_reconnect = {
+            // UNTESTED: For a client that presented an auto-reconnect cookie, the acceptor keeps its credentials past
+            // the result in case the cookie fails.
+            // They're taken here whatever the cookie's outcome, and dropped at the end of this block, so neither the
+            // acceptor nor this function, which runs the whole session, holds them after the cookie is checked.
+            // No test can see the server's acceptor, so when changing this, check that they're still taken here.
+            let received = acceptor.take_received_credentials();
+            match result.auto_reconnect.as_ref() {
+                None => false,
+                Some(_) if self.connection_binder.is_some() => {
+                    // The acceptor skips capability-exchange binding for every auto-reconnect attempt, so neither a
+                    // verified cookie nor a fallback logon can be bound.
+                    warn!("Auto-reconnect cannot restore a credential-bound connection safely");
+                    send_access_denied(acceptor, writer).await?;
+                    return Err(ServerError::reason(
+                        "auto-reconnect validation",
+                        "unsupported with a connection binder",
+                    ));
                 }
-                false
+                Some(reconnect) if self.verify_auto_reconnect_cookie(reconnect) => {
+                    debug!("Auto-reconnect cookie validation accepted");
+                    true
+                }
+                Some(_) => {
+                    // MS-RDPBCGR 3.3.5.3.11: "If logon with the cookie fails, the credentials supplied in the Client
+                    // Info PDU SHOULD be used".
+                    // A cookie issued before the server restarted never verifies, so refusing here locks out every
+                    // client that auto-reconnects across a restart.
+                    // The connection continues exactly like one that sent no cookie, so the credential validator
+                    // decides.
+                    // After CredSSP with HYBRID_EX it has already run on the delegated credentials.
+                    // Otherwise the acceptor deferred it to the cookie, and it runs now on the credentials it would
+                    // have checked without one, the delegated ones under plain HYBRID and the Client Info ones
+                    // otherwise.
+                    debug!("Auto-reconnect cookie not recognized; continuing with a normal logon");
+                    let validated = self
+                        .pending_authenticated_credentials
+                        .lock()
+                        .expect("authenticated credentials lock poisoned")
+                        .is_some();
+                    // UNTESTED: Under plain HYBRID the validator runs here on the credentials CredSSP delegated, with
+                    // their origin, as it does for a TLS client on the Client Info credentials.
+                    // FreeRDP before 3.32 negotiates plain HYBRID by default, but no IronRDP client can, because it
+                    // always offers HYBRID_EX, so no test reaches it.
+                    // When changing this arm or the acceptor's handling of received credentials, check that plain
+                    // HYBRID still brings the delegated credentials here.
+                    if !validated {
+                        if let Err(error) = self.prepare_authenticated_connection(received).await {
+                            warn!(%error, "Normal logon after an unrecognized auto-reconnect cookie failed");
+                            send_access_denied(acceptor, writer).await?;
+                            return Err(ServerError::reason(
+                                "auto-reconnect validation",
+                                "cookie rejected and the credentials did not validate",
+                            ));
+                        }
+                    }
+                    false
+                }
             }
         };
 

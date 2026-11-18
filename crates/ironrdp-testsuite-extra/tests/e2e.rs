@@ -4549,6 +4549,11 @@ fn stale_auto_reconnect_cookie() -> ServerAutoReconnect {
 
 /// A client that comes back with a cookie the server can't verify, such as one issued before the server restarted, logs
 /// on with its credentials instead, and is sent a fresh cookie at activation like any other connection.
+///
+/// MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU: "If logon with the cookie fails, the credentials supplied in the
+/// Client Info PDU SHOULD be used".
+///
+/// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
 // oracle: spec MS-RDPBCGR §3.3.5.3.11
 #[tokio::test]
 async fn an_unverifiable_auto_reconnect_cookie_falls_back_to_a_normal_logon() {
@@ -4565,6 +4570,9 @@ async fn an_unverifiable_auto_reconnect_cookie_falls_back_to_a_normal_logon() {
 
 /// With a credential validator, a client whose cookie fails logs on when the validator accepts its Client Info
 /// credentials.
+/// MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU says the server SHOULD use them when the cookie fails.
+///
+/// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
 // oracle: spec MS-RDPBCGR §3.3.5.3.11
 #[tokio::test]
 async fn an_unverifiable_auto_reconnect_cookie_logs_on_with_credentials_the_validator_accepts() {
@@ -4594,6 +4602,9 @@ async fn an_unverifiable_auto_reconnect_cookie_logs_on_with_credentials_the_vali
 
 /// The same under NLA: CredSSP with HYBRID_EX runs the credential validator on the delegated credentials before the
 /// cookie is read, and a cookie that then fails doesn't run it again.
+/// The client still logs on, as MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU asks when the cookie fails.
+///
+/// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
 #[tokio::test]
 async fn an_unverifiable_auto_reconnect_cookie_logs_on_after_nla() {
     let (mut server, display_tx) = hybrid_server();
