@@ -24,8 +24,8 @@
     "@sveltejs/vite-plugin-svelte": "^6.2.4",
     "@tsconfig/svelte": "^5.0.4",
     "@typescript-eslint/eslint-plugin": "^8.25.0",
+    "@typescript-eslint/parser": "^8.57.2",
     "@vitest/browser-playwright": "^4.1.4",
-    "@vitest/ui": "^4.1.4",
     "eslint": "^9.21.0",
     "eslint-config-prettier": "^9.0.0",
     "eslint-plugin-prettier": "^5.0.1",
@@ -40,7 +40,6 @@
     "tslib": "^2.4.1",
     "typescript": "~5.9.3",
     "vite": "^6.3.0",
-    "vite-plugin-dts": "^4.5.0",
     "vite-plugin-top-level-await": "^1.2.2",
     "vitest": "^4.1.2",
     "vitest-browser-svelte": "^2.1.0"
