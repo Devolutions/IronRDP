@@ -32,6 +32,7 @@ pub mod ffi {
         }
     }
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
     pub struct ConnectionResult(
         pub(crate) Option<ironrdp::connector::ConnectionResult>,

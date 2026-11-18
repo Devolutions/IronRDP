@@ -101,8 +101,9 @@ Android audio is unsupported so that the existing Android API 21 baseline remain
 ## Migrating from 2026.10.19
 
 - Properties replace the `GetX()` and `SetX()` methods they duplicated.
-- Only these types are `IDisposable`: `ActiveStage`, `ActiveStageOutput`, `ActiveStageOutputIterator`, `ClipboardMessage`, `ClipboardSvcMessage`, `CredsspProcessGenerator`, `DecodedImage`, `DecodedPointer`, `FfiFileContentsResponse`, `FormatDataResponse`, `PenFrameBuilder`, `TouchFrameBuilder`, `VecU8`, `WinCliprdr` and `WriteBuf`.
+- These types are `IDisposable`: `ActiveStage`, `ActiveStageOutput`, `ActiveStageOutputIterator`, `ClientConnectorState`, `ClipboardMessage`, `ClipboardSvcMessage`, `ConnectionResult`, `CredsspProcessGenerator`, `DecodedImage`, `DecodedPointer`, `FfiFileContentsResponse`, `FormatDataResponse`, `NativeAudio`, `PenFrameBuilder`, `TouchFrameBuilder`, `VecU8`, `WinCliprdr` and `WriteBuf`.
   Every other type is released by its finalizer, so drop `using` and `Dispose()` on it.
+- `ClientConnector` remains finalizer-managed because its `NextPduHint` and `DynState` views borrow from it, so generated .NET code cannot safely expose `Dispose` while those views retain their source.
 - Dispose `WinCliprdr` on the thread that created it, because only that thread can remove its window subclass.
 - Dispose a `CredsspProcessGenerator` before the next call on its `CredsspSequence`.
 - `DecodedImage.Data` is gone: size a buffer with `DataSize` and copy into it with `FillData`.

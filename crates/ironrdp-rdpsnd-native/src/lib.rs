@@ -17,6 +17,6 @@ pub mod error;
 mod session_volume;
 
 #[cfg(feature = "capture")]
-pub use capture::{RdpeaiCaptureBackend, is_pcm_capture_format, take_capture_packets};
+pub use capture::{CaptureStopSignal, RdpeaiCaptureBackend, is_pcm_capture_format, take_capture_packets};
 pub use device::{AudioDeviceInfo, DeviceSelector, Direction, list_devices};
 pub use error::{RdpsndNativeError, RdpsndNativeErrorKind, RdpsndNativeResult};

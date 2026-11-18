@@ -14,7 +14,7 @@ mod native {
     use ironrdp::svc::SvcMessage;
     use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler, RdpeaiClient};
     use ironrdp_rdpsnd_native::DeviceSelector;
-    use ironrdp_rdpsnd_native::capture::{CaptureConfig, RdpeaiCaptureBackend};
+    use ironrdp_rdpsnd_native::capture::{CaptureConfig, CaptureStopSignal, RdpeaiCaptureBackend};
     use ironrdp_rdpsnd_native::cpal::{PlaybackConfig, RdpsndBackend};
     use tracing::warn;
 
@@ -383,18 +383,34 @@ mod native {
                 device: shared.input_device.clone(),
             };
             let backend = RdpeaiCaptureBackend::with_config(config);
+            let stop_signal = backend.stop_signal();
             let sender = Arc::clone(shared);
+            let uplink_stop_signal = stop_signal.clone();
             let client = RdpeaiClient::new(
                 Box::new(BoundedCapture(backend)),
-                Box::new(move |_, messages| sender.enqueue_capture(token, messages)),
+                Box::new(move |_, messages| enqueue_capture_for_channel(&sender, token, messages, &uplink_stop_signal)),
             )
             .with_ordered_replies();
             Some(CaptureChannel {
                 client,
                 token,
                 shared: Arc::clone(shared),
+                stop_signal,
             })
         }
+    }
+
+    fn enqueue_capture_for_channel(
+        shared: &AudioShared,
+        token: u64,
+        messages: Vec<SvcMessage>,
+        stop_signal: &CaptureStopSignal,
+    ) -> PduResult<()> {
+        let result = shared.enqueue_capture(token, messages);
+        if result.is_err() {
+            stop_signal.request_stop();
+        }
+        result
     }
 
     impl DvcChannelListener for CaptureListener {
@@ -413,6 +429,7 @@ mod native {
         client: RdpeaiClient,
         token: u64,
         shared: Arc<AudioShared>,
+        stop_signal: CaptureStopSignal,
     }
 
     ironrdp_core::impl_as_any!(CaptureChannel);
@@ -433,6 +450,7 @@ mod native {
                 Err(error) => {
                     warn!(%error, "Audio capture channel failed; stopping capture");
                     self.shared.failed_capture.store(self.token, Ordering::Release);
+                    self.stop_signal.request_stop();
                     Ok(Vec::new())
                 }
             }
@@ -912,6 +930,8 @@ mod native {
             use ironrdp_rdpeai::pdu::{DataPdu, MAX_DATA_PACKET_SIZE, RdpeaiPdu};
 
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let backend = RdpeaiCaptureBackend::new();
+            let stop_signal = backend.stop_signal();
             let token = (1u64 << 32) | 7;
             let packet = || {
                 ironrdp::dvc::encode_dvc_messages(
@@ -925,13 +945,30 @@ mod native {
                 .expect("encode capture batch")
             };
             let mut accepted = 0;
-            while audio.0.enqueue_capture(token, packet()).is_ok() {
+            while enqueue_capture_for_channel(&audio.0, token, packet(), &stop_signal).is_ok() {
                 accepted += 1;
             }
             assert!(accepted > 0 && accepted < 100);
+            assert!(stop_signal.is_requested());
             assert!(audio.0.queued_bytes.load(Ordering::Acquire) <= CAPTURE_QUEUE_BYTE_LIMIT);
             while audio.0.try_recv_capture().is_ok() {}
             assert_eq!(audio.0.queued_bytes.load(Ordering::Acquire), 0);
+        }
+
+        // oracle: regression #2469
+        #[test]
+        fn capture_message_queue_overflow_requests_worker_stop() {
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let backend = RdpeaiCaptureBackend::new();
+            let stop_signal = backend.stop_signal();
+            let token = (1u64 << 32) | 7;
+            for _ in 0..CAPTURE_QUEUE_CAPACITY {
+                audio.0.enqueue_capture(token, Vec::new()).expect("queue has space");
+            }
+
+            assert!(!stop_signal.is_requested());
+            assert!(enqueue_capture_for_channel(&audio.0, token, Vec::new(), &stop_signal).is_err());
+            assert!(stop_signal.is_requested());
         }
 
         // oracle: regression #2469
@@ -1083,7 +1120,7 @@ mod native {
 
         // oracle: regression #2469
         #[test]
-        fn stop_closes_capture_before_waiting_for_playback() {
+        fn dropping_active_stage_closes_capture_before_waiting_for_playback() {
             struct StopSignal(mpsc::Sender<()>);
 
             impl RdpeaiCaptureHandler for StopSignal {
@@ -1113,15 +1150,31 @@ mod native {
                 client,
                 token,
                 shared: Arc::clone(&audio.0),
+                stop_signal: RdpeaiCaptureBackend::new().stop_signal(),
             };
-            let mut stage = stage_with_capture_channel(channel);
+            let stage = stage_with_capture_channel(channel);
+            let stage = crate::session::ffi::ActiveStage(
+                stage,
+                {
+                    let mut builder = crate::connector::config::ffi::ConfigBuilder::default();
+                    builder.with_username_and_password("user", "password");
+                    builder.set_desktop_size(4, 8);
+                    builder.set_client_name("test");
+                    builder.set_client_dir("");
+                    let performance_flags = crate::connector::config::ffi::PerformanceFlags::new_default();
+                    builder.set_performance_flags(&performance_flags);
+                    let config = builder.build().unwrap_or_else(|_| panic!("build test config"));
+                    ironrdp::connector::connection_activation::ConnectionActivationFactory::new(config.connector, 0, 0)
+                },
+                Some(Arc::clone(&audio.0)),
+            );
             let backend = Arc::new(Mutex::new(RdpsndBackend::with_config(PlaybackConfig::default())));
             *audio.0.playback_backend.lock().unwrap() = Some(Arc::downgrade(&backend));
             let playback_guard = backend.lock().unwrap();
-            let worker = std::thread::spawn(move || stop_audio(&mut stage, &audio.0).is_ok());
+            let worker = std::thread::spawn(move || drop(stage));
             let closed_before_unlock = closed_rx.recv_timeout(Duration::from_secs(2)).is_ok();
             drop(playback_guard);
-            assert!(worker.join().expect("stop audio thread"));
+            worker.join().expect("drop active stage");
             assert!(closed_before_unlock);
         }
 
@@ -1147,6 +1200,7 @@ mod native {
                 client,
                 token,
                 shared: Arc::clone(&audio.0),
+                stop_signal: RdpeaiCaptureBackend::new().stop_signal(),
             };
             channel.start(7).expect("start capture channel");
             for pdu in [
@@ -1216,6 +1270,7 @@ mod native {
                 client,
                 token,
                 shared: Arc::clone(&audio.0),
+                stop_signal: RdpeaiCaptureBackend::new().stop_signal(),
             };
             channel.start(7).expect("start capture channel");
 

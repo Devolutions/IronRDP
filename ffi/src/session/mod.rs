@@ -871,6 +871,16 @@ pub mod ffi {
     pub struct GracefulDisconnectReason(pub ironrdp::session::GracefulDisconnectReason);
 }
 
+impl Drop for ffi::ActiveStage {
+    fn drop(&mut self) {
+        if let Some(audio) = self.2.as_ref()
+            && crate::audio::stop_audio(&mut self.0, audio).is_err()
+        {
+            tracing::warn!("Failed to stop native audio while dropping active stage");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;

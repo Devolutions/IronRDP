@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::sync::{Arc, Mutex, mpsc};
-use std::thread::{self, JoinHandle};
+use std::thread::{self, JoinHandle, Thread};
 
 use cpal::traits::{DeviceTrait as _, StreamTrait as _};
 use cpal::{Stream, StreamConfig};
@@ -52,6 +52,7 @@ pub struct RdpeaiCaptureBackend {
     formats: Vec<AudioFormat>,
     stream_handle: Option<JoinHandle<()>>,
     stream_ended: Arc<AtomicBool>,
+    stop_requested: CaptureStopSignal,
     /// Capture WAVEFORMATEX established by a successful Open (or last restart).
     open_capture_format: Option<AudioFormat>,
     /// Shared sink + packet size for the capture callback thread.
@@ -85,9 +86,17 @@ impl RdpeaiCaptureBackend {
             formats: default_capture_formats(),
             stream_handle: None,
             stream_ended: Arc::new(AtomicBool::new(false)),
+            stop_requested: CaptureStopSignal::new(),
             open_capture_format: None,
             sink_state: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Returns a nonblocking signal that stops capture without joining the worker.
+    ///
+    /// Once requested, this backend will not start capture again.
+    pub fn stop_signal(&self) -> CaptureStopSignal {
+        self.stop_requested.clone()
     }
 
     /// Stop the worker thread without clearing an already-installed sink.
@@ -110,6 +119,10 @@ impl RdpeaiCaptureBackend {
     fn start_stream(&mut self, format: &AudioFormat) -> Result<(), String> {
         self.stop_worker();
 
+        if self.stop_requested.is_requested() {
+            return Err("capture stop was requested".to_owned());
+        }
+
         if !is_pcm_capture_format(format) {
             return Err(format!("unsupported capture wave format: {:?}", format.format));
         }
@@ -131,12 +144,24 @@ impl RdpeaiCaptureBackend {
         let stream_ended = Arc::new(AtomicBool::new(false));
         self.stream_ended = Arc::clone(&stream_ended);
         let sink_state = Arc::clone(&self.sink_state);
+        let stop_requested = self.stop_requested.clone();
 
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
 
-        self.stream_handle = Some(thread::spawn(move || {
-            run_capture(&selector, &config, &sink_state, &stream_ended, ready_tx);
-        }));
+        let handle = thread::spawn(move || {
+            run_capture(
+                &selector,
+                &config,
+                &sink_state,
+                &stream_ended,
+                &stop_requested,
+                ready_tx,
+            );
+        });
+        if let Ok(mut worker_thread) = self.stop_requested.worker_thread.lock() {
+            *worker_thread = Some(handle.thread().clone());
+        }
+        self.stream_handle = Some(handle);
 
         self.wait_for_stream_start(ready_rx)
     }
@@ -208,6 +233,37 @@ impl RdpeaiCaptureBackend {
 impl Drop for RdpeaiCaptureBackend {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+/// A nonblocking request to stop an [`RdpeaiCaptureBackend`] stream.
+#[derive(Clone)]
+pub struct CaptureStopSignal {
+    requested: Arc<AtomicBool>,
+    worker_thread: Arc<Mutex<Option<Thread>>>,
+}
+
+impl CaptureStopSignal {
+    fn new() -> Self {
+        Self {
+            requested: Arc::new(AtomicBool::new(false)),
+            worker_thread: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Requests that the capture worker stop at its next callback or wake-up.
+    pub fn request_stop(&self) {
+        self.requested.store(true, Ordering::Release);
+        if let Ok(worker_thread) = self.worker_thread.try_lock()
+            && let Some(worker_thread) = worker_thread.as_ref()
+        {
+            worker_thread.unpark();
+        }
+    }
+
+    /// Returns whether capture has been asked to stop.
+    pub fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
     }
 }
 
@@ -392,16 +448,17 @@ fn run_capture(
     config: &StreamConfig,
     sink_state: &Arc<Mutex<Option<SinkState>>>,
     ended: &Arc<AtomicBool>,
+    stop_requested: &CaptureStopSignal,
     ready: mpsc::SyncSender<Result<(), String>>,
 ) {
     let mut ready = Some(ready);
     let device_lost = Arc::new(AtomicBool::new(false));
 
-    while !ended.load(Ordering::Relaxed) {
+    while !ended.load(Ordering::Relaxed) && !stop_requested.is_requested() {
         let opened = device::open_device(selector, Direction::Input)
             .ok_or_else(|| format!("audio input device {selector} not found"))
             .and_then(|device| {
-                let stream = build_input_stream(&device, config, sink_state, &device_lost)?;
+                let stream = build_input_stream(&device, config, sink_state, &device_lost, stop_requested)?;
                 stream
                     .play()
                     .map_err(|error| format!("could not start the audio input stream: {error}"))?;
@@ -430,7 +487,11 @@ fn run_capture(
             device_id.as_deref(),
             ended,
             &device_lost,
-            || {},
+            || {
+                if stop_requested.is_requested() {
+                    ended.store(true, Ordering::Release);
+                }
+            },
         );
         drop(stream);
     }
@@ -454,6 +515,7 @@ fn build_input_stream(
     config: &StreamConfig,
     sink_state: &Arc<Mutex<Option<SinkState>>>,
     device_lost: &Arc<AtomicBool>,
+    stop_requested: &CaptureStopSignal,
 ) -> Result<Stream, String> {
     let capture_thread = thread::current();
     let err_fn = {
@@ -473,7 +535,8 @@ fn build_input_stream(
         config,
         {
             let sink_state = Arc::clone(sink_state);
-            move |data: &[i16], _| push_samples(&sink_state, data.iter().copied())
+            let stop_requested = stop_requested.clone();
+            move |data: &[i16], _| push_samples(&sink_state, data.iter().copied(), &stop_requested)
         },
         err_fn.clone(),
         None,
@@ -484,10 +547,13 @@ fn build_input_stream(
         Err(i16_error) => {
             debug!(%i16_error, "I16 input stream unsupported; trying F32");
             let sink_state = Arc::clone(sink_state);
+            let stop_requested = stop_requested.clone();
             device
                 .build_input_stream(
                     config,
-                    move |data: &[f32], _| push_samples(&sink_state, data.iter().copied().map(f32_to_i16)),
+                    move |data: &[f32], _| {
+                        push_samples(&sink_state, data.iter().copied().map(f32_to_i16), &stop_requested)
+                    },
                     err_fn,
                     None,
                 )
@@ -498,7 +564,15 @@ fn build_input_stream(
     }
 }
 
-fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactSizeIterator<Item = i16>) {
+fn push_samples(
+    sink_state: &Arc<Mutex<Option<SinkState>>>,
+    samples: impl ExactSizeIterator<Item = i16>,
+    stop_requested: &CaptureStopSignal,
+) {
+    if stop_requested.is_requested() {
+        return;
+    }
+
     // The packets are encoded and handed to the sink under the lock, so a format change, which takes
     // the same lock, separates the packets of the old encoding from those of the new one. The sink
     // only queues the packets for the session loop (a non-blocking `try_send`).
@@ -519,6 +593,10 @@ fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactS
     }
 
     for packet in take_capture_packets(&mut state.buffer, state.packet_size) {
+        if stop_requested.is_requested() {
+            break;
+        }
+
         let packet = match state.encoder.as_mut() {
             None => packet,
             Some(encoder) => {
@@ -588,13 +666,15 @@ mod tests {
         let (finished_tx, finished_rx) = mpsc::sync_channel(1);
         let mut worker = None;
         let sink_state = Arc::clone(&backend.sink_state);
+        let stop_signal = backend.stop_signal();
         let mut confirm = || {
             let sink_state = Arc::clone(&sink_state);
+            let stop_signal = stop_signal.clone();
             let started_tx = started_tx.clone();
             let finished_tx = finished_tx.clone();
             worker = Some(thread::spawn(move || {
                 started_tx.send(()).unwrap();
-                push_samples(&sink_state, [1i16, 2].into_iter());
+                push_samples(&sink_state, [1i16, 2].into_iter(), &stop_signal);
                 finished_tx.send(()).unwrap();
             }));
             started_rx.recv().unwrap();

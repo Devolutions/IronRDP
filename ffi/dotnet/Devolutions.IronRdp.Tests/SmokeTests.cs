@@ -462,6 +462,13 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => NativeAudio.New(false, false, "", "", 0));
         });
 
+        // oracle: ffi/INTENT.md "Deterministic disposal in .NET bindings"
+        yield return ("native audio state owners expose deterministic disposal", () =>
+        {
+            True(typeof(IDisposable).IsAssignableFrom(typeof(ClientConnectorState)), "connector state is disposable");
+            True(typeof(IDisposable).IsAssignableFrom(typeof(ConnectionResult)), "connection result is disposable");
+        });
+
         // oracle: regression #2469
         yield return ("native audio is attached to one connector", () =>
         {
