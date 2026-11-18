@@ -366,21 +366,28 @@ fn maximum_desktop_dimensions_are_accepted() {
     )));
 }
 
-#[repr(u8)]
 #[derive(Clone, Copy, Debug)]
 enum SecurityFlag {
-    Encrypted = 0x80,
-    SecureChecksum = 0x40,
+    Encrypted,
+    SecureChecksum,
+}
+
+impl SecurityFlag {
+    fn bit(self) -> u8 {
+        match self {
+            SecurityFlag::Encrypted => 0x80,
+            SecurityFlag::SecureChecksum => 0x40,
+        }
+    }
 }
 
 #[rstest]
-#[case::client_encrypted(PduSource::Client, SecurityFlag::Encrypted)]
-#[case::server_encrypted(PduSource::Server, SecurityFlag::Encrypted)]
-#[case::client_secure_checksum(PduSource::Client, SecurityFlag::SecureChecksum)]
-#[case::server_secure_checksum(PduSource::Server, SecurityFlag::SecureChecksum)]
-fn fastpath_security_flags_are_rejected_during_seek(#[case] source: PduSource, #[case] flag: SecurityFlag) {
+fn fastpath_security_flags_are_rejected_during_seek(
+    #[values(PduSource::Client, PduSource::Server)] source: PduSource,
+    #[values(SecurityFlag::Encrypted, SecurityFlag::SecureChecksum)] flag: SecurityFlag,
+) {
     // oracle: mutant The mutant accepts security-flagged Fast-Path PDUs in either source direction.
-    assert_fastpath_security_flags_rejected(source, flag as u8);
+    assert_fastpath_security_flags_rejected(source, flag.bit());
 }
 
 fn assert_fastpath_security_flags_rejected(source: PduSource, flag: u8) {
