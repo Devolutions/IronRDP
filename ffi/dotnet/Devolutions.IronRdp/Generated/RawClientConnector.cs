@@ -30,6 +30,9 @@ internal partial struct ClientConnector
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ClientConnector_with_dynamic_channel_pipe_proxy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultVoidIronRdpError WithDynamicChannelPipeProxy(ClientConnector* handle, DvcPipeProxyConfig* config);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ClientConnector_with_dynamic_channel_direct", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVoidIronRdpError WithDynamicChannelDirect(ClientConnector* handle, DirectDvcConfig* config);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ClientConnector_should_perform_security_upgrade", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultBoolIronRdpError ShouldPerformSecurityUpgrade(ClientConnector* handle);
 

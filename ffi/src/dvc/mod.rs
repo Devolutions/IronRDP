@@ -1,3 +1,4 @@
+pub mod direct_channel;
 pub mod dvc_pipe_proxy_message_queue;
 
 #[diplomat::bridge]

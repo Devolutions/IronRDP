@@ -14,6 +14,12 @@ internal static class ConnectionHelpers
     {
         connector.WithDynamicChannelDisplayControl();
 
+        var directDvc = config.DirectDvc;
+        if (directDvc != null)
+        {
+            connector.WithDynamicChannelDirect(directDvc);
+        }
+
         var dvcPipeProxy = config.DvcPipeProxy;
         if (dvcPipeProxy != null)
         {

@@ -274,6 +274,33 @@ public partial class ClientConnector
     }
 
     /// <exception cref="IronRdpException"></exception>
+    public void WithDynamicChannelDirect(DirectDvcConfig config)
+    {
+        unsafe
+        {
+            if (config == null) throw new ArgumentNullException(nameof(config));
+            BorrowLease<Raw.ClientConnector>? selfLease = null;
+            BorrowLease<Raw.DirectDvcConfig>? configLease = null;
+            try
+            {
+                selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                configLease = config._diplomatHandle.Lease(BorrowKind.Shared);
+                var result = Raw.ClientConnector.WithDynamicChannelDirect(selfLease!.Ptr, configLease!.Ptr);
+                if (!result.IsOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                return;
+            }
+            finally
+            {
+                selfLease?.Release();
+                configLease?.Release();
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
     public bool ShouldPerformSecurityUpgrade()
     {
         unsafe

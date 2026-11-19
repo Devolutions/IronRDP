@@ -45,6 +45,12 @@ internal partial struct ActiveStage
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_send_dvc_pipe_proxy_message", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultVecU8IronRdpError SendDvcPipeProxyMessage(ActiveStage* handle, DvcPipeProxyMessage* message);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_send_direct_dvc_data", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVecU8IronRdpError SendDirectDvcData(ActiveStage* handle, uint channelId, ulong endpointId, DiplomatSliceU8 data);
+
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_close_direct_dvc_channel", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVecU8IronRdpError CloseDirectDvcChannel(ActiveStage* handle, uint channelId, ulong endpointId);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_graceful_shutdown", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError GracefulShutdown(ActiveStage* handle);
 
