@@ -258,6 +258,9 @@ jobs:
       - name: Build native library
         run: cargo xtask ffi build -v
 
+      - name: Run Rust FFI tests
+        run: cargo test --locked -p ffi --lib
+
       - name: Generate bindings
         run: cargo xtask ffi bindings -v
 
