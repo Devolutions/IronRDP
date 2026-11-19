@@ -3310,7 +3310,7 @@ async fn the_logon_information_names_the_auto_reconnect_session() {
 #[tokio::test]
 async fn the_logon_notification_is_sent_once_per_connection() {
     let (at_activation, after_reactivation) =
-        with_auto_reconnect_server(false, async |server_addr, cookie_handle, display_tx| {
+        with_logon_server(false, async |server_addr, cookie_handle, _server_handle, display_tx| {
             let mut probe = CookieProbe::connect(server_addr, None).await;
             let at_activation = probe.logon_notifications_until_marker(&cookie_handle).await;
             probe.reactivate(&display_tx).await;
@@ -3324,6 +3324,91 @@ async fn the_logon_notification_is_sent_once_per_connection() {
     assert_eq!(at_activation, 1, "one logon notification at activation");
     // oracle: mutant sending the logon notification again at each activation
     assert_eq!(after_reactivation, 0, "none after a reactivation");
+}
+
+/// On request, the client hears of the logon only once the embedder says the user has logged on.
+// oracle: mutant notifying at activation regardless of the request mode, or never on the embedder's signal
+#[tokio::test]
+async fn a_logon_notification_on_request_waits_for_the_embedder() {
+    let (before, after) = with_logon_server(true, async |server_addr, cookie_handle, server_handle, _display_tx| {
+        let mut probe = CookieProbe::connect(server_addr, None).await;
+        let before = probe.logon_notifications_until_marker(&cookie_handle).await;
+        server_handle.logon_completed().expect("signal the logon");
+        let after = probe.logon_notifications_until_marker(&cookie_handle).await;
+        probe.disconnect().await;
+        (before, after)
+    })
+    .await;
+
+    assert_eq!(before, 0, "none before the embedder signals the logon");
+    assert_eq!(after, 1, "one once it does");
+}
+
+/// A connection is told of its logon at most once, however often the embedder signals it.
+// oracle: mutant sending a logon notification for each signal
+#[rstest::rstest]
+#[case::at_activation(false)]
+#[case::on_request(true)]
+#[tokio::test]
+async fn a_connection_gets_at_most_one_logon_notification(#[case] on_request: bool) {
+    let notifications = with_logon_server(
+        on_request,
+        async |server_addr, cookie_handle, server_handle, _display_tx| {
+            let mut probe = CookieProbe::connect(server_addr, None).await;
+            server_handle.logon_completed().expect("signal the logon");
+            server_handle.logon_completed().expect("signal the logon again");
+            let notifications = probe.logon_notifications_until_marker(&cookie_handle).await;
+            probe.disconnect().await;
+            notifications
+        },
+    )
+    .await;
+
+    assert_eq!(notifications, 1);
+}
+
+/// A logon signal belongs to the connection that was current when the embedder sent it. One the server never read
+/// before that connection was replaced must not reach the replacement, whose user has not logged on. The server is
+/// driven the way an embedder drives it, with the signal queued before the next connection is served.
+// oracle: mutant keeping a logon signal across the connection it was sent for
+#[tokio::test]
+async fn a_logon_signal_for_a_replaced_connection_does_not_reach_its_replacement() {
+    let (mut server, _display_tx) = logon_server(true);
+    let cookie_handle = server.auto_reconnect_cookie_handle();
+    server.handle().logon_completed().expect("queue the stale signal");
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind listener");
+    let server_addr = listener.local_addr().expect("listener address");
+    let server_handle = server.handle().clone();
+
+    let local = tokio::task::LocalSet::new();
+    let (stale, fresh) = local
+        .run_until(async move {
+            let server = tokio::task::spawn_local(async move {
+                let (stream, _) = listener.accept().await.expect("accept connection");
+                Box::pin(server.run_connection(stream)).await.unwrap();
+            });
+
+            let client = tokio::task::spawn_local(async move {
+                let mut probe = CookieProbe::connect(server_addr, None).await;
+                let stale = probe.logon_notifications_until_marker(&cookie_handle).await;
+                server_handle.logon_completed().expect("signal the logon");
+                let fresh = probe.logon_notifications_until_marker(&cookie_handle).await;
+                probe.disconnect().await;
+                (stale, fresh)
+            });
+
+            let (server, client) = tokio::join!(server, client);
+            server.expect("server task");
+            client.expect("client task")
+        })
+        .await;
+
+    assert_eq!(
+        stale, 0,
+        "a signal queued for a connection that is gone must not reach its replacement"
+    );
+    assert_eq!(fresh, 1, "a signal sent for the live connection still reaches it");
 }
 
 /// What a client saw of the server's Save Session Info PDUs up to the marker cookie, and the channels they came on.
@@ -3435,6 +3520,32 @@ async fn logon_session(rewrite: Option<FrameRewrite>, user: &str, domain: &str) 
         "the client's frame was not rewritten"
     );
     session
+}
+
+/// A server like [`auto_reconnect_server`] that sends the cookie at activation, and the logon notification at
+/// activation or on request.
+fn logon_server(logon_on_request: bool) -> (RdpServer, UnboundedSender<DisplayUpdate>) {
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    server.set_logon_notification_on_request(logon_on_request);
+    (server, display_tx)
+}
+
+/// Runs `client` against a [`logon_server`], like [`with_auto_reconnect_server`], also handing it the server
+/// handle.
+async fn with_logon_server<F, Fut, T>(logon_on_request: bool, client: F) -> T
+where
+    F: FnOnce(
+            SocketAddr,
+            server::AutoReconnectCookieHandle,
+            server::RdpServerHandle,
+            UnboundedSender<DisplayUpdate>,
+        ) -> Fut
+        + 'static,
+    Fut: Future<Output = T>,
+    T: 'static,
+{
+    let (server, display_tx) = logon_server(logon_on_request);
+    with_server(server, display_tx, client).await
 }
 
 /// The type of a logon notification, with the user and domain it reports, or `None` for another Save Session
@@ -3756,9 +3867,32 @@ where
     Fut: Future<Output = T>,
     T: 'static,
 {
-    let (mut server, display_tx) = auto_reconnect_server(on_request);
+    let (server, display_tx) = auto_reconnect_server(on_request);
+    with_server(
+        server,
+        display_tx,
+        |server_addr, cookie_handle, _server_handle, display_tx| client(server_addr, cookie_handle, display_tx),
+    )
+    .await
+}
+
+/// Runs `server` and `client` until `client` returns, then has the server quit. `client` gets the server address,
+/// the cookie handle, the server handle and the channel that feeds the server's display.
+async fn with_server<F, Fut, T>(mut server: RdpServer, display_tx: UnboundedSender<DisplayUpdate>, client: F) -> T
+where
+    F: FnOnce(
+            SocketAddr,
+            server::AutoReconnectCookieHandle,
+            server::RdpServerHandle,
+            UnboundedSender<DisplayUpdate>,
+        ) -> Fut
+        + 'static,
+    Fut: Future<Output = T>,
+    T: 'static,
+{
     let ev = server.event_sender().clone();
     let cookie_handle = server.auto_reconnect_cookie_handle();
+    let server_handle = server.handle().clone();
 
     let local = tokio::task::LocalSet::new();
     local
@@ -3771,7 +3905,7 @@ where
                 let (tx, rx) = oneshot::channel();
                 ev.send(ServerEvent::GetLocalAddr(tx)).unwrap();
                 let server_addr = rx.await.unwrap().unwrap();
-                let result = client(server_addr, cookie_handle, display_tx).await;
+                let result = client(server_addr, cookie_handle, server_handle, display_tx).await;
                 ev.send(ServerEvent::Quit("bye".into())).unwrap();
                 result
             });

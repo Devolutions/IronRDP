@@ -1502,6 +1502,9 @@ pub struct RdpServer {
     /// client that came back with a verified one; see
     /// [`Self::set_auto_reconnect_on_request`].
     auto_reconnect_on_request: bool,
+    /// Tell the client of its user's logon only when asked (`LogonCompleted`); see
+    /// [`Self::set_logon_notification_on_request`].
+    logon_notification_on_request: bool,
     /// Whether the client's core Frame Acknowledge capability caps the EGFX
     /// frame window; see [`Self::set_egfx_core_frame_ack_limit`].
     #[cfg(feature = "egfx")]
@@ -1805,6 +1808,10 @@ pub enum ServerEvent {
     SetCredentials(Credentials),
     /// Replace or clear the Server Auto-Reconnect Cookie.
     SetAutoReconnectCookie(Option<rdp::session_info::ServerAutoReconnect>),
+    /// The user of the current connection has logged on: tell the client, if it has not been told yet.
+    ///
+    /// See [`RdpServer::set_logon_notification_on_request`].
+    LogonCompleted,
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
     /// Writes window orders only after RemoteApp negotiation.
     WindowingOrders(WindowingOrders),
@@ -1866,6 +1873,7 @@ impl fmt::Debug for ServerEvent {
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
             Self::SetAutoReconnectCookie(None) => f.write_str("SetAutoReconnectCookie(None)"),
+            Self::LogonCompleted => f.write_str("LogonCompleted"),
             Self::GetLocalAddr(..) => f.write_str("GetLocalAddr(..)"),
             Self::WindowingOrders(request) => f.debug_tuple("WindowingOrders").field(&request.orders.len()).finish(),
             #[cfg(feature = "egfx")]
@@ -1910,6 +1918,16 @@ impl RdpServerHandle {
         self.sender
             .send(ServerEvent::SetCredentials(credentials))
             .map_err(|_| ServerError::channel("send server credentials event"))
+    }
+
+    /// Queues [`ServerEvent::LogonCompleted`] to tell the current connection's client that its user has logged on.
+    ///
+    /// Success confirms queuing, not that the client was notified.
+    /// See [`RdpServer::set_logon_notification_on_request`].
+    pub fn logon_completed(&self) -> ServerResult<()> {
+        self.sender
+            .send(ServerEvent::LogonCompleted)
+            .map_err(|_| ServerError::channel("send logon completed event"))
     }
 
     /// Queries the listener address through the server event loop.
@@ -2329,10 +2347,20 @@ struct ConnectionState {
     /// eligible for the hourly update when cookies are on request (see
     /// [`RdpServer::set_auto_reconnect_on_request`]).
     auto_reconnect_issued: bool,
+    /// What the logon notification needs from the client, while the client has not been sent one yet but will be
+    /// once the embedder signals the logon (see [`RdpServer::set_logon_notification_on_request`]).
+    pending_logon_notification: Option<LogonNotificationRequest>,
     /// The client's Pointer Capability Set (MS-RDPBCGR 2.2.7.1.5) from the last activation, for
     /// [`DisplayContext::pointer_cache_size`] and [`DisplayContext::color_pointer_cache_size`].
     pointer_cache_size: u16,
     color_pointer_cache_size: u16,
+}
+
+/// What the client asked for in its logon notification; see [`RdpServer::send_logon_notification`].
+#[derive(Debug, Clone, Copy)]
+struct LogonNotificationRequest {
+    client_info_flags: rdp::client_info::ClientInfoFlags,
+    long_credentials: bool,
 }
 
 /// What processing client data asks the driver to do.
@@ -3248,6 +3276,7 @@ impl RdpServer {
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
             auto_reconnect_on_request: false,
+            logon_notification_on_request: false,
             #[cfg(feature = "egfx")]
             egfx_core_frame_ack_limit: false,
         }
@@ -3340,6 +3369,23 @@ impl RdpServer {
     /// effect there.
     pub fn set_auto_reconnect_on_request(&mut self, on_request: bool) {
         self.auto_reconnect_on_request = on_request;
+    }
+
+    /// Tell a client that its user has logged on only when the embedder says so, by sending
+    /// [`ServerEvent::LogonCompleted`] (through [`RdpServerHandle::logon_completed`]), instead of at activation.
+    ///
+    /// For embedders that activate a connection before the user has logged on, for instance to draw their own
+    /// logon screen: a client such as the Microsoft RDP client reports a completed logon once it gets the
+    /// notification, which [MS-RDPBCGR 3.3.5.10.1] sends after the user has logged on.
+    ///
+    /// Each connection gets at most one notification, and none on a Deactivation-Reactivation Sequence.
+    /// Like a vouch for the auto-reconnect cookie (see [`Self::set_auto_reconnect_on_request`]), the signal
+    /// belongs to the connection that was current when it was sent: if that connection is replaced before the
+    /// server reads it, it is dropped and the replacement is not notified until the embedder signals again.
+    ///
+    /// [MS-RDPBCGR 3.3.5.10.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/3061e2df-ae7c-41fe-8743-650a9cb70365
+    pub fn set_logon_notification_on_request(&mut self, on_request: bool) {
+        self.logon_notification_on_request = on_request;
     }
 
     /// Choose whether the client's `maxUnacknowledgedFrameCount` caps the EGFX
@@ -3501,17 +3547,26 @@ impl RdpServer {
     /// A client that set INFO_LOGONNOTIFY gets the logged-on user and domain, in the long form when it supports
     /// long credentials.
     /// Any other client gets a plain notification, as does one whose user this server does not know or whose user
-    /// or domain does not fit the logon information.
+    /// or domain does not fit the fixed fields of the logon information, rather than a truncated name or a failed
+    /// connection.
+    /// The session ID it reports is the logon ID of the auto-reconnect cookie, so both name the same session, or 0
+    /// when the server holds no cookie.
+    ///
+    /// Each connection is sent one notification, after its first activation or, on request, once the embedder
+    /// signals the logon; a Deactivation-Reactivation Sequence does not log the user on again.
     ///
     /// [MS-RDPBCGR 3.3.5.10.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/3061e2df-ae7c-41fe-8743-650a9cb70365
     async fn send_logon_notification(
         &self,
         writer: &mut impl FramedWrite,
-        client_info_flags: rdp::client_info::ClientInfoFlags,
-        long_credentials: bool,
+        request: LogonNotificationRequest,
         io_channel_id: u16,
         user_channel_id: u16,
     ) -> ServerResult<()> {
+        let LogonNotificationRequest {
+            client_info_flags,
+            long_credentials,
+        } = request;
         use rdp::session_info::{InfoData, InfoType, LogonInfo, LogonInfoVersion1, LogonInfoVersion2};
 
         let encode = |info_type, info_data| {
@@ -3528,7 +3583,6 @@ impl RdpServer {
                 .expect("authenticated credentials lock poisoned")
                 .as_ref()
                 .map(|credentials| LogonInfo {
-                    // The auto-reconnect logon ID is the only session identifier this server has.
                     session_id: self.auto_reconnect_cookie.as_ref().map_or(0, |cookie| cookie.logon_id),
                     user_name: credentials.username.clone(),
                     domain_name: credentials.domain.clone().unwrap_or_default(),
@@ -3539,6 +3593,8 @@ impl RdpServer {
 
         let logon = logon_info.map(|logon_info| {
             if long_credentials {
+                // The Size field is 18, as in the MS-RDPBCGR 4.3.1 example and what Windows Server sends (see
+                // FreeRDP's libfreerdp/core/info.c); the Microsoft RDP client accepts it.
                 (
                     InfoType::LogonLong,
                     InfoData::LogonInfoV2(LogonInfoVersion2 { logon_info }),
@@ -3845,6 +3901,7 @@ impl RdpServer {
             egfx_on_udp: false,
             early_tunnel_payloads: VecDeque::new(),
             auto_reconnect_issued: false,
+            pending_logon_notification: None,
             pointer_cache_size: 0,
             color_pointer_cache_size: 0,
         }
@@ -3879,7 +3936,8 @@ impl RdpServer {
     /// the embedder is replacing the stored cookie on its own account. With
     /// [`RdpServer::set_auto_reconnect_on_request`] it is a vouch for one
     /// connection, so a vouch the replaced connection never consumed is dropped
-    /// here instead of reaching the connection that replaced it.
+    /// here instead of reaching the connection that replaced it. So is
+    /// `LogonCompleted`, which always speaks for one connection.
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     async fn discard_stale_session_events(&mut self) {
         let ev_receiver = Arc::clone(&self.ev_receiver);
@@ -5280,6 +5338,14 @@ impl RdpServer {
                     self.update_auto_reconnect_cookie(conn, cookie, writer, io_channel_id, user_channel_id)
                         .await?;
                 }
+                ServerEvent::LogonCompleted => {
+                    if let Some(request) = conn.pending_logon_notification.take() {
+                        self.send_logon_notification(writer, request, io_channel_id, user_channel_id)
+                            .await?;
+                    } else {
+                        debug!("The client was already told of its logon");
+                    }
+                }
                 ServerEvent::Rdpsnd(message) => {
                     let drop_stale_wave = matches!(&message, RdpsndServerMessage::Wave(..))
                         && WAVE_KEEP <= remaining_current_waves(pending.as_slice());
@@ -6461,14 +6527,16 @@ impl RdpServer {
                         if general.extra_flags.contains(GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED)
                 )
             });
-            self.send_logon_notification(
-                writer,
-                result.client_info_flags,
+            let request = LogonNotificationRequest {
+                client_info_flags: result.client_info_flags,
                 long_credentials,
-                result.io_channel_id,
-                result.user_channel_id,
-            )
-            .await?;
+            };
+            if self.logon_notification_on_request {
+                conn.pending_logon_notification = Some(request);
+            } else {
+                self.send_logon_notification(writer, request, result.io_channel_id, result.user_channel_id)
+                    .await?;
+            }
         }
 
         // A client can join the rdpsnd channel although it asked for no audio redirection, as some do for device
