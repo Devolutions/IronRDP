@@ -1,5 +1,16 @@
 pub mod image;
 
+fn ensure_native_audio_attached(
+    attached: Option<&std::sync::Arc<crate::audio::AudioShared>>,
+    audio: &std::sync::Arc<crate::audio::AudioShared>,
+) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
+    if attached.is_some_and(|attached| std::sync::Arc::ptr_eq(attached, audio)) {
+        Ok(())
+    } else {
+        Err("native audio belongs to another connection".into())
+    }
+}
+
 /// Encodes windowing orders as a complete slow-path Orders update ([MS-RDPBCGR] 2.2.9.1.1.3.1
 /// Slow-Path Graphics Update carrying an [MS-RDPEGDI] 2.2.2.1 Orders Update), the byte form this
 /// API exposed before orders were decoded.
@@ -25,6 +36,7 @@ pub mod ffi {
     use std::collections::VecDeque;
 
     use super::image::ffi::DecodedImage;
+    use crate::audio::ffi::NativeAudio;
     use crate::clipboard::message::ffi::{
         ClipboardFormatId, ClipboardFormatIterator, ClipboardMessage, FormatDataResponse,
     };
@@ -41,8 +53,9 @@ pub mod ffi {
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
     pub struct ActiveStage(
-        pub ironrdp::session::ActiveStage,
-        pub ironrdp::connector::connection_activation::ConnectionActivationFactory,
+        pub(crate) ironrdp::session::ActiveStage,
+        pub(crate) ironrdp::connector::connection_activation::ConnectionActivationFactory,
+        pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
     );
 
     #[diplomat::attr(dotnet, manually_disposable)]
@@ -127,6 +140,7 @@ pub mod ffi {
 
     impl ActiveStage {
         pub fn new(connection_result: &mut ConnectionResult) -> Result<Box<Self>, Box<IronRdpError>> {
+            let audio = connection_result.1.take();
             let connection_result = connection_result
                 .0
                 .take()
@@ -149,7 +163,7 @@ pub mod ffi {
             .build();
             stage.set_window_support_level(window_support_level);
 
-            Ok(Box::new(ActiveStage(stage, activation_factory)))
+            Ok(Box::new(ActiveStage(stage, activation_factory, audio)))
         }
 
         /// Produces a fresh connection activation sequence to drive the Deactivation-Reactivation
@@ -195,6 +209,14 @@ pub mod ffi {
         pub fn poll_rdpdr_deferred(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             let outputs = self.poll_rdpdr_deferred_output()?;
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
+        }
+
+        /// Permanently stops native playback for this connection without disconnecting the desktop.
+        /// Stopping playback produces no transport frames.
+        pub fn stop_audio(&mut self, audio: &NativeAudio) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            super::ensure_native_audio_attached(self.2.as_ref(), &audio.0)?;
+            audio.0.stop_playback();
+            Ok(Box::new(ActiveStageOutputIterator(VecDeque::new())))
         }
 
         pub fn process_fastpath_input(
@@ -841,6 +863,14 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct GracefulDisconnectReason(pub ironrdp::session::GracefulDisconnectReason);
+}
+
+impl Drop for ffi::ActiveStage {
+    fn drop(&mut self) {
+        if let Some(audio) = self.2.as_ref() {
+            audio.stop_playback();
+        }
+    }
 }
 
 #[cfg(test)]

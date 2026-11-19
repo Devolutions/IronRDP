@@ -249,6 +249,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install native build dependencies
+        uses: ./.github/actions/install-build-deps
+
       - name: Set up the pinned diplomat-tool
         uses: ./.github/actions/setup-diplomat-tool
 
@@ -270,6 +273,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Install native build dependencies
+        uses: ./.github/actions/install-build-deps
 
       - name: Set up the pinned diplomat-tool
         uses: ./.github/actions/setup-diplomat-tool

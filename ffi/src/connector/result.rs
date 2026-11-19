@@ -1,10 +1,11 @@
 #[diplomat::bridge]
 pub mod ffi {
+    use diplomat_runtime::DiplomatWrite;
+
     use crate::connector::config::ffi::DesktopSize;
     use crate::error::ValueConsumedError;
     use crate::error::ffi::IronRdpError;
     use crate::utils::ffi::{OptionalUsize, VecU8};
-    use diplomat_runtime::DiplomatWrite;
 
     #[diplomat::opaque]
     pub struct Written(pub ironrdp::connector::Written);
@@ -32,8 +33,12 @@ pub mod ffi {
         }
     }
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
-    pub struct ConnectionResult(pub Option<ironrdp::connector::ConnectionResult>);
+    pub struct ConnectionResult(
+        pub(crate) Option<ironrdp::connector::ConnectionResult>,
+        pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
+    );
 
     impl ConnectionResult {
         #[diplomat::attr(auto, getter = "io_channel_id")]

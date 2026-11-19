@@ -456,6 +456,45 @@ internal static class SmokeTests
             True(stage.EncodedResize(1024, 768) is null, "no resize frame");
         });
 
+        // oracle: regression Devolutions/IronRDP#2469
+        yield return ("native playback settings attach to only one connector", () =>
+        {
+            var audio = NativeAudio.New("", 0);
+            var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            first.WithNativeAudio(audio);
+            Throws<IronRdpException>(() => second.WithNativeAudio(audio));
+            Throws<IronRdpException>(() => first.WithStaticChannelRdpSnd());
+        });
+
+        // oracle: regression Devolutions/IronRDP#2469
+        yield return ("native playback and a playback pipe proxy cannot share a channel name", () =>
+        {
+            var queue = DvcPipeProxyMessageQueue.New(1);
+            var proxy = DvcPipeProxyConfig.New(queue.Sink);
+            proxy.AddPipeProxy(DvcPipeProxyDescriptor.New("AUDIO_PLAYBACK_LOSSY_DVC", "test-playback"));
+            var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            first.WithDynamicChannelPipeProxy(proxy);
+            Throws<IronRdpException>(() => first.WithNativeAudio(NativeAudio.New("", 0)));
+
+            var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            second.WithNativeAudio(NativeAudio.New("", 0));
+            Throws<IronRdpException>(() => second.WithDynamicChannelPipeProxy(proxy));
+        });
+
+        // oracle: regression Devolutions/IronRDP#2469
+        yield return ("stopping playback requires the attached connection", () =>
+        {
+            var audio = NativeAudio.New("", 0);
+            var other = NativeAudio.New("", 0);
+            var connected = ConnectedStage(8, 4, audio: audio);
+            using var stage = connected.Stage;
+            using var image = connected.Image;
+            Throws<IronRdpException>(() => stage.StopAudio(other));
+            using var stopped = stage.StopAudio(audio);
+            Equal(0ul, (ulong)stopped.Len(), "stopping playback requires no response frame");
+        });
+
         // oracle: spec MS-RDPEDISP §1.3 (the client sends a monitor layout only after the server's DISPLAYCONTROL_CAPS_PDU)
         // and §2.2.2.1 (MaxNumMonitors=2, MaxMonitorAreaFactorA=3840, MaxMonitorAreaFactorB=2400 in DisplayControlCapsPdu)
         yield return ("display control becomes ready when the server capabilities arrive", () =>
@@ -922,6 +961,19 @@ internal static class SmokeTests
         0x02, 0x0c, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     };
 
+    // oracle: spec MS-RDPBCGR §2.2.1.4.4
+    // The Server Network Data block assigns 1004, 1005, and 1006 to the three requested static channels.
+    private static readonly byte[] McsConnectResponseWithPlayback =
+    {
+        0x03, 0x00, 0x00, 0x70, 0x02, 0xf0, 0x80, 0x7f, 0x66, 0x66, 0x0a, 0x01, 0x00, 0x02, 0x01, 0x00,
+        0x30, 0x1a, 0x02, 0x01, 0x22, 0x02, 0x01, 0x03, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x01,
+        0x00, 0x02, 0x01, 0x01, 0x02, 0x03, 0x00, 0xff, 0xf8, 0x02, 0x01, 0x02, 0x04, 0x42, 0x00, 0x05,
+        0x00, 0x14, 0x7c, 0x00, 0x01, 0x3a, 0x14, 0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0xc0, 0x00, 0x4d,
+        0x63, 0x44, 0x6e, 0x2c, 0x01, 0x0c, 0x10, 0x00, 0x04, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x08, 0x00, 0x00, 0x00, 0x03, 0x0c, 0x10, 0x00, 0xeb, 0x03, 0x03, 0x00, 0xec, 0x03, 0xed, 0x03,
+        0xee, 0x03, 0x00, 0x00, 0x02, 0x0c, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+
     // DRDYNVC Create Request for "Microsoft::Windows::RDS::DisplayControl" as channel 1 on static channel 1004
     // (MS-RDPEDYC §2.2.2.1), inside an MCS Send Data Indication.
     private static readonly byte[] DrdynvcDisplayControlCreateRequest =
@@ -968,7 +1020,7 @@ internal static class SmokeTests
         },
     };
 
-    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false)
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false, NativeAudio? audio = null)
     {
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
         var serverPdus = HandshakeServerPdus.ToArray();
@@ -982,7 +1034,12 @@ internal static class SmokeTests
             connector.WithDynamicChannelRdpei(10, false);
         }
 
-        if (displayControl || rdpei)
+        if (audio is not null)
+        {
+            connector.WithNativeAudio(audio);
+            serverPdus[1] = McsConnectResponseWithPlayback;
+        }
+        else if (displayControl || rdpei)
         {
             serverPdus[1] = McsConnectResponseWithDrdynvc;
         }
@@ -1016,7 +1073,9 @@ internal static class SmokeTests
         }
 
         Equal(serverPdus.Length, i, "server PDUs consumed by the handshake");
-        var stage = ActiveStage.New(connector.ConsumeAndCastToClientConnectorState().GetConnectedResult());
+        using var state = connector.ConsumeAndCastToClientConnectorState();
+        using var result = state.GetConnectedResult();
+        var stage = ActiveStage.New(result);
         return (stage, DecodedImage.New(PixelFormat.BgrX32, width, height));
     }
 

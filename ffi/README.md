@@ -26,6 +26,35 @@ Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from 
 `Unavailable` means the channel was not requested.
 `ActiveStage.DisplayControlCapabilities` exposes the server's monitor count and area limits once `Ready`.
 
+## Native audio playback
+
+Attach native playback before starting the connector.
+Create a new `NativeAudio` for each connection.
+Native playback joins RDPDR without redirected devices if it is absent, because Windows servers require the channel to start playback.
+An existing RDPDR configuration is preserved.
+
+```csharp
+var audio = NativeAudio.New(outputDevice: "", latencyMs: 0);
+connector.WithNativeAudio(audio);
+```
+
+An empty device selector follows the system default; otherwise supply a device ID or name.
+The latency is in milliseconds; zero selects the native default.
+Incoming audio is handled by the normal `ActiveStage.Process` loop.
+Device and stream failures are logged through Rust tracing rather than returned as managed status events.
+
+Serialize `StopAudio` with `Process` on the same stage.
+Stopping audio is permanent for the connection and does not disconnect the desktop.
+Dispose the stage on disconnect to release playback resources.
+
+```csharp
+using var outputs = stage.StopAudio(audio);
+```
+
+Linux builds require ALSA development headers.
+The native FFI library requires `libasound` at runtime even when playback is disabled.
+Android audio is unsupported so that the Android API 21 baseline remains usable.
+
 ## Touch and pen input (MS-RDPEI)
 
 - Attach the channel before connecting: `connector.WithDynamicChannelRdpei(maxTouchContacts, showTouchVisuals)`.
