@@ -14,13 +14,15 @@ mod native {
 
     use super::PLAYBACK_CHANNEL_NAMES;
 
+    type PlaybackBackend = Mutex<Box<dyn RdpsndClientHandler>>;
+
     pub(crate) struct AudioShared {
         pub(super) output_device: DeviceSelector,
         pub(super) latency: Duration,
         pub(super) attached: AtomicBool,
         pub(super) playback_enabled: AtomicBool,
         /// This slot lets StopAudio close playback without owning the backend.
-        pub(super) playback_backend: Mutex<Option<Weak<Mutex<RdpsndBackend>>>>,
+        pub(super) playback_backend: Mutex<Option<Weak<PlaybackBackend>>>,
     }
 
     impl AudioShared {
@@ -73,15 +75,7 @@ mod native {
                 device: self.output_device.clone(),
                 latency: self.latency,
             };
-            let backend = RdpsndBackend::with_config(config);
-            let formats = backend.get_formats().to_vec().into();
-            let backend = Arc::new(Mutex::new(backend));
-            *self.playback_backend.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::downgrade(&backend));
-            let playback = SharedPlayback {
-                backend,
-                formats,
-                shared: Arc::clone(self),
-            };
+            let playback = SharedPlayback::new(self, Box::new(RdpsndBackend::with_config(config)));
             connector.attach_static_channel(rdpsnd_with_clock(Box::new(playback.clone())));
             let state = rdpsnd_dvc_with_clock(Box::new(playback));
             let drdynvc = drdynvc(connector);
@@ -135,7 +129,7 @@ mod native {
     #[derive(Clone)]
     struct SharedPlayback {
         /// INVARIANT: Session processing, device callbacks, and shutdown serialize access to the backend.
-        backend: Arc<Mutex<RdpsndBackend>>,
+        backend: Arc<PlaybackBackend>,
         formats: Arc<[AudioFormat]>,
         shared: Arc<AudioShared>,
     }
@@ -147,8 +141,19 @@ mod native {
     }
 
     impl SharedPlayback {
-        fn with_backend<T>(&self, f: impl FnOnce(&mut RdpsndBackend) -> T) -> T {
-            f(&mut self.backend.lock().unwrap_or_else(PoisonError::into_inner))
+        fn new(shared: &Arc<AudioShared>, backend: Box<dyn RdpsndClientHandler>) -> Self {
+            let formats = backend.get_formats().to_vec().into();
+            let backend = Arc::new(Mutex::new(backend));
+            *shared.playback_backend.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::downgrade(&backend));
+            Self {
+                backend,
+                formats,
+                shared: Arc::clone(shared),
+            }
+        }
+
+        fn with_backend<T>(&self, f: impl FnOnce(&mut dyn RdpsndClientHandler) -> T) -> T {
+            f(self.backend.lock().unwrap_or_else(PoisonError::into_inner).as_mut())
         }
     }
 
@@ -177,7 +182,7 @@ mod native {
             self.with_backend(|backend| backend.set_pitch(pitch));
         }
         fn close(&mut self) {
-            self.with_backend(RdpsndBackend::close);
+            self.with_backend(|backend| backend.close());
         }
     }
 
@@ -201,6 +206,147 @@ mod native {
             } else {
                 self.state.channel()
             }))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::audio::ffi::NativeAudio;
+        use crate::connector::config::ffi::{ConfigBuilder, PerformanceFlags};
+        use crate::session::ffi::ActiveStage;
+
+        #[derive(Clone, Copy, Debug, Default)]
+        struct PlaybackState {
+            active: bool,
+            waves: usize,
+            closed_active: usize,
+        }
+
+        #[derive(Debug)]
+        struct RecordingPlayback(Arc<Mutex<PlaybackState>>);
+
+        impl RdpsndClientHandler for RecordingPlayback {
+            fn get_formats(&self) -> &[AudioFormat] {
+                &[]
+            }
+
+            fn wave(&mut self, _: &AudioFormat, _: u32, _: Cow<'_, [u8]>) {
+                let mut state = self.0.lock().unwrap();
+                state.active = true;
+                state.waves += 1;
+            }
+
+            fn set_volume(&mut self, _: VolumePdu) {}
+
+            fn set_pitch(&mut self, _: PitchPdu) {}
+
+            fn close(&mut self) {
+                let mut state = self.0.lock().unwrap();
+                if state.active {
+                    state.active = false;
+                    state.closed_active += 1;
+                }
+            }
+        }
+
+        fn playback_stage() -> (ActiveStage, Box<NativeAudio>, SharedPlayback, Arc<Mutex<PlaybackState>>) {
+            let audio = NativeAudio::new("", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let observed = Arc::new(Mutex::new(PlaybackState::default()));
+            let playback = SharedPlayback::new(&audio.0, Box::new(RecordingPlayback(Arc::clone(&observed))));
+            let mut channels = ironrdp::svc::StaticChannelSet::new();
+            channels.insert(rdpsnd_with_clock(Box::new(playback.clone())));
+            let stage = ironrdp::session::ActiveStageBuilder {
+                static_channels: channels,
+                user_channel_id: 1002,
+                io_channel_id: 1003,
+                message_channel_id: None,
+                share_id: 1,
+                compression_type: None,
+                enable_server_pointer: false,
+                pointer_software_rendering: false,
+            }
+            .build();
+            let mut builder = ConfigBuilder::new();
+            builder.with_username_and_password("user", "password");
+            builder.set_desktop_size(768, 1024);
+            builder.set_client_name("client");
+            builder.set_client_dir("C:\\");
+            builder.set_performance_flags(&PerformanceFlags::new_default());
+            let config = builder.build().unwrap_or_else(|_| panic!("connector config"));
+            let factory = ironrdp::connector::connection_activation::ConnectionActivationFactory::new(
+                config.connector.clone(),
+                1003,
+                1002,
+            );
+            (
+                ActiveStage(stage, factory, Some(Arc::clone(&audio.0))),
+                audio,
+                playback,
+                observed,
+            )
+        }
+
+        fn play_wave(playback: &mut SharedPlayback) {
+            let format = AudioFormat {
+                format: ironrdp::rdpsnd::pdu::WaveFormat::PCM,
+                n_channels: 1,
+                n_samples_per_sec: 8_000,
+                n_avg_bytes_per_sec: 16_000,
+                n_block_align: 2,
+                bits_per_sample: 16,
+                data: None,
+            };
+            playback.wave(&format, 0, Cow::Borrowed(&[0, 0]));
+        }
+
+        // oracle: regression Devolutions/IronRDP#2480 review 5980962351
+        #[test]
+        fn stopping_audio_closes_active_playback() {
+            let (mut stage, audio, mut playback, observed) = playback_stage();
+            play_wave(&mut playback);
+            assert!(observed.lock().unwrap().active);
+
+            stage.stop_audio(&audio).unwrap_or_else(|_| panic!("stop audio"));
+
+            let observed = *observed.lock().unwrap();
+            assert!(!observed.active);
+            assert_eq!(observed.closed_active, 1);
+        }
+
+        // oracle: regression Devolutions/IronRDP#2480 review 5980962351
+        #[test]
+        fn stopping_audio_permanently_suppresses_later_waves() {
+            let (mut stage, audio, mut playback, observed) = playback_stage();
+            play_wave(&mut playback);
+            stage.stop_audio(&audio).unwrap_or_else(|_| panic!("stop audio"));
+
+            play_wave(&mut playback);
+            play_wave(&mut playback);
+
+            let observed = *observed.lock().unwrap();
+            assert!(!observed.active);
+            assert_eq!(observed.waves, 1);
+        }
+
+        // oracle: regression Devolutions/IronRDP#2480 review 5980962351
+        #[test]
+        fn dropping_stage_closes_playback_and_suppresses_retained_handlers() {
+            let (stage, _audio, mut playback, observed) = playback_stage();
+            play_wave(&mut playback);
+            assert!(observed.lock().unwrap().active);
+
+            drop(stage);
+
+            {
+                let observed = *observed.lock().unwrap();
+                assert!(!observed.active);
+                assert_eq!(observed.closed_active, 1);
+            }
+            play_wave(&mut playback);
+            let observed = *observed.lock().unwrap();
+            assert!(!observed.active);
+            assert_eq!(observed.waves, 1);
         }
     }
 }
