@@ -294,12 +294,16 @@ mod imp {
     /// access, never act as us. The owner check below runs only after the pipe is opened, so this must
     /// be explicit and not depend on tokio's default.
     // UNTESTED: an impostor server connected to by `connect` must not be able to impersonate the client
-    // at `SecurityImpersonation` or `SecurityDelegation`. Between `open` and the owner check the impostor
-    // can already call `ImpersonateNamedPipeClient`, and with those levels it would act as the current
-    // user. No test covers this because it needs a server running as another account. When changing
-    // these flags or how `connect` opens the pipe, keep `SECURITY_SQOS_PRESENT` set with
-    // `SECURITY_IDENTIFICATION` (or `SECURITY_ANONYMOUS`), and check with a server that calls
-    // `ImpersonateNamedPipeClient` then `OpenThreadToken`: the token level must be at most identification.
+    // at `SecurityImpersonation` or `SecurityDelegation`. The owner check does not prevent this: once the
+    // client has opened the pipe, the server can call `ImpersonateNamedPipeClient` after reading from it
+    // or after the client disconnects, so even a rejected connection hands the server a client token.
+    // A server holding `SeImpersonatePrivilege` (a service account) would then act as the current user.
+    // No test covers this because it needs a server running as another, privileged account. When
+    // changing these flags or how `connect` opens the pipe, keep `SECURITY_SQOS_PRESENT` set with
+    // `SECURITY_IDENTIFICATION` (or `SECURITY_ANONYMOUS`), and check with a server that holds
+    // `SeImpersonatePrivilege` (for example one running as SYSTEM) and calls `ImpersonateNamedPipeClient`
+    // then `OpenThreadToken`: the token level must be at most identification. A server without that
+    // privilege always gets identification, so it cannot detect a regression.
     const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
     const SECURITY_SQOS_PRESENT: u32 = 0x0010_0000;
 
