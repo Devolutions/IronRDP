@@ -605,6 +605,9 @@ impl Rdpdr {
             .zip(device_ids)
             .partition(|(device, _)| !announce_all_devices && device.device_type() == DeviceType::Serial);
         let mut messages = self.announce_batches([other, serial])?;
+        if messages.is_empty() {
+            messages = self.announce_devices(Vec::new(), Vec::new())?;
+        }
 
         self.client_id_confirmed = true;
         self.post_logon_devices_announced = announce_all_devices;
