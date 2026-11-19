@@ -9,9 +9,6 @@
 //! Both emit standard zstd frames, so the choice of backend is invisible on the
 //! wire and either side of a connection may use either one.
 
-use crate::ServerResult;
-
-/// The `zstd-safe` and `zrip` backends use nearly identical parameter sets at compression level 3.
 const COMPRESSION_LEVEL: i32 = 3;
 
 #[cfg(not(feature = "qoiz-zstd"))]
@@ -20,64 +17,37 @@ use zrip_backend as backend;
 use zstd_safe_backend as backend;
 
 /// Streaming compressor for the QOIZ codec.
-pub(crate) struct Compressor(backend::Compressor);
+pub(crate) type Compressor = backend::Compressor;
 
-impl Compressor {
-    pub(crate) fn new() -> ServerResult<Self> {
-        Ok(Self(backend::Compressor::new()?))
-    }
-
-    /// Compresses `input` and returns the bytes produced for this update.
-    pub(crate) fn compress(&mut self, input: &[u8]) -> ServerResult<Vec<u8>> {
-        self.0.compress(input)
-    }
-}
-
-impl core::fmt::Debug for Compressor {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Compressor").field("backend", &backend::NAME).finish()
-    }
-}
-
-// Compiled even when the `qoiz-zstd` feature is enabled, so tests can use both backends.
-#[cfg_attr(all(feature = "qoiz-zstd", not(feature = "__test")), expect(dead_code))]
+#[cfg(any(not(feature = "qoiz-zstd"), feature = "__test"))]
 #[cfg_attr(feature = "__test", visibility::make(pub(crate)))]
 mod zrip_backend {
     use crate::encoder::qoiz::COMPRESSION_LEVEL;
     use crate::{ServerError, ServerErrorExt as _, ServerResult};
     use zrip::push::{EndOp, PushEncoder};
 
-    // Used by the `Debug` impl only when zrip is the active backend.
-    #[cfg(not(feature = "qoiz-zstd"))]
-    pub(super) const NAME: &str = "zrip";
-
     #[cfg_attr(feature = "__test", visibility::make(pub))]
-    pub(super) struct Compressor {
-        // The `PushEncoder` structure is large, so it is boxed to keep this type small.
-        encoder: Box<PushEncoder>,
-    }
+    pub(crate) struct Compressor(Box<PushEncoder>);
 
     impl Compressor {
         #[cfg_attr(feature = "__test", visibility::make(pub))]
-        pub(super) fn new() -> ServerResult<Self> {
-            // Long distance matching is what lets an update match against
-            // earlier ones. Without it, repeated content is re-emitted in full.
+        pub(crate) fn new() -> ServerResult<Self> {
             let options = zrip::Options::default().ldm(true);
-            let encoder =
-                Box::new(PushEncoder::with_options(COMPRESSION_LEVEL, &options).map_err(|error| {
-                    ServerError::reason("qoiz init", format!("failed to create an encoder: {error}"))
-                })?);
+            let encoder = Box::new(PushEncoder::with_options(COMPRESSION_LEVEL, &options).map_err(|error| {
+                ServerError::reason("qoiz init", format!("zrip: failed to create an encoder: {error}"))
+            })?);
 
-            Ok(Self { encoder })
+            Ok(Self(encoder))
         }
 
         #[cfg_attr(feature = "__test", visibility::make(pub))]
-        pub(super) fn compress(&mut self, input: &[u8]) -> ServerResult<Vec<u8>> {
+        /// Compresses `input` and returns the bytes produced for this update.
+        pub(crate) fn compress(&mut self, input: &[u8]) -> ServerResult<Vec<u8>> {
             let mut output = Vec::new();
 
-            self.encoder
+            self.0
                 .encode_to_vec(input, &mut output, EndOp::Flush)
-                .map_err(|error| ServerError::reason("qoiz compress", format!("failed to compress: {error}")))?;
+                .map_err(|error| ServerError::reason("qoiz compress", format!("zrip: failed to compress: {error}")))?;
 
             Ok(output)
         }
@@ -90,16 +60,12 @@ mod zstd_safe_backend {
     use crate::encoder::qoiz::COMPRESSION_LEVEL;
     use crate::{ServerError, ServerErrorExt as _, ServerResult};
 
-    pub(super) const NAME: &str = "zstd-safe";
-
     #[cfg_attr(feature = "__test", visibility::make(pub))]
-    pub(super) struct Compressor {
-        zctxt: zstd_safe::CCtx<'static>,
-    }
+    pub(crate) struct Compressor(zstd_safe::CCtx<'static>);
 
     impl Compressor {
         #[cfg_attr(feature = "__test", visibility::make(pub))]
-        pub(super) fn new() -> ServerResult<Self> {
+        pub(crate) fn new() -> ServerResult<Self> {
             let mut zctxt = zstd_safe::CCtx::default();
 
             zctxt
@@ -108,7 +74,7 @@ mod zstd_safe_backend {
                     ServerError::reason(
                         "qoiz init",
                         format!(
-                            "failed to set zstd compression level: {}",
+                            "zstd-safe: failed to set compression level: {}",
                             zstd_safe::get_error_name(code)
                         ),
                     )
@@ -119,17 +85,18 @@ mod zstd_safe_backend {
                     ServerError::reason(
                         "qoiz init",
                         format!(
-                            "failed to set zstd enable long distance matching: {}",
+                            "zstd-safe: failed to enable long distance matching: {}",
                             zstd_safe::get_error_name(code)
                         ),
                     )
                 })?;
 
-            Ok(Self { zctxt })
+            Ok(Self(zctxt))
         }
 
         #[cfg_attr(feature = "__test", visibility::make(pub))]
-        pub(super) fn compress(&mut self, input: &[u8]) -> ServerResult<Vec<u8>> {
+        /// Compresses `input` and returns the bytes produced for this update.
+        pub(crate) fn compress(&mut self, input: &[u8]) -> ServerResult<Vec<u8>> {
             let mut inb = zstd_safe::InBuffer::around(input);
             let mut data = vec![0; input.len()];
             let mut outb;
@@ -138,7 +105,7 @@ mod zstd_safe_backend {
             loop {
                 outb = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
                 let res = self
-                    .zctxt
+                    .0
                     .compress_stream2(
                         &mut outb,
                         &mut inb,
@@ -147,7 +114,7 @@ mod zstd_safe_backend {
                     .map_err(|code| {
                         ServerError::reason(
                             "qoiz compress",
-                            format!("failed to compress: {}", zstd_safe::get_error_name(code)),
+                            format!("zstd-safe: failed to compress: {}", zstd_safe::get_error_name(code)),
                         )
                     })?;
                 if res == 0 {

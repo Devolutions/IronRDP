@@ -18,6 +18,10 @@ mod qoiz;
 
 use core::fmt;
 
+// Silence warnings about unused `zrip` when `qoiz-zstd` is enabled.
+#[cfg(all(feature = "qoiz-zstd", not(feature = "__test")))]
+use zrip as _;
+
 #[cfg(feature = "__test")]
 pub use active_stage::composite_graphics_updates;
 pub use active_stage::{

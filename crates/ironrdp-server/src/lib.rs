@@ -27,6 +27,10 @@ mod sound;
 #[cfg(feature = "usb")]
 mod urbdrc;
 
+// Silence warnings about unused `zrip` when `qoiz-zstd` is enabled.
+#[cfg(all(feature = "qoiz-zstd", not(feature = "__test")))]
+use zrip as _;
+
 pub use clipboard::CliprdrServerFactory;
 pub use display::{
     BitmapUpdate, ColorPointer, DesktopSize, DisplayContext, DisplayUpdate, Framebuffer, LargePointer, PixelFormat,
