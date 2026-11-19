@@ -866,7 +866,9 @@ impl Acceptor {
     ///
     /// For a client that presented an auto-reconnect cookie they stay available after the result is taken, until
     /// [`take_received_credentials`](Self::take_received_credentials), because the server checks them only if the
-    /// cookie fails to verify.
+    /// cookie fails to verify, as MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU asks.
+    ///
+    /// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
     pub fn received_credentials(&self) -> Option<&ReceivedCredentials> {
         self.received_credentials.as_ref()
     }

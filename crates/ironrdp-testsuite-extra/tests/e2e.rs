@@ -4209,10 +4209,7 @@ fn auto_reconnect_server(on_request: bool) -> (RdpServer, UnboundedSender<Displa
             rx: Arc::new(Mutex::new(display_rx)),
             offers_display_control: true,
         })
-        .with_auto_reconnect_cookie(Some(ServerAutoReconnect {
-            logon_id: 1,
-            random_bits: [0x5a; 16],
-        }))
+        .with_auto_reconnect_cookie(Some(issued_auto_reconnect_cookie()))
         .with_auto_reconnect_on_request(on_request)
         .build();
     server.set_credentials(Some(server::Credentials {
@@ -4539,6 +4536,14 @@ impl server::CredentialValidator for RejectingValidator {
     }
 }
 
+/// The cookie the test server is configured with, as one a client was issued before it lost its connection.
+fn issued_auto_reconnect_cookie() -> ServerAutoReconnect {
+    ServerAutoReconnect {
+        logon_id: 1,
+        random_bits: [0x5a; 16],
+    }
+}
+
 /// A cookie the test server never issued, as one issued before a server restarted.
 fn stale_auto_reconnect_cookie() -> ServerAutoReconnect {
     ServerAutoReconnect {
@@ -4608,10 +4613,7 @@ async fn an_unverifiable_auto_reconnect_cookie_logs_on_with_credentials_the_vali
 #[tokio::test]
 async fn an_unverifiable_auto_reconnect_cookie_logs_on_after_nla() {
     let (mut server, display_tx) = hybrid_server();
-    server.set_auto_reconnect_cookie(Some(ServerAutoReconnect {
-        logon_id: 1,
-        random_bits: [0x5a; 16],
-    }));
+    server.set_auto_reconnect_cookie(Some(issued_auto_reconnect_cookie()));
     let calls = Arc::new(StdMutex::new(Vec::new()));
     server.set_credential_validator(Some(Arc::new(RecordingCredentialValidator(Arc::clone(&calls)))));
 
@@ -4705,10 +4707,7 @@ async fn an_unverifiable_auto_reconnect_cookie_is_refused_when_the_validator_rej
 // oracle: mutant a server with a connection binder admitting an auto-reconnect attempt it never binds
 #[rstest::rstest]
 #[case::stale_cookie(stale_auto_reconnect_cookie())]
-#[case::verified_cookie(ServerAutoReconnect {
-    logon_id: 1,
-    random_bits: [0x5a; 16],
-})]
+#[case::verified_cookie(issued_auto_reconnect_cookie())]
 #[tokio::test]
 async fn an_auto_reconnect_attempt_is_refused_with_a_connection_binder(#[case] cookie: ServerAutoReconnect) {
     let (mut server, display_tx) = auto_reconnect_server(false);

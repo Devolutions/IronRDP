@@ -6477,18 +6477,18 @@ impl RdpServer {
                     // have checked without one, the delegated ones under plain HYBRID and the Client Info ones
                     // otherwise.
                     debug!("Auto-reconnect cookie not recognized; continuing with a normal logon");
-                    let validated = self
-                        .pending_authenticated_credentials
-                        .lock()
-                        .expect("authenticated credentials lock poisoned")
-                        .is_some();
                     // UNTESTED: Under plain HYBRID the validator runs here on the credentials CredSSP delegated, with
                     // their origin, as it does for a TLS client on the Client Info credentials.
                     // FreeRDP before 3.32 negotiates plain HYBRID by default, but no IronRDP client can, because it
                     // always offers HYBRID_EX, so no test reaches it.
                     // When changing this arm or the acceptor's handling of received credentials, check that plain
                     // HYBRID still brings the delegated credentials here.
-                    if !validated {
+                    if self
+                        .pending_authenticated_credentials
+                        .lock()
+                        .expect("authenticated credentials lock poisoned")
+                        .is_none()
+                    {
                         if let Err(error) = self.prepare_authenticated_connection(received).await {
                             warn!(%error, "Normal logon after an unrecognized auto-reconnect cookie failed");
                             send_access_denied(acceptor, writer).await?;
