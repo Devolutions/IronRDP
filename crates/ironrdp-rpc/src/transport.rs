@@ -128,13 +128,11 @@ mod imp {
                 ));
             }
             // UNTESTED: another user's socket is reported, not removed; check with a socket bound by a second account.
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AddrInUse,
-                    format!("the endpoint {endpoint} is held by another user"),
-                ));
+            Err(e) => {
+                if let Some(held) = held_by_another_user(&e, endpoint) {
+                    return Err(held);
+                }
             }
-            Err(_) => {}
         }
         use std::os::unix::fs::FileTypeExt as _;
         let metadata = std::fs::symlink_metadata(&endpoint.0)?;
@@ -145,6 +143,15 @@ mod imp {
             ));
         }
         std::fs::remove_file(&endpoint.0)
+    }
+
+    pub(super) fn held_by_another_user(error: &io::Error, endpoint: &Endpoint) -> Option<io::Error> {
+        (error.kind() == io::ErrorKind::PermissionDenied).then(|| {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("the endpoint {endpoint} is held by another user"),
+            )
+        })
     }
 
     /// Connects to a listening daemon.
@@ -632,37 +639,23 @@ mod imp {
         }
 
         // oracle: regression #2483
-        #[tokio::test]
-        async fn pipe_owner_is_current_user() {
+        #[test]
+        fn security_descriptor_owner_is_current_user() {
+            use windows::Win32::Security::GetSecurityDescriptorOwner;
+
             let expected_buffer = current_user_token_buffer().expect("get current user token");
             let expected_sid = sid_from_token_buffer(&expected_buffer);
-
             let security = OwnedSecurityDescriptor::for_current_user().expect("build security descriptor");
-            let name = format!("\\\\.\\pipe\\ironrdp-agent-owner-acl-test-{}", std::process::id());
-            let mut name_utf16: Vec<u16> = name.encode_utf16().collect();
-            name_utf16.push(0u16);
-            let _server = create_server_instance(&name, true, &security).expect("create pipe instance");
 
-            let mut sd = PSECURITY_DESCRIPTOR(core::ptr::null_mut());
             let mut owner = PSID(core::ptr::null_mut());
-            // SAFETY: `name_utf16` is null-terminated and the out-pointers are valid.
-            let result = unsafe {
-                GetNamedSecurityInfoW(
-                    PCWSTR::from_raw(name_utf16.as_ptr()),
-                    SE_FILE_OBJECT,
-                    OWNER_SECURITY_INFORMATION,
-                    Some(core::ptr::addr_of_mut!(owner)),
-                    None,
-                    None,
-                    None,
-                    core::ptr::addr_of_mut!(sd),
-                )
-            };
-            let _sd = OwnedSecurityDescriptor(sd);
-            assert_eq!(result, ERROR_SUCCESS, "GetNamedSecurityInfoW must succeed");
-            // SAFETY: `owner` points into `sd`, which `_sd` keeps alive, and `expected_sid` into the token buffer.
+            let mut defaulted = windows::core::BOOL(0);
+            // SAFETY: `security` holds a valid self-relative descriptor, and the out-pointers are valid.
+            unsafe { GetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR(security.as_ptr()), &mut owner, &mut defaulted) }
+                .expect("read descriptor owner");
+            assert!(!owner.0.is_null(), "the descriptor must set an explicit owner");
+            // SAFETY: `owner` points into `security`, which is alive, and `expected_sid` into the token buffer.
             let owner_equal = unsafe { EqualSid(owner, expected_sid) }.is_ok();
-            assert!(owner_equal, "pipe owner must equal the current user SID");
+            assert!(owner_equal, "descriptor owner must equal the current user SID");
         }
 
         // oracle: regression #2483
@@ -685,6 +678,7 @@ mod imp {
             // SAFETY: `text` is a valid null-terminated SID string; `everyone` is a valid out-pointer.
             unsafe { ConvertStringSidToSidW(PCWSTR::from_raw(text.as_ptr()), core::ptr::addr_of_mut!(everyone)) }
                 .expect("convert Everyone sid");
+            // oracle: regression #2483
             let rejected = current_user_owns(everyone);
             // SAFETY: `everyone` was `LocalAlloc`'d by `ConvertStringSidToSidW` and is no longer needed.
             let _ = unsafe { LocalFree(Some(HLOCAL(everyone.0))) };
@@ -760,7 +754,7 @@ mod tests {
 
         let path = std::env::temp_dir().join(format!("ironrdp-owner-test-{}.sock", std::process::id()));
         let endpoint = Endpoint(path);
-        let _ = prepare_endpoint(&endpoint).await;
+        prepare_endpoint(&endpoint).await.expect("prepare endpoint");
         let mut listener = Listener::bind(&endpoint).expect("bind listener");
         let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
         accepted.expect("accept");
@@ -772,5 +766,15 @@ mod tests {
     #[test]
     fn check_peer_uid_rejects_a_foreign_peer() {
         assert!(super::imp::check_peer_uid(1001, 1000).is_err());
+    }
+
+    // oracle: regression #2483
+    #[cfg(unix)]
+    #[test]
+    fn prepare_endpoint_reports_a_foreign_peer_as_held() {
+        let endpoint = super::Endpoint("/tmp/ironrdp-held-test.sock".into());
+        let foreign = super::imp::check_peer_uid(1001, 1000).expect_err("foreign peer");
+        let held = super::imp::held_by_another_user(&foreign, &endpoint).expect("held by another user");
+        assert_eq!(held.kind(), io::ErrorKind::AddrInUse);
     }
 }
