@@ -1371,7 +1371,9 @@ mod native {
                 },
                 Some(Arc::clone(&audio.0)),
             );
-            let backend = Arc::new(Mutex::new(RdpsndBackend::with_config(PlaybackConfig::default())));
+            let backend: Arc<PlaybackBackend> = Arc::new(Mutex::new(Box::new(RdpsndBackend::with_config(
+                PlaybackConfig::default(),
+            ))));
             *audio.0.playback_backend.lock().unwrap() = Some(Arc::downgrade(&backend));
             let playback_guard = backend.lock().unwrap();
             let worker = std::thread::spawn(move || drop(stage));
