@@ -19,7 +19,7 @@ mod native {
         pub(super) latency: Duration,
         pub(super) attached: AtomicBool,
         pub(super) playback_enabled: AtomicBool,
-        /// INVARIANT: This slot lets StopAudio close playback without owning the backend.
+        /// This slot lets StopAudio close playback without owning the backend.
         pub(super) playback_backend: Mutex<Option<Weak<Mutex<RdpsndBackend>>>>,
     }
 
@@ -29,13 +29,11 @@ mod native {
             connector: &mut ironrdp::connector::ClientConnector,
         ) -> Result<(), &'static str> {
             let channels = &connector.static_channels;
-            let playback_type = channels.get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>().is_some();
             let drdynvc_type = channels.get_by_type::<ironrdp::dvc::DrdynvcClient>().is_some();
             let rdpdr_type = channels.get_by_type::<ironrdp::rdpdr::Rdpdr>().is_some();
-            if !playback_type
-                && channels
-                    .get_by_channel_name_key(&ironrdp::rdpsnd::client::Rdpsnd::NAME)
-                    .is_some()
+            if channels
+                .get_by_channel_name_key(&ironrdp::rdpsnd::client::Rdpsnd::NAME)
+                .is_some()
             {
                 return Err("RDPSND channel name is already registered");
             }
@@ -49,7 +47,7 @@ mod native {
             if !rdpdr_type && channels.get_by_channel_name_key(&ironrdp::rdpdr::Rdpdr::NAME).is_some() {
                 return Err("RDPDR channel name is already registered");
             }
-            let needed = usize::from(!playback_type) + usize::from(!drdynvc_type) + usize::from(!rdpdr_type);
+            let needed = 1 + usize::from(!drdynvc_type) + usize::from(!rdpdr_type);
             if ironrdp::svc::MAX_STATIC_CHANNELS < channels.len() + needed {
                 return Err("no space for native audio channels");
             }

@@ -686,7 +686,7 @@ internal static class SmokeTests
             True(stage.EncodedResize(1024, 768) is null, "no resize frame");
         });
 
-        // oracle: regression Devolutions/IronRDP#2469
+        // oracle: mutant attach one audio settings object to multiple connectors or replace native playback
         yield return ("native playback settings attach to only one connector", () =>
         {
             var audio = NativeAudio.New("", 0);
@@ -697,7 +697,19 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => first.WithStaticChannelRdpSnd());
         });
 
-        // oracle: regression Devolutions/IronRDP#2469
+        // oracle: mutant silently replace an already attached static playback channel
+        yield return ("native playback rejects an existing static playback channel", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            var audio = NativeAudio.New("", 0);
+            connector.WithStaticChannelRdpSnd();
+            Throws<IronRdpException>(() => connector.WithNativeAudio(audio));
+
+            var other = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            other.WithNativeAudio(audio);
+        });
+
+        // oracle: mutant allow native playback and a playback pipe proxy to share a channel name
         yield return ("native playback and a playback pipe proxy cannot share a channel name", () =>
         {
             var queue = DvcPipeProxyMessageQueue.New(1);
@@ -739,7 +751,7 @@ internal static class SmokeTests
             connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "first-in-batch"));
         });
 
-        // oracle: regression Devolutions/IronRDP#2469
+        // oracle: mutant stop playback attached to a different connection
         yield return ("stopping playback requires the attached connection", () =>
         {
             var audio = NativeAudio.New("", 0);
@@ -749,6 +761,7 @@ internal static class SmokeTests
             using var image = connected.Image;
             Throws<IronRdpException>(() => stage.StopAudio(other));
             using var stopped = stage.StopAudio(audio);
+            // oracle: mutant stopping playback produces transport output
             Equal(0ul, (ulong)stopped.Len(), "stopping playback requires no response frame");
         });
 

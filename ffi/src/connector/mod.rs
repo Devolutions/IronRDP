@@ -78,6 +78,7 @@ pub mod ffi {
         /// Use a fresh `NativeAudio` for each connection.
         /// Playback attaches RDPDR without redirected devices when the channel is absent.
         /// Existing RDPDR configuration is preserved.
+        /// An existing RDPSND channel prevents native playback from being attached.
         pub fn with_native_audio(&mut self, audio: &NativeAudio) -> Result<(), Box<IronRdpError>> {
             let connector = self
                 .0

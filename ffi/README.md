@@ -60,6 +60,7 @@ Attach native playback before starting the connector.
 Create a new `NativeAudio` for each connection.
 Native playback joins RDPDR without redirected devices if it is absent, because Windows servers require the channel to start playback.
 An existing RDPDR configuration is preserved.
+An existing RDPSND channel prevents native playback from being attached.
 
 ```csharp
 var audio = NativeAudio.New(outputDevice: "", latencyMs: 0);

@@ -606,6 +606,7 @@ impl Rdpdr {
             .partition(|(device, _)| !announce_all_devices && device.device_type() == DeviceType::Serial);
         let mut messages = self.announce_batches([other, serial])?;
         if messages.is_empty() {
+            // MS-RDPEFS 3.1.3 requires an initial device list even when none are ready.
             messages = self.announce_devices(Vec::new(), Vec::new())?;
         }
 
@@ -1441,6 +1442,7 @@ mod tests {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("four-byte integer"))
     }
 
+    // oracle: spec MS-RDPEFS §2.2.2.9
     fn assert_empty_device_announce(messages: &[SvcMessage]) {
         assert_eq!(messages.len(), 1);
         assert_eq!(
@@ -1523,6 +1525,7 @@ mod tests {
         );
     }
 
+    // oracle: spec MS-RDPEFS §2.2.2.9 and §2.2.1.3
     #[test]
     fn user_logged_on_before_client_id_confirm_is_deferred() {
         let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())

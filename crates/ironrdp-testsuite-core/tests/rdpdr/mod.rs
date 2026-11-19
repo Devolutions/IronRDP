@@ -117,6 +117,7 @@ fn encoded_server_client_id_confirm(client_id: u32) -> Vec<u8> {
     .unwrap()
 }
 
+// oracle: spec MS-RDPEFS §2.2.2.9
 fn assert_empty_device_announce(messages: &[SvcMessage]) {
     assert_eq!(messages.len(), 1);
     assert_eq!(
@@ -583,7 +584,7 @@ fn client_announce_reply_uses_minor_version_13() {
 
 // oracle: spec MS-RDPEFS §3.1.3 step 4 and §2.2.2.9
 #[test]
-fn no_devices_are_announced_after_client_id_confirm() {
+fn client_id_confirm_with_no_devices_sends_an_empty_device_announce() {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned());
     let client_id = announce_client_id(&mut rdpdr, 12);
     let capability = RdpdrPdu::CoreCapability(CoreCapability {
