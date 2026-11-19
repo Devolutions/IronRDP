@@ -733,10 +733,12 @@ internal static class SmokeTests
             var direct = NewDirectDvcConfig(events, "AUDIO_PLAYBACK_DVC");
             var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
             first.WithDynamicChannelDirect(direct);
-            Throws<IronRdpException>(() => first.WithNativeAudio(NativeAudio.New("", 0)));
+            using var firstAudio = NativeAudio.New(true, false, "", "", 0);
+            Throws<IronRdpException>(() => first.WithNativeAudio(firstAudio));
 
             var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
-            second.WithNativeAudio(NativeAudio.New("", 0));
+            using var secondAudio = NativeAudio.New(true, false, "", "", 0);
+            second.WithNativeAudio(secondAudio);
             Throws<IronRdpException>(() => second.WithDynamicChannelDirect(direct));
         });
 
@@ -746,7 +748,8 @@ internal static class SmokeTests
             using var events = DirectDvcEventQueue.New(4);
             var queue = DvcPipeProxyMessageQueue.New(4);
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
-            connector.WithNativeAudio(NativeAudio.New("", 0));
+            using var audio = NativeAudio.New(true, false, "", "", 0);
+            connector.WithNativeAudio(audio);
             connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "direct-conflict"));
             Throws<IronRdpException>(
                 () => connector.WithDynamicChannelPipeProxy(NewPipeProxyConfig(queue, "first-in-batch", "direct-conflict")));
