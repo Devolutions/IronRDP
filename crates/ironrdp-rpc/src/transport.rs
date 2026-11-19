@@ -123,7 +123,7 @@ mod imp {
                     format!("an RPC listener already appears to be running at {endpoint}"),
                 ));
             }
-            // A foreign-owned socket is held by another user: do not try to remove it.
+            // The socket belongs to another user, so leave it in place.
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
@@ -143,25 +143,18 @@ mod imp {
         std::fs::remove_file(&endpoint.0)
     }
 
-    /// Connects to a listening daemon, then verifies the peer is owned by the current user.
+    /// Connects to a listening daemon and fails unless the peer runs as the current user.
     ///
-    /// The `/tmp` fallback directory is world-writable, so a different local user could bind the
-    /// predictable socket path first and answer the client. Checking the peer credential here closes
-    /// that gap for every caller before any request (which may carry secrets) is sent. This is a
-    /// same-user identity check, not an integrity boundary: any process of the current user is accepted.
+    /// Another local user can bind the predictable path first, notably under the world-writable `/tmp` fallback.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<UnixStream> {
         let stream = UnixStream::connect(&endpoint.0).await?;
         let peer = stream.peer_cred()?;
-        // SAFETY: `geteuid` has no preconditions and is always safe to call.
+        // SAFETY: `geteuid` has no preconditions.
         let me = unsafe { libc::geteuid() };
         check_peer_uid(peer.uid(), me)?;
         Ok(stream)
     }
 
-    /// Fails closed unless the connected peer runs as the current (effective) user.
-    ///
-    /// `SO_PEERCRED` is captured by the kernel at connect time and cannot be spoofed by an
-    /// unprivileged user, so this reliably rejects a socket another local user bound first.
     fn check_peer_uid(peer_uid: u32, me: u32) -> io::Result<()> {
         if peer_uid != me {
             return Err(io::Error::new(
@@ -211,9 +204,6 @@ mod imp {
     mod tests {
         use super::*;
 
-        /// A legitimate same-user daemon must still round-trip through `connect`'s peer check. The
-        /// reject path (a peer owned by a different user) needs a second local account, which
-        /// single-user CI runners do not have, so it is exercised by manual testing instead.
         // oracle: regression #2483 (a same-user daemon must still be accepted by the peer check).
         #[tokio::test]
         async fn connect_accepts_a_same_user_peer() {
@@ -226,7 +216,6 @@ mod imp {
             assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
         }
 
-        /// The peer check accepts the current user and rejects any other uid.
         // oracle: regression #2483 (only a peer running as the current user is trusted).
         #[test]
         fn check_peer_uid_rejects_a_foreign_peer() {
@@ -290,31 +279,18 @@ mod imp {
         Ok(())
     }
 
-    /// Pins the client connection's impersonation level so that an impostor server can only check our
-    /// access, never act as us. The owner check below runs only after the pipe is opened, so this must
-    /// be explicit and not depend on tokio's default.
-    // UNTESTED: an impostor server connected to by `connect` must not be able to impersonate the client
-    // at `SecurityImpersonation` or `SecurityDelegation`. The owner check does not prevent this: once the
-    // client has opened the pipe, the server can call `ImpersonateNamedPipeClient` after reading from it
-    // or after the client disconnects, so even a rejected connection hands the server a client token.
-    // A server holding `SeImpersonatePrivilege` (a service account) would then act as the current user.
-    // No test covers this because it needs a server running as another, privileged account. When
-    // changing these flags or how `connect` opens the pipe, keep `SECURITY_SQOS_PRESENT` set with
-    // `SECURITY_IDENTIFICATION` (or `SECURITY_ANONYMOUS`), and check with a server that holds
-    // `SeImpersonatePrivilege` (for example one running as SYSTEM) and calls `ImpersonateNamedPipeClient`
-    // then `OpenThreadToken`: the token level must be at most identification. A server without that
-    // privilege always gets identification, so it cannot detect a regression.
+    // UNTESTED: the pipe server must get at most an identification-level token for the client.
+    // The owner check does not prevent impersonation: the server can call `ImpersonateNamedPipeClient` once the
+    // client has written to or closed the pipe, and with `SeImpersonatePrivilege` it would then act as us.
+    // When changing these flags or how `connect` opens the pipe, check with a server holding that privilege, such
+    // as SYSTEM, that the impersonated token level is identification.
+    // A server without the privilege always gets identification, so it cannot detect a regression.
     const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
     const SECURITY_SQOS_PRESENT: u32 = 0x0010_0000;
 
-    /// Connects to a listening daemon, then verifies the pipe is owned by the current user.
+    /// Connects to a listening daemon and fails unless the pipe is owned by the current user.
     ///
-    /// The pipe name is predictable and, until the daemon binds it, absent, so a different local user
-    /// can pre-create it and answer the client. The server-side DACL protects a daemon that is already
-    /// running, but nothing stops the client from trusting an impostor that claimed the name first.
-    /// Comparing the pipe object's owner SID to ours here closes that gap for every caller before any
-    /// request (which may carry secrets) is sent. This is a same-user identity check, not an integrity
-    /// boundary: any process running as the current user is accepted.
+    /// Another local user can create the predictable pipe name before the daemon binds it.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<NamedPipeClient> {
         let client = ClientOptions::new()
             .security_qos_flags(SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT)
@@ -323,19 +299,12 @@ mod imp {
         Ok(client)
     }
 
-    /// Fails closed unless the pipe `client` is connected to is owned by the current user.
-    ///
-    /// The pipe object's owner SID is a deterministic identity: a normal user cannot create a kernel
-    /// object owned by another user's SID (that needs `SeRestorePrivilege`), so an impostor's pipe
-    /// never matches. This avoids authenticating by the server PID, which the kernel fixes at open
-    /// time and can recycle to a victim-owned process.
+    /// A user cannot create a kernel object owned by another user's SID, so an impostor's pipe never matches.
     fn verify_server_is_current_user(client: &NamedPipeClient) -> io::Result<()> {
         let handle = HANDLE(client.as_raw_handle());
         let mut owner = PSID(core::ptr::null_mut());
         let mut security_descriptor = PSECURITY_DESCRIPTOR(core::ptr::null_mut());
-        // SAFETY: `handle` is a valid pipe client handle opened with READ_CONTROL (tokio sets
-        // `generic_read`); the out-pointers are valid. The returned descriptor is `LocalAlloc`'d and
-        // owned by us, and `owner` points into it.
+        // SAFETY: `handle` is an open pipe handle with `READ_CONTROL`, and the out-pointers are valid.
         let status = unsafe {
             GetSecurityInfo(
                 handle,
@@ -356,9 +325,8 @@ mod imp {
         current_user_owns(owner)
     }
 
-    /// Fails closed unless `owner` is the current user's SID.
     fn current_user_owns(owner: PSID) -> io::Result<()> {
-        // `EqualSid` assumes valid SIDs; a null owner is undefined behavior, so fail closed first.
+        // `EqualSid` requires valid SIDs, so reject a null owner first.
         if owner.0.is_null() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -367,7 +335,7 @@ mod imp {
         }
         let current_buffer = current_user_token_buffer()?;
         let current_sid = sid_from_token_buffer(&current_buffer);
-        // SAFETY: `owner` is a valid, non-null SID kept alive by the caller; `current_sid` points into `current_buffer`.
+        // SAFETY: `owner` is non-null and kept alive by the caller, and `current_sid` points into `current_buffer`.
         if unsafe { EqualSid(owner, current_sid) }.is_err() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -416,11 +384,8 @@ mod imp {
             // SAFETY: `sid_wide` was `LocalAlloc`'d by `ConvertSidToStringSidW` and is no longer needed.
             let _ = unsafe { LocalFree(Some(HLOCAL(sid_wide.as_ptr().cast::<core::ffi::c_void>()))) };
 
-            // Build the SDDL: set the current user as the object owner (so the client's owner check
-            // holds even when the daemon runs elevated, whose token owner defaults to Administrators),
-            // plus a protected DACL granting GENERIC_ALL to the current user only. A normal or elevated
-            // token can always assign its own user SID as owner; a restricted/AppContainer token whose
-            // user SID is not owner-eligible is not a supported daemon context.
+            // The explicit owner lets the client accept an elevated daemon, whose default owner is Administrators.
+            // The protected DACL grants `GENERIC_ALL` to the current user only.
             let sddl_string = format!("O:{sid_text}D:P(A;;GA;;;{sid_text})");
             let mut sddl_utf16: Vec<u16> = sddl_string.encode_utf16().collect();
             sddl_utf16.push(0u16);
@@ -694,9 +659,6 @@ mod imp {
             assert!(sids_equal, "ACE SID must equal the current user SID");
         }
 
-        /// The listener must set the pipe's object owner to the current user (the `O:` in the SDDL),
-        /// not just the DACL. Without it, an elevated daemon's pipe would be owned by Administrators
-        /// and the client's owner check would reject a legitimate same-user connection.
         // oracle: regression #2483 (the daemon's pipe must be owned by its user so the client owner check accepts it).
         #[tokio::test]
         async fn pipe_owner_is_current_user() {
@@ -711,8 +673,7 @@ mod imp {
 
             let mut sd = PSECURITY_DESCRIPTOR(core::ptr::null_mut());
             let mut owner = PSID(core::ptr::null_mut());
-            // SAFETY: `name_utf16` is a valid null-terminated pipe path; we request only the owner; the
-            // out-pointers are valid. The returned SD is `LocalAlloc`'d and owned by us until freed below.
+            // SAFETY: `name_utf16` is null-terminated and the out-pointers are valid.
             let result = unsafe {
                 GetNamedSecurityInfoW(
                     PCWSTR::from_raw(name_utf16.as_ptr()),
@@ -726,31 +687,24 @@ mod imp {
                 )
             };
             assert_eq!(result, ERROR_SUCCESS, "GetNamedSecurityInfoW must succeed");
-            // SAFETY: both SIDs are valid: `owner` points into `sd` (alive here), `expected_sid` into the token buffer.
+            // SAFETY: `owner` points into `sd`, which is still alive, and `expected_sid` into the token buffer.
             let owner_equal = unsafe { EqualSid(owner, expected_sid) }.is_ok();
             // SAFETY: `sd` was `LocalAlloc`'d by `GetNamedSecurityInfoW` and is no longer needed.
             let _ = unsafe { LocalFree(Some(HLOCAL(sd.0))) };
             assert!(owner_equal, "pipe owner must equal the current user SID");
         }
 
-        /// A legitimate same-user daemon must still round-trip through `connect`'s owner check. The
-        /// reject path (a server owned by a different user) needs a second local account, which
-        /// single-user CI runners do not have, so it is exercised by manual testing instead.
         // oracle: regression #2483 (a same-user daemon must still be accepted by the owner check).
         #[tokio::test]
         async fn connect_accepts_a_same_user_server() {
             let endpoint = Endpoint(format!("\\\\.\\pipe\\ironrdp-agent-owner-test-{}", std::process::id()));
             let mut listener = Listener::bind(&endpoint).expect("bind listener");
-            // The listener holds raw handles and is not `Send`, so drive both ends on this task.
+            // The listener is not `Send`, so drive both ends on this task.
             let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
             accepted.expect("accept");
             assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
         }
 
-        /// The owner check must reject a pipe owned by a different identity. Creating a pipe owned by
-        /// another user needs a second account, but the decision is a SID comparison, so test it
-        /// against the `Everyone` group SID (`S-1-1-0`): a group SID can never equal a token user SID,
-        /// so this holds regardless of which account CI runs the job as.
         #[test]
         fn current_user_owns_rejects_a_foreign_owner() {
             use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
