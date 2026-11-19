@@ -7,7 +7,7 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class NativeAudio
+public partial class NativeAudio: IDisposable
 {
     private unsafe RustHandle<Raw.NativeAudio>? _inner;
 
@@ -61,15 +61,18 @@ public partial class NativeAudio
     /// <returns>
     /// A <c>NativeAudio</c> allocated on Rust side.
     /// </returns>
-    public static NativeAudio New(string outputDevice, uint latencyMs)
+    public static NativeAudio New(bool playback, bool capture, string outputDevice, string inputDevice, uint latencyMs)
     {
         unsafe
         {
             if (outputDevice == null) throw new ArgumentNullException(nameof(outputDevice));
+            if (inputDevice == null) throw new ArgumentNullException(nameof(inputDevice));
             byte[] outputDeviceBytes = Diplomat.Utf8.Clone(outputDevice);
+            byte[] inputDeviceBytes = Diplomat.Utf8.Clone(inputDevice);
             fixed (byte* outputDevicePtr = outputDeviceBytes)
+            fixed (byte* inputDevicePtr = inputDeviceBytes)
             {
-                var result = Raw.NativeAudio.New(new DiplomatSliceU8 { Ptr = outputDevicePtr, Len = (nuint)outputDeviceBytes.Length }, latencyMs);
+                var result = Raw.NativeAudio.New(playback, capture, new DiplomatSliceU8 { Ptr = outputDevicePtr, Len = (nuint)outputDeviceBytes.Length }, new DiplomatSliceU8 { Ptr = inputDevicePtr, Len = (nuint)inputDeviceBytes.Length }, latencyMs);
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -92,5 +95,19 @@ public partial class NativeAudio
             inner.ReleaseWrapper();
             _inner = null;
         }
+    }
+    /// <summary>
+    /// Releases this wrapper's native resource immediately.
+    /// </summary>
+    /// <remarks>
+    /// Retained-borrow returns sourced from a manually_disposable opaque are
+    /// rejected during generation, so Dispose is not a parent-invalidation API.
+    /// Callers must not race Dispose with calls from another thread. Later calls
+    /// throw <see cref="ObjectDisposedException"/>.
+    /// </remarks>
+    public void Dispose()
+    {
+        Cleanup();
+        GC.SuppressFinalize(this);
     }
 }

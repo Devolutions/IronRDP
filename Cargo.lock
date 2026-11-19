@@ -1761,6 +1761,7 @@ dependencies = [
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr-native",
+ "ironrdp-rdpeai",
  "ironrdp-rdpsnd-native",
  "ironrdp-vmconnect",
  "sspi",
