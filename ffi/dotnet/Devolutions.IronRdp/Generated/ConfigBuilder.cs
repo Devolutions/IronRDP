@@ -152,6 +152,30 @@ public partial class ConfigBuilder
         }
     }
 
+    public DirectDvcConfig DirectDvc
+    {
+        set
+        {
+            unsafe
+            {
+                if (value == null) throw new ArgumentNullException(nameof(value));
+                BorrowLease<Raw.ConfigBuilder>? selfLease = null;
+                BorrowLease<Raw.DirectDvcConfig>? valueLease = null;
+                try
+                {
+                    selfLease = _diplomatHandle.Lease(BorrowKind.Exclusive);
+                    valueLease = value._diplomatHandle.Lease(BorrowKind.Shared);
+                    Raw.ConfigBuilder.SetDirectDvc(selfLease!.Ptr, valueLease!.Ptr);
+                }
+                finally
+                {
+                    selfLease?.Release();
+                    valueLease?.Release();
+                }
+            }
+        }
+    }
+
     public string Domain
     {
         set

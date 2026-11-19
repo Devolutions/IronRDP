@@ -214,6 +214,14 @@ impl DrdynvcClient {
                 .any(|channel| channel.channel_name() == name)
     }
 
+    /// Checks whether a registered listener has the given name and processor type.
+    pub fn has_channel_name_of_type<T: DvcClientProcessor + 'static>(&self, name: &str) -> bool {
+        self.dynamic_channels
+            .listeners
+            .get(name)
+            .is_some_and(|entry| entry.type_id == Some(TypeId::of::<T>()))
+    }
+
     /// Registers a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
@@ -268,8 +276,19 @@ impl DrdynvcClient {
         T: DvcClientProcessor + 'static,
         F: FnMut() -> T + Send + 'static,
     {
-        self.dynamic_channels.register_factory(channel_name.into(), factory);
+        self.attach_dynamic_channel_factory(channel_name, factory);
         self
+    }
+
+    /// Attaches a factory that creates a fresh processor for each opening.
+    ///
+    /// If a listener or a pre-registered channel with the same name already exists, it will be silently overwritten.
+    pub fn attach_dynamic_channel_factory<T, F>(&mut self, channel_name: impl Into<DynamicChannelName>, factory: F)
+    where
+        T: DvcClientProcessor + 'static,
+        F: FnMut() -> T + Send + 'static,
+    {
+        self.dynamic_channels.register_factory(channel_name.into(), factory);
     }
 
     pub fn attach_established_dynamic_channel<T>(&mut self, channel_id: DynamicChannelId, channel: T) -> PduResult<()>
