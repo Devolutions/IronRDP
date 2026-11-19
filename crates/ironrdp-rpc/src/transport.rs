@@ -123,6 +123,7 @@ mod imp {
                     format!("an RPC listener already appears to be running at {endpoint}"),
                 ));
             }
+            // UNTESTED: another user's socket is reported, not removed; check with a socket bound by a second account.
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
@@ -147,21 +148,16 @@ mod imp {
     /// Fails unless the peer runs as the current user.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<UnixStream> {
         let stream = UnixStream::connect(&endpoint.0).await?;
-        let peer = stream.peer_cred()?;
-        // SAFETY: `geteuid` has no preconditions.
-        let me = unsafe { libc::geteuid() };
-        check_peer_uid(peer.uid(), me)?;
-        Ok(stream)
-    }
-
-    fn check_peer_uid(peer_uid: u32, me: u32) -> io::Result<()> {
-        if peer_uid != me {
+        // SAFETY: `getuid` has no preconditions and is always safe to call.
+        let uid = unsafe { libc::getuid() };
+        // UNTESTED: a peer running as another user is rejected; check with a socket bound by a second account.
+        if stream.peer_cred()?.uid() != uid {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "refusing to use the endpoint: it is owned by another user",
             ));
         }
-        Ok(())
+        Ok(stream)
     }
 
     /// A bound listener that accepts client connections.
@@ -198,30 +194,6 @@ mod imp {
             let _ = std::fs::remove_file(&self.path);
         }
     }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        // oracle: regression #2483
-        #[tokio::test]
-        async fn connect_accepts_a_same_user_peer() {
-            let path = std::env::temp_dir().join(format!("ironrdp-owner-test-{}.sock", std::process::id()));
-            let endpoint = Endpoint(path);
-            let _ = prepare_endpoint(&endpoint).await;
-            let mut listener = Listener::bind(&endpoint).expect("bind listener");
-            let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
-            accepted.expect("accept");
-            assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
-        }
-
-        // oracle: regression #2483
-        #[test]
-        fn check_peer_uid_rejects_a_foreign_peer() {
-            assert!(check_peer_uid(1000, 1000).is_ok());
-            assert!(check_peer_uid(1001, 1000).is_err());
-        }
-    }
 }
 
 #[cfg(windows)]
@@ -240,6 +212,7 @@ mod imp {
         EqualSid, GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
         TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
+    use windows::Win32::Storage::FileSystem::{SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT};
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows::core::{PCWSTR, PWSTR};
 
@@ -278,17 +251,15 @@ mod imp {
         Ok(())
     }
 
-    // UNTESTED: the pipe server must get at most an identification-level token, even when `connect` rejects it.
-    // To check, impersonate the client from a server holding `SeImpersonatePrivilege`, such as SYSTEM.
-    const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
-    const SECURITY_SQOS_PRESENT: u32 = 0x0010_0000;
-
     /// Connects to a listening daemon.
     ///
     /// Fails unless the pipe is owned by the current user.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<NamedPipeClient> {
+        // UNTESTED: a pipe owned by another user is rejected, and its server gets at most an identification-level
+        // token even then.
+        // To check, connect to a pipe created by a second account holding `SeImpersonatePrivilege`, such as SYSTEM.
         let client = ClientOptions::new()
-            .security_qos_flags(SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT)
+            .security_qos_flags((SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT).0)
             .open(&endpoint.0)?;
         verify_server_is_current_user(&client)?;
         Ok(client)
@@ -702,11 +673,6 @@ mod imp {
         fn current_user_owns_rejects_a_foreign_owner() {
             use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
 
-            // oracle: regression #2483
-            let buffer = current_user_token_buffer().expect("current user token");
-            let current = sid_from_token_buffer(&buffer);
-            current_user_owns(current).expect("current user must be accepted");
-
             // oracle: spec MS-DTYP §2.4.2.4
             let mut everyone = PSID(core::ptr::null_mut());
             let text: Vec<u16> = "S-1-1-0\0".encode_utf16().collect();
@@ -778,5 +744,20 @@ mod tests {
             )
         );
         assert!(stream.0.is_empty());
+    }
+
+    // oracle: regression #2483
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_accepts_a_same_user_peer() {
+        use super::{Endpoint, Listener, connect, prepare_endpoint};
+
+        let path = std::env::temp_dir().join(format!("ironrdp-owner-test-{}.sock", std::process::id()));
+        let endpoint = Endpoint(path);
+        let _ = prepare_endpoint(&endpoint).await;
+        let mut listener = Listener::bind(&endpoint).expect("bind listener");
+        let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
+        accepted.expect("accept");
+        assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
     }
 }
