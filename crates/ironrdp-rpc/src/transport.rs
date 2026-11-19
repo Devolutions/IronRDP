@@ -123,7 +123,6 @@ mod imp {
                     format!("an RPC listener already appears to be running at {endpoint}"),
                 ));
             }
-            // The socket belongs to another user, so leave it in place.
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
@@ -144,8 +143,6 @@ mod imp {
     }
 
     /// Connects to a listening daemon and fails unless the peer runs as the current user.
-    ///
-    /// Another local user can bind the predictable path first, notably under the world-writable `/tmp` fallback.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<UnixStream> {
         let stream = UnixStream::connect(&endpoint.0).await?;
         let peer = stream.peer_cred()?;
@@ -204,7 +201,7 @@ mod imp {
     mod tests {
         use super::*;
 
-        // oracle: regression #2483 (a same-user daemon must still be accepted by the peer check).
+        // oracle: regression #2483
         #[tokio::test]
         async fn connect_accepts_a_same_user_peer() {
             let path = std::env::temp_dir().join(format!("ironrdp-owner-test-{}.sock", std::process::id()));
@@ -216,7 +213,7 @@ mod imp {
             assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
         }
 
-        // oracle: regression #2483 (only a peer running as the current user is trusted).
+        // oracle: regression #2483
         #[test]
         fn check_peer_uid_rejects_a_foreign_peer() {
             assert!(check_peer_uid(1000, 1000).is_ok());
@@ -279,18 +276,12 @@ mod imp {
         Ok(())
     }
 
-    // UNTESTED: the pipe server must get at most an identification-level token for the client.
-    // The owner check does not prevent impersonation: the server can call `ImpersonateNamedPipeClient` once the
-    // client has written to or closed the pipe, and with `SeImpersonatePrivilege` it would then act as us.
-    // When changing these flags or how `connect` opens the pipe, check with a server holding that privilege, such
-    // as SYSTEM, that the impersonated token level is identification.
-    // A server without the privilege always gets identification, so it cannot detect a regression.
+    // UNTESTED: the pipe server must get at most an identification-level token, even when `connect` rejects it.
+    // To check, impersonate the client from a server holding `SeImpersonatePrivilege`, such as SYSTEM.
     const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
     const SECURITY_SQOS_PRESENT: u32 = 0x0010_0000;
 
     /// Connects to a listening daemon and fails unless the pipe is owned by the current user.
-    ///
-    /// Another local user can create the predictable pipe name before the daemon binds it.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<NamedPipeClient> {
         let client = ClientOptions::new()
             .security_qos_flags(SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT)
@@ -299,7 +290,6 @@ mod imp {
         Ok(client)
     }
 
-    /// A user cannot create a kernel object owned by another user's SID, so an impostor's pipe never matches.
     fn verify_server_is_current_user(client: &NamedPipeClient) -> io::Result<()> {
         let handle = HANDLE(client.as_raw_handle());
         let mut owner = PSID(core::ptr::null_mut());
@@ -384,8 +374,8 @@ mod imp {
             // SAFETY: `sid_wide` was `LocalAlloc`'d by `ConvertSidToStringSidW` and is no longer needed.
             let _ = unsafe { LocalFree(Some(HLOCAL(sid_wide.as_ptr().cast::<core::ffi::c_void>()))) };
 
-            // The explicit owner lets the client accept an elevated daemon, whose default owner is Administrators.
-            // The protected DACL grants `GENERIC_ALL` to the current user only.
+            // Build the SDDL: the current user as owner, since an elevated daemon's default owner is Administrators,
+            // and a protected DACL granting GENERIC_ALL to the current user only.
             let sddl_string = format!("O:{sid_text}D:P(A;;GA;;;{sid_text})");
             let mut sddl_utf16: Vec<u16> = sddl_string.encode_utf16().collect();
             sddl_utf16.push(0u16);
@@ -659,7 +649,7 @@ mod imp {
             assert!(sids_equal, "ACE SID must equal the current user SID");
         }
 
-        // oracle: regression #2483 (the daemon's pipe must be owned by its user so the client owner check accepts it).
+        // oracle: regression #2483
         #[tokio::test]
         async fn pipe_owner_is_current_user() {
             let expected_buffer = current_user_token_buffer().expect("get current user token");
@@ -694,12 +684,11 @@ mod imp {
             assert!(owner_equal, "pipe owner must equal the current user SID");
         }
 
-        // oracle: regression #2483 (a same-user daemon must still be accepted by the owner check).
+        // oracle: regression #2483
         #[tokio::test]
         async fn connect_accepts_a_same_user_server() {
             let endpoint = Endpoint(format!("\\\\.\\pipe\\ironrdp-agent-owner-test-{}", std::process::id()));
             let mut listener = Listener::bind(&endpoint).expect("bind listener");
-            // The listener is not `Send`, so drive both ends on this task.
             let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
             accepted.expect("accept");
             assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
@@ -709,13 +698,12 @@ mod imp {
         fn current_user_owns_rejects_a_foreign_owner() {
             use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
 
-            // oracle: regression #2483 (the current user's own SID is the trusted owner).
+            // oracle: regression #2483
             let buffer = current_user_token_buffer().expect("current user token");
             let current = sid_from_token_buffer(&buffer);
             current_user_owns(current).expect("current user must be accepted");
 
-            // oracle: spec MS-DTYP §2.4.2.4 (`S-1-1-0` is the Everyone group, never a user SID), and
-            // regression #2483 (any owner other than the current user is rejected).
+            // oracle: spec MS-DTYP §2.4.2.4
             let mut everyone = PSID(core::ptr::null_mut());
             let text: Vec<u16> = "S-1-1-0\0".encode_utf16().collect();
             // SAFETY: `text` is a valid null-terminated SID string; `everyone` is a valid out-pointer.
