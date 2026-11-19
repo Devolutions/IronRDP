@@ -304,7 +304,7 @@ mod imp {
         current_user_owns(owner)
     }
 
-    fn current_user_owns(owner: PSID) -> io::Result<()> {
+    pub(super) fn current_user_owns(owner: PSID) -> io::Result<()> {
         // `EqualSid` requires valid SIDs, so reject a null owner first.
         if owner.0.is_null() {
             return Err(io::Error::new(
@@ -338,7 +338,7 @@ mod imp {
 
     /// Owns a self-relative security descriptor allocated by
     /// `ConvertStringSecurityDescriptorToSecurityDescriptorW` and frees it with `LocalFree` on drop.
-    struct OwnedSecurityDescriptor(PSECURITY_DESCRIPTOR);
+    pub(super) struct OwnedSecurityDescriptor(PSECURITY_DESCRIPTOR);
 
     impl OwnedSecurityDescriptor {
         /// Builds a security descriptor granting access only to the current user.
@@ -349,7 +349,7 @@ mod imp {
         /// named pipe. On shared Windows hosts the pipe namespace is otherwise reachable by every
         /// local user, so this is the last line of defense against a different local user driving the
         /// session (input, screenshots, logs, NOW execution).
-        fn for_current_user() -> io::Result<Self> {
+        pub(super) fn for_current_user() -> io::Result<Self> {
             let buffer = current_user_token_buffer()?;
             let sid = sid_from_token_buffer(&buffer);
 
@@ -388,7 +388,7 @@ mod imp {
         }
 
         /// Returns the raw security-descriptor pointer for use as `lpSecurityDescriptor`.
-        fn as_ptr(&self) -> *mut core::ffi::c_void {
+        pub(super) fn as_ptr(&self) -> *mut core::ffi::c_void {
             self.0.0
         }
     }
@@ -406,7 +406,7 @@ mod imp {
     ///
     /// The user SID is referenced by `TOKEN_USER.User.Sid` and lives inside this buffer, so keep the
     /// buffer alive while using the SID pointer.
-    fn current_user_token_buffer() -> io::Result<Vec<u8>> {
+    pub(super) fn current_user_token_buffer() -> io::Result<Vec<u8>> {
         // SAFETY: `GetCurrentProcess` has no preconditions and returns a pseudo-handle that must
         // not be closed.
         let process = unsafe { GetCurrentProcess() };
@@ -441,7 +441,7 @@ mod imp {
     }
 
     /// Returns the user SID referenced by a token buffer from [`current_user_token_buffer`].
-    fn sid_from_token_buffer(buffer: &[u8]) -> PSID {
+    pub(super) fn sid_from_token_buffer(buffer: &[u8]) -> PSID {
         // The buffer is byte-aligned, so read the `TOKEN_USER` header unaligned; the SID it references
         // lives further inside the buffer and stays valid as long as the buffer does.
         // SAFETY: `GetTokenInformation` wrote a valid `TOKEN_USER` at the start of `buffer`.
@@ -637,56 +637,6 @@ mod imp {
             let sids_equal = unsafe { EqualSid(ace_sid, expected_sid) }.is_ok();
             assert!(sids_equal, "ACE SID must equal the current user SID");
         }
-
-        // oracle: regression #2483
-        #[test]
-        fn security_descriptor_owner_is_current_user() {
-            use windows::Win32::Security::GetSecurityDescriptorOwner;
-
-            let expected_buffer = current_user_token_buffer().expect("get current user token");
-            let expected_sid = sid_from_token_buffer(&expected_buffer);
-            let security = OwnedSecurityDescriptor::for_current_user().expect("build security descriptor");
-
-            let mut owner = PSID(core::ptr::null_mut());
-            let mut defaulted = windows::core::BOOL(0);
-            // SAFETY: `security` holds a valid self-relative descriptor, and the out-pointers are valid.
-            unsafe { GetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR(security.as_ptr()), &mut owner, &mut defaulted) }
-                .expect("read descriptor owner");
-            assert!(!owner.0.is_null(), "the descriptor must set an explicit owner");
-            // SAFETY: `owner` points into `security`, which is alive, and `expected_sid` into the token buffer.
-            let owner_equal = unsafe { EqualSid(owner, expected_sid) }.is_ok();
-            assert!(owner_equal, "descriptor owner must equal the current user SID");
-        }
-
-        // oracle: regression #2483
-        #[tokio::test]
-        async fn connect_accepts_a_same_user_server() {
-            let endpoint = Endpoint(format!("\\\\.\\pipe\\ironrdp-agent-owner-test-{}", std::process::id()));
-            let mut listener = Listener::bind(&endpoint).expect("bind listener");
-            let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
-            accepted.expect("accept");
-            assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
-        }
-
-        #[test]
-        fn current_user_owns_rejects_a_foreign_owner() {
-            use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
-
-            // oracle: spec MS-DTYP §2.4.2.4
-            let mut everyone = PSID(core::ptr::null_mut());
-            let text: Vec<u16> = "S-1-1-0\0".encode_utf16().collect();
-            // SAFETY: `text` is a valid null-terminated SID string; `everyone` is a valid out-pointer.
-            unsafe { ConvertStringSidToSidW(PCWSTR::from_raw(text.as_ptr()), core::ptr::addr_of_mut!(everyone)) }
-                .expect("convert Everyone sid");
-            // oracle: regression #2483
-            let rejected = current_user_owns(everyone);
-            // SAFETY: `everyone` was `LocalAlloc`'d by `ConvertStringSidToSidW` and is no longer needed.
-            let _ = unsafe { LocalFree(Some(HLOCAL(everyone.0))) };
-            assert!(
-                rejected.is_err(),
-                "a pipe not owned by the current user must be rejected"
-            );
-        }
     }
 }
 
@@ -776,5 +726,67 @@ mod tests {
         let foreign = super::imp::check_peer_uid(1001, 1000).expect_err("foreign peer");
         let held = super::imp::held_by_another_user(&foreign, &endpoint).expect("held by another user");
         assert_eq!(held.kind(), io::ErrorKind::AddrInUse);
+    }
+
+    #[cfg(windows)]
+    mod windows_owner {
+        use windows::Win32::Foundation::{HLOCAL, LocalFree};
+        use windows::Win32::Security::{EqualSid, PSECURITY_DESCRIPTOR, PSID};
+        use windows::core::PCWSTR;
+
+        use crate::transport::imp::{
+            OwnedSecurityDescriptor, current_user_owns, current_user_token_buffer, sid_from_token_buffer,
+        };
+        use crate::transport::{Endpoint, Listener, connect};
+
+        // oracle: regression #2483
+        #[test]
+        fn security_descriptor_owner_is_current_user() {
+            use windows::Win32::Security::GetSecurityDescriptorOwner;
+
+            let expected_buffer = current_user_token_buffer().expect("get current user token");
+            let expected_sid = sid_from_token_buffer(&expected_buffer);
+            let security = OwnedSecurityDescriptor::for_current_user().expect("build security descriptor");
+
+            let mut owner = PSID(core::ptr::null_mut());
+            let mut defaulted = windows::core::BOOL(0);
+            // SAFETY: `security` holds a valid self-relative descriptor, and the out-pointers are valid.
+            unsafe { GetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR(security.as_ptr()), &mut owner, &mut defaulted) }
+                .expect("read descriptor owner");
+            assert!(!owner.0.is_null(), "the descriptor must set an explicit owner");
+            // SAFETY: `owner` points into `security`, which is alive, and `expected_sid` into the token buffer.
+            let owner_equal = unsafe { EqualSid(owner, expected_sid) }.is_ok();
+            assert!(owner_equal, "descriptor owner must equal the current user SID");
+        }
+
+        // oracle: regression #2483
+        #[tokio::test]
+        async fn connect_accepts_a_same_user_server() {
+            let endpoint = Endpoint(format!("\\\\.\\pipe\\ironrdp-agent-owner-test-{}", std::process::id()));
+            let mut listener = Listener::bind(&endpoint).expect("bind listener");
+            let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
+            accepted.expect("accept");
+            assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
+        }
+
+        #[test]
+        fn current_user_owns_rejects_a_foreign_owner() {
+            use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+
+            // oracle: spec MS-DTYP §2.4.2.4
+            let mut everyone = PSID(core::ptr::null_mut());
+            let text: Vec<u16> = "S-1-1-0\0".encode_utf16().collect();
+            // SAFETY: `text` is a valid null-terminated SID string; `everyone` is a valid out-pointer.
+            unsafe { ConvertStringSidToSidW(PCWSTR::from_raw(text.as_ptr()), core::ptr::addr_of_mut!(everyone)) }
+                .expect("convert Everyone sid");
+            // oracle: regression #2483
+            let rejected = current_user_owns(everyone);
+            // SAFETY: `everyone` was `LocalAlloc`'d by `ConvertStringSidToSidW` and is no longer needed.
+            let _ = unsafe { LocalFree(Some(HLOCAL(everyone.0))) };
+            assert!(
+                rejected.is_err(),
+                "a pipe not owned by the current user must be rejected"
+            );
+        }
     }
 }
