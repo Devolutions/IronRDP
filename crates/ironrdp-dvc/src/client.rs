@@ -276,8 +276,19 @@ impl DrdynvcClient {
         T: DvcClientProcessor + 'static,
         F: FnMut() -> T + Send + 'static,
     {
-        self.dynamic_channels.register_factory(channel_name.into(), factory);
+        self.attach_dynamic_channel_factory(channel_name, factory);
         self
+    }
+
+    /// Attaches a factory that creates a fresh processor for each opening.
+    ///
+    /// If a listener or a pre-registered channel with the same name already exists, it will be silently overwritten.
+    pub fn attach_dynamic_channel_factory<T, F>(&mut self, channel_name: impl Into<DynamicChannelName>, factory: F)
+    where
+        T: DvcClientProcessor + 'static,
+        F: FnMut() -> T + Send + 'static,
+    {
+        self.dynamic_channels.register_factory(channel_name.into(), factory);
     }
 
     pub fn attach_established_dynamic_channel<T>(&mut self, channel_id: DynamicChannelId, channel: T) -> PduResult<()>

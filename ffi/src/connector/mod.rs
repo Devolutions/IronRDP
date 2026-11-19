@@ -221,8 +221,25 @@ pub mod ffi {
                 return Err("dynamic channel name is already registered".into());
             }
 
+            if config.channel_names.is_empty() {
+                return Ok(());
+            }
+
+            if connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .is_none()
+            {
+                connector.attach_static_channel(ironrdp::dvc::DrdynvcClient::new());
+            }
+            let drdynvc = connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .ok_or("failed to attach DRDYNVC static channel")?;
             for channel_name in &config.channel_names {
-                self.with_dvc(DirectDvcChannelProcessor::new(&config.event_sink, channel_name))?;
+                let name = channel_name.clone();
+                let sink = config.event_sink.clone();
+                drdynvc.attach_dynamic_channel_factory(channel_name.clone(), move || {
+                    DirectDvcChannelProcessor::new(&sink, &name)
+                });
             }
             Ok(())
         }

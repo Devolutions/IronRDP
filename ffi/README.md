@@ -21,6 +21,7 @@ At this point, you may build and run the examples for .NET:
 ## Direct dynamic virtual channels
 
 Register channel names with `DirectDvcConfig` and set `ConfigBuilder.DirectDvc`, or attach it with `ClientConnector.WithDynamicChannelDirect`.
+The server can open multiple channels with the same registered name at once; each opening has its own channel and endpoint IDs.
 Create its `DirectDvcEventQueue` with a positive event capacity and poll `NextEvent()` for `Opened`, `Data` and `Closed` events.
 The capacity limits event count, not aggregate payload bytes.
 `NextEvent()` returns null when the queue is empty.

@@ -549,6 +549,50 @@ internal static class SmokeTests
             }
         });
 
+        // oracle: mutant reject a second concurrent opening of the same dynamic-channel name
+        yield return ("direct DVC openings of one name remain independent", () =>
+        {
+            foreach (var closingChannelId in new uint[] { 1, 2 })
+            {
+                using var events = DirectDvcEventQueue.New(8);
+                var (stage, image) = ConnectedStage(8, 4, directDvc: NewDirectDvcConfig(events));
+                using (stage)
+                using (image)
+                {
+                    using var first = OpenDisplayControl(stage, image, events);
+                    var secondCreate = DrdynvcDisplayControlCreateRequest.ToArray();
+                    secondCreate[23] = 2; // DYNVC_CREATE ChannelId.
+                    ProcessFrame(stage, image, secondCreate);
+                    using var second = events.NextEvent() ?? throw new InvalidOperationException("missing second open event");
+                    Equal(DirectDvcEventKind.Opened, second.Kind, "second event kind");
+                    Equal(1u, first.ChannelId, "first channel ID");
+                    Equal(2u, second.ChannelId, "second channel ID");
+                    Equal(first.ChannelName, second.ChannelName, "channel name");
+                    True(first.EndpointId != second.EndpointId, "distinct endpoint IDs");
+
+                    using var firstFrame = stage.SendDirectDvcData(first.ChannelId, first.EndpointId, [0x11]);
+                    using var secondFrame = stage.SendDirectDvcData(second.ChannelId, second.EndpointId, [0x22]);
+                    ThrowsWithMessage<IronRdpException>(
+                        () => stage.SendDirectDvcData(first.ChannelId, second.EndpointId, [0x11]),
+                        "direct DVC endpoint is no longer active");
+                    var closing = closingChannelId == first.ChannelId ? first : second;
+                    var surviving = closingChannelId == first.ChannelId ? second : first;
+                    using var closeFrame = stage.CloseDirectDvcChannel(closing.ChannelId, closing.EndpointId);
+                    using var closed = events.NextEvent() ?? throw new InvalidOperationException("missing close event");
+                    Equal(closing.EndpointId, closed.EndpointId, "closed endpoint");
+                    using var survivingFrame = stage.SendDirectDvcData(surviving.ChannelId, surviving.EndpointId, [0x33]);
+                    var data = DisplayControlCapsPdu.ToArray();
+                    data[23] = (byte)surviving.ChannelId; // DYNVC_DATA ChannelId.
+                    ProcessFrame(stage, image, data);
+                    using var received = events.NextEvent() ?? throw new InvalidOperationException("missing data event");
+                    Equal(DirectDvcEventKind.Data, received.Kind, "surviving event kind");
+                    Equal(surviving.EndpointId, received.EndpointId, "surviving endpoint");
+                    using var bytes = received.TakeData();
+                    True(data.AsSpan(24).SequenceEqual(ToArray(bytes)), "surviving endpoint data");
+                }
+            }
+        });
+
         // oracle: mutant accept an endpoint after close or reuse it for a later opening
         yield return ("direct DVC endpoints become stale on close and reopen", () =>
         {

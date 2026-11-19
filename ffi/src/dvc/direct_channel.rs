@@ -147,6 +147,7 @@ pub mod ffi {
     /// Configures event-driven listeners for dynamic virtual channels ([MS-RDPEDYC]).
     ///
     /// Channel names must be unique and must not match an existing dynamic-channel listener.
+    /// Each registered name can have multiple concurrent openings, each with a distinct endpoint ID.
     ///
     /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
     #[diplomat::opaque_mut]
