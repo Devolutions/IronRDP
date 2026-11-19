@@ -2283,6 +2283,7 @@ fn captured_credssp_identity(
 /// outlive its connection or be observed by the next one, so it needs no
 /// manual reset between connections.
 #[derive(Default)]
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 struct ConnectionState {
     remote_app: Option<ironrdp_acceptor::RemoteAppCapabilities>,
     max_graphics_size: Option<usize>,
@@ -2368,13 +2369,23 @@ struct LogonNotificationRequest {
 
 /// What processing client data asks the driver to do.
 #[derive(Debug)]
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 enum ConnectionOutput {
     Keyboard(KeyboardEvent),
     /// Mouse input from whichever input path owns the mouse.
     Mouse(MouseEvent),
     DisplayLayout(DisplayControlMonitorLayout),
     ResponseFrame(Vec<u8>),
-    TunnelData(Vec<u8>),
+    /// One Tunnel Data PDU for the UDP transport: its RDP_TUNNEL_SUBHEADERs, then its payload, which
+    /// may be empty.
+    ///
+    /// See [MS-RDPEMT] 2.2.2.3 "RDP_TUNNEL_DATA" and 2.2.1.1.1 "RDP_TUNNEL_SUBHEADER".
+    ///
+    /// [MS-RDPEMT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/
+    TunnelData {
+        sub_headers: Vec<ironrdp_rdpemt::TunnelSubHeader>,
+        data: Vec<u8>,
+    },
     /// The client could not establish the sideband transport, and will not attempt to create one.
     ///
     /// See [MS-RDPBCGR] 2.2.15.2 "Client Initiate Multitransport Response PDU" and 3.2.5.15.2 "Sending the Initiate Multitransport Response PDU".
@@ -2384,12 +2395,32 @@ enum ConnectionOutput {
     Disconnect,
 }
 
+#[cfg_attr(feature = "__test", visibility::make(pub))]
 struct PduContext {
     io_channel_id: u16,
     user_channel_id: u16,
     message_channel_id: Option<u16>,
     udp_available: bool,
     now_ms: u64,
+}
+
+#[cfg(feature = "__test")]
+impl PduContext {
+    pub fn new(
+        io_channel_id: u16,
+        user_channel_id: u16,
+        message_channel_id: Option<u16>,
+        udp_available: bool,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            io_channel_id,
+            user_channel_id,
+            message_channel_id,
+            udp_available,
+            now_ms,
+        }
+    }
 }
 
 struct ConnectionIteration {
@@ -2414,6 +2445,15 @@ impl ConnectionIteration {
 }
 
 impl ConnectionState {
+    /// A connection with auto-detect on and nothing negotiated.
+    #[cfg(feature = "__test")]
+    pub fn with_autodetect() -> Self {
+        Self {
+            autodetect: Some(AutoDetectManager::new()),
+            ..Self::default()
+        }
+    }
+
     /// The handles this connection hands to the display backend, cloned at
     /// each activation so every call to [`RdpServerDisplay::updates`] on the
     /// same connection gets the same ones.
@@ -2436,6 +2476,11 @@ impl ConnectionState {
 
     fn get_channel_id_by_type<T: SvcProcessor + 'static>(&self) -> Option<StaticChannelId> {
         self.static_channels.get_channel_id_by_type::<T>()
+    }
+
+    /// The ID of a static channel the client joined, or `None` when it did not join it.
+    fn get_channel_id_by_name(&self, name: &ChannelName) -> Option<StaticChannelId> {
+        self.static_channels.get_channel_id_by_channel_name(name)
     }
 
     #[cfg(feature = "usb")]
@@ -2615,7 +2660,10 @@ impl ConnectionState {
                     _ => false,
                 };
                 if tunneled {
-                    outputs.push(ConnectionOutput::TunnelData(payload));
+                    outputs.push(ConnectionOutput::TunnelData {
+                        sub_headers: Vec::new(),
+                        data: payload,
+                    });
                     continue;
                 }
             }
@@ -2662,6 +2710,222 @@ impl ConnectionState {
         };
         let mut outputs = self.encode_drdynvc_output(user_channel_id, udp_available, channel_id, messages)?;
         outputs.extend(self.take_dvc_events());
+        Ok(outputs)
+    }
+
+    /// Decides whether the connection survives the loss of its UDP transport.
+    ///
+    /// Soft-Sync only moves channels onto a tunnel ([MS-RDPEDYC] 2.2.5.1 "Soft-Sync Request PDU"
+    /// has no TCP tunnel type), its request promised no more of their data over TCP
+    /// (SOFT_SYNC_TCP_FLUSHED), and the tunnel lasts as long as the connection ([MS-RDPEMT] 1.3.3
+    /// "Connection Termination"). A client whose channels moved has nowhere left to read them, so
+    /// the connection ends and the client can reconnect, rather than keep a session it cannot draw.
+    ///
+    /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
+    /// [MS-RDPEMT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpemt/
+    fn udp_transport_closed(&self) -> ServerResult<()> {
+        if self.egfx_on_udp {
+            warn!("UDP transport lost with EGFX on it, ending the connection");
+            return Err(ServerError::reason(
+                "UDP transport",
+                "lost with dynamic channels moved onto it",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Routes EGFX graphics data over the sideband UDP transport when one is
+    /// up and the channel has migrated, otherwise the normal TCP path.
+    ///
+    /// Opportunistically requests the migration (Soft-Sync,
+    /// [`dvc::DrdynvcServer::request_reliable_udp`]) the first time EGFX has
+    /// data to send after a transport exists: [MS-RDPBCGR] sequencing does not
+    /// give an earlier point where EGFX's dynamic channel id is known to be
+    /// open (dynamic channels open lazily, driven by the client, well after
+    /// the transport could have already come up during multitransport
+    /// bootstrapping). The request is made once per connection: A later attempt
+    /// gets an "already requested" error from
+    /// [`dvc::DrdynvcServer::request_reliable_udp`], which is expected and only
+    /// traced. The request declares the TCP path flushed for the channel
+    /// (SOFT_SYNC_TCP_FLUSHED, [MS-RDPEDYC] 2.2.5.1 "Soft-Sync Request PDU"), so
+    /// its data goes over the tunnel from then on (3.3.5.3.1 "Sending the
+    /// Soft-Sync Request PDU"), whatever the client's response lists.
+    ///
+    /// The outputs are in wire order and carry only [`ConnectionOutput::ResponseFrame`] and
+    /// [`ConnectionOutput::TunnelData`].
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
+    #[cfg(feature = "egfx")]
+    fn encode_egfx_messages(
+        &mut self,
+        context: &PduContext,
+        messages: Vec<ironrdp_svc::SvcMessage>,
+    ) -> ServerResult<Vec<ConnectionOutput>> {
+        let drdynvc_channel_id = self
+            .get_channel_id_by_type::<dvc::DrdynvcServer>()
+            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
+
+        let mut outputs = Vec::new();
+        let mut udp_route = false;
+
+        // `udp_migration_allowed` gates the Soft-Sync Request itself
+        // (`request_reliable_udp` below): MS-RDPEDYC 3.1.5.3/3.3.5.3.1 forbid
+        // it unless both peers negotiated SOFT_SYNC_TCP_TO_UDP and a
+        // successful Initiate Multitransport Response was actually received,
+        // neither of which the sideband transport's own handshake succeeding
+        // (`udp_available`) establishes on its own.
+        let mut newly_on_udp = None;
+        if self.udp_migration_allowed
+            && context.udp_available
+            && let Some(drdynvc) = self.get_svc_processor::<dvc::DrdynvcServer>()
+        {
+            let Some(egfx_dvc_id) = crate::gfx::egfx_channel_id(drdynvc) else {
+                trace!("EGFX channel not open yet, staying on TCP");
+                return self.encode_egfx_over_tcp(context, drdynvc_channel_id, messages);
+            };
+
+            // First time EGFX has data to send after the tunnel exists: ask
+            // to migrate it. "Already requested" (a previous batch already
+            // asked) and "channel not open" (raced with the client closing
+            // it) are both expected steady-state outcomes here, not errors.
+            match drdynvc.request_reliable_udp(vec![egfx_dvc_id]) {
+                Ok(request) => {
+                    let data = server_encode_svc_messages(vec![request], drdynvc_channel_id, context.user_channel_id)
+                        .map_err(ServerError::encode)?;
+                    outputs.push(ConnectionOutput::ResponseFrame(data));
+                    debug!(
+                        egfx_dvc_id,
+                        "Soft-Sync request issued, asking to move EGFX to reliable UDP"
+                    );
+                }
+                Err(error) => trace!(%error, "No Soft-Sync request sent"),
+            }
+
+            // From the request on, not from the client's response: The request
+            // carries SOFT_SYNC_TCP_FLUSHED, "no more data will be sent over
+            // TCP for the specified DVCs" (MS-RDPEDYC 2.2.5.1), and the server
+            // MUST keep using the tunnel it named immediately after sending it
+            // (3.3.5.3.1). The client does not read the tunnel until the
+            // request has arrived (3.2.5.3.1), so data that overtakes it waits.
+            if drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP) {
+                udp_route = true;
+                if !self.egfx_on_udp {
+                    newly_on_udp = Some(egfx_dvc_id);
+                }
+            }
+        }
+        if let Some(egfx_dvc_id) = newly_on_udp {
+            self.egfx_on_udp = true;
+            debug!(egfx_dvc_id, "EGFX is now sent over the UDP transport");
+        }
+
+        if udp_route {
+            outputs.extend(self.encode_egfx_over_udp(context, messages)?);
+        } else {
+            outputs.extend(self.encode_egfx_over_tcp(context, drdynvc_channel_id, messages)?);
+        }
+        Ok(outputs)
+    }
+
+    /// Encodes EGFX messages for the UDP tunnel, one Tunnel Data PDU each.
+    ///
+    /// A batch large enough to measure is bracketed as on TCP (see
+    /// [`Self::encode_egfx_over_tcp`]), except that Start and Stop travel in
+    /// RDP_TUNNEL_SUBHEADERs rather than on the MCS message channel
+    /// ([MS-RDPBCGR] 1.3.9): The client counts the bytes that arrive on the
+    /// transport carrying Start, and the graphics are no longer on TCP. Each
+    /// goes in a PDU with no data of its own, so the count is exactly the
+    /// graphics payloads between them whichever way the client orders a
+    /// PDU's sub-headers and data.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    #[cfg(feature = "egfx")]
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    fn encode_egfx_over_udp(
+        &mut self,
+        context: &PduContext,
+        messages: Vec<ironrdp_svc::SvcMessage>,
+    ) -> ServerResult<Vec<ConnectionOutput>> {
+        let payloads = messages
+            .iter()
+            .map(ironrdp_svc::SvcMessage::encode_unframed_pdu)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ServerError::encode)?;
+        let len = payloads.iter().map(Vec::len).sum();
+
+        let mut outputs = Vec::new();
+        let start = self
+            .autodetect
+            .as_mut()
+            .and_then(|ad| ad.begin_bandwidth_measure(len, context.now_ms));
+        let bracketed = start.is_some();
+        if let Some(start) = start {
+            trace!(len, "Bracketing a UDP graphics write for a bandwidth measurement");
+            outputs.push(ConnectionOutput::TunnelData {
+                sub_headers: vec![autodetect_sub_header(&start)?],
+                data: Vec::new(),
+            });
+        }
+        outputs.extend(payloads.into_iter().map(|data| ConnectionOutput::TunnelData {
+            sub_headers: Vec::new(),
+            data,
+        }));
+        if bracketed
+            && let Some(stop) = self
+                .autodetect
+                .as_mut()
+                .and_then(AutoDetectManager::end_bandwidth_measure)
+        {
+            outputs.push(ConnectionOutput::TunnelData {
+                sub_headers: vec![autodetect_sub_header(&stop)?],
+                data: Vec::new(),
+            });
+        }
+        Ok(outputs)
+    }
+
+    #[cfg(feature = "egfx")]
+    #[cfg_attr(feature = "__test", visibility::make(pub))]
+    fn encode_egfx_over_tcp(
+        &mut self,
+        context: &PduContext,
+        drdynvc_channel_id: u16,
+        messages: Vec<ironrdp_svc::SvcMessage>,
+    ) -> ServerResult<Vec<ConnectionOutput>> {
+        let data = server_encode_svc_messages(messages, drdynvc_channel_id, context.user_channel_id)
+            .map_err(ServerError::encode)?;
+
+        // Measure bandwidth across this write when it is large enough to
+        // say something about the link: Start, the graphics data and Stop
+        // go out back to back on the same stream, so the client times a
+        // burst rather than whatever idle stretch a fixed window happens
+        // to span.
+        let mut outputs = Vec::new();
+        if let (Some(ad), Some(message_channel_id)) = (self.autodetect.as_mut(), context.message_channel_id)
+            && let Some(start) = ad.begin_bandwidth_measure(data.len(), context.now_ms)
+        {
+            outputs.push(ConnectionOutput::ResponseFrame(encode_autodetect_request(
+                start,
+                message_channel_id,
+                context.user_channel_id,
+            )?));
+        }
+        outputs.push(ConnectionOutput::ResponseFrame(data));
+        // Only a bracket this batch opened is still pending here, so the manager
+        // returns a Stop for exactly that one, and `None` when no Start was sent.
+        if let Some(message_channel_id) = context.message_channel_id
+            && let Some(stop) = self
+                .autodetect
+                .as_mut()
+                .and_then(AutoDetectManager::end_bandwidth_measure)
+        {
+            outputs.push(ConnectionOutput::ResponseFrame(encode_autodetect_request(
+                stop,
+                message_channel_id,
+                context.user_channel_id,
+            )?));
+        }
         Ok(outputs)
     }
 
@@ -2722,6 +2986,57 @@ impl ConnectionState {
                 trace!(seq = response.sequence_number(), "Unmatched auto-detect response");
             }
         }
+    }
+
+    /// Records the auto-detect responses carried in sub-headers on the UDP
+    /// tunnel, where the client may return Bandwidth Measure Results for a
+    /// measurement started there ([MS-RDPBCGR] 1.3.9). Results that come
+    /// back on the message channel instead go through
+    /// [`Self::handle_message_channel_data`].
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    fn record_tunnel_sub_headers(&mut self, now_ms: u64, sub_headers: &[ironrdp_rdpemt::TunnelSubHeader]) {
+        for response in sub_headers.iter().filter_map(autodetect_response_from_sub_header) {
+            self.record_autodetect_response(now_ms, &response);
+        }
+    }
+
+    /// Encodes the auto-detect requests due at an RTT probe tick, in the order they are sent: the
+    /// RTT request, the network characteristics result, then a bandwidth measurement PDU.
+    ///
+    /// Auto-detect requests ride the MCS message channel ([MS-RDPBCGR] 2.2.14.3). With auto-detect
+    /// off, or no message channel negotiated (the client did not request it), there is nowhere to
+    /// send them and there are none.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+    fn drive_autodetect(&mut self, context: &PduContext) -> ServerResult<Vec<Vec<u8>>> {
+        let (Some(ad), Some(message_channel_id)) = (self.autodetect.as_mut(), context.message_channel_id) else {
+            return Ok(Vec::new());
+        };
+        let user_channel_id = context.user_channel_id;
+        ad.expire_stale_probes(context.now_ms, crate::autodetect::RTT_PROBE_MAX_AGE_MS);
+        let request = ad.send_rtt_request(context.now_ms);
+        let mut frames = vec![encode_autodetect_request(request, message_channel_id, user_channel_id)?];
+
+        // Report the measured characteristics to the client
+        // ([MS-RDPBCGR] 2.2.14.1.5). The client does not reply. Sent only
+        // once both RTT and bandwidth are known, and paced independently
+        // of this probe cadence, so a fast caller does not turn into a
+        // fast stream of unsolicited PDUs.
+        if let Some(result) = ad.build_netchar_result(context.now_ms) {
+            frames.push(encode_autodetect_request(result, message_channel_id, user_channel_id)?);
+        }
+
+        // While no large graphics write has been bracketed recently (see
+        // `encode_egfx_over_tcp` and `encode_egfx_over_udp`), measure
+        // bandwidth over a window of ticks: Start on one, Stop several later,
+        // with ordinary traffic in between counted by the client, then a
+        // Bandwidth Measure Results PDU in reply. Until one has completed
+        // there is no characteristics result to send.
+        if let Some(pdu) = ad.build_bandwidth_measure() {
+            frames.push(encode_autodetect_request(pdu, message_channel_id, user_channel_id)?);
+        }
+        Ok(frames)
     }
 
     fn handle_message_channel_data(&mut self, now_ms: u64, data: SendDataRequest<'_>) -> Vec<ConnectionOutput> {
@@ -2873,6 +3188,93 @@ impl ConnectionState {
         }
 
         Ok(Vec::new())
+    }
+
+    /// Encodes window orders as Fast-Path Orders updates, all fragments back to back.
+    ///
+    /// Fails when RemoteApp, or the support level an order requires, was not negotiated, or when
+    /// the update exceeds the graphics limit.
+    fn encode_windowing_orders(
+        &self,
+        server_max_request_size: u32,
+        orders: &[WindowingOrder],
+    ) -> ServerResult<Vec<u8>> {
+        let remote_app = self
+            .remote_app
+            .as_ref()
+            .ok_or_else(|| ServerError::reason("window orders", "RemoteApp was not negotiated"))?;
+        if !remote_app
+            .rail
+            .support_level
+            .contains(rdp::capability_sets::RailSupportLevel::SHELL_INTEGRATION_SUPPORTED)
+            && orders.iter().any(|order| match order {
+                WindowingOrder::Window(order) => match &order.body {
+                    WindowOrderBody::Icon(icon) => icon.overlay,
+                    WindowOrderBody::State(state) => state.overlay_description.is_some() || state.icon_overlay_null,
+                    WindowOrderBody::Deleted => false,
+                },
+                _ => false,
+            })
+        {
+            return Err(ServerError::reason(
+                "window orders",
+                "shell integration support was not negotiated",
+            ));
+        }
+        if remote_app.window_list.support_level != rdp::capability_sets::WindowSupportLevel::SupportedEx
+            && orders.iter().any(WindowingOrder::requires_extended_support)
+        {
+            return Err(ServerError::reason(
+                "window orders",
+                "extended Window List support was not negotiated",
+            ));
+        }
+        let count = u16::try_from(orders.len()).map_err(|error| ServerError::custom("window order count", error))?;
+        let maximum = usize::try_from(server_max_request_size)
+            .map_err(|error| ServerError::custom("window update limit", error))?
+            .max(MAX_FASTPATH_UPDATE_SIZE)
+            .min(self.max_graphics_size.unwrap_or(0).max(MAX_FASTPATH_UPDATE_SIZE));
+        let length = orders
+            .iter()
+            .try_fold(2 /* numberOrders */, |length: usize, order| {
+                length.checked_add(order.size()).filter(|length| *length <= maximum)
+            })
+            .ok_or_else(|| ServerError::reason("window orders", "update exceeds the graphics limit"))?;
+        // INVARIANT: The buffer holds numberOrders plus each order's encoded size.
+        let mut data = vec![0; length];
+        let mut cursor = ironrdp_core::WriteCursor::new(&mut data);
+        cursor.write_u16(count);
+        for order in orders {
+            order.encode(&mut cursor).map_err(ServerError::encode)?;
+        }
+
+        let mut update = Vec::with_capacity(data.len());
+        let mut fragments = UpdateFragmenter::new(UpdateCode::Orders, data);
+        let mut buffer = vec![0; fragments.size_hint()];
+        while let Some(written) = fragments.next(&mut buffer) {
+            update.extend_from_slice(&buffer[..written]);
+        }
+        Ok(update)
+    }
+
+    /// Encodes a Server Set Error Info PDU carrying `error_info`.
+    ///
+    /// Returns `None` for a client that did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU, which must not
+    /// be sent the PDU ([MS-RDPBCGR 3.3.5.7.1]). `pduSource` is 0 ([MS-RDPBCGR 2.2.5.1.1]).
+    ///
+    /// [MS-RDPBCGR 2.2.5.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a21a1bd9-2303-49c1-90ec-3932435c248c
+    /// [MS-RDPBCGR 3.3.5.7.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/e895ef8f-829a-4166-ad29-7d64d200c136
+    fn encode_error_info(
+        &self,
+        io_channel_id: u16,
+        user_channel_id: u16,
+        error_info: ErrorInfo,
+    ) -> ServerResult<Option<Vec<u8>>> {
+        if !self.client_supports_errinfo {
+            return Ok(None);
+        }
+        let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error_info));
+        encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id).map(Some)
     }
 }
 
@@ -5069,11 +5471,14 @@ impl RdpServer {
         message_channel_id: Option<u16>,
         udp_transport: Option<&multitransport::UdpTransportHandle>,
     ) -> ServerResult<RunState> {
-        // Only referenced under `#[cfg(feature = "egfx")]` below (the only
-        // channel this integration migrates); this keeps the parameter
-        // itself unconditional so callers don't need their own `egfx` gate.
-        #[cfg(not(feature = "egfx"))]
-        let _ = &udp_transport;
+        // Called by the event that needs it, so the time is read when that event is handled.
+        let pdu_context = || PduContext {
+            io_channel_id,
+            user_channel_id,
+            message_channel_id,
+            udp_available: udp_transport.is_some(),
+            now_ms: monotonic_now_ms(),
+        };
 
         // Avoid wave messages queuing up and causing extra delay. When a
         // batch carries more than `WAVE_KEEP` waves, drop the OLDEST ones
@@ -5178,7 +5583,7 @@ impl RdpServer {
                         trace!(channel = ?name.as_str(), "Discarding canceled static channel write");
                         continue;
                     }
-                    let Some(channel_id) = conn.static_channels.get_channel_id_by_channel_name(&name) else {
+                    let Some(channel_id) = conn.get_channel_id_by_name(&name) else {
                         warn!(channel = ?name.as_str(), "Static channel was not joined, rejecting write");
                         continue;
                     };
@@ -5205,7 +5610,7 @@ impl RdpServer {
                         .map_err(|error| ServerError::io("write static channel data", error))?;
                 }
                 ServerEvent::StaticChannelJoined(name, reply) => {
-                    let joined = conn.static_channels.get_channel_id_by_channel_name(&name).is_some();
+                    let joined = conn.get_channel_id_by_name(&name).is_some();
                     if reply.send(joined).is_err() {
                         trace!(channel = ?name.as_str(), "Static channel query stopped waiting for its answer");
                     }
@@ -5214,75 +5619,14 @@ impl RdpServer {
                     if request.completion.as_ref().is_none_or(oneshot::Sender::is_closed) {
                         continue;
                     }
-                    let encoded: ServerResult<Vec<u8>> = (|| {
-                        let remote_app = conn
-                            .remote_app
-                            .as_ref()
-                            .ok_or_else(|| ServerError::reason("window orders", "RemoteApp was not negotiated"))?;
-                        if !remote_app
-                            .rail
-                            .support_level
-                            .contains(rdp::capability_sets::RailSupportLevel::SHELL_INTEGRATION_SUPPORTED)
-                            && request.orders.iter().any(|order| match order {
-                                WindowingOrder::Window(order) => match &order.body {
-                                    WindowOrderBody::Icon(icon) => icon.overlay,
-                                    WindowOrderBody::State(state) => {
-                                        state.overlay_description.is_some() || state.icon_overlay_null
-                                    }
-                                    WindowOrderBody::Deleted => false,
-                                },
-                                _ => false,
-                            })
-                        {
-                            return Err(ServerError::reason(
-                                "window orders",
-                                "shell integration support was not negotiated",
-                            ));
-                        }
-                        if remote_app.window_list.support_level != rdp::capability_sets::WindowSupportLevel::SupportedEx
-                            && request.orders.iter().any(WindowingOrder::requires_extended_support)
-                        {
-                            return Err(ServerError::reason(
-                                "window orders",
-                                "extended Window List support was not negotiated",
-                            ));
-                        }
-                        let count = u16::try_from(request.orders.len())
-                            .map_err(|error| ServerError::custom("window order count", error))?;
-                        let maximum = usize::try_from(self.opts.max_request_size)
-                            .map_err(|error| ServerError::custom("window update limit", error))?
-                            .max(MAX_FASTPATH_UPDATE_SIZE)
-                            .min(conn.max_graphics_size.unwrap_or(0).max(MAX_FASTPATH_UPDATE_SIZE));
-                        let length = request
-                            .orders
-                            .iter()
-                            .try_fold(2 /* numberOrders */, |length: usize, order| {
-                                length.checked_add(order.size()).filter(|length| *length <= maximum)
-                            })
-                            .ok_or_else(|| ServerError::reason("window orders", "update exceeds the graphics limit"))?;
-                        // INVARIANT: The buffer holds numberOrders plus each order's encoded size.
-                        let mut data = vec![0; length];
-                        let mut cursor = ironrdp_core::WriteCursor::new(&mut data);
-                        cursor.write_u16(count);
-                        for order in &request.orders {
-                            order.encode(&mut cursor).map_err(ServerError::encode)?;
-                        }
-                        Ok(data)
-                    })();
-                    let data = match encoded {
-                        Ok(data) => data,
+                    let update = match conn.encode_windowing_orders(self.opts.max_request_size, &request.orders) {
+                        Ok(update) => update,
                         Err(error) => {
                             request.complete(Err(error));
                             continue;
                         }
                     };
                     // All fragments go in one queued PDU, so they stay contiguous on the wire.
-                    let mut update = Vec::with_capacity(data.len());
-                    let mut fragments = UpdateFragmenter::new(UpdateCode::Orders, data);
-                    let mut buffer = vec![0; fragments.size_hint()];
-                    while let Some(written) = fragments.next(&mut buffer) {
-                        update.extend_from_slice(&buffer[..written]);
-                    }
                     writer
                         .queue_with_completion(update, WriteCompletion::WindowingOrders(request))
                         .map_err(|error| ServerError::io("write window orders", error))?;
@@ -5315,12 +5659,7 @@ impl RdpServer {
                 }
                 ServerEvent::Disconnect(error) => {
                     debug!(?error, "Got disconnect event");
-                    if conn.client_supports_errinfo {
-                        let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error));
-                        // pduSource=0, not user_channel_id -- same MS-RDPBCGR
-                        // 2.2.5.1.1 requirement as the EvictedByOtherConnection
-                        // arm above.
-                        let data = encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id)?;
+                    if let Some(data) = conn.encode_error_info(io_channel_id, user_channel_id, error)? {
                         writer
                             .write_all(&data)
                             .await
@@ -5772,278 +6111,28 @@ impl RdpServer {
                 #[cfg(feature = "egfx")]
                 ServerEvent::Egfx(msg) => match msg {
                     EgfxServerMessage::SendMessages { messages } => {
-                        self.dispatch_egfx_messages(
-                            conn,
-                            messages,
-                            writer,
-                            user_channel_id,
-                            message_channel_id,
-                            udp_transport,
-                        )
-                        .await?;
+                        let outputs = conn.encode_egfx_messages(&pdu_context(), messages)?;
+                        if self
+                            .execute_connection_outputs(conn, writer, udp_transport, outputs)
+                            .await?
+                        {
+                            *events = pending.collect();
+                            return Ok(RunState::Disconnect);
+                        }
                     }
                 },
                 ServerEvent::AutoDetectRttRequest => {
-                    // Auto-detect requests ride the MCS message channel
-                    // ([MS-RDPBCGR] 2.2.14.3). With none negotiated (the client
-                    // did not request it), there is nowhere to send them.
-                    if let (Some(ad), Some(message_channel_id)) = (conn.autodetect.as_mut(), message_channel_id) {
-                        let now_ms = monotonic_now_ms();
-                        ad.expire_stale_probes(now_ms, crate::autodetect::RTT_PROBE_MAX_AGE_MS);
-                        let request = ad.send_rtt_request(now_ms);
-                        let data = encode_autodetect_request(request, message_channel_id, user_channel_id)?;
+                    for data in conn.drive_autodetect(&pdu_context())? {
                         writer
                             .write_all(&data)
                             .await
                             .map_err(|e| ServerError::io("write_all", e))?;
-
-                        // Report the measured characteristics to the client
-                        // ([MS-RDPBCGR] 2.2.14.1.5). The client does not reply. Sent only
-                        // once both RTT and bandwidth are known, and paced independently
-                        // of this probe cadence, so a fast caller does not turn into a
-                        // fast stream of unsolicited PDUs.
-                        if let Some(result) = ad.build_netchar_result(now_ms) {
-                            let data = encode_autodetect_request(result, message_channel_id, user_channel_id)?;
-                            writer
-                                .write_all(&data)
-                                .await
-                                .map_err(|e| ServerError::io("write_all", e))?;
-                        }
-
-                        // While no large graphics write has been bracketed recently (see
-                        // `write_egfx_over_tcp` and `write_egfx_over_udp`), measure
-                        // bandwidth over a window of ticks: Start on one, Stop several later,
-                        // with ordinary traffic in between counted by the client, then a
-                        // Bandwidth Measure Results PDU in reply. Until one has completed
-                        // there is no characteristics result to send.
-                        if let Some(pdu) = ad.build_bandwidth_measure() {
-                            let data = encode_autodetect_request(pdu, message_channel_id, user_channel_id)?;
-                            writer
-                                .write_all(&data)
-                                .await
-                                .map_err(|e| ServerError::io("write_all", e))?;
-                        }
                     }
                 }
             }
         }
 
         Ok(RunState::Continue)
-    }
-
-    /// Routes EGFX graphics data over the sideband UDP transport when one is
-    /// up and the channel has migrated, otherwise the normal TCP path.
-    ///
-    /// Opportunistically requests the migration (Soft-Sync,
-    /// [`dvc::DrdynvcServer::request_reliable_udp`]) the first time EGFX has
-    /// data to send after a transport exists: MS-RDPBCGR sequencing does not
-    /// give an earlier point where EGFX's dynamic channel id is known to be
-    /// open (dynamic channels open lazily, driven by the client, well after
-    /// the transport could have already come up during multitransport
-    /// bootstrapping). The request is made once per connection: A later attempt
-    /// gets an "already requested" error from
-    /// [`dvc::DrdynvcServer::request_reliable_udp`], which is expected and only
-    /// traced. The request declares the TCP path flushed for the channel
-    /// (SOFT_SYNC_TCP_FLUSHED, MS-RDPEDYC 2.2.5.1), so its data goes over the
-    /// tunnel from then on (3.3.5.3.1), whatever the client's response lists.
-    #[cfg(feature = "egfx")]
-    async fn dispatch_egfx_messages(
-        &mut self,
-        conn: &mut ConnectionState,
-        messages: Vec<ironrdp_svc::SvcMessage>,
-        writer: &mut impl FramedWrite,
-        user_channel_id: u16,
-        message_channel_id: Option<u16>,
-        udp_transport: Option<&multitransport::UdpTransportHandle>,
-    ) -> ServerResult<()> {
-        let drdynvc_channel_id = conn
-            .get_channel_id_by_type::<dvc::DrdynvcServer>()
-            .ok_or_else(|| ServerError::channel("DRDYNVC channel not found"))?;
-
-        let mut udp_route = None;
-
-        // `conn.udp_migration_allowed` gates the Soft-Sync Request itself
-        // (`request_reliable_udp` below): MS-RDPEDYC 3.1.5.3/3.3.5.3.1 forbid
-        // it unless both peers negotiated SOFT_SYNC_TCP_TO_UDP and a
-        // successful Initiate Multitransport Response was actually received,
-        // neither of which the sideband transport's own handshake succeeding
-        // (`udp_transport.is_some()`) establishes on its own.
-        let mut newly_on_udp = None;
-        if conn.udp_migration_allowed
-            && let Some(udp_transport) = udp_transport
-            && let Some(drdynvc) = conn.get_svc_processor::<dvc::DrdynvcServer>()
-        {
-            let Some(egfx_dvc_id) = crate::gfx::egfx_channel_id(drdynvc) else {
-                trace!("EGFX channel not open yet, staying on TCP");
-                return self
-                    .write_egfx_over_tcp(
-                        conn,
-                        messages,
-                        writer,
-                        drdynvc_channel_id,
-                        user_channel_id,
-                        message_channel_id,
-                    )
-                    .await;
-            };
-
-            // First time EGFX has data to send after the tunnel exists: ask
-            // to migrate it. "Already requested" (a previous batch already
-            // asked) and "channel not open" (raced with the client closing
-            // it) are both expected steady-state outcomes here, not errors.
-            match drdynvc.request_reliable_udp(vec![egfx_dvc_id]) {
-                Ok(request) => {
-                    let data = server_encode_svc_messages(vec![request], drdynvc_channel_id, user_channel_id)
-                        .map_err(ServerError::encode)?;
-                    writer
-                        .write_all(&data)
-                        .await
-                        .map_err(|e| ServerError::io("write_all", e))?;
-                    debug!(
-                        egfx_dvc_id,
-                        "Soft-Sync request sent, asking to move EGFX to reliable UDP"
-                    );
-                }
-                Err(error) => trace!(%error, "No Soft-Sync request sent"),
-            }
-
-            // From the request on, not from the client's response: The request
-            // carries SOFT_SYNC_TCP_FLUSHED, "no more data will be sent over
-            // TCP for the specified DVCs" (MS-RDPEDYC 2.2.5.1), and the server
-            // MUST keep using the tunnel it named immediately after sending it
-            // (3.3.5.3.1). The client does not read the tunnel until the
-            // request has arrived (3.2.5.3.1), so data that overtakes it waits.
-            if drdynvc.tunnel_for_outgoing_channel(egfx_dvc_id) == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP) {
-                udp_route = Some(udp_transport);
-                if !conn.egfx_on_udp {
-                    newly_on_udp = Some(egfx_dvc_id);
-                }
-            }
-        }
-        if let Some(egfx_dvc_id) = newly_on_udp {
-            conn.egfx_on_udp = true;
-            debug!(egfx_dvc_id, "EGFX is now sent over the UDP transport");
-        }
-
-        if let Some(udp_transport) = udp_route {
-            // Boxed to keep `run`'s future under `clippy::large_futures`.
-            return Box::pin(self.write_egfx_over_udp(conn, messages, udp_transport)).await;
-        }
-        self.write_egfx_over_tcp(
-            conn,
-            messages,
-            writer,
-            drdynvc_channel_id,
-            user_channel_id,
-            message_channel_id,
-        )
-        .await
-    }
-
-    /// Sends EGFX messages over the UDP tunnel, one Tunnel Data PDU each.
-    ///
-    /// A batch large enough to measure is bracketed as on TCP (see
-    /// [`Self::write_egfx_over_tcp`]), except that Start and Stop travel in
-    /// RDP_TUNNEL_SUBHEADERs rather than on the MCS message channel
-    /// ([MS-RDPBCGR] 1.3.9): The client counts the bytes that arrive on the
-    /// transport carrying Start, and the graphics are no longer on TCP. Each
-    /// goes in a PDU with no data of its own, so the count is exactly the
-    /// graphics payloads between them whichever way the client orders a
-    /// PDU's sub-headers and data.
-    #[cfg(feature = "egfx")]
-    async fn write_egfx_over_udp(
-        &mut self,
-        conn: &mut ConnectionState,
-        messages: Vec<ironrdp_svc::SvcMessage>,
-        udp_transport: &multitransport::UdpTransportHandle,
-    ) -> ServerResult<()> {
-        let payloads = messages
-            .iter()
-            .map(ironrdp_svc::SvcMessage::encode_unframed_pdu)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(ServerError::encode)?;
-        let len = payloads.iter().map(Vec::len).sum();
-
-        let start = conn
-            .autodetect
-            .as_mut()
-            .and_then(|ad| ad.begin_bandwidth_measure(len, monotonic_now_ms()));
-        let bracketed = start.is_some();
-        if let Some(start) = start {
-            trace!(len, "Bracketing a UDP graphics write for a bandwidth measurement");
-            udp_transport.send_message(autodetect_sub_header(&start)?).await;
-        }
-        for payload in payloads {
-            udp_transport.send(payload).await;
-        }
-        if bracketed
-            && let Some(stop) = conn
-                .autodetect
-                .as_mut()
-                .and_then(AutoDetectManager::end_bandwidth_measure)
-        {
-            udp_transport.send_message(autodetect_sub_header(&stop)?).await;
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "egfx")]
-    async fn write_egfx_over_tcp(
-        &mut self,
-        conn: &mut ConnectionState,
-        messages: Vec<ironrdp_svc::SvcMessage>,
-        writer: &mut impl FramedWrite,
-        drdynvc_channel_id: u16,
-        user_channel_id: u16,
-        message_channel_id: Option<u16>,
-    ) -> ServerResult<()> {
-        let data =
-            server_encode_svc_messages(messages, drdynvc_channel_id, user_channel_id).map_err(ServerError::encode)?;
-
-        // Measure bandwidth across this write when it is large enough to
-        // say something about the link: Start, the graphics data and Stop
-        // go out back to back on the same stream, so the client times a
-        // burst rather than whatever idle stretch a fixed window happens
-        // to span.
-        if let (Some(ad), Some(message_channel_id)) = (conn.autodetect.as_mut(), message_channel_id)
-            && let Some(start) = ad.begin_bandwidth_measure(data.len(), monotonic_now_ms())
-        {
-            let start = encode_autodetect_request(start, message_channel_id, user_channel_id)?;
-            writer
-                .write_all(&start)
-                .await
-                .map_err(|e| ServerError::io("write_all", e))?;
-        }
-        writer
-            .write_all(&data)
-            .await
-            .map_err(|e| ServerError::io("write_all", e))?;
-        // Only a bracket this write opened is still pending here, so the manager
-        // returns a Stop for exactly that one, and `None` when no Start was sent.
-        if let Some(message_channel_id) = message_channel_id
-            && let Some(stop) = conn
-                .autodetect
-                .as_mut()
-                .and_then(AutoDetectManager::end_bandwidth_measure)
-        {
-            let stop = encode_autodetect_request(stop, message_channel_id, user_channel_id)?;
-            writer
-                .write_all(&stop)
-                .await
-                .map_err(|e| ServerError::io("write_all", e))?;
-        }
-        Ok(())
-    }
-
-    /// Records the auto-detect responses carried in sub-headers on the UDP
-    /// tunnel, where the client may return Bandwidth Measure Results for a
-    /// measurement started there ([MS-RDPBCGR] 1.3.9). Results that come
-    /// back on the message channel instead go through
-    /// [`ConnectionState::handle_message_channel_data`].
-    fn record_tunnel_sub_headers(conn: &mut ConnectionState, sub_headers: &[ironrdp_rdpemt::TunnelSubHeader]) {
-        for response in sub_headers.iter().filter_map(autodetect_response_from_sub_header) {
-            conn.record_autodetect_response(monotonic_now_ms(), &response);
-        }
     }
 
     #[expect(
@@ -6360,29 +6449,16 @@ impl RdpServer {
                     }
                 }, if pending_udp_accept.is_none() && !reads_paused => {
                     let Some(message) = message else {
-                        // Soft-Sync only moves channels onto a tunnel (MS-RDPEDYC
-                        // 2.2.5.1 has no TCP tunnel type), its request promised
-                        // no more of their data over TCP (SOFT_SYNC_TCP_FLUSHED),
-                        // and the tunnel lasts as long as the connection
-                        // (MS-RDPEMT 1.3.3). A client whose channels moved has
-                        // nowhere left to read them, so end the connection and let
-                        // it reconnect rather than keep a session it cannot draw.
-                        if conn.egfx_on_udp {
-                            warn!("UDP transport lost with EGFX on it, ending the connection");
-                            return Err(ServerError::reason(
-                                "UDP transport",
-                                "lost with dynamic channels moved onto it",
-                            ));
-                        }
+                        conn.udp_transport_closed()?;
                         debug!("UDP transport closed, continuing TCP-only for the rest of the session");
-                        // Without this, `dispatch_egfx_messages` would keep seeing
+                        // Without this, the EGFX path would keep seeing
                         // `Some(dead_handle)` here and stay on the UDP branch,
                         // silently dropping every future EGFX batch instead of
                         // actually falling back to TCP as this log claims.
                         *udp_transport = None;
                         continue;
                     };
-                    Self::record_tunnel_sub_headers(conn, &message.sub_headers);
+                    conn.record_tunnel_sub_headers(monotonic_now_ms(), &message.sub_headers);
                     if message.data.is_empty() {
                         continue;
                     }
@@ -6867,10 +6943,12 @@ impl RdpServer {
                     .write_all(&frame)
                     .await
                     .map_err(|e| ServerError::io("write protocol response", e))?,
-                ConnectionOutput::TunnelData(data) => {
+                ConnectionOutput::TunnelData { sub_headers, data } => {
                     let transport =
                         udp_transport.ok_or_else(|| ServerError::reason("UDP output", "transport unavailable"))?;
-                    transport.send(data).await;
+                    transport
+                        .send_message(ironrdp_rdpeudp_tokio::TunnelMessage { sub_headers, data })
+                        .await;
                 }
                 ConnectionOutput::MultitransportFailed => {
                     if let Some(abort) = conn.pending_udp_accept_abort.take() {
@@ -7157,8 +7235,7 @@ fn audio_redirection_wanted(flags: rdp::client_info::ClientInfoFlags) -> bool {
     )
 }
 
-/// Carries an auto-detect request as an RDP_TUNNEL_SUBHEADER, alone in a
-/// Tunnel Data PDU of its own ([MS-RDPBCGR] 1.3.9, [MS-RDPEMT] 2.2.1.1.1).
+/// Carries an auto-detect request as an RDP_TUNNEL_SUBHEADER ([MS-RDPBCGR] 1.3.9, [MS-RDPEMT] 2.2.1.1.1).
 ///
 /// The sub-header is the request itself, with none of the security header
 /// [`encode_autodetect_request`] frames it with on the message channel: Its
@@ -7168,17 +7245,14 @@ fn audio_redirection_wanted(flags: rdp::client_info::ClientInfoFlags) -> bool {
 #[cfg_attr(feature = "__test", visibility::make(pub))]
 fn autodetect_sub_header(
     request: &rdp::autodetect::AutoDetectRequest,
-) -> ServerResult<ironrdp_rdpeudp_tokio::TunnelMessage> {
+) -> ServerResult<ironrdp_rdpemt::TunnelSubHeader> {
     let mut data = encode_vec(request).map_err(ServerError::encode)?;
     // Every auto-detect request starts with the two header bytes the
     // sub-header supplies itself.
     data.drain(..AUTODETECT_HEADER_SIZE);
-    Ok(ironrdp_rdpeudp_tokio::TunnelMessage {
-        sub_headers: vec![ironrdp_rdpemt::TunnelSubHeader {
-            sub_header_type: ironrdp_rdpemt::SubHeaderType::AutoDetectRequest,
-            data,
-        }],
-        data: Vec::new(),
+    Ok(ironrdp_rdpemt::TunnelSubHeader {
+        sub_header_type: ironrdp_rdpemt::SubHeaderType::AutoDetectRequest,
+        data,
     })
 }
 
@@ -7294,17 +7368,14 @@ async fn send_error_info(
     error_info: ErrorInfo,
     reason: &str,
 ) {
-    if !conn.client_supports_errinfo {
-        debug!(
-            reason,
-            "Client did not opt into Set Error Info PDUs; disconnecting without the reason"
-        );
-        return;
-    }
-    let pdu = rdp::headers::ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(error_info));
-    // pduSource=0 -- MS-RDPBCGR 2.2.5.1.1 requires it for TS_SET_ERROR_INFO_PDU.
-    match encode_share_data_pdu(pdu, 0, io_channel_id, user_channel_id) {
-        Ok(bytes) => {
+    match conn.encode_error_info(io_channel_id, user_channel_id, error_info) {
+        Ok(None) => {
+            debug!(
+                reason,
+                "Client did not opt into Set Error Info PDUs; disconnecting without the reason"
+            );
+        }
+        Ok(Some(bytes)) => {
             if let Err(error) = writer.write_all(&bytes).await {
                 debug!(%error, reason, "Could not send the reason; disconnecting anyway");
             }
