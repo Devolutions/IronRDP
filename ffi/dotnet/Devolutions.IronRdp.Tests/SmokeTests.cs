@@ -701,7 +701,7 @@ internal static class SmokeTests
         yield return ("native playback rejects an existing static playback channel", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
-            var audio = NativeAudio.New("", 0);
+            using var audio = NativeAudio.New(true, false, "", "", 0);
             connector.WithStaticChannelRdpSnd();
             Throws<IronRdpException>(() => connector.WithNativeAudio(audio));
 

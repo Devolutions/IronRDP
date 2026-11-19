@@ -148,7 +148,6 @@ mod native {
             let drdynvc_type = channels.get_by_type::<ironrdp::dvc::DrdynvcClient>().is_some();
             let rdpdr_type = channels.get_by_type::<ironrdp::rdpdr::Rdpdr>().is_some();
             if self.playback
-                && !playback_type
                 && channels
                     .get_by_channel_name_key(&ironrdp::rdpsnd::client::Rdpsnd::NAME)
                     .is_some()
@@ -166,9 +165,8 @@ mod native {
             {
                 return Err("RDPDR channel name is already registered");
             }
-            let needed = usize::from(self.playback && !playback_type)
-                + usize::from(!drdynvc_type)
-                + usize::from(self.playback && !rdpdr_type);
+            let needed =
+                usize::from(self.playback) + usize::from(!drdynvc_type) + usize::from(self.playback && !rdpdr_type);
             if ironrdp::svc::MAX_STATIC_CHANNELS < channels.len() + needed {
                 return Err("no space for native audio channels");
             }
