@@ -91,10 +91,14 @@ mod imp {
         }
     }
 
+    fn current_uid() -> u32 {
+        // SAFETY: `getuid` has no preconditions and is always safe to call.
+        unsafe { libc::getuid() }
+    }
+
     /// Returns a per-user endpoint for `name`.
     pub fn default_endpoint_named(name: &str) -> Endpoint {
-        // SAFETY: `getuid` has no preconditions and is always safe to call.
-        let uid = unsafe { libc::getuid() };
+        let uid = current_uid();
         let dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -145,19 +149,22 @@ mod imp {
 
     /// Connects to a listening daemon.
     ///
-    /// Fails unless the peer runs as the current user.
+    /// Fails with `PermissionDenied` unless the peer runs as the current user, which `prepare_endpoint` relies on.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<UnixStream> {
         let stream = UnixStream::connect(&endpoint.0).await?;
-        // SAFETY: `getuid` has no preconditions and is always safe to call.
-        let uid = unsafe { libc::getuid() };
         // UNTESTED: a peer running as another user is rejected; check with a socket bound by a second account.
-        if stream.peer_cred()?.uid() != uid {
+        check_peer_uid(stream.peer_cred()?.uid(), current_uid())?;
+        Ok(stream)
+    }
+
+    pub(super) fn check_peer_uid(peer_uid: u32, uid: u32) -> io::Result<()> {
+        if peer_uid != uid {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "refusing to use the endpoint: it is owned by another user",
             ));
         }
-        Ok(stream)
+        Ok(())
     }
 
     /// A bound listener that accepts client connections.
@@ -651,11 +658,10 @@ mod imp {
                     core::ptr::addr_of_mut!(sd),
                 )
             };
+            let _sd = OwnedSecurityDescriptor(sd);
             assert_eq!(result, ERROR_SUCCESS, "GetNamedSecurityInfoW must succeed");
-            // SAFETY: `owner` points into `sd`, which is still alive, and `expected_sid` into the token buffer.
+            // SAFETY: `owner` points into `sd`, which `_sd` keeps alive, and `expected_sid` into the token buffer.
             let owner_equal = unsafe { EqualSid(owner, expected_sid) }.is_ok();
-            // SAFETY: `sd` was `LocalAlloc`'d by `GetNamedSecurityInfoW` and is no longer needed.
-            let _ = unsafe { LocalFree(Some(HLOCAL(sd.0))) };
             assert!(owner_equal, "pipe owner must equal the current user SID");
         }
 
@@ -759,5 +765,12 @@ mod tests {
         let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
         accepted.expect("accept");
         assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
+    }
+
+    // oracle: regression #2483
+    #[cfg(unix)]
+    #[test]
+    fn check_peer_uid_rejects_a_foreign_peer() {
+        assert!(super::imp::check_peer_uid(1001, 1000).is_err());
     }
 }
