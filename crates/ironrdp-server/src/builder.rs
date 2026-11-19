@@ -61,6 +61,7 @@ pub struct BuilderDone {
     honor_client_desktop_size: Option<DesktopSize>,
     auto_reconnect_cookie: Option<ServerAutoReconnect>,
     auto_reconnect_on_request: bool,
+    logon_notification_on_request: bool,
     #[cfg(feature = "egfx")]
     egfx_core_frame_ack_limit: bool,
     connection_policy: ConnectionPolicy,
@@ -181,6 +182,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 connection_policy,
                 auto_reconnect_cookie: None,
                 auto_reconnect_on_request: false,
+                logon_notification_on_request: false,
                 #[cfg(feature = "egfx")]
                 egfx_core_frame_ack_limit: false,
                 remotefx_quant: Quant::default(),
@@ -221,6 +223,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 connection_policy,
                 auto_reconnect_cookie: None,
                 auto_reconnect_on_request: false,
+                logon_notification_on_request: false,
                 #[cfg(feature = "egfx")]
                 egfx_core_frame_ack_limit: false,
                 remotefx_quant: Quant::default(),
@@ -431,6 +434,14 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    /// Tell the client of its user's logon only on request instead of at activation.
+    ///
+    /// See [`RdpServer::set_logon_notification_on_request`].
+    pub fn with_logon_notification_on_request(mut self, on_request: bool) -> Self {
+        self.state.logon_notification_on_request = on_request;
+        self
+    }
+
     /// Let the client's core Frame Acknowledge capability cap the EGFX frame
     /// window. Off by default. See [`RdpServer::set_egfx_core_frame_ack_limit`].
     #[cfg(feature = "egfx")]
@@ -576,6 +587,7 @@ impl RdpServerBuilder<BuilderDone> {
         server.set_credential_validator(self.state.credential_validator);
         server.set_auto_reconnect_cookie(self.state.auto_reconnect_cookie);
         server.set_auto_reconnect_on_request(self.state.auto_reconnect_on_request);
+        server.set_logon_notification_on_request(self.state.logon_notification_on_request);
         #[cfg(feature = "egfx")]
         server.set_egfx_core_frame_ack_limit(self.state.egfx_core_frame_ack_limit);
         server.set_connection_binder(self.state.connection_binder);
