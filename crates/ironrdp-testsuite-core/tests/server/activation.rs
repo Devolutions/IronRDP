@@ -326,6 +326,8 @@ async fn play_client_after_connection_request_with_network(
         CLIENT_SIZE,
     )
     .await;
+    // oracle: spec MS-RDPBCGR §3.3.5.10.1 (the server notifies the client once the user has logged on, which these
+    // servers take to be at activation)
     let (_, logon) = framed.read_frame().await.unwrap();
     let logon = mcs::decode_send_data_indication(&logon)
         .unwrap()
