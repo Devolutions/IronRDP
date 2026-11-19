@@ -528,11 +528,11 @@ mod tests {
         connector.with_dynamic_channel_pipe_proxy(&config).is_ok()
     }
 
-    fn attach_direct(connector: &mut ClientConnector, channel_name: &str) -> bool {
-        let queue = DirectDvcEventQueue::new(1).unwrap_or_else(|_| panic!("direct DVC queue"));
+    fn attach_direct(connector: &mut ClientConnector, channel_name: &str) -> Result<bool, &'static str> {
+        let queue = DirectDvcEventQueue::new(1).map_err(|_| "direct DVC queue")?;
         let mut config = DirectDvcConfig::new(&queue.get_sink());
         config.add_channel(channel_name);
-        connector.with_dynamic_channel_direct(&config).is_ok()
+        Ok(connector.with_dynamic_channel_direct(&config).is_ok())
     }
 
     // oracle: regression #2469
@@ -541,7 +541,7 @@ mod tests {
         let mut connector = connector_without_playback()?;
         let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
         connector.with_native_audio(&playback).map_err(|_| "attach playback")?;
-        assert!(attach_direct(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
+        assert!(attach_direct(&mut connector, ironrdp_rdpeai::CHANNEL_NAME)?);
         assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_capture);
         Ok(())
     }
@@ -553,7 +553,10 @@ mod tests {
         connector
             .with_native_audio(&*capture_audio()?)
             .map_err(|_| "attach capture")?;
-        assert!(attach_direct(&mut connector, ironrdp::rdpsnd::client::DVC_CHANNEL_NAME));
+        assert!(attach_direct(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        )?);
         assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
         Ok(())
     }
@@ -562,13 +565,13 @@ mod tests {
     #[test]
     fn capture_and_direct_input_reject_collisions_in_both_orders() -> Result<(), &'static str> {
         let mut first = connector_without_playback()?;
-        assert!(attach_direct(&mut first, ironrdp_rdpeai::CHANNEL_NAME));
+        assert!(attach_direct(&mut first, ironrdp_rdpeai::CHANNEL_NAME)?);
         assert!(first.with_native_audio(&*capture_audio()?).is_err());
         let mut second = connector_without_playback()?;
         second
             .with_native_audio(&*capture_audio()?)
             .map_err(|_| "attach capture")?;
-        assert!(!attach_direct(&mut second, ironrdp_rdpeai::CHANNEL_NAME));
+        assert!(!attach_direct(&mut second, ironrdp_rdpeai::CHANNEL_NAME)?);
         Ok(())
     }
 
