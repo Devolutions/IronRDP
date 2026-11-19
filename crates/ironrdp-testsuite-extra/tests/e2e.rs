@@ -1970,6 +1970,13 @@ impl RdpdrFixtureState {
                 ])
             }
             RdpdrFixturePhase::AwaitDeviceAnnouncement => {
+                assert_eq!(&payload[..4], &[0x72, 0x44, 0x41, 0x44]);
+                let device_count = read_u32(payload, 4);
+                if device_count == 0 {
+                    assert_eq!(payload.len(), 8);
+                    return Ok(Vec::new());
+                }
+                assert_eq!(device_count, 1);
                 let device_id = read_u32(payload, 12);
                 self.announced_device_id = Some(device_id);
 

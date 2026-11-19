@@ -1441,6 +1441,14 @@ mod tests {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("four-byte integer"))
     }
 
+    fn assert_empty_device_announce(messages: &[SvcMessage]) {
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].encode_unframed_pdu().expect("encode device announce"),
+            [0x72, 0x44, 0x41, 0x44, 0, 0, 0, 0]
+        );
+    }
+
     fn encoded_server_announce(client_id: u32) -> Vec<u8> {
         encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
             version_major: 1,
@@ -1495,11 +1503,10 @@ mod tests {
             8,
         );
         assert_eq!(client_id, 0x1234);
-        assert!(
-            rdpdr
+        assert_empty_device_announce(
+            &rdpdr
                 .process(&encoded_server_client_id_confirm(client_id))
-                .expect("process server client ID confirm")
-                .is_empty()
+                .expect("process server client ID confirm"),
         );
         assert_eq!(
             rdpdr
@@ -1537,13 +1544,15 @@ mod tests {
                 .user_logged_on_calls,
             0
         );
-        assert_eq!(
-            rdpdr
-                .process(&encoded_server_client_id_confirm(0x1234))
-                .expect("process server client ID confirm")
-                .len(),
-            1
-        );
+        let responses = rdpdr
+            .process(&encoded_server_client_id_confirm(0x1234))
+            .expect("process server client ID confirm");
+        assert_eq!(responses.len(), 2);
+        assert_empty_device_announce(&responses[..1]);
+        let drive = responses[1].encode_unframed_pdu().expect("encode drive announce");
+        assert_eq!(&drive[..4], &[0x72, 0x44, 0x41, 0x44]);
+        assert_eq!(read_u32(&drive, 4), 1);
+        assert_eq!(read_u32(&drive, 12), 42);
         assert!(
             rdpdr
                 .process(&encoded_server_device_announce_response(42, NtStatus::SUCCESS))
@@ -1580,11 +1589,10 @@ mod tests {
         rdpdr
             .process(&encoded_server_announce(0x5678))
             .expect("process replacement server announce");
-        assert!(
-            rdpdr
+        assert_empty_device_announce(
+            &rdpdr
                 .process(&encoded_server_client_id_confirm(0x5678))
-                .expect("process server client ID confirm")
-                .is_empty()
+                .expect("process server client ID confirm"),
         );
         assert_eq!(
             rdpdr
@@ -1623,15 +1631,14 @@ mod tests {
                 })
                 .is_err()
         );
-        assert!(
-            rdpdr
+        assert_empty_device_announce(
+            &rdpdr
                 .handle_client_id_confirm(VersionAndIdPdu {
                     client_id,
                     kind: VersionAndIdPduKind::ServerClientIdConfirm,
                     ..server_announce
                 })
-                .expect("confirm generated client ID")
-                .is_empty()
+                .expect("confirm generated client ID"),
         );
     }
 
