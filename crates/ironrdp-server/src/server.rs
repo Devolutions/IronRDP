@@ -3382,6 +3382,9 @@ impl RdpServer {
     /// Like a vouch for the auto-reconnect cookie (see [`Self::set_auto_reconnect_on_request`]), the signal
     /// belongs to the connection that was current when it was sent: if that connection is replaced before the
     /// server reads it, it is dropped and the replacement is not notified until the embedder signals again.
+    /// The signal carries no connection identity: it is dropped by draining the queue when a connection ends, so
+    /// a producer must stop signalling for a connection before the next one starts, or its late signal counts for
+    /// the next connection.
     ///
     /// [MS-RDPBCGR 3.3.5.10.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/3061e2df-ae7c-41fe-8743-650a9cb70365
     pub fn set_logon_notification_on_request(&mut self, on_request: bool) {
@@ -3593,8 +3596,10 @@ impl RdpServer {
 
         let logon = logon_info.map(|logon_info| {
             if long_credentials {
-                // The Size field is 18, as in the MS-RDPBCGR 4.3.1 example and what Windows Server sends (see
-                // FreeRDP's libfreerdp/core/info.c); the Microsoft RDP client accepts it.
+                // UNTESTED: the Size field ironrdp-pdu writes here is 18, as in the MS-RDPBCGR 4.3.1 example and what
+                // Windows Server sends (see FreeRDP's libfreerdp/core/info.c), not the 576 the 2.2.10.1.1.2 layout
+                // implies; the Microsoft RDP client accepts it. When changing the encoder, check that a client
+                // that set LONG_CREDENTIALS_SUPPORTED still reports the logon.
                 (
                     InfoType::LogonLong,
                     InfoData::LogonInfoV2(LogonInfoVersion2 { logon_info }),
@@ -6519,6 +6524,9 @@ impl RdpServer {
             .client_early_capability_flags
             .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
         // The user logs on once per connection, so a reactivation does not notify the client again.
+        // UNTESTED: on request, a reactivation leaves `pending_logon_notification` as it was, so a notification the
+        // embedder has not signalled yet is still sent on its later signal. When changing the reactivation path,
+        // check that it neither clears nor refills that state.
         if !result.reactivation {
             let long_credentials = result.capabilities.iter().any(|capability| {
                 matches!(
