@@ -142,7 +142,9 @@ mod imp {
         std::fs::remove_file(&endpoint.0)
     }
 
-    /// Connects to a listening daemon and fails unless the peer runs as the current user.
+    /// Connects to a listening daemon.
+    ///
+    /// Fails unless the peer runs as the current user.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<UnixStream> {
         let stream = UnixStream::connect(&endpoint.0).await?;
         let peer = stream.peer_cred()?;
@@ -281,7 +283,9 @@ mod imp {
     const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
     const SECURITY_SQOS_PRESENT: u32 = 0x0010_0000;
 
-    /// Connects to a listening daemon and fails unless the pipe is owned by the current user.
+    /// Connects to a listening daemon.
+    ///
+    /// Fails unless the pipe is owned by the current user.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<NamedPipeClient> {
         let client = ClientOptions::new()
             .security_qos_flags(SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT)
@@ -374,8 +378,8 @@ mod imp {
             // SAFETY: `sid_wide` was `LocalAlloc`'d by `ConvertSidToStringSidW` and is no longer needed.
             let _ = unsafe { LocalFree(Some(HLOCAL(sid_wide.as_ptr().cast::<core::ffi::c_void>()))) };
 
-            // Build the SDDL: the current user as owner, since an elevated daemon's default owner is Administrators,
-            // and a protected DACL granting GENERIC_ALL to the current user only.
+            // Build the SDDL: a protected DACL granting GENERIC_ALL to the current user only.
+            // The current user is also the owner, since an elevated daemon's default owner is Administrators.
             let sddl_string = format!("O:{sid_text}D:P(A;;GA;;;{sid_text})");
             let mut sddl_utf16: Vec<u16> = sddl_string.encode_utf16().collect();
             sddl_utf16.push(0u16);
