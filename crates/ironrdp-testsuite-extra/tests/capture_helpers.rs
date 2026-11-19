@@ -241,6 +241,20 @@ fn capture_offers_encodable_formats_compressed_first() {
     assert_eq!(first_pcm, 2);
 }
 
+// oracle: mutant reject high-rate PCM during capture negotiation
+#[test]
+fn capture_negotiation_preserves_high_rate_and_multichannel_pcm() {
+    use ironrdp_rdpeai::client::RdpeaiCaptureHandler as _;
+    use ironrdp_rdpeai::pdu::pcm_format;
+    use ironrdp_rdpsnd_native::RdpeaiCaptureBackend;
+
+    let high_rate = pcm_format(1, 192_000, 16);
+    let multichannel = pcm_format(6, 48_000, 16);
+    let server = [high_rate, multichannel];
+
+    assert_eq!(RdpeaiCaptureBackend::new().choose_formats(&server), server);
+}
+
 // oracle: mutant capture opened with an encoder for another rate
 #[test]
 fn capture_refuses_an_encode_format_with_other_rate_or_channels() {

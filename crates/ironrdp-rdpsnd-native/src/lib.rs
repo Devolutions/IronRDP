@@ -1,9 +1,7 @@
 #![cfg_attr(doc, doc = include_str!("../README.md"))]
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
-// `anyhow` and `tracing-subscriber` are dev-deps used only by the `cpal`
-// example binary, but `unused_crate_dependencies` still flags them on the
-// lib target. The `[lib] test = false` setting makes a `#[cfg(test)]`
-// workaround dead code, so the suppression has to apply unconditionally.
+// The `cpal` example's dev-dependencies are unused by the normal library build,
+// so the suppression must also apply when `cfg(test)` is not set.
 #![allow(unused_crate_dependencies)]
 
 #[cfg(all(windows, feature = "aac"))]

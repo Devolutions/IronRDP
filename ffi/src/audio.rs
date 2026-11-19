@@ -906,7 +906,7 @@ mod native {
             .build()
         }
 
-        // oracle: user decision to retry closing after queued output is returned
+        // oracle: mutant remove the capture channel before encoding its close frame
         #[test]
         fn failed_capture_close_encoding_keeps_channel_for_retry() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -1517,7 +1517,7 @@ mod native {
             assert_eq!(audio.0.active_capture.load(Ordering::Acquire), 0);
         }
 
-        // oracle: user decision to return queued output before retrying capture close
+        // oracle: mutant return a close error before delivering queued output
         #[test]
         fn capture_close_failure_preserves_queued_output_for_retry() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -1539,7 +1539,7 @@ mod native {
             ));
         }
 
-        // oracle: user decision to surface capture close errors when no output is ready
+        // oracle: mutant silently ignore a close error when no output is queued
         #[test]
         fn capture_close_failure_is_returned_without_queued_output() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));

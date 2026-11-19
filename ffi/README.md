@@ -79,8 +79,8 @@ Call `PollAudio(audio)` before and after each incoming PDU and at least every 50
 Write each returned `ResponseFrame` to the same transport in order and dispose the output iterator and frames.
 Each response can contain multiple complete RDP packets.
 The bounded queue holds at least 100 ms at up to 48 kHz and two channels, including after a mono-to-stereo format change.
-If the session loop stalls long enough to exhaust that buffer, capture stops and its dynamic channel closes instead of continuing with missing messages.
-An Open failure describes one capture attempt; the server can reopen the channel and retry.
+On the next poll, queue overflow, malformed capture PDUs, or a failed ordered format change permanently disable capture for the connection and close its dynamic channel.
+An Open failure affects one capture attempt; the server can reopen the channel and retry.
 Opening capture or changing its rate or channels waits up to two seconds for device readiness in the serialized session loop.
 This pauses session processing, and cleanup can take longer if a driver blocks.
 Capture samples received before the Open reply is queued are discarded so they cannot overtake the reply.

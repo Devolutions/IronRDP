@@ -670,6 +670,11 @@ mod tests {
         let sink_state = Arc::clone(&backend.sink_state);
         let stop_signal = backend.stop_signal();
         let mut confirm = || {
+            // oracle: mutant confirmation runs outside the sink lock
+            assert!(matches!(
+                sink_state.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
             let sink_state = Arc::clone(&sink_state);
             let stop_signal = stop_signal.clone();
             let started_tx = started_tx.clone();
@@ -688,18 +693,5 @@ mod tests {
         finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         worker.unwrap().join().unwrap();
         assert_eq!(*events.lock().unwrap(), ["confirmation", "data"]);
-    }
-
-    // oracle: regression #2469
-    #[test]
-    fn format_negotiation_preserves_high_rate_and_multichannel_pcm() {
-        let backend = RdpeaiCaptureBackend::new();
-        let high_rate = pcm_format(1, 192_000, 16);
-        let multichannel = pcm_format(6, 48_000, 16);
-
-        assert_eq!(
-            backend.choose_formats(&[high_rate.clone(), multichannel.clone()]),
-            [high_rate, multichannel]
-        );
     }
 }

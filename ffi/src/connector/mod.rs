@@ -635,7 +635,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: direct DVC names must not conflict with attached native audio channels
+    // oracle: mutant allow capture to reuse a direct AUDIO_INPUT channel
     #[test]
     fn capture_and_direct_input_reject_collisions_in_both_orders() -> Result<(), &'static str> {
         let mut first = connector_without_playback()?;
