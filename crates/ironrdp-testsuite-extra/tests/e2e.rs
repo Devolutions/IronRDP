@@ -4809,15 +4809,7 @@ async fn an_unverifiable_auto_reconnect_cookie_is_refused_when_the_validator_rej
 #[tokio::test]
 async fn an_auto_reconnect_attempt_is_refused_with_a_connection_binder(#[case] cookie: ServerAutoReconnect) {
     let (mut server, display_tx) = auto_reconnect_server(false);
-    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
-        server::Credentials {
-            username: USERNAME.into(),
-            password: PASSWORD.into(),
-            domain: None,
-        },
-    ))));
-    let (_bound_tx, bound_rx) = mpsc::unbounded_channel();
-    server.set_connection_binder(Some(Arc::new(TestBinder(Arc::new(Mutex::new(bound_rx))))));
+    let _bound_tx = install_test_binder(&mut server);
 
     // A server that admits the attempt doesn't always end the run, so the run is bounded and running out of time counts
     // as admitted.
@@ -4838,6 +4830,24 @@ async fn an_auto_reconnect_attempt_is_refused_with_a_connection_binder(#[case] c
     assert!(ended, "the server ends the connection instead of admitting it");
 }
 
+/// Gives `server` a credential validator that accepts the test client's credentials and a [`TestBinder`], and returns
+/// the sender that feeds the bound display.
+///
+/// The caller keeps the sender for as long as a bound session should run: Once it drops, the bound display's updates
+/// end and the server closes the session.
+fn install_test_binder(server: &mut RdpServer) -> UnboundedSender<DisplayUpdate> {
+    server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
+        server::Credentials {
+            username: USERNAME.into(),
+            password: PASSWORD.into(),
+            domain: None,
+        },
+    ))));
+    let (bound_tx, bound_rx) = mpsc::unbounded_channel();
+    server.set_connection_binder(Some(Arc::new(TestBinder(Arc::new(Mutex::new(bound_rx))))));
+    bound_tx
+}
+
 /// A connection binder that hands every connection the test display and input handler.
 struct TestBinder(DisplayUpdatesRx);
 
@@ -4856,6 +4866,51 @@ impl server::ConnectionBinder for TestBinder {
             input: Box::new(TestInputHandler),
         })
     }
+}
+
+/// A server with a connection binder sends no auto-reconnect cookie at activation, when the embedder issues one, or in
+/// the hourly update, because it refuses every auto-reconnect attempt, so a client's reconnect is an ordinary logon
+/// that the binder handles.
+///
+/// The hour passes on tokio's paused clock once the connection is up, as in the hourly update tests.
+// oracle: mutant a server with a connection binder issuing a cookie it will always refuse, on any of the three paths
+#[tokio::test]
+async fn a_server_with_a_connection_binder_issues_no_auto_reconnect_cookie() {
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    let _bound_tx = install_test_binder(&mut server);
+
+    let (at_activation, issued, hourly) = with_server(
+        server,
+        display_tx,
+        async |server_addr, cookie_handle, _server_handle, _display_tx| {
+            let mut probe = CookieProbe::connect(server_addr, None).await;
+            let at_activation = probe.watch_for_cookie(Duration::from_secs(1)).await;
+
+            cookie_handle
+                .set(Some(ServerAutoReconnect {
+                    logon_id: 1,
+                    random_bits: [0x66; 16],
+                }))
+                .expect("issue the cookie");
+            let issued = probe.watch_for_cookie(Duration::from_secs(1)).await;
+
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(60 * 60 + 1)).await;
+            let hourly = probe.watch_for_cookie(Duration::from_secs(30)).await;
+
+            probe.disconnect().await;
+            (at_activation, issued, hourly)
+        },
+    )
+    .await;
+
+    assert_eq!(
+        at_activation,
+        Ok(false),
+        "the client logs on and is bound, and gets no cookie"
+    );
+    assert_eq!(issued, Ok(false), "a cookie the embedder issues is not sent");
+    assert_eq!(hourly, Ok(false), "the hourly update sends no cookie");
 }
 
 /// On request, a vouch belongs to the connection that was current when the embedder sent

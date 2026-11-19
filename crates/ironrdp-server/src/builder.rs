@@ -398,6 +398,8 @@ impl RdpServerBuilder<BuilderDone> {
     }
 
     /// Set a binder that replaces display/input handlers after credentials are accepted.
+    ///
+    /// With a binder the server sends no auto-reconnect cookie; see [`RdpServer::set_connection_binder`].
     pub fn with_connection_binder(mut self, binder: Option<Arc<dyn ConnectionBinder>>) -> Self {
         self.state.connection_binder = binder;
         self
@@ -420,6 +422,9 @@ impl RdpServerBuilder<BuilderDone> {
     /// See [`RdpServer::set_auto_reconnect_cookie`] for post-construction
     /// configuration and [`RdpServer::auto_reconnect_cookie_handle`] for
     /// updates while the server is running.
+    ///
+    /// A server with a connection binder sends no cookie, because it refuses every auto-reconnect attempt; see
+    /// [`RdpServer::set_connection_binder`].
     pub fn with_auto_reconnect_cookie(mut self, cookie: Option<ServerAutoReconnect>) -> Self {
         self.state.auto_reconnect_cookie = cookie;
         self
@@ -427,8 +432,8 @@ impl RdpServerBuilder<BuilderDone> {
 
     /// Send the cookie only on request instead of at activation.
     ///
-    /// A server with a connection binder refuses auto-reconnect, so this has no
-    /// useful effect there. See [`RdpServer::set_auto_reconnect_on_request`].
+    /// A server with a connection binder sends no cookie and refuses auto-reconnect, so this has no effect there.
+    /// See [`RdpServer::set_auto_reconnect_on_request`].
     pub fn with_auto_reconnect_on_request(mut self, on_request: bool) -> Self {
         self.state.auto_reconnect_on_request = on_request;
         self
