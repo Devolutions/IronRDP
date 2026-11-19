@@ -33,6 +33,10 @@ pub mod ffi {
 
     // Basic Impl for ClientConnector
     impl ClientConnector {
+        fn has_direct_dvc_listener(drdynvc: &ironrdp::dvc::DrdynvcClient, channel_name: &str) -> bool {
+            drdynvc.has_channel_name_of_type::<DirectDvcChannelProcessor>(channel_name)
+        }
+
         pub fn new(config: &Config, client_addr: &str) -> Result<Box<ClientConnector>, Box<IronRdpError>> {
             let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
 
@@ -112,7 +116,7 @@ pub mod ffi {
                 }
             };
 
-            if drdynvc.has_channel_name_of_type::<DirectDvcChannelProcessor>(processor.channel_name()) {
+            if Self::has_direct_dvc_listener(drdynvc, processor.channel_name()) {
                 return Err("dynamic channel name is already registered as a direct DVC".into());
             }
 
@@ -158,15 +162,17 @@ pub mod ffi {
             &mut self,
             config: &DvcPipeProxyConfig,
         ) -> Result<(), Box<IronRdpError>> {
-            if self.0.as_mut().is_some_and(|connector| {
+            let has_direct_collision = self.0.as_mut().is_some_and(|connector| {
                 connector
                     .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
                     .is_some_and(|drdynvc| {
-                        config.descriptors.iter().any(|descriptor| {
-                            drdynvc.has_channel_name_of_type::<DirectDvcChannelProcessor>(&descriptor.channel_name)
-                        })
+                        config
+                            .descriptors
+                            .iter()
+                            .any(|descriptor| Self::has_direct_dvc_listener(drdynvc, &descriptor.channel_name))
                     })
-            }) {
+            });
+            if has_direct_collision {
                 return Err("dynamic channel name is already registered as a direct DVC".into());
             }
 

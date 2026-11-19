@@ -105,7 +105,9 @@ pub mod ffi {
     /// Receives owned lifecycle and payload events from configured dynamic virtual channels ([MS-RDPEDYC]).
     ///
     /// Capacity is measured in events, not bytes.
-    /// Once an event is lost to overflow, every `next_event` call fails.
+    /// Overflow drops an application-level event without corrupting RDP framing or DVC reassembly.
+    /// Channels configured with the same sink share this queue, so overflow stops delivery for every such channel.
+    /// Every `next_event` call fails after overflow.
     ///
     /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
     #[diplomat::attr(dotnet, manually_disposable)]

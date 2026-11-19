@@ -29,7 +29,9 @@ Dispose the queue, each returned event and every `VecU8` from `TakeData()` when 
 Pass both IDs to `ActiveStage.SendDirectDvcData` or `CloseDirectDvcChannel`; each method checks that the endpoint is still active when encoding the frame.
 After a channel closes or reopens, the previous endpoint ID is rejected.
 On queue overflow, `NextEvent()` reports an error immediately, even if events remain queued, and continues to fail on later calls.
-Overflow drops an event and permanently desynchronizes the event stream, so close the session instead of processing more events.
+Overflow drops an application-level event; it does not corrupt RDP framing or DVC reassembly.
+Channels configured with the same event sink share a queue, so overflow stops delivery for each of those channels and later inbound events may fail processing.
+Because the application event history is incomplete and the queue cannot recover, stop acting on its events and close the session.
 Both methods return an encoded frame for the main RDP connection and fail if the channel was moved to a multitransport tunnel.
 
 Use one serialized pipeline for `ActiveStage.Process`, direct send and close encoding, and the resulting transport writes.
