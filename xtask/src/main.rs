@@ -132,6 +132,7 @@ fn main() -> anyhow::Result<()> {
             filter,
             save_baseline,
             baseline,
+            rayon,
         } => {
             let args = filter
                 .into_iter()
@@ -142,7 +143,7 @@ fn main() -> anyhow::Result<()> {
                 )
                 .chain(baseline.into_iter().flat_map(|name| ["--baseline".to_owned(), name]))
                 .collect();
-            bench::rfx_decode(&sh, args)?
+            bench::rfx_decode(&sh, rayon, args)?
         }
         Action::BenchRfxDecodeWasm { simd } => bench::rfx_decode_wasm(&sh, simd)?,
         Action::WasmCheck => wasm::check(&sh)?,

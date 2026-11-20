@@ -14,11 +14,13 @@
 mod driver;
 mod fixture;
 mod pattern;
+mod progressive;
 mod stage;
 
 pub use self::driver::Driver;
 pub use self::fixture::{Fixture, fixture};
 pub use self::pattern::{Pattern, render};
+pub use self::progressive::{ProgressiveFixture, progressive_fixture};
 pub use self::stage::{StageFixture, stage_fixture};
 
 pub const TILE: usize = 64;

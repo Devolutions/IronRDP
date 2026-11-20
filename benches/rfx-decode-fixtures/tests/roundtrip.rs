@@ -4,7 +4,8 @@
 use ironrdp::core::{Decode as _, ReadCursor};
 use ironrdp::pdu::codecs::rfx::{Block, CodecChannel, EntropyAlgorithm, OperatingMode};
 
-use rfx_decode_fixtures::{Driver, Pattern, fixture, render};
+use ironrdp::graphics::progressive::{ProgressiveDecoder, TILE_BYTES_PER_PIXEL};
+use rfx_decode_fixtures::{Driver, Pattern, TILE, fixture, progressive_fixture, render};
 use rstest::rstest;
 
 /// Mean absolute error per channel between the decoded image and the source.
@@ -57,6 +58,47 @@ fn every_pattern_round_trips(
         mae < max_mae,
         "{pattern:?}/{algorithm:?}: mean abs error {mae:.6} exceeds {max_mae}"
     );
+}
+
+/// Mean absolute error per channel between the decoded Progressive fixture and the source.
+fn progressive_mean_abs_error(pattern: Pattern, width: u16, height: u16) -> f64 {
+    let fx = progressive_fixture(pattern, width, height);
+    let mut decoder = ProgressiveDecoder::new();
+    decoder
+        .decode_bitmap(0, 0, width, height, &fx.init)
+        .expect("decode context");
+    let tiles = decoder
+        .decode_bitmap(0, 0, width, height, &fx.frame)
+        .expect("decode frame");
+
+    let (w, h) = (usize::from(width), usize::from(height));
+    let mut image = vec![0u8; w * h * TILE_BYTES_PER_PIXEL];
+    for tile in &tiles {
+        let (x, y) = (usize::from(tile.x_idx) * TILE, usize::from(tile.y_idx) * TILE);
+        let row_len = (w - x).min(TILE) * TILE_BYTES_PER_PIXEL;
+        for row in 0..(h - y).min(TILE) {
+            let from = row * TILE * TILE_BYTES_PER_PIXEL;
+            let to = ((y + row) * w + x) * TILE_BYTES_PER_PIXEL;
+            image[to..to + row_len].copy_from_slice(&tile.pixels[from..from + row_len]);
+        }
+    }
+
+    mae_between(&render(pattern, w, h), &image)
+}
+
+// oracle: mutant guard against blank or partially decoded Progressive fixture output.
+// 640x384 RGB MAE at Quant::default() with the reduce-extrapolate DWT:
+// Desktop=1.547150, text=1.917240, gradient=1.448634, photo=3.220082, noise=5.527239.
+// Ceilings round each measured MAE up to the next channel-value unit, as above; these are regression gates, not codec accuracy guarantees.
+#[rstest]
+#[case::desktop(Pattern::Desktop, 2.0)]
+#[case::text(Pattern::Text, 2.0)]
+#[case::gradient(Pattern::Gradient, 2.0)]
+#[case::photo(Pattern::Photo, 4.0)]
+#[case::noise(Pattern::Noise, 6.0)]
+fn every_pattern_round_trips_as_progressive(#[case] pattern: Pattern, #[case] max_mae: f64) {
+    let mae = progressive_mean_abs_error(pattern, 640, 384);
+    assert!(mae < max_mae, "{pattern:?}: mean abs error {mae:.6} exceeds {max_mae}");
 }
 
 // oracle: mutant guard against substituting another pattern's decoded image.
