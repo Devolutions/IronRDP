@@ -389,7 +389,7 @@ pub struct Config {
     /// The default is `false`, so EGFX is not advertised.
     ///
     /// [\[MS-RDPBCGR\] 2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
-    /// [\[MS-RDPEGFX\] 1.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
+    /// [\[MS-RDPEGFX\] 1.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/f75a7d5c-141d-4bbc-8b27-3299378f8ac6
     /// [`DvcClientProcessor`]: https://docs.rs/ironrdp-dvc/latest/ironrdp_dvc/trait.DvcClientProcessor.html
     /// [`DrdynvcClient::with_dynamic_channel`]: https://docs.rs/ironrdp-dvc/latest/ironrdp_dvc/struct.DrdynvcClient.html#method.with_dynamic_channel
     /// [`GraphicsPipelineClient`]: https://docs.rs/ironrdp-egfx/latest/ironrdp_egfx/client/struct.GraphicsPipelineClient.html
