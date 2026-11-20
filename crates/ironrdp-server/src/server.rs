@@ -3337,6 +3337,9 @@ impl RdpServer {
     /// RDP Security. The [`ServerAutoReconnect`] `logon_id` identifies the
     /// session; the server generates replacement randoms with a CSPRNG.
     ///
+    /// A server with a connection binder (see [`Self::set_connection_binder`]) sends no cookie, because it refuses
+    /// every auto-reconnect attempt, and a cookie set while a binder is set logs a warning saying so.
+    ///
     /// With [`Self::set_auto_reconnect_on_request`] the cookie is sent only on
     /// request, and the server regenerates it when the embedder vouches for a
     /// connection instead of after every accepted connection.
@@ -3350,6 +3353,9 @@ impl RdpServer {
     ///
     /// [`ServerAutoReconnect`]: ironrdp_pdu::rdp::session_info::ServerAutoReconnect
     pub fn set_auto_reconnect_cookie(&mut self, cookie: Option<rdp::session_info::ServerAutoReconnect>) {
+        if cookie.is_some() && self.connection_binder.is_some() {
+            warn!("Auto-reconnect cookie not sent, because a server with a connection binder refuses auto-reconnect");
+        }
         self.auto_reconnect_cookie = cookie;
         self.previous_auto_reconnect_cookie = None;
         self.auto_reconnect_sent = false;
@@ -3380,10 +3386,9 @@ impl RdpServer {
     /// is dropped and the replacement gets no cookie until the embedder vouches
     /// for it.
     ///
-    /// A server with a connection binder (see [`Self::set_connection_binder`])
-    /// refuses every auto-reconnect attempt, because a reconnect can't restore
-    /// a credential-bound connection safely, so this option has no useful
-    /// effect there.
+    /// A server with a connection binder (see [`Self::set_connection_binder`]) sends no cookie and refuses every
+    /// auto-reconnect attempt, because a reconnect can't restore a credential-bound connection safely, so this option
+    /// has no effect there.
     pub fn set_auto_reconnect_on_request(&mut self, on_request: bool) {
         self.auto_reconnect_on_request = on_request;
     }
@@ -3451,10 +3456,16 @@ impl RdpServer {
     }
 
     fn supports_auto_reconnect(&self) -> bool {
-        matches!(
-            &self.opts.security,
-            RdpServerSecurity::Tls(_) | RdpServerSecurity::Hybrid(_)
-        )
+        // A server with a connection binder refuses every auto-reconnect attempt in `client_accepted`, because the
+        // acceptor doesn't bind one, so it issues no cookie either.
+        // A client that presented a cookie would be refused without being told why if it doesn't advertise error-info
+        // support (MS-RDPBCGR 3.3.5.7.1), and would reconnect again at once.
+        // Without a cookie its reconnect is an ordinary logon that the binder binds.
+        self.connection_binder.is_none()
+            && matches!(
+                &self.opts.security,
+                RdpServerSecurity::Tls(_) | RdpServerSecurity::Hybrid(_)
+            )
     }
 
     fn verify_auto_reconnect_cookie(&self, reconnect: &rdp::client_info::ClientAutoReconnect) -> bool {
@@ -3718,6 +3729,9 @@ impl RdpServer {
     /// When set, the binder is called only when authenticated credentials are
     /// available. The returned display/input handlers replace the server
     /// defaults for the accepted connection.
+    ///
+    /// A client can't auto-reconnect to a bound connection, so with a binder the server sends no auto-reconnect cookie
+    /// and refuses a client that presents one.
     pub fn set_connection_binder(&mut self, binder: Option<Arc<dyn ConnectionBinder>>) {
         self.connection_binder = binder;
     }
@@ -4417,6 +4431,13 @@ impl RdpServer {
             );
         }
 
+        if self.connection_binder.is_some() && self.auto_reconnect_cookie.is_some() {
+            warn!(
+                "An auto-reconnect cookie is configured with a connection binder, which refuses auto-reconnect, so no \
+                 cookie is sent"
+            );
+        }
+
         loop {
             let next = match pending.take() {
                 Some(winner) => NextConnection::Authenticated(winner),
@@ -4559,6 +4580,8 @@ impl RdpServer {
     /// `Preempt` outside [`RdpServerSecurity::Hybrid`] is the one who knows that
     /// the only bar to a takeover is then what its source and
     /// [`ConnectionHandler::on_accept`] check.
+    /// Nor does it repeat `serve`'s warning that an auto-reconnect cookie configured with a connection binder is never
+    /// sent.
     pub async fn serve_connection<C>(
         &mut self,
         connection: NextConnection<C::Stream>,
@@ -6429,7 +6452,7 @@ impl RdpServer {
         conn: &mut ConnectionState,
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
-        (result, acceptor): (AcceptorResult, &Acceptor),
+        (result, acceptor): (AcceptorResult, &mut Acceptor),
         udp_transport: &mut Option<multitransport::UdpTransportHandle>,
         pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
     ) -> ServerResult<RunState>
@@ -6439,26 +6462,65 @@ impl RdpServer {
     {
         debug!("Client accepted");
 
-        let is_auto_reconnect = if let Some(reconnect) = result.auto_reconnect.as_ref() {
-            if !self.verify_auto_reconnect_cookie(reconnect) {
-                warn!("Auto-reconnect cookie validation rejected");
-                send_access_denied(acceptor, writer).await?;
-                return Err(ServerError::reason("auto-reconnect validation", "cookie rejected"));
+        let is_auto_reconnect = {
+            // For a client that presented an auto-reconnect cookie, the acceptor keeps its credentials past the
+            // result in case the cookie fails.
+            // They're taken here whatever the cookie's outcome, and dropped at the end of this block, so the acceptor
+            // ends up holding none, as for a connection without a cookie, and neither does this function, which runs
+            // the whole session.
+            // The result's own copy of the Client Info credentials, which the server doesn't read, stays with it as it
+            // does for every connection.
+            // UNTESTED: A verified cookie leaves no credentials in the acceptor only because they're taken here, ahead
+            // of the match. The fallback tests fail if they aren't taken at all, but no test can see the server's
+            // acceptor, so moving the take into the fallback arm would pass them. When changing this, keep the take
+            // ahead of the match.
+            let received = acceptor.take_received_credentials();
+            match result.auto_reconnect.as_ref() {
+                None => false,
+                Some(_) if self.connection_binder.is_some() => {
+                    // The acceptor skips capability-exchange binding for every auto-reconnect attempt, so neither a
+                    // verified cookie nor a fallback logon can be bound.
+                    warn!("Auto-reconnect cannot restore a credential-bound connection safely");
+                    send_access_denied(acceptor, writer).await?;
+                    return Err(ServerError::reason(
+                        "auto-reconnect validation",
+                        "unsupported with a connection binder",
+                    ));
+                }
+                Some(reconnect) if self.verify_auto_reconnect_cookie(reconnect) => {
+                    debug!("Auto-reconnect cookie validation accepted");
+                    true
+                }
+                Some(_) => {
+                    // MS-RDPBCGR 3.3.5.3.11: "If logon with the cookie fails, the credentials supplied in the Client
+                    // Info PDU SHOULD be used".
+                    // A cookie issued before the server restarted never verifies, so refusing here locks out every
+                    // client that auto-reconnects across a restart.
+                    // The connection continues exactly like one that sent no cookie, so the credential validator
+                    // decides.
+                    // After CredSSP with HYBRID_EX it has already run on the delegated credentials.
+                    // Otherwise the acceptor deferred it to the cookie, and it runs now on the credentials it would
+                    // have checked without one, the delegated ones under plain HYBRID and the Client Info ones
+                    // otherwise.
+                    debug!("Auto-reconnect cookie not recognized; continuing with a normal logon");
+                    if self
+                        .pending_authenticated_credentials
+                        .lock()
+                        .expect("authenticated credentials lock poisoned")
+                        .is_none()
+                    {
+                        if let Err(error) = self.prepare_authenticated_connection(received).await {
+                            warn!(%error, "Normal logon after an unrecognized auto-reconnect cookie failed");
+                            send_access_denied(acceptor, writer).await?;
+                            return Err(ServerError::reason(
+                                "auto-reconnect validation",
+                                "cookie rejected and the credentials did not validate",
+                            ));
+                        }
+                    }
+                    false
+                }
             }
-
-            if self.connection_binder.is_some() {
-                warn!("Auto-reconnect cannot restore a credential-bound connection safely");
-                send_access_denied(acceptor, writer).await?;
-                return Err(ServerError::reason(
-                    "auto-reconnect validation",
-                    "unsupported with a connection binder",
-                ));
-            }
-
-            debug!("Auto-reconnect cookie validation accepted");
-            true
-        } else {
-            false
         };
 
         if result.reactivation {
@@ -6976,7 +7038,7 @@ impl RdpServer {
                     &mut conn,
                     &mut reader,
                     &mut writer,
-                    (result, &acceptor),
+                    (result, &mut acceptor),
                     &mut udp_transport,
                     pending_udp_accept.take(),
                 )
