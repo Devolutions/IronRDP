@@ -1,5 +1,6 @@
 use std::sync::LazyLock;
 
+use expect_test::expect;
 use ironrdp_core::{decode, encode_vec};
 
 use super::*;
@@ -156,4 +157,289 @@ fn read_license_header_handles_valid_client_correctly() {
         }
         .into()
     );
+}
+
+// oracle: mutant a licensing type's Debug output printing withheld bytes or the user or machine name, or dropping a field that tells an exchange apart: a header, the product, the scope or the public exponent.
+#[test]
+fn debug_output_withholds_keying_material_and_licenses() {
+    use client_platform_challenge_response::{ClientType, LicenseDetailLevel};
+
+    // Each withheld field gets a length of its own, so the snapshots tell them apart; a field printed in full would
+    // show up as a list of 171s.
+    let bytes = |n: usize| vec![0xab; n];
+    let header = |preamble_message_type| LicenseHeader {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+        },
+        preamble_message_type,
+        preamble_flags: PreambleFlags::empty(),
+        preamble_version: PreambleVersion::V3,
+        preamble_message_size: 0,
+    };
+
+    expect![["
+        LicenseEncryptionData {
+            premaster_secret: <48 bytes withheld>,
+            mac_salt_key: <16 bytes withheld>,
+            license_key: <16 bytes withheld>,
+        }
+    "]]
+    .assert_debug_eq(&LicenseEncryptionData {
+        premaster_secret: bytes(48),
+        mac_salt_key: bytes(16),
+        license_key: bytes(16),
+    });
+
+    expect![["
+        ClientNewLicenseRequest {
+            license_header: LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags(
+                        LICENSE_PKT,
+                    ),
+                },
+                preamble_message_type: NewLicenseRequest,
+                preamble_flags: PreambleFlags(
+                    0x0,
+                ),
+                preamble_version: V3,
+                preamble_message_size: 0,
+            },
+            client_random: <32 bytes withheld>,
+            encrypted_premaster_secret: <64 bytes withheld>,
+            client_username: <7 bytes withheld>,
+            client_machine_name: <12 bytes withheld>,
+        }
+    "]]
+    .assert_debug_eq(&ClientNewLicenseRequest {
+        license_header: header(PreambleType::NewLicenseRequest),
+        client_random: bytes(32),
+        encrypted_premaster_secret: bytes(64),
+        client_username: "someone".to_owned(),
+        client_machine_name: "WORKSTATION9".to_owned(),
+    });
+
+    expect![["
+        ClientLicenseInfo {
+            license_header: LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags(
+                        LICENSE_PKT,
+                    ),
+                },
+                preamble_message_type: LicenseInfo,
+                preamble_flags: PreambleFlags(
+                    0x0,
+                ),
+                preamble_version: V3,
+                preamble_message_size: 0,
+            },
+            client_random: <32 bytes withheld>,
+            encrypted_premaster_secret: <64 bytes withheld>,
+            license_info: <1000 bytes withheld>,
+            encrypted_hwid: <20 bytes withheld>,
+            mac_data: <16 bytes withheld>,
+        }
+    "]]
+    .assert_debug_eq(&ClientLicenseInfo {
+        license_header: header(PreambleType::LicenseInfo),
+        client_random: bytes(32),
+        encrypted_premaster_secret: bytes(64),
+        license_info: bytes(1000),
+        encrypted_hwid: bytes(20),
+        mac_data: bytes(16),
+    });
+
+    expect![["
+        ClientPlatformChallengeResponse {
+            license_header: LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags(
+                        LICENSE_PKT,
+                    ),
+                },
+                preamble_message_type: PlatformChallengeResponse,
+                preamble_flags: PreambleFlags(
+                    0x0,
+                ),
+                preamble_version: V3,
+                preamble_message_size: 0,
+            },
+            encrypted_challenge_response_data: <18 bytes withheld>,
+            encrypted_hwid: <20 bytes withheld>,
+            mac_data: <16 bytes withheld>,
+        }
+    "]]
+    .assert_debug_eq(&ClientPlatformChallengeResponse {
+        license_header: header(PreambleType::PlatformChallengeResponse),
+        encrypted_challenge_response_data: bytes(18),
+        encrypted_hwid: bytes(20),
+        mac_data: bytes(16),
+    });
+
+    expect![["
+        PlatformChallengeResponseData {
+            client_type: Other,
+            license_detail_level: Detail,
+            challenge: <10 bytes withheld>,
+        }
+    "]]
+    .assert_debug_eq(&PlatformChallengeResponseData {
+        client_type: ClientType::Other,
+        license_detail_level: LicenseDetailLevel::Detail,
+        challenge: bytes(10),
+    });
+
+    expect![["
+        ClientHardwareIdentification {
+            platform_id: 67108864,
+            data: <16 bytes withheld>,
+        }
+    "]]
+    .assert_debug_eq(&ClientHardwareIdentification {
+        platform_id: 0x0400_0000,
+        data: bytes(16),
+    });
+
+    expect![["
+        ServerPlatformChallenge {
+            license_header: LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags(
+                        LICENSE_PKT,
+                    ),
+                },
+                preamble_message_type: PlatformChallenge,
+                preamble_flags: PreambleFlags(
+                    0x0,
+                ),
+                preamble_version: V3,
+                preamble_message_size: 0,
+            },
+            encrypted_platform_challenge: <10 bytes withheld>,
+            mac_data: <16 bytes withheld>,
+        }
+    "]]
+    .assert_debug_eq(&ServerPlatformChallenge {
+        license_header: header(PreambleType::PlatformChallenge),
+        encrypted_platform_challenge: bytes(10),
+        mac_data: bytes(16),
+    });
+
+    expect![["
+        ServerUpgradeLicense {
+            license_header: LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags(
+                        LICENSE_PKT,
+                    ),
+                },
+                preamble_message_type: UpgradeLicense,
+                preamble_flags: PreambleFlags(
+                    0x0,
+                ),
+                preamble_version: V3,
+                preamble_message_size: 0,
+            },
+            encrypted_license_info: <1000 bytes withheld>,
+            mac_data: <16 bytes withheld>,
+        }
+    "]]
+    .assert_debug_eq(&ServerUpgradeLicense {
+        license_header: header(PreambleType::UpgradeLicense),
+        encrypted_license_info: bytes(1000),
+        mac_data: bytes(16),
+    });
+
+    expect![[r#"
+        LicenseInformation {
+            version: 393216,
+            scope: "microsoft.com",
+            company_name: "Microsoft Corporation",
+            product_id: "A02",
+            license_info: <1000 bytes withheld>,
+        }
+    "#]]
+    .assert_debug_eq(&LicenseInformation {
+        version: 0x0006_0000,
+        scope: "microsoft.com".to_owned(),
+        company_name: "Microsoft Corporation".to_owned(),
+        product_id: "A02".to_owned(),
+        license_info: bytes(1000),
+    });
+
+    expect![[r#"
+        ServerLicenseRequest {
+            license_header: LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags(
+                        LICENSE_PKT,
+                    ),
+                },
+                preamble_message_type: LicenseRequest,
+                preamble_flags: PreambleFlags(
+                    0x0,
+                ),
+                preamble_version: V3,
+                preamble_message_size: 0,
+            },
+            server_random: <32 bytes withheld>,
+            product_info: ProductInfo {
+                version: 393216,
+                company_name: "Microsoft Corporation",
+                product_id: "A02",
+            },
+            server_certificate: Some(
+                ServerCertificate {
+                    issued_permanently: true,
+                    certificate: Proprietary(
+                        ProprietaryCertificate {
+                            public_key: RsaPublicKey {
+                                public_exponent: 65537,
+                                modulus: <64 bytes withheld>,
+                            },
+                            signature: <72 bytes withheld>,
+                        },
+                    ),
+                },
+            ),
+            scope_list: [
+                Scope(
+                    "microsoft.com",
+                ),
+            ],
+        }
+    "#]]
+    .assert_debug_eq(&ServerLicenseRequest {
+        license_header: header(PreambleType::LicenseRequest),
+        server_random: bytes(32),
+        product_info: ProductInfo {
+            version: 0x0006_0000,
+            company_name: "Microsoft Corporation".to_owned(),
+            product_id: "A02".to_owned(),
+        },
+        server_certificate: Some(ServerCertificate {
+            issued_permanently: true,
+            certificate: cert::CertificateType::Proprietary(cert::ProprietaryCertificate {
+                public_key: cert::RsaPublicKey {
+                    public_exponent: 0x0001_0001,
+                    modulus: bytes(64),
+                },
+                signature: bytes(72),
+            }),
+        }),
+        scope_list: vec![Scope("microsoft.com".to_owned())],
+    });
+
+    expect![["
+        X509CertificateChain {
+            certificate_array: [
+                <500 bytes withheld>,
+                <400 bytes withheld>,
+            ],
+        }
+    "]]
+    .assert_debug_eq(&cert::X509CertificateChain {
+        certificate_array: vec![bytes(500), bytes(400)],
+    });
 }

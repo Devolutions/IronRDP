@@ -127,7 +127,7 @@ impl DvcProcessor for DisplayControlClient {
             }
         };
         debug!("Received {:?}", caps);
-        self.capabilities = Some(caps.clone());
+        self.capabilities = Some(caps);
         (self.on_capabilities_received)(caps)
     }
 

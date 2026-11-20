@@ -18,6 +18,34 @@ At this point, you may build and run the examples for .NET:
 - `dotnet run --project Devolutions.IronRdp.ConnectExample`
 - `dotnet run --project Devolutions.IronRdp.AvaloniaExample`
 
+## Direct dynamic virtual channels
+
+Register channel names with `DirectDvcConfig` and set `ConfigBuilder.DirectDvc`, or attach it with `ClientConnector.WithDynamicChannelDirect`.
+The server can open multiple channels with the same registered name at once; each opening has its own channel and endpoint IDs.
+Create its `DirectDvcEventQueue` with a positive event capacity and poll `NextEvent()` for `Opened`, `Data` and `Closed` events.
+The capacity limits event count, not aggregate payload bytes.
+`NextEvent()` returns null when the queue is empty.
+Each event carries the channel name, server channel ID and an endpoint ID unique to that channel opening; call `TakeData()` to transfer a data event's owned bytes into `VecU8`.
+Dispose the queue, each returned event and every `VecU8` from `TakeData()` when finished to release native memory promptly.
+Pass both IDs to `ActiveStage.SendDirectDvcData` or `CloseDirectDvcChannel`; each method checks that the endpoint is still active when encoding the frame.
+After a channel closes or reopens, the previous endpoint ID is rejected.
+On queue overflow, `NextEvent()` reports an error immediately, even if events remain queued, and continues to fail on later calls.
+Overflow drops an application-level event; it does not corrupt RDP framing or DVC reassembly.
+Channels configured with the same event sink share a queue, so overflow stops delivery for each of those channels and later inbound events may fail processing.
+Because the application event history is incomplete and the queue cannot recover, stop acting on its events and close the session.
+Both methods return an encoded frame for the main RDP connection and fail if the channel was moved to a multitransport tunnel.
+
+Use one serialized pipeline for `ActiveStage.Process`, direct send and close encoding, and the resulting transport writes.
+Write the responses from `Process`, including the channel create response, before acting on the resulting DVC events in that pipeline.
+Write each encoded direct DVC frame before processing another inbound PDU that could close or reopen its channel; endpoint IDs are checked during encoding, not again when the frame is written.
+
+```csharp
+var events = DirectDvcEventQueue.New(256);
+var directDvc = DirectDvcConfig.New(events.Sink);
+directDvc.AddChannel("my-channel");
+builder.DirectDvc = directDvc;
+```
+
 ## Dynamic resize
 
 `ClientConnector.WithDynamicChannelDisplayControl()` requests the Display Control channel ([MS-RDPEDISP]).

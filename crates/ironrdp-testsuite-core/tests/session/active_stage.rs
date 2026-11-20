@@ -552,3 +552,205 @@ fn composite_graphics_pipeline_takes_the_window_updates() {
     let again = composite_graphics_pipeline(&mut gfx, &mut image).expect("composite again");
     assert!(again.window_updates.is_empty(), "drained window updates came back");
 }
+
+// VirtualBox's VRDP sends a complete 8550-byte slow-path pointer update inside an 8565-byte frame while declaring `totalLength = 24`.
+// oracle: regression #1536
+#[test]
+fn under_declared_vrdp_pointer_reaches_active_stage() {
+    use std::borrow::Cow;
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_pdu::Action;
+    use ironrdp_pdu::mcs::SendDataIndication;
+    use ironrdp_pdu::pointer::Point16;
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
+    use ironrdp_svc::StaticChannelSet;
+    use ironrdp_testsuite_core::rdp::{VRDP_POINTER_HEIGHT, VRDP_POINTER_WIDTH, vrdp_pointer_pdu};
+
+    let user_data = vrdp_pointer_pdu(Point16 { x: 0, y: 0 });
+    assert_eq!(user_data.len(), 8_550);
+    let frame = encode_vec(&X224(SendDataIndication {
+        initiator_id: 1002,
+        channel_id: 1003,
+        user_data: Cow::Owned(user_data),
+    }))
+    .expect("encode MCS frame");
+    assert_eq!(frame.len(), 8_565);
+
+    let mut stage = ActiveStageBuilder {
+        static_channels: StaticChannelSet::new(),
+        user_channel_id: 1002,
+        io_channel_id: 1003,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: None,
+        enable_server_pointer: true,
+        pointer_software_rendering: false,
+    }
+    .build();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
+    let outputs = stage
+        .process(&mut image, Action::X224, &frame, None)
+        .expect("a complete VRDP pointer update must not terminate the session");
+    let pointer = outputs
+        .iter()
+        .find_map(|output| match output {
+            ActiveStageOutput::PointerBitmap(pointer) => Some(pointer),
+            _ => None,
+        })
+        .expect("the pointer bitmap is delivered");
+    assert_eq!(
+        (pointer.width, pointer.height),
+        (VRDP_POINTER_WIDTH, VRDP_POINTER_HEIGHT)
+    );
+    assert_eq!(
+        pointer.bitmap_data.len(),
+        usize::from(VRDP_POINTER_WIDTH) * usize::from(VRDP_POINTER_HEIGHT) * 4 /* RGBA */
+    );
+}
+
+// An under-declared VRDP pointer shape update preceded by another Share Control PDU in one Send Data Indication still decodes.
+// oracle: regression #1536
+#[test]
+fn concatenated_pdu_before_under_declared_vrdp_pointer_reaches_active_stage() {
+    use std::borrow::Cow;
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_pdu::Action;
+    use ironrdp_pdu::mcs::SendDataIndication;
+    use ironrdp_pdu::pointer::Point16;
+    use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlHeader, ShareControlPdu};
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
+    use ironrdp_svc::StaticChannelSet;
+    use ironrdp_testsuite_core::rdp::{VRDP_POINTER_HEIGHT, VRDP_POINTER_WIDTH, vrdp_pointer_pdu};
+
+    let mut user_data = encode_vec(&ShareControlHeader {
+        share_control_pdu: ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll),
+        pdu_source: 1002,
+        share_id: 1,
+    })
+    .expect("encode DeactivateAll");
+    user_data.extend(vrdp_pointer_pdu(Point16 { x: 0, y: 0 }));
+
+    let frame = encode_vec(&X224(SendDataIndication {
+        initiator_id: 1002,
+        channel_id: 1003,
+        user_data: Cow::Owned(user_data),
+    }))
+    .expect("encode MCS frame");
+
+    let mut stage = ActiveStageBuilder {
+        static_channels: StaticChannelSet::new(),
+        user_channel_id: 1002,
+        io_channel_id: 1003,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: None,
+        enable_server_pointer: true,
+        pointer_software_rendering: false,
+    }
+    .build();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
+    let outputs = stage
+        .process(&mut image, Action::X224, &frame, None)
+        .expect("concatenated PDU followed by VRDP pointer update must decode");
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, ActiveStageOutput::DeactivateAll))
+    );
+    assert!(outputs.iter().any(|output| matches!(
+        output,
+        ActiveStageOutput::PointerBitmap(pointer)
+            if (pointer.width, pointer.height) == (VRDP_POINTER_WIDTH, VRDP_POINTER_HEIGHT)
+    )));
+}
+
+// A self-consistent 24-byte Cached Pointer PDU concatenated with another Share Control PDU must still split into both outputs.
+// oracle: spec MS-RDPBCGR §2.2.9.1.1.4.6
+#[test]
+fn concatenated_24_byte_cached_pointer_and_deactivate_all_both_reach_active_stage() {
+    use std::borrow::Cow;
+
+    use ironrdp_core::encode_vec;
+    use ironrdp_pdu::Action;
+    use ironrdp_pdu::mcs::SendDataIndication;
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerUpdateData};
+    use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlHeader, ShareControlPdu};
+    use ironrdp_pdu::x224::X224;
+    use ironrdp_session::{ActiveStageBuilder, ActiveStageOutput};
+    use ironrdp_svc::StaticChannelSet;
+
+    let mut stage = ActiveStageBuilder {
+        static_channels: StaticChannelSet::new(),
+        user_channel_id: 1002,
+        io_channel_id: 1003,
+        message_channel_id: None,
+        share_id: 1,
+        compression_type: None,
+        enable_server_pointer: true,
+        pointer_software_rendering: false,
+    }
+    .build();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, 64, 64);
+
+    // Populate pointer cache slot 3 first.
+    stage
+        .process_pointer_update(
+            &mut image,
+            PointerUpdateData::Color(ColorPointerAttribute {
+                cache_index: 3,
+                hot_spot: Point16 { x: 0, y: 0 },
+                width: 1,
+                height: 1,
+                xor_mask: &[0xFF, 0xFF, 0xFF, 0x00],
+                and_mask: &[0x80, 0x00],
+            }),
+        )
+        .expect("cache pointer shape");
+
+    let mut user_data = vec![
+        24, 0, // totalLength (honest 24-byte Cached Pointer PDU)
+        0x17, 0, // Data PDU and protocol version
+        0xEA, 0x03, // pduSource
+        1, 0, 0, 0, // shareId
+        0, 4, // padding and stream priority
+        6, 0, // uncompressedLength
+        0x1B, 0, 0, 0, // pointer PDU and compression
+        7, 0, // messageType (TS_PTRMSGTYPE_CACHED)
+        0, 0, // pad2Octets
+        3, 0, // cacheIndex = 3
+    ];
+    assert_eq!(user_data.len(), 24);
+    user_data.extend(
+        encode_vec(&ShareControlHeader {
+            share_control_pdu: ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll),
+            pdu_source: 1002,
+            share_id: 1,
+        })
+        .expect("encode DeactivateAll"),
+    );
+
+    let frame = encode_vec(&X224(SendDataIndication {
+        initiator_id: 1002,
+        channel_id: 1003,
+        user_data: Cow::Owned(user_data),
+    }))
+    .expect("encode MCS frame");
+
+    let outputs = stage
+        .process(&mut image, Action::X224, &frame, None)
+        .expect("concatenated 24-byte Cached Pointer and DeactivateAll must both decode");
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, ActiveStageOutput::PointerBitmap(pointer) if (pointer.width, pointer.height) == (1, 1)))
+    );
+    assert!(
+        outputs
+            .iter()
+            .any(|output| matches!(output, ActiveStageOutput::DeactivateAll))
+    );
+}

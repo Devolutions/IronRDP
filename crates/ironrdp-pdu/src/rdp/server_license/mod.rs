@@ -26,6 +26,21 @@ mod server_license_request;
 mod server_platform_challenge;
 mod server_upgrade_license;
 
+/// Bytes that stay out of `Debug` output, shown as their length only.
+///
+/// Keying material, encrypted blobs, the license itself and the user and machine names stay out so that a log at any
+/// level can be handed over.
+/// The server certificate's chain, modulus and signature are public, but a derived `Debug` would print their
+/// kilobytes as a decimal list and bury the rest of the exchange; their lengths, which tell the key size and the
+/// chain's shape, stay.
+pub(crate) struct Withheld<'a>(pub(crate) &'a [u8]);
+
+impl fmt::Debug for Withheld<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} bytes withheld>", self.0.len())
+    }
+}
+
 pub use self::client_new_license_request::{ClientNewLicenseRequest, PLATFORM_ID};
 pub use self::client_platform_challenge_response::{
     ClientHardwareIdentification, ClientPlatformChallengeResponse, PlatformChallengeResponseData,
@@ -51,11 +66,14 @@ const KEY_EXCHANGE_ALGORITHM_RSA: u32 = 1;
 
 const MAC_SIZE: usize = 16;
 
-#[derive(Debug, PartialEq, Eq, Clone, Default)]
+#[derive(PartialEq, Eq, Clone, Default)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseEncryptionData {
+    /// INVARIANT: `Debug` output withholds this field.
     pub premaster_secret: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub mac_salt_key: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub license_key: Vec<u8>,
 }
 
@@ -569,5 +587,15 @@ impl From<ServerUpgradeLicense> for LicensePdu {
 impl From<LicensingErrorMessage> for LicensePdu {
     fn from(pdu: LicensingErrorMessage) -> Self {
         Self::LicensingErrorMessage(pdu)
+    }
+}
+
+impl fmt::Debug for LicenseEncryptionData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LicenseEncryptionData")
+            .field("premaster_secret", &Withheld(&self.premaster_secret))
+            .field("mac_salt_key", &Withheld(&self.mac_salt_key))
+            .field("license_key", &Withheld(&self.license_key))
+            .finish()
     }
 }

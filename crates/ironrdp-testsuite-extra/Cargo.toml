@@ -29,7 +29,7 @@ harness = true
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
-ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol", "rdpsnd"] }
+ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol", "rdpsnd", "acceptor", "cliprdr"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent.path = "../ironrdp-agent"
@@ -61,7 +61,7 @@ ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 # The EGFX-over-UDP migration in ironrdp-server is behind its `egfx` feature,
 # which nothing else in the workspace enables.
 ironrdp-server = { path = "../ironrdp-server", features = ["egfx", "__test"] }
-ironrdp-viewer.path = "../ironrdp-viewer"
+ironrdp-viewer = { path = "../ironrdp-viewer", features = ["__test"] }
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }
@@ -87,7 +87,13 @@ ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__test"] }
 png = "0.18"
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+ironrdp-cliprdr.path = "../ironrdp-cliprdr"
+ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__test"] }
+
 [target.'cfg(windows)'.dev-dependencies]
+ironrdp-rdpei.path = "../ironrdp-rdpei"
+ironrdp-rdpei-native = { path = "../ironrdp-rdpei-native", features = ["__test"] }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", features = ["__test"] }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", features = ["__test"] }
 ironrdp-rdpdr-native.path = "../ironrdp-rdpdr-native"
@@ -101,6 +107,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Ole",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_Pointer",
 ] }
 
 [lints]

@@ -152,6 +152,7 @@ fn format_list_preserves_in_flight_file_contents_requests() {
             file_index: 0,
             flags: FileContentsFlags::SIZE,
             sent_at_ms: 0,
+            clip_data_id: None,
         },
     );
 
@@ -210,6 +211,7 @@ fn format_list_response_fail_notifies_backend_for_pending_requests() {
                 file_index: 0,
                 flags: FileContentsFlags::RANGE,
                 sent_at_ms: 0,
+                clip_data_id: None,
             },
         );
     }
@@ -268,6 +270,7 @@ fn stale_request_cleanup_after_timeout() {
             file_index: 0,
             flags: FileContentsFlags::SIZE,
             sent_at_ms: 0,
+            clip_data_id: None,
         },
     );
     cliprdr.__test_sent_file_contents_requests_mut().insert(
@@ -276,6 +279,7 @@ fn stale_request_cleanup_after_timeout() {
             file_index: 1,
             flags: FileContentsFlags::RANGE,
             sent_at_ms: 0,
+            clip_data_id: None,
         },
     );
     assert_eq!(cliprdr.__test_sent_file_contents_requests().len(), 2);
@@ -315,6 +319,7 @@ fn stale_request_cleanup_spares_recent_requests() {
             file_index: 0,
             flags: FileContentsFlags::SIZE,
             sent_at_ms: 0,
+            clip_data_id: None,
         },
     );
 
@@ -327,6 +332,7 @@ fn stale_request_cleanup_spares_recent_requests() {
             file_index: 1,
             flags: FileContentsFlags::RANGE,
             sent_at_ms: 150,
+            clip_data_id: None,
         },
     );
 

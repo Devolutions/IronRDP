@@ -34,22 +34,6 @@ pub(crate) mod rfx;
 pub(crate) use fast_path::*;
 use ironrdp_graphics::rdp6::BitmapEncodeError;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(u8)]
-enum CodecId {
-    None = 0x0,
-}
-
-impl CodecId {
-    #[expect(
-        clippy::as_conversions,
-        reason = "guarantees discriminant layout, and as is the only way to cast enum -> primitive"
-    )]
-    fn as_u8(self) -> u8 {
-        self as u8
-    }
-}
-
 #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
@@ -195,7 +179,11 @@ impl UpdateEncoder {
                     nscodec: Some((id, cll)),
                     ..
                 } => BitmapUpdater::NsCodec(NsCodecHandler::new(id, cll)),
-                _ => BitmapUpdater::None(NoneHandler),
+                // No shared codec: send RDP 6.0 compressed bitmap updates,
+                // which every client decodes and which are lossless, rather
+                // than uncompressed surface bits (~25x the bytes on a moving
+                // 1080p window).
+                _ => BitmapUpdater::Bitmap(BitmapHandler::new()),
             }
         } else {
             BitmapUpdater::Bitmap(BitmapHandler::new())
@@ -790,7 +778,6 @@ impl EncoderIter<'_> {
 
 #[derive(Debug)]
 enum BitmapUpdater {
-    None(NoneHandler),
     Bitmap(BitmapHandler),
     RemoteFx(RemoteFxHandler),
     #[cfg(feature = "qoi")]
@@ -804,7 +791,6 @@ enum BitmapUpdater {
 impl BitmapUpdater {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         match self {
-            Self::None(up) => up.handle(bitmap),
             Self::Bitmap(up) => up.handle(bitmap),
             Self::RemoteFx(up) => up.handle(bitmap),
             #[cfg(feature = "qoi")]
@@ -825,20 +811,6 @@ impl BitmapUpdater {
 
 trait BitmapUpdateHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter>;
-}
-
-#[derive(Clone, Debug)]
-struct NoneHandler;
-
-impl BitmapUpdateHandler for NoneHandler {
-    fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
-        let stride = usize::from(bitmap.format.bytes_per_pixel()) * usize::from(bitmap.width.get());
-        let mut data = Vec::with_capacity(stride * usize::from(bitmap.height.get()));
-        for row in bitmap.data.chunks(bitmap.stride.get()).rev() {
-            data.extend_from_slice(&row[..stride]);
-        }
-        set_surface(bitmap, CodecId::None.as_u8(), &data)
-    }
 }
 
 #[derive(Clone)]

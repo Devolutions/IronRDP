@@ -24,9 +24,18 @@ pub enum RdpeaiServerMessage {
         initial_format: u32,
         capture_format: AudioFormat,
     },
+    /// Request capture on a runtime-created AUDIO_INPUT channel.
+    OpenOnChannel {
+        channel_id: u32,
+        frames_per_packet: u32,
+        initial_format: u32,
+        capture_format: AudioFormat,
+    },
     /// Request the client switch to a different negotiated format. See
     /// [`RdpeaiServer::change_format`].
     ChangeFormat { new_format: u32 },
+    /// Change formats on a runtime-created AUDIO_INPUT channel.
+    ChangeFormatOnChannel { channel_id: u32, new_format: u32 },
     /// Failure received from the embedding application's own capture/consumer pipeline.
     /// Implementations should log/display this error.
     Error(Box<dyn RdpeaiError>),
@@ -410,6 +419,10 @@ impl_as_any!(RdpeaiServer);
 impl DvcProcessor for RdpeaiServer {
     fn channel_name(&self) -> &str {
         CHANNEL_NAME
+    }
+
+    fn max_message_size(&self) -> Option<usize> {
+        Some(256 * 1024)
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {

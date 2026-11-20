@@ -26,19 +26,26 @@ pub fn check(sh: &Shell) -> anyhow::Result<()> {
 
     build(sh, true)?;
 
+    run_cmd_in!(sh, IRONRDP_WEB_PATH, "wasm-pack test --node --lib --locked")?;
+
     // Exercise the public WASM API in Node with browser objects mocked by the tests.
     run_cmd_in!(
         sh,
         IRONRDP_WEB_PATH,
         "wasm-pack build --dev --target nodejs --out-dir ../../target/ironrdp-web-tests -- --locked"
     )?;
-    cmd!(sh, "node --test crates/ironrdp-web/tests/websocket_protocols.cjs").run()?;
+    cmd!(
+        sh,
+        "node --test crates/ironrdp-web/tests/websocket_protocols.cjs crates/ironrdp-web/tests/display_config.cjs"
+    )
+    .run()?;
 
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run lint")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run test")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_RDP_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REMOTE_DESKTOP_RDP_PATH, "{NPM} run lint")?;
+    run_cmd_in!(sh, IRON_REMOTE_DESKTOP_RDP_PATH, "{NPM} run test")?;
     run_cmd_in!(sh, IRON_SVELTE_CLIENT_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_SVELTE_CLIENT_PATH, "{NPM} run lint")?;
 

@@ -361,8 +361,8 @@ impl RdpdrBackendFactory for NixRdpdrBackendFactory {
     }
 }
 
-/// Device names are announced as NUL-terminated strings, so an empty name or one with an embedded
-/// NUL would reach the server empty or cut short.
+/// Device names are announced as NUL-terminated strings: an empty name would reach the server
+/// empty, and a NUL cannot be part of one.
 fn is_valid_device_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('\0')
 }

@@ -783,7 +783,7 @@ impl ActiveStage {
         self.get_dvc::<DisplayControlClient>()?
             .processor()
             .capabilities()
-            .cloned()
+            .copied()
     }
 
     /// Prepares a complete monitor layout request for routing over TCP or a Soft-Sync tunnel.

@@ -11,3 +11,4 @@ pub const CHANNEL_NAME: &str = "Microsoft::Windows::RDS::Location";
 
 pub mod client;
 pub mod pdu;
+pub mod server;

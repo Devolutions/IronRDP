@@ -30,6 +30,7 @@ pub mod ffi {
     };
     use crate::connector::activation::ffi::ConnectionActivationSequence;
     use crate::connector::result::ffi::ConnectionResult;
+    use crate::dvc::direct_channel::{DirectDvcChannelProcessor, DirectDvcMessage};
     use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessage;
     use crate::error::ffi::IronRdpError;
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
@@ -126,6 +127,19 @@ pub mod ffi {
     }
 
     impl ActiveStage {
+        fn validate_direct_dvc_endpoint(&self, channel_id: u32, endpoint_id: u64) -> Result<(), Box<IronRdpError>> {
+            let Some(channel) = self.0.get_dvc_by_channel_id::<DirectDvcChannelProcessor>(channel_id) else {
+                return Err("direct DVC channel is not open".into());
+            };
+            if !channel.processor().is_active_endpoint(endpoint_id) {
+                return Err("direct DVC endpoint is no longer active".into());
+            }
+            if self.0.dvc_tunnel_for_channel(channel_id).is_some() {
+                return Err("direct DVC channel is routed through a multitransport tunnel".into());
+            }
+            Ok(())
+        }
+
         pub fn new(connection_result: &mut ConnectionResult) -> Result<Box<Self>, Box<IronRdpError>> {
             let connection_result = connection_result
                 .0
@@ -324,6 +338,53 @@ pub mod ffi {
             }
 
             let frame = self.0.encode_dvc_messages(messages)?;
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        /// Encodes `data` in a DYNVC_DATA PDU ([MS-RDPEDYC] section 2.2.3.2, "DVC Data (DYNVC_DATA)").
+        ///
+        /// Rejects an inactive endpoint or a channel moved to a multitransport tunnel.
+        /// The endpoint is checked during encoding.
+        /// Serialize inbound processing, encoding, and transport writes, and write this frame before processing a later close or reopen.
+        ///
+        /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/11402a8d-7ad8-49a7-a7d4-1458b7ac3fea
+        pub fn send_direct_dvc_data(
+            &mut self,
+            channel_id: u32,
+            endpoint_id: u64,
+            data: &[u8],
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            self.validate_direct_dvc_endpoint(channel_id, endpoint_id)?;
+
+            let messages = ironrdp::dvc::encode_dvc_messages(
+                channel_id,
+                vec![Box::new(DirectDvcMessage(data.to_vec()))],
+                ironrdp::svc::ChannelFlags::empty(),
+            )?;
+            let frame = self.0.encode_dvc_messages(messages)?;
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        /// Encodes a DYNVC_CLOSE PDU ([MS-RDPEDYC] section 2.2.4, "Closing a DVC (DYNVC_CLOSE)").
+        ///
+        /// Rejects an inactive endpoint, a channel moved to a multitransport tunnel, or a channel that is not open.
+        /// The endpoint is checked during encoding.
+        /// Serialize inbound processing, encoding, and transport writes, and write this frame before processing a later close or reopen.
+        ///
+        /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/c02dfd21-ccbc-4254-985b-3ef6dd115dec
+        pub fn close_direct_dvc_channel(
+            &mut self,
+            channel_id: u32,
+            endpoint_id: u64,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            self.validate_direct_dvc_endpoint(channel_id, endpoint_id)?;
+
+            let close = self
+                .0
+                .get_svc_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .and_then(|drdynvc| drdynvc.close_channel(channel_id))
+                .ok_or("direct DVC channel is not open")?;
+            let frame = self.0.encode_dvc_messages(vec![close])?;
             Ok(Box::new(VecU8(frame)))
         }
 

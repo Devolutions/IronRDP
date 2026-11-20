@@ -14,7 +14,7 @@ use std::sync::{Mutex, PoisonError};
 
 use ironrdp_client::config::DvcProxyInfo;
 use now_client::{NowCapabilities, NowClient, NowClientConfig, NowClientError, NowClientHandle};
-use now_proto_pdu::NowChannelCapsetMsg;
+use now_proto_pdu::{NowChannelCapsetMsg, NowSessionCapsetFlags};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tokio::time::{Instant, sleep, timeout_at};
@@ -351,7 +351,9 @@ where
     // `NowChannelCapsetMsg::downgrade` negotiates `None` when neither peer requests one.
     let config = {
         let default = NowClientConfig::default();
-        let client_capset = NowChannelCapsetMsg::default().with_exec_capset(default.client_capset.exec_capset());
+        let client_capset = NowChannelCapsetMsg::default()
+            .with_session_capset(NowSessionCapsetFlags::LOGOFF)
+            .with_exec_capset(default.client_capset.exec_capset());
         NowClientConfig {
             client_capset,
             ..default
@@ -416,11 +418,13 @@ mod tests {
     use now_proto_pdu::ironrdp_core::{Decode as _, IntoOwned as _, ReadCursor, encode_vec};
     use now_proto_pdu::{
         NowChannelMessage, NowExecCapsetFlags, NowExecDataMsg, NowExecDataStreamKind, NowExecMessage, NowExecResultMsg,
-        NowExecStartedMsg, NowMessage,
+        NowExecStartedMsg, NowMessage, NowSessionMessage,
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+    use crate::ipc::AgentErrorCategory;
+    use crate::operations::OperationManager;
 
     #[cfg(unix)]
     type Peer = tokio::net::UnixStream;
@@ -491,16 +495,26 @@ mod tests {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
+        negotiate_with(
+            peer,
+            NowChannelCapsetMsg::default().with_exec_capset(NowExecCapsetFlags::STYLE_RUN),
+        )
+        .await;
+    }
+
+    /// Plays the host's half of the handshake, answering with `host_capset`, and returns the
+    /// client's capability set.
+    async fn negotiate_with<S>(peer: &mut S, host_capset: NowChannelCapsetMsg) -> NowChannelCapsetMsg
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
         let first = bounded(read_message(peer)).await;
         let NowMessage::Channel(NowChannelMessage::Capset(capset)) = first else {
             panic!("the client must open with its capability set, got {first:?}");
         };
         assert_eq!(capset.heartbeat_interval(), None);
-        write_message(
-            peer,
-            NowChannelCapsetMsg::default().with_exec_capset(NowExecCapsetFlags::STYLE_RUN),
-        )
-        .await;
+        write_message(peer, host_capset).await;
+        capset
     }
 
     /// How long the NOW host keeps an opened channel without a client capability set before giving
@@ -886,5 +900,47 @@ mod tests {
 
         assert!(!connection.transport_closed.is_closed());
         peer.abort();
+    }
+
+    // oracle: spec Devolutions/now-libraries@587a1ce09d4f:protocols/docs/NOW-spec.md §NOW_SESSION_LOGOFF_MSG
+    #[tokio::test]
+    async fn logoff_sends_the_session_logoff_message_to_a_host_that_supports_it() {
+        let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));
+        let mut host = Host::bind(&endpoint);
+        let operations = OperationManager::new(Arc::clone(&endpoint));
+
+        let host_side = async {
+            let mut peer = host.accept().await;
+            let client_capset = negotiate_with(
+                &mut peer,
+                NowChannelCapsetMsg::default().with_session_capset(NowSessionCapsetFlags::LOGOFF),
+            )
+            .await;
+            (client_capset, read_message(&mut peer).await)
+        };
+        let (result, (client_capset, message)) =
+            bounded(async { tokio::join!(operations.session_logoff(), host_side) }).await;
+
+        assert!(client_capset.session_capset().contains(NowSessionCapsetFlags::LOGOFF));
+        result.expect("a host advertising logoff must receive the request");
+        assert!(
+            matches!(message, NowMessage::Session(NowSessionMessage::Logoff(_))),
+            "the host must receive NOW_SESSION_LOGOFF_MSG, got {message:?}"
+        );
+    }
+
+    // oracle: spec Devolutions/now-libraries@587a1ce09d4f:protocols/docs/NOW-spec.md §NOW_CHANNEL_CAPSET_MSG (the host removes capabilities it does not share)
+    #[tokio::test]
+    async fn logoff_is_unavailable_when_the_host_does_not_support_it() {
+        let endpoint = Arc::new(NowEndpoint::new().expect("endpoint allocation must succeed"));
+        let mut host = Host::bind(&endpoint);
+        let operations = OperationManager::new(Arc::clone(&endpoint));
+
+        let (result, _peer) =
+            bounded(async { tokio::join!(operations.session_logoff(), accept_and_negotiate(&mut host)) }).await;
+
+        let error = result.expect_err("a host without logoff support must reject the request");
+        // oracle: mutant a session_logoff that reports another category, which agent and ActiveX callers surface as a different error kind
+        assert_eq!(error.category, AgentErrorCategory::Unavailable);
     }
 }

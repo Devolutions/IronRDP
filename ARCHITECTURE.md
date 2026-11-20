@@ -339,6 +339,11 @@ Web-based frontend using `Svelte` and `Material` frameworks.
 
 Native CLIPRDR backend implementations.
 
+#### [`crates/ironrdp-rdpei-native`](./crates/ironrdp-rdpei-native)
+
+Windows touch and pen injection for RDPEI server consumers.
+Owns native input devices and contact timing without coupling injection to a server runtime or companion process.
+
 #### [`crates/ironrdp-rdpeusb-native`](./crates/ironrdp-rdpeusb-native)
 
 nusb backend for the MS-RDPEUSB client, handling device selection, discovery, and USB I/O outside the session loop.

@@ -95,6 +95,37 @@ describe('ready event', () => {
         expect(calls).toContain('remoteClipboardChangedCallback');
     });
 
+    it('does not fire for a component destroyed while its clipboard was being set up', async () => {
+        let grantPermission!: () => void;
+        stubClipboardApi(
+            () =>
+                new Promise((resolve) => {
+                    grantPermission = () => resolve({ state: 'granted' });
+                }),
+        );
+
+        const target = document.createElement('div');
+        document.body.appendChild(target);
+        const mounted = mount(IronRemoteDesktop, {
+            target,
+            props: { scale: 'fit', verbose: 'false', flexcenter: 'true', module: createRecordingModule([]) },
+        });
+        await vi.waitFor(() => expect(navigator.permissions.query).toHaveBeenCalled());
+
+        // The component's own element, which the event would be dispatched on.
+        const inner = target.querySelector('div') as HTMLDivElement;
+        const ready = vi.fn();
+        inner.addEventListener('ready', ready);
+        target.addEventListener('ready', ready);
+
+        // Without the check, the component dispatches on the element Svelte cleared on unmount, and the error that
+        // throws fails the run.
+        unmount(mounted);
+        grantPermission();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(ready).not.toHaveBeenCalled();
+    });
+
     it('still fires when the clipboard is unavailable', async () => {
         vi.stubGlobal('isSecureContext', false);
 

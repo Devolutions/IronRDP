@@ -51,6 +51,23 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  and wait for termination. The daemon keeps running.
                                  `--server` is a safety check against disconnecting a different
                                  destination, not a way to select among multiple sessions.
+- `session info [--format human|json|ndjson]`
+                                 Report what the server sent about the session: the remote session
+                                 ID, whether the logon completed, the network characteristics it
+                                 measured (round-trip times in ms, bandwidth in kbps), its monitor
+                                 layout (inclusive right and bottom, `primary` marked), and the
+                                 last logon error, warning or status. A fact the server has not
+                                 sent is absent (`null` in JSON), except that the logon reads as
+                                 not completed until the server's logon notification arrives. A
+                                 redirection or a resize that falls back to a new connection
+                                 clears them all.
+- `session logoff [--timeout-secs N]`
+                                 Log the user off the remote session, ending it on the host instead of
+                                 leaving it disconnected. Requires Devolutions Agent (the NOW agent) in
+                                 the remote session; RDP itself cannot request a logoff. Waits up to N
+                                 seconds (default 60) for the host to end the session, and fails unless
+                                 the host gives a logoff reason; an application with unsaved work can
+                                 block sign-out.
 - `daemon-start [--overlay FILE] [--prop KEY:TYPE:VALUE]... [--skip-certificate-check] [--rdpdr-drive NAME=VOLUME_ROOT]... [--smartcard]`
                                  Legacy foreground alias for `daemon start --foreground`. `--overlay`
                                  preloads a .rdp file as an overlay applied to every `connect`
@@ -137,9 +154,18 @@ Override with `--endpoint <PATH-OR-PIPE>` on any subcommand.
                                  The listener defaults to `127.0.0.1`; do not expose unauthenticated SOCKS5 to untrusted networks.
 - `disconnect [--server HOST[:PORT]]`  Alias for `session disconnect`; the optional server
                                  must match the active destination before any disconnect occurs.
-- `status`                       Report connection state, destination, last frame size, and whether
-                                 credentials are preloaded (`credentials loaded: true|false`). Query
-                                 this first to decide whether you must supply a password.
+- `logoff [--timeout-secs N]`    Alias for `session logoff`.
+- `status`                       Report connection state, destination, last frame size and number
+                                 (`frame: N`), and whether credentials are preloaded
+                                 (`credentials loaded: true|false`). Query this first to decide
+                                 whether you must supply a password.
+- `wait-frame --after-frame N [--timeout-ms MS]`
+                                 Wait without polling for a frame numbered above N, then print the
+                                 same report as `status`. Read N from `status` before the action
+                                 whose result you wait for, so a frame that arrives early still
+                                 counts; use 0 to wait for the first frame. Fails (exit 1) when the
+                                 session ends or the timeout (default 30000, at most 60000) elapses
+                                 first, so success always means a newer frame.
 
 ## Inspection
 

@@ -3,6 +3,8 @@ pub mod cert;
 #[cfg(test)]
 mod tests;
 
+use core::fmt;
+
 use cert::{CertificateType, ProprietaryCertificate, X509CertificateChain};
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
@@ -11,7 +13,7 @@ use ironrdp_core::{
 
 use super::{
     BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA, LicenseHeader, PreambleType,
-    RANDOM_NUMBER_SIZE, ServerLicenseError, UTF8_NULL_TERMINATOR_SIZE, UTF16_NULL_TERMINATOR_SIZE,
+    RANDOM_NUMBER_SIZE, ServerLicenseError, UTF8_NULL_TERMINATOR_SIZE, UTF16_NULL_TERMINATOR_SIZE, Withheld,
 };
 use crate::utils;
 
@@ -30,10 +32,11 @@ const RSA_EXCHANGE_ALGORITHM: u32 = 1;
 /// [2.2.2.1] Server License Request (SERVER_LICENSE_REQUEST)
 ///
 /// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/e17772e9-9642-4bb6-a2bc-82875dd6da7c
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerLicenseRequest {
     pub license_header: LicenseHeader,
+    /// INVARIANT: `Debug` output withholds this field.
     pub server_random: Vec<u8>,
     pub product_info: ProductInfo,
     pub server_certificate: Option<ServerCertificate>,
@@ -400,5 +403,17 @@ impl<'de> Decode<'de> for ProductInfo {
             company_name,
             product_id,
         })
+    }
+}
+
+impl fmt::Debug for ServerLicenseRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerLicenseRequest")
+            .field("license_header", &self.license_header)
+            .field("server_random", &Withheld(&self.server_random))
+            .field("product_info", &self.product_info)
+            .field("server_certificate", &self.server_certificate)
+            .field("scope_list", &self.scope_list)
+            .finish()
     }
 }

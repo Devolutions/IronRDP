@@ -144,6 +144,7 @@ pub struct Acceptor {
     password_cookie: Option<PasswordCookie>,
     client_info_flags: Option<ClientInfoFlags>,
     performance_flags: PerformanceFlags,
+    timezone_info: Option<rdp::client_info::TimezoneInfo>,
     remote_app_capabilities: Option<RemoteAppCapabilities>,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
@@ -358,6 +359,10 @@ pub struct AcceptorResult {
     pub ime_file_name: String,
     /// Desktop shell performance flags requested by the client in its Extended Client Info PDU (`performanceFlags`).
     pub performance_flags: PerformanceFlags,
+    /// Client time zone reported in Extended Client Info ([2.2.1.11.1.1.1.1] "Time Zone Information (TS_TIME_ZONE_INFORMATION)"), when present.
+    ///
+    /// [2.2.1.11.1.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/526ed635-d7a9-4d3c-bbe1-4e3fb17585f4
+    pub timezone_info: Option<rdp::client_info::TimezoneInfo>,
     /// Desktop scale factor announced by the client in its GCC Client Core Data
     /// ([2.2.1.3.2] Client Core Data (TS_UD_CS_CORE), `desktopScaleFactor`): the scale, as a percentage,
     /// the client wants applied to the session's UI, e.g. 200 for a client on a
@@ -489,6 +494,7 @@ impl Acceptor {
             password_cookie: None,
             client_info_flags: None,
             performance_flags: PerformanceFlags::empty(),
+            timezone_info: None,
             remote_app_capabilities: None,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
@@ -749,6 +755,7 @@ impl Acceptor {
             password_cookie: consumed.password_cookie,
             client_info_flags: consumed.client_info_flags,
             performance_flags: consumed.performance_flags,
+            timezone_info: consumed.timezone_info,
             remote_app_capabilities: None,
             server_capabilities: consumed.server_capabilities,
             static_channels,
@@ -768,6 +775,12 @@ impl Acceptor {
             multitransport_security_rng: consumed.multitransport_security_rng,
             received_multitransport_response: consumed.received_multitransport_response,
         })
+    }
+
+    /// Bounds the messages of each static channel whose processor sets no limit of its own, in the channels attached so
+    /// far and those attached later; see [`StaticChannelSet::set_max_message_size`].
+    pub fn set_max_static_message_size(&mut self, max_message_size: usize) {
+        self.static_channels.set_max_message_size(max_message_size);
     }
 
     pub fn attach_static_channel<T>(&mut self, channel: T)
@@ -988,6 +1001,7 @@ impl Acceptor {
                 keyboard_functional_keys_count: self.keyboard_functional_keys_count,
                 ime_file_name: self.ime_file_name.clone(),
                 performance_flags: self.performance_flags,
+                timezone_info: self.timezone_info.clone(),
                 desktop_scale_factor: self.desktop_scale_factor,
                 device_scale_factor: self.device_scale_factor,
                 multitransport_flags: self
@@ -1167,6 +1181,7 @@ impl Sequence for Acceptor {
             AcceptorState::MultitransportBootstrapping { .. } => None,
             AcceptorState::CapabilitiesSendServer { .. } => None,
             AcceptorState::MonitorLayoutSend { .. } => None,
+            AcceptorState::CapabilitiesWaitConfirm { .. } if self.reactivation => Some(&pdu::RDP_HINT),
             AcceptorState::CapabilitiesWaitConfirm { .. } => Some(&pdu::X224_HINT),
             AcceptorState::ConnectionFinalization { finalization, .. } => finalization.next_pdu_hint(),
             AcceptorState::Accepted { .. } => None,
@@ -1515,6 +1530,7 @@ impl Sequence for Acceptor {
                     .optional_data
                     .performance_flags()
                     .unwrap_or_else(PerformanceFlags::empty);
+                self.timezone_info = client_info.client_info.extra_info.optional_data.timezone().cloned();
 
                 let auto_reconnect = client_info
                     .client_info
@@ -1717,6 +1733,16 @@ impl Sequence for Acceptor {
             }
 
             AcceptorState::CapabilitiesWaitConfirm { ref channels } => {
+                if self.reactivation
+                    && input.first().is_some_and(|header| {
+                        matches!(pdu::Action::from_fp_output_header(*header), Ok(pdu::Action::FastPath))
+                    })
+                {
+                    self.pending_input_events.push(input)?;
+                    self.state = prev_state;
+                    return Ok(Written::Nothing);
+                }
+
                 let message = decode::<X224<mcs::McsMessage<'_>>>(input)
                     .map_err(ConnectorError::decode)
                     .map(|p| p.0);
@@ -1773,6 +1799,21 @@ impl Sequence for Acceptor {
                                 }
                             }
                         };
+
+                        if self.reactivation
+                            && data.channel_id == self.io_channel_id
+                            && matches!(
+                                &capabilities_confirm.share_control_pdu,
+                                ShareControlPdu::Data(rdp::headers::ShareDataHeader {
+                                    share_data_pdu: rdp::headers::ShareDataPdu::Input(_),
+                                    ..
+                                })
+                            )
+                        {
+                            self.pending_input_events.push(input)?;
+                            self.state = prev_state;
+                            return Ok(Written::Nothing);
+                        }
 
                         debug!(message = ?capabilities_confirm, "Received");
 

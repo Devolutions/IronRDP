@@ -42,6 +42,7 @@ pub mod ffi {
     use ironrdp::connector::Credentials;
     use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 
+    use crate::dvc::direct_channel::ffi::DirectDvcConfig;
     use crate::dvc::ffi::DvcPipeProxyConfig;
     use crate::error::ffi::IronRdpError;
 
@@ -49,6 +50,7 @@ pub mod ffi {
     pub struct Config {
         pub connector: ironrdp::connector::Config,
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
+        pub direct_dvc: Option<DirectDvcConfig>,
     }
 
     impl Config {
@@ -59,6 +61,11 @@ pub mod ffi {
         #[diplomat::attr(auto, getter = "dvc_pipe_proxy")]
         pub fn get_dvc_pipe_proxy(&self) -> Option<Box<DvcPipeProxyConfig>> {
             self.dvc_pipe_proxy.as_ref().map(|dvc| Box::new(dvc.clone()))
+        }
+
+        #[diplomat::attr(auto, getter = "direct_dvc")]
+        pub fn get_direct_dvc(&self) -> Option<Box<DirectDvcConfig>> {
+            self.direct_dvc.as_ref().map(|dvc| Box::new(dvc.clone()))
         }
     }
 
@@ -88,6 +95,7 @@ pub mod ffi {
         pub performance_flags: Option<ironrdp::pdu::rdp::client_info::PerformanceFlags>,
         pub timezone_info: Option<ironrdp::pdu::rdp::client_info::TimezoneInfo>,
         pub dvc_pipe_proxy: Option<DvcPipeProxyConfig>,
+        pub direct_dvc: Option<DirectDvcConfig>,
     }
 
     pub enum KeyboardType {
@@ -225,6 +233,11 @@ pub mod ffi {
             self.dvc_pipe_proxy = Some(dvc_pipe_proxy.clone());
         }
 
+        #[diplomat::attr(auto, setter = "direct_dvc")]
+        pub fn set_direct_dvc(&mut self, direct_dvc: &DirectDvcConfig) {
+            self.direct_dvc = Some(direct_dvc.clone());
+        }
+
         pub fn build(&self) -> Result<Box<Config>, Box<IronRdpError>> {
             let connector = ironrdp::connector::Config {
                 credentials: self.credentials.clone().ok_or("credentials not set")?,
@@ -296,12 +309,14 @@ pub mod ffi {
                 rail_support_level: ironrdp::pdu::rdp::capability_sets::RailSupportLevel::empty(),
             };
             let dvc_pipe_proxy = self.dvc_pipe_proxy.clone();
+            let direct_dvc = self.direct_dvc.clone();
 
             tracing::debug!(config=?connector, "Built config");
 
             Ok(Box::new(Config {
                 connector,
                 dvc_pipe_proxy,
+                direct_dvc,
             }))
         }
     }
@@ -353,7 +368,7 @@ impl From<PerformanceFlagsType> for PerformanceFlags {
             PerformanceFlagsType::DisableTheming => PerformanceFlags::DISABLE_THEMING,
             PerformanceFlagsType::DisableWallpaper => PerformanceFlags::DISABLE_WALLPAPER,
             PerformanceFlagsType::EnableDesktopComposition => PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
-            PerformanceFlagsType::EnableFontSmoothing => PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
+            PerformanceFlagsType::EnableFontSmoothing => PerformanceFlags::ENABLE_FONT_SMOOTHING,
             PerformanceFlagsType::Reserved1 => PerformanceFlags::RESERVED1,
             PerformanceFlagsType::Reserved2 => PerformanceFlags::RESERVED2,
         }

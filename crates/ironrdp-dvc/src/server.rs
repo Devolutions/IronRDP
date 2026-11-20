@@ -6,7 +6,9 @@ use core::fmt;
 
 use ironrdp_core::{Decode as _, DecodeResult, ReadCursor, impl_as_any, invalid_field_err};
 use ironrdp_pdu::{self as pdu, PduError, decode_err, encode_err, pdu_other_err};
-use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
+use ironrdp_svc::{
+    ChannelFlags, CompressionCondition, MAX_CHANNEL_CHUNK_LENGTH, SvcMessage, SvcProcessor, SvcServerProcessor,
+};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
 use tracing::{debug, trace};
@@ -17,7 +19,10 @@ use crate::pdu::{
 };
 use crate::{CompleteData, DvcProcessor, DynamicChannelMut, DynamicChannelRef, encode_dvc_messages};
 
-pub trait DvcServerProcessor: DvcProcessor {}
+pub trait DvcServerProcessor: DvcProcessor {
+    /// Invoked when the client declines a server-initiated `Create Request` PDU.
+    fn creation_failed(&mut self, _channel_id: u32, _status: CreationStatus) {}
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ChannelState {
@@ -149,6 +154,8 @@ pub struct DrdynvcServer {
     soft_sync_state: SoftSyncState,
     outgoing_tunnel_channels: BTreeMap<u32, SoftSyncTunnelType>,
     incoming_tunnel_channels: BTreeMap<u32, SoftSyncTunnelType>,
+    /// The message limit of a channel whose processor sets none.
+    max_message_size: Option<usize>,
 }
 
 impl fmt::Debug for DrdynvcServer {
@@ -177,7 +184,20 @@ impl DrdynvcServer {
             soft_sync_state: SoftSyncState::Idle,
             outgoing_tunnel_channels: BTreeMap::new(),
             incoming_tunnel_channels: BTreeMap::new(),
+            max_message_size: None,
         }
+    }
+
+    /// Bounds the messages of each dynamic channel whose processor sets no limit of its own.
+    ///
+    /// A message larger than `max_message_size` closes its channel, as [`DvcProcessor::max_message_size`] does for one
+    /// channel; a declared length over it does so before any fragment is kept.
+    /// The DRDYNVC static channel is bounded at the limit plus [`MAX_CHANNEL_CHUNK_LENGTH`] in place of a static
+    /// channel set's limit, which admits every PDU a conforming client sends.
+    #[must_use]
+    pub fn with_max_message_size(mut self, max_message_size: usize) -> Self {
+        self.max_message_size = Some(max_message_size);
+        self
     }
 
     pub fn get_channel_id_by_type<T>(&self) -> Option<u32>
@@ -453,17 +473,19 @@ impl DrdynvcServer {
             trace!(channel_id, "Discarding data for a closed dynamic channel");
             return Ok(Vec::new());
         }
+        let server_max_message_size = self.max_message_size;
         let c = self.channel_by_id(channel_id).map_err(|e| decode_err!(e))?;
         if c.state != ChannelState::Opened {
             debug!(?channel_id, ?c.state, "Invalid channel state");
             return Err(pdu_other_err!("invalid channel state"));
         }
+        let max_message_size = c.processor.max_message_size().or(server_max_message_size);
         let declared_length = match &data {
             crate::pdu::DrdynvcDataPdu::DataFirst(first) => Some(first.length()),
             crate::pdu::DrdynvcDataPdu::DataFirstCompressed(first) => Some(first.length()),
             crate::pdu::DrdynvcDataPdu::Data(_) | crate::pdu::DrdynvcDataPdu::DataCompressed(_) => None,
         };
-        if let (Some(max_message_size), Some(length)) = (c.processor.max_message_size(), declared_length) {
+        if let (Some(max_message_size), Some(length)) = (max_message_size, declared_length) {
             let size = usize::try_from(length).unwrap_or(usize::MAX);
             if max_message_size < size {
                 return Ok(self.close_for_message_limit(channel_id, size));
@@ -471,10 +493,7 @@ impl DrdynvcServer {
         }
         let mut resp = Vec::new();
         if let Some(complete) = c.complete_data.process_data(data).map_err(|e| decode_err!(e))? {
-            if c.processor
-                .max_message_size()
-                .is_some_and(|max_message_size| max_message_size < complete.len())
-            {
+            if max_message_size.is_some_and(|max_message_size| max_message_size < complete.len()) {
                 return Ok(self.close_for_message_limit(channel_id, complete.len()));
             }
             let msg = c.processor.process(channel_id, &complete)?;
@@ -539,6 +558,24 @@ impl SvcProcessor for DrdynvcServer {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
+    /// With a dynamic channel limit, bounds the DRDYNVC static channel at that limit plus
+    /// [`MAX_CHANNEL_CHUNK_LENGTH`], in place of a static channel set's limit.
+    ///
+    /// A conforming client sends each DRDYNVC PDU as one static channel message of at most 1,600 bytes
+    /// ([2.2.3.1] DVC Data First PDU (`DYNVC_DATA_FIRST`), [2.2.3.2] DVC Data PDU (`DYNVC_DATA`)), which this limit
+    /// admits for any dynamic channel limit.
+    /// The room above the dynamic channel limit, the largest static channel chunk, lets a message sent unfragmented,
+    /// against the specification, reach [`Self::process`] and close only its channel, as it does for a client that
+    /// fragments its messages at that chunk length instead of at 1,600 bytes.
+    /// Without a dynamic channel limit, a static channel set's limit applies.
+    ///
+    /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
+    /// [2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/15b59886-db44-47f1-8da3-47c8fcd82803
+    fn max_message_size(&self) -> Option<usize> {
+        self.max_message_size
+            .map(|max_message_size| max_message_size.saturating_add(MAX_CHANNEL_CHUNK_LENGTH))
+    }
+
     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
         let cap = CapabilitiesRequestPdu::new(CapsVersion::V2, None);
         let req = DrdynvcServerPdu::Capabilities(cap);
@@ -585,6 +622,7 @@ impl SvcProcessor for DrdynvcServer {
                     // declined on every connect, not a fault.
                     debug!(channel_id = ?id, %name, ?status, "DVC channel creation declined by client");
                     c.state = ChannelState::CreationFailed(status.into());
+                    c.processor.creation_failed(id, status);
                     return Ok(resp);
                 }
                 c.state = ChannelState::Opened;

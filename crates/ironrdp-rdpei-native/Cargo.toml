@@ -1,0 +1,38 @@
+[package]
+name = "ironrdp-rdpei-native"
+version = "0.0.0"
+publish = false
+readme = "README.md"
+description = "Windows touch and pen injection backend for IronRDP MS-RDPEI"
+rust-version = "1.94"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[features]
+# Internal testing surface, not a supported API.
+__test = []
+
+[target.'cfg(windows)'.dependencies]
+futures-timer = "3"
+ironrdp-error = { path = "../ironrdp-error", version = "0.2", features = ["std"] } # public
+ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.3" } # public
+tracing = { version = "0.1", features = ["log"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Performance",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_Pointer",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[lints]
+workspace = true

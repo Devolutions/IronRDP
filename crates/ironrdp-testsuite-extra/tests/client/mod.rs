@@ -6,6 +6,7 @@ mod egfx_cache;
 mod entra;
 mod input;
 mod multipoint;
+mod network_characteristics;
 mod output_channel;
 mod rail;
 mod remote_guard;

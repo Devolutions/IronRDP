@@ -228,6 +228,12 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// Locks transition to Expired when a new FormatList PDU is received (clipboard change);
     /// this callback fires later when the cleanup actually removes them.
     ///
+    /// It also fires when [`crate::Cliprdr::initiate_file_copy`] takes clipboard ownership:
+    /// immediately for the locks no download is using, and later, from
+    /// [`crate::Cliprdr::drive_timeouts`], for a lock a download was still using, once that
+    /// download has gone quiet. Such a kept lock is not reported to
+    /// [`CliprdrBackend::on_outgoing_locks_expired`] first.
+    ///
     /// **Use case**: Backends can use this to clean up any associated lock state, cancel
     /// ongoing downloads, or update UI to reflect that the lock is no longer valid.
     ///
@@ -251,6 +257,10 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     ///
     /// This callback fires once per clipboard change, with only the lock IDs
     /// that transitioned from Active to Expired during that event.
+    ///
+    /// A local file copy ([`crate::Cliprdr::initiate_file_copy`]) is not a clipboard
+    /// change in this sense: a lock it keeps for a download still in progress also
+    /// becomes Expired, but is not reported here, so the download can finish.
     fn on_outgoing_locks_expired(&mut self, clip_data_ids: &[LockDataId]) {
         let _ = clip_data_ids;
     }

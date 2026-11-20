@@ -140,6 +140,7 @@ struct Recording {
     start_calls: usize,
     chosen_wformat: Option<u16>,
     wave_confirms: Vec<(u8, u16)>,
+    unconfirmed_waves: Vec<usize>,
 }
 
 #[derive(Debug)]
@@ -179,6 +180,10 @@ impl RdpsndServerHandler for FakeHandler {
             .expect("poisoned")
             .wave_confirms
             .push((block_no, timestamp));
+    }
+
+    fn unconfirmed_waves_changed(&mut self, unconfirmed: usize) {
+        self.rec.lock().expect("poisoned").unconfirmed_waves.push(unconfirmed);
     }
 }
 
@@ -427,6 +432,11 @@ fn block_number_wrap_counts_unconfirmed_waves_and_stale_confirms() {
     assert_eq!(stats.second_confirms, 0);
     assert_eq!(stats.unmatched_confirms, 0);
     assert_eq!(rec.lock().expect("poisoned").wave_confirms, vec![(0, 500), (0, 2600)]);
+    // oracle: mutant firing unconfirmed_waves_changed when a wraparound send overwrites an already-unconfirmed slot.
+    assert_eq!(
+        rec.lock().expect("poisoned").unconfirmed_waves,
+        (1..=256).chain([255]).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -461,4 +471,44 @@ fn stale_check_follows_the_u16_timestamp_wrap() {
     blocks.record(8, 0xFFF0);
     // 0x0010 is 32 ms after 0xFFF0 across the wrap.
     assert_eq!(blocks.confirm(8, 0x0010), ConfirmKind::First(0xFFF0));
+}
+
+// oracle: mutant reporting second, unmatched, or stale confirms as unconfirmed wave transitions.
+#[test]
+fn unconfirmed_waves_changed_tracks_sends_and_first_valid_confirms() {
+    let rec = Arc::new(Mutex::new(Recording::default()));
+    let mut server = RdpsndServer::new(Box::new(FakeHandler {
+        formats: vec![fmt(WaveFormat::PCM, 44100)],
+        rec: Arc::clone(&rec),
+        start_ok: true,
+    }));
+
+    drive_to_ready(&mut server, vec![fmt(WaveFormat::PCM, 44100)]);
+    server.wave(vec![0; 8], 0x0100).expect("wave 0");
+    server.wave(vec![0; 8], 0x0200).expect("wave 1");
+    assert_eq!(rec.lock().expect("poisoned").unconfirmed_waves, vec![1, 2]);
+
+    // First confirm for block 0 reduces the unconfirmed count to 1.
+    // Second confirm for block 0, third (unmatched) confirm for block 0,
+    // unmatched confirm for block 9, and stale confirm for block 1 (0x0050 < 0x0200)
+    // must not invoke `unconfirmed_waves_changed`.
+    for (block_no, timestamp) in [(0, 0x0100), (0, 0x0340), (0, 0x0350), (9, 0x0360), (1, 0x0050)] {
+        // oracle: spec MS-RDPEA §2.2.3.8
+        let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu { timestamp, block_no });
+        server
+            .process(&encode_vec(&confirm).expect("encode wave confirm"))
+            .expect("process wave confirm");
+    }
+    assert_eq!(rec.lock().expect("poisoned").unconfirmed_waves, vec![1, 2, 1]);
+
+    // First valid confirm for block 1 reduces the unconfirmed count to 0.
+    // oracle: spec MS-RDPEA §2.2.3.8
+    let confirm = ClientAudioOutputPdu::WaveConfirm(WaveConfirmPdu {
+        timestamp: 0x0210,
+        block_no: 1,
+    });
+    server
+        .process(&encode_vec(&confirm).expect("encode wave confirm"))
+        .expect("process wave confirm");
+    assert_eq!(rec.lock().expect("poisoned").unconfirmed_waves, vec![1, 2, 1, 0]);
 }

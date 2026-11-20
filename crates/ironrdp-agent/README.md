@@ -42,6 +42,32 @@ Optionally pass `--server rdp.example.test` to verify the active destination bef
 The existing `ironrdp-agent disconnect` command remains an alias.
 Both disconnect commands wait for the session to end while leaving the daemon running.
 
+To read what the server reported about the session:
+
+```powershell
+ironrdp-agent session info
+ironrdp-agent session info --format json
+```
+
+It reports the remote session ID, whether the logon completed, the network characteristics the server measured, its monitor layout and the last logon error, warning or status.
+A fact the server has not sent is left out, or `null` in JSON, and all of them are cleared when the server redirects the connection or a resize falls back to a new connection.
+The logon reads as not completed until the server's logon notification arrives.
+A logon that is still continuing, or that has failed, is reported as the logon error or status instead.
+With one reply to print, `--format ndjson` prints the same single JSON line as `--format json`.
+
+A disconnect leaves the user's session running on the host.
+To end it, log the user off instead:
+
+```powershell
+ironrdp-agent session logoff
+```
+
+RDP has no message that asks the host to log the user off, so `session logoff` (alias `logoff`) asks Devolutions Agent (the NOW agent) running inside the remote session to sign out.
+It fails without touching the session when the host does not run Devolutions Agent.
+The command waits up to `--timeout-secs` (default 60) for the host to end the session.
+It succeeds only when the host ends the session with a logoff reason; a session that ends for another reason is an error, because the user's session may still be running.
+An application with unsaved work can hold the sign-out until someone answers it on the remote desktop.
+
 Use `daemon start` to launch it without connecting, or `daemon start --foreground` to keep its logs in your terminal.
 The old `daemon-start` command remains a foreground alias.
 `daemon list` reports the default daemon if running; custom `--endpoint` values are not discoverable and can be queried with `daemon status --endpoint NAME`.
@@ -87,7 +113,7 @@ On Windows, an ActiveX host can expose its session through the same local RPC pr
 host with `IRONRDP_ACTIVEX_RPC=1`, then use `--backend active-x` for agent operations. The agent
 uses the per-user `ironrdp-activex` endpoint by default and never attempts to start an ActiveX host.
 Use `--endpoint` when the host selected `IRONRDP_ACTIVEX_RPC_ENDPOINT`.
-The RAIL audit commands and terminal `attach` require the daemon backend.
+The RAIL audit commands, `wait-frame` and terminal `attach` require the daemon backend.
 
 `connect` accepts `RDP_HOSTNAME`, `RDP_USERNAME`, and `RDP_PASSWORD` as defaults for its named
 connection flags. Explicit flags override those process-local values. The native MSTSC bridge uses
@@ -170,6 +196,23 @@ Closing the last application window does not automatically disconnect this headl
 `type-unicode --text TEXT` sends at most 96 Unicode characters in ordered FastPath input events.
 The daemon reserves all queue slots before changing keyboard state, so queue backpressure sends none of a rejected request.
 The ActiveX backend explicitly rejects this bulk input operation.
+
+## Waiting for a frame
+
+`status` reports the number of the most recent frame as `frame: N`, counted from 1 within the session.
+`wait-frame --after-frame N` returns once a frame with a greater number arrives, without polling, and prints the same report as `status`:
+
+```powershell
+ironrdp-agent status                                          # frame: 12
+ironrdp-agent mouse-button --button left --pressed true
+ironrdp-agent wait-frame --after-frame 12 --timeout-ms 5000   # frame: 13
+```
+
+Read the number before the action whose result you are waiting for.
+A frame the action produces can arrive before the next command runs, and it still satisfies the wait because its number is greater.
+Each report carries the new number for the next wait, and `--after-frame 0` waits for the first frame of a session.
+The command fails when the session ends or the timeout elapses first, so success always means a newer frame arrived.
+The ActiveX backend reports no frame number and rejects `wait-frame`.
 
 ## Terminal screenshots
 

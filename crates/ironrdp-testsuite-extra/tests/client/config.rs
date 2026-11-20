@@ -1172,6 +1172,108 @@ impl ironrdp_egfx::decode::H264Decoder for YuvDecoder {
     }
 }
 
+fn avc420_update(surface_id: u16) -> ironrdp_egfx::pdu::GfxPdu {
+    use ironrdp_egfx::pdu::{
+        Avc420Region, Codec1Type, GfxPdu, PixelFormat, WireToSurface1Pdu, encode_avc420_bitmap_stream,
+    };
+
+    let region = Avc420Region::full_frame(16, 16, 22);
+    GfxPdu::WireToSurface1(WireToSurface1Pdu {
+        surface_id,
+        codec_id: Codec1Type::Avc420,
+        pixel_format: PixelFormat::XRgb,
+        destination_rectangle: ironrdp_pdu::geometry::ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 16,
+            bottom: 16,
+        },
+        bitmap_data: encode_avc420_bitmap_stream(&[region], &[0x00, 0x00, 0x00, 0x01, 0x67]),
+    })
+}
+
+/// This builds a real session's connector, so it fails if the client stops giving its factory to the graphics pipeline.
+/// The decoder is a stand-in, so this checks which decoders are created rather than what they decode.
+// oracle: regression #2033
+#[test]
+fn the_client_creates_a_decoder_for_a_second_h264_surface() {
+    use ironrdp_client::__test_build_connector;
+    use ironrdp_core::encode_vec;
+    use ironrdp_dvc::pdu::{CapabilitiesRequestPdu, CapsVersion, CreateRequestPdu, DrdynvcServerPdu};
+    use ironrdp_dvc::{DrdynvcClient, DvcProcessor as _};
+    use ironrdp_egfx::client::GraphicsPipelineClient;
+    use ironrdp_egfx::pdu::{
+        CapabilitiesConfirmPdu, CapabilitiesV107Flags, CapabilitySet, CreateSurfacePdu, GfxPdu, PixelFormat,
+    };
+    use ironrdp_graphics::zgfx::wrap_uncompressed;
+    use ironrdp_svc::SvcProcessor as _;
+
+    const CHANNEL_ID: u32 = 1;
+
+    let created = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+    let factory = {
+        let created = Arc::clone(&created);
+        H264DecoderFactory::new(move || {
+            created.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            Some(Box::new(YuvDecoder))
+        })
+    };
+    let config = complete_builder()
+        .with_h264_decoder(Some(factory))
+        .build()
+        .expect("config with a decoder");
+    let mut connector = __test_build_connector(&config, None).expect("build connector");
+    let drdynvc = connector
+        .get_static_channel_processor_mut::<DrdynvcClient>()
+        .expect("DRDYNVC processor");
+
+    let open_channel = [
+        DrdynvcServerPdu::Capabilities(CapabilitiesRequestPdu::new(CapsVersion::V1, None)),
+        DrdynvcServerPdu::Create(CreateRequestPdu::new(CHANNEL_ID, ironrdp_egfx::CHANNEL_NAME.to_owned())),
+    ];
+    for pdu in &open_channel {
+        drdynvc.process(&encode_vec(pdu).expect("encode")).expect("process");
+    }
+
+    let create_surface = |surface_id| {
+        GfxPdu::CreateSurface(CreateSurfacePdu {
+            surface_id,
+            width: 16,
+            height: 16,
+            pixel_format: PixelFormat::XRgb,
+        })
+    };
+    let setup = [
+        GfxPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_typed(&CapabilitySet::V10_7 {
+            flags: CapabilitiesV107Flags::empty(),
+        })),
+        create_surface(1),
+        create_surface(2),
+    ];
+    let mut graphics = drdynvc
+        .get_dvc_mut::<GraphicsPipelineClient>()
+        .expect("the graphics channel is open");
+    let mut send = |pdu: &GfxPdu| {
+        graphics
+            .processor_mut()
+            .process(CHANNEL_ID, &wrap_uncompressed(&encode_vec(pdu).expect("encode")))
+            .expect("process");
+    };
+    for pdu in &setup {
+        send(pdu);
+    }
+
+    send(&avc420_update(1));
+
+    // Other channels ask the same factory while the connector is built, so count only what the second surface adds.
+    let before_second_surface = created.load(core::sync::atomic::Ordering::Relaxed);
+    send(&avc420_update(2));
+    assert_eq!(
+        created.load(core::sync::atomic::Ordering::Relaxed),
+        before_second_surface + 1
+    );
+}
+
 // oracle: mutant the background start blocking its caller or losing the created decoder
 #[test]
 fn a_decoder_started_in_background_is_ready_later() {

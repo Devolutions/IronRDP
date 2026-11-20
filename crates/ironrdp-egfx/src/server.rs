@@ -765,19 +765,26 @@ impl FrameTracker {
 
     /// Discard pending frames for a graphics reset without ending the DVC generation.
     /// Previously issued frames can still be named by delayed suspend ACKs.
+    /// A suspension outlives the reset.
+    /// The client does not repeat SUSPEND_FRAME_ACKNOWLEDGEMENT after RDPGFX_RESET_GRAPHICS_PDU.
     fn clear_pending_frames(&mut self) {
         self.unacknowledged.clear();
         self.client_queue_depth = 0;
+        self.last_backpressure_state = false;
+    }
+
+    /// Discard pending frames and any suspension ahead of a new capability exchange.
+    fn clear_acknowledgement_state(&mut self) {
+        self.clear_pending_frames();
         self.ack_suspended = false;
         self.suspension_outstanding.clear();
         self.suspension_first_frame_id = None;
-        self.last_backpressure_state = false;
         self.last_ack_suspended_state = false;
     }
 
     /// Clear per-channel tracking while preserving operator config and the connection ceiling.
     pub fn clear(&mut self) {
-        self.clear_pending_frames();
+        self.clear_acknowledgement_state();
         self.generation_first_frame_id = self.next_frame_id;
     }
 }
@@ -2490,12 +2497,8 @@ impl GraphicsPipelineServer {
         let mode = self.compression_mode;
         let pdus: Vec<_> = self.output_queue.drain(..).collect();
 
-        // D2: ZGFX compression timing. drain_output runs synchronously on the
-        // event-dispatch thread and is held under both `this.lock()` and the
-        // SharedWriter lock — so any slowness here blocks both inbound PDU
-        // processing AND outbound writes. Sum per-PDU compress times; log
-        // INFO if the batch exceeded a budget so operators can see when ZGFX
-        // is the limiter on a slow VM.
+        // `drain_output` runs synchronously on the caller's send path (for example under `GfxServerHandle`'s mutex on
+        // the connection task), so slow ZGFX compression delays inbound PDU processing and outbound queuing.
         let drain_start = Instant::now();
         let mut total_uncompressed: usize = 0;
         let mut total_compressed: usize = 0;
@@ -2544,9 +2547,8 @@ impl GraphicsPipelineServer {
             })
             .collect();
 
-        // D2: log batch timing. INFO threshold at 10ms — anything above is
-        // significant for the per-frame budget. Always log at DEBUG so the
-        // ZGFX ratio is visible during normal debug sessions.
+        // Log batches taking at least 10 ms at INFO because they eat into the per-frame budget, and shorter non-empty
+        // batches at DEBUG so the ZGFX compression ratio stays visible in debug traces.
         let elapsed = drain_start.elapsed();
         if elapsed >= core::time::Duration::from_millis(10) {
             tracing::info!(
@@ -2604,7 +2606,7 @@ impl GraphicsPipelineServer {
                  state for re-initialization (no DeleteSurface PDU emitted, surface ID counter reset)"
             );
             self.surfaces.reset_for_reinit();
-            self.frames.clear_pending_frames();
+            self.frames.clear_acknowledgement_state();
             self.reset_graphics_sent = false;
         }
 
@@ -2722,6 +2724,10 @@ impl_as_any!(GraphicsPipelineServer);
 impl DvcProcessor for GraphicsPipelineServer {
     fn channel_name(&self) -> &str {
         CHANNEL_NAME
+    }
+
+    fn max_message_size(&self) -> Option<usize> {
+        Some(256 * 1024)
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {

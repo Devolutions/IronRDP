@@ -1,22 +1,26 @@
 #[cfg(test)]
 mod test;
 
+use core::fmt;
+
 use ironrdp_core::{
     Decode as _, DecodeResult, Encode as _, EncodeResult, ReadCursor, WriteCursor, ensure_size, invalid_field_err,
 };
 
-use super::{BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, LicenseHeader, MAC_SIZE, PreambleType};
+use super::{BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, LicenseHeader, MAC_SIZE, PreambleType, Withheld};
 
 const CONNECT_FLAGS_FIELD_SIZE: usize = 4;
 
 /// [2.2.2.4] Server Platform Challenge (SERVER_PLATFORM_CHALLENGE)
 ///
 /// [2.2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/41e129ad-0f35-43ad-a399-1b10e7d007a9
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerPlatformChallenge {
     pub license_header: LicenseHeader,
+    /// INVARIANT: `Debug` output withholds this field.
     pub encrypted_platform_challenge: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub mac_data: Vec<u8>,
 }
 
@@ -63,5 +67,18 @@ impl ServerPlatformChallenge {
 
     pub fn size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.license_header.size() + self.encrypted_platform_challenge.len()
+    }
+}
+
+impl fmt::Debug for ServerPlatformChallenge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerPlatformChallenge")
+            .field("license_header", &self.license_header)
+            .field(
+                "encrypted_platform_challenge",
+                &Withheld(&self.encrypted_platform_challenge),
+            )
+            .field("mac_data", &Withheld(&self.mac_data))
+            .finish()
     }
 }

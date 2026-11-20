@@ -353,6 +353,9 @@ pub trait H264Decoder: Send {
     }
 }
 
+/// Creates an H.264 decoder for a new stream, or `None` when none is available.
+pub type DecoderFactory = Box<dyn FnMut() -> Option<Box<dyn H264Decoder>> + Send>;
+
 // ============================================================================
 // OpenH264 Implementation
 // ============================================================================

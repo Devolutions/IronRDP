@@ -14,6 +14,30 @@ public partial class Config
     private static readonly unsafe RustDestructor<Raw.Config> _destroy = Raw.Config.Destroy;
 
     /// <returns>
+    /// A <c>DirectDvcConfig</c> allocated on Rust side.
+    /// </returns>
+    public DirectDvcConfig? DirectDvc
+    {
+        get
+        {
+            unsafe
+            {
+                BorrowLease<Raw.Config>? selfLease = null;
+                try
+                {
+                    selfLease = _diplomatHandle.Lease(BorrowKind.Shared);
+                    Raw.DirectDvcConfig* result = Raw.Config.GetDirectDvc(selfLease!.Ptr);
+                    return result == null ? null : new DirectDvcConfig(result);
+                }
+                finally
+                {
+                    selfLease?.Release();
+                }
+            }
+        }
+    }
+
+    /// <returns>
     /// A <c>DvcPipeProxyConfig</c> allocated on Rust side.
     /// </returns>
     public DvcPipeProxyConfig? DvcPipeProxy

@@ -20,6 +20,7 @@ pub mod ffi {
     use super::result::ffi::Written;
     use super::state::ffi::ClientConnectorState;
     use crate::clipboard::ffi::Cliprdr;
+    use crate::dvc::direct_channel::{DirectDvcChannelProcessor, ffi::DirectDvcConfig};
     use crate::dvc::dvc_pipe_proxy_message_queue::DvcPipeProxyMessageInner;
     use crate::dvc::ffi::DvcPipeProxyConfig;
     use crate::error::ValueConsumedError;
@@ -32,6 +33,10 @@ pub mod ffi {
 
     // Basic Impl for ClientConnector
     impl ClientConnector {
+        fn has_direct_dvc_listener(drdynvc: &ironrdp::dvc::DrdynvcClient, channel_name: &str) -> bool {
+            drdynvc.has_channel_name_of_type::<DirectDvcChannelProcessor>(channel_name)
+        }
+
         pub fn new(config: &Config, client_addr: &str) -> Result<Box<ClientConnector>, Box<IronRdpError>> {
             let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
 
@@ -111,6 +116,10 @@ pub mod ffi {
                 }
             };
 
+            if Self::has_direct_dvc_listener(drdynvc, processor.channel_name()) {
+                return Err("dynamic channel name is already registered as a direct DVC".into());
+            }
+
             drdynvc.attach_dynamic_channel(processor);
 
             Ok(())
@@ -153,6 +162,20 @@ pub mod ffi {
             &mut self,
             config: &DvcPipeProxyConfig,
         ) -> Result<(), Box<IronRdpError>> {
+            let has_direct_collision = self.0.as_mut().is_some_and(|connector| {
+                connector
+                    .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                    .is_some_and(|drdynvc| {
+                        config
+                            .descriptors
+                            .iter()
+                            .any(|descriptor| Self::has_direct_dvc_listener(drdynvc, &descriptor.channel_name))
+                    })
+            });
+            if has_direct_collision {
+                return Err("dynamic channel name is already registered as a direct DVC".into());
+            }
+
             for descriptor in &config.descriptors {
                 let sink = config.message_sink.0.clone();
                 let proxy = DvcNamedPipeProxy::new(
@@ -164,6 +187,59 @@ pub mod ffi {
                     },
                 );
                 self.with_dvc(proxy)?;
+            }
+            Ok(())
+        }
+
+        /// Registers event-driven listeners for dynamic virtual channels ([MS-RDPEDYC]).
+        ///
+        /// Rejects duplicate names and names already registered by another listener.
+        /// This includes built-in channels and pipe proxies.
+        ///
+        /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
+        pub fn with_dynamic_channel_direct(&mut self, config: &DirectDvcConfig) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+
+            let mut channel_names = std::collections::BTreeSet::new();
+            for channel_name in &config.channel_names {
+                if !channel_names.insert(channel_name) {
+                    return Err("direct DVC channel name is registered more than once".into());
+                }
+            }
+
+            if connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .is_some_and(|drdynvc| {
+                    config
+                        .channel_names
+                        .iter()
+                        .any(|channel_name| drdynvc.has_channel_name(channel_name))
+                })
+            {
+                return Err("dynamic channel name is already registered".into());
+            }
+
+            if config.channel_names.is_empty() {
+                return Ok(());
+            }
+
+            if connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .is_none()
+            {
+                connector.attach_static_channel(ironrdp::dvc::DrdynvcClient::new());
+            }
+            let drdynvc = connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .ok_or("failed to attach DRDYNVC static channel")?;
+            for channel_name in &config.channel_names {
+                let name = channel_name.clone();
+                let sink = config.event_sink.clone();
+                drdynvc.attach_dynamic_channel_factory(channel_name.clone(), move || {
+                    DirectDvcChannelProcessor::new(&sink, &name)
+                });
             }
             Ok(())
         }

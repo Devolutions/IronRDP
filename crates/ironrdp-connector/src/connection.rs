@@ -17,7 +17,7 @@ use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionStat
 use crate::connection_activation::{
     ConnectionActivationFactory, ConnectionActivationSequence, ConnectionActivationState,
 };
-use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
+use crate::license_exchange::{DefaultLicenseRng, LicenseExchangeSequence, LicenseRng, NoopLicenseCache};
 use crate::{
     Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, MonotonicInstant,
     NegotiationFailure, Sequence, State, Written, encode_x224_packet, general_err, reason_err,
@@ -146,6 +146,17 @@ pub enum DynamicStaticChannelAttachError {
     DuplicateChannelName,
 }
 
+/// Network measurements reported by the server during connection setup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetworkCharacteristics {
+    /// Lowest detected RTT in milliseconds, when the server reported it.
+    pub base_rtt_ms: Option<u32>,
+    /// Current bandwidth in kilobits per second, when the server reported it.
+    pub bandwidth_kbps: Option<u32>,
+    /// Current average RTT in milliseconds.
+    pub average_rtt_ms: u32,
+}
+
 #[derive(Debug)]
 pub struct ConnectionResult {
     pub io_channel_id: u16,
@@ -178,6 +189,8 @@ pub struct ConnectionResult {
     pub window_support_level: Option<WindowSupportLevel>,
     /// The monitor layout reported by the server during connection finalization.
     pub monitor_layout: Option<rdp::finalization_messages::MonitorLayoutPdu>,
+    /// The latest network characteristics reported before connection activation.
+    pub network_characteristics: Option<NetworkCharacteristics>,
     /// Factory for producing connection activation sequences.
     ///
     /// Used to drive the [Deactivation-Reactivation Sequence] when a Server Deactivate All PDU is
@@ -187,6 +200,14 @@ pub struct ConnectionResult {
     pub activation_factory: ConnectionActivationFactory,
     /// The bulk compression type that was negotiated, if any.
     pub compression_type: Option<rdp::client_info::CompressionType>,
+    /// The RDP version the server announced in its Server Core Data
+    /// ([MS-RDPBCGR] 2.2.1.4.2).
+    ///
+    /// Servers that announce an old version may ignore newer client settings;
+    /// for example xrdp announces RDP 5 and does not apply the desktop scale factor.
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/379a020e-9925-4b4f-98f3-7d634e10b411
+    pub server_rdp_version: gcc::RdpVersion,
 }
 
 impl ConnectionResult {
@@ -424,6 +445,8 @@ pub struct ClientConnector {
     /// advertised `SOFTSYNC_TCP_TO_UDP`, so the outcome reported back depends on
     /// what both peers advertised.
     pub server_multitransport_flags: Option<gcc::MultiTransportFlags>,
+    /// RDP version from the server's Server Core Data, once received.
+    pub server_rdp_version: Option<gcc::RdpVersion>,
     /// Auto-reconnect cookie from a previous session, when reconnecting.
     ///
     /// Set via [`ClientConnector::with_auto_reconnect_cookie`].
@@ -442,6 +465,8 @@ pub struct ClientConnector {
     /// Only accumulated while a window is open, since a total with no interval to
     /// divide it by is not a measurement of anything.
     connect_time_bw_bytes: u32,
+    /// Latest network characteristics reported during connection negotiation.
+    network_characteristics: Option<NetworkCharacteristics>,
     remote_guard: bool,
     remote_guard_ready: bool,
     // None disables NTLM; Some(None) binds it to the configured identity.
@@ -450,6 +475,8 @@ pub struct ClientConnector {
     // False rejects Kerberos operations on the redirection channel, restricting the session to NTLM.
     #[cfg(feature = "remote-guard")]
     remote_guard_kerberos: bool,
+    /// Set via [`ClientConnector::with_license_rng`].
+    license_rng: Arc<dyn LicenseRng>,
 }
 
 impl ClientConnector {
@@ -465,16 +492,19 @@ impl ClientConnector {
             response_flags: nego::ResponseFlags::empty(),
             entra_auth: false,
             server_multitransport_flags: None,
+            server_rdp_version: None,
             auto_reconnect_cookie: None,
             redirection_password_cookie: None,
             connect_time_bw_started_at: None,
             connect_time_bw_bytes: 0,
+            network_characteristics: None,
             remote_guard: false,
             remote_guard_ready: false,
             #[cfg(feature = "remote-guard")]
             remote_guard_ntlm: None,
             #[cfg(feature = "remote-guard")]
             remote_guard_kerberos: false,
+            license_rng: Arc::new(DefaultLicenseRng),
         }
     }
 
@@ -610,6 +640,17 @@ impl ClientConnector {
             .count()
     }
 
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn __test_respond_to_connect_time_autodetect(
+        &mut self,
+        request: rdp::autodetect::AutoDetectRequest,
+    ) -> ConnectorResult<Option<NetworkCharacteristics>> {
+        let mut output = WriteBuf::default();
+        self.respond_to_connect_time_autodetect(request, None, 1004, 1003, &mut output)?;
+        Ok(self.network_characteristics)
+    }
+
     pub fn remote_guard_enabled(&self) -> bool {
         self.remote_guard
     }
@@ -677,6 +718,13 @@ impl ClientConnector {
     #[must_use]
     pub fn with_cluster_data(mut self, cluster_data: gcc::ClientClusterData) -> Self {
         self.cluster_data = Some(cluster_data);
+        self
+    }
+
+    /// Take the client random and premaster secret of the licensing exchange from `rng` instead of `rand::rng()`.
+    #[must_use]
+    pub fn with_license_rng(mut self, rng: Arc<dyn LicenseRng>) -> Self {
+        self.license_rng = rng;
         self
     }
 
@@ -1264,6 +1312,22 @@ impl ClientConnector {
                 let written = encode_send_data_request(user_channel_id, message_channel_id, &response, output)?;
                 Written::from_size(written)
             }
+            AutoDetectRequest::NetworkCharacteristicsResult {
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms,
+                ..
+            } => {
+                // [MS-RDPBCGR] 2.2.14.1.5 makes baseRTT and bandwidth optional in each result.
+                // A result without one keeps the value reported before, and averageRTT is in every result.
+                let previous = self.network_characteristics;
+                self.network_characteristics = Some(NetworkCharacteristics {
+                    base_rtt_ms: base_rtt_ms.or_else(|| previous.and_then(|network| network.base_rtt_ms)),
+                    bandwidth_kbps: bandwidth_kbps.or_else(|| previous.and_then(|network| network.bandwidth_kbps)),
+                    average_rtt_ms,
+                });
+                Ok(Written::Nothing)
+            }
             // A Stop reaching here with any other requestType means a nonconformant
             // server. [MS-RDPBCGR] 2.2.14.1.4 scopes 0x0429-via-Auto-Detect-Request-PDU
             // to after the RDP Connection Sequence has completed, so during connect-time
@@ -1284,9 +1348,8 @@ impl ClientConnector {
                 );
                 Ok(Written::Nothing)
             }
-            // The Network Characteristics Result is informational; nothing to send.
-            //
-            // This also catches the continuous-detection Bandwidth Measure Start,
+            // Other request types are informational or belong to continuous detection.
+            // In particular, this catches the continuous-detection Bandwidth Measure Start,
             // answered on a multitransport channel under a different procedure.
             // Reaching it here means a server started continuous detection before the
             // connection sequence completed (Windows Server 2022 does, during
@@ -1693,6 +1756,8 @@ impl Sequence for ClientConnector {
                     .as_ref()
                     .map(|data| data.flags);
 
+                self.server_rdp_version = Some(server_gcc_blocks.core.version);
+
                 let static_channel_ids = server_gcc_blocks.network.channel_ids;
                 let io_channel_id = server_gcc_blocks.network.io_channel;
 
@@ -1805,16 +1870,19 @@ impl Sequence for ClientConnector {
                 // what does is the first licensing PDU on the I/O channel, and it ends
                 // the phase. Without a message channel nothing is read and we go
                 // straight to licensing, as before.
-                let license_exchange = LicenseExchangeSequence::new(
-                    io_channel_id,
-                    self.config.credentials.username().unwrap_or("").to_owned(),
-                    self.config.domain.clone(),
-                    self.config.hardware_id.unwrap_or_default(),
-                    self.config
-                        .license_cache
-                        .clone()
-                        .unwrap_or_else(|| Arc::new(NoopLicenseCache)),
-                );
+                let license_exchange = LicenseExchangeSequence {
+                    rng: Arc::clone(&self.license_rng),
+                    ..LicenseExchangeSequence::new(
+                        io_channel_id,
+                        self.config.credentials.username().unwrap_or("").to_owned(),
+                        self.config.domain.clone(),
+                        self.config.hardware_id.unwrap_or_default(),
+                        self.config
+                            .license_cache
+                            .clone()
+                            .unwrap_or_else(|| Arc::new(NoopLicenseCache)),
+                    )
+                };
                 // If a PDU was read (message channel present) it is the first
                 // licensing PDU; advance the licensing sequence with it now,
                 // through the same helper the LicensingExchange state uses, so
@@ -2039,6 +2107,10 @@ impl Sequence for ClientConnector {
                                 return Err(general_err!("invalid static channel chunk size"));
                             }
 
+                            let server_rdp_version = self
+                                .server_rdp_version
+                                .ok_or_else(|| general_err!("no Server Core Data before finalization"))?;
+
                             ClientConnectorState::Connected {
                                 result: ConnectionResult {
                                     io_channel_id: connection_activation.io_channel_id(),
@@ -2054,6 +2126,7 @@ impl Sequence for ClientConnector {
                                     suppress_output_support,
                                     window_support_level,
                                     monitor_layout: connection_activation.monitor_layout(),
+                                    network_characteristics: self.network_characteristics.take(),
                                     activation_factory: ConnectionActivationFactory::new(
                                         self.config.clone(),
                                         connection_activation.io_channel_id(),
@@ -2061,6 +2134,7 @@ impl Sequence for ClientConnector {
                                     )
                                     .with_multitransport_soft_sync(self.soft_sync_negotiated()),
                                     compression_type: self.config.compression_type,
+                                    server_rdp_version,
                                 },
                             }
                         }
@@ -2599,6 +2673,23 @@ mod tests {
         )
         .expect("valid GCC blocks");
         assert_eq!(blocks.core.version, gcc::RdpVersion::V10_12);
+    }
+
+    #[test]
+    fn gcc_blocks_carry_the_configured_keyboard_layout() {
+        // oracle: spec MS-RDPBCGR §2.2.1.3.2
+        let mut config = test_config();
+        config.keyboard_layout = 0x409;
+
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC blocks");
+        assert_eq!(blocks.core.keyboard_layout, 0x409);
     }
 
     #[test]

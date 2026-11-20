@@ -76,13 +76,13 @@ jobs:
           - os: win
             runner: windows-2022
           - os: osx
-            runner: macos-14
+            runner: macos-15
           - os: linux
             runner: ubuntu-22.04
           - os: ios
-            runner: macos-14
+            runner: macos-15
           - os: iossimulator
-            runner: macos-14
+            runner: macos-15
           - os: android
             runner: ubuntu-22.04
         exclude:

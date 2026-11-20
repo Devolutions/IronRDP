@@ -37,7 +37,7 @@ fn encode_to_vec(size: usize, f: impl FnOnce(&mut WriteCursor<'_>) -> ironrdp_co
     f(&mut WriteCursor::new(&mut buf)).unwrap();
     buf
 }
-use ironrdp_svc::{SvcMessage, SvcProcessor as _};
+use ironrdp_svc::{StaticVirtualChannel, SvcMessage, SvcProcessor as _};
 
 #[derive(Debug, Default)]
 struct ResetTrackingRdpdrBackend {
@@ -292,6 +292,29 @@ fn printer_device_data(encoded: &[u8]) -> &[u8] {
     body
 }
 
+/// Announces one drive named `drive_name` through the handshake and returns the encoded device list announce.
+fn encoded_drive_announce(drive_name: &str) -> Vec<u8> {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
+        .with_drives(Some(vec![(42, drive_name.to_owned())]));
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    assert!(
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .unwrap()
+            .is_empty()
+    );
+    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
+    assert_eq!(responses.len(), 1);
+    responses[0].encode_unframed_pdu().unwrap()
+}
+
+/// The DeviceData of the single drive in an encoded device list announce.
+fn drive_device_data(encoded: &[u8]) -> &[u8] {
+    let device_data_length = read_u32_as_usize(&encoded[24..]);
+    assert_eq!(28 + device_data_length, encoded.len());
+    &encoded[28..28 + device_data_length]
+}
+
 #[test]
 fn printer_capability_wire_layout() {
     let mut caps = Capabilities::new();
@@ -389,32 +412,125 @@ fn printer_announce_respects_explicit_driver() {
 }
 
 #[test]
-fn filesystem_drive_announce_encodes_unicode_data_and_valid_dos_name() {
-    let drive_name = "share \u{1F4C1}";
-    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
-        .with_drives(Some(vec![(42, drive_name.to_owned())]));
-
-    let client_id = announce_client_id(&mut rdpdr, 12);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
-    let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
-    assert_eq!(responses.len(), 1);
-
-    let encoded = responses[0].encode_unframed_pdu().unwrap();
+fn filesystem_drive_announce_encodes_the_name_as_8_bit_characters_and_a_valid_dos_name() {
+    let encoded = encoded_drive_announce("share \u{1F4C1}");
     assert_eq!(&encoded[..4], &[0x72, 0x44, 0x41, 0x44]); // RDPDR + DEVICELIST_ANNOUNCE
     assert_eq!(read_u32(&encoded[4..]), 1);
     assert_eq!(read_u32(&encoded[8..]), u32::from(DeviceType::Filesystem));
     assert_eq!(read_u32(&encoded[12..]), 42);
     assert_eq!(&encoded[16..24], b"share \0\0");
 
-    let device_data_length = read_u32_as_usize(&encoded[24..]);
-    let device_data = &encoded[28..28 + device_data_length];
-    assert_eq!(28 + device_data_length, encoded.len());
-    assert_eq!(utf16le_to_string(device_data), drive_name);
+    let device_data = drive_device_data(&encoded);
+    // oracle: regression #2075 - Windows reads the name in DeviceData as 8-bit characters, so ASCII goes as its bytes.
+    assert_eq!(&device_data[..5], b"share");
+    // oracle: mutant the space dropped, or replaced with '_' as FreeRDP's drive_register_drive_path does.
+    assert_eq!(device_data[5], b' ');
+    // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c -
+    // drive_register_drive_path copies every byte of the UTF-8 name other than : < > " / \ | and space unchanged and
+    // ends DeviceData with a NUL, so U+1F4C1 goes as F0 9F 93 81 (a mutant writes it as UTF-16 or '_').
+    assert_eq!(&device_data[6..], b"\xF0\x9F\x93\x81\0");
+}
+
+#[test]
+fn filesystem_drive_announce_writes_a_name_outside_ascii_as_utf8() {
+    // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c -
+    // drive_register_drive_path copies every byte of the UTF-8 name other than : < > " / \ | and space unchanged into
+    // DeviceData; Windows Server 2025 accepts that drive and lists it as "їжачок on <client>", and refuses the same
+    // name sent as UTF-16 with STATUS_UNSUCCESSFUL.
+    let encoded = encoded_drive_announce("\u{457}\u{436}\u{430}\u{447}\u{43e}\u{43a}"); // "їжачок"
+    // oracle: mutant the name replaced with underscores, which Windows lists as "______", or written as UTF-16.
+    assert_eq!(
+        drive_device_data(&encoded),
+        [
+            0xD1, 0x97, 0xD0, 0xB6, 0xD0, 0xB0, 0xD1, 0x87, 0xD0, 0xBE, 0xD0, 0xBA, 0x00
+        ]
+    );
+    // oracle: spec MS-RDPEFS §2.2.1.3 - PreferredDosName is an 8-byte, null-terminated ASCII field.
+    let preferred_dos_name = &encoded[16..24];
+    assert!(preferred_dos_name.is_ascii());
+    assert!(preferred_dos_name.contains(&0));
+    // oracle: mutant the PreferredDosName fallback for a name with no ASCII prefix changed from "DRIVE".
+    assert_eq!(preferred_dos_name, b"DRIVE\0\0\0");
+}
+
+#[test]
+fn filesystem_drive_announce_replaces_only_the_bytes_a_drive_name_may_not_carry_and_keeps_the_rest() {
+    use proptest::prelude::*;
+
+    proptest!(|(name in any::<String>())| {
+        assert_drive_name_bytes(&name);
+    });
+}
+
+/// Checks, byte by byte, the DeviceData a drive named `name` is announced with.
+///
+/// A function rather than a block in the `proptest!` closure because the macro stringifies its body, and the `§` in
+/// the oracle markers below would then be a non-ASCII literal that `clippy::non_ascii_literal` rejects.
+fn assert_drive_name_bytes(name: &str) {
+    let encoded = encoded_drive_announce(name);
+    let device_data = drive_device_data(&encoded);
+    let (terminator, body) = device_data
+        .split_last()
+        .expect("DeviceData holds at least the NUL terminator");
+    // oracle: spec MS-RDPEFS §2.2.3.1 - the drive name in DeviceData is null-terminated.
+    assert_eq!(*terminator, 0);
+    // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c -
+    // drive_register_drive_path writes one DeviceData byte for each byte of the name (a mutant drops, re-encodes or
+    // adds characters).
+    assert_eq!(body.len(), name.len());
+    for (i, (&sent, &original)) in body.iter().zip(name.as_bytes()).enumerate() {
+        if b"<>\"/\\|".contains(&original) {
+            // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c
+            // - drive_register_drive_path writes '_' in DeviceData for <, >, ", /, \ and |, the characters
+            // MS-RDPEFS §2.2.1.3 forbids in a device name.
+            assert_eq!(sent, b'_', "byte {i} of {name:?}");
+        } else if original == 0 {
+            // oracle: mutant a NUL inside the name kept, which ends DeviceData early for a server reading up to the
+            // first NUL. A FreeRDP drive path is a C string and never holds one, so no reference decides this.
+            assert_eq!(sent, b'_', "byte {i} of {name:?}");
+        } else if original == b':' && i + 1 != name.len() {
+            // oracle: mutant a colon kept before the end of the name, where MS-RDPEFS §2.2.1.3 allows a colon in a
+            // device name only as its last character.
+            assert_eq!(sent, b'_', "byte {i} of {name:?}");
+        } else if original == b' ' || original == b':' {
+            // oracle: mutant a space, or a colon that ends the name, replaced. FreeRDP's drive_register_drive_path
+            // replaces both with '_'; this implementation keeps them, so FreeRDP does not decide these bytes.
+            assert_eq!(sent, original, "byte {i} of {name:?}");
+        } else {
+            // oracle: reference FreeRDP/FreeRDP@bf217a504e54cc719880c228e82353382cd7d4fa:channels/drive/client/drive_main.c
+            // - drive_register_drive_path copies every other byte of the UTF-8 name unchanged, so a character outside
+            // ASCII arrives as its UTF-8 bytes (a mutant drops, re-encodes or replaces it).
+            assert_eq!(sent, original, "byte {i} of {name:?}");
+        }
+    }
+}
+
+#[test]
+fn filesystem_drive_announce_replaces_characters_a_device_name_may_not_contain() {
+    // oracle: reference FreeRDP/FreeRDP@dae0390a42ab271fa07a35979dfcd5671f83a949:channels/drive/client/drive_main.c -
+    // drive_register_drive_path writes '_' for <, >, ", /, \, | and : in DeviceData.
+    assert_eq!(
+        drive_device_data(&encoded_drive_announce(r#"a<b>c"d/e\f|g:h"#)),
+        b"a_b_c_d_e_f_g_h\0"
+    );
+}
+
+#[test]
+fn filesystem_drive_announce_keeps_a_trailing_colon() {
+    // oracle: mutant the trailing colon replaced with '_', which Windows shows as `\\tsclient\C_` rather than
+    // `\\tsclient\C`.
+    assert_eq!(drive_device_data(&encoded_drive_announce("C:")), b"C:\0");
+}
+
+#[test]
+fn filesystem_drive_announce_replaces_an_embedded_nul() {
+    let encoded = encoded_drive_announce("a\0b");
+    let device_data = drive_device_data(&encoded);
+    // oracle: spec MS-RDPEFS §2.2.3.1 - the name in DeviceData is null-terminated, so a NUL inside it would end it
+    // early.
+    assert!(!device_data[..device_data.len() - 1].contains(&0));
+    // oracle: mutant the NUL dropped instead of replaced.
+    assert_eq!(device_data, b"a_b\0");
 }
 
 #[test]
@@ -2046,16 +2162,25 @@ fn decode_io_completion_rejects_set_volume_information() {
 
 #[derive(Debug, Default)]
 struct TrackingServerBackend {
+    max_message_size: Option<usize>,
     accepted: Vec<u32>,
+    accepted_types: Vec<DeviceType>,
     rejected_device_ids: Vec<u32>,
+    reject_removal: bool,
     removed: Vec<u32>,
+    reinitialized: Vec<u32>,
     client_name: Option<String>,
+    set_information: Vec<(DeviceIoResponse, u32)>,
     completions: Vec<&'static str>,
 }
 
 impl_as_any!(TrackingServerBackend);
 
 impl RdpdrServerBackend for TrackingServerBackend {
+    fn max_message_size(&self) -> Option<usize> {
+        self.max_message_size
+    }
+
     fn on_device_announce(&mut self, devices: &[DeviceAnnounceHeader]) -> Vec<(u32, bool)> {
         devices
             .iter()
@@ -2064,6 +2189,7 @@ impl RdpdrServerBackend for TrackingServerBackend {
                 let accepted = !self.rejected_device_ids.contains(&device_id);
                 if accepted {
                     self.accepted.push(device_id);
+                    self.accepted_types.push(device.device_type());
                 }
                 (device_id, accepted)
             })
@@ -2072,6 +2198,20 @@ impl RdpdrServerBackend for TrackingServerBackend {
 
     fn on_device_remove(&mut self, device_ids: &[u32]) {
         self.removed.extend_from_slice(device_ids);
+    }
+
+    fn try_on_device_remove(&mut self, device_ids: &[u32]) -> PduResult<()> {
+        if self.reject_removal {
+            return Err(ironrdp_pdu::pdu_other_err!("device state cannot be safely removed"));
+        }
+        self.on_device_remove(device_ids);
+        Ok(())
+    }
+
+    fn on_reinitialize(&mut self, device_ids: &[u32]) -> PduResult<()> {
+        self.try_on_device_remove(device_ids)?;
+        self.reinitialized.extend_from_slice(device_ids);
+        Ok(())
     }
 
     fn on_client_name(&mut self, computer_name: &str) {
@@ -2106,7 +2246,9 @@ impl RdpdrServerBackend for TrackingServerBackend {
         self.completions.push("query_information");
         Ok(())
     }
-    fn on_set_information_complete(&mut self, _response: &ClientDriveSetInformationResponse) -> PduResult<()> {
+    fn on_set_information_complete(&mut self, response: &ClientDriveSetInformationResponse) -> PduResult<()> {
+        self.set_information
+            .push((response.device_io_reply().clone(), response.length()));
         self.completions.push("set_information");
         Ok(())
     }
@@ -2142,11 +2284,10 @@ impl RdpdrServerBackend for TrackingServerBackend {
     }
 }
 
-/// Drives a fresh [`RdpdrServer`] through the full MS-RDPEFS initialization handshake
-/// (`start()` through `ClientCoreCapabilityResponse`), leaving it in the `Active` state.
+/// Drives a fresh [`RdpdrServer`] through the MS-RDPEFS handshake up to the client capabilities.
 /// Returns the `client_id` the server generated so callers can build further
 /// server-perspective client replies if needed.
-fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
+fn handshake_to_capability_exchange(server: &mut RdpdrServer) -> u32 {
     let started = server.start().unwrap();
     assert_eq!(started.len(), 1);
     let client_id = read_u32(&started[0].encode_unframed_pdu().unwrap()[4..]);
@@ -2167,15 +2308,62 @@ fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
     .unwrap();
     let capability_and_confirm = server.process(&name_request).unwrap();
     assert_eq!(capability_and_confirm.len(), 2);
+    client_id
+}
 
+fn handshake_to_active(server: &mut RdpdrServer) -> u32 {
+    let client_id = handshake_to_capability_exchange(server);
     let capability_response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability {
         capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_drive()],
         kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
     }))
     .unwrap();
-    assert!(server.process(&capability_response).unwrap().is_empty());
+    assert_eq!(server.process(&capability_response).unwrap().len(), 1);
 
     client_id
+}
+
+// oracle: spec MS-RDPEFS §3.3.5.1.5 requires User Logged On immediately after supported client capabilities.
+// https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/2ecd5c18-8c8c-4f5d-97ef-794ce19e91ba
+#[test]
+fn server_sends_user_logged_on_after_supported_client_capabilities() {
+    let mut server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
+    handshake_to_capability_exchange(&mut server);
+    let response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability::new_response(vec![
+        CapabilityMessage::new_general(0),
+        CapabilityMessage::new_drive(),
+    ])))
+    .unwrap();
+    let messages = server.process(&response).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].encode_unframed_pdu().unwrap(),
+        [0x72, 0x44, 0x4c, 0x55] // Component = RDPDR_CTYP_CORE; PacketId = PAKID_CORE_USER_LOGGEDON.
+    );
+}
+
+// oracle: spec MS-RDPEFS §3.3.5.1.5 permits User Logged On only when extendedPDU includes 0x00000004.
+// The field layout is MS-RDPEFS 2.2.2.7.1, General Capability Set.
+// https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501
+#[test]
+fn server_omits_user_logged_on_when_client_does_not_support_it() {
+    let mut server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
+    handshake_to_capability_exchange(&mut server);
+    let mut response = encode_vec(&RdpdrPdu::CoreCapability(CoreCapability::new_response(vec![
+        CapabilityMessage::new_general(0),
+    ])))
+    .unwrap();
+    let extended_pdu = 4 /* SharedHeader */
+        + 4 /* NumCapabilities and padding */
+        + 8 /* Header */
+        + 4 /* osType */
+        + 4 /* osVersion */
+        + 2 /* protocolMajorVersion */
+        + 2 /* protocolMinorVersion */
+        + 4 /* ioCode1 */
+        + 4 /* ioCode2 */;
+    response[extended_pdu..extended_pdu + 4 /* extendedPDU */].copy_from_slice(&3u32.to_le_bytes());
+    assert!(server.process(&response).unwrap().is_empty());
 }
 
 /// Extracts the `CompletionId` a `drive_*` method embedded in a sent
@@ -2191,6 +2379,26 @@ fn some_completion(device_id: u32, completion_id: u32) -> DeviceIoResponse {
         completion_id,
         io_status: NtStatus::SUCCESS,
     }
+}
+
+fn announce_drive(server: &mut RdpdrServer, device_id: u32) -> Vec<SvcMessage> {
+    let mut devices = Devices::new();
+    devices.add_drive(device_id, "DL".to_owned());
+    let announce = encode_vec(&RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+        device_list: devices.clone_inner(),
+    }))
+    .unwrap();
+    server.process(&announce).unwrap()
+}
+
+fn duplicate_announce_reply() -> Vec<u8> {
+    encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+        version_major: 1,
+        version_minor: VERSION_MINOR_RDP51,
+        client_id: 0,
+        kind: VersionAndIdPduKind::ClientAnnounceReply,
+    }))
+    .unwrap()
 }
 
 #[test]
@@ -2238,13 +2446,7 @@ fn duplicate_client_announce_reply_while_active_reinitializes() {
     let stale = server.drive_close(1, 1).unwrap();
     let stale_completion_id = completion_id_of(&stale[0]);
 
-    let duplicate_announce = encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
-        version_major: 1,
-        version_minor: VERSION_MINOR_RDP51,
-        client_id: 0,
-        kind: VersionAndIdPduKind::ClientAnnounceReply,
-    }))
-    .unwrap();
+    let duplicate_announce = duplicate_announce_reply();
     assert!(server.process(&duplicate_announce).unwrap().is_empty());
 
     // Back in AwaitingAnnounce: drive I/O is rejected again until the handshake redoes.
@@ -2281,6 +2483,87 @@ fn duplicate_client_announce_reply_while_active_reinitializes() {
     );
 }
 
+// oracle: mutant ignoring the backend's inbound message size limit on the static channel processor.
+#[test]
+fn server_forwards_backend_max_message_size() {
+    let default_server = RdpdrServer::new(Box::new(NoopRdpdrServerBackend));
+    assert_eq!(default_server.max_message_size(), None);
+
+    let bounded_server = RdpdrServer::new(Box::new(TrackingServerBackend {
+        max_message_size: Some(32),
+        ..Default::default()
+    }));
+    assert_eq!(bounded_server.max_message_size(), Some(32));
+
+    let mut channel = StaticVirtualChannel::new(bounded_server);
+    assert_eq!(channel.start().unwrap().len(), 1);
+
+    let within_limit = StaticVirtualChannel::chunkify(vec![SvcMessage::from(duplicate_announce_reply())]).unwrap();
+    assert!(channel.process(within_limit[0].filled()).unwrap().is_empty());
+
+    let over_limit = StaticVirtualChannel::chunkify(vec![SvcMessage::from(RdpdrPdu::ClientNameRequest(
+        ClientNameRequest::new(
+            "client-name-exceeding-32-bytes".to_owned(),
+            ClientNameRequestUnicodeFlag::Unicode,
+        ),
+    ))])
+    .unwrap();
+    assert!(channel.process(over_limit[0].filled()).is_err());
+}
+
+// oracle: mutant retaining backend devices after the protocol forgets them, or resetting state before decoding the reply.
+#[test]
+fn server_reinitialization_notifies_backend_of_forgotten_devices() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend::default()));
+    handshake_to_active(&mut server);
+    let accepted = announce_drive(&mut server, 42);
+    assert_eq!(
+        ntstatus_at(&accepted[0].encode_unframed_pdu().unwrap(), 8),
+        NtStatus::SUCCESS
+    );
+
+    let duplicate = duplicate_announce_reply();
+    assert!(server.process(&duplicate[..4 /* SharedHeader */]).is_err());
+    assert!(
+        server
+            .downcast_backend::<TrackingServerBackend>()
+            .unwrap()
+            .removed
+            .is_empty()
+    );
+    assert!(server.drive_close(42, 1).is_ok());
+
+    server.process(&duplicate).unwrap();
+    let backend = server.downcast_backend::<TrackingServerBackend>().unwrap();
+    assert_eq!(backend.accepted_types, [DeviceType::Filesystem]);
+    assert_eq!(backend.removed, [42]);
+    assert_eq!(backend.reinitialized, [42]);
+}
+
+// oracle: mutant accepting a new initialization after the backend rejects device cleanup.
+#[test]
+fn server_reinitialization_propagates_backend_failure() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend {
+        reject_removal: true,
+        ..Default::default()
+    }));
+    handshake_to_active(&mut server);
+    announce_drive(&mut server, 42);
+    let duplicate = duplicate_announce_reply();
+    assert!(server.process(&duplicate).is_err());
+    assert!(server.drive_close(42, 1).is_ok());
+
+    server
+        .downcast_backend_mut::<TrackingServerBackend>()
+        .unwrap()
+        .reject_removal = false;
+    server.process(&duplicate).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().removed,
+        [42]
+    );
+}
+
 #[test]
 fn device_announce_accepts_and_rejects_per_backend_decision() {
     let mut server = RdpdrServer::new(Box::new(TrackingServerBackend {
@@ -2313,6 +2596,7 @@ fn device_announce_accepts_and_rejects_per_backend_decision() {
 
     let backend = server.downcast_backend::<TrackingServerBackend>().unwrap();
     assert_eq!(backend.accepted, vec![1]);
+    assert_eq!(backend.accepted_types, vec![DeviceType::Smartcard]);
 }
 
 #[test]
@@ -2334,6 +2618,33 @@ fn device_list_remove_notifies_backend() {
     assert_eq!(
         server.downcast_backend::<TrackingServerBackend>().unwrap().removed,
         vec![1]
+    );
+}
+
+// oracle: mutant ignoring a backend failure while removing a device.
+#[test]
+fn device_remove_propagates_backend_failure() {
+    let mut server = RdpdrServer::new(Box::new(TrackingServerBackend {
+        reject_removal: true,
+        ..Default::default()
+    }));
+    handshake_to_active(&mut server);
+    announce_drive(&mut server, 42);
+    let remove = encode_vec(&RdpdrPdu::ClientDeviceListRemove(ClientDeviceListRemove {
+        device_list: vec![42],
+    }))
+    .unwrap();
+    assert!(server.process(&remove).is_err());
+
+    server
+        .downcast_backend_mut::<TrackingServerBackend>()
+        .unwrap()
+        .reject_removal = false;
+    let duplicate = duplicate_announce_reply();
+    server.process(&duplicate).unwrap();
+    assert_eq!(
+        server.downcast_backend::<TrackingServerBackend>().unwrap().removed,
+        [42]
     );
 }
 
@@ -2528,10 +2839,9 @@ fn drive_set_information_completion_round_trips() {
     let response = ClientDriveSetInformationResponse::new(&request, NtStatus::SUCCESS).unwrap();
     let completion = encode_vec(&RdpdrPdu::ClientDriveSetInformationResponse(response)).unwrap();
     server.process(&completion).unwrap();
-    assert_eq!(
-        server.downcast_backend::<TrackingServerBackend>().unwrap().completions,
-        vec!["set_information"]
-    );
+    let backend = server.downcast_backend::<TrackingServerBackend>().unwrap();
+    assert_eq!(backend.completions, vec!["set_information"]);
+    assert_eq!(backend.set_information, vec![(some_completion(1, completion_id), 8)]);
 }
 
 #[test]

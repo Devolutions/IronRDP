@@ -2,11 +2,15 @@
 /target
 /dependencies
 /bench-data
+/server/termsrv/package/msi/obj/
+# Local smoke-test artifacts
+/artifacts
 # Local cargo root
 /.cargo/local_root
 
 # Log files
 *.log
+IddDiagnostics-*.zip
 
 # Editor/IDE files
 *~

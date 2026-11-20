@@ -401,6 +401,12 @@ pub struct TouchContact {
 
 impl TouchContact {
     const NAME: &'static str = "RDPINPUT_CONTACT_DATA";
+    /// Minimum encoded size when all MS-RDPEI 2.2.2 variable-length integers take 1 byte.
+    pub const MIN_WIRE_SIZE: usize = 1 /* contactId */
+        + 1 /* fieldsPresent (TWO_BYTE_UNSIGNED_INTEGER) */
+        + 1 /* x (FOUR_BYTE_SIGNED_INTEGER) */
+        + 1 /* y (FOUR_BYTE_SIGNED_INTEGER) */
+        + 1 /* contactFlags (FOUR_BYTE_UNSIGNED_INTEGER) */;
 
     #[must_use]
     pub fn new(contact_id: u8, x: i32, y: i32, contact_flags: TouchContactFlags) -> Self {
@@ -586,6 +592,9 @@ pub struct TouchFrame {
 
 impl TouchFrame {
     const NAME: &'static str = "RDPINPUT_TOUCH_FRAME";
+    /// Minimum encoded size when both MS-RDPEI 2.2.2 variable-length integers take 1 byte and no contacts are present.
+    pub const MIN_WIRE_SIZE: usize = 1 /* contactCount (TWO_BYTE_UNSIGNED_INTEGER) */
+        + 1 /* frameOffset (EIGHT_BYTE_UNSIGNED_INTEGER) */;
 
     pub fn new(frame_offset: u64, contacts: Vec<TouchContact>) -> Self {
         Self { frame_offset, contacts }
@@ -627,7 +636,10 @@ impl<'de> Decode<'de> for TouchFrame {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let contact_count = TwoByteUnsigned::decode(src)?.get();
         let frame_offset = EightByteUnsigned::decode(src)?.get();
-        let mut contacts = Vec::with_capacity(contact_count as usize);
+        // UNTESTED: Cap preallocation by `TouchContact::MIN_WIRE_SIZE` so a truncated frame cannot allocate
+        // `contact_count` contacts before `TouchContact::decode` fails and drops the vector; verify the minimum wire
+        // size when changing contact encoding.
+        let mut contacts = Vec::with_capacity(usize::from(contact_count).min(src.len() / TouchContact::MIN_WIRE_SIZE));
         for _ in 0..contact_count {
             contacts.push(TouchContact::decode(src)?);
         }
@@ -696,7 +708,10 @@ impl<'de> Decode<'de> for TouchEventPdu {
         }
         let encode_time = FourByteUnsigned::decode(src)?.get();
         let frame_count = TwoByteUnsigned::decode(src)?.get();
-        let mut frames = Vec::with_capacity(frame_count as usize);
+        // UNTESTED: Cap preallocation by `TouchFrame::MIN_WIRE_SIZE` so a truncated event cannot allocate
+        // `frame_count` frames before `TouchFrame::decode` fails and drops the vector; verify the minimum wire size
+        // when changing frame encoding.
+        let mut frames = Vec::with_capacity(usize::from(frame_count).min(src.len() / TouchFrame::MIN_WIRE_SIZE));
         for _ in 0..frame_count {
             frames.push(TouchFrame::decode(src)?);
         }
@@ -834,6 +849,12 @@ pub struct PenContact {
 
 impl PenContact {
     const NAME: &'static str = "RDPINPUT_PEN_CONTACT";
+    /// Minimum encoded size when all MS-RDPEI 2.2.2 variable-length integers take 1 byte.
+    pub const MIN_WIRE_SIZE: usize = 1 /* deviceId */
+        + 1 /* fieldsPresent (TWO_BYTE_UNSIGNED_INTEGER) */
+        + 1 /* x (FOUR_BYTE_SIGNED_INTEGER) */
+        + 1 /* y (FOUR_BYTE_SIGNED_INTEGER) */
+        + 1 /* contactFlags (FOUR_BYTE_UNSIGNED_INTEGER) */;
 
     #[must_use]
     pub fn new(device_id: u8, x: i32, y: i32, contact_flags: PenContactFlags) -> Self {
@@ -1031,6 +1052,9 @@ pub struct PenFrame {
 
 impl PenFrame {
     const NAME: &'static str = "RDPINPUT_PEN_FRAME";
+    /// Minimum encoded size when both MS-RDPEI 2.2.2 variable-length integers take 1 byte and no contacts are present.
+    pub const MIN_WIRE_SIZE: usize = 1 /* contactCount (TWO_BYTE_UNSIGNED_INTEGER) */
+        + 1 /* frameOffset (EIGHT_BYTE_UNSIGNED_INTEGER) */;
 
     pub fn new(frame_offset: u64, contacts: Vec<PenContact>) -> Self {
         Self { frame_offset, contacts }
@@ -1072,7 +1096,10 @@ impl<'de> Decode<'de> for PenFrame {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let contact_count = TwoByteUnsigned::decode(src)?.get();
         let frame_offset = EightByteUnsigned::decode(src)?.get();
-        let mut contacts = Vec::with_capacity(contact_count as usize);
+        // UNTESTED: Cap preallocation by `PenContact::MIN_WIRE_SIZE` so a truncated frame cannot allocate
+        // `contact_count` contacts before `PenContact::decode` fails and drops the vector; verify the minimum wire
+        // size when changing contact encoding.
+        let mut contacts = Vec::with_capacity(usize::from(contact_count).min(src.len() / PenContact::MIN_WIRE_SIZE));
         for _ in 0..contact_count {
             contacts.push(PenContact::decode(src)?);
         }
@@ -1140,7 +1167,10 @@ impl<'de> Decode<'de> for PenEventPdu {
         }
         let encode_time = FourByteUnsigned::decode(src)?.get();
         let frame_count = TwoByteUnsigned::decode(src)?.get();
-        let mut frames = Vec::with_capacity(frame_count as usize);
+        // UNTESTED: Cap preallocation by `PenFrame::MIN_WIRE_SIZE` so a truncated event cannot allocate
+        // `frame_count` frames before `PenFrame::decode` fails and drops the vector; verify the minimum wire size
+        // when changing frame encoding.
+        let mut frames = Vec::with_capacity(usize::from(frame_count).min(src.len() / PenFrame::MIN_WIRE_SIZE));
         for _ in 0..frame_count {
             frames.push(PenFrame::decode(src)?);
         }

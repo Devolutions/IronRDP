@@ -29,6 +29,9 @@ use ironrdp_pdu::gcc::{
     ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientMessageChannelData, ClientMonitorData, Monitor,
     MonitorFlags, MultiTransportChannelData, MultiTransportFlags,
 };
+use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent, KeyboardFlags as FastPathKeyboardFlags};
+use ironrdp_pdu::input::scan_code::KeyboardFlags as ScanCodeFlags;
+use ironrdp_pdu::input::{InputEvent, InputEventPdu, ScanCodePdu};
 use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
 use ironrdp_pdu::rdp::ClientInfoPdu;
@@ -249,7 +252,7 @@ pub(super) fn encode_send_data_request(initiator_id: u16, channel_id: u16, user_
 /// Encode a client finalization ShareData PDU (Synchronize, Control, FontList),
 /// mirroring the shape `ironrdp_acceptor`'s own `wrap_share_data` uses for the
 /// server's confirmations of the same messages.
-fn encode_client_share_data(pdu: ShareDataPdu) -> Vec<u8> {
+pub(super) fn encode_client_share_data(pdu: ShareDataPdu) -> Vec<u8> {
     let header = ShareControlHeader {
         share_id: 0,
         pdu_source: 0,
@@ -1176,6 +1179,51 @@ fn dvc_create_reply_before_reactivation_confirm_is_preserved() {
     assert_eq!(result.input_events, vec![reply]);
 }
 
+// oracle: spec MS-RDPBCGR §3.3.5.8.1.1: an in-flight slow-path input event reaches the session.
+#[test]
+fn slow_path_input_before_reactivation_confirm_is_preserved() {
+    let (mut acceptor, user, io, _) = reactivating_dvc_acceptor();
+    let input = ShareDataPdu::Input(InputEventPdu(vec![InputEvent::ScanCode(ScanCodePdu {
+        flags: ScanCodeFlags::DOWN,
+        key_code: 0x1e,
+    })]));
+    let frame = encode_send_data_request(user, io, &encode_client_share_data(input));
+    let result = acceptor.step(&frame, None, &mut WriteBuf::new());
+    assert!(
+        result.is_ok(),
+        "in-flight input must not abort reactivation: {result:?}"
+    );
+    complete_activation(&mut acceptor, user, io);
+    assert_eq!(acceptor.get_result().unwrap().input_events, vec![frame]);
+}
+
+// oracle: mutant reordering or dropping buffered input and virtual-channel frames during reactivation.
+#[test]
+fn input_and_virtual_channel_frames_keep_their_order_before_reactivation_confirm() {
+    let (mut acceptor, user, io, reply) = reactivating_dvc_acceptor();
+    let pressed = encode_vec(&FastPathInput::single(FastPathInputEvent::KeyboardEvent(
+        FastPathKeyboardFlags::empty(),
+        0x1e,
+    )))
+    .unwrap();
+    let slow = ShareDataPdu::Input(InputEventPdu(vec![InputEvent::ScanCode(ScanCodePdu {
+        flags: ScanCodeFlags::DOWN,
+        key_code: 0x30,
+    })]));
+    let slow = encode_send_data_request(user, io, &encode_client_share_data(slow));
+    let released = encode_vec(&FastPathInput::single(FastPathInputEvent::KeyboardEvent(
+        FastPathKeyboardFlags::RELEASE,
+        0x1e,
+    )))
+    .unwrap();
+    let frames = vec![pressed, reply, slow, released];
+    for frame in &frames {
+        acceptor.step(frame, None, &mut WriteBuf::new()).unwrap();
+    }
+    complete_activation(&mut acceptor, user, io);
+    assert_eq!(acceptor.get_result().unwrap().input_events, frames);
+}
+
 #[test]
 fn dvc_create_reply_does_not_advance_reactivation_finalization() {
     // oracle: spec MS-RDPBCGR §1.3.3: virtual-channel data is independent of I/O-channel finalization.
@@ -1257,6 +1305,28 @@ fn client_info_flags_survive_reactivation() {
 
     assert!(result.reactivation);
     assert_eq!(result.client_info_flags, flags);
+}
+
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1.1.1 and §1.3.1.3: client time zone is read from Extended Client Info and kept across reactivation.
+#[test]
+fn timezone_info_is_kept_and_survives_reactivation() {
+    let expected = CLIENT_INFO_UNICODE
+        .extra_info
+        .optional_data
+        .timezone()
+        .expect("fixture includes client timezone")
+        .clone();
+    let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
+    client_blocks.network = None;
+    let (acceptor, result, user_channel_id, io_channel_id) = accepted(client_blocks, &CLIENT_INFO_PDU_BUFFER);
+    assert_eq!(result.timezone_info.as_ref(), Some(&expected));
+
+    let mut acceptor = Acceptor::new_deactivation_reactivation(acceptor, result.static_channels, DESKTOP_SIZE)
+        .expect("rebuild the acceptor for reactivation");
+    let result = result_after_activation(&mut acceptor, user_channel_id, io_channel_id);
+
+    assert!(result.reactivation);
+    assert_eq!(result.timezone_info, Some(expected));
 }
 
 /// The client's GCC blocks with `desktop` and `device` as the `desktopScaleFactor` and `deviceScaleFactor` of its

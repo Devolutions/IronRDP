@@ -29,6 +29,7 @@ use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::credssp::{KdcResolution, KerberosConfig};
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::displaycontrol::client::DisplayControlClient;
+use ironrdp::displaycontrol::pdu::DeviceScaleFactor;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
@@ -97,11 +98,20 @@ struct SessionBuilderInner {
     printer_driver_name: Option<String>,
 
     use_display_control: bool,
+    audio_playback_callback: Option<js_sys::Function>,
+    camera_callback: Option<js_sys::Function>,
+    camera_name: Option<String>,
     enable_credssp: bool,
     enable_standard_rdp_security: bool,
     enable_server_pointer: bool,
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
+    performance_flags: Option<PerformanceFlags>,
+    desktop_scale_factor: Option<u32>,
+    color_depth: Option<u32>,
+    monitor_layout: Option<MonitorLayout>,
+    monitor_layout_callback: Option<js_sys::Function>,
+    keyboard_layout: u32,
 }
 
 impl Default for SessionBuilderInner {
@@ -143,11 +153,20 @@ impl Default for SessionBuilderInner {
             printer_driver_name: None,
 
             use_display_control: false,
+            audio_playback_callback: None,
+            camera_callback: None,
+            camera_name: None,
             enable_credssp: true,
             enable_standard_rdp_security: false,
             enable_server_pointer: true,
             legacy_graphics: false,
             outbound_message_size_limit: None,
+            performance_flags: None,
+            desktop_scale_factor: None,
+            color_depth: None,
+            monitor_layout: None,
+            monitor_layout_callback: None,
+            keyboard_layout: 0,
         }
     }
 }
@@ -292,6 +311,19 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |vmconnect: String| { self.0.borrow_mut().vmconnect = Some(vmconnect) };
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
+            |audio_playback: JsValue| {
+                // A function receiving the audio (see audio::to_js); anything else turns playback off.
+                self.0.borrow_mut().audio_playback_callback = audio_playback.dyn_into::<js_sys::Function>().ok();
+            };
+            |camera: JsValue| {
+                // A function told when to capture (see camera::to_js); anything else turns the camera off.
+                self.0.borrow_mut().camera_callback = camera.dyn_into::<js_sys::Function>().ok();
+            };
+            |camera_name: String| {
+                if !camera_name.is_empty() {
+                    self.0.borrow_mut().camera_name = Some(camera_name);
+                }
+            };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
             |enable_standard_rdp_security: bool| {
                 self.0.borrow_mut().enable_standard_rdp_security = enable_standard_rdp_security;
@@ -307,6 +339,73 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     0 // Fallback to no limit for invalid values.
                 };
                 self.0.borrow_mut().outbound_message_size_limit = if limit > 0 { Some(limit) } else { None };
+            };
+            |performance_flags: f64| {
+                if performance_flags.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&performance_flags) {
+                    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let bits = performance_flags as u32;
+                    self.0.borrow_mut().performance_flags = Some(PerformanceFlags::from_bits_truncate(bits));
+                } else {
+                    warn!(performance_flags, "Invalid performance flags; ignored");
+                }
+            };
+            |desktop_scale_factor: f64| {
+                // MS-RDPBCGR 2.2.1.3.2: the server ignores a desktop scale factor outside 100 to 500.
+                if desktop_scale_factor.fract() == 0.0 && (100.0..=500.0).contains(&desktop_scale_factor) {
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "the integral scale factor is validated in 100..=500"
+                    )]
+                    let factor = desktop_scale_factor as u32;
+                    self.0.borrow_mut().desktop_scale_factor = Some(factor);
+                } else {
+                    warn!(desktop_scale_factor, "Invalid desktop scale factor; ignored");
+                }
+            };
+            |color_depth: f64| {
+                if [15.0, 16.0, 24.0, 32.0].contains(&color_depth) {
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "the color depth is validated against the supported values"
+                    )]
+                    let depth = color_depth as u32;
+                    self.0.borrow_mut().color_depth = Some(depth);
+                } else {
+                    warn!(color_depth, "Unsupported color depth; ignored");
+                }
+            };
+            |monitor_layout: JsValue| {
+                if let Some(layout) = parse_monitor_layout(&monitor_layout) {
+                    self.0.borrow_mut().monitor_layout = Some(layout);
+                } else {
+                    warn!("Invalid monitor layout; ignored");
+                }
+            };
+            |monitor_layout_callback: JsValue| {
+                self.0.borrow_mut().monitor_layout_callback = monitor_layout_callback.dyn_into::<js_sys::Function>().ok();
+            };
+            |client_name: String| {
+                if !client_name.is_empty() {
+                    self.0.borrow_mut().client_name = client_name;
+                }
+            };
+            |keyboard_layout: f64| {
+                if keyboard_layout.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(&keyboard_layout) {
+                    #[expect(
+                        clippy::as_conversions,
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "the integral layout is validated in the u32 range"
+                    )]
+                    let layout = keyboard_layout as u32;
+                    self.0.borrow_mut().keyboard_layout = layout;
+                } else {
+                    warn!(keyboard_layout, "Invalid keyboard layout; ignored");
+                }
             };
             // File transfer callbacks - protocol-specific, routed through extension()
             // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
@@ -477,8 +576,34 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             security,
         );
 
+        // Audio playback (RDPSND) when a callback takes the audio.
+        let audio_playback_callback = self.0.borrow().audio_playback_callback.clone();
+        config.enable_audio_playback = audio_playback_callback.is_some();
+
         let enable_server_pointer = self.0.borrow().enable_server_pointer;
         config.enable_server_pointer = enable_server_pointer;
+        config.keyboard_layout = self.0.borrow().keyboard_layout;
+
+        if let Some(performance_flags) = self.0.borrow().performance_flags {
+            config.performance_flags = performance_flags;
+        }
+
+        if let Some(factor) = self.0.borrow().desktop_scale_factor {
+            config.desktop_scale_factor = factor;
+            config.device_scale_factor = Some(DeviceScaleFactor::from_desktop_scale_factor(factor).value());
+        }
+        if let (Some(depth), Some(bitmap)) = (self.0.borrow().color_depth, config.bitmap.as_mut()) {
+            bitmap.color_depth = depth;
+        }
+
+        let monitor_layout = self.0.borrow().monitor_layout.clone();
+        let monitor_layout_callback = self.0.borrow().monitor_layout_callback.clone();
+        if let Some(layout) = monitor_layout {
+            config.desktop_size = layout.desktop_size;
+            config.monitor_layout = Some(ironrdp::pdu::gcc::ClientMonitorData {
+                monitors: layout.monitors,
+            });
+        }
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
@@ -558,6 +683,20 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         let use_display_control = self.0.borrow().use_display_control;
 
+        // Camera redirection (RDPECAM) when a callback takes the capture requests.
+        let camera_callback = self.0.borrow().camera_callback.clone();
+        let camera = camera_callback.as_ref().map(|_| crate::camera::CameraSink::default());
+        let camera_channels = camera
+            .as_ref()
+            .map(|sink| {
+                crate::camera::channels(
+                    input_events_tx.clone(),
+                    sink.clone(),
+                    self.0.borrow().camera_name.clone(),
+                )
+            })
+            .transpose()?;
+
         let (connection_result, ws, leftover) = connect(ConnectParams {
             ws,
             config,
@@ -573,6 +712,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name,
             computer_name: client_name.clone(),
             use_display_control,
+            audio_backend: audio_playback_callback
+                .is_some()
+                .then(|| crate::audio::WasmAudioBackend::new(input_events_tx.clone())),
+            camera_channels,
         })
         .await?;
 
@@ -593,6 +736,10 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             render_canvas,
             set_cursor_style_callback,
             set_cursor_style_callback_context,
+            audio_playback_callback,
+            camera_callback,
+            camera,
+            monitor_layout_callback,
 
             input_events_rx: RefCell::new(Some(input_events_rx)),
             rdp_reader: RefCell::new(Some((rdp_reader, leftover))),
@@ -601,6 +748,99 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer: RefCell::new(Some(printer)),
         })
     }
+}
+
+#[derive(Clone)]
+struct MonitorLayout {
+    monitors: Vec<ironrdp::pdu::gcc::Monitor>,
+    desktop_size: connector::DesktopSize,
+}
+
+/// Parses the [Client Monitor Data] fields left, top, right, bottom and flags for each monitor.
+///
+/// [Client Monitor Data]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8029f8e-01e1-4f19-af67-bcad5bdef624
+fn parse_monitor_layout(value: &JsValue) -> Option<MonitorLayout> {
+    if value.is_null() || value.is_undefined() {
+        return None;
+    }
+
+    const MONITOR_FIELDS: usize = 5;
+    const MAX_MONITOR_VALUES: usize = MONITOR_FIELDS * ironrdp::pdu::gcc::MONITOR_COUNT_MAX;
+    let values = js_sys::try_iter(value)
+        .ok()??
+        .take(MAX_MONITOR_VALUES + 1)
+        .map(|v| v.ok()?.as_f64())
+        .collect::<Option<Vec<f64>>>()?;
+    if values.is_empty() || values.len() % MONITOR_FIELDS != 0 || MAX_MONITOR_VALUES < values.len() {
+        return None;
+    }
+    let int = |v: f64| -> Option<i32> {
+        if v.fract() != 0.0 || !(f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&v) {
+            return None;
+        }
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            reason = "the integral value is within the i32 range"
+        )]
+        Some(v as i32)
+    };
+    let flags = |v: f64| -> Option<u32> {
+        if v.fract() != 0.0 || !(0.0..=f64::from(u32::MAX)).contains(&v) {
+            return None;
+        }
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the integral value is within the u32 range"
+        )]
+        Some(v as u32)
+    };
+    let monitors = values
+        .chunks_exact(MONITOR_FIELDS)
+        .map(|m| {
+            Some(ironrdp::pdu::gcc::Monitor {
+                left: int(m[0])?,
+                top: int(m[1])?,
+                right: int(m[2])?,
+                bottom: int(m[3])?,
+                flags: ironrdp::pdu::gcc::MonitorFlags::from_bits_retain(flags(m[4])?),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    let mut has_primary = false;
+    for monitor in &monitors {
+        if !(monitor.left <= monitor.right && monitor.top <= monitor.bottom) {
+            return None;
+        }
+        if monitor.flags.contains(ironrdp::pdu::gcc::MonitorFlags::PRIMARY) {
+            if has_primary || monitor.left != 0 || monitor.top != 0 {
+                return None;
+            }
+            has_primary = true;
+        }
+        left = left.min(monitor.left);
+        top = top.min(monitor.top);
+        right = right.max(monitor.right);
+        bottom = bottom.max(monitor.bottom);
+    }
+
+    let width = i64::from(right).checked_sub(i64::from(left))?.checked_add(1)?;
+    let height = i64::from(bottom).checked_sub(i64::from(top))?.checked_add(1)?;
+    if !has_primary || !(200..=32_766).contains(&width) || !(200..=32_766).contains(&height) {
+        return None;
+    }
+
+    Some(MonitorLayout {
+        monitors,
+        desktop_size: connector::DesktopSize {
+            width: u16::try_from(width).ok()?,
+            height: u16::try_from(height).ok()?,
+        },
+    })
 }
 
 pub(crate) type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
@@ -612,6 +852,12 @@ pub(crate) enum RdpInputEvent {
     /// Printer backend → event loop: a print job finished and its bytes are
     /// ready for delivery to JS. See [`crate::printer::PrinterBackendMessage`].
     Printer(crate::printer::PrinterBackendMessage),
+    /// RDPSND backend → event loop: audio for the JS callback. See [`crate::audio::AudioMessage`].
+    Audio(crate::audio::AudioMessage),
+    /// Camera backend → event loop: a capture request for the JS callback. See [`crate::camera::CameraMessage`].
+    Camera(crate::camera::CameraMessage),
+    /// Camera backend → event loop: device channel PDUs for the server, already encoded.
+    CameraUplink(crate::camera::CameraUplink),
     FastPath(FastPathInputEvents),
     Resize {
         width: u32,
@@ -641,6 +887,11 @@ pub(crate) struct Session {
     render_canvas: HtmlCanvasElement,
     set_cursor_style_callback: js_sys::Function,
     set_cursor_style_callback_context: JsValue,
+    audio_playback_callback: Option<js_sys::Function>,
+    camera_callback: Option<js_sys::Function>,
+    /// Takes the frames JS pushes with `camera_sample`, when the camera is on.
+    camera: Option<crate::camera::CameraSink>,
+    monitor_layout_callback: Option<js_sys::Function>,
 
     // Consumed when `run` is called
     input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
@@ -652,6 +903,26 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    // UNTESTED: The callback receives layouts from a live server.
+    // Server interoperability failures can leave the application's monitor geometry stale.
+    // When changing these paths, verify activation, reactivation and layout changes with a server.
+    fn report_monitor_layout(&self, monitors: &[ironrdp::pdu::gcc::Monitor]) {
+        let Some(callback) = &self.monitor_layout_callback else {
+            return;
+        };
+        let values = js_sys::Array::new();
+        for monitor in monitors {
+            values.push(&JsValue::from(monitor.left));
+            values.push(&JsValue::from(monitor.top));
+            values.push(&JsValue::from(monitor.right));
+            values.push(&JsValue::from(monitor.bottom));
+            values.push(&JsValue::from(monitor.flags.bits()));
+        }
+        if let Err(error) = callback.call1(&JsValue::NULL, &values) {
+            warn!(?error, "Monitor layout callback failed");
+        }
+    }
+
     fn h_send_inputs(&self, inputs: smallvec::SmallVec<[FastPathInputEvent; 2]>) -> Result<(), IronError> {
         if !inputs.is_empty() {
             trace!("Inputs: {inputs:?}");
@@ -715,6 +986,10 @@ impl iron_remote_desktop::Session for Session {
             .borrow_mut()
             .take()
             .expect("run called only once");
+
+        if let Some(layout) = &connection_result.monitor_layout {
+            self.report_monitor_layout(&layout.monitors);
+        }
 
         let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
         let mut wasm_printer = self.printer.borrow_mut().take().expect("run called only once");
@@ -946,6 +1221,25 @@ impl iron_remote_desktop::Session for Session {
                             }
                             Vec::new()
                         }
+                        RdpInputEvent::Audio(message) => {
+                            if let Some(callback) = &self.audio_playback_callback {
+                                if let Err(error) = callback.call1(&JsValue::NULL, &crate::audio::to_js(message)) {
+                                    warn!(?error, "Audio playback callback failed");
+                                }
+                            }
+                            Vec::new()
+                        }
+                        RdpInputEvent::Camera(message) => {
+                            if let Some(callback) = &self.camera_callback {
+                                if let Err(error) = callback.call1(&JsValue::NULL, &crate::camera::to_js(message)) {
+                                    warn!(?error, "Camera callback failed");
+                                }
+                            }
+                            Vec::new()
+                        }
+                        RdpInputEvent::CameraUplink(uplink) => {
+                            vec![ActiveStageOutput::ResponseFrame(active_stage.encode_dvc_messages(uplink.into_messages())?)]
+                        }
                         RdpInputEvent::TerminateSession => {
                             active_stage.graceful_shutdown()
                                 .context("graceful shutdown")?
@@ -1008,24 +1302,21 @@ impl iron_remote_desktop::Session for Session {
                         //
                         // Therefore, we need to scale the cursor sprite down to 32x32 if it is
                         // bigger than that.
-                        const MAX_CURSOR_SIZE: u16 = 32;
-                        // INVARIANT: 0 < scale <= 1.0
-                        // INVARIANT: pointer.width * scale <= MAX_CURSOR_SIZE
-                        // INVARIANT: pointer.height * scale <= MAX_CURSOR_SIZE
-                        let scale = if pointer.width >= pointer.height && pointer.width > MAX_CURSOR_SIZE {
-                            Some(f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.width))
-                        } else if pointer.height > MAX_CURSOR_SIZE {
-                            Some(f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.height))
-                        } else {
-                            None
-                        };
+                        // Its transparent margin is cut off first, so that only what shows is scaled, if anything.
+                        // UNTESTED: the size, hotspot and pixels below all come from the cropped pointer.
+                        // Mixing in the original's would misplace the hotspot or shrink the arrow again.
+                        // When changing this code, check that the shadowed `pointer` still covers all three.
+                        let cropped = crate::cursor::crop_transparent(&pointer);
+                        let pointer = cropped.as_ref().unwrap_or(&pointer);
+                        let scaled = crate::cursor::scaled_to_fit(pointer);
 
-                        let (png_width, png_height, hotspot_x, hotspot_y, rgba_buffer) = if let Some(scale) = scale {
-                            // Per invariants: Following conversions will never saturate.
-                            let scaled_width = f64_to_u16_saturating_cast(f64::from(pointer.width) * scale);
-                            let scaled_height = f64_to_u16_saturating_cast(f64::from(pointer.height) * scale);
-                            let hotspot_x = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_x) * scale);
-                            let hotspot_y = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale);
+                        let (png_width, png_height, hotspot_x, hotspot_y, rgba_buffer) = if let Some(scaled) = scaled {
+                            let crate::cursor::Scaled {
+                                width: scaled_width,
+                                height: scaled_height,
+                                hotspot_x,
+                                hotspot_y,
+                            } = scaled;
 
                             // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
                             #[expect(clippy::arithmetic_side_effects)]
@@ -1089,10 +1380,8 @@ impl iron_remote_desktop::Session for Session {
                         })?;
                     }
                     ActiveStageOutput::MonitorLayout(monitors) => {
-                        debug!(
-                            monitor_count = monitors.len(),
-                            "Received remote monitor layout without multi-monitor support"
-                        );
+                        debug!(monitor_count = monitors.len(), "Received remote monitor layout");
+                        self.report_monitor_layout(&monitors);
                     }
                     ActiveStageOutput::WindowingOrders(_) | ActiveStageOutput::WindowSurfaceUpdates(_) => {
                         // RemoteApp windows are not meaningful to the protocol-agnostic web component.
@@ -1133,6 +1422,9 @@ impl iron_remote_desktop::Session for Session {
                             } = connection_activation.connection_activation_state()
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
+                                if let Some(layout) = connection_activation.monitor_layout() {
+                                    self.report_monitor_layout(&layout.monitors);
+                                }
                                 // Release the previous framebuffer first so the probe and the new allocation do not
                                 // compete with it for linear memory.
                                 drop(image);
@@ -1343,6 +1635,15 @@ impl iron_remote_desktop::Session for Session {
                     .map_err(IronError::from)?;
 
                 return Ok(JsValue::NULL);
+            };
+            |camera_sample: JsValue| {
+                let Some(camera) = &self.camera else {
+                    return Err(IronError::from(anyhow::Error::msg("camera is not enabled")));
+                };
+                let sample = camera_sample
+                    .dyn_into::<js_sys::Uint8Array>()
+                    .map_err(|_| IronError::from(anyhow::Error::msg("camera_sample expects a Uint8Array")))?;
+                return Ok(JsValue::from_bool(camera.push(|| sample.to_vec())));
             };
         }
 
@@ -1663,6 +1964,8 @@ struct ConnectParams {
     /// `computer_name` when constructing the `Rdpdr` processor.
     computer_name: String,
     use_display_control: bool,
+    audio_backend: Option<crate::audio::WasmAudioBackend>,
+    camera_channels: Option<crate::camera::CameraChannels>,
 }
 
 fn default_printer_driver_name() -> String {
@@ -1697,6 +2000,49 @@ fn macos_major_version_from_user_agent(user_agent: &str) -> Option<u32> {
         .and_then(|major| major.parse().ok())
 }
 
+fn attach_audio_and_printer_channels(
+    connector: &mut ClientConnector,
+    audio_backend: Option<crate::audio::WasmAudioBackend>,
+    printer_backend: Option<WasmPrinterBackend>,
+    printer_device_id: u32,
+    printer_name: String,
+    printer_driver_name: String,
+    computer_name: String,
+) {
+    // UNTESTED: Live Windows/GNOME servers must deliver PCM to the registered callback.
+    // Channel tests cover local advertisement and negotiation; play a remote sound in the
+    // browser when changing this setup to check server interoperability and callback delivery.
+    let audio = audio_backend.is_some();
+    if let Some(audio_backend) = audio_backend {
+        connector.attach_static_channel(Rdpsnd::new(Box::new(audio_backend)));
+        // Windows servers require RDPDR to be advertised before sending RDPSND traffic
+        // (MS-RDPEA Appendix A<1>); without a printer, advertise it without any devices.
+        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/deaaab30-d4d6-473e-ac56-3f76c4f6fb24#Appendix_A_1
+        if printer_backend.is_none() {
+            connector.attach_static_channel(Rdpdr::new(
+                Box::new(ironrdp::rdpdr::NoopRdpdrBackend),
+                computer_name.clone(),
+            ));
+        }
+    }
+
+    if let Some(printer_backend) = printer_backend {
+        // Windows servers only speak on RDPDR when RDPSND is advertised too
+        // (MS-RDPEFS Appendix A<1>). Without audio playback, the no-op RDPSND
+        // processor satisfies that channel dependency.
+        if !audio {
+            connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
+        }
+        connector.attach_static_channel(
+            Rdpdr::new(Box::new(printer_backend), computer_name).with_printer_driver(
+                printer_device_id,
+                printer_name,
+                printer_driver_name,
+            ),
+        );
+    }
+}
+
 async fn connect(
     ConnectParams {
         ws,
@@ -1713,6 +2059,8 @@ async fn connect(
         printer_driver_name,
         computer_name,
         use_display_control,
+        audio_backend,
+        camera_channels,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket, BytesMut), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
@@ -1726,24 +2074,25 @@ async fn connect(
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
     }
 
-    if let Some(printer_backend) = printer_backend {
-        // Windows servers only speak on RDPDR when RDPSND is advertised too
-        // (MS-RDPEFS Appendix A<1>). We do not play audio in the web client,
-        // but the no-op RDPSND processor satisfies that channel dependency.
-        connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
-        connector.attach_static_channel(
-            Rdpdr::new(Box::new(printer_backend), computer_name).with_printer_driver(
-                printer_device_id,
-                printer_name,
-                printer_driver_name,
-            ),
-        );
-    }
+    attach_audio_and_printer_channels(
+        &mut connector,
+        audio_backend,
+        printer_backend,
+        printer_device_id,
+        printer_name,
+        printer_driver_name,
+        computer_name,
+    );
 
-    if use_display_control {
-        connector.attach_static_channel(
-            DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        );
+    if use_display_control || camera_channels.is_some() {
+        let mut drdynvc = DrdynvcClient::new();
+        if use_display_control {
+            drdynvc = drdynvc.with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+        }
+        if let Some((enumeration, device)) = camera_channels {
+            drdynvc = drdynvc.with_dynamic_channel(enumeration).with_listener(device);
+        }
+        connector.attach_static_channel(drdynvc);
     }
 
     let kerberos_config = url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str())
@@ -2042,11 +2391,6 @@ fn ensure_framebuffer_allocatable(desktop_size: connector::DesktopSize) -> anyho
     Ok(())
 }
 
-#[expect(clippy::as_conversions, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-fn f64_to_u16_saturating_cast(value: f64) -> u16 {
-    value as u16
-}
-
 #[cfg(test)]
 mod tests {
     use futures_util::io::Cursor;
@@ -2109,6 +2453,124 @@ mod tests {
             vmconnect: None,
             kerberos_config: None,
         }
+    }
+
+    fn audio_test_connector(audio: bool, printer: bool) -> ClientConnector {
+        let (tx, _rx) = mpsc::unbounded();
+        let mut connector = ClientConnector::new(
+            connector_config(SecurityConfig {
+                enable_credssp: true,
+                enable_standard_rdp_security: false,
+            }),
+            core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
+        );
+        attach_audio_and_printer_channels(
+            &mut connector,
+            audio.then(|| crate::audio::WasmAudioBackend::new(tx.clone())),
+            printer.then(|| WasmPrinterBackend::new(crate::printer::WasmPrinterMessageProxy::new(tx.clone()))),
+            7,
+            "Test printer".to_owned(),
+            DEFAULT_PRINTER_DRIVER_NAME.to_owned(),
+            "ironrdp-web-test".to_owned(),
+        );
+        connector
+    }
+
+    fn assert_audio_and_device_channels(connector: &ClientConnector) {
+        let channels: Vec<_> = connector
+            .static_channels
+            .values()
+            .map(|channel| channel.channel_name())
+            .collect();
+        assert_eq!(channels.len(), 2, "unexpected channels: {channels:?}");
+        assert!(channels.contains(&Rdpsnd::NAME), "missing RDPSND: {channels:?}");
+        assert!(channels.contains(&Rdpdr::NAME), "missing RDPDR: {channels:?}");
+    }
+
+    fn audio_test_format() -> ironrdp::rdpsnd::pdu::AudioFormat {
+        ironrdp::rdpsnd::pdu::AudioFormat {
+            format: ironrdp::rdpsnd::pdu::WaveFormat::PCM,
+            n_channels: 2,
+            n_samples_per_sec: 48_000,
+            n_avg_bytes_per_sec: 192_000,
+            n_block_align: 4,
+            bits_per_sample: 16,
+            data: None,
+        }
+    }
+
+    fn negotiate_audio_formats(connector: &mut ClientConnector) -> Vec<ironrdp::rdpsnd::pdu::AudioFormat> {
+        use ironrdp::rdpsnd::pdu;
+        use ironrdp_core::{decode, encode_vec};
+        use ironrdp_svc::SvcProcessor as _;
+
+        let rdpsnd = connector
+            .get_static_channel_processor_mut::<Rdpsnd>()
+            .expect("RDPSND attached");
+        let response = rdpsnd
+            .process(
+                &encode_vec(&pdu::ServerAudioOutputPdu::AudioFormat(pdu::ServerAudioFormatPdu {
+                    version: pdu::Version::V8,
+                    formats: vec![audio_test_format()],
+                }))
+                .expect("encode server formats"),
+            )
+            .expect("negotiate audio formats");
+        let encoded = response[0].encode_unframed_pdu().expect("encode client formats");
+        let pdu::ClientAudioOutputPdu::AudioFormat(reply) = decode(&encoded).expect("decode client formats") else {
+            panic!("expected client audio formats");
+        };
+        reply.formats
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn no_audio_or_printer_attaches_neither_channel() {
+        // oracle: mutant attaching redirection channels when both features are disabled.
+        let connector = audio_test_connector(false, false);
+        assert_eq!(connector.static_channels.values().count(), 0);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn audio_only_attaches_device_less_rdpdr() {
+        // oracle: spec MS-RDPEA Appendix A<1> requires RDPDR advertisement for Windows audio.
+        // oracle: mutant replacing the playback backend with a no-op or enabling a printer.
+        let mut connector = audio_test_connector(true, false);
+        assert_audio_and_device_channels(&connector);
+        let rdpdr = connector
+            .get_static_channel_processor::<Rdpdr>()
+            .expect("RDPDR attached");
+        assert!(rdpdr.downcast_backend::<ironrdp::rdpdr::NoopRdpdrBackend>().is_some());
+        assert_eq!(negotiate_audio_formats(&mut connector), [audio_test_format()]);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn printer_only_attaches_noop_audio() {
+        // oracle: spec MS-RDPEFS Appendix A<1> requires RDPSND advertisement for Windows RDPDR.
+        // oracle: mutant enabling playback without its callback or discarding the printer backend.
+        let mut connector = audio_test_connector(false, true);
+        assert_audio_and_device_channels(&connector);
+        let rdpdr = connector
+            .get_static_channel_processor::<Rdpdr>()
+            .expect("RDPDR attached");
+        assert!(rdpdr.downcast_backend::<WasmPrinterBackend>().is_some());
+        assert_eq!(negotiate_audio_formats(&mut connector), []);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn audio_and_printer_channels_preserve_both_backends() {
+        // oracle: spec MS-RDPEA and MS-RDPEFS Appendix A<1> require both channel advertisements.
+        // oracle: mutant replacing playback with the printer's no-op RDPSND or discarding the printer.
+        let mut connector = audio_test_connector(true, true);
+        assert_audio_and_device_channels(&connector);
+        let rdpdr = connector
+            .get_static_channel_processor::<Rdpdr>()
+            .expect("RDPDR attached");
+        assert!(rdpdr.downcast_backend::<WasmPrinterBackend>().is_some());
+        assert_eq!(negotiate_audio_formats(&mut connector), [audio_test_format()]);
     }
 
     #[test]
@@ -2650,3 +3112,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "monitor_layout_tests.rs"]
+mod monitor_layout_tests;

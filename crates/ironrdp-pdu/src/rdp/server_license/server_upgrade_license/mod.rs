@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests;
 
+use core::fmt;
+
 use ironrdp_core::{
     Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor, cast_length, ensure_fixed_part_size,
     ensure_size, invalid_field_err,
@@ -8,7 +10,7 @@ use ironrdp_core::{
 
 use super::{
     BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, MAC_SIZE,
-    PreambleType, ServerLicenseError, UTF8_NULL_TERMINATOR_SIZE, UTF16_NULL_TERMINATOR_SIZE,
+    PreambleType, ServerLicenseError, UTF8_NULL_TERMINATOR_SIZE, UTF16_NULL_TERMINATOR_SIZE, Withheld,
 };
 use crate::crypto::rc4::Rc4;
 use crate::utils;
@@ -19,11 +21,13 @@ const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 /// [2.2.2.6] Server Upgrade License (SERVER_UPGRADE_LICENSE)
 ///
 /// [2.2.2.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/e8339fbd-1fe3-42c2-a599-27c04407166d
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ServerUpgradeLicense {
     pub license_header: LicenseHeader,
+    /// INVARIANT: `Debug` output withholds this field.
     pub encrypted_license_info: Vec<u8>,
+    /// INVARIANT: `Debug` output withholds this field.
     pub mac_data: Vec<u8>,
 }
 
@@ -96,13 +100,14 @@ impl ServerUpgradeLicense {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseInformation {
     pub version: u32,
     pub scope: String,
     pub company_name: String,
     pub product_id: String,
+    /// INVARIANT: `Debug` output withholds this field.
     pub license_info: Vec<u8>,
 }
 
@@ -181,5 +186,27 @@ impl<'de> Decode<'de> for LicenseInformation {
             product_id,
             license_info,
         })
+    }
+}
+
+impl fmt::Debug for ServerUpgradeLicense {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerUpgradeLicense")
+            .field("license_header", &self.license_header)
+            .field("encrypted_license_info", &Withheld(&self.encrypted_license_info))
+            .field("mac_data", &Withheld(&self.mac_data))
+            .finish()
+    }
+}
+
+impl fmt::Debug for LicenseInformation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LicenseInformation")
+            .field("version", &self.version)
+            .field("scope", &self.scope)
+            .field("company_name", &self.company_name)
+            .field("product_id", &self.product_id)
+            .field("license_info", &Withheld(&self.license_info))
+            .finish()
     }
 }

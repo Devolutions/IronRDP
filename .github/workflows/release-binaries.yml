@@ -81,7 +81,7 @@ jobs:
             target: x86_64-apple-darwin
             os_arch: macos-x64
             macos_deployment_target: '10.13'
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
             os_arch: macos-arm64
             macos_deployment_target: '11.0'

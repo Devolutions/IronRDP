@@ -17,8 +17,8 @@ use futures_channel::mpsc;
 use iron_remote_desktop::ClipboardData as _;
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackend};
 use ironrdp::cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsFlags,
-    FileContentsRequest, FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
+    ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FORMAT_NAME_FILE_LIST,
+    FileContentsFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
 };
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html};
@@ -387,7 +387,7 @@ impl WasmClipboard {
         self.remote_mapping.clear();
         self.pending_file_list_paste = None;
 
-        // We accumulate all formats in the `remote_formats_to_read` attribute.
+        // We accumulate the formats to fetch in the `remote_formats_to_read` attribute.
         // Later, we loop over and fetch all of these (see `process_remote_data_response`).
         //
         // SAFETY (stale response concern): clearing both `remote_mapping` and
@@ -399,7 +399,7 @@ impl WasmClipboard {
         // new format list, so stale data cannot be misattributed to a new format.
         self.remote_formats_to_read.clear();
 
-        // In this loop, we ignore some formats. There are two reasons for that:
+        // We don't fetch every format. There are two reasons for that:
         //
         // 1) Some formats require an extra conversion into the appropriate MIME format
         // prior to being written to the system clipboard.
@@ -410,86 +410,76 @@ impl WasmClipboard {
         // 2) A direct consequence of 1) is that some formats will end up being mapped
         // into the same MIME type. Fetching only one of these is enough, especially given
         // that delayed rendering is not an option.
-        for format in &formats {
-            if format.id().is_registered() {
-                if let Some(name) = format.name() {
-                    // [MS-RDPECLIP] 2.2.5.2 FileGroupDescriptorW: file transfer format.
-                    // Handled separately from text/image because the cliprdr layer's
-                    // `initiate_paste()` + `handle_format_data_response()` intercept path
-                    // parses the file descriptors and calls `on_remote_file_list()`.
-                    // We defer this paste until after all text/image formats are fetched
-                    // to avoid conflicts with the FormatDataRequest/Response chain.
-                    if name.value() == ClipboardFormatName::FILE_LIST.value() {
-                        self.pending_file_list_paste = Some(format.id());
-                        continue;
-                    }
+        //
+        // So each MIME type is fetched once, from the first format of its preferred kind in the list.
+        // The list is the server's, of any length: it is gone through once, and nothing in it is fetched twice.
+        let mut text = None;
+        let mut mime_html = None;
+        let mut win_html = None;
+        let mut png = None;
+        let mut mime_png = None;
+        let mut dibv5 = None;
+        let mut dib = None;
+        let mut file_list = None;
 
-                    const SUPPORTED_FORMATS: &[&str] = &[
-                        FORMAT_WIN_HTML.name,
-                        FORMAT_MIME_HTML.name,
-                        FORMAT_PNG.name,
-                        FORMAT_MIME_PNG.name,
-                    ];
-
-                    if !SUPPORTED_FORMATS.iter().any(|supported| *supported == name.value()) {
-                        // Unknown format
-                        continue;
-                    }
-
-                    let skip_win_html = format_name_eq(format, FORMAT_WIN_HTML.name)
-                        && formats
-                            .iter()
-                            .any(|format| format_name_eq(format, FORMAT_MIME_HTML.name));
-
-                    let skip_mime_png = format_name_eq(format, FORMAT_MIME_PNG.name)
-                        && formats.iter().any(|format| format_name_eq(format, FORMAT_PNG.name));
-
-                    if skip_win_html || skip_mime_png {
-                        continue;
-                    }
-
-                    self.remote_mapping.insert(format.id(), name.value().to_owned());
+        for (position, format) in formats.iter().enumerate() {
+            let first = if format.id().is_registered() {
+                match format.name().map(ClipboardFormatName::value) {
+                    Some(FORMAT_MIME_HTML_NAME) => &mut mime_html,
+                    Some(FORMAT_WIN_HTML_NAME) => &mut win_html,
+                    Some(FORMAT_PNG_NAME) => &mut png,
+                    Some(FORMAT_MIME_PNG_NAME) => &mut mime_png,
+                    Some(FORMAT_NAME_FILE_LIST) => &mut file_list,
+                    // Unknown format, or one without a name: nothing to make of its data.
+                    _ => continue,
                 }
             } else {
-                const SUPPORTED_FORMATS: &[ClipboardFormatId] = &[
-                    ClipboardFormatId::CF_UNICODETEXT,
-                    ClipboardFormatId::CF_DIB,
-                    ClipboardFormatId::CF_DIBV5,
-                ];
-
-                if !SUPPORTED_FORMATS.contains(&format.id()) {
+                match format.id() {
+                    ClipboardFormatId::CF_UNICODETEXT => &mut text,
+                    ClipboardFormatId::CF_DIBV5 => &mut dibv5,
+                    ClipboardFormatId::CF_DIB => &mut dib,
                     // Unknown format
-                    continue;
+                    _ => continue,
                 }
+            };
 
-                let skip_dib = format.id() == ClipboardFormatId::CF_DIB
-                    && formats.iter().any(|format| {
-                        format.id() == ClipboardFormatId::CF_DIBV5
-                            || format_name_eq(format, FORMAT_MIME_PNG.name)
-                            || format_name_eq(format, FORMAT_PNG.name)
-                    });
+            if first.is_none() {
+                *first = Some((position, format));
+            }
+        }
 
-                let skip_dibv5 = format.id() == ClipboardFormatId::CF_DIBV5
-                    && formats.iter().any(|format| {
-                        format_name_eq(format, FORMAT_MIME_PNG.name) || format_name_eq(format, FORMAT_PNG.name)
-                    });
+        // [MS-RDPECLIP] 2.2.5.2 FileGroupDescriptorW: file transfer format.
+        // Handled separately from text/image because the cliprdr layer's
+        // `initiate_paste()` + `handle_format_data_response()` intercept path
+        // parses the file descriptors and calls `on_remote_file_list()`.
+        // We defer this paste until after all text/image formats are fetched
+        // to avoid conflicts with the FormatDataRequest/Response chain.
+        // The first one in the list is the one the cliprdr layer intercepts the response for.
+        self.pending_file_list_paste = file_list.map(|(_, format)| format.id());
 
-                if skip_dib || skip_dibv5 {
-                    continue;
+        let html = mime_html.or(win_html);
+        let image = png.or(mime_png).or(dibv5).or(dib);
+
+        // Queued in the order of the list (`remote_formats_to_read` is fetched from its end).
+        let mut fetched = [text, html, image];
+        fetched.sort_unstable_by_key(|first| first.map(|(position, _)| position));
+
+        for (_, format) in fetched.into_iter().flatten() {
+            // A format listed under two names is fetched once.
+            if self.remote_formats_to_read.contains(&format.id()) {
+                continue;
+            }
+
+            if format.id().is_registered() {
+                if let Some(name) = format.name() {
+                    self.remote_mapping.insert(format.id(), name.value().to_owned());
                 }
             }
 
             self.remote_formats_to_read.push(format.id());
         }
 
-        return Ok(self.remote_formats_to_read.last().copied());
-
-        fn format_name_eq(format: &ClipboardFormat, name: &str) -> bool {
-            format
-                .name()
-                .map(|actual: &ClipboardFormatName| actual.value() == name)
-                .unwrap_or(false)
-        }
+        Ok(self.remote_formats_to_read.last().copied())
     }
 
     fn process_remote_data_response(&mut self, response: FormatDataResponse<'_>) -> anyhow::Result<()> {
@@ -1785,5 +1775,167 @@ mod tests {
             clipboard.pending_file_list_paste, None,
             "New FormatList without files should clear pending file paste"
         );
+    }
+
+    // Callbacks made without JavaScript, for tests that run on the host (`cargo test`) as well: calling one panics
+    // there, so a test that passes on the host shows that JavaScript wasn't called.
+    fn inert_callbacks() -> JsClipboardCallbacks {
+        let inert = || JsValue::UNDEFINED.unchecked_into::<js_sys::Function>();
+        JsClipboardCallbacks {
+            on_remote_clipboard_changed: inert(),
+            on_force_clipboard_update: Some(inert()),
+            on_files_available: Some(inert()),
+            on_file_contents_request: Some(inert()),
+            on_file_contents_response: Some(inert()),
+            on_lock: Some(inert()),
+            on_unlock: Some(inert()),
+            on_locks_expired: Some(inert()),
+            on_format_list_response: Some(inert()),
+        }
+    }
+
+    fn inert_clipboard() -> (WasmClipboard, mpsc::UnboundedReceiver<RdpInputEvent>) {
+        let (proxy, rx) = create_test_proxy();
+        (WasmClipboard::new(proxy, inert_callbacks()), rx)
+    }
+
+    fn named_format(id: u32, name: &'static str) -> ClipboardFormat {
+        ClipboardFormat::new(ClipboardFormatId::new(id)).with_name(ClipboardFormatName::new_static(name))
+    }
+
+    // oracle: mutant a MIME type fetched twice, or from a format other than the first of its preferred kind
+    #[test]
+    fn remote_format_list_fetches_each_mime_type_once() {
+        // HTML with a picture, as a browser on Windows copies it.
+        let formats = vec![
+            named_format(0xC0A1, "HTML Format"),
+            ClipboardFormat::new(ClipboardFormatId::CF_DIB),
+            named_format(0xC0A2, "text/html"),
+            ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+            named_format(0xC0A3, "image/png"),
+            ClipboardFormat::new(ClipboardFormatId::CF_DIBV5),
+            named_format(0xC0A4, "PNG"),
+        ];
+        let (mut clipboard, _rx) = inert_clipboard();
+
+        let first = clipboard.process_remote_clipboard_changed(formats).unwrap();
+
+        // "text/html" over "HTML Format", "PNG" over the other pictures, in the order of the list.
+        assert_eq!(
+            clipboard.remote_formats_to_read,
+            [
+                ClipboardFormatId::new(0xC0A2),
+                ClipboardFormatId::CF_UNICODETEXT,
+                ClipboardFormatId::new(0xC0A4)
+            ]
+        );
+        assert_eq!(first, Some(ClipboardFormatId::new(0xC0A4)));
+        assert_eq!(clipboard.remote_mapping.len(), 2);
+        assert_eq!(clipboard.remote_mapping[&ClipboardFormatId::new(0xC0A2)], "text/html");
+        assert_eq!(clipboard.remote_mapping[&ClipboardFormatId::new(0xC0A4)], "PNG");
+    }
+
+    // oracle: mutant a format the client converts skipped when its preferred kind is missing, or a DIB over a DIBv5
+    #[test]
+    fn remote_format_list_falls_back_to_the_formats_it_converts() {
+        let formats = vec![
+            named_format(0xC0A1, "HTML Format"),
+            ClipboardFormat::new(ClipboardFormatId::CF_DIB),
+            ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+        ];
+        let (mut clipboard, _rx) = inert_clipboard();
+
+        clipboard.process_remote_clipboard_changed(formats).unwrap();
+
+        assert_eq!(
+            clipboard.remote_formats_to_read,
+            [
+                ClipboardFormatId::new(0xC0A1),
+                ClipboardFormatId::CF_DIB,
+                ClipboardFormatId::CF_UNICODETEXT
+            ]
+        );
+        assert_eq!(clipboard.remote_mapping[&ClipboardFormatId::new(0xC0A1)], "HTML Format");
+
+        // A DIBv5 over a DIB.
+        let formats = vec![
+            ClipboardFormat::new(ClipboardFormatId::CF_DIB),
+            ClipboardFormat::new(ClipboardFormatId::CF_DIBV5),
+        ];
+        clipboard.process_remote_clipboard_changed(formats).unwrap();
+
+        assert_eq!(clipboard.remote_formats_to_read, [ClipboardFormatId::CF_DIBV5]);
+    }
+
+    // oracle: regression #2091 - a format is requested once, however many times the list names it.
+    #[test]
+    fn remote_format_list_fetches_a_format_listed_many_times_once() {
+        // Repeated supported formats must select one request regardless of the list length.
+        let formats = vec![ClipboardFormat::new(ClipboardFormatId::CF_DIB); 1024];
+        let (mut clipboard, _rx) = inert_clipboard();
+
+        let first = clipboard.process_remote_clipboard_changed(formats).unwrap();
+
+        assert_eq!(first, Some(ClipboardFormatId::CF_DIB));
+        assert_eq!(clipboard.remote_formats_to_read, [ClipboardFormatId::CF_DIB]);
+    }
+
+    // oracle: regression #2091 - a format is requested once, however many times the list names it.
+    #[test]
+    fn remote_format_list_fetches_the_first_of_the_formats_with_one_name() {
+        let formats = vec![
+            named_format(0xC001, "text/html"),
+            named_format(0xC002, "text/html"),
+            named_format(0xC003, "PNG"),
+            named_format(0xC004, "PNG"),
+        ];
+        let (mut clipboard, _rx) = inert_clipboard();
+
+        clipboard.process_remote_clipboard_changed(formats).unwrap();
+
+        assert_eq!(
+            clipboard.remote_formats_to_read,
+            [ClipboardFormatId::new(0xC001), ClipboardFormatId::new(0xC003)]
+        );
+    }
+
+    // oracle: regression #2091 - a format is requested once, however many times the list names it.
+    #[test]
+    fn remote_format_list_fetches_a_format_listed_under_two_names_once() {
+        let formats = vec![named_format(0xC001, "text/html"), named_format(0xC001, "PNG")];
+        let (mut clipboard, _rx) = inert_clipboard();
+
+        clipboard.process_remote_clipboard_changed(formats).unwrap();
+
+        assert_eq!(clipboard.remote_formats_to_read, [ClipboardFormatId::new(0xC001)]);
+        assert_eq!(clipboard.remote_mapping[&ClipboardFormatId::new(0xC001)], "text/html");
+    }
+
+    // oracle: reference Devolutions/IronRDP@b9bd944276a2:crates/ironrdp-cliprdr/src/lib.rs - the cliprdr layer
+    // intercepts the response for the first file list only.
+    #[test]
+    fn remote_format_list_takes_the_first_file_list() {
+        // The cliprdr layer intercepts the response for the first one only.
+        let formats = vec![file_list_format(0xC080), file_list_format(0xC081)];
+        let (mut clipboard, _rx) = inert_clipboard();
+
+        clipboard.process_remote_clipboard_changed(formats).unwrap();
+
+        assert_eq!(clipboard.pending_file_list_paste, Some(ClipboardFormatId::new(0xC080)));
+    }
+
+    // oracle: mutant a registered format without a name requested
+    #[test]
+    fn remote_format_list_skips_registered_formats_without_a_name() {
+        // Nothing to make of their data.
+        let formats = vec![
+            ClipboardFormat::new(ClipboardFormatId::new(0xC001)),
+            ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+        ];
+        let (mut clipboard, _rx) = inert_clipboard();
+
+        clipboard.process_remote_clipboard_changed(formats).unwrap();
+
+        assert_eq!(clipboard.remote_formats_to_read, [ClipboardFormatId::CF_UNICODETEXT]);
     }
 }

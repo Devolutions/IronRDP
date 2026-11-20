@@ -101,10 +101,8 @@ impl Encode for ClientCoreData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let mut client_name_dst = utils::to_utf16_bytes(self.client_name.as_ref());
-        client_name_dst.resize(CLIENT_NAME_SIZE - 2, 0);
-        let mut ime_file_name_dst = utils::to_utf16_bytes(self.ime_file_name.as_ref());
-        ime_file_name_dst.resize(IME_FILE_NAME_SIZE - 2, 0);
+        let client_name_dst = utf16_field(&self.client_name, CLIENT_NAME_SIZE - 2);
+        let ime_file_name_dst = utf16_field(&self.ime_file_name, IME_FILE_NAME_SIZE - 2);
 
         dst.write_u32(self.version.0);
         dst.write_u16(self.desktop_width);
@@ -131,6 +129,20 @@ impl Encode for ClientCoreData {
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.optional_data.size()
     }
+}
+
+/// Encodes `value` as UTF-16, cut or padded to `len` bytes.
+///
+/// INVARIANT: the last UTF-16 unit is never an unpaired high surrogate.
+fn utf16_field(value: &str, len: usize) -> Vec<u8> {
+    let mut dst = utils::to_utf16_bytes(value);
+    dst.resize(len, 0);
+    if let Some(unit) = dst.chunks_exact_mut(2).next_back() {
+        if matches!(unit, [_, 0xD8..=0xDB]) {
+            unit.fill(0);
+        }
+    }
+    dst
 }
 
 impl<'de> Decode<'de> for ClientCoreData {

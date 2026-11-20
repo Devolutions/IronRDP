@@ -142,7 +142,8 @@ impl DynamicVirtualChannel {
     }
 }
 
-/// Recent client-closed channels remembered to tolerate data already sent by the server.
+/// Recent channels the client closed or declined, remembered to tolerate data the server sent before it saw
+/// the close or the decline.
 const MAX_CLIENT_CLOSED_CHANNELS: usize = 64;
 
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
@@ -157,7 +158,7 @@ pub struct DrdynvcClient {
     tunnel_channels: BTreeMap<DynamicChannelId, SoftSyncTunnelType>,
     switched_tunnels: BTreeSet<SoftSyncTunnelType>,
     soft_sync_complete: bool,
-    /// Recent client-closed channels and their tunnels, ordered from oldest to newest close.
+    /// Recent channels the client closed or declined, and their tunnels, ordered from oldest to newest.
     client_closed: VecDeque<(DynamicChannelId, Option<SoftSyncTunnelType>)>,
 }
 
@@ -213,12 +214,21 @@ impl DrdynvcClient {
                 .any(|channel| channel.channel_name() == name)
     }
 
+    /// Checks whether a registered listener has the given name and processor type.
+    pub fn has_channel_name_of_type<T: DvcClientProcessor + 'static>(&self, name: &str) -> bool {
+        self.dynamic_channels
+            .listeners
+            .get(name)
+            .is_some_and(|entry| entry.type_id == Some(TypeId::of::<T>()))
+    }
+
     /// Registers a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
-    /// A channel the server closes is kept and started again on its next Create Request
-    /// (xrdp reopens every channel after a Deactivation-Reactivation Sequence), so the
-    /// processor must accept [`DvcProcessor::start`] after [`DvcProcessor::close`].
+    /// A channel that closes, whether the server or the client closes it, is kept and started
+    /// again on the server's next Create Request (xrdp reopens every channel after a
+    /// Deactivation-Reactivation Sequence), so the processor must accept
+    /// [`DvcProcessor::start`] after [`DvcProcessor::close`].
     ///
     /// # Note
     ///
@@ -236,7 +246,7 @@ impl DrdynvcClient {
     /// Attaches a pre-initialized dynamic virtual channel with the [`DrdynvcClient`],
     /// making it available for immediate use when the session starts.
     ///
-    /// A channel the server closes is kept and started again on its next Create Request,
+    /// A channel that closes is kept and started again on the server's next Create Request,
     /// as with [`DrdynvcClient::with_dynamic_channel`].
     ///
     /// # Note
@@ -266,8 +276,19 @@ impl DrdynvcClient {
         T: DvcClientProcessor + 'static,
         F: FnMut() -> T + Send + 'static,
     {
-        self.dynamic_channels.register_factory(channel_name.into(), factory);
+        self.attach_dynamic_channel_factory(channel_name, factory);
         self
+    }
+
+    /// Attaches a factory that creates a fresh processor for each opening.
+    ///
+    /// If a listener or a pre-registered channel with the same name already exists, it will be silently overwritten.
+    pub fn attach_dynamic_channel_factory<T, F>(&mut self, channel_name: impl Into<DynamicChannelName>, factory: F)
+    where
+        T: DvcClientProcessor + 'static,
+        F: FnMut() -> T + Send + 'static,
+    {
+        self.dynamic_channels.register_factory(channel_name.into(), factory);
     }
 
     pub fn attach_established_dynamic_channel<T>(&mut self, channel_id: DynamicChannelId, channel: T) -> PduResult<()>
@@ -416,9 +437,13 @@ impl DrdynvcClient {
         Some((message, tunnel))
     }
 
-    /// Remember a channel the client closed, so that data the server sent before seeing the close is
-    /// dropped instead of failing the connection.
+    /// Remember a channel the client closed or declined, so that data the server sent before seeing the
+    /// close or the decline is dropped instead of failing the connection.
+    ///
+    /// A channel remembered again on the same transport (a server can offer the same channel after every
+    /// reactivation) moves to the newest end of the history instead of taking another entry.
     fn remember_client_close(&mut self, channel_id: DynamicChannelId, tunnel: Option<SoftSyncTunnelType>) {
+        self.client_closed.retain(|closed| *closed != (channel_id, tunnel));
         self.client_closed.push_back((channel_id, tunnel));
         // MS-RDPEDYC 3.2.5.2 specifies no server acknowledgement of a client-initiated close.
         // Bound the history by forgetting the oldest close, regardless of the server's ID order.
@@ -498,7 +523,10 @@ impl DrdynvcClient {
             DrdynvcServerPdu::Data(data) => {
                 let channel_id = data.channel_id();
                 if self.client_closed.contains(&(channel_id, Some(tunnel_type))) {
-                    trace!(channel_id, "Dropping tunneled DVC data for a channel the client closed");
+                    trace!(
+                        channel_id,
+                        "Dropping tunneled DVC data for a channel the client closed or declined"
+                    );
                     return Ok(DvcMessageBatch::new(channel_id, Vec::new()));
                 }
                 let selected_tunnel =
@@ -527,7 +555,7 @@ impl DrdynvcClient {
                     ));
                 }
                 let channel_id = create_request.channel_id();
-                let (created, messages) = self.process_create(create_request)?;
+                let (created, messages) = self.process_create(create_request, Some(tunnel_type))?;
                 if created {
                     self.tunnel_channels.insert(channel_id, tunnel_type);
                 }
@@ -546,8 +574,13 @@ impl DrdynvcClient {
     }
 
     /// Opens the requested dynamic channel and builds its Create Response, followed by any
-    /// start messages. Also returns whether the channel was opened.
-    fn process_create(&mut self, create_request: crate::pdu::CreateRequestPdu) -> PduResult<(bool, Vec<SvcMessage>)> {
+    /// start messages. Also returns whether the channel was opened. `tunnel` is the Soft-Sync
+    /// tunnel the request arrived on, or `None` for the static channel.
+    fn process_create(
+        &mut self,
+        create_request: crate::pdu::CreateRequestPdu,
+        tunnel: Option<SoftSyncTunnelType>,
+    ) -> PduResult<(bool, Vec<SvcMessage>)> {
         let channel_id = create_request.channel_id();
         let channel_name = create_request.into_channel_name();
         let mut responses = Vec::new();
@@ -570,8 +603,16 @@ impl DrdynvcClient {
             };
 
         if creation_status == CreationStatus::OK {
-            // The server reused the ID of a channel the client closed, so its close is settled.
+            // The server reused the ID of a channel the client closed or declined, which settles that.
             self.client_closed.retain(|(closed_id, _)| *closed_id != channel_id);
+        } else if self.dynamic_channels.get_by_channel_id(channel_id).is_none() {
+            // A server can send data on a channel before it sees the client decline it in the Create
+            // Response: GNOME Remote Desktop does this for AUDIO_PLAYBACK_DVC right after its Create
+            // Request. Declining closes the channel from this side, so that data, on the transport the
+            // request came on, is dropped as for a channel the client closed, rather than ending the
+            // session. (FreeRDP's client ignores data for any channel it doesn't know.) A channel
+            // already attached under the ID, as a recorded session's is, stays open and keeps its data.
+            self.remember_client_close(channel_id, tunnel);
         }
 
         let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
@@ -616,6 +657,7 @@ impl DrdynvcClient {
         }
 
         let mut tunnel_channels = BTreeMap::new();
+        let mut closed_on_tunnels = Vec::new();
         let mut tunnels_to_switch = Vec::new();
         for list in request.channel_lists() {
             // MS-RDPEDYC 3.2.5.3.1: the server manager starts sending data for these channels
@@ -627,16 +669,17 @@ impl DrdynvcClient {
 
             // The server lists every channel it intends to move, including channels this client
             // declined with NO_LISTENER: Windows lists CoreInput, MouseCursor, Video and Geometry
-            // next to the graphics pipeline. Those channels carry no data, so they are skipped
-            // one by one. Refusing the whole tunnel because of them would leave the channels
-            // this client did open stranded on TCP while the server already sends on the tunnel.
+            // next to the graphics pipeline. Those channels are not bound to the tunnel, and data the
+            // server already sent for them there is dropped. Refusing the whole tunnel because of them
+            // would leave the channels this client did open stranded on TCP while the server already
+            // sends on the tunnel.
             for channel_id in list.channel_ids() {
                 if self.dynamic_channels.get_by_channel_id(*channel_id).is_some() {
                     tunnel_channels.insert(*channel_id, list.tunnel_type());
                 } else if self.client_closed.contains(&(*channel_id, None)) {
-                    // Closed by this client while the server was choosing tunnels: the server may
-                    // already send its data on the tunnel, and that data is dropped as well.
-                    self.remember_client_close(*channel_id, Some(list.tunnel_type()));
+                    // Closed or declined by this client while the server was choosing tunnels: the
+                    // server may already send its data on the tunnel, and that data is dropped as well.
+                    closed_on_tunnels.push((*channel_id, list.tunnel_type()));
                 } else {
                     debug!(
                         channel_id,
@@ -646,6 +689,12 @@ impl DrdynvcClient {
                 }
             }
             tunnels_to_switch.push(list.tunnel_type());
+        }
+
+        // Remembered only once every listed channel was checked: remembering one can forget the
+        // oldest entry of the history, which may be a channel listed after it.
+        for (channel_id, tunnel_type) in closed_on_tunnels {
+            self.remember_client_close(channel_id, Some(tunnel_type));
         }
 
         self.switched_tunnels = tunnels_to_switch.iter().copied().collect();
@@ -707,7 +756,7 @@ impl SvcProcessor for DrdynvcClient {
                     responses.push(self.create_capabilities_response(CapsVersion::V2));
                 }
 
-                let (_, messages) = self.process_create(create_request)?;
+                let (_, messages) = self.process_create(create_request, None)?;
                 responses.extend(messages);
             }
             DrdynvcServerPdu::Close(close) => {
@@ -718,7 +767,7 @@ impl SvcProcessor for DrdynvcClient {
                 if self.client_closed.contains(&(data.channel_id(), None)) {
                     trace!(
                         channel_id = data.channel_id(),
-                        "Dropping DVC data for a channel the client closed"
+                        "Dropping DVC data for a channel the client closed or declined"
                     );
                     return Ok(responses);
                 }
@@ -882,7 +931,7 @@ impl DynamicChannelSet {
         };
         let type_id = dvc.processor_type_id();
 
-        // Only matters for pre-registered channels
+        // Only matters for pre-registered channels.
         if self.type_id_to_channel_id.get(&type_id) == Some(&id) {
             self.type_id_to_channel_id.remove(&type_id);
         }

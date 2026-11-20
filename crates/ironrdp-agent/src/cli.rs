@@ -78,8 +78,19 @@ enum Command {
     Cert(CertCommand),
     /// Disconnect the current RDP session, optionally checking the server first.
     Disconnect(DisconnectArgs),
+    /// Log the user off the remote session through the NOW agent, ending the session on the host.
+    Logoff(LogoffArgs),
     /// Report the current session status.
     Status,
+    /// Wait without polling for a frame newer than one already seen, then report the session status.
+    WaitFrame {
+        /// The `frame: N` number from a status read before the action being waited on, or 0 for the first frame.
+        #[arg(long)]
+        after_frame: u64,
+        /// Maximum wait time in milliseconds, capped at 60,000.
+        #[arg(long, default_value_t = 30_000)]
+        timeout_ms: u32,
+    },
     /// Query the live session properties.
     QueryProps(QueryPropsArgs),
     /// Print the RDP session's captured log lines (from the daemon's in-memory ring buffer).
@@ -266,6 +277,17 @@ enum SessionCommand {
     List,
     /// Disconnect the current RDP session without stopping the daemon.
     Disconnect(DisconnectArgs),
+    /// Log the user off the remote session through the NOW agent, ending the session on the host.
+    Logoff(LogoffArgs),
+    /// Report what the server sent about the session: its ID, the logon, the network and the monitors.
+    Info(SessionInfoArgs),
+}
+
+#[derive(Args, Debug)]
+struct SessionInfoArgs {
+    /// Output format for the session facts.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    format: OutputFormat,
 }
 
 #[derive(Args, Debug)]
@@ -273,6 +295,13 @@ struct DisconnectArgs {
     /// Disconnect only if the current session belongs to this host[:port].
     #[arg(long)]
     server: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct LogoffArgs {
+    /// Seconds to wait for the host to end the session after the logoff request.
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=3600))]
+    timeout_secs: u64,
 }
 
 #[derive(Args, Debug)]
@@ -1080,12 +1109,19 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             };
         }
         Command::Session(command) => {
-            if cli.backend != Backend::Daemon {
+            if cli.backend != Backend::Daemon && !matches!(&command, SessionCommand::Info(_)) {
                 anyhow::bail!("session commands require --backend daemon");
             }
             return match command {
                 SessionCommand::List => list_sessions(&endpoint).await,
                 SessionCommand::Disconnect(args) => disconnect_session(&endpoint, args, cli.backend).await,
+                SessionCommand::Logoff(args) => logoff_session(&endpoint, args).await,
+                SessionCommand::Info(args) => {
+                    let format = args.format;
+                    session_info(&endpoint, args)
+                        .await
+                        .map_err(|error| exit_on_daemon_error(error, format))
+                }
             };
         }
         Command::DaemonChild { bootstrap } => {
@@ -1127,16 +1163,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Now(args) => {
             let format = args.format;
-            let exit_code = match run_now(&endpoint, args).await {
-                Ok(exit_code) => exit_code,
-                Err(error) => {
-                    if let Some(error) = error.downcast_ref::<DaemonRequestError>() {
-                        print_request_error(&error.0, format)?;
-                        std::process::exit(1);
-                    }
-                    return Err(error);
-                }
-            };
+            let exit_code = run_now(&endpoint, args)
+                .await
+                .map_err(|error| exit_on_daemon_error(error, format))?;
             if let Some(exit_code) = exit_code {
                 if exit_code != 0 {
                     std::process::exit(remote_exit_status(exit_code));
@@ -1146,14 +1175,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Rail(args) => {
             let format = args.format;
-            if let Err(error) = run_rail(&endpoint, args).await {
-                if let Some(error) = error.downcast_ref::<DaemonRequestError>() {
-                    print_request_error(&error.0, format)?;
-                    std::process::exit(1);
-                }
-                return Err(error);
-            }
-            return Ok(());
+            return run_rail(&endpoint, args)
+                .await
+                .map_err(|error| exit_on_daemon_error(error, format));
         }
         Command::Connect(args) => {
             use std::io::IsTerminal as _;
@@ -1197,7 +1221,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             return run_sandbox_command(args);
         }
         Command::Disconnect(args) => return disconnect_session(&endpoint, args, cli.backend).await,
+        Command::Logoff(args) => return logoff_session(&endpoint, args).await,
         Command::Status => Request::Status,
+        Command::WaitFrame {
+            after_frame,
+            timeout_ms,
+        } => Request::WaitFrame {
+            after_frame,
+            timeout_ms,
+        },
         Command::QueryProps(args) => Request::QueryProps {
             filter: args
                 .filter
@@ -1450,6 +1482,77 @@ async fn run_daemon_foreground(endpoint: Endpoint, args: DaemonArgs) -> anyhow::
     daemon_settings(args)?.run(endpoint).await
 }
 
+async fn session_info(endpoint: &Endpoint, args: SessionInfoArgs) -> anyhow::Result<()> {
+    let info = match transport::send_request(endpoint, &Request::SessionInfo).await? {
+        Response::Ok(Payload::SessionInfo(info)) => info,
+        Response::Ok(_) => anyhow::bail!("unexpected response to session info request"),
+        Response::Err(error) => return Err(DaemonRequestError(error).into()),
+    };
+    match args.format {
+        OutputFormat::Human => print_payload(Payload::SessionInfo(info)),
+        OutputFormat::Json | OutputFormat::Ndjson => {
+            use ironrdp_rpc::ipc::{LogonErrorInfo, MonitorInfo, NetworkCharacteristicsInfo, SessionInfo};
+            use serde_json::json;
+
+            // Every type is destructured without `..`, so a field added to one fails to compile here until it's written.
+            let SessionInfo {
+                remote_session_id,
+                logon_complete,
+                network,
+                monitors,
+                logon_error,
+            } = info;
+            let network = network.map(
+                |NetworkCharacteristicsInfo {
+                     base_rtt_ms,
+                     bandwidth_kbps,
+                     average_rtt_ms,
+                 }| {
+                    json!({
+                        "base_rtt_ms": base_rtt_ms,
+                        "bandwidth_kbps": bandwidth_kbps,
+                        "average_rtt_ms": average_rtt_ms,
+                    })
+                },
+            );
+            let monitors = monitors
+                .into_iter()
+                .map(
+                    |MonitorInfo {
+                         left,
+                         top,
+                         right,
+                         bottom,
+                         primary,
+                     }| {
+                        json!({ "left": left, "top": top, "right": right, "bottom": bottom, "primary": primary })
+                    },
+                )
+                .collect::<Vec<_>>();
+            let logon_error = logon_error.map(
+                |LogonErrorInfo {
+                     notification_type,
+                     notification_data,
+                 }| {
+                    json!({ "notification_type": notification_type, "notification_data": notification_data })
+                },
+            );
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "session_info",
+                    "remote_session_id": remote_session_id,
+                    "logon_complete": logon_complete,
+                    "network": network,
+                    "monitors": monitors,
+                    "logon_error": logon_error,
+                }))?
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn list_sessions(endpoint: &Endpoint) -> anyhow::Result<()> {
     use ironrdp_rpc::ipc::ConnState;
 
@@ -1478,6 +1581,12 @@ async fn disconnect_session(endpoint: &Endpoint, args: DisconnectArgs, backend: 
     }
     crate::daemon_lifecycle::disconnect_session(endpoint, args.server).await?;
     println!("session disconnected; daemon remains running");
+    Ok(())
+}
+
+async fn logoff_session(endpoint: &Endpoint, args: LogoffArgs) -> anyhow::Result<()> {
+    crate::daemon_lifecycle::logoff_session(endpoint, core::time::Duration::from_secs(args.timeout_secs)).await?;
+    println!("user logged off; daemon remains running");
     Ok(())
 }
 
@@ -2324,6 +2433,18 @@ fn print_request_error(error: &AgentError, format: OutputFormat) -> anyhow::Resu
     }
 }
 
+/// Prints a daemon's error in `format` and exits with status 1.
+/// Any other error, or a failure to print, is returned to the caller.
+fn exit_on_daemon_error(error: anyhow::Error, format: OutputFormat) -> anyhow::Error {
+    if let Some(daemon_error) = error.downcast_ref::<DaemonRequestError>() {
+        if let Err(print_error) = print_request_error(&daemon_error.0, format) {
+            return print_error;
+        }
+        std::process::exit(1);
+    }
+    error
+}
+
 fn push_json_payload(
     values: &mut Vec<serde_json::Value>,
     output_bytes: &mut usize,
@@ -2573,6 +2694,9 @@ fn print_payload(payload: Payload) {
             if let (Some(width), Some(height)) = (status.width, status.height) {
                 println!("resolution: {width}x{height}");
             }
+            if let Some(frame_number) = status.frame_number {
+                println!("frame: {frame_number}");
+            }
             if let Some(message) = status.message {
                 println!("detail: {message}");
             }
@@ -2618,6 +2742,58 @@ fn print_payload(payload: Payload) {
         Payload::RailStatus(status) => {
             println!("RAIL generation: {}", status.generation);
             println!("RAIL handshake complete: {}", status.handshake_complete);
+        }
+        Payload::SessionInfo(info) => {
+            use ironrdp_rpc::ipc::{LogonErrorInfo, MonitorInfo, NetworkCharacteristicsInfo, SessionInfo};
+
+            // Every type is destructured without `..`, so a field added to one fails to compile here until it's printed.
+            let SessionInfo {
+                remote_session_id,
+                logon_complete,
+                network,
+                monitors,
+                logon_error,
+            } = info;
+            if let Some(remote_session_id) = remote_session_id {
+                println!("remote session id: {remote_session_id}");
+            }
+            println!("logon complete: {logon_complete}");
+            if let Some(NetworkCharacteristicsInfo {
+                base_rtt_ms,
+                bandwidth_kbps,
+                average_rtt_ms,
+            }) = network
+            {
+                let mut parts = vec![format!("average rtt {average_rtt_ms} ms")];
+                if let Some(base_rtt_ms) = base_rtt_ms {
+                    parts.push(format!("base rtt {base_rtt_ms} ms"));
+                }
+                if let Some(bandwidth_kbps) = bandwidth_kbps {
+                    parts.push(format!("bandwidth {bandwidth_kbps} kbps"));
+                }
+                println!("network: {}", parts.join(", "));
+            }
+            for (
+                index,
+                MonitorInfo {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    primary,
+                },
+            ) in monitors.into_iter().enumerate()
+            {
+                let primary = if primary { " (primary)" } else { "" };
+                println!("monitor {index}: {left},{top} to {right},{bottom}{primary}");
+            }
+            if let Some(LogonErrorInfo {
+                notification_type,
+                notification_data,
+            }) = logon_error
+            {
+                println!("logon notification: type 0x{notification_type:08x}, data 0x{notification_data:08x}");
+            }
         }
         Payload::RailEvents(events) => {
             println!("RAIL generation: {}", events.generation);

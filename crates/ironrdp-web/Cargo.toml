@@ -43,6 +43,7 @@ ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
 ironrdp-futures.path = "../ironrdp-futures"
 ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
+ironrdp-rdpecam.path = "../ironrdp-rdpecam"
 ironrdp-vmconnect.path = "../ironrdp-vmconnect"
 ironrdp-propertyset.path = "../ironrdp-propertyset"
 ironrdp-rdpfile.path = "../ironrdp-rdpfile"
@@ -91,6 +92,9 @@ tap = "1"
 semver = "1"
 url = "2.5"
 base64 = "0.22"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [lints]
 workspace = true

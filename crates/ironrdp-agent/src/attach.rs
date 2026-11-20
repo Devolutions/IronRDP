@@ -1017,6 +1017,7 @@ mod tests {
                         message: Some("session outcome".to_owned()),
                         credentials_loaded: false,
                         untrusted_certificate: None,
+                        frame_number: None,
                     })),
                 )
                 .await

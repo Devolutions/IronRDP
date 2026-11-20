@@ -185,19 +185,19 @@ impl SentBlocks {
             BlockState::Free => ConfirmKind::Unmatched,
         }
     }
+
+    fn unconfirmed(&self) -> usize {
+        self.0
+            .iter()
+            .filter(|state| matches!(state, BlockState::Sent(_)))
+            .count()
+    }
 }
 
 impl fmt::Debug for SentBlocks {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SentBlocks")
-            .field(
-                "unconfirmed",
-                &self
-                    .0
-                    .iter()
-                    .filter(|state| matches!(state, BlockState::Sent(_)))
-                    .count(),
-            )
+            .field("unconfirmed", &self.unconfirmed())
             .finish()
     }
 }
@@ -284,6 +284,16 @@ pub trait RdpsndServerHandler: Send + fmt::Debug {
     /// [\[MS-RDPEA\] 2.2.3.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/1c67d6d0-4e8b-4e1a-9d3a-cd0d6f0d1c5f
     fn wave_confirm(&mut self, block_no: u8, timestamp: u16) {
         let _ = (block_no, timestamp);
+    }
+
+    /// Reports the current count of tracked waves still awaiting their first timestamp-valid [\[MS-RDPEA\] 2.2.3.8] Client Audio Confirm PDU (`SNDWAV_CONFIRM`).
+    ///
+    /// Because `cBlockNo` is 8-bit (`0..=255`), the server tracks at most 256 in-flight waves and a wraparound send overwrites its slot's prior entry, leaving the tracked count unchanged when that slot was still unconfirmed.
+    /// A late confirm from an overwritten generation whose timestamp falls at or after the newer send cannot be distinguished from the newer wave's own confirm, so `unconfirmed` is exact only while fewer than 256 waves are sent within the client's confirm delay.
+    ///
+    /// [\[MS-RDPEA\] 2.2.3.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpea/1c67d6d0-4e8b-4e1a-9d3a-cd0d6f0d1c5f
+    fn unconfirmed_waves_changed(&mut self, unconfirmed: usize) {
+        let _ = unconfirmed;
     }
 }
 
@@ -415,15 +425,21 @@ impl RdpsndServer {
             RdpsndSvcMessages::new(vec![pdu::ServerAudioOutputPdu::Wave(info).into(), wave_data.into()])
         };
 
-        if let Some(sent_timestamp) = self.sent_blocks.record(self.block_no, wire_timestamp) {
+        let unconfirmed_changed = if let Some(sent_timestamp) = self.sent_blocks.record(self.block_no, wire_timestamp) {
             self.stats.never_confirmed += 1;
             trace!(
                 block_no = self.block_no,
                 sent_timestamp, "Reusing the block number of a wave the client never confirmed"
             );
-        }
+            false
+        } else {
+            true
+        };
         self.stats.waves_sent += 1;
         self.stats.bytes_sent += u64::try_from(data_len).unwrap_or(u64::MAX);
+        if unconfirmed_changed {
+            self.handler.unconfirmed_waves_changed(self.sent_blocks.unconfirmed());
+        }
         trace!(
             block_no = self.block_no,
             format_no,
@@ -602,12 +618,15 @@ impl SvcProcessor for RdpsndServer {
                 if let pdu::ClientAudioOutputPdu::WaveConfirm(c) = pdu {
                     self.stats.confirms += 1;
                     match self.sent_blocks.confirm(c.block_no, c.timestamp) {
-                        ConfirmKind::First(sent_timestamp) => trace!(
-                            block_no = c.block_no,
-                            timestamp = c.timestamp,
-                            held_ms = c.timestamp.wrapping_sub(sent_timestamp),
-                            "Received RDPSND wave confirm"
-                        ),
+                        ConfirmKind::First(sent_timestamp) => {
+                            self.handler.unconfirmed_waves_changed(self.sent_blocks.unconfirmed());
+                            trace!(
+                                block_no = c.block_no,
+                                timestamp = c.timestamp,
+                                held_ms = c.timestamp.wrapping_sub(sent_timestamp),
+                                "Received RDPSND wave confirm"
+                            );
+                        }
                         ConfirmKind::Second(sent_timestamp) => {
                             self.stats.second_confirms += 1;
                             trace!(
