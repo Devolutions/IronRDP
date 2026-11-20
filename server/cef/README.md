@@ -251,7 +251,7 @@ A second server run checks that prior cookies and local storage are absent.
 The runner also checks server exit status and profile removal.
 On Linux or Windows, substitute the packaged executable and native agent paths.
 Windows uses a unique named pipe and sends Ctrl-Break to a new console process group; Unix uses a private socket and SIGINT.
-Screenshot color comparisons allow four levels per RGB channel because the negotiated RemoteFX codec is lossy; geometry and distinct fixture states are still checked.
+Screenshot color comparisons allow eight levels per RGB channel because the negotiated EGFX AVC420 (H.264) and RemoteFX codecs are lossy; geometry and distinct fixture states are still checked.
 
 Run the private clipboard test against the custom macOS bundle and verify that stock CEF fails closed:
 

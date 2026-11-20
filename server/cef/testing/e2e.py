@@ -24,7 +24,8 @@ import zlib
 
 CHROME_HEIGHT = 88
 TIMEOUT = 30
-COLOR_TOLERANCE = 4
+# EGFX AVC420 (OpenH264) shifts flat colors by up to 5 levels per channel.
+COLOR_TOLERANCE = 8
 
 
 def require_background_bundle(server):
@@ -176,8 +177,9 @@ class Runner:
         command = [str(self.agent_bin), "--endpoint", str(self.socket)] + list(args)
         self.commands.write(json.dumps(command, ensure_ascii=False) + "\n")
         self.commands.flush()
+        # The agent writes UTF-8; Windows would otherwise decode with the ANSI code page.
         result = subprocess.run(command, env=self.env, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, timeout=timeout)
+                                stderr=subprocess.STDOUT, encoding="utf-8", timeout=timeout)
         self.commands.write(result.stdout + "\n")
         self.commands.flush()
         return result

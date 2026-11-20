@@ -155,7 +155,8 @@ class ClipboardRunner(e2e.Runner):
         self.agent("clipboard-set-image", str(image))
         self.paste_until("04-client-image", (552, 48, "ffaa00"))
         client_file = self.artifacts / "client.txt"
-        client_file.write_text("isolated client file\n", encoding="utf-8")
+        # Keep LF on Windows: the fixture compares the pasted file's exact text.
+        client_file.write_text("isolated client file\n", encoding="utf-8", newline="\n")
         self.agent("clipboard-set-files", str(client_file))
         self.paste_until("04-client-file", (640, 48, "22aaff"))
         self.agent("clipboard-set", "--text", "replacement")

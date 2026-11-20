@@ -308,7 +308,10 @@ class DownloadRunner(e2e.Runner):
     def restart(self, name, limits=None):
         status = self.agent("status").splitlines()
         if "state: Connected" in status:
-            self.agent("disconnect")
+            # A fenced delivery failure stops the server, which can drop the session after the status check.
+            result = self.agent_result("disconnect")
+            if result.returncode and "state: Disconnected" not in self.agent("status").splitlines():
+                raise RuntimeError("Agent ('disconnect',) failed: " + result.stdout)
         elif "state: Disconnected" not in status:
             raise AssertionError("Unexpected session state before restarting: " + repr(status))
         self.stop_server()
