@@ -2,7 +2,6 @@ use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
 use core::num::NonZeroU32;
 use core::time::Duration;
-use std::borrow::Cow;
 use std::rc::Rc;
 
 use crate::canvas::Canvas;
@@ -43,7 +42,6 @@ use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnect
 use ironrdp_core::WriteBuf;
 use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_futures::{FramedWrite, single_sequence_step_read};
-use rgb::AsPixels as _;
 use tap::prelude::*;
 use tracing::{debug, error, info, trace, warn};
 use wasm_bindgen::{JsCast as _, JsValue};
@@ -1294,80 +1292,21 @@ impl iron_remote_desktop::Session for Session {
                         // Not applicable for web.
                     }
                     ActiveStageOutput::PointerBitmap(pointer) => {
-                        // Maximum allowed cursor size for browsers is 32x32, because bigger sizes
-                        // will cause the following issues:
-                        // - cursors bigger than 128x128 are not supported in browsers.
-                        // - cursors bigger than 32x32 will default to the system cursor if their
-                        //   sprite does not fit in the browser's viewport, introducing an abrupt
-                        //   cursor style change when the cursor is moved to the edge of the
-                        //   browser window.
-                        //
-                        // Therefore, we need to scale the cursor sprite down to 32x32 if it is
-                        // bigger than that.
-                        // Its transparent margin is cut off first, so that only what shows is scaled, if anything.
-                        // UNTESTED: the size, hotspot and pixels below all come from the cropped pointer.
-                        // Mixing in the original's would misplace the hotspot or shrink the arrow again.
-                        // When changing this code, check that the shadowed `pointer` still covers all three.
-                        let cropped = crate::cursor::crop_transparent(&pointer);
-                        let pointer = cropped.as_ref().unwrap_or(&pointer);
-                        let scaled = crate::cursor::scaled_to_fit(pointer);
-
-                        let (png_width, png_height, hotspot_x, hotspot_y, rgba_buffer) = if let Some(scaled) = scaled {
-                            let crate::cursor::Scaled {
-                                width: scaled_width,
-                                height: scaled_height,
-                                hotspot_x,
-                                hotspot_y,
-                            } = scaled;
-
-                            // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
-                            #[expect(clippy::arithmetic_side_effects)]
-                            let resized_rgba_buffer_size = usize::from(scaled_width * scaled_height * 4);
-
-                            let mut rgba_resized = vec![0u8; resized_rgba_buffer_size];
-                            let mut resizer = resize::new(
-                                usize::from(pointer.width),
-                                usize::from(pointer.height),
-                                usize::from(scaled_width),
-                                usize::from(scaled_height),
-                                resize::Pixel::RGBA8P,
-                                resize::Type::Lanczos3,
-                            )
-                            .context("failed to initialize cursor resizer")?;
-
-                            resizer
-                                .resize(pointer.bitmap_data.as_pixels(), rgba_resized.as_pixels_mut())
-                                .context("failed to resize cursor")?;
-
-                            (
-                                scaled_width,
-                                scaled_height,
-                                hotspot_x,
-                                hotspot_y,
-                                Cow::Owned(rgba_resized),
-                            )
-                        } else {
-                            (
-                                pointer.width,
-                                pointer.height,
-                                pointer.hotspot_x,
-                                pointer.hotspot_y,
-                                Cow::Borrowed(pointer.bitmap_data.as_slice()),
-                            )
-                        };
+                        let fitted = crate::cursor::fit(&pointer)?;
+                        let pointer = fitted.as_ref().unwrap_or(&pointer);
 
                         // Encode PNG.
                         let mut png_buffer = Vec::new();
                         {
                             let mut encoder =
-                                png::Encoder::new(&mut png_buffer, u32::from(png_width), u32::from(png_height));
+                                png::Encoder::new(&mut png_buffer, u32::from(pointer.width), u32::from(pointer.height));
 
                             encoder.set_color(png::ColorType::Rgba);
                             encoder.set_depth(png::BitDepth::Eight);
                             encoder.set_compression(png::Compression::Fast);
                             let mut writer = encoder.write_header().context("PNG encoder header write failed")?;
                             writer
-                                .write_image_data(&rgba_buffer)
+                                .write_image_data(&pointer.bitmap_data)
                                 .context("failed to encode pointer PNG")?;
                         }
 
@@ -1377,8 +1316,8 @@ impl iron_remote_desktop::Session for Session {
 
                         self.set_cursor_style(CursorStyle::Url {
                             data: style,
-                            hotspot_x,
-                            hotspot_y,
+                            hotspot_x: pointer.hotspot_x,
+                            hotspot_y: pointer.hotspot_y,
                         })?;
                     }
                     ActiveStageOutput::MonitorLayout(monitors) => {
