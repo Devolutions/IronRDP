@@ -6440,14 +6440,17 @@ impl RdpServer {
         debug!("Client accepted");
 
         let is_auto_reconnect = {
-            // UNTESTED: For a client that presented an auto-reconnect cookie, the acceptor keeps its credentials past
-            // the result in case the cookie fails.
+            // For a client that presented an auto-reconnect cookie, the acceptor keeps its credentials past the
+            // result in case the cookie fails.
             // They're taken here whatever the cookie's outcome, and dropped at the end of this block, so the acceptor
             // ends up holding none, as for a connection without a cookie, and neither does this function, which runs
             // the whole session.
             // The result's own copy of the Client Info credentials, which the server doesn't read, stays with it as it
             // does for every connection.
-            // No test can see the server's acceptor, so when changing this, check that they're still taken here.
+            // UNTESTED: A verified cookie leaves no credentials in the acceptor only because they're taken here, ahead
+            // of the match. The fallback tests fail if they aren't taken at all, but no test can see the server's
+            // acceptor, so moving the take into the fallback arm would pass them. When changing this, keep the take
+            // ahead of the match.
             let received = acceptor.take_received_credentials();
             match result.auto_reconnect.as_ref() {
                 None => false,
@@ -6477,12 +6480,6 @@ impl RdpServer {
                     // have checked without one, the delegated ones under plain HYBRID and the Client Info ones
                     // otherwise.
                     debug!("Auto-reconnect cookie not recognized; continuing with a normal logon");
-                    // UNTESTED: Under plain HYBRID the validator runs here on the credentials CredSSP delegated, with
-                    // their origin, as it does for a TLS client on the Client Info credentials.
-                    // FreeRDP before 3.32 negotiates plain HYBRID by default, but no IronRDP client can, because it
-                    // always offers HYBRID_EX, so no test reaches it.
-                    // When changing this arm or the acceptor's handling of received credentials, check that plain
-                    // HYBRID still brings the delegated credentials here.
                     if self
                         .pending_authenticated_credentials
                         .lock()

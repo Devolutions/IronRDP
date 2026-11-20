@@ -4577,24 +4577,37 @@ async fn an_unverifiable_auto_reconnect_cookie_falls_back_to_a_normal_logon() {
 /// credentials.
 /// MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU says the server SHOULD use them when the cookie fails.
 ///
+/// The credentials aren't empty, so the validator accepts only the ones the client sent.
+///
 /// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
 // oracle: spec MS-RDPBCGR §3.3.5.3.11
+// oracle: mutant the fallback validating empty credentials instead of the client's
 #[tokio::test]
 async fn an_unverifiable_auto_reconnect_cookie_logs_on_with_credentials_the_validator_accepts() {
+    let credentials = server::Credentials {
+        username: "alice".into(),
+        password: "secret".into(),
+        domain: None,
+    };
     let (mut server, display_tx) = auto_reconnect_server(false);
+    server.set_credentials(Some(credentials.clone()));
     server.set_credential_validator(Some(Arc::new(server::ExactMatchCredentialValidator::new(
-        server::Credentials {
-            username: USERNAME.into(),
-            password: PASSWORD.into(),
-            domain: None,
-        },
+        credentials.clone(),
     ))));
+    let client_config = connector::Config {
+        credentials: connector::Credentials::UsernamePassword {
+            username: credentials.username,
+            password: credentials.password,
+        },
+        ..default_client_config()
+    };
 
     let admitted = with_server(
         server,
         display_tx,
         async |server_addr, _cookie_handle, _server_handle, _display_tx| {
-            let mut probe = CookieProbe::connect(server_addr, Some(stale_auto_reconnect_cookie())).await;
+            let mut probe =
+                CookieProbe::connect_with(server_addr, client_config, Some(stale_auto_reconnect_cookie())).await;
             let admitted = probe.cookie_within(Duration::from_secs(5)).await;
             probe.disconnect().await;
             admitted
@@ -4639,6 +4652,91 @@ async fn an_unverifiable_auto_reconnect_cookie_logs_on_after_nla() {
         [(HYBRID_USER.to_owned(), Some(server::CredentialOrigin::CredSspDelegated))],
         "the validator runs once, during CredSSP"
     );
+}
+
+/// The same under plain HYBRID, which FreeRDP before 3.32 negotiates by default: CredSSP leaves the credential validator
+/// to the cookie, so when the cookie fails it runs once, on the credentials CredSSP delegated, with their origin.
+/// The client logs on, as MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU asks when the cookie fails.
+///
+/// The IronRDP client always offers HYBRID_EX, so the connection goes through [`relay_without_hybrid_ex`], and the
+/// server selects plain HYBRID.
+///
+/// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
+#[tokio::test]
+async fn an_unverifiable_auto_reconnect_cookie_logs_on_with_the_delegated_credentials_under_plain_hybrid() {
+    let (mut server, display_tx) = hybrid_server();
+    server.set_auto_reconnect_cookie(Some(issued_auto_reconnect_cookie()));
+    let calls = Arc::new(StdMutex::new(Vec::new()));
+    server.set_credential_validator(Some(Arc::new(RecordingCredentialValidator(Arc::clone(&calls)))));
+
+    let (admitted, rewritten) = with_server(
+        server,
+        display_tx,
+        async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+            let (relay_addr, rewritten) = relay_without_hybrid_ex(server_addr).await;
+            let mut probe =
+                CookieProbe::connect_with(relay_addr, hybrid_client_config(), Some(stale_auto_reconnect_cookie()))
+                    .await;
+            let admitted = probe.cookie_within(Duration::from_secs(5)).await;
+            probe.disconnect().await;
+            (admitted, rewritten.load(Ordering::Relaxed))
+        },
+    )
+    .await;
+
+    assert!(
+        rewritten,
+        "the relay did not clear HYBRID_EX from the Connection Request"
+    );
+    // oracle: spec MS-RDPBCGR §3.3.5.3.11
+    assert!(
+        admitted,
+        "the client logs on under plain HYBRID and receives a fresh cookie"
+    );
+    // oracle: mutant the acceptor dropping a cookie attempt's delegated credentials before the server takes them
+    // oracle: mutant the fallback validating the Client Info credentials instead of the delegated ones
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [(HYBRID_USER.to_owned(), Some(server::CredentialOrigin::CredSspDelegated))],
+        "the validator runs once, on the credentials CredSSP delegated"
+    );
+}
+
+/// Relays one connection to `server_addr` with `PROTOCOL_HYBRID_EX` cleared in the client's X.224 Connection Request,
+/// so a server that offers both CredSSP protocols selects plain HYBRID.
+///
+/// The Connection Request is the client's first TPKT and goes out before the security upgrade, so everything after it
+/// is copied unchanged. The returned flag is set once a request that offered HYBRID_EX has been sent on without it.
+async fn relay_without_hybrid_ex(server_addr: SocketAddr) -> (SocketAddr, Arc<AtomicBool>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind the relay");
+    let relay_addr = listener.local_addr().expect("relay address");
+    let rewritten = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&rewritten);
+    tokio::spawn(async move {
+        let (mut client, _) = listener.accept().await.expect("accept the client");
+        let mut server = TcpStream::connect(server_addr).await.expect("connect to the server");
+
+        let mut request = vec![0; 4];
+        client.read_exact(&mut request).await.expect("read the TPKT header");
+        request.resize(usize::from(u16::from_be_bytes([request[2], request[3]])), 0);
+        client
+            .read_exact(&mut request[4..])
+            .await
+            .expect("read the Connection Request");
+        let mut decoded = decode::<X224<pdu::nego::ConnectionRequest>>(&request)
+            .expect("decode the Connection Request")
+            .0;
+        let offered = decoded.protocol.contains(pdu::nego::SecurityProtocol::HYBRID_EX);
+        decoded.protocol.remove(pdu::nego::SecurityProtocol::HYBRID_EX);
+        let request = encode_vec(&X224(decoded)).expect("encode the Connection Request");
+        server.write_all(&request).await.expect("send the Connection Request");
+        flag.store(offered, Ordering::Relaxed);
+
+        let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+    });
+    (relay_addr, rewritten)
 }
 
 /// A credential validator that accepts every call and records the user name, with the origin when the server passes one
