@@ -841,7 +841,7 @@ impl<R: Role> Cliprdr<R> {
         // because the remote rejected our clipboard and no further responses for
         // those requests will arrive.
 
-        let formats = format_list.get_formats(self.are_long_format_names_enabled())?;
+        let formats = format_list.received_formats(self.are_long_format_names_enabled())?;
 
         // Notify backend of available formats
         self.backend.on_remote_copy(&formats);
