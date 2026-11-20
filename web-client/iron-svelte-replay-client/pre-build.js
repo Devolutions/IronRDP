@@ -1,6 +1,6 @@
 import { cp, rm } from 'node:fs/promises';
-import { spawn } from 'child_process';
-import { argv } from 'node:process';
+import { execFileSync } from 'node:child_process';
+import { argv, execPath } from 'node:process';
 
 let noWasm = false;
 
@@ -12,23 +12,6 @@ argv.forEach((val, index) => {
         noWasm = true;
     }
 });
-
-const run = async (command, cwd) => {
-    const buildCommand = spawn(command, { stdio: 'pipe', shell: true, cwd });
-
-    buildCommand.stdout.on('data', (data) => console.log(`${data}`));
-    buildCommand.stderr.on('data', (data) => console.error(`${data}`));
-
-    return new Promise((resolve, reject) => {
-        buildCommand.on('close', (code) => {
-            if (code !== 0) {
-                reject(new Error(`Process exited with code ${code}`));
-            } else {
-                resolve();
-            }
-        });
-    });
-};
 
 const wasmBinarySource = '../../crates/ironrdp-web-replay/pkg/ironrdp_web_replay_bg.wasm';
 
@@ -48,14 +31,17 @@ const copyDistFiles = async () => {
 
 // Step 1: Build WASM crate (unless skipped)
 if (!noWasm) {
-    await run('cargo xtask web build-replay', '../../');
+    execFileSync('cargo', ['xtask', 'web', 'build-replay'], { cwd: '../../', stdio: 'inherit' });
+} else {
+    // Build the libraries when WASM has already been built or is pre-existing.
+    execFileSync(execPath, ['./node_modules/vite/bin/vite.js', 'build'], {
+        cwd: '../iron-replay-player-wasm',
+        stdio: 'inherit',
+    });
+    execFileSync(execPath, ['./node_modules/vite/bin/vite.js', 'build'], {
+        cwd: '../iron-replay-player',
+        stdio: 'inherit',
+    });
+
+    await copyDistFiles();
 }
-
-// Step 2: Build iron-replay-player-wasm lib (build-alone: WASM already built above or pre-existing)
-await run('npm run build-alone', '../iron-replay-player-wasm');
-
-// Step 3: Build iron-replay-player lib
-await run('npm run build', '../iron-replay-player');
-
-// Step 4: Copy dist folders into static/
-await copyDistFiles();

@@ -123,13 +123,7 @@ pub fn build_replay(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
     let js_path = sh.current_dir().join(IRONRDP_WEB_REPLAY_PACKAGE_JS_PATH);
     patch_vite_wasm_url(&js_path, "ironrdp_web_replay_bg.wasm")?;
 
-    // Build the WASM adapter library (build-alone: WASM already patched above, avoids pre-build.js recursion).
-    run_cmd_in!(sh, IRON_REPLAY_PLAYER_WASM_PATH, "{NPM} run build-alone")?;
-
-    // Build the UI component library.
-    run_cmd_in!(sh, IRON_REPLAY_PLAYER_PATH, "{NPM} run build")?;
-
-    // Build the demo app; the libraries have already been built above.
+    // The demo pre-build builds both libraries before the demo app.
     run_cmd_in!(sh, IRON_SVELTE_REPLAY_CLIENT_PATH, "{NPM} run build-no-wasm")?;
 
     Ok(())
