@@ -49,6 +49,7 @@ gateway = ["dep:ironrdp-mstsgu"]
 remote-guard = ["ironrdp-connector/remote-guard", "ironrdp-tokio/remote-guard"]
 qoi = ["ironrdp-connector/qoi", "ironrdp-session/qoi"]
 qoiz = ["ironrdp-connector/qoiz", "ironrdp-session/qoiz"]
+qoiz-zstd = ["ironrdp-session/qoiz-zstd", "qoiz"]
 dvc-pipe-proxy = ["dep:ironrdp-dvc-pipe-proxy"]
 dvc-com-plugin = ["dep:ironrdp-dvc-com-plugin"]
 # Prefer System32\webauthn.dll via the DVC COM plugin host (MSTSC parity / hash-only hosts).
