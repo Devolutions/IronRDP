@@ -109,6 +109,54 @@ fn neg_failure_on_protocol_mismatch() {
     }
 }
 
+/// An acceptor told to offer the graphics pipeline advertises it in the RDP Negotiation Response.
+///
+/// MS-RDPBCGR 2.2.1.2.1: `DYNVC_GFX_PROTOCOL_SUPPORTED` means the server supports the Graphics Pipeline Extension.
+#[test]
+fn negotiation_response_advertises_the_graphics_pipeline_when_offered() {
+    let mut acceptor = tls_acceptor();
+    acceptor.set_graphics_pipeline_offer(true);
+    let flags = connection_confirm_flags(&mut acceptor);
+    // oracle: spec MS-RDPBCGR §2.2.1.2.1 (the server supports the Graphics Pipeline Extension)
+    assert!(flags.contains(nego::ResponseFlags::DYNVC_GFX_PROTOCOL_SUPPORTED));
+    // oracle: mutant the graphics pipeline flag replacing the response's other flags
+    assert!(flags.contains(nego::ResponseFlags::EXTENDED_CLIENT_DATA_SUPPORTED));
+}
+
+/// An acceptor that wasn't told to offer the graphics pipeline doesn't claim to support it.
+// oracle: mutant the acceptor advertising the graphics pipeline by default
+#[test]
+fn negotiation_response_does_not_advertise_the_graphics_pipeline_by_default() {
+    let flags = connection_confirm_flags(&mut tls_acceptor());
+    assert!(!flags.contains(nego::ResponseFlags::DYNVC_GFX_PROTOCOL_SUPPORTED));
+}
+
+fn tls_acceptor() -> Acceptor {
+    Acceptor::new(
+        SecurityProtocol::SSL,
+        DesktopSize {
+            width: 1920,
+            height: 1080,
+        },
+        Vec::new(),
+        None,
+    )
+}
+
+/// Feed `acceptor` a Connection Request for TLS and return the flags of the RDP Negotiation Response it sends.
+fn connection_confirm_flags(acceptor: &mut Acceptor) -> nego::ResponseFlags {
+    let request_bytes = encode_connection_request(SecurityProtocol::SSL);
+    let mut output = WriteBuf::new();
+    acceptor.step(&request_bytes, None, &mut output).unwrap();
+
+    let mut output = WriteBuf::new();
+    acceptor.step(&[], None, &mut output).unwrap();
+    match decode::<X224<nego::ConnectionConfirm>>(output.filled()).unwrap().0 {
+        nego::ConnectionConfirm::Response { flags, .. } => flags,
+        nego::ConnectionConfirm::Failure { code } => panic!("expected Response, got Failure {code:?}"),
+    }
+}
+
 /// When server and client agree on SSL, negotiation succeeds normally.
 #[test]
 fn neg_success_when_protocols_match() {
