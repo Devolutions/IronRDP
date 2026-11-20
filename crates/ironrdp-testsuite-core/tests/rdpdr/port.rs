@@ -13,7 +13,10 @@ use ironrdp_rdpdr::pdu::esp::{PortIoCtlCode, PortIoRequest, SerialQueueSize, Ser
 use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr, RdpdrBackend, RdpdrPort, RdpdrPortKind};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
-use super::{announce_client_id, announced_devices, encoded_server_client_id_confirm, ntstatus_at, read_u16, read_u32};
+use super::{
+    announce_client_id, announced_devices, assert_empty_device_announce, encoded_server_client_id_confirm, ntstatus_at,
+    read_u16, read_u32,
+};
 
 const SERIAL_ID: u32 = 2;
 const PARALLEL_ID: u32 = 3;
@@ -260,12 +263,7 @@ fn serial_ports_are_announced_before_logon_and_parallel_ports_after() {
 fn serial_ports_missed_at_client_id_confirm_are_announced_at_logon() {
     let mut rdpdr = port_channel(Box::new(RecordingPortBackend::default()));
     let client_id = announce_client_id(&mut rdpdr, 12);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
     let server_capability = RdpdrPdu::CoreCapability(CoreCapability {
         capabilities: vec![CapabilityMessage::new_general(0), CapabilityMessage::new_port()],
         kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
@@ -294,7 +292,7 @@ fn ports_are_not_announced_without_server_port_capability() {
         1,
         "only the general capability is echoed"
     );
-    assert!(initialized.client_id_confirmed.is_empty());
+    assert_empty_device_announce(&initialized.client_id_confirmed);
     assert!(initialized.logged_on.is_empty());
 }
 

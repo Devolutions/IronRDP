@@ -19,8 +19,11 @@ pub mod ffi {
     use super::config::ffi::Config;
     use super::result::ffi::Written;
     use super::state::ffi::ClientConnectorState;
+    use crate::audio::PLAYBACK_CHANNEL_NAMES;
+    use crate::audio::ffi::NativeAudio;
     use crate::clipboard::ffi::Cliprdr;
-    use crate::dvc::direct_channel::{DirectDvcChannelProcessor, ffi::DirectDvcConfig};
+    use crate::dvc::direct_channel::DirectDvcChannelProcessor;
+    use crate::dvc::direct_channel::ffi::DirectDvcConfig;
     use crate::dvc::dvc_pipe_proxy_message_queue::DvcPipeProxyMessageInner;
     use crate::dvc::ffi::DvcPipeProxyConfig;
     use crate::error::ValueConsumedError;
@@ -29,7 +32,10 @@ pub mod ffi {
     use crate::utils::monotonic_now;
 
     #[diplomat::opaque_mut] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
-    pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
+    pub struct ClientConnector(
+        pub(crate) Option<ironrdp::connector::ClientConnector>,
+        pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
+    );
 
     // Basic Impl for ClientConnector
     impl ClientConnector {
@@ -40,9 +46,13 @@ pub mod ffi {
         pub fn new(config: &Config, client_addr: &str) -> Result<Box<ClientConnector>, Box<IronRdpError>> {
             let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
 
-            Ok(Box::new(ClientConnector(Some(
-                ironrdp::connector::ClientConnector::new(config.connector.clone(), client_addr),
-            ))))
+            Ok(Box::new(ClientConnector(
+                Some(ironrdp::connector::ClientConnector::new(
+                    config.connector.clone(),
+                    client_addr,
+                )),
+                None,
+            )))
         }
 
         // FIXME: Naming: since this is not a builder pattern, use "attach"?
@@ -51,12 +61,40 @@ pub mod ffi {
         pub fn with_static_channel_rdp_snd(&mut self) -> Result<(), Box<IronRdpError>> {
             use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 
+            if self.1.is_some() {
+                return Err("native playback is already attached".into());
+            }
             let Some(connector) = self.0.take() else {
                 return Err(IronRdpErrorKind::Consumed.into());
             };
 
             self.0 = Some(connector.with_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend {}))));
 
+            Ok(())
+        }
+
+        /// Attaches native audio to this connector.
+        ///
+        /// Use a fresh `NativeAudio` for each connection.
+        /// Playback attaches RDPDR without redirected devices when the channel is absent.
+        /// Existing RDPDR configuration is preserved.
+        /// An existing RDPSND channel prevents native playback from being attached.
+        pub fn with_native_audio(&mut self, audio: &NativeAudio) -> Result<(), Box<IronRdpError>> {
+            let connector = self
+                .0
+                .as_mut()
+                .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
+            if self.1.is_some() {
+                return Err("native audio is already attached to this connector".into());
+            }
+            if !matches!(
+                connector.state,
+                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
+            ) {
+                return Err("native audio must be attached before connecting".into());
+            }
+            audio.0.attach(connector)?;
+            self.1 = Some(std::sync::Arc::clone(&audio.0));
             Ok(())
         }
 
@@ -102,6 +140,10 @@ pub mod ffi {
         where
             T: DvcClientProcessor + 'static,
         {
+            let playback = PLAYBACK_CHANNEL_NAMES.contains(&processor.channel_name());
+            if self.1.is_some() && playback {
+                return Err("native audio dynamic channel is reserved".into());
+            }
             let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
@@ -121,6 +163,7 @@ pub mod ffi {
             }
 
             drdynvc.attach_dynamic_channel(processor);
+            connector.config.enable_audio_playback |= playback;
 
             Ok(())
         }
@@ -162,6 +205,15 @@ pub mod ffi {
             &mut self,
             config: &DvcPipeProxyConfig,
         ) -> Result<(), Box<IronRdpError>> {
+            if self.1.is_some()
+                && config
+                    .descriptors
+                    .iter()
+                    .any(|descriptor| PLAYBACK_CHANNEL_NAMES.contains(&descriptor.channel_name.as_str()))
+            {
+                return Err("native audio dynamic channel is reserved".into());
+            }
+
             let has_direct_collision = self.0.as_mut().is_some_and(|connector| {
                 connector
                     .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
@@ -368,7 +420,7 @@ pub mod ffi {
             let Some(connector) = self.0.take() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            Ok(Box::new(ClientConnectorState(Some(connector.state))))
+            Ok(Box::new(ClientConnectorState(Some(connector.state), self.1.take())))
         }
     }
 

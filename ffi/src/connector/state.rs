@@ -4,8 +4,12 @@ pub mod ffi {
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
     use crate::pdu::ffi::SecurityProtocol;
 
+    #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
-    pub struct ClientConnectorState(pub Option<ironrdp::connector::ClientConnectorState>);
+    pub struct ClientConnectorState(
+        pub(crate) Option<ironrdp::connector::ClientConnectorState>,
+        pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
+    );
 
     pub enum ClientConnectorStateType {
         Consumed,
@@ -177,9 +181,9 @@ pub mod ffi {
                 .take()
                 .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
             {
-                ironrdp::connector::ClientConnectorState::Connected { result } => {
-                    Ok(Box::new(crate::connector::result::ffi::ConnectionResult(Some(result))))
-                }
+                ironrdp::connector::ClientConnectorState::Connected { result } => Ok(Box::new(
+                    crate::connector::result::ffi::ConnectionResult(Some(result), self.1.take()),
+                )),
                 _ => Err(IncorrectEnumTypeError::on_variant("Connected")
                     .of_enum("ClientConnectorState")
                     .into()),
