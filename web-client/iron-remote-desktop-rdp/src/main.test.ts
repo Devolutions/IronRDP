@@ -21,7 +21,7 @@ vi.mock('../../../crates/ironrdp-web/pkg/ironrdp_web', () => ({
     },
 }));
 
-import { monitorLayout, monitorLayoutCallback } from './main';
+import { cameraH264, cameraSample, cameraWanted, monitorLayout, monitorLayoutCallback } from './main';
 
 describe('monitor layout extensions', () => {
     beforeEach(() => {
@@ -63,6 +63,27 @@ describe('monitor layout extensions', () => {
         expect(callback).toHaveBeenCalledWith([
             { left: 0, top: 0, right: 799, bottom: 599, primary: true },
             { left: -800, top: 0, right: -1, bottom: 599, primary: false },
+        ]);
+    });
+});
+
+describe('camera extensions', () => {
+    beforeEach(() => {
+        captured.extensions.length = 0;
+    });
+
+    it('send the names the session matches', () => {
+        // oracle: reference crates/ironrdp-web/src/session.rs matches `camera_h264`, `camera_sample` and `camera_wanted`.
+        const frame = new Uint8Array([0, 0, 0, 1]);
+
+        cameraH264(true);
+        cameraSample(frame);
+        cameraWanted();
+
+        expect(captured.extensions).toEqual([
+            { name: 'camera_h264', value: true },
+            { name: 'camera_sample', value: frame },
+            { name: 'camera_wanted', value: null },
         ]);
     });
 });
