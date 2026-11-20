@@ -167,7 +167,7 @@ async fn callback_receives_initial_changed_and_reactivated_layouts() {
         camera: None,
         monitor_layout_callback: Some(callback),
         input_events_rx: RefCell::new(Some(input_events_rx)),
-        rdp_reader: RefCell::new(Some(reader)),
+        rdp_reader: RefCell::new(Some((reader, BytesMut::new()))),
         clipboard: RefCell::new(Some(None)),
         printer: RefCell::new(Some(None)),
         connection_result: RefCell::new(Some(connector::ConnectionResult {
