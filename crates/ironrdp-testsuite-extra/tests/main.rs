@@ -3,6 +3,7 @@
 
 mod agent;
 mod async_framed;
+mod capture;
 mod capture_helpers;
 mod client;
 #[cfg(any(target_os = "linux", windows))]

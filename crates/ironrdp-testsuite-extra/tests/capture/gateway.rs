@@ -1,9 +1,4 @@
-#![expect(
-    unused_crate_dependencies,
-    reason = "integration tests link the library crate and do not use its direct dependencies"
-)]
-
-use ironrdp_capture_replay::{Plaintext, ReplayError, extract_tunneled_rdp, is_gateway_tunnel};
+use ironrdp_capture::{CaptureError, Plaintext, extract_tunneled_rdp, is_gateway_tunnel};
 
 const DATA_PACKET_HEADER: usize = 8 /* packet header */ + 2 /* data length */;
 
@@ -89,6 +84,7 @@ fn tunneled_capture(client_body: Vec<u8>, server_body: Vec<u8>) -> Plaintext {
 }
 
 #[test]
+// oracle: mutant treating the gateway upgrade as a direct RDP stream
 fn detects_gateway_upgrade() {
     let plaintext = tunneled_capture(Vec::new(), Vec::new());
     assert!(is_gateway_tunnel(&plaintext));
@@ -101,6 +97,7 @@ fn detects_gateway_upgrade() {
 }
 
 #[test]
+// oracle: spec RFC 6455 §5.2, §5.4 and §5.5
 fn extracts_data_packets_from_masked_client_frames() {
     let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
     let plaintext = tunneled_capture(
@@ -110,11 +107,14 @@ fn extracts_data_packets_from_masked_client_frames() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, rdp.to_vec())]);
 }
 
 #[test]
+// oracle: mutant treating interim HTTP authentication responses as tunnel payload
 fn skips_interim_authentication_round_trips() {
     let rdp = [0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0];
     let mut client = request_head();
@@ -131,11 +131,14 @@ fn skips_interim_authentication_round_trips() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, rdp.to_vec())]);
 }
 
 #[test]
+// oracle: spec RFC 6455 §5.2, §5.4 and §5.5
 fn reassembles_packets_split_across_frames() {
     let rdp: Vec<u8> = (0..200u16).map(|value| u8::try_from(value % 256).unwrap()).collect();
     let packet = tsgu_data_packet(&rdp);
@@ -146,11 +149,14 @@ fn reassembles_packets_split_across_frames() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.clone())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, rdp)]);
 }
 
 #[test]
+// oracle: spec MS-TSGU §2.2.10.6
 fn merges_packets_coalesced_in_one_frame() {
     let first = [1, 2, 3];
     let second = [4, 5, 6, 7];
@@ -161,11 +167,14 @@ fn merges_packets_coalesced_in_one_frame() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, first.to_vec()), (1, second.to_vec())]);
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.server, vec![(2, first.to_vec())]);
 }
 
 #[test]
+// oracle: spec RFC 6455 §5.2, §5.4 and §5.5
 fn skips_ping_frames_and_stops_at_close() {
     let rdp = [7, 7, 7];
     let mut body = websocket_frame(true, 0x9, b"ping", Some([0, 0, 0, 0]));
@@ -176,20 +185,23 @@ fn skips_ping_frames_and_stops_at_close() {
 
     let inner = extract_tunneled_rdp(&plaintext).unwrap();
 
+    // oracle: mutant changing recovered payload chunking or source-packet attribution.
     assert_eq!(inner.client, vec![(1, rdp.to_vec())]);
 }
 
 #[test]
+// oracle: regression #2153 empty gateway tunnel diagnostic
 fn rejects_tunneled_capture_without_data_packets() {
     let plaintext = tunneled_capture(client_frame(&tsgu_control_packet(0x1, &[0; 12])), server_frame(&[]));
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::MissingRdpState)
+        Err(CaptureError::MissingTunneledRdp)
     ));
 }
 
 #[test]
+// oracle: spec MS-TSGU §2.2.10.6
 fn rejects_truncated_data_packet() {
     let mut packet = tsgu_data_packet(&[1, 2, 3]);
     packet.truncate(packet.len() - 1);
@@ -197,11 +209,12 @@ fn rejects_truncated_data_packet() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::GatewayFraming(_))
+        Err(CaptureError::GatewayFraming(_))
     ));
 }
 
 #[test]
+// oracle: spec RFC 6455 §5.2, §5.4 and §5.5
 fn rejects_trailing_truncated_websocket_bytes() {
     let rdp = [1, 2, 3];
     let mut body = client_frame(&tsgu_data_packet(&rdp));
@@ -210,11 +223,12 @@ fn rejects_trailing_truncated_websocket_bytes() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::GatewayFraming(_))
+        Err(CaptureError::GatewayFraming(_))
     ));
 }
 
 #[test]
+// oracle: spec RFC 6455 §5.2, §5.4 and §5.5
 fn rejects_an_unfinished_websocket_message() {
     let packet = tsgu_data_packet(&[1, 2, 3]);
     let body = websocket_frame(false, 0x2, &packet, Some([9, 9, 9, 9]));
@@ -222,11 +236,12 @@ fn rejects_an_unfinished_websocket_message() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::GatewayFraming(_))
+        Err(CaptureError::GatewayFraming(_))
     ));
 }
 
 #[test]
+// oracle: spec MS-TSGU §2.2.10.6
 fn rejects_a_truncated_packet_after_a_valid_data_packet() {
     let rdp = [1, 2, 3];
     let mut payload = tsgu_data_packet(&rdp);
@@ -235,6 +250,6 @@ fn rejects_a_truncated_packet_after_a_valid_data_packet() {
 
     assert!(matches!(
         extract_tunneled_rdp(&plaintext),
-        Err(ReplayError::GatewayFraming(_))
+        Err(CaptureError::GatewayFraming(_))
     ));
 }
