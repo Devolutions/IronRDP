@@ -295,7 +295,9 @@ fn ports_are_not_announced_without_server_port_capability() {
         "only the general capability is echoed"
     );
     assert!(initialized.client_id_confirmed.is_empty());
-    assert!(initialized.logged_on.is_empty());
+    // The list still goes after logon, without the ports.
+    assert_eq!(initialized.logged_on.len(), 1);
+    assert!(announced_devices(&initialized.logged_on[0]).is_empty());
 }
 
 /// Device control and close requests and responses from [MS-RDPESP] 4.4.

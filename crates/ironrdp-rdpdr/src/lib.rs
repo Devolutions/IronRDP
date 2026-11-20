@@ -605,6 +605,9 @@ impl Rdpdr {
             .zip(device_ids)
             .partition(|(device, _)| !announce_all_devices && device.device_type() == DeviceType::Serial);
         let mut messages = self.announce_batches([other, serial])?;
+        if announce_all_devices {
+            messages.extend(self.announce_empty_list_if_none()?);
+        }
 
         self.client_id_confirmed = true;
         self.post_logon_devices_announced = announce_all_devices;
@@ -641,7 +644,28 @@ impl Rdpdr {
             .into_iter()
             .zip(device_ids)
             .partition(|(device, _)| Self::is_pre_logon_device(device));
-        self.announce_batches([pre_logon, post_logon])
+        let mut messages = self.announce_batches([pre_logon, post_logon])?;
+        messages.extend(self.announce_empty_list_if_none()?);
+        Ok(messages)
+    }
+
+    /// Sends an empty Client Device List Announce when every device is due and none was announced in this
+    /// initialization sequence, including when every configured device was left out for want of its capability
+    /// set, so the server learns there is nothing to redirect.
+    fn announce_empty_list_if_none(&mut self) -> PduResult<Vec<SvcMessage>> {
+        if self.any_device_announced() {
+            return Ok(Vec::new());
+        }
+        self.announce_devices(Vec::new(), Vec::new())
+    }
+
+    /// Whether a device was announced in the current initialization sequence, by this client or by
+    /// [`Self::add_drive`].
+    fn any_device_announced(&self) -> bool {
+        !(self.pending_device_announcements.is_empty()
+            && self.active_device_ids.is_empty()
+            && self.rejected_device_ids.is_empty()
+            && self.manually_announced_device_ids.is_empty())
     }
 
     /// Announces each nonempty batch in a Device List Announce of its own, in order.
@@ -1513,6 +1537,83 @@ mod tests {
         );
     }
 
+    /// Takes `rdpdr` through Server Announce, Client ID Confirm and User Logged On (RDP 12), returning what User
+    /// Logged On sends.
+    fn log_on(rdpdr: &mut Rdpdr) -> Vec<SvcMessage> {
+        let responses = rdpdr
+            .process(&encoded_server_announce(0x1234))
+            .expect("process server announce");
+        let client_id = read_u32(
+            &responses[0]
+                .encode_unframed_pdu()
+                .expect("encode client announce response"),
+            8,
+        );
+        rdpdr
+            .process(&encoded_server_client_id_confirm(client_id))
+            .expect("process server client ID confirm");
+
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on")
+    }
+
+    /// A Client Device List Announce with no device.
+    // oracle: spec MS-RDPEFS §2.2.2.9 and §2.2.1.1 (RDPDR_CTYP_CORE 0x4472, PAKID_CORE_DEVICELIST_ANNOUNCE 0x4441,
+    // little-endian, then a DeviceCount of zero)
+    const EMPTY_DEVICE_LIST_ANNOUNCE: [u8; 8] = [0x72, 0x44, 0x41, 0x44, 0, 0, 0, 0];
+
+    fn encoded(messages: &[SvcMessage]) -> Vec<Vec<u8>> {
+        messages
+            .iter()
+            .map(|message| message.encode_unframed_pdu().expect("encode message"))
+            .collect()
+    }
+
+    #[test]
+    fn user_logged_on_with_no_device_announces_an_empty_list() {
+        let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "test".to_owned());
+        assert_eq!(encoded(&log_on(&mut rdpdr)), [EMPTY_DEVICE_LIST_ANNOUNCE]);
+    }
+
+    #[test]
+    fn user_logged_on_announces_an_empty_list_when_every_device_lacks_its_capability() {
+        // The server sent no printer capability set, so the printer isn't announced.
+        let mut rdpdr =
+            Rdpdr::new(Box::new(NoopRdpdrBackend), "test".to_owned()).with_printer(1, "Office printer".to_owned());
+        assert_eq!(encoded(&log_on(&mut rdpdr)), [EMPTY_DEVICE_LIST_ANNOUNCE]);
+    }
+
+    #[test]
+    fn client_id_confirm_from_an_rdp_5_1_server_with_no_device_announces_an_empty_list_once() {
+        let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "test".to_owned());
+        let server_announce = VersionAndIdPdu {
+            version_major: 1,
+            version_minor: VERSION_MINOR_RDP51,
+            client_id: 0,
+            kind: VersionAndIdPduKind::ServerAnnounceRequest,
+        };
+        rdpdr
+            .handle_server_announce(server_announce.clone())
+            .expect("handle server announce");
+        let client_id = rdpdr.client_id.expect("generated client ID");
+
+        // An RDP 5.1 server is sent every device at Client ID Confirm.
+        let messages = rdpdr
+            .handle_client_id_confirm(VersionAndIdPdu {
+                client_id,
+                kind: VersionAndIdPduKind::ServerClientIdConfirm,
+                ..server_announce
+            })
+            .expect("handle client ID confirm");
+        assert_eq!(encoded(&messages), [EMPTY_DEVICE_LIST_ANNOUNCE]);
+
+        let messages = rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).expect("encode user logged on"))
+            .expect("process user logged on");
+        assert!(messages.is_empty());
+    }
+
     #[test]
     fn user_logged_on_before_client_id_confirm_is_deferred() {
         let mut rdpdr = Rdpdr::new(Box::new(TrackingBackend::default()), "test".to_owned())
@@ -1620,7 +1721,7 @@ mod tests {
                 })
                 .is_err()
         );
-        assert!(
+        assert_eq!(
             rdpdr
                 .handle_client_id_confirm(VersionAndIdPdu {
                     client_id,
@@ -1628,7 +1729,9 @@ mod tests {
                     ..server_announce
                 })
                 .expect("confirm generated client ID")
-                .is_empty()
+                .len(),
+            1,
+            "with no device, an RDP 5.1 server is sent the list empty"
         );
     }
 
