@@ -918,69 +918,182 @@ async fn a_new_connection_starts_without_the_previous_sessions_events() {
 
 /// A display that cannot start returns a `ServerErrorKind::ErrorInfo` error, and the client gets that code in a Set
 /// Error Info PDU, so it can tell the user why the session ended instead of reporting a lost connection.
+/// The Disconnect Provider Ultimatum follows the reason.
 // oracle: spec MS-RDPBCGR §2.2.5.1.1
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
 // oracle: regression #2301
 #[tokio::test]
 async fn a_display_that_cannot_start_tells_the_client_why() {
     let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
 
-    let (reason, close) = Box::pin(run_failing_display_probe(Some(error_info))).await;
+    let (reasons, close) = Box::pin(run_session_end_probe(SessionEnd::DisplayFails(Some(error_info)), true)).await;
 
-    let Some(session::GracefulDisconnectReason::Other(description)) = reason else {
-        panic!("the client did not get the reason, it got {reason:?}");
+    let [
+        session::GracefulDisconnectReason::Other(description),
+        session::GracefulDisconnectReason::ServerInitiated,
+    ] = reasons.as_slice()
+    else {
+        panic!("the client did not get the reason and then the ultimatum, it got {reasons:?}");
     };
     // oracle: property round-trip
-    assert_eq!(description, error_info.description());
-    // The server closes the TLS session (close_notify) after the reason, as on a normal disconnect.
+    assert_eq!(*description, error_info.description());
+    // The server closes the TLS session (close_notify) after the ultimatum, as on a normal disconnect.
     assert!(matches!(close, Some(Ok(0))), "{close:?}");
 }
 
-/// Other display errors close the connection as before, with no Set Error Info PDU.
-// oracle: doc RdpServerDisplay::updates and ServerErrorKind::ErrorInfo
+/// A client that did not set `RNS_UD_CS_SUPPORT_ERRINFO_PDU`, as FreeRDP 3 does not, gets no reason when the display
+/// cannot start, but still a provider-initiated Disconnect Provider Ultimatum, so it does not take the end of the
+/// session for a lost connection and reconnect.
+// oracle: spec MS-RDPBCGR §3.1.5.1.1
+// oracle: spec MS-RDPBCGR §3.3.5.7.1
+// oracle: regression #2388
 #[tokio::test]
-async fn a_display_error_without_error_info_sends_no_reason() {
-    let (reason, _) = Box::pin(run_failing_display_probe(None)).await;
-    assert!(reason.is_none(), "{reason:?}");
+async fn a_display_that_cannot_start_tells_a_client_without_error_info_that_the_server_ended_the_session() {
+    let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
+
+    let (reasons, _) = Box::pin(run_session_end_probe(SessionEnd::DisplayFails(Some(error_info)), false)).await;
+
+    assert!(
+        matches!(reasons.as_slice(), [session::GracefulDisconnectReason::ServerInitiated]),
+        "{reasons:?}"
+    );
 }
 
-/// Connects a client to a server whose display fails to start with `error_info`, or with a plain error. Returns the
-/// reason the client got for the end of the session, and, when it got one, the result of the next read on the TLS
-/// stream: `Ok(0)` when the server closed the TLS session with close_notify.
-async fn run_failing_display_probe(
-    error_info: Option<ErrorInfo>,
-) -> (
-    Option<session::GracefulDisconnectReason>,
-    Option<std::io::Result<usize>>,
-) {
-    let cert_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-cert.pem");
-    let key_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/certs/server-key.pem");
-    let identity = TlsIdentityCtx::init_from_paths(&cert_path, &key_path).expect("failed to init TLS identity");
-    let acceptor = identity.make_acceptor().expect("failed to build TLS acceptor");
+/// Other display errors close the connection with nothing sent.
+// oracle: mutant sending a Set Error Info PDU or the Disconnect Provider Ultimatum for a display error that carries no
+// error code
+#[tokio::test]
+async fn a_display_error_without_error_info_sends_no_reason() {
+    let (reasons, _) = Box::pin(run_session_end_probe(SessionEnd::DisplayFails(None), true)).await;
+    assert!(reasons.is_empty(), "{reasons:?}");
+}
 
-    let mut server = RdpServer::builder()
-        .with_addr(([127, 0, 0, 1], 0))
-        .with_tls(acceptor)
-        .with_input_handler(TestInputHandler)
-        .with_display_handler(FailingDisplay { error_info })
-        .build();
-    server.set_credentials(Some(server::Credentials {
-        username: USERNAME.into(),
-        password: PASSWORD.into(),
-        domain: None,
-    }));
+/// A client that did not set `RNS_UD_CS_SUPPORT_ERRINFO_PDU`, as FreeRDP 3 does not, gets no reason when the server
+/// disconnects it, but still a provider-initiated Disconnect Provider Ultimatum, so it can tell the server ended the
+/// session from a lost connection.
+// oracle: spec MS-RDPBCGR §3.1.5.1.1
+// oracle: spec MS-RDPBCGR §3.3.5.7.1
+// oracle: regression #2384
+#[tokio::test]
+async fn a_disconnect_tells_a_client_without_error_info_that_the_server_ended_the_session() {
+    let (reasons, _) = Box::pin(run_session_end_probe(SessionEnd::Disconnect(DISCONNECT_REASON), false)).await;
+    assert!(
+        matches!(reasons.as_slice(), [session::GracefulDisconnectReason::ServerInitiated]),
+        "{reasons:?}"
+    );
+}
+
+/// A client that set `RNS_UD_CS_SUPPORT_ERRINFO_PDU` gets the reason in a Set Error Info PDU, then the Disconnect
+/// Provider Ultimatum.
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
+#[tokio::test]
+async fn a_disconnect_tells_an_error_info_client_the_reason_before_the_ultimatum() {
+    let (reasons, _) = Box::pin(run_session_end_probe(SessionEnd::Disconnect(DISCONNECT_REASON), true)).await;
+    let [
+        session::GracefulDisconnectReason::Other(description),
+        session::GracefulDisconnectReason::ServerInitiated,
+    ] = reasons.as_slice()
+    else {
+        panic!("the client did not get the reason and then the ultimatum, it got {reasons:?}");
+    };
+    // oracle: spec MS-RDPBCGR §2.2.5.1.1
+    // oracle: property round-trip
+    assert_eq!(*description, DISCONNECT_REASON.description());
+}
+
+const DISCONNECT_REASON: ErrorInfo =
+    ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::RpcInitiatedDisconnectByuser);
+
+/// A client that another client takes the session from, and that did not set `RNS_UD_CS_SUPPORT_ERRINFO_PDU`, gets no
+/// reason, but still a provider-initiated Disconnect Provider Ultimatum, so it does not reconnect and take the session
+/// back.
+// oracle: spec MS-RDPBCGR §3.1.5.1.1
+// oracle: spec MS-RDPBCGR §3.3.5.7.1
+#[tokio::test]
+async fn a_takeover_tells_a_client_without_error_info_that_the_server_ended_the_session() {
+    let (reasons, _) = Box::pin(run_session_end_probe(SessionEnd::Takeover, false)).await;
+    assert!(
+        matches!(reasons.as_slice(), [session::GracefulDisconnectReason::ServerInitiated]),
+        "{reasons:?}"
+    );
+}
+
+/// A client that another client takes the session from gets `ERRINFO_DISCONNECTED_BY_OTHERCONNECTION` in a Set Error
+/// Info PDU, then the Disconnect Provider Ultimatum.
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
+#[tokio::test]
+async fn a_takeover_tells_an_error_info_client_the_reason_before_the_ultimatum() {
+    let (reasons, _) = Box::pin(run_session_end_probe(SessionEnd::Takeover, true)).await;
+    let [
+        session::GracefulDisconnectReason::Other(description),
+        session::GracefulDisconnectReason::ServerInitiated,
+    ] = reasons.as_slice()
+    else {
+        panic!("the client did not get the reason and then the ultimatum, it got {reasons:?}");
+    };
+    // oracle: spec MS-RDPBCGR §2.2.5.1.1
+    // oracle: property round-trip
+    assert_eq!(
+        *description,
+        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::DisconnectedByOtherconnection).description()
+    );
+}
+
+/// How the server ends a probed client's session.
+#[derive(Clone, Copy)]
+enum SessionEnd {
+    /// The display fails to start with this code, or with a plain error.
+    DisplayFails(Option<ErrorInfo>),
+    /// The server gets `ServerEvent::Disconnect` with this reason.
+    Disconnect(ErrorInfo),
+    /// A second client logs in and takes the session over.
+    Takeover,
+}
+
+/// Connects a client that sets `RNS_UD_CS_SUPPORT_ERRINFO_PDU` when `client_error_info` is true, ends its session as
+/// `end` says, and returns every reason the client got for the end, in order, and, when it got one, the result of the
+/// next read on the TLS stream: `Ok(0)` when the server closed the TLS session with close_notify.
+async fn run_session_end_probe(
+    end: SessionEnd,
+    client_error_info: bool,
+) -> (Vec<session::GracefulDisconnectReason>, Option<std::io::Result<usize>>) {
+    let (mut server, display_tx, config) = match end {
+        SessionEnd::DisplayFails(error_info) => {
+            (tls_server(FailingDisplay { error_info }), None, default_client_config())
+        }
+        SessionEnd::Disconnect(_) => {
+            let (display_tx, display_rx) = mpsc::unbounded_channel();
+            let display = TestDisplay {
+                rx: Arc::new(Mutex::new(display_rx)),
+                offers_display_control: false,
+            };
+            (tls_server(display), Some(display_tx), default_client_config())
+        }
+        SessionEnd::Takeover => {
+            let (server, display_tx) = hybrid_server();
+            (server, Some(display_tx), hybrid_client_config())
+        }
+    };
     let ev = server.event_sender().clone();
+    let opted_out = Arc::new(AtomicBool::new(false));
+    let client_opted_out = Arc::clone(&opted_out);
 
     let local = tokio::task::LocalSet::new();
-    Box::pin(local.run_until(async move {
+    let result = Box::pin(local.run_until(async move {
         let server_task = tokio::task::spawn_local(async move {
             let _ = server.run().await;
         });
 
         let server_addr = local_addr_of(&ev).await;
-        let (mut framed, connection_result) = connect_client(server_addr, |client_addr| {
-            connector::ClientConnector::new(default_client_config(), client_addr)
-        })
-        .await;
+        let make_connector = |client_addr| connector::ClientConnector::new(config.clone(), client_addr);
+        let (mut framed, connection_result) =
+            connect_client_with(server_addr, make_connector, |stream| ErrorInfoOptOut {
+                inner: stream,
+                enabled: !client_error_info,
+                opted_out: client_opted_out,
+            })
+            .await
+            .expect("finalize connection");
         let mut stage = ActiveStageBuilder {
             static_channels: connection_result.static_channels,
             user_channel_id: connection_result.user_channel_id,
@@ -994,11 +1107,28 @@ async fn run_failing_display_probe(
         .build();
         let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
-        // The server closes the connection right after the display fails. Read until the reason, the end of
-        // the stream, or the deadline.
-        let mut reason = None;
+        // The second client holds the session until the probe ends.
+        let _second = match end {
+            SessionEnd::DisplayFails(_) => None,
+            SessionEnd::Disconnect(reason) => {
+                ev.send(ServerEvent::Disconnect(reason)).unwrap();
+                None
+            }
+            SessionEnd::Takeover => {
+                let connect = connect_client(server_addr, |client_addr| {
+                    connector::ClientConnector::new(hybrid_client_config(), client_addr)
+                });
+                let second = tokio::time::timeout(Duration::from_secs(10), connect)
+                    .await
+                    .expect("the authenticated newcomer must be served (Preempt), not queued");
+                Some(second)
+            }
+        };
+
+        // Read until the ultimatum, the end of the stream, or the deadline.
+        let mut reasons = Vec::new();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while reason.is_none() {
+        while !matches!(reasons.last(), Some(session::GracefulDisconnectReason::ServerInitiated)) {
             let Ok(read) = tokio::time::timeout_at(deadline, framed.read_pdu()).await else {
                 break;
             };
@@ -1007,25 +1137,53 @@ async fn run_failing_display_probe(
             };
             for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
                 if let ActiveStageOutput::Terminate(terminate) = output {
-                    reason = Some(terminate);
+                    reasons.push(terminate);
                 }
             }
         }
 
-        let close = if reason.is_some() {
+        let close = if reasons.is_empty() {
+            None
+        } else {
             use tokio::io::AsyncReadExt as _;
 
             let (mut stream, _) = framed.into_inner();
             let mut buf = [0u8; 1];
             tokio::time::timeout_at(deadline, stream.read(&mut buf)).await.ok()
-        } else {
-            None
         };
 
+        drop(display_tx);
         server_task.abort();
-        (reason, close)
+        (reasons, close)
     }))
-    .await
+    .await;
+
+    assert_eq!(
+        opted_out.load(Ordering::Relaxed),
+        !client_error_info,
+        "the client's RNS_UD_CS_SUPPORT_ERRINFO_PDU was not cleared"
+    );
+    result
+}
+
+/// A server on loopback that takes TLS logins with [`USERNAME`] and [`PASSWORD`] and shows `display`.
+fn tls_server(display: impl RdpServerDisplay + 'static) -> RdpServer {
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(
+            test_tls_identity()
+                .make_acceptor()
+                .expect("failed to build TLS acceptor"),
+        )
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(display)
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    server
 }
 
 struct FailingDisplay {
@@ -1047,121 +1205,6 @@ impl RdpServerDisplay for FailingDisplay {
             None => server::ServerError::new("display", server::ServerErrorKind::Reason("capture failed".to_owned())),
         })
     }
-}
-
-/// A client that did not set `RNS_UD_CS_SUPPORT_ERRINFO_PDU`, as FreeRDP 3 does not, gets no reason when the server
-/// disconnects it, but still a provider-initiated Disconnect Provider Ultimatum, so it can tell the server ended the
-/// session from a lost connection.
-// oracle: spec MS-RDPBCGR §3.1.5.1.1
-// oracle: regression #2384
-#[tokio::test]
-async fn a_disconnect_tells_a_client_without_error_info_that_the_server_ended_the_session() {
-    let reasons = Box::pin(run_disconnect_probe(false)).await;
-    assert!(
-        matches!(reasons.as_slice(), [session::GracefulDisconnectReason::ServerInitiated]),
-        "{reasons:?}"
-    );
-}
-
-/// A client that set `RNS_UD_CS_SUPPORT_ERRINFO_PDU` gets the reason in a Set Error Info PDU, then the Disconnect
-/// Provider Ultimatum.
-// oracle: spec MS-RDPBCGR §1.3.1.4.3
-#[tokio::test]
-async fn a_disconnect_tells_an_error_info_client_the_reason_before_the_ultimatum() {
-    let reasons = Box::pin(run_disconnect_probe(true)).await;
-    let [
-        session::GracefulDisconnectReason::Other(description),
-        session::GracefulDisconnectReason::ServerInitiated,
-    ] = reasons.as_slice()
-    else {
-        panic!("the client did not get the reason and then the ultimatum, it got {reasons:?}");
-    };
-    // oracle: property round-trip
-    assert_eq!(*description, DISCONNECT_REASON.description());
-}
-
-const DISCONNECT_REASON: ErrorInfo =
-    ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::RpcInitiatedDisconnectByuser);
-
-/// Connects a client that sets `RNS_UD_CS_SUPPORT_ERRINFO_PDU` when `error_info` is true, ends the session with
-/// `ServerEvent::Disconnect(DISCONNECT_REASON)`, and returns every reason the client got for the end, in order.
-async fn run_disconnect_probe(error_info: bool) -> Vec<session::GracefulDisconnectReason> {
-    let identity = test_tls_identity();
-    let (display_tx, display_rx) = mpsc::unbounded_channel();
-    let mut server = RdpServer::builder()
-        .with_addr(([127, 0, 0, 1], 0))
-        .with_tls(identity.make_acceptor().expect("failed to build TLS acceptor"))
-        .with_input_handler(TestInputHandler)
-        .with_display_handler(TestDisplay {
-            rx: Arc::new(Mutex::new(display_rx)),
-            offers_display_control: false,
-        })
-        .build();
-    server.set_credentials(Some(server::Credentials {
-        username: USERNAME.into(),
-        password: PASSWORD.into(),
-        domain: None,
-    }));
-    let ev = server.event_sender().clone();
-    let opted_out = Arc::new(AtomicBool::new(false));
-
-    let local = tokio::task::LocalSet::new();
-    let reasons = Box::pin(local.run_until({
-        let opted_out = Arc::clone(&opted_out);
-        async move {
-            let server_task = tokio::task::spawn_local(async move {
-                let _ = server.run().await;
-            });
-
-            let server_addr = local_addr_of(&ev).await;
-            let make_connector = |client_addr| connector::ClientConnector::new(default_client_config(), client_addr);
-            let (mut framed, connection_result) =
-                connect_client_with(server_addr, make_connector, |stream| ErrorInfoOptOut {
-                    inner: stream,
-                    enabled: !error_info,
-                    opted_out,
-                })
-                .await
-                .expect("finalize connection");
-            let mut stage = ActiveStageBuilder {
-                static_channels: connection_result.static_channels,
-                user_channel_id: connection_result.user_channel_id,
-                io_channel_id: connection_result.io_channel_id,
-                message_channel_id: connection_result.message_channel_id,
-                share_id: connection_result.share_id,
-                compression_type: connection_result.compression_type,
-                enable_server_pointer: connection_result.enable_server_pointer,
-                pointer_software_rendering: connection_result.pointer_software_rendering,
-            }
-            .build();
-            let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
-
-            ev.send(ServerEvent::Disconnect(DISCONNECT_REASON)).unwrap();
-
-            // Read until the server closes the connection or the deadline passes.
-            let mut reasons = Vec::new();
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-            while let Ok(Ok((action, frame))) = tokio::time::timeout_at(deadline, framed.read_pdu()).await {
-                for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
-                    if let ActiveStageOutput::Terminate(reason) = output {
-                        reasons.push(reason);
-                    }
-                }
-            }
-
-            drop(display_tx);
-            server_task.abort();
-            reasons
-        }
-    }))
-    .await;
-
-    assert_eq!(
-        opted_out.load(Ordering::Relaxed),
-        !error_info,
-        "the client's RNS_UD_CS_SUPPORT_ERRINFO_PDU was not cleared"
-    );
-    reasons
 }
 
 /// Clears `RNS_UD_CS_SUPPORT_ERRINFO_PDU` in the client's MCS Connect Initial before TLS encrypts it, when `enabled`.
