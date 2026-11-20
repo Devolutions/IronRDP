@@ -5,6 +5,7 @@ use ironrdp_pdu::codecs::rfx::Quant;
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, EntropyBits, server_codecs_capabilities};
 use ironrdp_pdu::rdp::session_info::ServerAutoReconnect;
 use tokio_rustls::TlsAcceptor;
+use tracing::warn;
 
 use super::clipboard::CliprdrServerFactory;
 use super::display::{DesktopSize, DisplayContext, RdpServerDisplay};
@@ -520,12 +521,14 @@ impl RdpServerBuilder<BuilderDone> {
     /// The DRDYNVC static channel is bounded at [`Self::with_max_dynamic_channel_message_size`] plus
     /// [`MAX_CHANNEL_CHUNK_LENGTH`](ironrdp_svc::MAX_CHANNEL_CHUNK_LENGTH) when that is set, and at this limit
     /// otherwise, which must then be at least 1,600 bytes, the largest DRDYNVC PDU a client following MS-RDPEDYC sends
-    /// ([2.2.3.1] DVC Data First PDU (`DYNVC_DATA_FIRST`)).
+    /// ([2.2.3.1] DVC Data First PDU (`DYNVC_DATA_FIRST`), [2.2.3.2] DVC Data PDU (`DYNVC_DATA`)).
+    /// [`Self::build`] logs a warning when it is not.
     /// This limit does not bound dynamic channel messages, which a client splits into such PDUs.
     ///
     /// Unset by default: such messages are bounded only by their declared length, up to 4 GiB.
     ///
     /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
+    /// [2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/15b59886-db44-47f1-8da3-47c8fcd82803
     pub fn with_max_static_channel_message_size(mut self, max_message_size: usize) -> Self {
         self.state.max_static_channel_message_size = Some(max_message_size);
         self
@@ -554,6 +557,20 @@ impl RdpServerBuilder<BuilderDone> {
     }
 
     pub fn build(self) -> RdpServer {
+        // The size of the largest DRDYNVC PDUs a client following MS-RDPEDYC sends.
+        // These are 2.2.3.1 DVC Data First PDU (DYNVC_DATA_FIRST) and 2.2.3.2 DVC Data PDU (DYNVC_DATA).
+        const MAX_DRDYNVC_PDU_SIZE: usize = 1600;
+
+        if let Some(max_message_size) = self.state.max_static_channel_message_size
+            && self.state.max_dynamic_channel_message_size.is_none()
+            && max_message_size < MAX_DRDYNVC_PDU_SIZE
+        {
+            warn!(
+                max_message_size,
+                "Static channel message limit is below a full DRDYNVC PDU, which can end a conforming client's session"
+            );
+        }
+
         let mut server = RdpServer::new(
             RdpServerOptions {
                 addr: self.state.addr,
