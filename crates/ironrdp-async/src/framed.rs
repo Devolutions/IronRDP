@@ -4,7 +4,7 @@ use bytes::{Bytes, BytesMut};
 use ironrdp_connector::MonotonicInstant;
 use ironrdp_connector::{ConnectorResult, Sequence, Written};
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu::PduHint;
+use ironrdp_pdu::{MAX_UNSIZED_BUFFER_LEN, PduHint};
 use tracing::{debug, trace};
 
 // TODO: investigate if we could use static async fn / return position impl trait in traits when stabilized:
@@ -175,6 +175,9 @@ where
 
     /// Reads a frame using the provided PduHint.
     ///
+    /// Fails with [`io::ErrorKind::InvalidData`] once [`MAX_UNSIZED_BUFFER_LEN`] bytes are buffered without the hint
+    /// determining a PDU size.
+    ///
     /// # Cancel safety
     ///
     /// This method is cancel safe. If you use it as the event in a
@@ -205,6 +208,13 @@ where
                     }
                 }
                 None => {
+                    if MAX_UNSIZED_BUFFER_LEN <= self.buf.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "PduHint found no PDU size within the buffer limit",
+                        ));
+                    }
+
                     let len = self.read().await?;
 
                     // Handle EOF

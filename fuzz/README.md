@@ -27,6 +27,11 @@ However,
 
 Feeds random inputs to PDU decoding code.
 
+### `pdu_hint`
+
+Feeds random inputs to the PDU hints that framers use to find where a PDU ends, and checks that each hint reports a size or an error once its header is complete.
+A hint that keeps asking for more input instead makes the framer buffer whatever the peer sends.
+
 ### `bitmap_stream`
 
 Feeds random inputs to the RDP6 bitmap decoder.

@@ -24,6 +24,13 @@ test = false
 doc = false
 
 [[bin]]
+name = "pdu_hint"
+path = "fuzz_targets/pdu_hint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "rle_decompression"
 path = "fuzz_targets/rle_decompression.rs"
 test = false
