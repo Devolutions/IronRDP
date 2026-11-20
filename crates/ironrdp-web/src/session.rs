@@ -35,8 +35,8 @@ use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::{BitmapCodecs, client_codecs_capabilities};
 use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
-use ironrdp::rdpdr::Rdpdr;
 use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
+use ironrdp::rdpdr::{Rdpdr, RdpdrPrinter};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
@@ -96,6 +96,9 @@ struct SessionBuilderInner {
     printer_name: Option<String>,
     printer_device_id: Option<u32>,
     printer_driver_name: Option<String>,
+    // Set by the `printers` extension; replaces the single printer above.
+    printers: Option<Vec<PrinterSpec>>,
+    invalid_printers: bool,
 
     use_display_control: bool,
     audio_playback_callback: Option<js_sys::Function>,
@@ -151,6 +154,8 @@ impl Default for SessionBuilderInner {
             printer_name: None,
             printer_device_id: None,
             printer_driver_name: None,
+            printers: None,
+            invalid_printers: false,
 
             use_display_control: false,
             audio_playback_callback: None,
@@ -467,6 +472,20 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     Some(printer_driver_name)
                 };
             };
+            |printers: JsValue| {
+                let mut inner = self.0.borrow_mut();
+                match parse_printers(printers) {
+                    Ok(printers) => {
+                        inner.invalid_printers = false;
+                        inner.printers = Some(printers);
+                    }
+                    Err(error) => {
+                        inner.invalid_printers = true;
+                        inner.printers = None;
+                        warn!(%error, "Invalid printers");
+                    }
+                }
+            };
         }
 
         self.clone()
@@ -503,6 +522,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_name,
             printer_device_id,
             printer_driver_name,
+            printer_specs,
+            invalid_printers,
             outbound_message_size_limit,
             legacy_graphics,
             security,
@@ -548,6 +569,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_name = inner.printer_name.clone();
             printer_device_id = inner.printer_device_id;
             printer_driver_name = inner.printer_driver_name.clone();
+            printer_specs = inner.printers.clone();
+            invalid_printers = inner.invalid_printers;
             outbound_message_size_limit = inner.outbound_message_size_limit;
             legacy_graphics = inner.legacy_graphics;
             security = SecurityConfig {
@@ -642,11 +665,23 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             None => (None, None),
         };
 
-        // Default to 2 to avoid a potential collision if drive redirection is
-        // enabled in the same session.
-        let printer_device_id = printer_device_id.unwrap_or(2);
-        let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
-        let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
+        if invalid_printers {
+            return Err(IronError::from(anyhow::anyhow!(
+                "invalid printers extension; see the log for details"
+            )));
+        }
+
+        let printers = match printer_specs {
+            Some(specs) => redirected_printers(specs),
+            None => {
+                // Default to 2 to avoid a potential collision if drive redirection is
+                // enabled in the same session.
+                let printer_device_id = printer_device_id.unwrap_or(2);
+                let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
+                let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
+                vec![RdpdrPrinter::new(printer_device_id, printer_name, printer_driver_name).with_default(true)]
+            }
+        };
 
         let ws = if let Some(protocols) = websocket_protocols {
             web_sys::WebSocket::new_with_str_sequence(&proxy_address, &protocols)
@@ -707,9 +742,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             kdc_proxy_url,
             clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
             printer_backend,
-            printer_device_id,
-            printer_name,
-            printer_driver_name,
+            printers,
             computer_name: client_name.clone(),
             use_display_control,
             audio_backend: audio_playback_callback
@@ -1711,6 +1744,97 @@ fn get_u32_opt(obj: &js_sys::Object, key: &str) -> Result<Option<u32>, IronError
     Ok(Some(f64_to_u32_saturating_cast(f)))
 }
 
+/// One printer of the `printers` extension.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PrinterSpec {
+    name: String,
+    driver_name: Option<String>,
+    device_id: Option<u32>,
+    is_default: bool,
+    network: bool,
+}
+
+/// Most printers announced in one session; the server names them `PRN1` and up.
+const MAX_PRINTERS: usize = 64;
+
+fn parse_printers(printers: JsValue) -> anyhow::Result<Vec<PrinterSpec>> {
+    let printers = printers
+        .dyn_into::<js_sys::Array>()
+        .map_err(|_| anyhow::anyhow!("expected an array"))?;
+    let mut specs = Vec::new();
+    for entry in printers.iter() {
+        let entry = entry
+            .dyn_into::<js_sys::Object>()
+            .map_err(|_| anyhow::anyhow!("expected printer objects"))?;
+        let get = |key: &str| {
+            js_sys::Reflect::get(&entry, &JsValue::from_str(key)).map_err(|e| anyhow::anyhow!("get `{key}`: {e:?}"))
+        };
+        let name = get("name")?.as_string().context("printer `name` must be a string")?;
+        let driver_name = get("driverName")?.as_string().filter(|driver| !driver.is_empty());
+        let device_id = match get("deviceId")?.as_f64() {
+            Some(id) if id >= 1.0 && id <= f64::from(u32::MAX) && id.fract() == 0.0 => {
+                Some(f64_to_u32_saturating_cast(id))
+            }
+            Some(id) => anyhow::bail!("invalid printer deviceId {id}"),
+            None => None,
+        };
+        let is_default = get("isDefault")?.as_bool().unwrap_or(false);
+        let network = get("network")?.as_bool().unwrap_or(true);
+        specs.push(PrinterSpec {
+            name,
+            driver_name,
+            device_id,
+            is_default,
+            network,
+        });
+    }
+    validate_printers(&specs)?;
+    Ok(specs)
+}
+
+fn validate_printers(specs: &[PrinterSpec]) -> anyhow::Result<()> {
+    anyhow::ensure!(specs.len() <= MAX_PRINTERS, "at most {MAX_PRINTERS} printers");
+    for (i, spec) in specs.iter().enumerate() {
+        anyhow::ensure!(!spec.name.is_empty(), "printer names must not be empty");
+        for other in &specs[..i] {
+            anyhow::ensure!(other.name != spec.name, "duplicate printer name {:?}", spec.name);
+            anyhow::ensure!(
+                spec.device_id.is_none() || other.device_id != spec.device_id,
+                "duplicate printer deviceId"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Turns the `printers` extension into announcements. Printers without a
+/// `deviceId` get the lowest free ID from 2 up (1 is left for a drive), and
+/// without a `driverName` the default printer driver. When no printer is
+/// marked as the default, the first one is.
+fn redirected_printers(specs: Vec<PrinterSpec>) -> Vec<RdpdrPrinter> {
+    let mut used: Vec<u32> = specs.iter().filter_map(|spec| spec.device_id).collect();
+    let mut next = 2;
+    let any_default = specs.iter().any(|spec| spec.is_default);
+    specs
+        .into_iter()
+        .enumerate()
+        .map(|(index, spec)| {
+            let device_id = spec.device_id.unwrap_or_else(|| {
+                while used.contains(&next) {
+                    next += 1;
+                }
+                used.push(next);
+                next
+            });
+            let driver_name = spec.driver_name.unwrap_or_else(default_printer_driver_name);
+            RdpdrPrinter::new(device_id, spec.name, driver_name)
+                .with_network(spec.network)
+                .with_default(spec.is_default || (!any_default && index == 0))
+                .with_explicit_driver(true)
+        })
+        .collect()
+}
+
 fn parse_print_job_stream_callbacks(callbacks: JsValue) -> anyhow::Result<JsPrinterStreamCallbacks> {
     let callbacks = callbacks
         .dyn_into::<js_sys::Object>()
@@ -1721,6 +1845,7 @@ fn parse_print_job_stream_callbacks(callbacks: JsValue) -> anyhow::Result<JsPrin
         on_job_data: get_required_function(&callbacks, "onJobData")?,
         on_job_complete: get_required_function(&callbacks, "onJobComplete")?,
         on_job_error: get_optional_function(&callbacks, "onJobError")?,
+        on_printer_announced: get_optional_function(&callbacks, "onPrinterAnnounced")?,
     })
 }
 
@@ -1955,9 +2080,7 @@ struct ConnectParams {
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
     printer_backend: Option<WasmPrinterBackend>,
-    printer_device_id: u32,
-    printer_name: String,
-    printer_driver_name: String,
+    printers: Vec<RdpdrPrinter>,
     /// Matches the `client_name` in the connector config; used as the
     /// `computer_name` when constructing the `Rdpdr` processor.
     computer_name: String,
@@ -2006,9 +2129,7 @@ fn attach_audio_and_printer_channels(
     connector: &mut ClientConnector,
     audio_backend: Option<crate::audio::WasmAudioBackend>,
     printer_backend: Option<WasmPrinterBackend>,
-    printer_device_id: u32,
-    printer_name: String,
-    printer_driver_name: String,
+    printers: Vec<RdpdrPrinter>,
     computer_name: String,
 ) {
     // UNTESTED: Live Windows/GNOME servers must deliver PCM to the registered callback.
@@ -2035,13 +2156,11 @@ fn attach_audio_and_printer_channels(
         if !audio {
             connector.attach_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend)));
         }
-        connector.attach_static_channel(
-            Rdpdr::new(Box::new(printer_backend), computer_name).with_printer_driver(
-                printer_device_id,
-                printer_name,
-                printer_driver_name,
-            ),
+        let rdpdr = printers.into_iter().fold(
+            Rdpdr::new(Box::new(printer_backend), computer_name),
+            Rdpdr::with_redirected_printer,
         );
+        connector.attach_static_channel(rdpdr);
     }
 }
 
@@ -2056,9 +2175,7 @@ async fn connect(
         kdc_proxy_url,
         clipboard_backend,
         printer_backend,
-        printer_device_id,
-        printer_name,
-        printer_driver_name,
+        printers,
         computer_name,
         use_display_control,
         audio_backend,
@@ -2077,15 +2194,7 @@ async fn connect(
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
     }
 
-    attach_audio_and_printer_channels(
-        &mut connector,
-        audio_backend,
-        printer_backend,
-        printer_device_id,
-        printer_name,
-        printer_driver_name,
-        computer_name,
-    );
+    attach_audio_and_printer_channels(&mut connector, audio_backend, printer_backend, printers, computer_name);
 
     let mut dynamic_channels = DrdynvcClient::new();
     if !legacy_graphics {
@@ -2501,9 +2610,10 @@ mod tests {
             &mut connector,
             audio.then(|| crate::audio::WasmAudioBackend::new(tx.clone())),
             printer.then(|| WasmPrinterBackend::new(crate::printer::WasmPrinterMessageProxy::new(tx.clone()))),
-            7,
-            "Test printer".to_owned(),
-            DEFAULT_PRINTER_DRIVER_NAME.to_owned(),
+            vec![
+                RdpdrPrinter::new(7, "Test printer".to_owned(), DEFAULT_PRINTER_DRIVER_NAME.to_owned())
+                    .with_default(true),
+            ],
             "ironrdp-web-test".to_owned(),
         );
         connector
@@ -2604,6 +2714,60 @@ mod tests {
             .expect("RDPDR attached");
         assert!(rdpdr.downcast_backend::<WasmPrinterBackend>().is_some());
         assert_eq!(negotiate_audio_formats(&mut connector), [audio_test_format()]);
+    }
+
+    fn spec(name: &str, device_id: Option<u32>, is_default: bool) -> PrinterSpec {
+        PrinterSpec {
+            name: name.to_owned(),
+            driver_name: None,
+            device_id,
+            is_default,
+            network: false,
+        }
+    }
+
+    #[test]
+    fn redirected_printers_fill_free_device_ids_from_two() {
+        // oracle: device IDs must be unique per RDPDR channel (MS-RDPEFS 2.2.1.3).
+        let printers = redirected_printers(vec![
+            spec("A", None, false),
+            spec("B", Some(3), false),
+            spec("C", None, false),
+        ]);
+        let ids: Vec<u32> = printers.iter().map(RdpdrPrinter::device_id).collect();
+        assert_eq!(ids, [2, 3, 4]);
+    }
+
+    #[test]
+    fn redirected_printers_keep_one_default() {
+        // oracle: MS-RDPEPC 2.2.2.1 allows a single default printer; without one the first is used.
+        let first = redirected_printers(vec![spec("A", None, false), spec("B", None, false)]);
+        assert_eq!(
+            first.iter().map(RdpdrPrinter::is_default).collect::<Vec<_>>(),
+            [true, false]
+        );
+        let chosen = redirected_printers(vec![spec("A", None, false), spec("B", None, true)]);
+        assert_eq!(
+            chosen.iter().map(RdpdrPrinter::is_default).collect::<Vec<_>>(),
+            [false, true]
+        );
+    }
+
+    #[test]
+    fn redirected_printers_use_the_given_driver_and_network_flag() {
+        let mut printer = spec("Office", None, false);
+        printer.driver_name = Some("HP Universal Printing PCL 6".to_owned());
+        let printers = redirected_printers(vec![printer]);
+        assert_eq!(printers[0].driver_name(), "HP Universal Printing PCL 6");
+        assert!(!printers[0].network());
+    }
+
+    #[test]
+    fn validate_printers_rejects_duplicates_and_empty_names() {
+        assert!(validate_printers(&[spec("A", None, false), spec("A", None, false)]).is_err());
+        assert!(validate_printers(&[spec("A", Some(5), false), spec("B", Some(5), false)]).is_err());
+        assert!(validate_printers(&[spec("", None, false)]).is_err());
+        assert!(validate_printers(&[spec("A", None, false), spec("B", None, false)]).is_ok());
     }
 
     #[test]

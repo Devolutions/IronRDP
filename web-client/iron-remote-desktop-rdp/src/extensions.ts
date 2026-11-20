@@ -61,6 +61,11 @@ export function formatListResponseCallback(cb: (ok: boolean) => void): Extension
 // 128 MiB are rejected, and queued write chunks are bounded to protect browser
 // memory. `printerName`, `printerDeviceId`, and `printerDriverName` are
 // optional; sensible defaults are applied when omitted.
+//
+// `printers` announces several printers instead (for example every printer of
+// the local computer, each with the driver that the host has for it).
+// `onJobStart` then tells which printer a job was sent to, and
+// `onPrinterAnnounced` reports whether the host accepted each printer.
 
 export const PrinterDriverName = {
     PostScript: 'MS Publisher Imagesetter',
@@ -68,10 +73,27 @@ export const PrinterDriverName = {
 } as const;
 
 export interface PrintJobStreamCallbacks {
-    onJobStart?: (fileId: number) => void;
+    /** `deviceId` is the printer the job was sent to. */
+    onJobStart?: (fileId: number, deviceId: number) => void;
     onJobData: (fileId: number, chunk: Uint8Array) => void;
     onJobComplete: (fileId: number) => void;
     onJobError?: (fileId: number) => void;
+    /** The host's answer to a printer announcement; `resultCode` is an NTSTATUS. */
+    onPrinterAnnounced?: (deviceId: number, accepted: boolean, resultCode: number) => void;
+}
+
+/** A printer announced with {@link printers}. */
+export interface RedirectedPrinter {
+    /** Queue name shown on the host (usually with "(redirected N)" added). */
+    name: string;
+    /** Driver the host uses for the queue; defaults to the same driver as `printerDriverName`. */
+    driverName?: string;
+    /** RDPDR device ID; the lowest free ID from 2 up when omitted. */
+    deviceId?: number;
+    /** At most one printer is the default; the first one when none is marked. */
+    isDefault?: boolean;
+    /** Whether the local queue is a network printer (default `true`). */
+    network?: boolean;
 }
 
 export function printJobStreamCallbacks(callbacks: PrintJobStreamCallbacks): Extension {
@@ -88,6 +110,11 @@ export function printerDeviceId(id: number): Extension {
 
 export function printerDriverName(driverName: string): Extension {
     return new Extension('printer_driver_name', driverName);
+}
+
+/** Announces these printers instead of the single printer configured above. */
+export function printers(list: RedirectedPrinter[]): Extension {
+    return new Extension('printers', list as unknown);
 }
 
 // Runtime operation extensions (invoked via Session.invokeExtension())
