@@ -863,8 +863,22 @@ impl Acceptor {
     }
 
     /// Returns credentials received during the current handshake, if any.
+    ///
+    /// For a client that presented an auto-reconnect cookie they stay available after the result is taken, until
+    /// [`take_received_credentials`](Self::take_received_credentials), because the server checks them only if the
+    /// cookie fails to verify, as MS-RDPBCGR [3.3.5.3.11] Processing Client Info PDU asks.
+    ///
+    /// [3.3.5.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/ef9db6a5-36f4-4613-84b3-97501679d210
     pub fn received_credentials(&self) -> Option<&ReceivedCredentials> {
         self.received_credentials.as_ref()
+    }
+
+    /// Takes the credentials [`received_credentials`](Self::received_credentials) returns, leaving none.
+    ///
+    /// A server takes them when it checks an auto-reconnect cookie, so the acceptor doesn't keep them for the rest of
+    /// the connection.
+    pub fn take_received_credentials(&mut self) -> Option<ReceivedCredentials> {
+        self.received_credentials.take()
     }
 
     /// Returns the received Client Info flags, preserving them across reactivation.
@@ -920,8 +934,14 @@ impl Acceptor {
     }
 
     fn credentials_for_result(&mut self) -> Option<Credentials> {
-        self.received_credentials
-            .take()
+        // An auto-reconnect attempt leaves its credentials to the server, which checks them only if the cookie fails.
+        // They stay readable through `received_credentials` until the server takes them.
+        let received = if self.is_auto_reconnect_attempt() {
+            self.received_credentials.clone()
+        } else {
+            self.received_credentials.take()
+        };
+        received
             .filter(|received| received.origin == CredentialOrigin::ClientInfo)
             .map(|received| received.credentials)
     }

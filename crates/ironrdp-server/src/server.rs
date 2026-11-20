@@ -6429,7 +6429,7 @@ impl RdpServer {
         conn: &mut ConnectionState,
         reader: &mut Framed<R>,
         writer: &mut Framed<W>,
-        (result, acceptor): (AcceptorResult, &Acceptor),
+        (result, acceptor): (AcceptorResult, &mut Acceptor),
         udp_transport: &mut Option<multitransport::UdpTransportHandle>,
         pending_udp_accept: Option<task::JoinHandle<Option<multitransport::UdpTransportHandle>>>,
     ) -> ServerResult<RunState>
@@ -6439,26 +6439,65 @@ impl RdpServer {
     {
         debug!("Client accepted");
 
-        let is_auto_reconnect = if let Some(reconnect) = result.auto_reconnect.as_ref() {
-            if !self.verify_auto_reconnect_cookie(reconnect) {
-                warn!("Auto-reconnect cookie validation rejected");
-                send_access_denied(acceptor, writer).await?;
-                return Err(ServerError::reason("auto-reconnect validation", "cookie rejected"));
+        let is_auto_reconnect = {
+            // For a client that presented an auto-reconnect cookie, the acceptor keeps its credentials past the
+            // result in case the cookie fails.
+            // They're taken here whatever the cookie's outcome, and dropped at the end of this block, so the acceptor
+            // ends up holding none, as for a connection without a cookie, and neither does this function, which runs
+            // the whole session.
+            // The result's own copy of the Client Info credentials, which the server doesn't read, stays with it as it
+            // does for every connection.
+            // UNTESTED: A verified cookie leaves no credentials in the acceptor only because they're taken here, ahead
+            // of the match. The fallback tests fail if they aren't taken at all, but no test can see the server's
+            // acceptor, so moving the take into the fallback arm would pass them. When changing this, keep the take
+            // ahead of the match.
+            let received = acceptor.take_received_credentials();
+            match result.auto_reconnect.as_ref() {
+                None => false,
+                Some(_) if self.connection_binder.is_some() => {
+                    // The acceptor skips capability-exchange binding for every auto-reconnect attempt, so neither a
+                    // verified cookie nor a fallback logon can be bound.
+                    warn!("Auto-reconnect cannot restore a credential-bound connection safely");
+                    send_access_denied(acceptor, writer).await?;
+                    return Err(ServerError::reason(
+                        "auto-reconnect validation",
+                        "unsupported with a connection binder",
+                    ));
+                }
+                Some(reconnect) if self.verify_auto_reconnect_cookie(reconnect) => {
+                    debug!("Auto-reconnect cookie validation accepted");
+                    true
+                }
+                Some(_) => {
+                    // MS-RDPBCGR 3.3.5.3.11: "If logon with the cookie fails, the credentials supplied in the Client
+                    // Info PDU SHOULD be used".
+                    // A cookie issued before the server restarted never verifies, so refusing here locks out every
+                    // client that auto-reconnects across a restart.
+                    // The connection continues exactly like one that sent no cookie, so the credential validator
+                    // decides.
+                    // After CredSSP with HYBRID_EX it has already run on the delegated credentials.
+                    // Otherwise the acceptor deferred it to the cookie, and it runs now on the credentials it would
+                    // have checked without one, the delegated ones under plain HYBRID and the Client Info ones
+                    // otherwise.
+                    debug!("Auto-reconnect cookie not recognized; continuing with a normal logon");
+                    if self
+                        .pending_authenticated_credentials
+                        .lock()
+                        .expect("authenticated credentials lock poisoned")
+                        .is_none()
+                    {
+                        if let Err(error) = self.prepare_authenticated_connection(received).await {
+                            warn!(%error, "Normal logon after an unrecognized auto-reconnect cookie failed");
+                            send_access_denied(acceptor, writer).await?;
+                            return Err(ServerError::reason(
+                                "auto-reconnect validation",
+                                "cookie rejected and the credentials did not validate",
+                            ));
+                        }
+                    }
+                    false
+                }
             }
-
-            if self.connection_binder.is_some() {
-                warn!("Auto-reconnect cannot restore a credential-bound connection safely");
-                send_access_denied(acceptor, writer).await?;
-                return Err(ServerError::reason(
-                    "auto-reconnect validation",
-                    "unsupported with a connection binder",
-                ));
-            }
-
-            debug!("Auto-reconnect cookie validation accepted");
-            true
-        } else {
-            false
         };
 
         if result.reactivation {
@@ -6976,7 +7015,7 @@ impl RdpServer {
                     &mut conn,
                     &mut reader,
                     &mut writer,
-                    (result, &acceptor),
+                    (result, &mut acceptor),
                     &mut udp_transport,
                     pending_udp_accept.take(),
                 )
