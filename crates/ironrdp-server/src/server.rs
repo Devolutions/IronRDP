@@ -1451,6 +1451,12 @@ pub struct RdpServer {
     /// The local address the current client reached. See
     /// [`Self::set_connection_local_addr`].
     connection_local_addr: Option<SocketAddr>,
+    /// How long the server waits for the client to close a connection that an error ended: [`ERROR_CLOSE_TIMEOUT`],
+    /// unless a test sets it.
+    error_close_timeout: Duration,
+    /// How long the server waits for the client to close a session that ended without an error: [`CLOSE_TIMEOUT`],
+    /// unless a test sets it.
+    close_timeout: Duration,
     /// Peer address of the connection served by [`Self::serve_connection`].
     /// Set on connection entry and cleared by [`Self::run_connection_with`] and
     /// [`Self::run_connection_session`]; see [`ConnectionInfo::peer_addr`].
@@ -1981,13 +1987,10 @@ enum RunState {
     },
 }
 
-/// Which transport a connection ended up on after
-/// [`negotiate_and_authenticate`], carrying the framed stream in the shape the
-/// finalize step needs. The three variants exist to preserve the three
-/// pre-existing finalize behaviours exactly.
+/// Which transport a connection ended up on after [`negotiate_and_authenticate`], carrying the framed stream in the
+/// shape the finalize step needs.
 enum NegotiatedTransport<S> {
-    /// Never upgraded ([`RdpServerSecurity::None`]): finalize without a
-    /// stream shutdown, matching the old `BeginResult::Continue` arm.
+    /// Never upgraded ([`RdpServerSecurity::None`]).
     Continued(TokioFramed<S>),
     /// Upgraded in-band by us ([`TransportTls::Managed`]).
     Tls(Box<TokioFramed<tokio_rustls::server::TlsStream<S>>>),
@@ -2926,9 +2929,21 @@ where
 /// exceeding it is not an error, it just degrades to an abrupt drop.
 const EVICTION_GRACE: Duration = Duration::from_millis(750);
 
-/// How long the server waits to close the connection after it sent the client a
-/// Set Error Info PDU for an error.
-const ERROR_INFO_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long the server waits for the client to close a connection that an error ended, whether or not the error sent
+/// the client a last PDU.
+/// The errors that send one happen before the session streams anything, so the client has little left to read.
+/// After an error that sent nothing, only a client that stays connected holds the server, and one that has already gone
+/// ends the wait at once.
+/// A client that never closes the connection holds the server for this long, so the next client waits too, unless it
+/// takes the session over, which waits at most [`EVICTION_GRACE`].
+const ERROR_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How long the server waits for the client to close a session that ended without an error.
+/// The client may still be decoding frames sent before the reason and the ultimatum, so this matches
+/// [`FINAL_FLUSH_TIMEOUT`].
+/// A client that never closes the connection holds the server for this long, so the next client waits too, unless it
+/// takes the session over, which waits at most [`EVICTION_GRACE`].
+const CLOSE_TIMEOUT: Duration = FINAL_FLUSH_TIMEOUT;
 
 /// How long the client loop, at its end, writes what is still queued (a
 /// Deactivate All, a disconnect reason, the rest of a frame). A peer that
@@ -3267,6 +3282,8 @@ impl RdpServer {
             pending_authenticated_credentials: Arc::new(StdMutex::new(None)),
             local_addr: None,
             connection_local_addr: None,
+            error_close_timeout: ERROR_CLOSE_TIMEOUT,
+            close_timeout: CLOSE_TIMEOUT,
             connection_peer_addr: None,
             autodetect_enabled: false,
             heartbeat: None,
@@ -4023,9 +4040,9 @@ impl RdpServer {
     /// have `TCP_NODELAY` set; [`RdpServer::run`] does that for the
     /// connections it accepts itself.
     ///
-    /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
-    /// [`TransportTls::Managed`], including the treatment of events queued
-    /// before the call (see `Queued events` there).
+    /// Equivalent to [`run_connection_with`](Self::run_connection_with) with [`TransportTls::Managed`], including how
+    /// it treats events queued before the call and how it closes the connection (see `Queued events` and `Closing the
+    /// connection` there).
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -4068,6 +4085,14 @@ impl RdpServer {
     /// [`event_sender`](Self::event_sender) clone or one of the server's
     /// handles is not, so stop such producers before starting the next
     /// connection.
+    ///
+    /// # Closing the connection
+    ///
+    /// When the session ends, or an error ends the connection once the client is accepted, this method shuts the stream
+    /// down and then reads and discards what the client still sends until the client closes its side, so the client can
+    /// read the server's last PDUs.
+    /// It returns when the client closes, or once the wait reaches five seconds at the end of a session or one second
+    /// after an error.
     ///
     /// # Use case for [`TransportTls::AlreadyDone`]
     ///
@@ -4227,15 +4252,10 @@ impl RdpServer {
         pending
     }
 
-    /// Finalize a connection that has already negotiated (and, under Hybrid,
-    /// authenticated) via [`PendingConnection::negotiate_and_authenticate`].
-    /// Dispatches on which [`NegotiatedTransport`] variant it got: `Continued`
-    /// (no security upgrade happened, [`RdpServerSecurity::None`]) goes
-    /// straight to `accept_finalize` with no stream to shut down, while `Tls`
-    /// / `Offloaded` route through [`Self::finalize_and_shutdown`] for the
-    /// extra shutdown step — these three paths are NOT structurally identical
-    /// past this point, only past the handshake `negotiate_and_authenticate`
-    /// itself covers.
+    /// Finalize a connection that has already negotiated (and, under Hybrid, authenticated) via
+    /// [`PendingConnection::negotiate_and_authenticate`].
+    /// Every [`NegotiatedTransport`] variant goes through [`Self::finalize_and_shutdown`], which closes the stream once
+    /// the client could read the last PDUs.
     async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedConnection<S>) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
@@ -4258,10 +4278,10 @@ impl RdpServer {
             .expect("authenticated credentials lock poisoned") = authenticated_credentials;
         let local_addr = local_addr.or(self.connection_local_addr);
         match transport {
-            // No security upgrade happened, so there is no TLS session to shut
-            // down — matches the pre-existing `BeginResult::Continue` arm.
+            // No security upgrade happened, so there is no TLS session, but the client still has to read the last PDUs.
             NegotiatedTransport::Continued(framed) => {
-                self.accept_finalize(local_addr, framed, acceptor).await?;
+                self.finalize_and_shutdown(local_addr, framed, acceptor, "connection")
+                    .await?;
             }
             NegotiatedTransport::Tls(framed) => {
                 self.finalize_and_shutdown(local_addr, *framed, acceptor, "TLS connection")
@@ -4276,10 +4296,9 @@ impl RdpServer {
         Ok(())
     }
 
-    /// Finalize an upgraded stream and shut it down afterwards. The
-    /// negotiation and authentication that used to precede this now live in
-    /// [`negotiate_and_authenticate`], which the preemption candidate path
-    /// shares.
+    /// Finalize a stream and close it afterwards, as [`close_after_last_pdu`] does.
+    /// Negotiation and authentication happen before this, in [`negotiate_and_authenticate`], which the preemption
+    /// candidate path shares.
     async fn finalize_and_shutdown<S>(
         &mut self,
         local_addr: Option<SocketAddr>,
@@ -4297,10 +4316,8 @@ impl RdpServer {
         // work at this point, since it has no separate negotiation step.
         let framed = self.accept_finalize(local_addr, framed, acceptor).await?;
         debug!("Shutting down {}", shutdown_label);
-        let (mut inner, _) = framed.into_inner();
-        if let Err(e) = inner.shutdown().await {
-            debug!(?e, "{} shutdown error", shutdown_label);
-        }
+        let (inner, _) = framed.into_inner();
+        close_after_last_pdu(inner, self.close_timeout).await;
 
         Ok(())
     }
@@ -4362,6 +4379,10 @@ impl RdpServer {
     /// if it succeeds. [`ConnectionHandler::on_accept`] and
     /// [`ConnectionHandler::on_disconnected`] are called for connections that
     /// have a [`peer`](IncomingConnection::peer).
+    ///
+    /// Connections are served one at a time, so the close of one, which waits for the client as
+    /// [`run_connection_with`](Self::run_connection_with) describes, delays the next, except that under
+    /// [`ConnectionPolicy::Preempt`] a client taking the session over waits at most 750 ms.
     ///
     /// An embedder that needs its own loop around the policy (its own hooks, its
     /// own shutdown) calls [`serve_connection`](Self::serve_connection) instead.
@@ -6963,19 +6984,12 @@ impl RdpServer {
             let state = match state {
                 Ok(state) => state,
                 Err(error) => {
-                    if matches!(error.kind(), ServerErrorKind::ErrorInfo(_)) {
-                        // The client was sent a Set Error Info PDU. Close the
-                        // session as on a normal disconnect, so the client gets
-                        // the PDU and then the end of the stream.
-                        let (mut inner, _) = unsplit_tokio_framed(reader, writer).into_inner();
-                        match tokio::time::timeout(ERROR_INFO_CLOSE_TIMEOUT, inner.shutdown()).await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(shutdown_error)) => {
-                                debug!(%shutdown_error, "Shutdown after the error reason failed")
-                            }
-                            Err(_) => debug!("Shutdown after the error reason timed out"),
-                        }
-                    }
+                    // The server may have sent a last PDU before the error, such as the Set Error Info PDU of a
+                    // refusal or of a display error.
+                    // Close as on a normal disconnect, and wait for the client to close its side.
+                    // A client that has already gone ends the wait at once.
+                    let (inner, _) = unsplit_tokio_framed(reader, writer).into_inner();
+                    close_after_last_pdu(inner, self.error_close_timeout).await;
                     return Err(error);
                 }
             };
@@ -7051,6 +7065,15 @@ impl RdpServer {
     #[doc(hidden)]
     pub fn connection_local_addr_for_test(&self) -> Option<SocketAddr> {
         self.connection_local_addr
+    }
+
+    /// Sets how long the server waits for the client to close a connection, after an error and at the end of a session
+    /// alike.
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn set_close_timeout_for_test(&mut self, timeout: Duration) {
+        self.error_close_timeout = timeout;
+        self.close_timeout = timeout;
     }
 }
 
@@ -7308,6 +7331,39 @@ async fn send_disconnect_ultimatum(writer: &mut impl FramedWrite) {
         Err(error) => {
             warn!(%error, "Could not encode the Disconnect Provider Ultimatum; disconnecting anyway");
         }
+    }
+}
+
+/// Closes a connection that the server ends, so that the client can still read the last PDUs sent on it.
+///
+/// It shuts the stream down, then reads and discards what the client still sends until the client closes its side or
+/// `timeout` passes.
+/// A socket closed while the client is still sending answers that data with a reset, and the client's next write
+/// fails.
+/// FreeRDP takes the failed write for a lost connection, so it never processes the PDUs already waiting to be read, and
+/// it reconnects.
+async fn close_after_last_pdu<S>(mut stream: S, timeout: Duration)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncReadExt as _;
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    match tokio::time::timeout_at(deadline, stream.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            debug!(%error, "Shutdown before closing the connection failed");
+            return;
+        }
+        Err(_) => {
+            debug!("Shutdown before closing the connection timed out");
+            return;
+        }
+    }
+    let mut discarded = [0u8; 1024];
+    let drain = async { while matches!(stream.read(&mut discarded).await, Ok(1..)) {} };
+    if tokio::time::timeout_at(deadline, drain).await.is_err() {
+        debug!("The client did not close the connection in time");
     }
 }
 
