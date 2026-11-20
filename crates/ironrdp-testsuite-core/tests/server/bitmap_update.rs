@@ -7,12 +7,12 @@ use ironrdp_pdu::rdp::capability_sets::{CmdFlags, LargePointerSupportFlags};
 use ironrdp_server::{BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat, UpdateEncoder, UpdateEncoderCodecs};
 use proptest::prelude::*;
 
-/// Encodes `update` for a client without surface commands, which gets slow-path style bitmap
-/// updates, and returns every bitmap update PDU sent for it.
-async fn bitmap_updates(update: BitmapUpdate) -> Vec<Vec<u8>> {
+/// Encodes `updates` in turn with one encoder, for a client without surface commands, which gets
+/// slow-path style bitmap updates, and returns every bitmap update PDU sent for each.
+async fn bitmap_updates(updates: &[BitmapUpdate]) -> Vec<Vec<Vec<u8>>> {
     let desktop = DesktopSize {
-        width: update.x + update.width.get(),
-        height: update.y + update.height.get(),
+        width: updates.iter().map(|u| u.x + u.width.get()).max().unwrap(),
+        height: updates.iter().map(|u| u.y + u.height.get()).max().unwrap(),
     };
     let mut encoder = UpdateEncoder::new(
         desktop,
@@ -24,17 +24,25 @@ async fn bitmap_updates(update: BitmapUpdate) -> Vec<Vec<u8>> {
         LargePointerSupportFlags::empty(),
     )
     .unwrap();
-    let mut updates = encoder.update(DisplayUpdate::Bitmap(update));
-    let mut pdus = Vec::new();
-    while let Some(fragmenter) = updates.next().await {
-        pdus.push(fragmenter.unwrap().data);
+    let mut sent = Vec::new();
+    for update in updates {
+        let mut fragmenters = encoder.update(DisplayUpdate::Bitmap(update.clone()));
+        let mut pdus = Vec::new();
+        while let Some(fragmenter) = fragmenters.next().await {
+            pdus.push(fragmenter.unwrap().data);
+        }
+        sent.push(pdus);
     }
-    pdus
+    sent
+}
+
+fn encode_in_turn(updates: &[BitmapUpdate]) -> Vec<Vec<Vec<u8>>> {
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    runtime.block_on(bitmap_updates(updates))
 }
 
 fn encode(update: BitmapUpdate) -> Vec<Vec<u8>> {
-    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
-    runtime.block_on(bitmap_updates(update))
+    encode_in_turn(&[update]).remove(0)
 }
 
 /// Calls `f` with every `TS_BITMAP_DATA` of `pdus`.
@@ -166,6 +174,17 @@ fn bitmap_update_of_odd_width_has_scan_width_divisible_by_4() {
     assert_draws_exactly(&pdus, &update);
 }
 
+#[test]
+fn bitmap_update_after_a_larger_one_is_sent_as_on_its_own() {
+    let small = bitmap(8, 4, 67, 3);
+    let sent = encode_in_turn(&[bitmap(0, 0, 136, 70), small.clone()]);
+    // oracle: spec MS-RDPBCGR §2.2.9.1.1.3.1.2.2 (destLeft..destBottom are the inclusive bounds drawn)
+    // oracle: property round-trip (RDP 6.0 planar bitmaps without color loss decode to the pixels encoded)
+    assert_draws_exactly(&sent[1], &small);
+    // oracle: mutant a bitmap encoder that sends what its reused buffer kept from a larger update
+    assert_eq!(sent[1], encode(small));
+}
+
 /// An offset from 0 to `max`, with both ends as likely as any value in between.
 fn offset(max: u16) -> impl Strategy<Value = u16> {
     prop_oneof![Just(0), Just(max), 0..=max]
@@ -189,5 +208,16 @@ proptest! {
         assert_tiles_fit_64x64(&pdus);
         assert_scan_widths_divisible_by_4(&pdus);
         assert_draws_exactly(&pdus, &update);
+    }
+
+    // Same oracles as bitmap_update_after_a_larger_one_is_sent_as_on_its_own, over generated sequences of updates
+    // sent through one encoder.
+    #[test]
+    fn bitmap_updates_in_turn_are_sent_as_on_their_own(updates in prop::collection::vec(updates(), 1..=4)) {
+        let sent = encode_in_turn(&updates);
+        for (pdus, update) in sent.iter().zip(&updates) {
+            assert_draws_exactly(pdus, update);
+            prop_assert_eq!(pdus, &encode(update.clone()));
+        }
     }
 }
