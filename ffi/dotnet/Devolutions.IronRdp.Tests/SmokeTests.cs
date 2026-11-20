@@ -422,6 +422,15 @@ internal static class SmokeTests
             True(error.Message.Contains("credentials not set"), $"error message: {error.Message}");
         });
 
+        // oracle: KerberosConfig::new_with_kdc_url in ironrdp-connector parses the KDC URL and reports a parse failure as an error
+        yield return ("kerberos config rejects an invalid KDC URL", () =>
+        {
+            KerberosConfig.New("client");
+            KerberosConfig.NewWithKdcUrl("tcp://dc.example.com:88", "client");
+            var error = Throws<IronRdpException>(() => KerberosConfig.NewWithKdcUrl("dc.example.com", "client"));
+            True(error.Message.Contains("invalid KDC URL"), $"error message: {error.Message}");
+        });
+
         yield return ("connector sends an X.224 request and accepts the confirm", () =>
         {
             var config = TlsConfig();

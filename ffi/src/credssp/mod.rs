@@ -16,6 +16,25 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct KerberosConfig(pub ironrdp::connector::credssp::KerberosConfig);
 
+    impl KerberosConfig {
+        /// Kerberos with the KDC found from the user's realm through DNS or the system configuration.
+        ///
+        /// `hostname` is the client computer name sent to the KDC.
+        pub fn new(hostname: &str) -> Result<Box<KerberosConfig>, Box<IronRdpError>> {
+            let config = ironrdp::connector::credssp::KerberosConfig::new_with_kdc_url(None, hostname.to_owned())?;
+            Ok(Box::new(KerberosConfig(config)))
+        }
+
+        /// Kerberos with an explicit KDC, such as `tcp://dc.example.com:88`, or a KDC proxy URL.
+        pub fn new_with_kdc_url(kdc_url: &str, hostname: &str) -> Result<Box<KerberosConfig>, Box<IronRdpError>> {
+            let config = ironrdp::connector::credssp::KerberosConfig::new_with_kdc_url(
+                Some(kdc_url.to_owned()),
+                hostname.to_owned(),
+            )?;
+            Ok(Box::new(KerberosConfig(config)))
+        }
+    }
+
     #[diplomat::opaque_mut]
     pub struct CredsspSequence(pub ironrdp::connector::credssp::CredsspSequence);
 
