@@ -61,6 +61,11 @@ export function formatListResponseCallback(cb: (ok: boolean) => void): Extension
 // 128 MiB are rejected, and queued write chunks are bounded to protect browser
 // memory. `printerName`, `printerDeviceId`, and `printerDriverName` are
 // optional; sensible defaults are applied when omitted.
+//
+// `printers` announces several printers instead (for example every printer of
+// the local computer, each with the driver that the host has for it).
+// `onJobStart` then tells which printer a job was sent to, and
+// `onPrinterAnnounced` reports whether the host accepted each printer.
 
 export const PrinterDriverName = {
     PostScript: 'MS Publisher Imagesetter',
@@ -68,10 +73,27 @@ export const PrinterDriverName = {
 } as const;
 
 export interface PrintJobStreamCallbacks {
-    onJobStart?: (fileId: number) => void;
+    /** `deviceId` is the printer the job was sent to. */
+    onJobStart?: (fileId: number, deviceId: number) => void;
     onJobData: (fileId: number, chunk: Uint8Array) => void;
     onJobComplete: (fileId: number) => void;
     onJobError?: (fileId: number) => void;
+    /** The host's answer to a printer announcement; `resultCode` is an NTSTATUS. */
+    onPrinterAnnounced?: (deviceId: number, accepted: boolean, resultCode: number) => void;
+}
+
+/** A printer announced with {@link printers}. */
+export interface RedirectedPrinter {
+    /** Queue name shown on the host (usually with "(redirected N)" added). */
+    name: string;
+    /** Driver the host uses for the queue; defaults to the same driver as `printerDriverName`. */
+    driverName?: string;
+    /** RDPDR device ID; the lowest free ID from 2 up when omitted. */
+    deviceId?: number;
+    /** At most one printer is the default; the first one when none is marked. */
+    isDefault?: boolean;
+    /** Whether the local queue is a network printer (default `true`). */
+    network?: boolean;
 }
 
 export function printJobStreamCallbacks(callbacks: PrintJobStreamCallbacks): Extension {
@@ -88,6 +110,105 @@ export function printerDeviceId(id: number): Extension {
 
 export function printerDriverName(driverName: string): Extension {
     return new Extension('printer_driver_name', driverName);
+}
+
+/** Announces these printers instead of the single printer configured above. */
+export function printers(list: RedirectedPrinter[]): Extension {
+    return new Extension('printers', list as unknown);
+}
+
+// Drive redirection (RDPDR)
+//
+// `drives` announces folders of the local computer as drives on the host.
+// The browser cannot open local files, so every filesystem request of the
+// host goes to `driveRequestCallback`; answer each one that has a nonzero
+// `id` with `Session.invokeExtension(driveReply({...}))`. Requests may be
+// answered in any order but must be carried out in the order they arrive: a
+// `close` with `id` 0 (a handle that changed nothing) takes no reply. Directory
+// listings are fetched whole (`list`) and enumerated from memory, and the `stat`
+// of a `create` reply answers metadata queries until the drive changes. Times are Unix milliseconds; statuses are NTSTATUS
+// values (0 is success).
+
+/** A folder announced with {@link drives}. */
+export interface RedirectedDrive {
+    /** RDPDR device ID, unique among drives and printers. */
+    deviceId: number;
+    /** Name shown on the host, as in "<name> on <client name>". */
+    name: string;
+}
+
+/** File metadata in a {@link DriveReply}. */
+export interface DriveFileInfo {
+    /** Entry name (`list` replies only). */
+    name?: string;
+    dir: boolean;
+    size: number;
+    created: number;
+    accessed: number;
+    written: number;
+    changed: number;
+    /** FILE_ATTRIBUTE_* bits (read-only 0x1, hidden 0x2, ...). */
+    attributes?: number;
+    deletePending?: boolean;
+}
+
+export type DriveRequest = { id: number; deviceId: number; fileId: number } & (
+    | {
+          op: 'create';
+          /** `\`-separated, relative to the drive root (empty or `\` is the root). */
+          path: string;
+          desiredAccess: number;
+          /** FILE_SUPERSEDE 0, OPEN 1, CREATE 2, OPEN_IF 3, OVERWRITE 4, OVERWRITE_IF 5. */
+          disposition: number;
+          /** FILE_DIRECTORY_FILE 0x1, FILE_NON_DIRECTORY_FILE 0x40, FILE_DELETE_ON_CLOSE 0x1000, ... */
+          options: number;
+          attributes: number;
+          shareAccess: number;
+      }
+    | { op: 'close' | 'stat' | 'volume' | 'reset' }
+    | { op: 'read'; offset: number; length: number }
+    | { op: 'write'; offset: number; data: Uint8Array }
+    /** `path` is `\dir\pattern`, where the pattern may hold `*` and `?`. */
+    | { op: 'list'; path: string }
+    | { op: 'setBasic'; created: number; accessed: number; written: number; changed: number; attributes: number }
+    | { op: 'setSize'; size: number }
+    | { op: 'setDelete'; delete: boolean }
+    | { op: 'rename'; to: string; replace: boolean }
+    | { op: 'announced'; accepted: boolean; resultCode: number }
+);
+
+/** The answer to a {@link DriveRequest}. */
+export interface DriveReply {
+    id: number;
+    /** NTSTATUS; 0 is success. */
+    status: number;
+    /** `create`: the new handle. */
+    fileId?: number;
+    /** `create` (optional) and `stat`: the file's metadata. */
+    /** `create`: FILE_SUPERSEDED 0, OPENED 1, CREATED 2, OVERWRITTEN 3. */
+    information?: number;
+    /** `read`: the bytes read. */
+    data?: Uint8Array;
+    /** `write`: bytes written. */
+    length?: number;
+    stat?: DriveFileInfo;
+    /** `list`: matching entries, including `.` and `..` when they match. */
+    entries?: DriveFileInfo[];
+    /** `volume`: total and free bytes. */
+    total?: number;
+    free?: number;
+}
+
+export function drives(list: RedirectedDrive[]): Extension {
+    return new Extension('drives', list as unknown);
+}
+
+export function driveRequestCallback(cb: (request: DriveRequest) => void): Extension {
+    return new Extension('drive_request_callback', cb as unknown);
+}
+
+export function driveReply(reply: DriveReply): Extension {
+    return new Extension('drive_reply', reply as unknown);
 }
 
 // Runtime operation extensions (invoked via Session.invokeExtension())
