@@ -21,7 +21,14 @@ vi.mock('../../../crates/ironrdp-web/pkg/ironrdp_web', () => ({
     },
 }));
 
-import { cameraH264, cameraSample, cameraWanted, monitorLayout, monitorLayoutCallback } from './main';
+import {
+    cameraH264,
+    cameraSample,
+    cameraWanted,
+    emptyClientInfoPassword,
+    monitorLayout,
+    monitorLayoutCallback,
+} from './main';
 
 describe('monitor layout extensions', () => {
     beforeEach(() => {
@@ -85,5 +92,18 @@ describe('camera extensions', () => {
             { name: 'camera_sample', value: frame },
             { name: 'camera_wanted', value: null },
         ]);
+    });
+});
+
+describe('client info password extension', () => {
+    beforeEach(() => {
+        captured.extensions.length = 0;
+    });
+
+    it('sends the name the session matches', () => {
+        // oracle: reference crates/ironrdp-web/src/session.rs matches `empty_client_info_password`.
+        emptyClientInfoPassword(true);
+
+        expect(captured.extensions).toEqual([{ name: 'empty_client_info_password', value: true }]);
     });
 });

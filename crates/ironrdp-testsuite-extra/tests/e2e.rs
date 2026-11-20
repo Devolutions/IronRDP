@@ -4594,6 +4594,7 @@ pub(super) fn default_client_config() -> connector::Config {
             password: PASSWORD.into(),
         },
         domain: None,
+        empty_client_info_password: false,
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0)

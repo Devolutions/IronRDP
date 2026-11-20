@@ -57,6 +57,18 @@ const DEFAULT_HEIGHT: u16 = 720;
 struct SecurityConfig {
     enable_credssp: bool,
     enable_standard_rdp_security: bool,
+    empty_client_info_password: bool,
+}
+
+impl SecurityConfig {
+    /// The security settings the extensions left in the builder.
+    fn of(inner: &SessionBuilderInner) -> Self {
+        Self {
+            enable_credssp: inner.enable_credssp,
+            enable_standard_rdp_security: inner.enable_standard_rdp_security,
+            empty_client_info_password: inner.empty_client_info_password,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -113,6 +125,7 @@ struct SessionBuilderInner {
     monitor_layout: Option<MonitorLayout>,
     monitor_layout_callback: Option<js_sys::Function>,
     keyboard_layout: u32,
+    empty_client_info_password: bool,
 }
 
 impl Default for SessionBuilderInner {
@@ -169,6 +182,7 @@ impl Default for SessionBuilderInner {
             monitor_layout: None,
             monitor_layout_callback: None,
             keyboard_layout: 0,
+            empty_client_info_password: false,
         }
     }
 }
@@ -410,6 +424,9 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     warn!(keyboard_layout, "Invalid keyboard layout; ignored");
                 }
             };
+            |empty_client_info_password: bool| {
+                self.0.borrow_mut().empty_client_info_password = empty_client_info_password;
+            };
             // File transfer callbacks - protocol-specific, routed through extension()
             // rather than dedicated trait methods to keep iron-remote-desktop protocol-agnostic.
             |files_available_callback: JsValue| {
@@ -553,10 +570,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_driver_name = inner.printer_driver_name.clone();
             outbound_message_size_limit = inner.outbound_message_size_limit;
             legacy_graphics = inner.legacy_graphics;
-            security = SecurityConfig {
-                enable_credssp: inner.enable_credssp,
-                enable_standard_rdp_security: inner.enable_standard_rdp_security,
-            };
+            security = SecurityConfig::of(&inner);
         }
 
         if pcb.is_some() && vmconnect.is_some() {
@@ -1863,6 +1877,7 @@ fn build_config(
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
+        empty_client_info_password: security.empty_client_info_password,
         enable_tls: !security.enable_standard_rdp_security,
         enable_credssp: security.enable_credssp && !security.enable_standard_rdp_security,
         enable_standard_rdp_security: security.enable_standard_rdp_security,
@@ -2505,6 +2520,7 @@ mod tests {
                 SecurityConfig {
                     enable_credssp: true,
                     enable_standard_rdp_security: false,
+                    empty_client_info_password: false,
                 },
             ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
@@ -2670,6 +2686,7 @@ mod tests {
                 SecurityConfig {
                     enable_credssp,
                     enable_standard_rdp_security,
+                    empty_client_info_password: false,
                 },
             );
 
@@ -2700,6 +2717,7 @@ mod tests {
                 SecurityConfig {
                     enable_credssp: true,
                     enable_standard_rdp_security: false,
+                    empty_client_info_password: false,
                 },
             );
             let bitmap = config.bitmap.expect("bitmap config is always set");
@@ -2749,6 +2767,7 @@ mod tests {
                 SecurityConfig {
                     enable_credssp: false,
                     enable_standard_rdp_security: true,
+                    empty_client_info_password: false,
                 },
             ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
@@ -2805,6 +2824,7 @@ mod tests {
                 SecurityConfig {
                     enable_credssp: false,
                     enable_standard_rdp_security: false,
+                    empty_client_info_password: false,
                 },
             ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
@@ -2853,6 +2873,7 @@ mod tests {
                 SecurityConfig {
                     enable_credssp: false,
                     enable_standard_rdp_security: false,
+                    empty_client_info_password: false,
                 },
             ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
@@ -3239,6 +3260,81 @@ mod tests {
         let builder = SessionBuilder::create().extension(Extension::create("camera_h264".to_owned(), JsValue::TRUE));
 
         assert!(builder.0.borrow().camera_h264);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn the_connector_config_carries_the_credssp_password_by_default() {
+        // oracle: mutant an empty Info Packet password sent without the flag
+        let config = connector_config(
+            false,
+            SecurityConfig {
+                enable_credssp: true,
+                enable_standard_rdp_security: false,
+                empty_client_info_password: false,
+            },
+        );
+
+        assert!(!config.empty_client_info_password);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn an_empty_client_info_password_reaches_the_connector_config() {
+        // oracle: mutant the flag dropped on the way to the connector
+        let config = connector_config(
+            false,
+            SecurityConfig {
+                enable_credssp: true,
+                enable_standard_rdp_security: false,
+                empty_client_info_password: true,
+            },
+        );
+
+        assert!(config.empty_client_info_password);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn the_empty_client_info_password_extension_sets_the_flag() {
+        // oracle: mutant the extension name `emptyClientInfoPassword` sends not matched, or its flag lost on the way to the connector
+        use iron_remote_desktop::SessionBuilder as _;
+
+        let builder = SessionBuilder::create().extension(Extension::create(
+            "empty_client_info_password".to_owned(),
+            JsValue::TRUE,
+        ));
+
+        assert!(builder.0.borrow().empty_client_info_password);
+        assert!(connector_config(false, SecurityConfig::of(&builder.0.borrow())).empty_client_info_password);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn a_builder_without_the_extension_keeps_the_credssp_password() {
+        // oracle: mutant a builder default, or a copy into SecurityConfig, that empties the password
+        let inner = SessionBuilderInner::default();
+
+        assert!(!connector_config(false, SecurityConfig::of(&inner)).empty_client_info_password);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn the_empty_client_info_password_extension_clears_the_flag_with_false() {
+        // oracle: mutant a flag the extension sets whatever its value
+        use iron_remote_desktop::SessionBuilder as _;
+
+        let builder = SessionBuilder::create()
+            .extension(Extension::create(
+                "empty_client_info_password".to_owned(),
+                JsValue::TRUE,
+            ))
+            .extension(Extension::create(
+                "empty_client_info_password".to_owned(),
+                JsValue::FALSE,
+            ));
+
+        assert!(!builder.0.borrow().empty_client_info_password);
     }
 }
 
