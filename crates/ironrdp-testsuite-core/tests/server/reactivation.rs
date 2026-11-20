@@ -271,19 +271,23 @@ async fn in_flight_keyboard_input_survives_reactivation_before_confirm() {
             [
                 KeyboardEvent::Pressed {
                     code: 0x1e,
-                    extended: false
+                    extended: false,
+                    extended1: false
                 },
                 KeyboardEvent::Pressed {
                     code: 0x30,
-                    extended: false
+                    extended: false,
+                    extended1: false
                 },
                 KeyboardEvent::Released {
                     code: 0x30,
-                    extended: false
+                    extended: false,
+                    extended1: false
                 },
                 KeyboardEvent::Released {
                     code: 0x1e,
-                    extended: false
+                    extended: false,
+                    extended1: false
                 }
             ]
         ));

@@ -9143,12 +9143,14 @@ mod tests {
             [
                 ConnectionOutput::Keyboard(KeyboardEvent::Pressed {
                     code: 30,
-                    extended: false
+                    extended: false,
+                    extended1: false
                 }),
                 ConnectionOutput::Mouse(MouseEvent::Move { x: 12, y: 34 }),
                 ConnectionOutput::Keyboard(KeyboardEvent::Released {
                     code: 30,
-                    extended: false
+                    extended: false,
+                    extended1: false
                 }),
             ]
         ));
