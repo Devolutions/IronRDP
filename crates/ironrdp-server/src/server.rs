@@ -704,27 +704,30 @@ impl BoundInputSlot {
     ) -> Self {
         Self { default, bound }
     }
+
+    /// Runs `deliver` on the bound handler, or on the default one when none is bound.
+    fn dispatch(&mut self, deliver: impl FnOnce(&mut dyn RdpServerInputHandler)) {
+        let mut bound = self.bound.lock().expect("bound input lock poisoned");
+        if let Some(handler) = bound.as_mut() {
+            deliver(handler.as_mut());
+        } else {
+            drop(bound);
+            deliver(self.default.as_mut());
+        }
+    }
 }
 
 impl RdpServerInputHandler for BoundInputSlot {
     fn keyboard(&mut self, event: KeyboardEvent) {
-        let mut bound = self.bound.lock().expect("bound input lock poisoned");
-        if let Some(handler) = bound.as_mut() {
-            handler.keyboard(event);
-        } else {
-            drop(bound);
-            self.default.keyboard(event);
-        }
+        self.dispatch(|handler| handler.keyboard(event));
     }
 
     fn mouse(&mut self, event: MouseEvent) {
-        let mut bound = self.bound.lock().expect("bound input lock poisoned");
-        if let Some(handler) = bound.as_mut() {
-            handler.mouse(event);
-        } else {
-            drop(bound);
-            self.default.mouse(event);
-        }
+        self.dispatch(|handler| handler.mouse(event));
+    }
+
+    fn advanced_input_opened(&mut self) {
+        self.dispatch(|handler| handler.advanced_input_opened());
     }
 }
 
@@ -1064,6 +1067,8 @@ struct AInputHandler {
     owns_mouse: bool,
     /// Mouse events received since the connection last took them.
     mouse_events: Vec<MouseEvent>,
+    /// Whether the client opened the channel since the connection last checked.
+    opened: bool,
 }
 
 impl AInputHandler {
@@ -1071,11 +1076,16 @@ impl AInputHandler {
         Self {
             owns_mouse: false,
             mouse_events: Vec::new(),
+            opened: false,
         }
     }
 
     fn take_mouse_events(&mut self) -> Vec<MouseEvent> {
         core::mem::take(&mut self.mouse_events)
+    }
+
+    fn take_opened(&mut self) -> bool {
+        core::mem::take(&mut self.opened)
     }
 }
 
@@ -1088,6 +1098,8 @@ impl dvc::DvcProcessor for AInputHandler {
 
     fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::{ServerPdu, VersionPdu};
+
+        self.opened = true;
 
         let pdu = ServerPdu::Version(VersionPdu::default());
 
@@ -2369,6 +2381,8 @@ enum ConnectionOutput {
     Keyboard(KeyboardEvent),
     /// Mouse input from whichever input path owns the mouse.
     Mouse(MouseEvent),
+    /// The client opened the Advanced Input channel; comes before its first mouse event.
+    AdvancedInputOpened,
     DisplayLayout(DisplayControlMonitorLayout),
     ResponseFrame(Vec<u8>),
     TunnelData(Vec<u8>),
@@ -2477,13 +2491,11 @@ impl ConnectionState {
         if let Some(id) = drdynvc.get_channel_id_by_type::<AInputHandler>()
             && let Some(mut ainput) = drdynvc.dvc_by_id_mut::<AInputHandler>(id)
         {
-            outputs.extend(
-                ainput
-                    .processor_mut()
-                    .take_mouse_events()
-                    .into_iter()
-                    .map(ConnectionOutput::Mouse),
-            );
+            let ainput = ainput.processor_mut();
+            if ainput.take_opened() {
+                outputs.push(ConnectionOutput::AdvancedInputOpened);
+            }
+            outputs.extend(ainput.take_mouse_events().into_iter().map(ConnectionOutput::Mouse));
         }
         if let Some(id) = drdynvc.get_channel_id_by_type::<DisplayControlServer>()
             && let Some(mut display_control) = drdynvc.dvc_by_id_mut::<DisplayControlServer>(id)
@@ -6860,6 +6872,7 @@ impl RdpServer {
                     self.handler.lock().await.keyboard(event);
                 }
                 ConnectionOutput::Mouse(event) => self.handler.lock().await.mouse(event),
+                ConnectionOutput::AdvancedInputOpened => self.handler.lock().await.advanced_input_opened(),
                 ConnectionOutput::DisplayLayout(layout) => self.display.lock().await.request_layout(layout),
                 ConnectionOutput::Disconnect => return Ok(true),
             }
@@ -8782,6 +8795,52 @@ mod tests {
 
     use super::*;
 
+    struct AdvancedInputRecorder(Arc<AtomicBool>);
+
+    impl RdpServerInputHandler for AdvancedInputRecorder {
+        fn keyboard(&mut self, _event: KeyboardEvent) {}
+        fn mouse(&mut self, _event: MouseEvent) {}
+        fn advanced_input_opened(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    type BoundInput = Arc<StdMutex<Option<Box<dyn RdpServerInputHandler>>>>;
+
+    /// A `BoundInputSlot` whose default handler records `advanced_input_opened`, with its bound slot and the flag.
+    fn recording_input_slot() -> (BoundInputSlot, BoundInput, Arc<AtomicBool>) {
+        let default_opened = Arc::new(AtomicBool::new(false));
+        let bound = Arc::new(StdMutex::new(None));
+        let slot = BoundInputSlot::new(
+            Box::new(AdvancedInputRecorder(Arc::clone(&default_opened))),
+            Arc::clone(&bound),
+        );
+        (slot, bound, default_opened)
+    }
+
+    // oracle: mutant BoundInputSlot not forwarding advanced_input_opened to its default handler
+    #[test]
+    fn an_unbound_input_slot_forwards_advanced_input_opened_to_the_default_handler() {
+        let (mut slot, _, default_opened) = recording_input_slot();
+
+        slot.advanced_input_opened();
+
+        assert!(default_opened.load(Ordering::Acquire));
+    }
+
+    // oracle: mutant BoundInputSlot forwarding advanced_input_opened to the default handler while one is bound
+    #[test]
+    fn a_bound_input_slot_forwards_advanced_input_opened_to_the_bound_handler() {
+        let (mut slot, bound, default_opened) = recording_input_slot();
+        let bound_opened = Arc::new(AtomicBool::new(false));
+        *bound.lock().expect("bound input lock") = Some(Box::new(AdvancedInputRecorder(Arc::clone(&bound_opened))));
+
+        slot.advanced_input_opened();
+
+        assert!(bound_opened.load(Ordering::Acquire));
+        assert!(!default_opened.load(Ordering::Acquire));
+    }
+
     /// A client that did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU is not sent a
     /// Set Error Info PDU; a client that set it is.
     // oracle: spec MS-RDPBCGR §3.3.5.7.1
@@ -8836,6 +8895,66 @@ mod tests {
     impl RdpServerInputHandler for NoopInput {
         fn keyboard(&mut self, _event: KeyboardEvent) {}
         fn mouse(&mut self, _event: MouseEvent) {}
+    }
+
+    // oracle: mutant RdpServer dropping ConnectionOutput::AdvancedInputOpened instead of telling the input handler
+    #[tokio::test]
+    async fn opening_ainput_reaches_the_input_handler() {
+        use ironrdp_dvc::pdu::{
+            CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
+        };
+
+        const IO_CHANNEL_ID: u16 = 1003;
+        const DRDYNVC_CHANNEL_ID: u16 = 1004;
+        const USER_CHANNEL_ID: u16 = 1007;
+
+        let opened = Arc::new(AtomicBool::new(false));
+        let mut server = RdpServer::builder()
+            .with_addr(([127, 0, 0, 1], 0))
+            .with_no_security()
+            .with_input_handler(AdvancedInputRecorder(Arc::clone(&opened)))
+            .with_display_handler(PendingDisplay)
+            .build();
+        let mut conn = ConnectionState::default();
+        conn.static_channels
+            .insert(dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler::new()));
+        conn.static_channels
+            .attach_channel_id(core::any::TypeId::of::<dvc::DrdynvcServer>(), DRDYNVC_CHANNEL_ID);
+        conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap().start().unwrap();
+        let mut writer = cliprdr_error_tests::CapturingWriter::default();
+        let mut send = async |server: &mut RdpServer, conn: &mut ConnectionState, pdu: DrdynvcClientPdu| {
+            let frame = ironrdp_svc::client_encode_svc_messages(
+                vec![SvcMessage::from(pdu)],
+                DRDYNVC_CHANNEL_ID,
+                USER_CHANNEL_ID,
+            )
+            .unwrap();
+            server
+                .handle_x224(conn, &mut writer, IO_CHANNEL_ID, USER_CHANNEL_ID, None, &frame, None)
+                .await
+                .unwrap()
+        };
+
+        send(
+            &mut server,
+            &mut conn,
+            DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
+        )
+        .await;
+        let channel_id = conn
+            .get_svc_processor::<dvc::DrdynvcServer>()
+            .unwrap()
+            .get_channel_id_by_type::<AInputHandler>()
+            .unwrap();
+        assert!(!opened.load(Ordering::Acquire));
+        send(
+            &mut server,
+            &mut conn,
+            DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, CreationStatus::OK)),
+        )
+        .await;
+
+        assert!(opened.load(Ordering::Acquire));
     }
 
     // oracle: spec MS-RDPEDISP §3.1.5.2 has the server apply each layout; take_monitor_layouts() keeps arrival order.
@@ -8970,9 +9089,22 @@ mod tests {
 
     /// A connection whose client opened the AInput and Display Control channels, with their IDs.
     fn connection_with_builtin_dvcs() -> (ConnectionState, u32, u32) {
-        use ironrdp_dvc::pdu::{
-            CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
-        };
+        use ironrdp_dvc::pdu::{CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
+
+        let (mut conn, ainput_id, display_control_id) = connection_offering_builtin_dvcs();
+        for id in [ainput_id, display_control_id] {
+            send_drdynvc(
+                &mut conn,
+                DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::OK)),
+            );
+        }
+        (conn, ainput_id, display_control_id)
+    }
+
+    /// A connection that has offered the AInput and Display Control channels, which the client has not opened yet,
+    /// with their IDs.
+    fn connection_offering_builtin_dvcs() -> (ConnectionState, u32, u32) {
+        use ironrdp_dvc::pdu::{CapabilitiesResponsePdu, CapsVersion, DrdynvcClientPdu};
 
         let mut conn = ConnectionState::default();
         conn.static_channels.insert(
@@ -8990,12 +9122,6 @@ mod tests {
         let drdynvc = conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap();
         let ainput_id = drdynvc.get_channel_id_by_type::<AInputHandler>().unwrap();
         let display_control_id = drdynvc.get_channel_id_by_type::<DisplayControlServer>().unwrap();
-        for id in [ainput_id, display_control_id] {
-            send_drdynvc(
-                &mut conn,
-                DrdynvcClientPdu::Create(CreateResponsePdu::new(id, CreationStatus::OK)),
-            );
-        }
         (conn, ainput_id, display_control_id)
     }
 
@@ -9013,6 +9139,33 @@ mod tests {
             ainput_id,
             encode_vec(&mouse).unwrap(),
         )))
+    }
+
+    // oracle: mutant AInputHandler::start not reporting the opened channel, or reporting it more than once
+    #[test]
+    fn opening_ainput_comes_before_its_mouse_events() {
+        use ironrdp_dvc::pdu::{CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
+
+        let (mut conn, ainput_id, _) = connection_offering_builtin_dvcs();
+
+        let outputs = send_drdynvc(
+            &mut conn,
+            DrdynvcClientPdu::Create(CreateResponsePdu::new(ainput_id, CreationStatus::OK)),
+        );
+        let notices = outputs
+            .iter()
+            .filter(|output| matches!(output, ConnectionOutput::AdvancedInputOpened))
+            .count();
+        assert_eq!(notices, 1, "{outputs:?}");
+
+        let outputs = send_drdynvc(&mut conn, ainput_mouse_move(ainput_id, 1, 2));
+        assert!(
+            matches!(
+                outputs.as_slice(),
+                [ConnectionOutput::Mouse(MouseEvent::Move { x: 1, y: 2 })]
+            ),
+            "{outputs:?}"
+        );
     }
 
     // oracle: mutant that does not take what the built-in dynamic channels received after DRDYNVC processing.
