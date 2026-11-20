@@ -192,13 +192,31 @@ impl Yuv420Frame {
     /// [MS-RDPEGFX]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/da5c75f9-cd99-450c-98c4-014a496942b0
     pub fn to_rgba(&self) -> DecodedFrame {
         let (width, height) = (usize::from(self.width), usize::from(self.height));
-        let mut rgba = Vec::with_capacity(width * height * 4);
-        for row in 0..height {
+        let mut rgba = vec![0; width * height * 4];
+        if width == 0 {
+            return DecodedFrame::new(rgba, 0, u32::from(self.height));
+        }
+        // A pixel pair shares its chroma, so the chroma terms are worked out once a pair and
+        // the pair is written as a fixed eight bytes: no bounds checks and no reallocation in
+        // the loop, which then vectorises. About a quarter of the time of a call per pixel.
+        let pairs = width / 2;
+        for (row, out) in rgba.chunks_exact_mut(width * 4).enumerate() {
             let (Some(y), Some(u), Some(v)) = (self.luma_row(row), self.u_row(row / 2), self.v_row(row / 2)) else {
                 break;
             };
-            for (col, &y) in y.iter().enumerate() {
-                rgba.extend_from_slice(&crate::avc444::yuv_to_rgba(y, u[col / 2], v[col / 2]));
+            let (out_pairs, out_last) = out.split_at_mut(pairs * 8);
+            for (((out, y), &u), &v) in out_pairs.chunks_exact_mut(8).zip(y.chunks_exact(2)).zip(u).zip(v) {
+                let chroma = crate::avc444::chroma_terms(u, v);
+                for (out, &y) in out.chunks_exact_mut(4).zip(y) {
+                    out.copy_from_slice(&crate::avc444::luma_to_rgba(y, chroma));
+                }
+            }
+            // An odd width leaves one pixel without a partner; rows are exactly `width` luma and
+            // `width.div_ceil(2)` chroma samples long, so its samples are the last of each.
+            if let ([.., y], [.., u], [.., v]) = (y, u, v)
+                && width % 2 == 1
+            {
+                out_last.copy_from_slice(&crate::avc444::yuv_to_rgba(*y, *u, *v));
             }
         }
         DecodedFrame::new(rgba, u32::from(self.width), u32::from(self.height))
