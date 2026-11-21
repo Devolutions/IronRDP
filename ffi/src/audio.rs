@@ -483,6 +483,9 @@ mod native {
 
     impl Drop for CaptureChannel {
         fn drop(&mut self) {
+            if self.shared.failed_capture.load(Ordering::Acquire) == self.token {
+                self.shared.capture_enabled.store(false, Ordering::Release);
+            }
             let _ = self
                 .shared
                 .active_capture
@@ -906,6 +909,18 @@ mod native {
             .build()
         }
 
+        fn server_close_capture_channel(stage: &mut ironrdp::session::ActiveStage, channel_id: u32) {
+            use ironrdp::svc::SvcProcessor as _;
+
+            let close = ironrdp::dvc::pdu::DrdynvcServerPdu::Close(ironrdp::dvc::pdu::ClosePdu::new(channel_id));
+            let payload = ironrdp_core::encode_vec(&close).expect("encode server close");
+            stage
+                .get_svc_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .expect("DRDYNVC processor")
+                .process(&payload)
+                .expect("process server close");
+        }
+
         // oracle: mutant remove the capture channel before encoding its close frame
         #[test]
         fn failed_capture_close_encoding_keeps_channel_for_retry() {
@@ -1205,6 +1220,38 @@ mod native {
             assert_ne!(audio.0.active_capture.load(Ordering::Acquire), 0);
             drop(second);
             assert_eq!(audio.0.active_capture.load(Ordering::Acquire), 0);
+        }
+
+        // oracle: mutant disable capture after an ordinary server close
+        #[test]
+        fn capture_listener_allows_reopen_after_nonterminal_server_close() {
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let mut listener = CaptureListener(Arc::clone(&audio.0));
+            let first = listener.create_channel(7).expect("first channel");
+            assert!(listener.create_channel(8).is_none());
+            let mut stage = stage_with_capture_channel(first);
+            server_close_capture_channel(&mut stage, 7);
+            poll_audio(&mut stage, &audio.0).unwrap_or_else(|_| panic!("poll audio"));
+
+            let second = listener.create(7).expect("reopened channel");
+            drop(second);
+        }
+
+        // oracle: mutant clear the active token without disabling failed capture
+        #[test]
+        fn failed_capture_server_close_does_not_allow_reopen_after_poll() {
+            let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
+            let listener = CaptureListener(Arc::clone(&audio.0));
+            let mut channel = listener.create_channel(7).expect("capture channel");
+            channel.start(7).expect("start capture channel");
+            drop(channel.process(7, &[]).expect("capture failure is isolated"));
+
+            let mut stage = stage_with_capture_channel(channel);
+            server_close_capture_channel(&mut stage, 7);
+            assert!(listener.create_channel(7).is_none());
+            poll_audio(&mut stage, &audio.0).unwrap_or_else(|_| panic!("poll audio"));
+
+            assert!(listener.create_channel(7).is_none());
         }
 
         // oracle: regression #2469

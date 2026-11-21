@@ -85,10 +85,12 @@ Opening capture or changing its rate or channels waits up to two seconds for dev
 This pauses session processing, and cleanup can take longer if a driver blocks.
 Capture samples received before the Open reply is queued are discarded so they cannot overtake the reply.
 
-Serialize `PollAudio`, `StopAudio`, and `Process` on the same stage.
+Serialize `PollAudio`, `StopAudio`, and `Process` with their transport writes on the same pipeline.
+Finish writing each call's returned frames before starting the next call, so capture data cannot overtake a format confirmation.
 Stopping audio is permanent for the connection and does not disconnect the desktop.
 Stopping audio closes capture before waiting for playback cleanup.
 Dispose the stage on disconnect to release device streams.
+Keep `NativeAudio` undisposed until the final `PollAudio` or `StopAudio` call.
 Disposing `NativeAudio` releases its handle but does not stop an attached stage.
 
 ```csharp
@@ -113,7 +115,10 @@ await SendAudioOutputs(stage.PollAudio(audio));
 await SendAudioOutputs(stage.StopAudio(audio));
 ```
 
-Microphone capture requires operating-system permission; iOS applications must provide a microphone usage description and request access.
+Microphone capture requires operating-system permission.
+On iOS and macOS, provide `NSMicrophoneUsageDescription` and request microphone access.
+On macOS, applications using the hardened runtime need the `com.apple.security.device.audio-input` entitlement.
+Applications using App Sandbox need the `com.apple.security.device.microphone` entitlement.
 Linux builds require ALSA development headers.
 The native FFI library requires `libasound` at runtime even when audio is disabled.
 Android audio is unsupported so that the Android API 21 baseline remains usable.
