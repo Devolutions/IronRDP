@@ -1,6 +1,11 @@
 //! Pure-Rust client for WindowsSandboxServer `sandboxserver.SandboxCore`.
 //!
-//! Speaks unary gRPC over HTTP/2 on `\\.\pipe\wsandbox\<md5(user SID) as .NET Guid>`.
+//! Speaks unary gRPC over HTTP/2 on the per-user named pipe:
+//! - Newer `MicrosoftWindows.WindowsSandbox` builds (e.g. `0.8.114.0`):
+//!   `\\.\pipe\wsandbox\<md5(TokenUser) as .NET Guid>-<md5(TokenOwner) as .NET Guid>`
+//! - Legacy single-GUID layout:
+//!   `\\.\pipe\wsandbox\<md5(TokenUser) as .NET Guid>`
+//!
 //! No .NET runtime or helper process is required.
 
 use core::time::Duration;
@@ -12,7 +17,9 @@ use md5::{Digest as _, Md5};
 use tokio::net::windows::named_pipe::ClientOptions;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
-use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+use windows::Win32::Security::{
+    GetTokenInformation, PSID, TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser,
+};
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::PWSTR;
 
@@ -20,27 +27,51 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const PIPE_BUSY_RETRY: Duration = Duration::from_millis(50);
 const RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const START_SANDBOX_TIMEOUT: Duration = Duration::from_secs(120);
+/// `ERROR_FILE_NOT_FOUND` — pipe path does not exist (try legacy fallback layout).
+const ERROR_FILE_NOT_FOUND: i32 = 2;
 /// `ERROR_PIPE_BUSY` — another client still holds the pipe instance.
 const ERROR_PIPE_BUSY: i32 = 231;
 /// `CO_E_APPSINGLEUSE` — the Windows Sandbox policy permits only one active VM.
 const CO_E_APPSINGLEUSE: i32 = -2_147_221_002;
 
-/// Resolve the per-user WindowsSandboxServer gRPC pipe path.
-pub(crate) fn grpc_pipe_path() -> anyhow::Result<String> {
-    let sid = current_user_sid_string()?;
-    Ok(grpc_pipe_path_for_sid(&sid))
+/// Resolve candidate per-user WindowsSandboxServer gRPC pipe paths in preference order.
+///
+/// Newer Store-delivered `MicrosoftWindows.WindowsSandbox` builds (observed on `0.8.114.0`,
+/// Windows 11 26H2) compute `wsandbox\<md5(TokenUser)>-<md5(TokenOwner)>` in
+/// `SandboxCommon.Grpc.GrpcServer.PipeName`, whereas earlier builds used only
+/// `wsandbox\<md5(TokenUser)>`.
+pub(crate) fn grpc_pipe_paths() -> anyhow::Result<[String; 2]> {
+    let (user_sid, owner_sid) = current_user_and_owner_sid_strings()?;
+    Ok([
+        grpc_pipe_path_for_user_and_owner(&user_sid, &owner_sid),
+        grpc_pipe_path_for_sid(&user_sid),
+    ])
 }
 
-/// Map a Windows SID string to the SandboxCore named-pipe path.
-///
-/// Product layout: `\\.\pipe\wsandbox\{Guid(MD5(UTF-8(SID)))}` using .NET `Guid(byte[])`
-/// mixed-endian field order.
-fn grpc_pipe_path_for_sid(sid: &str) -> String {
+/// Hash a Windows SID string to a .NET `Guid(MD5(UTF-8(SID)))` mixed-endian string.
+fn hash_sid_to_dotnet_guid(sid: &str) -> String {
     let digest = Md5::digest(sid.as_bytes());
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&digest);
-    let guid = guid_string_from_dotnet_bytes(&bytes);
+    guid_string_from_dotnet_bytes(&bytes)
+}
+
+/// Map a Windows `TokenUser` SID string to the legacy SandboxCore named-pipe path.
+///
+/// Legacy layout: `\\.\pipe\wsandbox\{Guid(MD5(UTF-8(TokenUser)))}`.
+fn grpc_pipe_path_for_sid(sid: &str) -> String {
+    let guid = hash_sid_to_dotnet_guid(sid);
     format!(r"\\.\pipe\wsandbox\{guid}")
+}
+
+/// Map Windows `TokenUser` and `TokenOwner` SID strings to the current SandboxCore named-pipe path.
+///
+/// Current layout (`SandboxCommon.Grpc.GrpcServer.PipeName`):
+/// `\\.\pipe\wsandbox\{Guid(MD5(UTF-8(TokenUser)))}-{Guid(MD5(UTF-8(TokenOwner)))}`.
+fn grpc_pipe_path_for_user_and_owner(user_sid: &str, owner_sid: &str) -> String {
+    let user_guid = hash_sid_to_dotnet_guid(user_sid);
+    let owner_guid = hash_sid_to_dotnet_guid(owner_sid);
+    format!(r"\\.\pipe\wsandbox\{user_guid}-{owner_guid}")
 }
 
 /// `EnumerateSandboxVMs` → sandbox id list.
@@ -120,8 +151,8 @@ where
 }
 
 async fn unary(method: &str, request_proto: &[u8], timeout: Duration) -> anyhow::Result<Vec<u8>> {
-    let path = grpc_pipe_path()?;
-    let stream = open_pipe(&path).await?;
+    let paths = grpc_pipe_paths()?;
+    let stream = open_pipe(&paths).await?;
 
     let (sender, conn) = h2::client::Builder::new()
         .handshake(stream)
@@ -201,25 +232,40 @@ async fn unary(method: &str, request_proto: &[u8], timeout: Duration) -> anyhow:
     decode_grpc_message(data.freeze())
 }
 
-async fn open_pipe(path: &str) -> anyhow::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-    let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
-    loop {
-        match ClientOptions::new().open(path) {
-            Ok(stream) => return Ok(stream),
-            Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                if tokio::time::Instant::now() >= deadline {
+async fn open_pipe(paths: &[String]) -> anyhow::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    let mut last_not_found = None;
+    for path in paths {
+        let deadline = tokio::time::Instant::now() + CONNECT_TIMEOUT;
+        loop {
+            match ClientOptions::new().open(path) {
+                Ok(stream) => return Ok(stream),
+                Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(err).context(format!(
+                            "open WindowsSandboxServer pipe {path} (still busy after timeout)"
+                        ));
+                    }
+                    tokio::time::sleep(PIPE_BUSY_RETRY).await;
+                }
+                Err(err) if err.raw_os_error() == Some(ERROR_FILE_NOT_FOUND) => {
+                    last_not_found = Some(err);
+                    break;
+                }
+                Err(err) => {
                     return Err(err).context(format!(
-                        "open WindowsSandboxServer pipe {path} (still busy after timeout)"
+                        "open WindowsSandboxServer pipe {path} (is Windows Sandbox / WindowsSandboxServer running?)"
                     ));
                 }
-                tokio::time::sleep(PIPE_BUSY_RETRY).await;
-            }
-            Err(err) => {
-                return Err(err).context(format!(
-                    "open WindowsSandboxServer pipe {path} (is Windows Sandbox / WindowsSandboxServer running?)"
-                ));
             }
         }
+    }
+
+    let tried = paths.join(", ");
+    match last_not_found {
+        Some(err) => Err(err).context(format!(
+            "open WindowsSandboxServer pipe (tried {tried}; is Windows Sandbox / WindowsSandboxServer running?)"
+        )),
+        None => bail!("no WindowsSandboxServer pipe candidates configured"),
     }
 }
 
@@ -374,50 +420,59 @@ fn guid_string_from_dotnet_bytes(b: &[u8; 16]) -> String {
     )
 }
 
-fn current_user_sid_string() -> anyhow::Result<String> {
+fn current_user_and_owner_sid_strings() -> anyhow::Result<(String, String)> {
     let mut token = HANDLE::default();
     // SAFETY: pseudo-handle for the calling process; never closed.
     let process = unsafe { GetCurrentProcess() };
     // SAFETY: `token` out-param is written only on success.
     unsafe {
-        OpenProcessToken(process, TOKEN_QUERY, &mut token).context("OpenProcessToken for current user SID")?;
+        OpenProcessToken(process, TOKEN_QUERY, &mut token).context("OpenProcessToken for current token SIDs")?;
     }
 
-    let mut len = 0u32;
-    // SAFETY: probe call with null buffer; only `len` is written.
-    unsafe {
-        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
-    }
-    if len == 0 {
-        // SAFETY: `token` owned exclusively by us from `OpenProcessToken`.
-        unsafe {
-            let _ = CloseHandle(token);
-        }
-        bail!("GetTokenInformation returned zero length for TokenUser");
-    }
+    let result = (|| {
+        let user_sid = token_sid_string(token, TokenUser, "TokenUser", |buf| {
+            // SAFETY: buffer was filled by GetTokenInformation with a TOKEN_USER.
+            unsafe { buf.as_ptr().cast::<TOKEN_USER>().read_unaligned().User.Sid }
+        })?;
+        let owner_sid = token_sid_string(token, TokenOwner, "TokenOwner", |buf| {
+            // SAFETY: buffer was filled by GetTokenInformation with a TOKEN_OWNER.
+            unsafe { buf.as_ptr().cast::<TOKEN_OWNER>().read_unaligned().Owner }
+        })?;
+        Ok((user_sid, owner_sid))
+    })();
 
-    let buf_len = usize::try_from(len).context("TokenUser buffer length")?;
-    let mut buf = vec![0u8; buf_len];
-    // SAFETY: buffer is at least `len` bytes; API writes TokenUser into it.
-    let info_result = unsafe { GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), len, &mut len) };
-    if let Err(err) = info_result {
-        // SAFETY: close owned token on error path.
-        unsafe {
-            let _ = CloseHandle(token);
-        }
-        return Err(err).context("GetTokenInformation(TokenUser)");
-    }
-
-    // SAFETY: buffer was filled by GetTokenInformation with a TOKEN_USER.
-    let token_user = unsafe { buf.as_ptr().cast::<TOKEN_USER>().read_unaligned() };
-    let mut sid_raw = PWSTR::null();
-    // SAFETY: SID pointer from TOKEN_USER is valid for the lifetime of `buf`.
-    let sid_result = unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_raw) };
-    // SAFETY: close owned token after SID conversion.
+    // SAFETY: `token` owned exclusively by us from `OpenProcessToken`.
     unsafe {
         let _ = CloseHandle(token);
     }
-    sid_result.context("ConvertSidToStringSidW")?;
+    result
+}
+
+fn token_sid_string(
+    token: HANDLE,
+    class: TOKEN_INFORMATION_CLASS,
+    label: &str,
+    extract_sid: impl FnOnce(&[u8]) -> PSID,
+) -> anyhow::Result<String> {
+    let mut len = 0u32;
+    // SAFETY: probe call with null buffer; only `len` is written.
+    unsafe {
+        let _ = GetTokenInformation(token, class, None, 0, &mut len);
+    }
+    if len == 0 {
+        bail!("GetTokenInformation returned zero length for {label}");
+    }
+
+    let buf_len = usize::try_from(len).with_context(|| format!("{label} buffer length"))?;
+    let mut buf = vec![0u8; buf_len];
+    // SAFETY: buffer is at least `len` bytes; API writes the requested token struct into it.
+    unsafe { GetTokenInformation(token, class, Some(buf.as_mut_ptr().cast()), len, &mut len) }
+        .with_context(|| format!("GetTokenInformation({label})"))?;
+
+    let sid_ptr = extract_sid(&buf);
+    let mut sid_raw = PWSTR::null();
+    // SAFETY: `sid_ptr` points into `buf`, which lives across `ConvertSidToStringSidW`.
+    unsafe { ConvertSidToStringSidW(sid_ptr, &mut sid_raw) }.context("ConvertSidToStringSidW")?;
 
     // SAFETY: `sid_raw` is a valid NUL-terminated wide string from ConvertSidToStringSidW.
     let sid = unsafe { sid_raw.to_string() }.context("SID UTF-16 to string")?;
@@ -538,6 +593,28 @@ mod tests {
         assert_eq!(
             grpc_pipe_path_for_sid(SID),
             r"\\.\pipe\wsandbox\4b6a999d-8a64-9e3b-dc96-aefb3c47388b"
+        );
+    }
+
+    #[test]
+    fn grpc_pipe_path_with_owner_matches_live_windows_sandbox_server() {
+        // Captured on Windows 11 26H2 (Build 26300.9974) with MicrosoftWindows.WindowsSandbox 0.8.114.0
+        // running elevated (TokenOwner = BUILTIN\Administrators, S-1-5-32-544).
+        const USER_SID: &str = "S-1-5-21-1836277193-1273758988-2127231066-1001";
+        const OWNER_SID: &str = "S-1-5-32-544";
+        assert_eq!(
+            grpc_pipe_path_for_user_and_owner(USER_SID, OWNER_SID),
+            r"\\.\pipe\wsandbox\df7750f0-cba5-ffd6-bd92-f9c4126daf4b-c3a1c445-afe0-88d7-bd81-4130ffc120e8"
+        );
+    }
+
+    #[test]
+    fn grpc_pipe_path_with_same_user_and_owner() {
+        // Non-elevated tokens typically have TokenUser == TokenOwner.
+        const SID: &str = "S-1-5-21-1836277193-1273758988-2127231066-1001";
+        assert_eq!(
+            grpc_pipe_path_for_user_and_owner(SID, SID),
+            r"\\.\pipe\wsandbox\df7750f0-cba5-ffd6-bd92-f9c4126daf4b-df7750f0-cba5-ffd6-bd92-f9c4126daf4b"
         );
     }
 

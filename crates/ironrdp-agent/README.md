@@ -292,7 +292,7 @@ ironrdp-agent screenshot sandbox.png
 ironrdp-agent sandbox stop <sandbox-id>
 ```
 
-The agent speaks `sandboxserver.SandboxCore` in-process over the per-user named pipe (`\\.\pipe\wsandbox\<md5(user SID)>`) — no .NET helper is required.
+The agent speaks `sandboxserver.SandboxCore` in-process over the per-user named pipe (`\\.\pipe\wsandbox\<md5(TokenUser)>-<md5(TokenOwner)>` on newer `MicrosoftWindows.WindowsSandbox` builds such as `0.8.114.0`, falling back to the legacy `\\.\pipe\wsandbox\<md5(TokenUser)>` layout) — no .NET helper is required.
 WindowsSandboxServer must already be running; opening the Sandbox UI or invoking `wsb` starts it.
 On retail builds that permit one active sandbox, stop that initial sandbox before using `sandbox start`; the agent reports server policy errors rather than bypassing them.
 `sandbox start` accepts `--id <GUID>` and `--config <FILE>`, reads the same configuration XML accepted by `wsb start --config`, and prints the created sandbox Id.
