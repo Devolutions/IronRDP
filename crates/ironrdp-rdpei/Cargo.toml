@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpei"
-version = "0.3.0"
+version = "0.3.1"
 readme = "README.md"
 description = "Input virtual channel extension (MS-RDPEI) implementation"
 edition.workspace = true
