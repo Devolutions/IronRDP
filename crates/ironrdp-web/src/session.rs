@@ -73,6 +73,7 @@ struct SessionBuilderInner {
     pcb: Option<String>,
     vmconnect: Option<String>,
     kdc_proxy_url: Option<String>,
+    entra_assertion_callback: Option<js_sys::Function>,
     client_name: String,
     desktop_size: DesktopSize,
 
@@ -127,6 +128,7 @@ impl Default for SessionBuilderInner {
             pcb: None,
             vmconnect: None,
             kdc_proxy_url: None,
+            entra_assertion_callback: None,
             client_name: "ironrdp-web".to_owned(),
             desktop_size: DesktopSize {
                 width: DEFAULT_WIDTH,
@@ -310,6 +312,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |pcb: String| { self.0.borrow_mut().pcb = Some(pcb) };
             |vmconnect: String| { self.0.borrow_mut().vmconnect = Some(vmconnect) };
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
+            |entra_assertion: JsValue| {
+                // A function signing the RDP assertion (see entra::perform_entra_auth); anything else leaves
+                // Microsoft Entra ID sign-in off.
+                self.0.borrow_mut().entra_assertion_callback = entra_assertion.dyn_into::<js_sys::Function>().ok();
+            };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
             |audio_playback: JsValue| {
                 // A function receiving the audio (see audio::to_js); anything else turns playback off.
@@ -484,6 +491,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             pcb,
             vmconnect,
             kdc_proxy_url,
+            entra_assertion_callback,
             client_name,
             desktop_size,
             render_canvas,
@@ -512,10 +520,21 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             let inner = self.0.borrow();
 
             websocket_protocols = inner.websocket_protocols.clone().map_err(anyhow::Error::msg)?;
-            username = inner.username.clone().context("username missing")?;
+            entra_assertion_callback = inner.entra_assertion_callback.clone();
+            // With Microsoft Entra ID sign-in the server takes the user from the access token.
+            let credentials_optional = entra_assertion_callback.is_some();
+            username = inner
+                .username
+                .clone()
+                .or_else(|| credentials_optional.then(String::new))
+                .context("username missing")?;
             destination = inner.destination.clone().context("destination missing")?;
             server_domain = inner.server_domain.clone();
-            password = inner.password.clone().context("password missing")?;
+            password = inner
+                .password
+                .clone()
+                .or_else(|| credentials_optional.then(String::new))
+                .context("password missing")?;
             proxy_address = inner.proxy_address.clone().context("proxy_address missing")?;
             auth_token = inner.auth_token.clone().context("auth_token missing")?;
             pcb = inner.pcb.clone();
@@ -562,6 +581,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         if security.enable_standard_rdp_security && vmconnect.is_some() {
             return Err(anyhow::Error::msg("standard RDP security and VMConnect are mutually exclusive").into());
+        }
+
+        if entra_assertion_callback.is_some() && (security.enable_standard_rdp_security || vmconnect.is_some()) {
+            return Err(
+                anyhow::Error::msg("Microsoft Entra ID sign-in excludes standard RDP security and VMConnect").into(),
+            );
         }
 
         info!("Connect to RDP host");
@@ -705,6 +730,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             pcb,
             vmconnect,
             kdc_proxy_url,
+            entra_assertion_callback,
             clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
             printer_backend,
             printer_device_id,
@@ -1953,6 +1979,7 @@ struct ConnectParams {
     pcb: Option<String>,
     vmconnect: Option<String>,
     kdc_proxy_url: Option<String>,
+    entra_assertion_callback: Option<js_sys::Function>,
     clipboard_backend: Option<WasmClipboardBackend>,
     printer_backend: Option<WasmPrinterBackend>,
     printer_device_id: u32,
@@ -2054,6 +2081,7 @@ async fn connect(
         pcb,
         vmconnect,
         kdc_proxy_url,
+        entra_assertion_callback,
         clipboard_backend,
         printer_backend,
         printer_device_id,
@@ -2072,6 +2100,10 @@ async fn connect(
     let dummy_client_addr = core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899));
 
     let mut connector = ClientConnector::new(config, dummy_client_addr);
+
+    if entra_assertion_callback.is_some() {
+        connector = connector.with_entra_auth();
+    }
 
     if let Some(clipboard_backend) = clipboard_backend {
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
@@ -2129,6 +2161,10 @@ async fn connect(
         },
     )
     .await?;
+
+    if let Some(sign_assertion) = &entra_assertion_callback {
+        crate::entra::perform_entra_auth(&mut framed, &mut connector, sign_assertion).await?;
+    }
 
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
