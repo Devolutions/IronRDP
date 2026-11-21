@@ -44,6 +44,7 @@ internal static class ConnectionHelpers
         byte[] serverpubkey,
         uint? selectedProtocol = null,
         CancellationToken cancellationToken = default,
+        CredsspPackage package = CredsspPackage.Ntlm,
         KerberosConfig? kerberosConfig = null) where T : Stream
     {
         // Extract hostname from "hostname:port" format if needed
@@ -56,8 +57,8 @@ internal static class ConnectionHelpers
         }
 
         var credsspSequenceInitResult = selectedProtocol is uint protocol
-            ? CredsspSequence.InitWithProtocol(connector, hostname, serverpubkey, protocol, kerberosConfig)
-            : CredsspSequence.Init(connector, hostname, serverpubkey, kerberosConfig);
+            ? CredsspSequence.InitWithProtocol(connector, hostname, serverpubkey, protocol, package, kerberosConfig)
+            : CredsspSequence.Init(connector, hostname, serverpubkey, package, kerberosConfig);
         var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
         var tsRequest = credsspSequenceInitResult.GetTsRequest();
 
@@ -109,6 +110,7 @@ internal static class ConnectionHelpers
         byte[] serverPubKey,
         Framed<T> framedSsl,
         CancellationToken cancellationToken = default,
+        CredsspPackage package = CredsspPackage.Ntlm,
         KerberosConfig? kerberosConfig = null) where T : Stream
     {
         var writeBuf = WriteBuf.New();
@@ -116,7 +118,7 @@ internal static class ConnectionHelpers
         if (connector.ShouldPerformCredssp())
         {
             await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey,
-                cancellationToken: cancellationToken, kerberosConfig: kerberosConfig);
+                cancellationToken: cancellationToken, package: package, kerberosConfig: kerberosConfig);
         }
 
         while (!connector.DynState.IsTerminal())

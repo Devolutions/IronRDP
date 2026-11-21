@@ -57,25 +57,15 @@ public partial class KerberosConfig
         }
     }
 
-    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>KerberosConfig</c> allocated on Rust side.
     /// </returns>
-    public static KerberosConfig New(string hostname)
+    public static KerberosConfig New()
     {
         unsafe
         {
-            if (hostname == null) throw new ArgumentNullException(nameof(hostname));
-            byte[] hostnameBytes = Diplomat.Utf8.Clone(hostname);
-            fixed (byte* hostnamePtr = hostnameBytes)
-            {
-                var result = Raw.KerberosConfig.New(new DiplomatSliceU8 { Ptr = hostnamePtr, Len = (nuint)hostnameBytes.Length });
-                if (!result.IsOk)
-                {
-                    throw new IronRdpException(new IronRdpError(result.Err));
-                }
-                return new KerberosConfig(result.Ok);
-            }
+            Raw.KerberosConfig* result = Raw.KerberosConfig.New();
+            return new KerberosConfig(result);
         }
     }
 
@@ -83,18 +73,15 @@ public partial class KerberosConfig
     /// <returns>
     /// A <c>KerberosConfig</c> allocated on Rust side.
     /// </returns>
-    public static KerberosConfig NewWithKdcUrl(string kdcUrl, string hostname)
+    public static KerberosConfig NewWithKdcUrl(string kdcUrl)
     {
         unsafe
         {
             if (kdcUrl == null) throw new ArgumentNullException(nameof(kdcUrl));
-            if (hostname == null) throw new ArgumentNullException(nameof(hostname));
             byte[] kdcUrlBytes = Diplomat.Utf8.Clone(kdcUrl);
-            byte[] hostnameBytes = Diplomat.Utf8.Clone(hostname);
             fixed (byte* kdcUrlPtr = kdcUrlBytes)
-            fixed (byte* hostnamePtr = hostnameBytes)
             {
-                var result = Raw.KerberosConfig.NewWithKdcUrl(new DiplomatSliceU8 { Ptr = kdcUrlPtr, Len = (nuint)kdcUrlBytes.Length }, new DiplomatSliceU8 { Ptr = hostnamePtr, Len = (nuint)hostnameBytes.Length });
+                var result = Raw.KerberosConfig.NewWithKdcUrl(new DiplomatSliceU8 { Ptr = kdcUrlPtr, Len = (nuint)kdcUrlBytes.Length });
                 if (!result.IsOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));

@@ -13,10 +13,10 @@ internal partial struct CredsspSequence
     internal static unsafe extern PduHint* NextPduHint(CredsspSequence* handle);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "CredsspSequence_init", CallingConvention = CallingConvention.Cdecl)]
-    internal static unsafe extern DiplomatResultCredsspSequenceInitResultIronRdpError Init(ClientConnector* connector, DiplomatSliceU8 serverName, DiplomatSliceU8 serverPublicKey, KerberosConfig* kerberoConfigs);
+    internal static unsafe extern DiplomatResultCredsspSequenceInitResultIronRdpError Init(ClientConnector* connector, DiplomatSliceU8 serverName, DiplomatSliceU8 serverPublicKey, CredsspPackage package, KerberosConfig* kerberosConfig);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "CredsspSequence_init_with_protocol", CallingConvention = CallingConvention.Cdecl)]
-    internal static unsafe extern DiplomatResultCredsspSequenceInitResultIronRdpError InitWithProtocol(ClientConnector* connector, DiplomatSliceU8 serverName, DiplomatSliceU8 serverPublicKey, uint selectedProtocol, KerberosConfig* kerberoConfigs);
+    internal static unsafe extern DiplomatResultCredsspSequenceInitResultIronRdpError InitWithProtocol(ClientConnector* connector, DiplomatSliceU8 serverName, DiplomatSliceU8 serverPublicKey, uint selectedProtocol, CredsspPackage package, KerberosConfig* kerberosConfig);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "CredsspSequence_decode_server_message", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultTsRequestIronRdpError DecodeServerMessage(CredsspSequence* handle, DiplomatSliceU8 pdu);

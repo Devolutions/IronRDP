@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Net.Sockets;
 
@@ -7,19 +8,25 @@ namespace Devolutions.IronRdp;
 
 public static class Connection
 {
+    // Far above real Kerberos replies, which stay in the tens of kilobytes even with large PACs.
+    internal const int MaxKdcReplyLength = 1024 * 1024;
+
+    private static readonly HttpClient KdcProxyClient = new() { MaxResponseContentBufferSize = MaxKdcReplyLength };
+
     public static Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName,
         CliprdrBackendFactory? factory, int port = 3389, CancellationToken cancellationToken = default)
     {
-        return Connect(config, serverName, factory, null, port, cancellationToken);
+        return Connect(config, serverName, factory, CredsspPackage.Ntlm, null, port, cancellationToken);
     }
 
     /// <summary>
-    /// Connects with Kerberos available to CredSSP when <paramref name="kerberosConfig"/> is set. Kerberos needs
+    /// Connects with <paramref name="package"/> for CredSSP; <see cref="CredsspPackage"/> says when each package
+    /// uses Kerberos or NTLM. <paramref name="kerberosConfig"/> optionally names the KDC. Kerberos needs
     /// <paramref name="serverName"/> to be the server's host name, because the service ticket is for
-    /// <c>TERMSRV/serverName</c>. Without it, CredSSP uses NTLM.
+    /// <c>TERMSRV/serverName</c>.
     /// </summary>
     public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName,
-        CliprdrBackendFactory? factory, KerberosConfig? kerberosConfig, int port = 3389,
+        CliprdrBackendFactory? factory, CredsspPackage package, KerberosConfig? kerberosConfig, int port = 3389,
         CancellationToken cancellationToken = default)
     {
         var client = await CreateTcpConnection(serverName, port, cancellationToken);
@@ -34,7 +41,7 @@ public static class Connection
 
         await ConnectBegin(framed, connector, cancellationToken);
         var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector, cancellationToken);
-        var result = await ConnectionHelpers.ConnectFinalize(serverName, connector, serverPublicKey, framedSsl, cancellationToken, kerberosConfig);
+        var result = await ConnectionHelpers.ConnectFinalize(serverName, connector, serverPublicKey, framedSsl, cancellationToken, package, kerberosConfig);
 
         return (result, framedSsl);
     }
@@ -84,14 +91,14 @@ public static class Connection
                 var url = request.Url;
                 var data = request.Data;
 
-                if (protocol == NetworkRequestProtocol.Tcp)
+                var response = protocol switch
                 {
-                    state = generator.Resume(await SendKdcTcpRequest(new Uri(url), Utils.VecU8ToByte(data), cancellationToken));
-                }
-                else
-                {
-                    throw new Exception($"Unimplemented protocol: {protocol}");
-                }
+                    NetworkRequestProtocol.Tcp => await SendKdcTcpRequest(new Uri(url), Utils.VecU8ToByte(data), cancellationToken),
+                    NetworkRequestProtocol.Http or NetworkRequestProtocol.Https =>
+                        await SendKdcProxyRequest(new Uri(url), Utils.VecU8ToByte(data), cancellationToken),
+                    _ => throw new Exception($"Unimplemented protocol: {protocol}"),
+                };
+                state = generator.Resume(response);
             }
             else if (state.IsCompleted())
             {
@@ -117,11 +124,10 @@ public static class Connection
         }
     }
 
-    // Kerberos over TCP (RFC 4120 section 7.2.2): each message is prefixed with its length as a big-endian u32.
-    // A KDC may close the connection after replying, so every request uses its own connection, as sspi does.
-    // UNTESTED: the whole reply is returned even when it arrives in several reads; a ticket with a large PAC often
-    // exceeds one read. Check this against a real KDC when changing how the reply is read.
-    private static async Task<byte[]> SendKdcTcpRequest(Uri url, byte[] data, CancellationToken cancellationToken)
+    // Kerberos over TCP (RFC 4120 section 7.2.2): each message is prefixed with its length as a big-endian u32. sspi
+    // hands over the request with its prefix and expects the reply with its prefix. A KDC may close the connection
+    // after replying, so every request uses its own connection, as sspi does.
+    internal static async Task<byte[]> SendKdcTcpRequest(Uri url, byte[] data, CancellationToken cancellationToken)
     {
         using var client = new TcpClient();
         await client.ConnectAsync(url.DnsSafeHost, url.Port < 0 ? 88 : url.Port, cancellationToken);
@@ -131,10 +137,26 @@ public static class Connection
         var header = new byte[4];
         await stream.ReadExactlyAsync(header, cancellationToken);
         var length = BinaryPrimitives.ReadUInt32BigEndian(header);
-        var response = new byte[checked(4 + (int)length)];
+        if (length > MaxKdcReplyLength)
+        {
+            throw new InvalidDataException($"The KDC reply length {length} exceeds {MaxKdcReplyLength} bytes.");
+        }
+
+        var response = new byte[4 + (int)length];
         header.CopyTo(response, 0);
         await stream.ReadExactlyAsync(response.AsMemory(4), cancellationToken);
         return response;
+    }
+
+    // KDC proxy (MS-KKDCP section 2.1): sspi wraps the request in a DER-encoded KDC_PROXY_MESSAGE, which is POSTed as
+    // the body, and unwraps the KDC_PROXY_MESSAGE in the response body.
+    internal static async Task<byte[]> SendKdcProxyRequest(Uri url, byte[] data, CancellationToken cancellationToken)
+    {
+        using var content = new ByteArrayContent(data);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/kerberos");
+        using var response = await KdcProxyClient.PostAsync(url, content, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
     }
 
     public static async Task SingleSequenceStep<S, T>(S sequence, WriteBuf buf, Framed<T> framed,
