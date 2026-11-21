@@ -157,13 +157,21 @@ try:
         # oracle: spec MS-RDPEI §2.2.3.7.1.1; mutant omitting pen contact delivery, pressure scaling, or CHROME_HEIGHT translation.
         if results["pen"] != {"pointerType": "pen", "x": 60, "y": 32, "pressure": 0.5}:
             raise AssertionError(f"unexpected RDPEI pen result: {results['pen']!r}")
+        # The client logs what it received asynchronously; the page can report
+        # its results (an aborted WebAuthn request, for one) before the client
+        # has logged the matching RDP message.
+        device_lines = (
+            "Synthetic RDPSND playback verified",
+            "Synthetic WebAuthn assertion checked",
+            "Synthetic WebAuthn cancelled",
+        )
         log_deadline = time.monotonic() + 5
         while time.monotonic() < log_deadline:
             initial_log = (ARTIFACTS / "client.log").read_text()
             if (
                 "Synthetic pointer bitmap received" in initial_log
                 and "Synthetic desktop frame received" in initial_log
-                and (not PROVIDE_DEVICES or "Synthetic RDPSND playback verified" in initial_log)
+                and (not PROVIDE_DEVICES or all(line in initial_log for line in device_lines))
             ):
                 break
             time.sleep(0.05)
@@ -204,7 +212,7 @@ try:
                 "abortError": "AbortError",
             }:
                 raise AssertionError(f"unexpected WebAuthn result: {webauthn!r}")
-            log = (ARTIFACTS / "client.log").read_text()
+            log = initial_log
             if "Synthetic WebAuthn assertion checked" not in log:
                 raise AssertionError("client did not verify GetAssertion over RDPEWA")
             if "Synthetic WebAuthn cancelled" not in log:
