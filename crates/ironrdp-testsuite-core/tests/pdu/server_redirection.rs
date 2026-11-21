@@ -53,6 +53,25 @@ fn decodes_the_annotated_enhanced_security_server_redirection_pdu() {
     assert_eq!(redirection.target_certificate, None);
 }
 
+// oracle: reference FreeRDP/FreeRDP@12d8399cf44c:libfreerdp/core/rdp.c
+// `rdp_write_share_control_header` sets the 0x10 version bit on every PDU type, so FreeRDP-based servers such as
+// gnome-remote-desktop send this PDU with a `pduType` of 0x1A rather than the 0x000A of the MS-RDPBCGR 4.6 example.
+#[test]
+fn enhanced_security_server_redirection_with_freerdp_pdu_version_is_decoded() {
+    /// Offset of the `pduType` low byte: it follows the 2-byte `totalLength`.
+    const PDU_TYPE_OFFSET: usize = USER_DATA_OFFSET + 2;
+
+    let mut pdu = ANNOTATED_PDU.to_vec();
+    pdu[PDU_TYPE_OFFSET] = 0x1A;
+
+    let ctx = decode_send_data_indication(&pdu).expect("Send Data Indication");
+    let redirection = decode_server_redirection(ctx.user_data)
+        .expect("valid Server Redirection PDU")
+        .expect("a Server Redirection PDU");
+
+    assert_eq!(redirection, annotated_redirection());
+}
+
 // oracle: spec MS-RDPBCGR §4.6
 // The padding fields, whose values "MUST be ignored", are expected as zeros.
 #[test]
