@@ -472,23 +472,35 @@ fn finish_profile(profile: tempfile::TempDir, cleanup_complete: bool) -> anyhow:
         }
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+            use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_DIR_NOT_EMPTY, ERROR_SHARING_VIOLATION};
 
+            // Antivirus scanners and search indexers open files in a closed
+            // profile for a while; the deletion fails with these until they
+            // let go. Retry with backoff, but never keep the profile silently.
             let path = profile.keep();
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut delay = Duration::from_millis(25);
             loop {
                 match std::fs::remove_dir_all(&path) {
                     Ok(()) => break Ok(()),
                     Err(error)
-                        if error.raw_os_error().and_then(|code| u32::try_from(code).ok())
-                            == Some(ERROR_SHARING_VIOLATION)
-                            && Instant::now() < deadline =>
+                        if matches!(
+                            error.raw_os_error().and_then(|code| u32::try_from(code).ok()),
+                            Some(ERROR_SHARING_VIOLATION | ERROR_ACCESS_DENIED | ERROR_DIR_NOT_EMPTY)
+                        ) && Instant::now() < deadline =>
                     {
-                        std::thread::sleep(Duration::from_millis(25));
+                        std::thread::sleep(delay);
+                        delay = (delay * 2).min(Duration::from_secs(1));
                     }
                     Err(error) => {
-                        break Err(error)
-                            .with_context(|| format!("failed to remove the browser profile {}", path.display()));
+                        let remaining = remaining_profile_files(&path);
+                        break Err(error).with_context(|| {
+                            format!(
+                                "failed to remove the browser profile {} (still present: {})",
+                                path.display(),
+                                remaining
+                            )
+                        });
                     }
                 }
             }
@@ -497,6 +509,32 @@ fn finish_profile(profile: tempfile::TempDir, cleanup_complete: bool) -> anyhow:
         let path = profile.keep();
         tracing::warn!(path = %path.display(), "Retained browser profile after incomplete cleanup");
         Ok(())
+    }
+}
+
+/// Lists up to five files left in a profile that could not be removed, to show
+/// what held it open.
+#[cfg(windows)]
+fn remaining_profile_files(profile: &std::path::Path) -> String {
+    let mut pending = vec![profile.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(path);
+            } else if files.len() < 5 {
+                files.push(path.strip_prefix(profile).unwrap_or(&path).display().to_string());
+            }
+        }
+    }
+    if files.is_empty() {
+        "no files".to_owned()
+    } else {
+        files.join(", ")
     }
 }
 
@@ -829,4 +867,35 @@ fn perform(
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn profile_removal_outlasts_a_file_held_open_by_another_process() {
+        let profile = tempfile::TempDir::new().expect("temporary profile");
+        let path = profile.path().to_path_buf();
+        let held = path.join("Default").join("History");
+        std::fs::create_dir_all(held.parent().expect("profile subdirectory")).expect("profile subdirectory");
+        std::fs::write(&held, b"history").expect("profile file");
+        // Share nothing, as a scanner does; held longer than the old 3 s limit.
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&held)
+            .expect("exclusive handle");
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_secs(4));
+            drop(file);
+        });
+
+        super::finish_profile(profile, true).expect("profile removed after the handle closes");
+        release.join().expect("release thread");
+        assert!(!path.exists());
+    }
 }
