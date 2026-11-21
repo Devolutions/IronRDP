@@ -10,6 +10,7 @@ mod connection_finalization;
 pub mod credssp;
 pub mod entra;
 mod license_exchange;
+mod rdstls;
 #[cfg(all(feature = "remote-guard", not(feature = "__test")))]
 #[expect(
     unreachable_pub,
@@ -533,6 +534,8 @@ pub enum ConnectorErrorKind {
     Decode(ironrdp_core::DecodeError),
     Credssp(sspi::Error),
     EntraAuth(u32),
+    /// The server refused the RDSTLS authentication of a redirected connection.
+    Rdstls(ironrdp_pdu::rdp::rdstls::RdstlsResultCode),
     Reason(String),
     AccessDenied,
     General,
@@ -547,6 +550,7 @@ impl fmt::Display for ConnectorErrorKind {
             ConnectorErrorKind::Decode(_) => write!(f, "decode error"),
             ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
             ConnectorErrorKind::EntraAuth(code) => write!(f, "Entra authentication failed (HRESULT 0x{code:08x})"),
+            ConnectorErrorKind::Rdstls(code) => write!(f, "RDSTLS authentication failed ({code})"),
             ConnectorErrorKind::Reason(description) => write!(f, "reason: {description}"),
             ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
             ConnectorErrorKind::General => write!(f, "general error"),
@@ -563,6 +567,7 @@ impl core::error::Error for ConnectorErrorKind {
             ConnectorErrorKind::Decode(e) => Some(e),
             ConnectorErrorKind::Credssp(e) => Some(e),
             ConnectorErrorKind::EntraAuth(_) => None,
+            ConnectorErrorKind::Rdstls(_) => None,
             ConnectorErrorKind::Reason(_) => None,
             ConnectorErrorKind::AccessDenied => None,
             ConnectorErrorKind::Custom => None,

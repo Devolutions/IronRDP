@@ -141,3 +141,22 @@ proptest! {
         prop_assert_eq!(decode::<RdstlsAuthenticationResponse>(&encode_vec(&response).unwrap()).unwrap(), response);
     }
 }
+
+// oracle: mutant RdstlsPasswordAuthenticationRequest Debug output exposing the GUID or password bytes or omitting the
+// user name.
+#[test]
+fn password_authentication_request_debug_redacts_guid_and_password() {
+    let request = RdstlsPasswordAuthenticationRequest {
+        redirection_guid: b"guidsecret".to_vec(),
+        username: "Administrator".to_owned(),
+        domain: String::new(),
+        password: b"blobsecret".to_vec(),
+    };
+
+    let rendered = format!("{request:?}");
+    assert!(rendered.contains("Administrator"));
+    for secret in [b"guidsecret", b"blobsecret"] {
+        assert!(!rendered.contains(&format!("{secret:?}")));
+        assert!(!rendered.contains(&format!("{:?}", secret.to_vec())));
+    }
+}
