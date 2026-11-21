@@ -26,6 +26,42 @@ pub(crate) struct RedirectionHop {
     pub(crate) password_cookie: Option<Vec<u8>>,
     /// DER-encoded certificate of the target, as the redirecting server reported it.
     pub(crate) target_certificate: Option<Vec<u8>>,
+    /// `RedirectionGuid` to present through RDSTLS, when the password cookie is encrypted for the target.
+    ///
+    /// Such a cookie works once, so a reconnection goes back through [`Self::origin`].
+    pub(crate) rdstls_redirection_guid: Option<Vec<u8>>,
+    /// Where the connection went before the first redirection.
+    pub(crate) origin: Option<Box<RedirectionOrigin>>,
+}
+
+/// What a Server Redirection PDU replaces in the configuration, as it was before the first redirection.
+#[derive(Clone)]
+pub(crate) struct RedirectionOrigin {
+    destination: Destination,
+    load_balance_info: Option<String>,
+    credentials: Credentials,
+    domain: Option<String>,
+    redirection: Option<RedirectionHop>,
+}
+
+impl RedirectionOrigin {
+    fn capture(config: &Config) -> Self {
+        Self {
+            destination: config.destination.clone(),
+            load_balance_info: config.load_balance_info.clone(),
+            credentials: config.connector.credentials.clone(),
+            domain: config.connector.domain.clone(),
+            redirection: config.redirection.clone(),
+        }
+    }
+
+    fn restore(self, config: &mut Config) {
+        config.destination = self.destination;
+        config.load_balance_info = self.load_balance_info;
+        config.connector.credentials = self.credentials;
+        config.connector.domain = self.domain;
+        config.redirection = self.redirection;
+    }
 }
 
 impl fmt::Debug for RedirectionHop {
@@ -35,6 +71,14 @@ impl fmt::Debug for RedirectionHop {
             .field("session_id", &self.session_id)
             .field("password_cookie", &self.password_cookie.as_ref().map(Vec::len))
             .field("target_certificate", &self.target_certificate.as_ref().map(Vec::len))
+            .field(
+                "rdstls_redirection_guid",
+                &self.rdstls_redirection_guid.as_ref().map(Vec::len),
+            )
+            .field(
+                "origin",
+                &self.origin.as_ref().map(|origin| origin.destination.to_string()),
+            )
             .finish()
     }
 }
@@ -80,14 +124,38 @@ pub(crate) fn apply_server_redirection(
         }
     }
 
-    if redirection
+    // The first redirecting server is the one a reconnection after an RDSTLS hop returns to.
+    let origin = config
+        .redirection
+        .as_ref()
+        .and_then(|hop| hop.origin.clone())
+        .unwrap_or_else(|| Box::new(RedirectionOrigin::capture(config)));
+
+    // An encrypted password is presented through RDSTLS, along with the redirection GUID ([MS-RDPBCGR] 2.2.17.2).
+    // Without the GUID, the target can only refuse the logon, so the redirection fails here with a clearer reason.
+    let rdstls_redirection_guid = if redirection
         .flags
         .contains(ServerRedirectionFlags::PASSWORD_IS_PK_ENCRYPTED)
         && redirection.password.is_some()
     {
+        let Some(guid) = redirection.redirection_guid.as_ref().filter(|guid| !guid.is_empty()) else {
+            return Err(reason_err!(
+                "Redirect",
+                "the redirection password is encrypted for RDSTLS, but the redirection carries no RedirectionGuid"
+            ));
+        };
+        Some(guid.clone())
+    } else {
+        None
+    };
+    // A smart card logon keeps its own identity and sends the PIN in the Client Info PDU, so the RDSTLS request would
+    // carry no user name and the logon would not use the redirection password.
+    // UNTESTED: an RDSTLS redirection is refused with smart card credentials. The client configuration cannot hold
+    // smart card credentials yet, so no test reaches this; once it can, cover it and check the RDSTLS user name.
+    if rdstls_redirection_guid.is_some() && matches!(config.connector.credentials, Credentials::SmartCard { .. }) {
         return Err(reason_err!(
             "Redirect",
-            "the redirection password is encrypted for RDSTLS, which is not supported"
+            "an RDSTLS redirection needs password credentials, not a smart card"
         ));
     }
 
@@ -178,6 +246,14 @@ pub(crate) fn apply_server_redirection(
     if redirection.target_certificate.is_some() && target_certificate.is_none() {
         warn!("The redirection target certificate container has no DER certificate");
     }
+    // RDSTLS does not bind the password to the server key, so only the reported certificate tells the target apart
+    // from any other server that completes the TLS handshake and could replay the password ([MS-RDPBCGR] 5.4.5.3.1).
+    if rdstls_redirection_guid.is_some() && target_certificate.is_none() {
+        return Err(reason_err!(
+            "Redirect",
+            "the redirection password is encrypted for RDSTLS, but the redirection reports no target certificate"
+        ));
+    }
 
     info!(
         target = %target,
@@ -195,6 +271,8 @@ pub(crate) fn apply_server_redirection(
         session_id: redirection.session_id,
         password_cookie: redirection.password.clone(),
         target_certificate,
+        rdstls_redirection_guid,
+        origin: Some(origin),
     });
 
     return Ok(config.destination.to_string());
@@ -214,4 +292,24 @@ pub(crate) fn apply_server_redirection(
         }
         String::from_utf8(token.to_vec()).map_err(|e| ironrdp_connector::custom_err!("routing token", e))
     }
+}
+
+/// Points `config` back at the first redirecting server when the last redirection used an RDSTLS password.
+///
+/// The target accepts that password once, and the first server redirects again with a fresh one.
+/// FreeRDP reconnects the same way.
+/// Returns whether `config` changed.
+pub(crate) fn reconnect_through_broker(config: &mut Config) -> bool {
+    let Some(hop) = config.redirection.as_mut() else {
+        return false;
+    };
+    if hop.rdstls_redirection_guid.is_none() {
+        return false;
+    }
+    let Some(origin) = hop.origin.take() else {
+        return false;
+    };
+    info!(broker = %origin.destination, "Reconnecting through the first server, the RDSTLS password works once");
+    origin.restore(config);
+    true
 }

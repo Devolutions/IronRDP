@@ -1156,6 +1156,8 @@ async fn orchestrate_and_prepare(config: &Config, gw: &GatewayConfig) -> anyhow:
         session_id: redirected_session_id,
         password_cookie,
         target_certificate,
+        rdstls_redirection_guid: None,
+        origin: None,
     });
     if let Some(auth_guid) = orch.redirected_auth_guid.as_deref().filter(|s| !s.is_empty()) {
         avd_config.properties.insert("redirectionguid", auth_guid.to_owned());
