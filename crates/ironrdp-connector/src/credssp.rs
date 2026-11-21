@@ -55,12 +55,35 @@ impl KerberosConfig {
     }
 }
 
+/// The security package CredSSP authenticates with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredsspPackage {
+    /// NTLM only.
+    Ntlm,
+    /// SPNEGO, preferring Kerberos and allowing NTLM.
+    ///
+    /// Without a [`KerberosConfig`], Kerberos is used when sspi finds a KDC for the user's realm, and NTLM otherwise.
+    /// With one, Kerberos starts right away; sspi falls back to NTLM only for some errors, and in the CredSSP exchange
+    /// a KDC that cannot be found can surface after that point, so the exchange fails instead.
+    Negotiate,
+    /// SPNEGO restricted to Kerberos: NTLM is never negotiated or used as a fallback.
+    Kerberos,
+}
+
 impl From<KerberosConfig> for sspi::KerberosConfig {
     fn from(val: KerberosConfig) -> Self {
         sspi::KerberosConfig {
             kdc_resolution: val.kdc_resolution.into(),
             client_computer_name: val.hostname,
         }
+    }
+}
+
+fn package_for(kerberos_config: Option<&KerberosConfig>) -> CredsspPackage {
+    if kerberos_config.is_some() {
+        CredsspPackage::Negotiate
+    } else {
+        CredsspPackage::Ntlm
     }
 }
 
@@ -124,6 +147,8 @@ impl CredsspSequence {
     }
 
     /// `server_name` must be the actual target server hostname (as opposed to the proxy)
+    ///
+    /// Uses [`CredsspPackage::Negotiate`] when `kerberos_config` is set, and [`CredsspPackage::Ntlm`] otherwise.
     pub fn init(
         credentials: Credentials,
         domain: Option<&str>,
@@ -132,12 +157,37 @@ impl CredsspSequence {
         server_public_key: Vec<u8>,
         kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
+        let package = package_for(kerberos_config.as_ref());
+        Self::init_with_package(
+            credentials,
+            domain,
+            protocol,
+            server_name,
+            server_public_key,
+            package,
+            kerberos_config,
+        )
+    }
+
+    /// Like [`CredsspSequence::init`], with the security package chosen independently of the Kerberos
+    /// configuration. `kerberos_config` is optional for [`CredsspPackage::Negotiate`] and
+    /// [`CredsspPackage::Kerberos`], and not allowed for [`CredsspPackage::Ntlm`].
+    pub fn init_with_package(
+        credentials: Credentials,
+        domain: Option<&str>,
+        protocol: nego::SecurityProtocol,
+        server_name: ServerName,
+        server_public_key: Vec<u8>,
+        package: CredsspPackage,
+        kerberos_config: Option<KerberosConfig>,
+    ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         Self::init_with_mode(
             credentials,
             domain,
             protocol,
             server_name,
             server_public_key,
+            package,
             kerberos_config,
             false,
         )
@@ -159,6 +209,7 @@ impl CredsspSequence {
             selected_protocol,
             server_name,
             server_public_key,
+            package_for(kerberos_config.as_ref()),
             kerberos_config,
             connector.remote_guard_enabled(),
         )?;
@@ -218,15 +269,25 @@ impl CredsspSequence {
             .map_err(|e| ConnectorError::new("RCG context", ConnectorErrorKind::Credssp(e)))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the public constructors' inputs plus the Remote Credential Guard mode"
+    )]
     fn init_with_mode(
         credentials: Credentials,
         domain: Option<&str>,
         protocol: nego::SecurityProtocol,
         server_name: ServerName,
         server_public_key: Vec<u8>,
+        package: CredsspPackage,
         kerberos_config: Option<KerberosConfig>,
         remote_guard: bool,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
+        if package == CredsspPackage::Ntlm && kerberos_config.is_some() {
+            return Err(general_err!(
+                "a Kerberos configuration needs the Negotiate or Kerberos package"
+            ));
+        }
         if remote_guard
             && !matches!(
                 kerberos_config.as_ref().map(|cfg| &cfg.kdc_resolution),
@@ -278,17 +339,22 @@ impl CredsspSequence {
 
         let service_principal_name = format!("TERMSRV/{}", &server_name);
 
-        let client_mode = match kerberos_config {
-            Some(ref krb_config) => {
-                let credssp_config = Box::new(Into::<sspi::KerberosConfig>::into(krb_config.clone()));
-                debug!(?credssp_config);
+        let client_mode = match package {
+            CredsspPackage::Ntlm => credssp::ClientMode::Ntlm(sspi::ntlm::NtlmConfig::default()),
+            CredsspPackage::Negotiate | CredsspPackage::Kerberos => {
+                // Without a Kerberos configuration, Negotiate starts from NTLM and switches to Kerberos when sspi
+                // finds a KDC for the user's realm; with only Kerberos allowed, sspi switches unconditionally.
+                let protocol_config: Box<dyn sspi::negotiate::ProtocolConfig> = match kerberos_config {
+                    Some(ref krb_config) => Box::new(Into::<sspi::KerberosConfig>::into(krb_config.clone())),
+                    None => Box::new(sspi::ntlm::NtlmConfig::default()),
+                };
+                debug!(?protocol_config, ?package);
                 credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
-                    protocol_config: credssp_config,
-                    package_list: None,
+                    protocol_config,
+                    package_list: (package == CredsspPackage::Kerberos).then(|| "kerberos".to_owned()),
                     client_computer_name: server_name,
                 })
             }
-            None => credssp::ClientMode::Ntlm(sspi::ntlm::NtlmConfig::default()),
         };
 
         let mode = credssp::CredSspMode::WithCredentials;

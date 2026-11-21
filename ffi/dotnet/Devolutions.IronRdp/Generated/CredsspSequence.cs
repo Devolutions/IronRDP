@@ -86,7 +86,7 @@ public partial class CredsspSequence
     /// <returns>
     /// A <c>CredsspSequenceInitResult</c> allocated on Rust side.
     /// </returns>
-    public static CredsspSequenceInitResult Init(ClientConnector connector, string serverName, byte[] serverPublicKey, KerberosConfig? kerberoConfigs)
+    public static CredsspSequenceInitResult Init(ClientConnector connector, string serverName, byte[] serverPublicKey, CredsspPackage package, KerberosConfig? kerberosConfig)
     {
         unsafe
         {
@@ -95,15 +95,15 @@ public partial class CredsspSequence
             if (serverPublicKey == null) throw new ArgumentNullException(nameof(serverPublicKey));
             byte[] serverNameBytes = Diplomat.Utf8.Clone(serverName);
             BorrowLease<Raw.ClientConnector>? connectorLease = null;
-            BorrowLease<Raw.KerberosConfig>? kerberoConfigsLease = null;
+            BorrowLease<Raw.KerberosConfig>? kerberosConfigLease = null;
             try
             {
                 connectorLease = connector._diplomatHandle.Lease(BorrowKind.Shared);
-                kerberoConfigsLease = kerberoConfigs == null ? null : kerberoConfigs._diplomatHandle.Lease(BorrowKind.Shared);
+                kerberosConfigLease = kerberosConfig == null ? null : kerberosConfig._diplomatHandle.Lease(BorrowKind.Shared);
                 fixed (byte* serverNamePtr = serverNameBytes)
                 fixed (byte* serverPublicKeyPtr = serverPublicKey)
                 {
-                    var result = Raw.CredsspSequence.Init(connectorLease!.Ptr, new DiplomatSliceU8 { Ptr = serverNamePtr, Len = (nuint)serverNameBytes.Length }, new DiplomatSliceU8 { Ptr = serverPublicKeyPtr, Len = (nuint)serverPublicKey.Length }, kerberoConfigsLease == null ? null : kerberoConfigsLease.Ptr);
+                    var result = Raw.CredsspSequence.Init(connectorLease!.Ptr, new DiplomatSliceU8 { Ptr = serverNamePtr, Len = (nuint)serverNameBytes.Length }, new DiplomatSliceU8 { Ptr = serverPublicKeyPtr, Len = (nuint)serverPublicKey.Length }, package, kerberosConfigLease == null ? null : kerberosConfigLease.Ptr);
                     if (!result.IsOk)
                     {
                         throw new IronRdpException(new IronRdpError(result.Err));
@@ -114,7 +114,7 @@ public partial class CredsspSequence
             finally
             {
                 connectorLease?.Release();
-                kerberoConfigsLease?.Release();
+                kerberosConfigLease?.Release();
             }
         }
     }
@@ -123,7 +123,7 @@ public partial class CredsspSequence
     /// <returns>
     /// A <c>CredsspSequenceInitResult</c> allocated on Rust side.
     /// </returns>
-    public static CredsspSequenceInitResult InitWithProtocol(ClientConnector connector, string serverName, byte[] serverPublicKey, uint selectedProtocol, KerberosConfig? kerberoConfigs)
+    public static CredsspSequenceInitResult InitWithProtocol(ClientConnector connector, string serverName, byte[] serverPublicKey, uint selectedProtocol, CredsspPackage package, KerberosConfig? kerberosConfig)
     {
         unsafe
         {
@@ -132,15 +132,15 @@ public partial class CredsspSequence
             if (serverPublicKey == null) throw new ArgumentNullException(nameof(serverPublicKey));
             byte[] serverNameBytes = Diplomat.Utf8.Clone(serverName);
             BorrowLease<Raw.ClientConnector>? connectorLease = null;
-            BorrowLease<Raw.KerberosConfig>? kerberoConfigsLease = null;
+            BorrowLease<Raw.KerberosConfig>? kerberosConfigLease = null;
             try
             {
                 connectorLease = connector._diplomatHandle.Lease(BorrowKind.Shared);
-                kerberoConfigsLease = kerberoConfigs == null ? null : kerberoConfigs._diplomatHandle.Lease(BorrowKind.Shared);
+                kerberosConfigLease = kerberosConfig == null ? null : kerberosConfig._diplomatHandle.Lease(BorrowKind.Shared);
                 fixed (byte* serverNamePtr = serverNameBytes)
                 fixed (byte* serverPublicKeyPtr = serverPublicKey)
                 {
-                    var result = Raw.CredsspSequence.InitWithProtocol(connectorLease!.Ptr, new DiplomatSliceU8 { Ptr = serverNamePtr, Len = (nuint)serverNameBytes.Length }, new DiplomatSliceU8 { Ptr = serverPublicKeyPtr, Len = (nuint)serverPublicKey.Length }, selectedProtocol, kerberoConfigsLease == null ? null : kerberoConfigsLease.Ptr);
+                    var result = Raw.CredsspSequence.InitWithProtocol(connectorLease!.Ptr, new DiplomatSliceU8 { Ptr = serverNamePtr, Len = (nuint)serverNameBytes.Length }, new DiplomatSliceU8 { Ptr = serverPublicKeyPtr, Len = (nuint)serverPublicKey.Length }, selectedProtocol, package, kerberosConfigLease == null ? null : kerberosConfigLease.Ptr);
                     if (!result.IsOk)
                     {
                         throw new IronRdpException(new IronRdpError(result.Err));
@@ -151,7 +151,7 @@ public partial class CredsspSequence
             finally
             {
                 connectorLease?.Release();
-                kerberoConfigsLease?.Release();
+                kerberosConfigLease?.Release();
             }
         }
     }
