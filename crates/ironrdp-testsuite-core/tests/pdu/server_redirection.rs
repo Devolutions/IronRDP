@@ -1,4 +1,4 @@
-use ironrdp_core::{decode, encode_vec};
+use ironrdp_core::{DecodeErrorKind, decode, encode_vec};
 use ironrdp_pdu::mcs::decode_send_data_indication;
 use ironrdp_pdu::rdp::client_info::{ClientInfo, PasswordCookie};
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlHeader, ShareControlPdu};
@@ -133,6 +133,40 @@ fn other_share_control_pdus_are_not_server_redirections() {
     .unwrap();
 
     assert_eq!(decode_server_redirection(&deactivate_all).unwrap(), None);
+}
+
+// oracle: spec MS-RDPBCGR §2.2.3.1.1
+// The PDUVersion subfield of a Deactivate All PDU "MUST be set to TS_PROTOCOL_VERSION (0x1)"; only the Enhanced
+// Security Server Redirection PDU sets it to zero (§2.2.13.3.1).
+#[test]
+fn share_control_pdu_other_than_a_redirection_with_pdu_version_zero_is_rejected() {
+    /// Offset of the `pduType` low byte: it follows the 2-byte `totalLength`.
+    const PDU_TYPE_OFFSET: usize = 2;
+    /// `PDUTYPE_DEACTIVATEALLPDU` with `TS_PROTOCOL_VERSION`.
+    const DEACTIVATE_ALL_VERSION_1: u8 = 0x16;
+
+    let mut deactivate_all = encode_vec(&ShareControlHeader {
+        share_control_pdu: ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll),
+        pdu_source: 1002,
+        share_id: 0x0001_0000,
+    })
+    .unwrap();
+    assert_eq!(deactivate_all[PDU_TYPE_OFFSET], DEACTIVATE_ALL_VERSION_1);
+    decode::<ShareControlHeader>(&deactivate_all).expect("the same PDU with version 1 is valid");
+
+    deactivate_all[PDU_TYPE_OFFSET] = 0x06;
+
+    let error = decode::<ShareControlHeader>(&deactivate_all).expect_err("version 0 outside a redirection");
+    assert!(
+        matches!(
+            error.kind(),
+            DecodeErrorKind::InvalidField {
+                field: "pdu_version",
+                ..
+            }
+        ),
+        "{error}"
+    );
 }
 
 // oracle: spec MS-RDPBCGR §2.2.13.1.2
