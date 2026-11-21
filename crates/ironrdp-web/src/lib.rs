@@ -20,6 +20,7 @@ mod camera;
 mod canvas;
 mod clipboard;
 mod cursor;
+mod entra;
 mod error;
 mod image;
 mod input;
