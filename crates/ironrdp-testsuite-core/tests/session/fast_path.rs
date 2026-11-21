@@ -2,17 +2,25 @@
 //!
 //! Covers software-rendered and accelerated pointer updates as well as bulk-compressed Fast-Path frames.
 
+use core::num::{NonZeroU16, NonZeroUsize};
+
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType, flags as bulk_flags};
-use ironrdp_core::{WriteBuf, encode_vec};
+use ironrdp_core::{ReadCursor, WriteBuf, decode_cursor, encode_vec};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
 use ironrdp_pdu::pointer::{
     ColorPointerAttribute, LargePointerAttribute, Point16, PointerAttribute, PointerUpdateData,
 };
+use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits, LargePointerSupportFlags};
 use ironrdp_pdu::rdp::client_info::CompressionType as PduCompressionType;
 use ironrdp_pdu::rdp::headers::CompressionFlags;
+use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
+use ironrdp_server::{
+    BitmapUpdate, DesktopSize, DisplayUpdate, PixelFormat as ServerPixelFormat, RemoteFxCodec, UpdateEncoder,
+    UpdateEncoderCodecs,
+};
 use ironrdp_session::fast_path::{Processor, ProcessorBuilder, UpdateKind};
 use ironrdp_session::image::DecodedImage;
 
@@ -245,13 +253,7 @@ fn fastpath_frame(update_pdu: &[u8]) -> Vec<u8> {
 /// Runs one FastPath frame through a fresh processor and returns the resulting
 /// framebuffer.
 fn render(frame: &[u8]) -> DecodedImage {
-    let mut image = DecodedImage::new(PixelFormat::RgbA32, IMAGE_DIM, IMAGE_DIM);
-    let mut output = WriteBuf::new();
-    let mut bulk_decompressor = Some(BulkCompressor::new(BulkCompressionType::Rdp5));
-    processor()
-        .process(&mut image, frame, &mut output, &mut bulk_decompressor)
-        .expect("process FastPath frame");
-    image
+    render_all(&[frame.to_vec()])
 }
 
 #[test]
@@ -389,4 +391,418 @@ fn fragmented_compressed_fastpath_update_decompresses_before_reassembly() {
             .is_empty()
     );
     assert_eq!(image.data(), expected.data());
+}
+
+/// One pixel of the bitmaps the surface bits tests draw, in the BGRX order of an uncompressed 32bpp surface bitmap.
+const SURFACE_PIXEL: [u8; 4] = [0x30, 0x20, 0x10, 0xff];
+
+/// Which of the two surface bits commands a test sends.
+#[derive(Clone, Copy, Debug)]
+enum SurfaceBitsKind {
+    Set,
+    Stream,
+}
+
+/// Encodes a FastPath frame with one surface bits command of `kind` at `destination`, carrying an uncompressed 32bpp
+/// `width` by `height` bitmap of [`SURFACE_PIXEL`].
+fn surface_bits_frame(kind: SurfaceBitsKind, destination: ExclusiveRectangle, width: u16, height: u16) -> Vec<u8> {
+    uncompressed_surface_bits_frame(kind, 32, &SURFACE_PIXEL, destination, width, height)
+}
+
+/// Encodes a FastPath frame with one surface bits command of `kind` at `destination`, carrying an uncompressed `width`
+/// by `height` bitmap of `bpp` bits per pixel whose every pixel is `pixel`.
+fn uncompressed_surface_bits_frame(
+    kind: SurfaceBitsKind,
+    bpp: u8,
+    pixel: &[u8],
+    destination: ExclusiveRectangle,
+    width: u16,
+    height: u16,
+) -> Vec<u8> {
+    let pixels = pixel.repeat(usize::from(width) * usize::from(height));
+    let bits = SurfaceBitsPdu {
+        destination,
+        extended_bitmap_data: ExtendedBitmapDataPdu {
+            bpp,
+            codec_id: 0, // CODEC_ID_NONE
+            width,
+            height,
+            header: None,
+            data: &pixels,
+        },
+    };
+    let command = match kind {
+        SurfaceBitsKind::Set => SurfaceCommand::SetSurfaceBits(bits),
+        SurfaceBitsKind::Stream => SurfaceCommand::StreamSurfaceBits(bits),
+    };
+    surface_commands_frame(&encode_vec(&command).expect("encode surface command"))
+}
+
+/// Wraps encoded surface commands in a FastPath Surface Commands update frame.
+fn surface_commands_frame(commands: &[u8]) -> Vec<u8> {
+    fastpath_frame(
+        &encode_vec(&FastPathUpdatePdu {
+            fragmentation: Fragmentation::Single,
+            update_code: UpdateCode::SurfaceCommands,
+            compression_flags: None,
+            compression_type: None,
+            data: commands,
+        })
+        .expect("encode FastPath surface commands update"),
+    )
+}
+
+/// The red, green and blue of the pixel at `x`, `y`.
+fn rgb_at(image: &DecodedImage, x: usize, y: usize) -> [u8; 3] {
+    let offset = (y * usize::from(IMAGE_DIM) + x) * 4;
+    let pixel = &image.data()[offset..offset + 4];
+    [pixel[0], pixel[1], pixel[2]]
+}
+
+/// Asserts that a `width` by `height` bitmap of [`SURFACE_PIXEL`] was drawn with its top left at `left`, `top`, and
+/// nothing anywhere else.
+fn assert_drawn_at(image: &DecodedImage, left: usize, top: usize, width: usize, height: usize) {
+    let drawn = [SURFACE_PIXEL[2], SURFACE_PIXEL[1], SURFACE_PIXEL[0]];
+    assert_drawn_within(image, (left, top, width, height), drawn, drawn);
+}
+
+/// Asserts that every pixel of the `(left, top, width, height)` region has each of its red, green and blue between
+/// `min` and `max`, and that every pixel outside it is black.
+fn assert_drawn_within(
+    image: &DecodedImage,
+    (left, top, width, height): (usize, usize, usize, usize),
+    min: [u8; 3],
+    max: [u8; 3],
+) {
+    for y in 0..usize::from(IMAGE_DIM) {
+        for x in 0..usize::from(IMAGE_DIM) {
+            let rgb = rgb_at(image, x, y);
+            if (left..left + width).contains(&x) && (top..top + height).contains(&y) {
+                let within = (0..3).all(|c| (min[c]..=max[c]).contains(&rgb[c]));
+                assert!(within, "pixel {x},{y} is {rgb:?}, not between {min:?} and {max:?}");
+            } else {
+                assert_eq!(rgb, [0, 0, 0], "pixel {x},{y} outside the bitmap");
+            }
+        }
+    }
+}
+
+/// A server can send a destBottom of zero, which once took the client's surface processing down with an arithmetic
+/// overflow. destRight and destBottom SHOULD be ignored, so the bitmap is drawn at the size it gives.
+// oracle: spec MS-RDPBCGR §2.2.9.2.1
+#[test]
+fn surface_bits_with_a_zero_destination_bottom_are_drawn_at_the_bitmap_size() {
+    let frame = surface_bits_frame(
+        SurfaceBitsKind::Set,
+        ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 2,
+            bottom: 0,
+        },
+        2,
+        2,
+    );
+
+    assert_drawn_at(&render(&frame), 0, 0, 2, 2);
+}
+
+/// The Extended Bitmap Data gives the size of the decoded image for both surface bits commands, so a destination that
+/// disagrees with the bitmap doesn't change where it's drawn.
+#[rstest::rstest]
+// oracle: spec MS-RDPBCGR §2.2.9.2.1
+#[case::set(SurfaceBitsKind::Set)]
+// oracle: spec MS-RDPBCGR §2.2.9.2.1.1
+#[case::stream(SurfaceBitsKind::Stream)]
+fn surface_bits_are_drawn_at_the_bitmap_size_rather_than_the_destination_bounds(#[case] kind: SurfaceBitsKind) {
+    let frame = surface_bits_frame(
+        kind,
+        ExclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 4,
+        },
+        2,
+        2,
+    );
+
+    assert_drawn_at(&render(&frame), 0, 0, 2, 2);
+}
+
+/// A bitmap is drawn with its top left at destLeft and destTop, so one sent away from the origin is drawn there and
+/// nowhere else.
+// oracle: spec MS-RDPBCGR §2.2.9.2.1
+#[rstest::rstest]
+#[case::right_of_the_origin(5, 0)]
+#[case::below_the_origin(0, 9)]
+#[case::away_from_both_edges(37, 21)]
+fn surface_bits_are_drawn_at_their_destination_origin(#[case] left: u16, #[case] top: u16) {
+    let frame = surface_bits_frame(
+        SurfaceBitsKind::Set,
+        ExclusiveRectangle {
+            left,
+            top,
+            right: left + 3,
+            bottom: top + 2,
+        },
+        3,
+        2,
+    );
+
+    assert_drawn_at(&render(&frame), usize::from(left), usize::from(top), 3, 2);
+}
+
+/// Surface bits that cover no pixels, or that would run past the 16-bit coordinate range, draw nothing and leave the
+/// session running.
+#[rstest::rstest]
+// oracle: spec MS-RDPBCGR §2.2.9.2.1.1
+#[case::zero_width(ExclusiveRectangle { left: 0, top: 0, right: 0, bottom: 2 }, 0, 2)]
+// oracle: spec MS-RDPBCGR §2.2.9.2.1.1
+#[case::zero_height(ExclusiveRectangle { left: 0, top: 0, right: 2, bottom: 0 }, 2, 0)]
+// oracle: mutant placing a bitmap that runs past 65535 with unchecked addition
+#[case::past_the_coordinate_range(ExclusiveRectangle { left: u16::MAX, top: 0, right: 1, bottom: 1 }, 2, 1)]
+fn surface_bits_that_cover_no_pixels_draw_nothing(
+    #[case] destination: ExclusiveRectangle,
+    #[case] width: u16,
+    #[case] height: u16,
+) {
+    let image = render(&surface_bits_frame(SurfaceBitsKind::Set, destination, width, height));
+
+    let blank = blank_image();
+    assert_eq!(image.data(), blank.data());
+}
+
+/// An uncompressed bitmap is read with its own width as the stride at every color depth, so one sent with a larger
+/// destination is drawn exactly as one sent with a destination of its own size, in the colors its pixels hold.
+/// The 15 and 16 bpp pixels are one channel at full intensity, so a channel read from the wrong bits shows. How a 5 or
+/// 6 bit channel widens to 8 bits isn't specified, so a full one only has to reach 248, which is 31 shifted left by 3.
+/// 8bpp is left out because it needs a palette first, and it takes its stride from the same width.
+// oracle: spec MS-RDPBCGR §2.2.9.2.1.1
+// oracle: spec MS-RDPBCGR §2.2.1.3.2
+#[rstest::rstest]
+#[case::bpp_15_full_red(15, &[0x00, 0x7c], [248, 0, 0], [255, 0, 0])]
+#[case::bpp_16_full_green(16, &[0xe0, 0x07], [0, 248, 0], [0, 255, 0])]
+#[case::bpp_24(24, &[0x30, 0x20, 0x10], [0x10, 0x20, 0x30], [0x10, 0x20, 0x30])]
+#[case::bpp_32(32, &SURFACE_PIXEL, [0x10, 0x20, 0x30], [0x10, 0x20, 0x30])]
+fn uncompressed_surface_bits_are_read_with_the_bitmap_stride_at_every_depth(
+    #[case] bpp: u8,
+    #[case] pixel: &[u8],
+    #[case] min: [u8; 3],
+    #[case] max: [u8; 3],
+) {
+    let frame = |right, bottom| {
+        uncompressed_surface_bits_frame(
+            SurfaceBitsKind::Set,
+            bpp,
+            pixel,
+            ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right,
+                bottom,
+            },
+            4,
+            2,
+        )
+    };
+    let expected = render(&frame(4, 2));
+    assert_drawn_within(&expected, (0, 0, 4, 2), min, max);
+
+    assert_eq!(render(&frame(8, 8)).data(), expected.data());
+}
+
+/// A change made to every surface bits command IronRDP's server sends, before the client processes it.
+#[derive(Clone, Copy, Debug)]
+enum SurfaceBitsEdit {
+    None,
+    ZeroDestinationRightAndBottom,
+    ZeroBitmapSize,
+}
+
+impl SurfaceBitsEdit {
+    fn apply(self, bits: &mut SurfaceBitsPdu<'_>) {
+        match self {
+            Self::None => {}
+            Self::ZeroDestinationRightAndBottom => {
+                bits.destination.right = 0;
+                bits.destination.bottom = 0;
+            }
+            Self::ZeroBitmapSize => {
+                bits.extended_bitmap_data.width = 0;
+                bits.extended_bitmap_data.height = 0;
+            }
+        }
+    }
+}
+
+/// An encoder that sends whole-desktop bitmaps as surface bits with `codecs`, as IronRDP's server does.
+fn surface_bits_encoder(codecs: UpdateEncoderCodecs) -> UpdateEncoder {
+    UpdateEncoder::new(
+        DesktopSize {
+            width: IMAGE_DIM,
+            height: IMAGE_DIM,
+        },
+        CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS,
+        codecs,
+        16 * 1024 * 1024,
+        0,
+        0,
+        LargePointerSupportFlags::empty(),
+    )
+    .expect("build the update encoder")
+}
+
+/// The FastPath frames `encoder` sends for one whole-desktop bitmap of `pixel` (BGRX), with `edit` applied to each
+/// surface bits command in them.
+async fn encoded_surface_frames(encoder: &mut UpdateEncoder, pixel: [u8; 4], edit: SurfaceBitsEdit) -> Vec<Vec<u8>> {
+    let stride = usize::from(IMAGE_DIM) * 4;
+    let bitmap = BitmapUpdate {
+        x: 0,
+        y: 0,
+        width: NonZeroU16::new(IMAGE_DIM).expect("non-zero width"),
+        height: NonZeroU16::new(IMAGE_DIM).expect("non-zero height"),
+        format: ServerPixelFormat::BgrX32,
+        data: pixel.repeat(usize::from(IMAGE_DIM) * usize::from(IMAGE_DIM)).into(),
+        stride: NonZeroUsize::new(stride).expect("non-zero stride"),
+    };
+    let mut updates = encoder.update(DisplayUpdate::Bitmap(bitmap));
+    let mut frames = Vec::new();
+    while let Some(fragmenter) = updates.next().await {
+        let fragmenter = fragmenter.expect("encode the bitmap");
+        let mut cursor = ReadCursor::new(&fragmenter.data);
+        let mut commands = Vec::new();
+        while !cursor.is_empty() {
+            let mut command = decode_cursor::<SurfaceCommand<'_>>(&mut cursor).expect("decode a surface command");
+            if let SurfaceCommand::SetSurfaceBits(bits) | SurfaceCommand::StreamSurfaceBits(bits) = &mut command {
+                edit.apply(bits);
+            }
+            commands.extend(encode_vec(&command).expect("encode a surface command"));
+        }
+        frames.push(surface_commands_frame(&commands));
+    }
+    frames
+}
+
+/// The framebuffer a test draws into, and the baseline for one that should stay blank.
+fn blank_image() -> DecodedImage {
+    DecodedImage::new(PixelFormat::RgbA32, IMAGE_DIM, IMAGE_DIM)
+}
+
+/// Runs `frames` through one processor, in order, and returns the resulting framebuffer.
+fn render_all(frames: &[Vec<u8>]) -> DecodedImage {
+    let mut image = blank_image();
+    let mut output = WriteBuf::new();
+    let mut bulk_decompressor = Some(BulkCompressor::new(BulkCompressionType::Rdp5));
+    let mut processor = processor();
+    for frame in frames {
+        processor
+            .process(&mut image, frame, &mut output, &mut bulk_decompressor)
+            .expect("process FastPath frame");
+    }
+    image
+}
+
+fn remotefx_encoder() -> UpdateEncoder {
+    let mut codecs = UpdateEncoderCodecs::new();
+    codecs.set_remotefx_codec(Some((EntropyBits::Rlgr3, 3, RemoteFxCodec::RemoteFx)));
+    surface_bits_encoder(codecs)
+}
+
+/// The RemoteFX decoder places its tiles from destLeft and destTop and clips them to its channel's size (MS-RDPRFX
+/// 2.2.2.1.3), so a RemoteFX frame is drawn the same whatever its destRight, destBottom, width and height say.
+#[rstest::rstest]
+// oracle: spec MS-RDPBCGR §2.2.9.2.1.1
+// oracle: spec MS-RDPRFX §2.2.2.1.3
+#[case::zero_destination_right_and_bottom(SurfaceBitsEdit::ZeroDestinationRightAndBottom)]
+// oracle: spec MS-RDPRFX §2.2.2.1.3
+#[case::zero_bitmap_size(SurfaceBitsEdit::ZeroBitmapSize)]
+#[tokio::test]
+async fn a_remotefx_frame_is_drawn_whatever_its_destination_bounds_and_bitmap_size(#[case] edit: SurfaceBitsEdit) {
+    let pixel = [0x40, 0x80, 0xc0, 0xff];
+    let expected = render_all(&encoded_surface_frames(&mut remotefx_encoder(), pixel, SurfaceBitsEdit::None).await);
+    let blank = blank_image();
+    assert_ne!(
+        expected.data(),
+        blank.data(),
+        "the RemoteFX frame should draw something"
+    );
+
+    let edited = render_all(&encoded_surface_frames(&mut remotefx_encoder(), pixel, edit).await);
+
+    assert_eq!(edited.data(), expected.data());
+}
+
+fn qoi_encoder() -> UpdateEncoder {
+    let mut codecs = UpdateEncoderCodecs::new();
+    codecs.set_qoi(Some(0x0A));
+    surface_bits_encoder(codecs)
+}
+
+fn qoiz_encoder() -> UpdateEncoder {
+    let mut codecs = UpdateEncoderCodecs::new();
+    codecs.set_qoiz(Some(0x0B));
+    surface_bits_encoder(codecs)
+}
+
+/// A QOI frame is placed by its bitmap's size, so it's drawn the same whatever its destRight and destBottom say.
+// oracle: spec MS-RDPBCGR §2.2.9.2.1.1
+#[tokio::test]
+async fn a_qoi_frame_is_drawn_whatever_its_destination_bounds() {
+    let pixel = [0x40, 0x80, 0xc0, 0xff];
+    let unedited = render_all(&encoded_surface_frames(&mut qoi_encoder(), pixel, SurfaceBitsEdit::None).await);
+    assert_ne!(
+        unedited.data(),
+        blank_image().data(),
+        "the QOI frame should draw something"
+    );
+
+    let edited = render_all(
+        &encoded_surface_frames(
+            &mut qoi_encoder(),
+            pixel,
+            SurfaceBitsEdit::ZeroDestinationRightAndBottom,
+        )
+        .await,
+    );
+
+    assert_eq!(edited.data(), unedited.data());
+}
+
+/// A QOI image carries its own size, which has to match the bitmap's, so a QOI frame whose bitmap claims no pixels
+/// draws nothing, and the session continues.
+// oracle: spec MS-RDPBCGR §2.2.9.2.1.1
+#[tokio::test]
+async fn a_qoi_frame_whose_bitmap_claims_no_pixels_draws_nothing() {
+    let pixel = [0x40, 0x80, 0xc0, 0xff];
+
+    let edited = render_all(&encoded_surface_frames(&mut qoi_encoder(), pixel, SurfaceBitsEdit::ZeroBitmapSize).await);
+
+    assert_eq!(edited.data(), blank_image().data());
+}
+
+/// QOIZ frames share one zstd stream, so a frame that draws nothing because its bitmap claims no pixels is still
+/// decompressed, and the frame after it decodes as if nothing had been claimed.
+// oracle: mutant skipping the decompression of a QOIZ frame whose bitmap has no pixels
+#[tokio::test]
+async fn a_qoiz_frame_with_no_pixels_keeps_the_stream_for_the_next_one() {
+    let (first, second) = ([0x10, 0x20, 0x30, 0xff], [0x60, 0x50, 0x40, 0xff]);
+
+    let mut encoder = qoiz_encoder();
+    let mut frames = encoded_surface_frames(&mut encoder, first, SurfaceBitsEdit::None).await;
+    frames.extend(encoded_surface_frames(&mut encoder, second, SurfaceBitsEdit::None).await);
+    let expected = render_all(&frames);
+
+    let mut encoder = qoiz_encoder();
+    let mut frames = encoded_surface_frames(&mut encoder, first, SurfaceBitsEdit::ZeroBitmapSize).await;
+    frames.extend(encoded_surface_frames(&mut encoder, second, SurfaceBitsEdit::None).await);
+    let edited = render_all(&frames);
+
+    let blank = blank_image();
+    assert_ne!(
+        expected.data(),
+        blank.data(),
+        "the second QOIZ frame should draw something"
+    );
+    assert_eq!(edited.data(), expected.data());
 }

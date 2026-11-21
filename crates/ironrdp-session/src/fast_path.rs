@@ -741,21 +741,38 @@ impl Processor {
 
                     trace!(?codec_id, "Surface bits");
 
-                    let destination = bits.destination;
                     // TODO(@pacmancoder): Correct rectangle conversion logic should
                     // be revisited when `rectangle_processing.rs` from
                     // `ironrdp-graphics` will be refactored to use generic `Rectangle`
                     // trait instead of hardcoded `InclusiveRectangle`.
-                    let destination = InclusiveRectangle {
-                        left: destination.left,
-                        top: destination.top,
-                        right: destination.right - 1,
-                        bottom: destination.bottom - 1,
-                    };
+                    // The bitmap is placed at destLeft and destTop with the size of the decoded image, which both
+                    // commands carry in TS_BITMAP_DATA_EX (MS-RDPBCGR 2.2.9.2.1.1). For Set Surface Bits, destRight
+                    // and destBottom SHOULD be ignored (2.2.9.2.1). Stream Surface Bits doesn't say so (2.2.9.2.2),
+                    // but its bitmap data has the same size either way.
+                    // The destination is None when the bitmap has no pixels or would run past the 16-bit coordinate
+                    // range.
+                    let (left, top) = (bits.destination.left, bits.destination.top);
+                    let (width, height) = (bits.extended_bitmap_data.width, bits.extended_bitmap_data.height);
+                    let destination = width
+                        .checked_sub(1)
+                        .and_then(|width| left.checked_add(width))
+                        .zip(height.checked_sub(1).and_then(|height| top.checked_add(height)))
+                        .map(|(right, bottom)| InclusiveRectangle {
+                            left,
+                            top,
+                            right,
+                            bottom,
+                        });
+                    let ignore_empty =
+                        || warn!(left, top, width, height, "Ignoring empty or out-of-range surface bits");
                     match codec_id {
                         CODEC_ID_NONE => {
+                            let Some(destination) = destination else {
+                                ignore_empty();
+                                continue;
+                            };
                             let ext_data = bits.extended_bitmap_data;
-                            let source_width = destination.width();
+                            let source_width = width;
                             let rectangle = match ext_data.bpp {
                                 8 => image.apply_rgb8_with_palette(
                                     ext_data.data,
@@ -791,6 +808,15 @@ impl Processor {
                                 .or(Some(rectangle));
                         }
                         CODEC_ID_REMOTEFX => {
+                            // The decoder places its tiles from destLeft and destTop and clips them to its channel's
+                            // size (MS-RDPRFX 2.2.2.1.3), so it reads only the origin of the destination, and a frame
+                            // is decoded whatever its bitmap's size says.
+                            let destination = destination.unwrap_or(InclusiveRectangle {
+                                left,
+                                top,
+                                right: left,
+                                bottom: top,
+                            });
                             let mut data = ReadCursor::new(bits.extended_bitmap_data.data);
                             while !data.is_empty() {
                                 let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
@@ -801,6 +827,10 @@ impl Processor {
                         }
                         #[cfg(feature = "qoi")]
                         ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOI => {
+                            let Some(destination) = destination else {
+                                ignore_empty();
+                                continue;
+                            };
                             qoi_apply(
                                 image,
                                 destination,
@@ -810,7 +840,13 @@ impl Processor {
                         }
                         #[cfg(feature = "qoiz")]
                         ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOIZ => {
+                            // The data is decompressed whatever the bitmap's size says, so the zstd stream the frames
+                            // share stays in step with the server's.
                             let data = self.qoiz_decompressor.decompress(bits.extended_bitmap_data.data)?;
+                            let Some(destination) = destination else {
+                                ignore_empty();
+                                continue;
+                            };
 
                             qoi_apply(image, destination, &data, &mut update_rectangle)?;
                         }
