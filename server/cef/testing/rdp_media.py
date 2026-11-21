@@ -59,6 +59,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path == "/webauthn-pending":
+            # Answers once the client holds the page's WebAuthn request, so the
+            # page's abort has to reach the client as CancelCurOp.
+            log = ARTIFACTS / "client.log"
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if log.exists() and "Synthetic WebAuthn waiting for cancel" in log.read_text(errors="replace"):
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+                time.sleep(0.05)
+            self.send_error(504)
+            return
         if self.path == "/resume":
             if not resume.wait(60):
                 self.send_error(504)

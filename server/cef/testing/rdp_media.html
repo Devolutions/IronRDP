@@ -138,7 +138,10 @@ async function webauthn() {
             timeout: 45678,
         },
     }).then(() => 'resolved', error => error.name);
-    await sleep(300);
+    // Abort only once the client holds the request, so the abort must reach it
+    // as an RDPEWA CancelCurOp; a fixed delay lost the race on slow hosts. A
+    // request that settles first (no remote authenticator) is not waited for.
+    await Promise.race([fetch('/webauthn-pending'), cancelled]);
     abort.abort();
     return {uvpaa, aaguid, assertionOutcome, abortError: await cancelled};
 }
