@@ -91,10 +91,14 @@ mod imp {
         }
     }
 
+    fn current_uid() -> u32 {
+        // SAFETY: `getuid` has no preconditions and is always safe to call.
+        unsafe { libc::getuid() }
+    }
+
     /// Returns a per-user endpoint for `name`.
     pub fn default_endpoint_named(name: &str) -> Endpoint {
-        // SAFETY: `getuid` has no preconditions and is always safe to call.
-        let uid = unsafe { libc::getuid() };
+        let uid = current_uid();
         let dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp"));
@@ -116,11 +120,19 @@ mod imp {
         if !endpoint.0.exists() {
             return Ok(());
         }
-        if connect(endpoint).await.is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                format!("an RPC listener already appears to be running at {endpoint}"),
-            ));
+        match connect(endpoint).await {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!("an RPC listener already appears to be running at {endpoint}"),
+                ));
+            }
+            // UNTESTED: another user's socket is reported, not removed; check with a socket bound by a second account.
+            Err(e) => {
+                if let Some(held) = held_by_another_user(&e, endpoint) {
+                    return Err(held);
+                }
+            }
         }
         use std::os::unix::fs::FileTypeExt as _;
         let metadata = std::fs::symlink_metadata(&endpoint.0)?;
@@ -133,9 +145,33 @@ mod imp {
         std::fs::remove_file(&endpoint.0)
     }
 
+    pub(super) fn held_by_another_user(error: &io::Error, endpoint: &Endpoint) -> Option<io::Error> {
+        (error.kind() == io::ErrorKind::PermissionDenied).then(|| {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("the endpoint {endpoint} is held by another user"),
+            )
+        })
+    }
+
     /// Connects to a listening daemon.
+    ///
+    /// Fails with `PermissionDenied` unless the peer runs as the current user, which `prepare_endpoint` relies on.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<UnixStream> {
-        UnixStream::connect(&endpoint.0).await
+        let stream = UnixStream::connect(&endpoint.0).await?;
+        // UNTESTED: a peer running as another user is rejected; check with a socket bound by a second account.
+        check_peer_uid(stream.peer_cred()?.uid(), current_uid())?;
+        Ok(stream)
+    }
+
+    pub(super) fn check_peer_uid(peer_uid: u32, uid: u32) -> io::Result<()> {
+        if peer_uid != uid {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "refusing to use the endpoint: it is owned by another user",
+            ));
+        }
+        Ok(())
     }
 
     /// A bound listener that accepts client connections.
@@ -178,14 +214,19 @@ mod imp {
 mod imp {
     use std::io;
 
+    use std::os::windows::io::AsRawHandle as _;
+
     use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions};
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
+    use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree};
     use windows::Win32::Security::Authorization::{
-        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+        SE_KERNEL_OBJECT,
     };
     use windows::Win32::Security::{
-        GetTokenInformation, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        EqualSid, GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+        TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
+    use windows::Win32::Storage::FileSystem::{SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT};
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     use windows::core::{PCWSTR, PWSTR};
 
@@ -225,8 +266,62 @@ mod imp {
     }
 
     /// Connects to a listening daemon.
+    ///
+    /// Fails unless the pipe is owned by the current user.
     pub async fn connect(endpoint: &Endpoint) -> io::Result<NamedPipeClient> {
-        ClientOptions::new().open(&endpoint.0)
+        // UNTESTED: a pipe owned by another user is rejected, and its server gets at most an identification-level
+        // token even then.
+        // To check, connect to a pipe created by a second account holding `SeImpersonatePrivilege`, such as SYSTEM.
+        let client = ClientOptions::new()
+            .security_qos_flags((SECURITY_IDENTIFICATION | SECURITY_SQOS_PRESENT).0)
+            .open(&endpoint.0)?;
+        verify_server_is_current_user(&client)?;
+        Ok(client)
+    }
+
+    fn verify_server_is_current_user(client: &NamedPipeClient) -> io::Result<()> {
+        let handle = HANDLE(client.as_raw_handle());
+        let mut owner = PSID(core::ptr::null_mut());
+        let mut security_descriptor = PSECURITY_DESCRIPTOR(core::ptr::null_mut());
+        // SAFETY: `handle` is an open pipe handle with `READ_CONTROL`, and the out-pointers are valid.
+        let status = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                Some(core::ptr::addr_of_mut!(owner)),
+                None,
+                None,
+                None,
+                Some(core::ptr::addr_of_mut!(security_descriptor)),
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(io::Error::other(format!("query pipe owner: {status:?}")));
+        }
+        // Keep the descriptor alive while `owner`, which points into it, is read.
+        let _descriptor = OwnedSecurityDescriptor(security_descriptor);
+        current_user_owns(owner)
+    }
+
+    pub(super) fn current_user_owns(owner: PSID) -> io::Result<()> {
+        // `EqualSid` requires valid SIDs, so reject a null owner first.
+        if owner.0.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "refusing to use the endpoint: it has no owner",
+            ));
+        }
+        let current_buffer = current_user_token_buffer()?;
+        let current_sid = sid_from_token_buffer(&current_buffer);
+        // SAFETY: `owner` is non-null and kept alive by the caller, and `current_sid` points into `current_buffer`.
+        if unsafe { EqualSid(owner, current_sid) }.is_err() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "refusing to use the endpoint: it is owned by another user",
+            ));
+        }
+        Ok(())
     }
 
     /// Owns a process token handle and closes it on drop.
@@ -243,7 +338,7 @@ mod imp {
 
     /// Owns a self-relative security descriptor allocated by
     /// `ConvertStringSecurityDescriptorToSecurityDescriptorW` and frees it with `LocalFree` on drop.
-    struct OwnedSecurityDescriptor(PSECURITY_DESCRIPTOR);
+    pub(super) struct OwnedSecurityDescriptor(PSECURITY_DESCRIPTOR);
 
     impl OwnedSecurityDescriptor {
         /// Builds a security descriptor granting access only to the current user.
@@ -254,7 +349,7 @@ mod imp {
         /// named pipe. On shared Windows hosts the pipe namespace is otherwise reachable by every
         /// local user, so this is the last line of defense against a different local user driving the
         /// session (input, screenshots, logs, NOW execution).
-        fn for_current_user() -> io::Result<Self> {
+        pub(super) fn for_current_user() -> io::Result<Self> {
             let buffer = current_user_token_buffer()?;
             let sid = sid_from_token_buffer(&buffer);
 
@@ -269,7 +364,8 @@ mod imp {
             let _ = unsafe { LocalFree(Some(HLOCAL(sid_wide.as_ptr().cast::<core::ffi::c_void>()))) };
 
             // Build the SDDL: a protected DACL granting GENERIC_ALL to the current user only.
-            let sddl_string = format!("D:P(A;;GA;;;{sid_text})");
+            // The current user is also the owner, since an elevated daemon's default owner is Administrators.
+            let sddl_string = format!("O:{sid_text}D:P(A;;GA;;;{sid_text})");
             let mut sddl_utf16: Vec<u16> = sddl_string.encode_utf16().collect();
             sddl_utf16.push(0u16);
             let sddl_ptr = PCWSTR::from_raw(sddl_utf16.as_ptr());
@@ -292,7 +388,7 @@ mod imp {
         }
 
         /// Returns the raw security-descriptor pointer for use as `lpSecurityDescriptor`.
-        fn as_ptr(&self) -> *mut core::ffi::c_void {
+        pub(super) fn as_ptr(&self) -> *mut core::ffi::c_void {
             self.0.0
         }
     }
@@ -310,7 +406,7 @@ mod imp {
     ///
     /// The user SID is referenced by `TOKEN_USER.User.Sid` and lives inside this buffer, so keep the
     /// buffer alive while using the SID pointer.
-    fn current_user_token_buffer() -> io::Result<Vec<u8>> {
+    pub(super) fn current_user_token_buffer() -> io::Result<Vec<u8>> {
         // SAFETY: `GetCurrentProcess` has no preconditions and returns a pseudo-handle that must
         // not be closed.
         let process = unsafe { GetCurrentProcess() };
@@ -345,7 +441,7 @@ mod imp {
     }
 
     /// Returns the user SID referenced by a token buffer from [`current_user_token_buffer`].
-    fn sid_from_token_buffer(buffer: &[u8]) -> PSID {
+    pub(super) fn sid_from_token_buffer(buffer: &[u8]) -> PSID {
         // The buffer is byte-aligned, so read the `TOKEN_USER` header unaligned; the SID it references
         // lives further inside the buffer and stays valid as long as the buffer does.
         // SAFETY: `GetTokenInformation` wrote a valid `TOKEN_USER` at the start of `buffer`.
@@ -421,11 +517,10 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use windows::Win32::Foundation::ERROR_SUCCESS;
         use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
         use windows::Win32::Security::{
-            ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION, EqualSid,
-            GetAce, GetAclInformation, GetSecurityDescriptorControl, GetSecurityDescriptorDacl, SE_DACL_PROTECTED,
+            ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION, GetAce,
+            GetAclInformation, GetSecurityDescriptorControl, GetSecurityDescriptorDacl, SE_DACL_PROTECTED,
         };
 
         /// The pipe created by the listener must actually carry the restrictive DACL, not just a
@@ -599,5 +694,99 @@ mod tests {
             )
         );
         assert!(stream.0.is_empty());
+    }
+
+    // oracle: regression #2483
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_accepts_a_same_user_peer() {
+        use super::{Endpoint, Listener, connect, prepare_endpoint};
+
+        let path = std::env::temp_dir().join(format!("ironrdp-owner-test-{}.sock", std::process::id()));
+        let endpoint = Endpoint(path);
+        prepare_endpoint(&endpoint).await.expect("prepare endpoint");
+        let mut listener = Listener::bind(&endpoint).expect("bind listener");
+        let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
+        accepted.expect("accept");
+        assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
+    }
+
+    // oracle: regression #2483
+    #[cfg(unix)]
+    #[test]
+    fn check_peer_uid_rejects_a_foreign_peer() {
+        assert!(super::imp::check_peer_uid(1001, 1000).is_err());
+    }
+
+    // oracle: regression #2483
+    #[cfg(unix)]
+    #[test]
+    fn prepare_endpoint_reports_a_foreign_peer_as_held() {
+        let endpoint = super::Endpoint("/tmp/ironrdp-held-test.sock".into());
+        let foreign = super::imp::check_peer_uid(1001, 1000).expect_err("foreign peer");
+        let held = super::imp::held_by_another_user(&foreign, &endpoint).expect("held by another user");
+        assert_eq!(held.kind(), io::ErrorKind::AddrInUse);
+    }
+
+    #[cfg(windows)]
+    mod windows_owner {
+        use windows::Win32::Foundation::{HLOCAL, LocalFree};
+        use windows::Win32::Security::{EqualSid, PSECURITY_DESCRIPTOR, PSID};
+        use windows::core::PCWSTR;
+
+        use crate::transport::imp::{
+            OwnedSecurityDescriptor, current_user_owns, current_user_token_buffer, sid_from_token_buffer,
+        };
+        use crate::transport::{Endpoint, Listener, connect};
+
+        // oracle: regression #2483
+        #[test]
+        fn security_descriptor_owner_is_current_user() {
+            use windows::Win32::Security::GetSecurityDescriptorOwner;
+
+            let expected_buffer = current_user_token_buffer().expect("get current user token");
+            let expected_sid = sid_from_token_buffer(&expected_buffer);
+            let security = OwnedSecurityDescriptor::for_current_user().expect("build security descriptor");
+
+            let mut owner = PSID(core::ptr::null_mut());
+            let mut defaulted = windows::core::BOOL(0);
+            // SAFETY: `security` holds a valid self-relative descriptor, and the out-pointers are valid.
+            unsafe { GetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR(security.as_ptr()), &mut owner, &mut defaulted) }
+                .expect("read descriptor owner");
+            assert!(!owner.0.is_null(), "the descriptor must set an explicit owner");
+            // SAFETY: `owner` points into `security`, which is alive, and `expected_sid` into the token buffer.
+            let owner_equal = unsafe { EqualSid(owner, expected_sid) }.is_ok();
+            assert!(owner_equal, "descriptor owner must equal the current user SID");
+        }
+
+        // oracle: regression #2483
+        #[tokio::test]
+        async fn connect_accepts_a_same_user_server() {
+            let endpoint = Endpoint(format!("\\\\.\\pipe\\ironrdp-agent-owner-test-{}", std::process::id()));
+            let mut listener = Listener::bind(&endpoint).expect("bind listener");
+            let (accepted, client) = tokio::join!(listener.accept(), connect(&endpoint));
+            accepted.expect("accept");
+            assert!(client.is_ok(), "same-user connect must succeed: {client:?}");
+        }
+
+        #[test]
+        fn current_user_owns_rejects_a_foreign_owner() {
+            use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+
+            // oracle: spec MS-DTYP §2.4.2.4
+            let mut everyone = PSID(core::ptr::null_mut());
+            let text: Vec<u16> = "S-1-1-0\0".encode_utf16().collect();
+            // SAFETY: `text` is a valid null-terminated SID string; `everyone` is a valid out-pointer.
+            unsafe { ConvertStringSidToSidW(PCWSTR::from_raw(text.as_ptr()), core::ptr::addr_of_mut!(everyone)) }
+                .expect("convert Everyone sid");
+            // oracle: regression #2483
+            let rejected = current_user_owns(everyone);
+            // SAFETY: `everyone` was `LocalAlloc`'d by `ConvertStringSidToSidW` and is no longer needed.
+            let _ = unsafe { LocalFree(Some(HLOCAL(everyone.0))) };
+            assert!(
+                rejected.is_err(),
+                "a pipe not owned by the current user must be rejected"
+            );
+        }
     }
 }

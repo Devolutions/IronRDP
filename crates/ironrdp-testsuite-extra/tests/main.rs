@@ -22,3 +22,4 @@ mod rdpeudp_tokio;
 mod static_channel;
 mod vmconnect;
 mod volume;
+mod web_replay;

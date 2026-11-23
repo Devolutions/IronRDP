@@ -77,7 +77,14 @@ impl<'de> Decode<'de> for FastPathInputHeader {
             0
         };
 
-        let data_length = usize::from(length) - sizeof_length - 1 - num_events_length;
+        let header_length = sizeof_length + Self::FIXED_PART_SIZE + num_events_length;
+        let data_length = usize::from(length).checked_sub(header_length).ok_or_else(|| {
+            invalid_field_err!(
+                "fastPathLength",
+                "length is smaller than the Fast-Path input header",
+                in: src
+            )
+        })?;
 
         Ok(FastPathInputHeader {
             flags,

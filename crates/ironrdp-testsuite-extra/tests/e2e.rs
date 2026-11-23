@@ -140,6 +140,8 @@ async fn server_handle_set_credentials_applies_to_the_next_connection() {
         assert_eq!(handle.local_addr().await.unwrap(), Some(addr));
         handle.quit("disconnect authenticated client").unwrap();
         while client.read_pdu().await.is_ok() {}
+        // A client closes its side once it has read the end of the stream, which ends the server's wait for it.
+        drop(client);
         assert_eq!(handle.local_addr().await.unwrap(), Some(addr));
         handle.quit("stop idle listener").unwrap();
         server_task.await.unwrap().unwrap();
@@ -169,6 +171,8 @@ async fn connection_result_reports_the_rdp_version_the_server_announced() {
 
         handle.quit("disconnect the client").unwrap();
         while client.read_pdu().await.is_ok() {}
+        // A client closes its side once it has read the end of the stream, which ends the server's wait for it.
+        drop(client);
         handle.quit("stop idle listener").unwrap();
         server_task.await.unwrap().unwrap();
     }));
@@ -924,30 +928,44 @@ async fn a_new_connection_starts_without_the_previous_sessions_events() {
 async fn a_display_that_cannot_start_tells_the_client_why() {
     let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
 
-    let (reason, close) = Box::pin(run_failing_display_probe(Some(error_info))).await;
+    let (reason, close) = Box::pin(run_failing_display_probe(Some(error_info), false)).await;
 
-    let Some(session::GracefulDisconnectReason::Other(description)) = reason else {
-        panic!("the client did not get the reason, it got {reason:?}");
-    };
-    // oracle: property round-trip
-    assert_eq!(description, error_info.description());
+    assert_reason(reason, error_info);
     // The server closes the TLS session (close_notify) after the reason, as on a normal disconnect.
     assert!(matches!(close, Some(Ok(0))), "{close:?}");
 }
 
+/// A client that is still sending when the display fails gets the reason too.
+/// The server reads what the client sends until the client closes the connection, so the client's writes don't fail
+/// before it has read the reason.
+// oracle: mutant closing the connection as soon as the last PDU is written
+// oracle: reference FreeRDP/FreeRDP@1845130fb53e:libfreerdp/core/transport.c
+#[tokio::test]
+async fn a_client_still_sending_when_the_display_fails_gets_the_reason() {
+    let error_info = ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges);
+
+    let (reason, _) = Box::pin(run_failing_display_probe(Some(error_info), true)).await;
+
+    assert_reason(reason, error_info);
+}
+
 /// Other display errors close the connection as before, with no Set Error Info PDU.
-// oracle: doc RdpServerDisplay::updates and ServerErrorKind::ErrorInfo
+// oracle: mutant a display error without ErrorInfo sending a Set Error Info PDU
 #[tokio::test]
 async fn a_display_error_without_error_info_sends_no_reason() {
-    let (reason, _) = Box::pin(run_failing_display_probe(None)).await;
+    let (reason, _) = Box::pin(run_failing_display_probe(None, false)).await;
     assert!(reason.is_none(), "{reason:?}");
 }
 
 /// Connects a client to a server whose display fails to start with `error_info`, or with a plain error. Returns the
 /// reason the client got for the end of the session, and, when it got one, the result of the next read on the TLS
 /// stream: `Ok(0)` when the server closed the TLS session with close_notify.
+///
+/// With `client_keeps_sending`, the client sends input while the server ends the connection, before it reads anything
+/// past the connection finalization, as [`keep_sending`] describes.
 async fn run_failing_display_probe(
     error_info: Option<ErrorInfo>,
+    client_keeps_sending: bool,
 ) -> (
     Option<session::GracefulDisconnectReason>,
     Option<std::io::Result<usize>>,
@@ -968,6 +986,9 @@ async fn run_failing_display_probe(
         password: PASSWORD.into(),
         domain: None,
     }));
+    if client_keeps_sending {
+        server.set_close_timeout_for_test(UNHURRIED_CLOSE);
+    }
     let ev = server.event_sender().clone();
 
     let local = tokio::task::LocalSet::new();
@@ -994,23 +1015,15 @@ async fn run_failing_display_probe(
         .build();
         let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
-        // The server closes the connection right after the display fails. Read until the reason, the end of
-        // the stream, or the deadline.
-        let mut reason = None;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while reason.is_none() {
-            let Ok(read) = tokio::time::timeout_at(deadline, framed.read_pdu()).await else {
-                break;
-            };
-            let Ok((action, frame)) = read else {
-                break;
-            };
-            for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
-                if let ActiveStageOutput::Terminate(terminate) = output {
-                    reason = Some(terminate);
-                }
-            }
+        if client_keeps_sending {
+            keep_sending(&mut framed)
+                .await
+                .expect("the client's input failed while the server ended the connection");
         }
+
+        // The server closes the connection right after the display fails.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let reason = read_reason(&mut stage, &mut image, &mut framed, deadline).await;
 
         let close = if reason.is_some() {
             use tokio::io::AsyncReadExt as _;
@@ -1024,6 +1037,249 @@ async fn run_failing_display_probe(
 
         server_task.abort();
         (reason, close)
+    }))
+    .await
+}
+
+/// Sends a mouse move every 10 ms for 500 ms, and returns the first write error.
+///
+/// A socket closed while the client is still sending answers the next input with a reset, so the write after it fails.
+/// Writing for a while, rather than once or twice, catches a close at any point in that time, since another write
+/// follows it.
+/// FreeRDP takes a failed write for a lost connection and never reads the PDUs already sent to it.
+/// Tests that use it give the server [`UNHURRIED_CLOSE`], so a slow machine can't make the writes outlast its wait.
+async fn keep_sending<S>(framed: &mut Framed<TokioStream<S>>) -> std::io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+{
+    let input = pdu::input::fast_path::FastPathInput::new(vec![pdu::input::fast_path::FastPathInputEvent::MouseEvent(
+        pdu::input::MousePdu {
+            flags: pdu::input::mouse::PointerFlags::MOVE,
+            number_of_wheel_rotation_units: 0,
+            x_position: 12,
+            y_position: 34,
+        },
+    )])
+    .expect("one event");
+    let input = encode_vec(&input).expect("encode input");
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        framed.write_all(&input).await?;
+    }
+    Ok(())
+}
+
+/// How long the tests built on [`keep_sending`] let the server wait for the client to close the connection.
+/// The client closes it once it has read the reason, which ends the wait at once.
+const UNHURRIED_CLOSE: Duration = Duration::from_secs(60);
+
+/// Asserts that the client got `expected` as the reason for the end of the session.
+#[track_caller]
+fn assert_reason(reason: Option<session::GracefulDisconnectReason>, expected: ErrorInfo) {
+    let got = match &reason {
+        Some(session::GracefulDisconnectReason::Other(description)) => Some(description.as_str()),
+        _ => None,
+    };
+    // oracle: property round-trip
+    assert_eq!(
+        got,
+        Some(expected.description().as_str()),
+        "the client did not get the reason, it got {reason:?}"
+    );
+}
+
+/// Asserts that the client got `expected` in a Set Error Info PDU, then the Disconnect Provider Ultimatum.
+#[track_caller]
+fn assert_reason_then_ultimatum(reasons: &[session::GracefulDisconnectReason], expected: ErrorInfo) {
+    assert!(
+        matches!(reasons, [_, session::GracefulDisconnectReason::ServerInitiated]),
+        "the client did not get a reason and then the ultimatum, it got {reasons:?}"
+    );
+    assert_reason(reasons.first().cloned(), expected);
+}
+
+/// Reads until the reason the server gives for the end of the session, the end of the stream, or `deadline`.
+async fn read_reason(
+    stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    framed: &mut Framed<TokioStream<TlsStream<TcpStream>>>,
+    deadline: tokio::time::Instant,
+) -> Option<session::GracefulDisconnectReason> {
+    loop {
+        let Ok(Ok((action, frame))) = tokio::time::timeout_at(deadline, framed.read_pdu()).await else {
+            return None;
+        };
+        for output in stage.process(image, action, &frame, None).expect("stage process") {
+            if let ActiveStageOutput::Terminate(reason) = output {
+                return Some(reason);
+            }
+        }
+    }
+}
+
+/// Reads until the end of the stream or `deadline`, and returns every reason the server gives for the end of the
+/// session, in order.
+async fn read_reasons<S>(
+    stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    framed: &mut Framed<TokioStream<S>>,
+    deadline: tokio::time::Instant,
+) -> Vec<session::GracefulDisconnectReason>
+where
+    S: AsyncRead + Send + Sync + Unpin,
+{
+    let mut reasons = Vec::new();
+    while let Ok(Ok((action, frame))) = tokio::time::timeout_at(deadline, framed.read_pdu()).await {
+        for output in stage.process(image, action, &frame, None).expect("stage process") {
+            if let ActiveStageOutput::Terminate(reason) = output {
+                reasons.push(reason);
+            }
+        }
+    }
+    reasons
+}
+
+/// How a session in [`server_close_wait`] ends.
+#[derive(Clone, Copy, Debug)]
+enum SessionEnding {
+    /// `ServerEvent::Disconnect` once the client is connected.
+    Disconnect,
+    /// The display fails to start with an `ErrorInfo` error.
+    DisplayError,
+}
+
+/// How the client in [`server_close_wait`] treats the connection once it has read the end of the stream.
+#[derive(Clone, Copy, Debug)]
+enum ClientClose {
+    /// It closes the TLS session with close_notify, then the connection, as FreeRDP does.
+    WithCloseNotify,
+    /// It closes the connection without close_notify.
+    Abruptly,
+    /// It keeps the connection open and sends nothing.
+    Never,
+}
+
+/// How long the tests built on [`server_close_wait`] give the server to finish a connection.
+/// It is far above what the server takes, a few milliseconds or the 300 ms bound, and far below the 60 s bound.
+const CLOSE_WAIT_LIMIT: Duration = Duration::from_secs(20);
+
+/// The server stops waiting for the client to close the connection as soon as the client closes it, not at the bound.
+// oracle: mutant the close wait ignores the client's close and runs to its bound
+#[rstest::rstest]
+#[tokio::test]
+async fn the_server_stops_waiting_once_the_client_closes(
+    #[values(SessionEnding::Disconnect, SessionEnding::DisplayError)] ending: SessionEnding,
+    #[values(ClientClose::WithCloseNotify, ClientClose::Abruptly)] close: ClientClose,
+) {
+    let waited = Box::pin(server_close_wait(ending, Duration::from_secs(60), close)).await;
+    assert!(
+        waited.is_some(),
+        "the server was still waiting {CLOSE_WAIT_LIMIT:?} after the client closed the connection"
+    );
+}
+
+/// The server stops waiting for a client that never closes the connection once the bound passes.
+// oracle: mutant the close wait has no time limit
+#[rstest::rstest]
+#[case::at_the_end_of_a_session(SessionEnding::Disconnect)]
+#[case::after_an_error(SessionEnding::DisplayError)]
+#[tokio::test]
+async fn the_server_stops_waiting_for_a_client_that_never_closes(#[case] ending: SessionEnding) {
+    let waited = Box::pin(server_close_wait(
+        ending,
+        Duration::from_millis(300),
+        ClientClose::Never,
+    ))
+    .await;
+    assert!(
+        waited.is_some(),
+        "the server was still waiting {CLOSE_WAIT_LIMIT:?} for a client that never closes the connection"
+    );
+}
+
+/// Ends a session as `ending` says, with both of the server's close bounds set to `bound`, and returns how long after
+/// the client read the end of the stream the server took to finish the connection, or `None` when it took longer than
+/// [`CLOSE_WAIT_LIMIT`].
+///
+/// The client then treats the connection as `close` says.
+async fn server_close_wait(ending: SessionEnding, bound: Duration, close: ClientClose) -> Option<Duration> {
+    let identity = test_tls_identity();
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let finished = Arc::new(StdMutex::new(None));
+    let builder = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_tls(identity.make_acceptor().expect("failed to build TLS acceptor"))
+        .with_input_handler(TestInputHandler);
+    let builder = match ending {
+        SessionEnding::Disconnect => builder.with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        }),
+        SessionEnding::DisplayError => builder.with_display_handler(FailingDisplay {
+            error_info: Some(ErrorInfo::ProtocolIndependentCode(
+                ProtocolIndependentCode::ServerInsufficientPrivileges,
+            )),
+        }),
+    };
+    let mut server = builder
+        .with_connection_handler(Some(Box::new(RecordDisconnection(Arc::clone(&finished)))))
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    server.set_close_timeout_for_test(bound);
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+
+        let server_addr = local_addr_of(&ev).await;
+        let (mut framed, _) = connect_client(server_addr, |client_addr| {
+            connector::ClientConnector::new(default_client_config(), client_addr)
+        })
+        .await;
+        if matches!(ending, SessionEnding::Disconnect) {
+            ev.send(ServerEvent::Disconnect(DISCONNECT_REASON)).unwrap();
+        }
+
+        // The server's shutdown ends the stream once it has sent its last PDUs.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while let Ok(Ok(_)) = tokio::time::timeout_at(deadline, framed.read_pdu()).await {}
+        let read_the_end = Instant::now();
+        let kept_open = match close {
+            ClientClose::WithCloseNotify => {
+                use tokio::io::AsyncWriteExt as _;
+
+                let (mut stream, _) = framed.into_inner();
+                let _ = stream.shutdown().await;
+                None
+            }
+            ClientClose::Abruptly => {
+                drop(framed);
+                None
+            }
+            ClientClose::Never => Some(framed),
+        };
+
+        let mut waited = None;
+        while read_the_end.elapsed() < CLOSE_WAIT_LIMIT {
+            if finished.lock().unwrap().is_some() {
+                waited = Some(read_the_end.elapsed());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        drop(kept_open);
+        drop(display_tx);
+        server_task.abort();
+        waited
     }))
     .await
 }
@@ -1056,7 +1312,7 @@ impl RdpServerDisplay for FailingDisplay {
 // oracle: regression #2384
 #[tokio::test]
 async fn a_disconnect_tells_a_client_without_error_info_that_the_server_ended_the_session() {
-    let reasons = Box::pin(run_disconnect_probe(false)).await;
+    let reasons = Box::pin(run_disconnect_probe(false, false)).await;
     assert!(
         matches!(reasons.as_slice(), [session::GracefulDisconnectReason::ServerInitiated]),
         "{reasons:?}"
@@ -1068,16 +1324,114 @@ async fn a_disconnect_tells_a_client_without_error_info_that_the_server_ended_th
 // oracle: spec MS-RDPBCGR §1.3.1.4.3
 #[tokio::test]
 async fn a_disconnect_tells_an_error_info_client_the_reason_before_the_ultimatum() {
-    let reasons = Box::pin(run_disconnect_probe(true)).await;
-    let [
-        session::GracefulDisconnectReason::Other(description),
-        session::GracefulDisconnectReason::ServerInitiated,
-    ] = reasons.as_slice()
-    else {
-        panic!("the client did not get the reason and then the ultimatum, it got {reasons:?}");
-    };
-    // oracle: property round-trip
-    assert_eq!(*description, DISCONNECT_REASON.description());
+    let reasons = Box::pin(run_disconnect_probe(true, false)).await;
+    assert_reason_then_ultimatum(&reasons, DISCONNECT_REASON);
+}
+
+/// A client that is behind on reading when the server disconnects it, and still sending input, gets the reason and
+/// the ultimatum too.
+/// A client decoding a stream falls that far behind, and one with a user at it keeps sending.
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
+// oracle: mutant closing the connection as soon as the last PDU is written
+// oracle: reference FreeRDP/FreeRDP@1845130fb53e:libfreerdp/core/transport.c
+#[tokio::test]
+async fn a_client_still_sending_when_the_server_disconnects_it_gets_the_reason_and_the_ultimatum() {
+    let reasons = Box::pin(run_disconnect_probe(true, true)).await;
+    assert_reason_then_ultimatum(&reasons, DISCONNECT_REASON);
+}
+
+/// A client on a connection without TLS that is behind on reading when the server disconnects it, and still sending
+/// input, gets the reason and the ultimatum too.
+// oracle: spec MS-RDPBCGR §1.3.1.4.3
+// oracle: mutant closing the connection as soon as the last PDU is written
+// oracle: reference FreeRDP/FreeRDP@1845130fb53e:libfreerdp/core/transport.c
+#[tokio::test]
+async fn a_client_still_sending_on_a_plain_connection_gets_the_reason_and_the_ultimatum() {
+    let (display_tx, display_rx) = mpsc::unbounded_channel();
+    let mut server = RdpServer::builder()
+        .with_addr(([127, 0, 0, 1], 0))
+        .with_no_security()
+        .with_input_handler(TestInputHandler)
+        .with_display_handler(TestDisplay {
+            rx: Arc::new(Mutex::new(display_rx)),
+            offers_display_control: false,
+        })
+        .build();
+    server.set_credentials(Some(server::Credentials {
+        username: USERNAME.into(),
+        password: PASSWORD.into(),
+        domain: None,
+    }));
+    server.set_close_timeout_for_test(UNHURRIED_CLOSE);
+    let ev = server.event_sender().clone();
+
+    let local = tokio::task::LocalSet::new();
+    let reasons = Box::pin(local.run_until(async move {
+        let server_task = tokio::task::spawn_local(async move {
+            let _ = server.run().await;
+        });
+
+        let server_addr = local_addr_of(&ev).await;
+        // Connect over plain TCP, requesting PROTOCOL_RDP with neither TLS nor CredSSP.
+        let (mut framed, connection_result) = {
+            let tcp_stream = TcpStream::connect(server_addr).await.expect("TCP connect");
+            let client_addr = tcp_stream.local_addr().expect("local_addr");
+            let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
+            let mut connector = connector::ClientConnector::new(
+                connector::Config {
+                    enable_tls: false,
+                    enable_credssp: false,
+                    enable_standard_rdp_security: true,
+                    ..default_client_config()
+                },
+                client_addr,
+            );
+            let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
+                .await
+                .expect("begin connection");
+            let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
+            let connection_result = ironrdp_async::connect_finalize(
+                upgraded,
+                connector,
+                &mut framed,
+                &mut ironrdp_tokio::reqwest::ReqwestNetworkClient::new(),
+                "localhost".into(),
+                Vec::new(),
+                None,
+            )
+            .await
+            .and_then(connector::ConnectionOutcome::into_connected)
+            .expect("finalize connection");
+            (framed, connection_result)
+        };
+        let mut stage = ActiveStageBuilder {
+            static_channels: connection_result.static_channels,
+            user_channel_id: connection_result.user_channel_id,
+            io_channel_id: connection_result.io_channel_id,
+            message_channel_id: connection_result.message_channel_id,
+            share_id: connection_result.share_id,
+            compression_type: connection_result.compression_type,
+            enable_server_pointer: connection_result.enable_server_pointer,
+            pointer_software_rendering: connection_result.pointer_software_rendering,
+        }
+        .build();
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
+
+        ev.send(ServerEvent::Disconnect(DISCONNECT_REASON)).unwrap();
+        keep_sending(&mut framed)
+            .await
+            .expect("the client's input failed while the server ended the session");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let reasons = read_reasons(&mut stage, &mut image, &mut framed, deadline).await;
+
+        drop(display_tx);
+        server_task.abort();
+        reasons
+    }))
+    .await;
+
+    assert_reason_then_ultimatum(&reasons, DISCONNECT_REASON);
 }
 
 const DISCONNECT_REASON: ErrorInfo =
@@ -1085,7 +1439,10 @@ const DISCONNECT_REASON: ErrorInfo =
 
 /// Connects a client that sets `RNS_UD_CS_SUPPORT_ERRINFO_PDU` when `error_info` is true, ends the session with
 /// `ServerEvent::Disconnect(DISCONNECT_REASON)`, and returns every reason the client got for the end, in order.
-async fn run_disconnect_probe(error_info: bool) -> Vec<session::GracefulDisconnectReason> {
+///
+/// With `client_keeps_sending`, the client sends input while the server ends the session, before it reads anything,
+/// as [`keep_sending`] describes.
+async fn run_disconnect_probe(error_info: bool, client_keeps_sending: bool) -> Vec<session::GracefulDisconnectReason> {
     let identity = test_tls_identity();
     let (display_tx, display_rx) = mpsc::unbounded_channel();
     let mut server = RdpServer::builder()
@@ -1102,6 +1459,9 @@ async fn run_disconnect_probe(error_info: bool) -> Vec<session::GracefulDisconne
         password: PASSWORD.into(),
         domain: None,
     }));
+    if client_keeps_sending {
+        server.set_close_timeout_for_test(UNHURRIED_CLOSE);
+    }
     let ev = server.event_sender().clone();
     let opted_out = Arc::new(AtomicBool::new(false));
 
@@ -1137,17 +1497,15 @@ async fn run_disconnect_probe(error_info: bool) -> Vec<session::GracefulDisconne
             let mut image = DecodedImage::new(PixelFormat::RgbA32, DESKTOP_WIDTH, DESKTOP_HEIGHT);
 
             ev.send(ServerEvent::Disconnect(DISCONNECT_REASON)).unwrap();
+            if client_keeps_sending {
+                keep_sending(&mut framed)
+                    .await
+                    .expect("the client's input failed while the server ended the session");
+            }
 
             // Read until the server closes the connection or the deadline passes.
-            let mut reasons = Vec::new();
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-            while let Ok(Ok((action, frame))) = tokio::time::timeout_at(deadline, framed.read_pdu()).await {
-                for output in stage.process(&mut image, action, &frame, None).expect("stage process") {
-                    if let ActiveStageOutput::Terminate(reason) = output {
-                        reasons.push(reason);
-                    }
-                }
-            }
+            let reasons = read_reasons(&mut stage, &mut image, &mut framed, deadline).await;
 
             drop(display_tx);
             server_task.abort();
@@ -1975,6 +2333,13 @@ impl RdpdrFixtureState {
                 ])
             }
             RdpdrFixturePhase::AwaitDeviceAnnouncement => {
+                assert_eq!(&payload[..4], &[0x72, 0x44, 0x41, 0x44]);
+                let device_count = read_u32(payload, 4);
+                if device_count == 0 {
+                    assert_eq!(payload.len(), 8);
+                    return Ok(Vec::new());
+                }
+                assert_eq!(device_count, 1);
                 let device_id = read_u32(payload, 12);
                 self.announced_device_id = Some(device_id);
 
@@ -4099,6 +4464,57 @@ async fn an_auto_reconnect_cookie_the_embedder_issues_invalidates_the_previous_o
 
     assert!(!first_still_works, "the earlier client's cookie is no longer accepted");
     assert!(second_works, "the newest cookie is accepted");
+}
+
+/// A client that is still sending when the server refuses its reconnect gets the reason.
+/// The client presents an auto-reconnect cookie the server doesn't hold, and the credential validator rejects its
+/// logon, so the server refuses the reconnect whether it refuses the cookie or falls back to the Client Info
+/// credentials.
+/// The server reads what the client sends until the client closes the connection, so the client's writes don't fail
+/// before it has read the reason.
+// oracle: mutant closing the connection as soon as the last PDU is written
+// oracle: reference FreeRDP/FreeRDP@1845130fb53e:libfreerdp/core/transport.c
+#[tokio::test]
+async fn a_client_still_sending_when_its_reconnect_is_refused_gets_the_reason() {
+    let (mut server, display_tx) = auto_reconnect_server(false);
+    server.set_credential_validator(Some(Arc::new(RejectingValidator)));
+    server.set_close_timeout_for_test(UNHURRIED_CLOSE);
+    let (sent, reason) = with_server(
+        server,
+        display_tx,
+        async |server_addr, _cookie_handle, _server_handle, _display_tx| {
+            let unknown = ServerAutoReconnect {
+                logon_id: 1,
+                random_bits: [0x66; 16],
+            };
+            let mut probe = CookieProbe::connect(server_addr, Some(unknown)).await;
+            let sent = keep_sending(&mut probe.framed).await;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            let reason = read_reason(&mut probe.stage, &mut probe.image, &mut probe.framed, deadline).await;
+            (sent, reason)
+        },
+    )
+    .await;
+
+    sent.expect("the client's input failed while the server refused the reconnect");
+    // oracle: spec MS-RDPBCGR §3.3.5.7.1.1
+    assert_reason(
+        reason,
+        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::ServerInsufficientPrivileges),
+    );
+}
+
+/// Rejects every logon.
+struct RejectingValidator;
+
+#[async_trait::async_trait]
+impl server::CredentialValidator for RejectingValidator {
+    async fn validate(
+        &self,
+        _credentials: &server::Credentials,
+    ) -> Result<server::CredentialDecision, server::CredentialValidationError> {
+        Ok(server::CredentialDecision::Reject)
+    }
 }
 
 /// On request, a vouch belongs to the connection that was current when the embedder sent

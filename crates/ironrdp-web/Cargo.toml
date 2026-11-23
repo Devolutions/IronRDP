@@ -40,6 +40,7 @@ ironrdp = { path = "../ironrdp", features = [
 ] }
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
+ironrdp-egfx.path = "../ironrdp-egfx"
 ironrdp-futures.path = "../ironrdp-futures"
 ironrdp-pdu.path = "../ironrdp-pdu"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"

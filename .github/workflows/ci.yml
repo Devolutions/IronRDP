@@ -214,7 +214,7 @@ jobs:
 
   web:
     name: Web Client
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v6
@@ -236,8 +236,22 @@ jobs:
       - name: Prepare
         run: cargo xtask web install -v
 
+      - name: Prepare replay web packages
+        run: cargo xtask web install-replay -v
+
       - name: Check
         run: cargo xtask web check -v
+
+      - name: Install replay browser
+        run: npx playwright install --with-deps chromium
+        working-directory: web-client/iron-replay-player
+
+      - name: Check replay web packages
+        run: cargo xtask web check-replay -v
+
+      - name: Check replay browser tests
+        run: npm run test:browser
+        working-directory: web-client/iron-replay-player
 
       - name: Lock files
         run: cargo xtask check locks -v
@@ -249,11 +263,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install native build dependencies
+        uses: ./.github/actions/install-build-deps
+
       - name: Set up the pinned diplomat-tool
         uses: ./.github/actions/setup-diplomat-tool
 
       - name: Build native library
         run: cargo xtask ffi build -v
+
+      - name: Run Rust FFI tests
+        run: cargo test --locked -p ffi --lib
 
       - name: Generate bindings
         run: cargo xtask ffi bindings -v
@@ -270,6 +290,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Install native build dependencies
+        uses: ./.github/actions/install-build-deps
 
       - name: Set up the pinned diplomat-tool
         uses: ./.github/actions/setup-diplomat-tool

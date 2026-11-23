@@ -81,25 +81,33 @@ It does not mean the RDP session ended, and subsequent wave messages can resume 
 ## Camera
 
 Register `camera(callback)` before connecting to redirect one camera to the remote desktop, shown there as `Browser camera` or the name given with `cameraName(name)`.
-The device offers MJPEG at 640x480 (30 and 15 fps), 320x240 (15 fps) and 1280x720 (15 fps), in that preference order.
+The device offers MJPEG at 640x480 (30 and 15 fps), 320x240 (15 fps) and 1280x720 (15 fps), in that preference order; with `cameraH264(true)` it offers H.264 at the same sizes ahead of them.
 Its current media type is the first offered until the server selects one, and stays the last selected across stops.
-The embedding application owns the capture and the JPEG encoding.
+The embedding application owns the capture and the encoding.
 
 The callback receives these message shapes.
 
-| Message                                 | Fields                                                                           |
-| --------------------------------------- | -------------------------------------------------------------------------------- |
-| `{ type: 'start', width, height, fps }` | The format the server started the stream in; capture in it until a stop message. |
-| `{ type: 'stop' }`                      | The server stopped the stream, deactivated the device or closed its channel.     |
+| Message                                         | Fields                                                                                                                |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `{ type: 'start', width, height, fps, format }` | The size the server started the stream in, and its format, `'mjpeg'` or `'h264'`; capture in it until a stop message. |
+| `{ type: 'stop' }`                              | The server stopped the stream, deactivated the device or closed its channel.                                          |
 
 A stream restarted in another format gets a stop message before its start message.
 No stop message follows the end of the session itself; the session's end is that signal.
 
-After a start message, push each frame as one JPEG with `session.invokeExtension(cameraSample(frame))`.
+After a start message, push each frame, a JPEG or an H.264 access unit, with `session.invokeExtension(cameraSample(frame))`.
 The server asks for frames one Sample Request at a time ([MS-RDPECAM §2.2.3.13 Sample Request]).
-A frame answers the oldest pending request at once, and `invokeExtension` returns `true`; with no request pending the frame is held, in place of any older held frame, until the next request, and `invokeExtension` returns `false`.
-It also returns `false` when no stream is running, in which case the frame is dropped, and when the server refused the frame and got a Sample Error Response instead.
-A held frame is discarded when the stream stops or restarts, so a new stream never gets a frame of the old size.
+A frame answers the oldest pending request at once; with no request pending it is held until the next request.
+`invokeExtension` returns `true` when a frame went out and none is left held.
+It returns `false` when a frame is held, when no stream is running, in which case the frame is dropped, and when the server refused the frame and got a Sample Error Response instead.
+An MJPEG frame replaces any held frame.
+An H.264 frame queues behind the held frames, because every picture but a key frame depends on the ones before it.
+Push H.264 access units in decode order, as the encoder emits them: the queue keeps that order, and a picture whose references were never pushed cannot be told from a good one.
+The queue holds 30 frames; a frame pushed when it is full is dropped with the queue, and the callback gets a stop message and a new start message: capture afresh, so that the next frame is a key frame.
+A held H.264 frame the server refuses ends the capture the same way, since the frames behind it would decode against a picture the server never got.
+Held frames are discarded when the stream stops or restarts, so a new stream never gets a frame of the old size or format.
+
+Before encoding an H.264 frame, ask `session.invokeExtension(cameraWanted())` how many frames to encode: the pending requests no held frame answers, plus one held ready for the next request, so it goes out without an encode in the round trip.
 
 [MS-RDPECAM §2.2.3.13 Sample Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpecam/
 
