@@ -15,6 +15,9 @@ internal partial struct ClientConnector
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ClientConnector_with_static_channel_rdp_snd", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultVoidIronRdpError WithStaticChannelRdpSnd(ClientConnector* handle);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ClientConnector_with_native_audio", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVoidIronRdpError WithNativeAudio(ClientConnector* handle, NativeAudio* audio);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ClientConnector_with_static_channel_rdpdr", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultVoidIronRdpError WithStaticChannelRdpdr(ClientConnector* handle, DiplomatSliceU8 computerName, uint smartCardDeviceId);
 
@@ -26,6 +29,9 @@ internal partial struct ClientConnector
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ClientConnector_with_dynamic_channel_pipe_proxy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultVoidIronRdpError WithDynamicChannelPipeProxy(ClientConnector* handle, DvcPipeProxyConfig* config);
+
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ClientConnector_with_dynamic_channel_direct", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVoidIronRdpError WithDynamicChannelDirect(ClientConnector* handle, DirectDvcConfig* config);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ClientConnector_should_perform_security_upgrade", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultBoolIronRdpError ShouldPerformSecurityUpgrade(ClientConnector* handle);

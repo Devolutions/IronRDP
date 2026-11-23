@@ -29,7 +29,7 @@ harness = true
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
-ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol", "rdpsnd", "acceptor"] }
+ironrdp = { path = "../ironrdp", features = ["server", "pdu", "connector", "session", "svc", "dvc", "echo", "displaycontrol", "rdpsnd", "acceptor", "cliprdr"] }
 ironrdp-cfg.path = "../ironrdp-cfg"
 ironrdp-async.path = "../ironrdp-async"
 ironrdp-agent.path = "../ironrdp-agent"
@@ -61,7 +61,9 @@ ironrdp-rpc = { path = "../ironrdp-rpc", features = ["__test"] }
 # The EGFX-over-UDP migration in ironrdp-server is behind its `egfx` feature,
 # which nothing else in the workspace enables.
 ironrdp-server = { path = "../ironrdp-server", features = ["egfx", "__test"] }
+ironrdp-session.path = "../ironrdp-session"
 ironrdp-viewer = { path = "../ironrdp-viewer", features = ["__test"] }
+ironrdp-web-replay.path = "../ironrdp-web-replay"
 ironrdp-tokio.path = "../ironrdp-tokio"
 ironrdp-tls = { path = "../ironrdp-tls", features = ["rustls"] }
 ironrdp-vmconnect = { path = "../ironrdp-vmconnect", features = ["__test"] }

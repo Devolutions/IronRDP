@@ -1761,6 +1761,7 @@ dependencies = [
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr-native",
+ "ironrdp-rdpsnd-native",
  "ironrdp-vmconnect",
  "sspi",
  "thiserror 2.0.21",
@@ -3818,11 +3819,13 @@ dependencies = [
  "ironrdp-rdpsnd-native",
  "ironrdp-rpc",
  "ironrdp-server",
+ "ironrdp-session",
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
  "ironrdp-viewer",
  "ironrdp-vmconnect",
+ "ironrdp-web-replay",
  "picky",
  "png",
  "proptest",
@@ -3940,10 +3943,12 @@ dependencies = [
  "ironrdp",
  "ironrdp-cliprdr-format",
  "ironrdp-core 0.3.1",
+ "ironrdp-egfx",
  "ironrdp-futures",
  "ironrdp-pdu",
  "ironrdp-propertyset",
  "ironrdp-rdcleanpath",
+ "ironrdp-rdpecam",
  "ironrdp-rdpfile",
  "ironrdp-svc",
  "ironrdp-vmconnect",
@@ -3962,6 +3967,19 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "x509-cert",
+]
+
+[[package]]
+name = "ironrdp-web-replay"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-core 0.3.1",
+ "ironrdp-error 0.2.1",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
+ "ironrdp-session",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

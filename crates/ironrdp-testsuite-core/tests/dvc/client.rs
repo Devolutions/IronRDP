@@ -73,6 +73,16 @@ impl DvcProcessor for FailingDvc {
 
 impl DvcClientProcessor for FailingDvc {}
 
+// oracle: mutant distinguish registered channel types for backward-compatible name checks
+#[test]
+fn channel_name_lookup_checks_processor_type() {
+    let client = DrdynvcClient::new().with_dynamic_channel(RecordedDvc::default());
+
+    assert!(client.has_channel_name_of_type::<RecordedDvc>("recorded"));
+    assert!(!client.has_channel_name_of_type::<FailingDvc>("recorded"));
+    assert!(!client.has_channel_name_of_type::<RecordedDvc>("missing"));
+}
+
 struct DropFlagDvc(Arc<AtomicBool>);
 
 impl_as_any!(DropFlagDvc);

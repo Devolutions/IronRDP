@@ -1,6 +1,9 @@
 use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_graphics::rfx::RfxDecodeError;
 use ironrdp_pdu::ReadCursor;
+use ironrdp_pdu::codecs::rfx::{Block, CodecChannel};
 use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_session::SessionResult;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::rfx::DecodingContext;
 use rstest::rstest;
@@ -14,6 +17,45 @@ fn decode_decodes_valid_sequence_of_messages() {
     let image = decode_messages(ENCODED_MESSAGES.as_ref());
 
     assert_eq!(DECODED_IMAGE.as_ref(), image.data());
+}
+
+/// Each quantization index of a [2.2.2.3.4.1] TS_RFX_TILE "specifies an index into the TS_RFX_CODEC_QUANT
+/// array provided in the TS_RFX_TILESET message". An index past the end is a decoding error, not a panic.
+///
+/// [2.2.2.3.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdprfx/89e669ed-b6dd-4591-a267-73a72bc6d84e
+// oracle: spec MS-RDPRFX §2.2.2.3.4.1 (quantIdx fields index the tileset's quantVals array)
+#[rstest]
+#[case::y_out_of_range(1, [1, 0, 0])]
+#[case::cb_out_of_range(1, [0, 1, 0])]
+#[case::cr_out_of_range(1, [0, 0, 1])]
+#[case::no_quantization_tables(0, [0, 0, 0])]
+fn decode_rejects_tile_quant_index_out_of_range(#[case] quant_count: usize, #[case] quant_indexes: [u8; 3]) {
+    use core::error::Error as _;
+
+    let encoded = encode_edited_messages(|block| {
+        if let Block::CodecChannel(CodecChannel::TileSet(tile_set)) = block {
+            tile_set.quants.truncate(quant_count);
+            let [y, cb, cr] = quant_indexes;
+            tile_set.tiles[0].y_quant_index = y;
+            tile_set.tiles[0].cb_quant_index = cb;
+            tile_set.tiles[0].cr_quant_index = cr;
+        }
+    });
+
+    let error = try_decode_messages(&encoded).map(drop).unwrap_err();
+    let cause = error
+        .source()
+        .and_then(|source| source.downcast_ref::<RfxDecodeError>());
+
+    // Every case names the first index past the end of its table.
+    assert!(
+        matches!(
+            cause,
+            Some(&RfxDecodeError::InvalidQuantIndex { index, table_len })
+                if usize::from(index) == quant_count && table_len == quant_count
+        ),
+        "{error:?}"
+    );
 }
 
 /// MS-RDPRFX 4.2.2, 4.2.3 and 4.2.4.1: header, frame and tileset sample messages.
@@ -1060,36 +1102,21 @@ pub(crate) const DECODED_IMAGE: [u8; IMAGE_WIDTH * IMAGE_HEIGHT * FORMAT_SIZE] =
 #[case::channel_width(Edit::ChannelWidth)]
 #[case::channel_height(Edit::ChannelHeight)]
 fn decode_draws_nothing_for_unreachable_geometry(#[case] edit: Edit) {
-    use ironrdp_pdu::codecs::rfx::{Block, CodecChannel};
-
-    let encoded = {
-        use ironrdp_pdu::Decode as _;
-
-        let mut src = ReadCursor::new(ENCODED_MESSAGES.as_ref());
-        let mut encoded = Vec::new();
-        while !src.is_empty() {
-            let mut block = Block::decode(&mut src).unwrap();
-            match (edit, &mut block) {
-                // 1024 * 64 does not fit in u16.
-                (Edit::TileX, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].x = 1024,
-                (Edit::TileY, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].y = 1024,
-                (Edit::RegionWidth, Block::CodecChannel(CodecChannel::Region(region))) => {
-                    region.rectangles[0].width = 0
-                }
-                (Edit::RegionHeight, Block::CodecChannel(CodecChannel::Region(region))) => {
-                    region.rectangles[0].height = 0
-                }
-                // The channel is 64x64.
-                (Edit::RegionX, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].x = 100,
-                (Edit::RegionY, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].y = 100,
-                (Edit::ChannelWidth, Block::Channels(channels)) => channels.0[0].width = 0,
-                (Edit::ChannelHeight, Block::Channels(channels)) => channels.0[0].height = 0,
-                _ => {}
-            }
-            encoded.extend(ironrdp_core::encode_vec(&block).unwrap());
+    let encoded = encode_edited_messages(|block| {
+        match (edit, block) {
+            // 1024 * 64 does not fit in u16.
+            (Edit::TileX, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].x = 1024,
+            (Edit::TileY, Block::CodecChannel(CodecChannel::TileSet(tile_set))) => tile_set.tiles[0].y = 1024,
+            (Edit::RegionWidth, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].width = 0,
+            (Edit::RegionHeight, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].height = 0,
+            // The channel is 64x64.
+            (Edit::RegionX, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].x = 100,
+            (Edit::RegionY, Block::CodecChannel(CodecChannel::Region(region))) => region.rectangles[0].y = 100,
+            (Edit::ChannelWidth, Block::Channels(channels)) => channels.0[0].width = 0,
+            (Edit::ChannelHeight, Block::Channels(channels)) => channels.0[0].height = 0,
+            _ => {}
         }
-        encoded
-    };
+    });
 
     let image = decode_messages(&encoded);
 
@@ -1108,8 +1135,26 @@ enum Edit {
     ChannelHeight,
 }
 
+/// Decodes the MS-RDPRFX 4.2 example sequence, passes each block to `edit`, and encodes the blocks again.
+fn encode_edited_messages(mut edit: impl FnMut(&mut Block<'_>)) -> Vec<u8> {
+    use ironrdp_pdu::Decode as _;
+
+    let mut src = ReadCursor::new(ENCODED_MESSAGES.as_ref());
+    let mut encoded = Vec::new();
+    while !src.is_empty() {
+        let mut block = Block::decode(&mut src).unwrap();
+        edit(&mut block);
+        encoded.extend(ironrdp_core::encode_vec(&block).unwrap());
+    }
+    encoded
+}
+
 /// Decodes `messages` into a fresh image covering the whole 64x64 channel.
 fn decode_messages(messages: &[u8]) -> DecodedImage {
+    try_decode_messages(messages).unwrap()
+}
+
+fn try_decode_messages(messages: &[u8]) -> SessionResult<DecodedImage> {
     let destination = InclusiveRectangle {
         left: 0,
         top: 0,
@@ -1122,11 +1167,9 @@ fn decode_messages(messages: &[u8]) -> DecodedImage {
         IMAGE_WIDTH.try_into().unwrap(),
         IMAGE_HEIGHT.try_into().unwrap(),
     );
-    DecodingContext::default()
-        .decode(&mut image, &destination, &mut ReadCursor::new(messages))
-        .unwrap();
+    DecodingContext::default().decode(&mut image, &destination, &mut ReadCursor::new(messages))?;
 
-    image
+    Ok(image)
 }
 
 #[test]

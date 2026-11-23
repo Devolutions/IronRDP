@@ -2,6 +2,7 @@
 #![allow(clippy::should_implement_trait)] // Implementing extra traits is not useful for FFI
 #![allow(clippy::needless_lifetimes)] // Diplomat requires lifetimes to be specified even if they can be elided in regular Rust code
 
+pub mod audio;
 pub mod clipboard;
 pub mod connector;
 pub mod credssp;

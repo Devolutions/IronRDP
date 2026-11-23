@@ -128,7 +128,7 @@ fn daemon_reports_no_active_session() {
     }
 }
 
-// oracle: mutant a command line without `wait-frame` or its options, or a daemon that waits with no session
+// oracle: mutant a command line without `wait-frame`, or a daemon that waits with no session
 #[test]
 fn wait_frame_reports_no_active_session() {
     let endpoint = test_endpoint("wait-frame");
@@ -396,46 +396,81 @@ fn session_list_and_disconnect_distinguish_session_from_daemon() {
     }
 }
 
-// oracle: mutant a status printer that drops the frame number or prints it under another label
-#[test]
-fn status_prints_the_frame_number() {
-    use ironrdp_rpc::ipc::{ConnState, Payload, Request, Response, StatusInfo};
+/// Runs the agent with `args` against a stand-in daemon that checks the command's one request and answers it.
+fn answer_one_request(
+    name: &str,
+    args: &'static [&'static str],
+    expected: ironrdp_rpc::ipc::Request,
+    reply: ironrdp_rpc::ipc::Response,
+) -> std::process::Output {
+    use ironrdp_rpc::ipc::Request;
     use ironrdp_rpc::transport::{self, Listener};
 
-    let endpoint = test_endpoint("frame-status");
+    let endpoint = test_endpoint(name);
     let runtime = tokio::runtime::Runtime::new().expect("test runtime");
-    let output = runtime.block_on(async {
+    runtime.block_on(async {
         let mut listener =
             Listener::bind(&transport::endpoint_from_string(endpoint.clone())).expect("bind mock daemon");
-        let command = tokio::task::spawn_blocking(move || agent(&endpoint, &["status"]));
-        // A stand-in daemon whose session is at frame 7 answers the command's one status request.
+        let command = tokio::task::spawn_blocking(move || agent(&endpoint, args));
         let serve = async {
-            let mut stream = listener.accept().await.expect("accept status request");
+            let mut stream = listener.accept().await.expect("accept request");
             let request: Request = transport::read_message(&mut stream).await.expect("read request");
-            assert_eq!(request, Request::Status);
-            let status = StatusInfo {
-                state: ConnState::Connected,
-                destination: None,
-                width: None,
-                height: None,
-                message: None,
-                credentials_loaded: false,
-                untrusted_certificate: None,
-                frame_number: Some(7),
-            };
-            transport::write_message(&mut stream, &Response::Ok(Payload::Status(status)))
-                .await
-                .expect("send status");
-            command.await.expect("run status command")
+            assert_eq!(request, expected);
+            transport::write_message(&mut stream, &reply).await.expect("send reply");
+            command.await.expect("run command")
         };
         tokio::time::timeout(Duration::from_secs(30), serve)
             .await
-            .expect("status command timeout")
-    });
+            .expect("command timeout")
+    })
+}
+
+/// Builds a connected session's status reply at `frame_number`, reporting nothing else.
+fn status_at_frame(frame_number: u64) -> ironrdp_rpc::ipc::Response {
+    use ironrdp_rpc::ipc::{ConnState, Payload, Response, StatusInfo};
+
+    Response::Ok(Payload::Status(StatusInfo {
+        state: ConnState::Connected,
+        destination: None,
+        width: None,
+        height: None,
+        message: None,
+        credentials_loaded: false,
+        untrusted_certificate: None,
+        frame_number: Some(frame_number),
+    }))
+}
+
+// oracle: mutant a status printer that drops the frame number or prints it under another label
+#[test]
+fn status_prints_the_frame_number() {
+    use ironrdp_rpc::ipc::Request;
+
+    let output = answer_one_request("frame-status", &["status"], Request::Status, status_at_frame(7));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     assert!(stdout.lines().any(|line| line == "frame: 7"), "{stdout}");
+}
+
+// oracle: mutant a command line that drops, swaps or zeroes the wait's options, or a wait that doesn't print its report
+#[test]
+fn wait_frame_sends_its_options_and_prints_the_report() {
+    use ironrdp_rpc::ipc::Request;
+
+    let output = answer_one_request(
+        "frame-wait",
+        &["wait-frame", "--after-frame", "3", "--timeout-ms", "60000"],
+        Request::WaitFrame {
+            after_frame: 3,
+            timeout_ms: 60_000,
+        },
+        status_at_frame(13),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.lines().any(|line| line == "frame: 13"), "{stdout}");
 }
 
 // oracle: mutant a command line without `session info`, or a daemon that reports facts for a session it does not have
@@ -462,7 +497,7 @@ fn session_info_reports_no_active_session_in_json_format() {
     );
 }
 
-// oracle: regression Devolutions/IronRDP#2437
+// oracle: mutant an agent that replaces the ActiveX host's session info error with its own
 #[test]
 fn session_info_for_activex_prints_the_backend_error() {
     use ironrdp_rpc::ipc::{AgentErrorCategory, Request, Response};

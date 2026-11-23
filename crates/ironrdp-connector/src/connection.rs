@@ -1318,9 +1318,12 @@ impl ClientConnector {
                 average_rtt_ms,
                 ..
             } => {
+                // [MS-RDPBCGR] 2.2.14.1.5 makes baseRTT and bandwidth optional in each result.
+                // A result without one keeps the value reported before, and averageRTT is in every result.
+                let previous = self.network_characteristics;
                 self.network_characteristics = Some(NetworkCharacteristics {
-                    base_rtt_ms,
-                    bandwidth_kbps,
+                    base_rtt_ms: base_rtt_ms.or_else(|| previous.and_then(|network| network.base_rtt_ms)),
+                    bandwidth_kbps: bandwidth_kbps.or_else(|| previous.and_then(|network| network.bandwidth_kbps)),
                     average_rtt_ms,
                 });
                 Ok(Written::Nothing)
@@ -2670,6 +2673,23 @@ mod tests {
         )
         .expect("valid GCC blocks");
         assert_eq!(blocks.core.version, gcc::RdpVersion::V10_12);
+    }
+
+    #[test]
+    fn gcc_blocks_carry_the_configured_keyboard_layout() {
+        // oracle: spec MS-RDPBCGR §2.2.1.3.2
+        let mut config = test_config();
+        config.keyboard_layout = 0x409;
+
+        let blocks = create_gcc_blocks(
+            &config,
+            None,
+            nego::SecurityProtocol::empty(),
+            true,
+            core::iter::empty(),
+        )
+        .expect("valid GCC blocks");
+        assert_eq!(blocks.core.keyboard_layout, 0x409);
     }
 
     #[test]

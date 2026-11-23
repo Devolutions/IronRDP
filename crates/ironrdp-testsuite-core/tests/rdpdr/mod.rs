@@ -117,6 +117,15 @@ fn encoded_server_client_id_confirm(client_id: u32) -> Vec<u8> {
     .unwrap()
 }
 
+// oracle: spec MS-RDPEFS §2.2.2.9
+fn assert_empty_device_announce(messages: &[SvcMessage]) {
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].encode_unframed_pdu().unwrap(),
+        [0x72, 0x44, 0x41, 0x44, 0, 0, 0, 0]
+    );
+}
+
 fn encoded_server_client_id_confirm_with_minor(version_minor: u16, client_id: u32) -> Vec<u8> {
     encode_vec(&RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
         version_major: 1,
@@ -215,12 +224,7 @@ fn negotiate_printer_capability(rdpdr: &mut Rdpdr) {
 fn acknowledge_printer(rdpdr: &mut Rdpdr, result_code: NtStatus) {
     let client_id = announce_client_id(rdpdr, 12);
     negotiate_printer_capability(rdpdr);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
     assert_eq!(
         rdpdr
             .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
@@ -297,12 +301,7 @@ fn encoded_drive_announce(drive_name: &str) -> Vec<u8> {
     let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned())
         .with_drives(Some(vec![(42, drive_name.to_owned())]));
     let client_id = announce_client_id(&mut rdpdr, 12);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
     let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
     assert_eq!(responses.len(), 1);
     responses[0].encode_unframed_pdu().unwrap()
@@ -539,22 +538,12 @@ fn server_announce_reopens_post_logon_drive_announcements() {
         Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_drives(Some(vec![(42, "share".to_owned())]));
 
     let client_id = announce_client_id(&mut rdpdr, 12);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
     let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
     assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Filesystem)]);
 
     let client_id = announce_client_id(&mut rdpdr, 12);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
     let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
     assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Filesystem)]);
 }
@@ -593,6 +582,36 @@ fn client_announce_reply_uses_minor_version_13() {
     assert_eq!(read_u16(&encoded[6..]), 13);
 }
 
+// oracle: spec MS-RDPEFS §3.1.3 step 4 and §2.2.2.9
+#[test]
+fn client_id_confirm_with_no_devices_sends_an_empty_device_announce() {
+    let mut rdpdr = Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned());
+    let client_id = announce_client_id(&mut rdpdr, 12);
+    let capability = RdpdrPdu::CoreCapability(CoreCapability {
+        capabilities: vec![CapabilityMessage::new_general(0)],
+        kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
+    });
+    let capabilities = rdpdr.process(&encode_vec(&capability).unwrap()).unwrap();
+    assert_eq!(capabilities.len(), 1);
+    let response: RdpdrPdu = ironrdp_core::decode(&capabilities[0].encode_unframed_pdu().unwrap()).unwrap();
+    assert!(matches!(
+        response,
+        RdpdrPdu::CoreCapability(CoreCapability {
+            kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
+            ..
+        })
+    ));
+
+    let announce = rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap();
+    assert_empty_device_announce(&announce);
+    assert!(
+        rdpdr
+            .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[test]
 fn version_and_id_pdu_decode_client_announce_reply_tags_the_reply_not_the_confirm() {
     let original = VersionAndIdPdu {
@@ -626,12 +645,7 @@ fn printer_device_announce_is_deferred_until_user_loggedon() {
 
     let client_id = announce_client_id(&mut rdpdr, 12);
     negotiate_printer_capability(&mut rdpdr);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
 
     let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
     assert_eq!(responses.len(), 1);
@@ -916,12 +930,7 @@ fn printer_is_not_announced_without_server_printer_capability() {
         kind: CoreCapabilityKind::ServerCoreCapabilityRequest,
     });
     rdpdr.process(&encode_vec(&server_capability).unwrap()).unwrap();
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
     assert!(
         rdpdr
             .process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap())
@@ -1087,12 +1096,7 @@ fn acknowledged_drive() -> Rdpdr {
         Rdpdr::new(Box::new(NoopRdpdrBackend), "IronRDP".to_owned()).with_drives(Some(vec![(42, "share".to_owned())]));
 
     let client_id = announce_client_id(&mut rdpdr, 12);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
     let responses = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
     assert_eq!(announced_devices(&responses[0]), vec![(42, DeviceType::Filesystem)]);
     assert!(

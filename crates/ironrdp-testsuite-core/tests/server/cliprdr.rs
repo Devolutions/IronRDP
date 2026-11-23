@@ -16,7 +16,7 @@ use ironrdp_cliprdr::pdu::{
 use ironrdp_core::{ReadCursor, decode_cursor, encode_vec, impl_as_any};
 use ironrdp_pdu::mcs::SendDataIndication;
 use ironrdp_pdu::x224::X224;
-use ironrdp_server::{ConnectionWriter, RdpServer, ServerEvent, dispatch_static_channel_events};
+use ironrdp_server::{RdpServer, ServerEvent, drive_static_channel_events};
 use ironrdp_svc::{StaticChannelSet, SvcProcessor as _};
 use ironrdp_tokio::TokioFramed;
 use tokio::io::AsyncReadExt as _;
@@ -129,10 +129,9 @@ async fn invalidated_clipboard_offer_is_discarded_after_preceding_event() {
     let mut transport = TokioFramed::new(stream);
     let mut bytes = Vec::new();
     let mut channels = {
-        let mut writer = ConnectionWriter::new(&mut transport);
         let mut server = server();
         let mut events = vec![blocker, event];
-        let dispatch = dispatch_static_channel_events(&mut server, channels, &mut events, &mut writer);
+        let dispatch = drive_static_channel_events(&mut server, channels, &mut events, &mut transport);
         tokio::pin!(dispatch);
         assert_pending(dispatch.as_mut()).await;
         assert_eq!(processed.try_recv(), Err(oneshot::error::TryRecvError::Empty));

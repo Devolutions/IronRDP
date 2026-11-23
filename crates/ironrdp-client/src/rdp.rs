@@ -1991,14 +1991,6 @@ async fn send_active_output_event(
         .map_err(|error| ironrdp_session::custom_err!("output_event_sender", error))
 }
 
-fn network_characteristics_output_event(network: ironrdp_connector::NetworkCharacteristics) -> RdpOutputEvent {
-    RdpOutputEvent::NetworkCharacteristics {
-        base_rtt_ms: network.base_rtt_ms,
-        bandwidth_kbps: network.bandwidth_kbps,
-        average_rtt_ms: network.average_rtt_ms,
-    }
-}
-
 async fn send_connect_time_network_characteristics(
     output_event_sender: &crate::output_channel::OutputEventSender,
     network: Option<ironrdp_connector::NetworkCharacteristics>,
@@ -2010,7 +2002,11 @@ async fn send_connect_time_network_characteristics(
 
     send_cancellable_output_event(
         output_event_sender,
-        network_characteristics_output_event(network),
+        RdpOutputEvent::NetworkCharacteristics {
+            base_rtt_ms: network.base_rtt_ms,
+            bandwidth_kbps: network.bandwidth_kbps,
+            average_rtt_ms: network.average_rtt_ms,
+        },
         close_receiver,
     )
     .await
@@ -2946,37 +2942,27 @@ fn build_connector(
             .is_some_and(ironrdp_rdpdr::Rdpdr::drive_hotplug_available),
     );
 
-    // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
     #[cfg(any(feature = "sound", feature = "rdpdr"))]
-    {
+    let rdpsnd_kind = {
         #[cfg(feature = "rdpdr")]
         let rdpdr_attached = rdpdr_channel.is_some();
         #[cfg(not(feature = "rdpdr"))]
         let rdpdr_attached = false;
 
-        if let Some(kind) = rdpsnd_backend_kind(audio_playback, rdpdr_attached) {
-            match kind {
-                #[cfg(feature = "sound")]
-                RdpsndBackendKind::Playback => {
-                    // INVARIANT: `audio_playback` is `config.channels.sound && connector.enable_audio_playback`,
-                    // the condition that created `playback`, so the static channel and the dynamic
-                    // channels drive the same backend.
-                    let playback = playback.expect("the shared playback backend exists when audio playback is enabled");
-                    connector = connector.with_static_channel(
-                        ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(playback))
-                            .with_quality_mode(config.audio_quality_mode.into_rdpsnd())
-                            .with_clock(crate::audio::clock()),
-                    );
-                }
-                #[cfg(feature = "rdpdr")]
-                RdpsndBackendKind::Noop => {
-                    connector = connector.with_static_channel(
-                        ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(ironrdp_rdpsnd::client::NoopRdpsndBackend))
-                            .with_quality_mode(config.audio_quality_mode.into_rdpsnd()),
-                    );
-                }
-            }
-        }
+        rdpsnd_backend_kind(audio_playback, rdpdr_attached)
+    };
+
+    #[cfg(feature = "sound")]
+    if matches!(rdpsnd_kind, Some(RdpsndBackendKind::Playback)) {
+        // INVARIANT: `audio_playback` is `config.channels.sound && connector.enable_audio_playback`,
+        // the condition that created `playback`, so the static channel and the dynamic
+        // channels drive the same backend.
+        let playback = playback.expect("the shared playback backend exists when audio playback is enabled");
+        connector = connector.with_static_channel(
+            ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(playback))
+                .with_quality_mode(config.audio_quality_mode.into_rdpsnd())
+                .with_clock(crate::audio::clock()),
+        );
     }
 
     #[cfg(feature = "rdpdr")]
@@ -2992,8 +2978,28 @@ fn build_connector(
     }
 
     // Attach user-defined static channels from the extension registry.
+    let rdpsnd_before_extensions = connector
+        .static_channels
+        .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
+        .is_some();
     for attach_sc in &config.extensions.static_channels {
         attach_sc(&mut connector, &config.properties);
+    }
+    let rdpsnd_after_extensions = connector
+        .static_channels
+        .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
+        .is_some();
+    if !rdpsnd_before_extensions && config.connector.enable_audio_playback && rdpsnd_after_extensions {
+        connector.config.enable_audio_playback = true;
+    }
+
+    // Windows servers only issue RDPDR traffic when RDPSND is also advertised.
+    #[cfg(feature = "rdpdr")]
+    if !rdpsnd_after_extensions && matches!(rdpsnd_kind, Some(RdpsndBackendKind::Noop)) {
+        connector = connector.with_static_channel(
+            ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(ironrdp_rdpsnd::client::NoopRdpsndBackend))
+                .with_quality_mode(config.audio_quality_mode.into_rdpsnd()),
+        );
     }
 
     if let Some(cookie) = auto_reconnect_cookie {
@@ -4689,6 +4695,7 @@ async fn active_session(
     let mut connection_telemetry = crate::telemetry::ConnectionTelemetry::new(connection_started);
 
     let disconnect_reason = 'outer: loop {
+        let shutting_down = graceful_shutdown_sent && initial_outputs.is_none();
         let resize_deadline = resize_queue.deadline();
         let input_batch_deadline = input_batcher.deadline();
         #[cfg(feature = "video")]
@@ -4741,6 +4748,7 @@ async fn active_session(
                 _ = graceful_close_receiver.changed() => {
                     let outputs = if *graceful_close_receiver.borrow_and_update() && !graceful_shutdown_sent {
                         graceful_shutdown_sent = true;
+                        resize_queue = ResizeQueue::default();
                         active_stage.graceful_shutdown()?
                     } else {
                         Vec::new()
@@ -4750,6 +4758,13 @@ async fn active_session(
                 frame = reader.read_pdu() => {
                     let (action, payload) = match frame {
                         Ok(frame) => frame,
+                        Err(error)
+                            if graceful_shutdown_sent
+                                && error.kind() == io::ErrorKind::UnexpectedEof
+                                && reader.peek().is_empty() =>
+                        {
+                            break 'outer GracefulDisconnectReason::UserInitiated;
+                        }
                         Err(error) if is_transport_read_error(&error) => {
                             return Ok(RdpControlFlow::TransportFailure(
                                 ironrdp_session::custom_err!("read frame", error),
@@ -4908,6 +4923,9 @@ async fn active_session(
                     }
 
                     match input_event {
+                    RdpInputEvent::Resize { .. } | RdpInputEvent::MonitorLayout(_) if graceful_shutdown_sent => {
+                        ActiveSessionIteration::outputs(Vec::new())
+                    }
                     resize_event @ (RdpInputEvent::Resize { .. } | RdpInputEvent::MonitorLayout(_)) => {
                         let request = match resize_event {
                             RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
@@ -5025,7 +5043,16 @@ async fn active_session(
                             None => ActiveSessionIteration::outputs(Vec::new()),
                         }
                     }
-                    RdpInputEvent::Close => ActiveSessionIteration::outputs(active_stage.graceful_shutdown()?),
+                    RdpInputEvent::Close => {
+                        let outputs = if !graceful_shutdown_sent {
+                            graceful_shutdown_sent = true;
+                            resize_queue = ResizeQueue::default();
+                            active_stage.graceful_shutdown()?
+                        } else {
+                            Vec::new()
+                        };
+                        ActiveSessionIteration::outputs(outputs)
+                    }
                     #[cfg(feature = "clipboard")]
                     RdpInputEvent::Clipboard(event) => {
                         ActiveSessionIteration::outputs(process_clipboard_message(&mut active_stage, event)?)
@@ -5405,6 +5432,19 @@ async fn active_session(
             iteration.reply_tunnel = None;
         }
 
+        if shutting_down {
+            // Only terminating responses may be written once ShutdownRequest has been sent.
+            iteration.dvc_batch = None;
+            let terminating = iteration
+                .outputs
+                .iter()
+                .any(|output| matches!(output, ActiveStageOutput::Terminate(_)));
+            iteration.outputs.retain(|output| {
+                !matches!(output, ActiveStageOutput::DeactivateAll)
+                    && (terminating || !matches!(output, ActiveStageOutput::ResponseFrame(_)))
+            });
+        }
+
         if let Some(batch) = iteration.dvc_batch {
             let channel_id = batch.channel_id();
             let messages = batch.into_messages();
@@ -5643,7 +5683,7 @@ async fn active_session(
                     }
                 }
                 ActiveStageOutput::SaveSessionInfo { logon_complete: true } => {
-                    if !post_logon_redraw_requested {
+                    if !post_logon_redraw_requested && !graceful_shutdown_sent {
                         post_logon_redraw_requested = true;
                         let redraw_frames = active_stage.request_full_redraw(
                             image.width(),
@@ -5923,7 +5963,9 @@ async fn active_session(
                         ironrdp_connector::MultitransportResult::Failure(MultitransportResponsePdu::E_ABORT)
                     };
 
-                    if let Some(response) = outcome.response_pdu(request.request_id, multitransport_soft_sync) {
+                    if !graceful_shutdown_sent
+                        && let Some(response) = outcome.response_pdu(request.request_id, multitransport_soft_sync)
+                    {
                         let frame = active_stage.encode_multitransport_response(&response)?;
                         let Some(result) = cancelable_operation(writer.write_all(&frame), close_receiver).await else {
                             return Ok(RdpControlFlow::TerminatedGracefully(
@@ -6071,7 +6113,8 @@ async fn active_session(
             ));
         }
 
-        if resize_queue.in_flight.is_none()
+        if !graceful_shutdown_sent
+            && resize_queue.in_flight.is_none()
             && let Some(pending) = resize_queue.pending.as_ref()
         {
             let mut request = pending.request.clone();
@@ -6547,16 +6590,23 @@ mod tests {
         core::marker::PhantomData
     }
 
-    #[cfg(feature = "rdpdr")]
-    fn test_config() -> Config {
-        crate::config::ConfigBuilder::new()
+    fn test_config_builder() -> crate::config::ConfigBuilder {
+        let builder = crate::config::ConfigBuilder::new()
             .with_destination(crate::config::Destination::from_parts("127.0.0.1", 3389))
             .with_username("user")
             .with_password("password")
             .with_client_build(1)
             .with_client_dir(r"C:\")
             .with_platform(ironrdp_pdu::rdp::capability_sets::MajorPlatformType::WINDOWS)
-            .with_client_name("client")
+            .with_client_name("client");
+        #[cfg(feature = "rdpdr")]
+        let builder = builder.with_rdpdr(false);
+        builder
+    }
+
+    #[cfg(feature = "rdpdr")]
+    fn test_config() -> Config {
+        test_config_builder()
             .with_rdpdr(true)
             .build()
             .expect("test configuration should build")
@@ -8152,5 +8202,137 @@ mod tests {
     fn rdpsnd_backend_kind_playback_only_without_rdpdr() {
         assert_eq!(rdpsnd_backend_kind(true, false), Some(RdpsndBackendKind::Playback));
         assert_eq!(rdpsnd_backend_kind(false, false), None);
+    }
+
+    #[derive(Debug)]
+    struct CustomRdpsndChannel;
+
+    ironrdp_core::impl_as_any!(CustomRdpsndChannel);
+
+    impl ironrdp_svc::SvcProcessor for CustomRdpsndChannel {
+        fn channel_name(&self) -> ChannelName {
+            ChannelName::from_static(b"rdpsnd\0\0")
+        }
+
+        fn process(&mut self, _payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl ironrdp_svc::SvcClientProcessor for CustomRdpsndChannel {}
+
+    fn build_rdpsnd_test_connector(
+        builder: crate::config::ConfigBuilder,
+        enable_audio_playback: bool,
+    ) -> (ironrdp_connector::ClientConnector, bool) {
+        let mut config = builder.build().expect("test configuration should build");
+        #[cfg(feature = "sound")]
+        {
+            config.channels.sound = false;
+        }
+        config.connector.enable_audio_playback = enable_audio_playback;
+
+        #[cfg(feature = "clipboard")]
+        let cliprdr_factory: CliprdrFactoryRef<'static> = None;
+        #[cfg(not(feature = "clipboard"))]
+        let cliprdr_factory: CliprdrFactoryRef<'static> = core::marker::PhantomData;
+
+        #[cfg(feature = "rdpdr")]
+        let rdpdr_factory: RdpdrFactoryRef<'static> = None;
+        #[cfg(not(feature = "rdpdr"))]
+        let rdpdr_factory: RdpdrFactoryRef<'static> = core::marker::PhantomData;
+
+        let (input_sender, _input_receiver) = RdpInputSender::channel(1);
+        let (output_sender, _output_receiver) = crate::output_channel::output_channel(1);
+        let connector = build_connector(
+            &config,
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            (&input_sender, &output_sender),
+            cliprdr_factory,
+            rdpdr_factory,
+            RdpdrDevicePolicy::ALLOW_ALL,
+            false,
+            false,
+            None,
+        )
+        .expect("test connector should build");
+        let has_rdpsnd = connector
+            .static_channels
+            .get_by_channel_name_key(&ChannelName::from_static(b"rdpsnd\0\0"))
+            .is_some();
+
+        (connector, has_rdpsnd)
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND)
+    #[test]
+    fn custom_rdpsnd_static_channel_keeps_audio_playback_enabled() {
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
+            test_config_builder().with_static_channel(|_| Some(CustomRdpsndChannel)),
+            true,
+        );
+
+        assert!(connector.config.enable_audio_playback);
+        assert!(has_rdpsnd);
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND)
+    #[test]
+    fn custom_rdpsnd_static_channel_instances_keeps_audio_playback_enabled() {
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
+            test_config_builder().with_static_channel_instances(|_| vec![CustomRdpsndChannel]),
+            true,
+        );
+
+        assert!(connector.config.enable_audio_playback);
+        assert!(has_rdpsnd);
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when playback is disabled)
+    #[test]
+    fn custom_rdpsnd_static_channel_respects_disabled_audio_playback() {
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
+            test_config_builder().with_static_channel(|_| Some(CustomRdpsndChannel)),
+            false,
+        );
+
+        assert!(!connector.config.enable_audio_playback);
+        assert!(has_rdpsnd);
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when no playback channel is registered)
+    #[test]
+    fn missing_rdpsnd_static_channel_disables_audio_playback() {
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(test_config_builder(), true);
+
+        assert!(!connector.config.enable_audio_playback);
+        assert!(!has_rdpsnd);
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK disables audio redirection when only the no-op RDPDR companion channel is registered)
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn noop_rdpsnd_companion_keeps_audio_playback_disabled() {
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(test_config_builder().with_rdpdr(true), true);
+
+        assert!(!connector.config.enable_audio_playback);
+        assert!(has_rdpsnd);
+    }
+
+    // oracle: spec MS-RDPBCGR §2.2.1.11.1.1 (INFO_NOAUDIOPLAYBACK is omitted when audio playback is redirected to the client over RDPSND, even when RDPDR is enabled)
+    #[cfg(feature = "rdpdr")]
+    #[test]
+    fn custom_rdpsnd_with_rdpdr_keeps_audio_playback_enabled() {
+        let (connector, has_rdpsnd) = build_rdpsnd_test_connector(
+            test_config_builder().with_rdpdr(true).with_static_channel(|_| {
+                Some(ironrdp_rdpsnd::client::Rdpsnd::new(Box::new(
+                    ironrdp_rdpsnd::client::NoopRdpsndBackend,
+                )))
+            }),
+            true,
+        );
+
+        assert!(connector.config.enable_audio_playback);
+        assert!(has_rdpsnd);
     }
 }

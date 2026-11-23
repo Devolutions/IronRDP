@@ -2497,12 +2497,8 @@ impl GraphicsPipelineServer {
         let mode = self.compression_mode;
         let pdus: Vec<_> = self.output_queue.drain(..).collect();
 
-        // D2: ZGFX compression timing. drain_output runs synchronously on the
-        // event-dispatch thread and is held under both `this.lock()` and the
-        // SharedWriter lock — so any slowness here blocks both inbound PDU
-        // processing AND outbound writes. Sum per-PDU compress times; log
-        // INFO if the batch exceeded a budget so operators can see when ZGFX
-        // is the limiter on a slow VM.
+        // `drain_output` runs synchronously on the caller's send path (for example under `GfxServerHandle`'s mutex on
+        // the connection task), so slow ZGFX compression delays inbound PDU processing and outbound queuing.
         let drain_start = Instant::now();
         let mut total_uncompressed: usize = 0;
         let mut total_compressed: usize = 0;
@@ -2551,9 +2547,8 @@ impl GraphicsPipelineServer {
             })
             .collect();
 
-        // D2: log batch timing. INFO threshold at 10ms — anything above is
-        // significant for the per-frame budget. Always log at DEBUG so the
-        // ZGFX ratio is visible during normal debug sessions.
+        // Log batches taking at least 10 ms at INFO because they eat into the per-frame budget, and shorter non-empty
+        // batches at DEBUG so the ZGFX compression ratio stays visible in debug traces.
         let elapsed = drain_start.elapsed();
         if elapsed >= core::time::Duration::from_millis(10) {
             tracing::info!(

@@ -15,6 +15,9 @@ internal partial struct Config
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "Config_get_dvc_pipe_proxy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DvcPipeProxyConfig* GetDvcPipeProxy(Config* handle);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "Config_get_direct_dvc", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DirectDvcConfig* GetDirectDvc(Config* handle);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "Config_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(Config* handle);
 }

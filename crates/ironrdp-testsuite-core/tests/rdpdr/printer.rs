@@ -19,8 +19,8 @@ use ironrdp_rdpdr::{
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
 use super::{
-    announce_client_id, encoded_server_client_id_confirm, negotiate_printer_capability, read_u32, read_u32_as_usize,
-    utf16le_to_string,
+    announce_client_id, assert_empty_device_announce, encoded_server_client_id_confirm, negotiate_printer_capability,
+    read_u32, read_u32_as_usize, utf16le_to_string,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -76,12 +76,7 @@ fn announced_printers(message: &SvcMessage) -> Vec<AnnouncedPrinter> {
 fn announce_after_logon(rdpdr: &mut Rdpdr) -> SvcMessage {
     let client_id = announce_client_id(rdpdr, 12);
     negotiate_printer_capability(rdpdr);
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
     let mut messages = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
     assert_eq!(messages.len(), 1);
     messages.remove(0)
@@ -163,12 +158,7 @@ fn legacy_printer_helpers_get_distinct_ports_and_one_capability() {
     // General and printer capability sets only.
     assert_eq!(u16::from_le_bytes([encoded[4], encoded[5]]), 2);
 
-    assert!(
-        rdpdr
-            .process(&encoded_server_client_id_confirm(client_id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_empty_device_announce(&rdpdr.process(&encoded_server_client_id_confirm(client_id)).unwrap());
     let announcement = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon).unwrap()).unwrap();
     let dos_names = announced_printers(&announcement[0])
         .into_iter()

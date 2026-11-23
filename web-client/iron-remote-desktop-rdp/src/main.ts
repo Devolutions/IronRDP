@@ -55,6 +55,49 @@ export function audioPlayback(callback: (message: unknown) => void): Extension {
     return new Extension('audio_playback', callback);
 }
 
+/**
+ * Redirects a camera through the callback described in README.md, Camera.
+ * Start messages name the size and the format the server picked, `'mjpeg'` or `'h264'`; a stop message ends the capture.
+ * The page then pushes one frame at a time with `cameraSample`.
+ */
+export function camera(callback: (message: unknown) => void): Extension {
+    return new Extension('camera', callback);
+}
+
+/**
+ * Also offer H.264 at every size, ahead of MJPEG, when the page can encode it.
+ * The start message's `format` says which the server picked.
+ */
+export function cameraH264(enable: boolean): Extension {
+    return new Extension('camera_h264', enable);
+}
+
+/** The camera's name on the remote desktop, in place of `Browser camera`. An empty name is ignored. */
+export function cameraName(name: string): Extension {
+    return new Extension('camera_name', name);
+}
+
+/**
+ * One frame for `invokeExtension`, a JPEG or an H.264 access unit as the last start message said.
+ * `invokeExtension` returns true when a frame went out and none is left held. It returns false when a frame is held
+ * for the next request, when no stream is running (the frame is dropped), or when the server refused the frame and
+ * got a Sample Error Response instead.
+ * An MJPEG frame replaces any held frame; an H.264 frame queues behind them, since each depends on the ones before it.
+ * Push H.264 access units in decode order, as the encoder emits them: the queue keeps that order.
+ * When 30 frames are held and none is requested, the queue is dropped and the callback gets a stop and a new start.
+ */
+export function cameraSample(frame: Uint8Array): Extension {
+    return new Extension('camera_sample', frame);
+}
+
+/**
+ * For `invokeExtension`: how many frames to encode now, the pending requests no held frame answers plus one kept ready.
+ * Ask before encoding an H.264 frame, because a dropped one spoils the picture until the next key frame.
+ */
+export function cameraWanted(): Extension {
+    return new Extension('camera_wanted', null);
+}
+
 export function kdcProxyUrl(url: string): Extension {
     return new Extension('kdc_proxy_url', url);
 }
@@ -158,6 +201,22 @@ export function monitorLayoutCallback(callback: (monitors: MonitorRect[]) => voi
         callback(monitors);
     };
     return new Extension('monitor_layout_callback', unpack);
+}
+
+/**
+ * The client name the server sees, in place of `ironrdp-web`: Windows shows it as the session's client name.
+ * The protocol keeps the first 15 UTF-16 code units, so an emoji takes two. An empty name is ignored.
+ */
+export function clientName(name: string): Extension {
+    return new Extension('client_name', name);
+}
+
+/**
+ * The keyboard layout to ask for, as a Windows input locale identifier such as 0x409 (US) or 0x809 (UK).
+ * Without it, or with 0, the server uses its default layout.
+ */
+export function keyboardLayout(layoutId: number): Extension {
+    return new Extension('keyboard_layout', layoutId);
 }
 
 // --- RDCleanPath ---

@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Reflection;
 
 namespace Devolutions.IronRdp.Tests;
 
@@ -448,12 +450,319 @@ internal static class SmokeTests
             True(!state.IsTerminal(), "state is not terminal");
         });
 
+        // oracle: mutant reject built-in channel replacement that would suppress direct events
+        yield return ("built-in DVC registration cannot replace a direct listener", () =>
+        {
+            using var events = DirectDvcEventQueue.New(1);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events));
+            ThrowsWithMessage<IronRdpException>(() => connector.WithDynamicChannelDisplayControl(), "already registered as a direct DVC");
+            ThrowsWithMessage<IronRdpException>(() => connector.WithDynamicChannelRdpei(10, false), "already registered as a direct DVC");
+        });
+
+        // oracle: mutant reject direct listener replacement that would suppress built-in handling
+        yield return ("direct DVC registration cannot replace a built-in listener", () =>
+        {
+            using var events = DirectDvcEventQueue.New(1);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDisplayControl();
+            ThrowsWithMessage<IronRdpException>(() => connector.WithDynamicChannelDirect(NewDirectDvcConfig(events)), "dynamic channel name is already registered");
+        });
+
+        // oracle: mutant preserve overwrite behavior between non-direct channel listeners
+        yield return ("built-in DVC registration can replace a non-direct listener", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDisplayControl();
+            connector.WithDynamicChannelDisplayControl();
+        });
+
+        // oracle: mutant allow a pipe proxy to replace a direct listener and suppress its events
+        yield return ("pipe-proxy registration rejects a direct DVC name", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var pipeQueue = DvcPipeProxyMessageQueue.New(4);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "shared-channel"));
+            ThrowsWithMessage<IronRdpException>(
+                () => connector.WithDynamicChannelPipeProxy(NewPipeProxyConfig(pipeQueue, "shared-channel")),
+                "already registered as a direct DVC");
+        });
+
+        // oracle: mutant allow a direct listener to replace a pipe proxy
+        yield return ("direct registration rejects a pipe-proxy name", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var pipeQueue = DvcPipeProxyMessageQueue.New(4);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelPipeProxy(NewPipeProxyConfig(pipeQueue, "shared-channel"));
+            ThrowsWithMessage<IronRdpException>(
+                () => connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "shared-channel")),
+                "dynamic channel name is already registered");
+        });
+
+        // oracle: mutant partially register a pipe-proxy batch before rejecting a direct-name conflict
+        yield return ("pipe-proxy collision rejection leaves the batch unregistered", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var pipeQueue = DvcPipeProxyMessageQueue.New(4);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "conflict"));
+            ThrowsWithMessage<IronRdpException>(
+                () => connector.WithDynamicChannelPipeProxy(NewPipeProxyConfig(pipeQueue, "first-in-batch", "conflict")),
+                "already registered as a direct DVC");
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "first-in-batch"));
+        });
+
+        // oracle: mutant partially register duplicate direct names before rejecting the configuration
+        yield return ("direct registration rejects duplicate names without registering either", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var duplicate = DirectDvcConfig.New(events.Sink);
+            duplicate.AddChannel("duplicate");
+            duplicate.AddChannel("duplicate");
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            ThrowsWithMessage<IronRdpException>(
+                () => connector.WithDynamicChannelDirect(duplicate),
+                "direct DVC channel name is registered more than once");
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "duplicate"));
+        });
+
+        // oracle: mutant retain received DVC payload bytes after the source frame is reused
+        yield return ("direct DVC data events own their payload", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var (stage, image) = ConnectedStage(8, 4, directDvc: NewDirectDvcConfig(events));
+            using (stage)
+            using (image)
+            {
+                using var opened = OpenDisplayControl(stage, image, events);
+                var frame = DisplayControlCapsPdu.ToArray();
+                var expected = frame[24..];
+                ProcessFrame(stage, image, frame);
+                Array.Clear(frame);
+                using var data = events.NextEvent() ?? throw new InvalidOperationException("missing data event");
+                Equal(DirectDvcEventKind.Data, data.Kind, "event kind");
+                Equal(opened.EndpointId, data.EndpointId, "data endpoint");
+                using var receivedData = data.TakeData();
+                True(expected.SequenceEqual(ToArray(receivedData)), "data event owns its payload");
+            }
+        });
+
+        // oracle: mutant reject a second concurrent opening of the same dynamic-channel name
+        yield return ("direct DVC openings of one name remain independent", () =>
+        {
+            foreach (var closingChannelId in new uint[] { 1, 2 })
+            {
+                using var events = DirectDvcEventQueue.New(8);
+                var (stage, image) = ConnectedStage(8, 4, directDvc: NewDirectDvcConfig(events));
+                using (stage)
+                using (image)
+                {
+                    using var first = OpenDisplayControl(stage, image, events);
+                    var secondCreate = DrdynvcDisplayControlCreateRequest.ToArray();
+                    secondCreate[23] = 2; // DYNVC_CREATE ChannelId.
+                    ProcessFrame(stage, image, secondCreate);
+                    using var second = events.NextEvent() ?? throw new InvalidOperationException("missing second open event");
+                    Equal(DirectDvcEventKind.Opened, second.Kind, "second event kind");
+                    Equal(1u, first.ChannelId, "first channel ID");
+                    Equal(2u, second.ChannelId, "second channel ID");
+                    Equal(first.ChannelName, second.ChannelName, "channel name");
+                    True(first.EndpointId != second.EndpointId, "distinct endpoint IDs");
+
+                    using var firstFrame = stage.SendDirectDvcData(first.ChannelId, first.EndpointId, [0x11]);
+                    using var secondFrame = stage.SendDirectDvcData(second.ChannelId, second.EndpointId, [0x22]);
+                    ThrowsWithMessage<IronRdpException>(
+                        () => stage.SendDirectDvcData(first.ChannelId, second.EndpointId, [0x11]),
+                        "direct DVC endpoint is no longer active");
+                    var closing = closingChannelId == first.ChannelId ? first : second;
+                    var surviving = closingChannelId == first.ChannelId ? second : first;
+                    using var closeFrame = stage.CloseDirectDvcChannel(closing.ChannelId, closing.EndpointId);
+                    using var closed = events.NextEvent() ?? throw new InvalidOperationException("missing close event");
+                    Equal(closing.EndpointId, closed.EndpointId, "closed endpoint");
+                    using var survivingFrame = stage.SendDirectDvcData(surviving.ChannelId, surviving.EndpointId, [0x33]);
+                    var data = DisplayControlCapsPdu.ToArray();
+                    data[23] = (byte)surviving.ChannelId; // DYNVC_DATA ChannelId.
+                    ProcessFrame(stage, image, data);
+                    using var received = events.NextEvent() ?? throw new InvalidOperationException("missing data event");
+                    Equal(DirectDvcEventKind.Data, received.Kind, "surviving event kind");
+                    Equal(surviving.EndpointId, received.EndpointId, "surviving endpoint");
+                    using var bytes = received.TakeData();
+                    True(data.AsSpan(24).SequenceEqual(ToArray(bytes)), "surviving endpoint data");
+                }
+            }
+        });
+
+        // oracle: mutant accept an endpoint after close or reuse it for a later opening
+        yield return ("direct DVC endpoints become stale on close and reopen", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var (stage, image) = ConnectedStage(8, 4, directDvc: NewDirectDvcConfig(events));
+            using (stage)
+            using (image)
+            {
+                using var opened = OpenDisplayControl(stage, image, events);
+                using var closeFrame = stage.CloseDirectDvcChannel(opened.ChannelId, opened.EndpointId);
+                using var closed = events.NextEvent() ?? throw new InvalidOperationException("missing close event");
+                Equal(DirectDvcEventKind.Closed, closed.Kind, "event kind");
+                Equal(opened.EndpointId, closed.EndpointId, "closed endpoint");
+                ThrowsWithMessage<IronRdpException>(
+                    () => stage.SendDirectDvcData(opened.ChannelId, opened.EndpointId, [0x01]),
+                    "direct DVC channel is not open");
+
+                ProcessFrame(stage, image, DrdynvcDisplayControlCreateRequest);
+                using var reopened = events.NextEvent() ?? throw new InvalidOperationException("missing reopen event");
+                Equal(DirectDvcEventKind.Opened, reopened.Kind, "event kind");
+                Equal(opened.ChannelId, reopened.ChannelId, "reused channel ID");
+                True(opened.EndpointId != reopened.EndpointId, "endpoint ID changes on reopen");
+                ThrowsWithMessage<IronRdpException>(
+                    () => stage.SendDirectDvcData(opened.ChannelId, opened.EndpointId, [0x01]),
+                    "direct DVC endpoint is no longer active");
+            }
+        });
+
+        // oracle: spec MS-RDPBCGR §2.2.9.1.1 (TPKT Header) and MS-RDPEDYC §2.2.3.2 (DVC Data)
+        yield return ("direct DVC send encodes the channel and exact payload", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var (stage, image) = ConnectedStage(8, 4, directDvc: NewDirectDvcConfig(events));
+            using (stage)
+            using (image)
+            {
+                using var opened = OpenDisplayControl(stage, image, events);
+                byte[] payload = [0x11, 0x22, 0x33];
+                using var outbound = stage.SendDirectDvcData(opened.ChannelId, opened.EndpointId, payload);
+                var outboundFrame = ToArray(outbound);
+                Equal(0x03, outboundFrame[0], "TPKT version");
+                Equal(0x00, outboundFrame[1], "TPKT reserved byte");
+                Equal(outboundFrame.Length, (int)BinaryPrimitives.ReadUInt16BigEndian(outboundFrame.AsSpan(2, 2)), "TPKT length");
+                byte[] expectedDvcData = [0x30, 0x01, 0x11, 0x22, 0x33];
+                True(outboundFrame.AsSpan(outboundFrame.Length - expectedDvcData.Length).SequenceEqual(expectedDvcData),
+                    "DYNVC_DATA command, channel ID and exact payload");
+            }
+        });
+
+        // oracle: mutant stop event delivery permanently after overflow, before draining queued events
+        yield return ("direct DVC queue stops event delivery after overflow", () =>
+        {
+            using var events = DirectDvcEventQueue.New(1);
+            var (stage, image) = ConnectedStage(8, 4, directDvc: NewDirectDvcConfig(events));
+            using (stage)
+            using (image)
+            {
+                ProcessFrame(stage, image, DrdynvcDisplayControlCreateRequest);
+                ThrowsWithMessage<IronRdpException>(
+                    () => ProcessFrame(stage, image, DisplayControlCapsPdu),
+                    "direct DVC event queue is full");
+                ThrowsWithMessage<IronRdpException>(() => events.NextEvent(), "direct DVC event queue overflowed");
+                ThrowsWithMessage<IronRdpException>(() => events.NextEvent(), "direct DVC event queue overflowed");
+                ThrowsWithMessage<IronRdpException>(
+                    () => ProcessFrame(stage, image, DisplayControlCapsPdu),
+                    "direct DVC event queue overflowed");
+                ThrowsWithMessage<IronRdpException>(() => events.NextEvent(), "direct DVC event queue overflowed");
+            }
+        });
+
+        // oracle: mutant omit Config.DirectDvc when setting up the connector
+        yield return ("ConfigBuilder direct DVC is attached during connector setup", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var directDvc = NewDirectDvcConfig(events, "configured-channel");
+            var config = TlsConfig(directDvc);
+            var connector = ClientConnector.New(config, "127.0.0.1:33890");
+
+            SetupConnector(connector, config);
+
+            ThrowsWithMessage<IronRdpException>(
+                () => connector.WithDynamicChannelDirect(directDvc),
+                "dynamic channel name is already registered");
+        });
+
         yield return ("display control is unavailable without its dynamic channel", () =>
         {
             var (stage, _) = ConnectedStage(8, 4);
             Equal(DisplayControlState.Unavailable, stage.DisplayControlState, "state");
             True(stage.DisplayControlCapabilities is null, "no capabilities");
             True(stage.EncodedResize(1024, 768) is null, "no resize frame");
+        });
+
+        // oracle: mutant attach one audio settings object to multiple connectors or replace native playback
+        yield return ("native playback settings attach to only one connector", () =>
+        {
+            var audio = NativeAudio.New("", 0);
+            var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            first.WithNativeAudio(audio);
+            Throws<IronRdpException>(() => second.WithNativeAudio(audio));
+            Throws<IronRdpException>(() => first.WithStaticChannelRdpSnd());
+        });
+
+        // oracle: mutant silently replace an already attached static playback channel
+        yield return ("native playback rejects an existing static playback channel", () =>
+        {
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            var audio = NativeAudio.New("", 0);
+            connector.WithStaticChannelRdpSnd();
+            Throws<IronRdpException>(() => connector.WithNativeAudio(audio));
+
+            var other = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            other.WithNativeAudio(audio);
+        });
+
+        // oracle: mutant allow native playback and a playback pipe proxy to share a channel name
+        yield return ("native playback and a playback pipe proxy cannot share a channel name", () =>
+        {
+            var queue = DvcPipeProxyMessageQueue.New(1);
+            var proxy = DvcPipeProxyConfig.New(queue.Sink);
+            proxy.AddPipeProxy(DvcPipeProxyDescriptor.New("AUDIO_PLAYBACK_LOSSY_DVC", "test-playback"));
+            var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            first.WithDynamicChannelPipeProxy(proxy);
+            Throws<IronRdpException>(() => first.WithNativeAudio(NativeAudio.New("", 0)));
+
+            var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            second.WithNativeAudio(NativeAudio.New("", 0));
+            Throws<IronRdpException>(() => second.WithDynamicChannelPipeProxy(proxy));
+        });
+
+        // oracle: mutant replace a direct DVC with native playback or replace native playback with a direct DVC
+        yield return ("native playback and direct DVCs cannot share a playback channel name", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var direct = NewDirectDvcConfig(events, "AUDIO_PLAYBACK_DVC");
+            var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            first.WithDynamicChannelDirect(direct);
+            Throws<IronRdpException>(() => first.WithNativeAudio(NativeAudio.New("", 0)));
+
+            var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            second.WithNativeAudio(NativeAudio.New("", 0));
+            Throws<IronRdpException>(() => second.WithDynamicChannelDirect(direct));
+        });
+
+        // oracle: mutant partially register a pipe-proxy batch before rejecting a direct DVC collision
+        yield return ("pipe-proxy direct DVC collision remains atomic with playback attached", () =>
+        {
+            using var events = DirectDvcEventQueue.New(4);
+            var queue = DvcPipeProxyMessageQueue.New(4);
+            var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
+            connector.WithNativeAudio(NativeAudio.New("", 0));
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "direct-conflict"));
+            Throws<IronRdpException>(
+                () => connector.WithDynamicChannelPipeProxy(NewPipeProxyConfig(queue, "first-in-batch", "direct-conflict")));
+            connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "first-in-batch"));
+        });
+
+        // oracle: mutant stop playback attached to a different connection
+        yield return ("stopping playback requires the attached connection", () =>
+        {
+            var audio = NativeAudio.New("", 0);
+            var other = NativeAudio.New("", 0);
+            var connected = ConnectedStage(8, 4, audio: audio);
+            using var stage = connected.Stage;
+            using var image = connected.Image;
+            Throws<IronRdpException>(() => stage.StopAudio(other));
+            using var stopped = stage.StopAudio(audio);
+            // oracle: mutant stopping playback produces transport output
+            Equal(0ul, (ulong)stopped.Len(), "stopping playback requires no response frame");
         });
 
         // oracle: spec MS-RDPEDISP §1.3 (the client sends a monitor layout only after the server's DISPLAYCONTROL_CAPS_PDU)
@@ -922,6 +1231,19 @@ internal static class SmokeTests
         0x02, 0x0c, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     };
 
+    // oracle: spec MS-RDPBCGR §2.2.1.4.4
+    // The Server Network Data block assigns 1004, 1005, and 1006 to the three requested static channels.
+    private static readonly byte[] McsConnectResponseWithPlayback =
+    {
+        0x03, 0x00, 0x00, 0x70, 0x02, 0xf0, 0x80, 0x7f, 0x66, 0x66, 0x0a, 0x01, 0x00, 0x02, 0x01, 0x00,
+        0x30, 0x1a, 0x02, 0x01, 0x22, 0x02, 0x01, 0x03, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x01,
+        0x00, 0x02, 0x01, 0x01, 0x02, 0x03, 0x00, 0xff, 0xf8, 0x02, 0x01, 0x02, 0x04, 0x42, 0x00, 0x05,
+        0x00, 0x14, 0x7c, 0x00, 0x01, 0x3a, 0x14, 0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0xc0, 0x00, 0x4d,
+        0x63, 0x44, 0x6e, 0x2c, 0x01, 0x0c, 0x10, 0x00, 0x04, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x08, 0x00, 0x00, 0x00, 0x03, 0x0c, 0x10, 0x00, 0xeb, 0x03, 0x03, 0x00, 0xec, 0x03, 0xed, 0x03,
+        0xee, 0x03, 0x00, 0x00, 0x02, 0x0c, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+
     // DRDYNVC Create Request for "Microsoft::Windows::RDS::DisplayControl" as channel 1 on static channel 1004
     // (MS-RDPEDYC §2.2.2.1), inside an MCS Send Data Indication.
     private static readonly byte[] DrdynvcDisplayControlCreateRequest =
@@ -968,7 +1290,45 @@ internal static class SmokeTests
         },
     };
 
-    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false)
+    private static DirectDvcConfig NewDirectDvcConfig(DirectDvcEventQueue events)
+    {
+        var config = DirectDvcConfig.New(events.Sink);
+        config.AddChannel("Microsoft::Windows::RDS::DisplayControl");
+        config.AddChannel("Microsoft::Windows::RDS::Input");
+        return config;
+    }
+
+    private static DirectDvcConfig NewDirectDvcConfig(DirectDvcEventQueue events, string channelName)
+    {
+        var config = DirectDvcConfig.New(events.Sink);
+        config.AddChannel(channelName);
+        return config;
+    }
+
+    private static DvcPipeProxyConfig NewPipeProxyConfig(DvcPipeProxyMessageQueue queue, params string[] channelNames)
+    {
+        var config = DvcPipeProxyConfig.New(queue.Sink);
+        foreach (var channelName in channelNames)
+        {
+            config.AddPipeProxy(DvcPipeProxyDescriptor.New(channelName, "unused"));
+        }
+        return config;
+    }
+
+    private static DirectDvcEvent OpenDisplayControl(ActiveStage stage, DecodedImage image, DirectDvcEventQueue events)
+    {
+        ProcessFrame(stage, image, DrdynvcDisplayControlCreateRequest);
+        return events.NextEvent() ?? throw new InvalidOperationException("missing open event");
+    }
+
+    private static void SetupConnector(ClientConnector connector, Config config)
+    {
+        var helpers = typeof(Connection).Assembly.GetType("Devolutions.IronRdp.ConnectionHelpers", throwOnError: true)!;
+        var setup = helpers.GetMethod("SetupConnector", BindingFlags.Static | BindingFlags.NonPublic)!;
+        setup.Invoke(null, [connector, config, null]);
+    }
+
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false, DirectDvcConfig? directDvc = null, NativeAudio? audio = null)
     {
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
         var serverPdus = HandshakeServerPdus.ToArray();
@@ -982,7 +1342,17 @@ internal static class SmokeTests
             connector.WithDynamicChannelRdpei(10, false);
         }
 
-        if (displayControl || rdpei)
+        if (directDvc is not null)
+        {
+            connector.WithDynamicChannelDirect(directDvc);
+        }
+
+        if (audio is not null)
+        {
+            connector.WithNativeAudio(audio);
+            serverPdus[1] = McsConnectResponseWithPlayback;
+        }
+        else if (displayControl || rdpei || directDvc is not null)
         {
             serverPdus[1] = McsConnectResponseWithDrdynvc;
         }
@@ -1016,7 +1386,9 @@ internal static class SmokeTests
         }
 
         Equal(serverPdus.Length, i, "server PDUs consumed by the handshake");
-        var stage = ActiveStage.New(connector.ConsumeAndCastToClientConnectorState().GetConnectedResult());
+        using var state = connector.ConsumeAndCastToClientConnectorState();
+        using var result = state.GetConnectedResult();
+        var stage = ActiveStage.New(result);
         return (stage, DecodedImage.New(PixelFormat.BgrX32, width, height));
     }
 
@@ -1096,7 +1468,7 @@ internal static class SmokeTests
         throw new InvalidOperationException("SetSurfaceBits produced no GraphicsUpdate");
     }
 
-    private static Config TlsConfig()
+    private static Config TlsConfig(DirectDvcConfig? directDvc = null)
     {
         var builder = ConfigBuilder.New();
         builder.WithUsernameAndPassword("user", "password");
@@ -1106,6 +1478,10 @@ internal static class SmokeTests
         builder.EnableTls = true;
         builder.EnableCredssp = false;
         builder.PerformanceFlags = PerformanceFlags.NewDefault();
+        if (directDvc is not null)
+        {
+            builder.DirectDvc = directDvc;
+        }
         return builder.Build();
     }
 
@@ -1218,6 +1594,12 @@ internal static class SmokeTests
         }
 
         throw new InvalidOperationException($"expected {typeof(T).Name}");
+    }
+
+    private static void ThrowsWithMessage<T>(System.Action action, string message) where T : Exception
+    {
+        var error = Throws<T>(action);
+        True(error.Message.Contains(message, StringComparison.Ordinal), $"error message: {error.Message}");
     }
 
     private static void True(bool condition, string what)
