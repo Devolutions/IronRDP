@@ -529,14 +529,31 @@ impl DrdynvcClient {
                     );
                     return Ok(DvcMessageBatch::new(channel_id, Vec::new()));
                 }
-                let selected_tunnel =
-                    self.tunnel_channels.get(&channel_id).copied().ok_or_else(|| {
-                        pdu_other_err!("received tunneled data for a channel not selected by Soft-Sync")
-                    })?;
-                if tunnel_type != selected_tunnel {
-                    return Err(pdu_other_err!(
-                        "received tunneled data on a tunnel not selected for the dynamic channel"
-                    ));
+                match self.tunnel_channels.get(&channel_id).copied() {
+                    Some(selected) if selected == tunnel_type => {}
+                    // Windows does not keep to the Soft-Sync selection: it creates
+                    // AUDIO_PLAYBACK_LOSSY_DVC over TCP after Soft-Sync, never lists it, and sends
+                    // its data on the reliable UDP tunnel (the first sound, e.g. a UAC prompt's).
+                    // Ending the session over it is worse than taking the data: the channel is
+                    // open, so the data is its own, and it is bound to this tunnel from now on.
+                    Some(_) => {
+                        return Err(pdu_other_err!(
+                            "received tunneled data on a tunnel not selected for the dynamic channel"
+                        ));
+                    }
+                    None => {
+                        if self.dynamic_channels.get_by_channel_id(channel_id).is_none() {
+                            return Err(pdu_other_err!(
+                                "received tunneled data for a channel not selected by Soft-Sync"
+                            ));
+                        }
+                        debug!(
+                            channel_id,
+                            ?tunnel_type,
+                            "Tunneled DVC data for an open channel Soft-Sync did not select; taking it"
+                        );
+                        self.tunnel_channels.insert(channel_id, tunnel_type);
+                    }
                 }
                 let messages = self.process_data(data)?;
                 Ok(DvcMessageBatch::new(channel_id, messages))

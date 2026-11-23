@@ -1190,3 +1190,42 @@ fn soft_sync_checks_every_listed_channel_before_it_fills_the_close_history() {
         .expect("late tunneled data for the first declined channel is dropped");
     assert!(batch.messages().is_empty());
 }
+
+#[test]
+fn tunneled_data_for_an_open_channel_soft_sync_did_not_list_is_taken() {
+    // Windows creates AUDIO_PLAYBACK_LOSSY_DVC over TCP after Soft-Sync and then sends its data
+    // on the reliable UDP tunnel (seen when a UAC prompt plays its sound): the channel is open,
+    // so the data is its own, and the channel is bound to the tunnel from then on.
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("recorded channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+    let request = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![7]),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client.process(&request).expect("Soft-Sync request should be accepted");
+    client
+        .attach_established_dynamic_channel(10, RecordedDvc::default())
+        .expect("a second channel should attach");
+    assert_eq!(client.tunnel_for_channel(10), None);
+
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        10,
+        vec![1, 2, 3],
+    ))))
+    .expect("data should encode");
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &data)
+        .expect("data on the tunnel for an open channel is taken");
+    assert_eq!(client.tunnel_for_channel(10), Some(SoftSyncTunnelType::RELIABLE_UDP));
+
+    // A channel that is not open still fails.
+    let stray = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(12, vec![1]))))
+        .expect("data should encode");
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &stray)
+        .expect_err("data for a channel that is not open is an error");
+}
