@@ -105,7 +105,10 @@ struct SessionBuilderInner {
     enable_credssp: bool,
     enable_standard_rdp_security: bool,
     enable_server_pointer: bool,
-    enable_compression: bool,
+    /// The bulk compression requested in the [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET) flags.
+    ///
+    /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+    compression_type: Option<ironrdp::pdu::rdp::client_info::CompressionType>,
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
     performance_flags: Option<PerformanceFlags>,
@@ -114,14 +117,6 @@ struct SessionBuilderInner {
     monitor_layout: Option<MonitorLayout>,
     monitor_layout_callback: Option<js_sys::Function>,
     keyboard_layout: u32,
-}
-
-impl SessionBuilderInner {
-    /// The bulk compression to request: MPPC 64K, the native client's default, when the app enabled it.
-    fn compression_type(&self) -> Option<ironrdp::pdu::rdp::client_info::CompressionType> {
-        self.enable_compression
-            .then_some(ironrdp::pdu::rdp::client_info::CompressionType::K64)
-    }
 }
 
 impl Default for SessionBuilderInner {
@@ -170,7 +165,7 @@ impl Default for SessionBuilderInner {
             enable_credssp: true,
             enable_standard_rdp_security: false,
             enable_server_pointer: true,
-            enable_compression: false,
+            compression_type: None,
             legacy_graphics: false,
             outbound_message_size_limit: None,
             performance_flags: None,
@@ -342,7 +337,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 self.0.borrow_mut().enable_standard_rdp_security = enable_standard_rdp_security;
             };
             |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
-            |enable_compression: bool| { self.0.borrow_mut().enable_compression = enable_compression };
+            |enable_compression: bool| {
+                // MPPC 64K, the `ironrdp-client` default.
+                self.0.borrow_mut().compression_type =
+                    enable_compression.then_some(ironrdp::pdu::rdp::client_info::CompressionType::K64);
+            };
             |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
             |outbound_message_size_limit: f64| {
                 let limit = if outbound_message_size_limit >= 0.0 && outbound_message_size_limit <= f64::from(u32::MAX) {
@@ -620,7 +619,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
         }
 
         // UNTESTED: no test observes the Client Info PDU this ends up in.
-        config.compression_type = self.0.borrow().compression_type();
+        config.compression_type = self.0.borrow().compression_type;
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
@@ -3248,18 +3247,18 @@ mod tests {
     #[wasm_bindgen_test::wasm_bindgen_test]
     fn enable_compression_extension_selects_mppc_64k() {
         // oracle: reference crates/ironrdp-client/src/config.rs - MPPC 64K is its type when compression is on.
-        // oracle: mutant the extension not dispatched by its name, compression on by default, or not turned off
+        // oracle: mutant the extension not dispatched by its name, compression on by default, or not turned off.
         use iron_remote_desktop::SessionBuilder as _;
         use ironrdp::pdu::rdp::client_info::CompressionType;
 
         let builder = SessionBuilder::create();
-        assert_eq!(builder.0.borrow().compression_type(), None);
+        assert_eq!(builder.0.borrow().compression_type, None);
 
         let builder = builder.extension(Extension::create("enable_compression".to_owned(), JsValue::TRUE));
-        assert_eq!(builder.0.borrow().compression_type(), Some(CompressionType::K64));
+        assert_eq!(builder.0.borrow().compression_type, Some(CompressionType::K64));
 
         let builder = builder.extension(Extension::create("enable_compression".to_owned(), JsValue::FALSE));
-        assert_eq!(builder.0.borrow().compression_type(), None);
+        assert_eq!(builder.0.borrow().compression_type, None);
     }
 
     #[cfg(target_arch = "wasm32")]

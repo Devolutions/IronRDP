@@ -128,6 +128,10 @@ export function enableServerPointer(enable: boolean): Extension {
 /**
  * Negotiate RDP bulk compression (MPPC 64K): the server compresses what it sends and the client
  * decompresses it. Fewer bytes cross the WebSocket and any proxy, for some CPU in the browser.
+ *
+ * Only display updates are decompressed. A server may also compress static virtual channel data
+ * (clipboard, dynamic channels, device redirection), which then reaches the channels undecoded.
+ * A Windows 11 server compressed none of it in testing.
  */
 export function enableCompression(enable: boolean): Extension {
     return new Extension('enable_compression', enable);
