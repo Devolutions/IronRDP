@@ -620,7 +620,10 @@ mod tests {
         FileEndOfFileInformation, FileRenameInformation, FileSystemInformationClass, FileSystemInformationClassLevel,
         MajorFunction, MinorFunction, ServerDriveQueryVolumeInformationRequest, SharedAccess,
     };
+    use std::collections::HashSet;
     use std::path::PathBuf;
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::windows::factory::RedirectedDrive;
@@ -1657,6 +1660,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn temporary_paths_stay_unique_across_parallel_threads() {
+        // oracle: mutant naming by process id and clock alone gives threads that read the same clock value one name.
+        const THREADS: usize = 8;
+        const PATHS_PER_THREAD: usize = 500;
+        let start = Barrier::new(THREADS);
+        let distinct: HashSet<PathBuf> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        (0..PATHS_PER_THREAD)
+                            .map(|_| TemporaryFile::new_path())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().expect("naming thread completes"))
+                .collect()
+        });
+        assert_eq!(distinct.len(), THREADS * PATHS_PER_THREAD);
+    }
+
     struct TemporaryFile(PathBuf);
 
     impl TemporaryFile {
@@ -1670,10 +1698,14 @@ mod tests {
             Self(Self::new_path())
         }
 
+        /// INVARIANT: two calls in one process never return the same path.
         fn new_path() -> PathBuf {
+            // Tests run in parallel threads of one process, so the clock alone can repeat.
+            static NEXT: AtomicU64 = AtomicU64::new(0);
             let unique_name = format!(
-                "ironrdp-rdpdr-native-{}-{}.tmp",
+                "ironrdp-rdpdr-native-{}-{}-{}.tmp",
                 std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .expect("system clock is after Unix epoch")

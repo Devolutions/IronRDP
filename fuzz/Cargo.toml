@@ -15,11 +15,20 @@ debug = 1
 
 [dependencies]
 ironrdp-fuzzing = { path = "../crates/ironrdp-fuzzing" }
+ironrdp-graphics = { path = "../crates/ironrdp-graphics" }
+ironrdp-session = { path = "../crates/ironrdp-session" }
+ironrdp-web-replay = { path = "../crates/ironrdp-web-replay" }
 libfuzzer-sys = "0.4"
 
 [[bin]]
 name = "pdu_decoding"
 path = "fuzz_targets/pdu_decoding.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "web_replay_pdu_processing"
+path = "fuzz_targets/web_replay_pdu_processing.rs"
 test = false
 doc = false
 

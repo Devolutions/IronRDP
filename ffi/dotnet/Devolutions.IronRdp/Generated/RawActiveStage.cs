@@ -21,6 +21,9 @@ internal partial struct ActiveStage
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_poll_rdpdr_deferred", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError PollRdpdrDeferred(ActiveStage* handle);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_stop_audio", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError StopAudio(ActiveStage* handle, NativeAudio* audio);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_process_fastpath_input", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError ProcessFastpathInput(ActiveStage* handle, DecodedImage* image, FastPathInputEventIterator* fastpathInput);
 
@@ -41,6 +44,12 @@ internal partial struct ActiveStage
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_send_dvc_pipe_proxy_message", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultVecU8IronRdpError SendDvcPipeProxyMessage(ActiveStage* handle, DvcPipeProxyMessage* message);
+
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_send_direct_dvc_data", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVecU8IronRdpError SendDirectDvcData(ActiveStage* handle, uint channelId, ulong endpointId, DiplomatSliceU8 data);
+
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_close_direct_dvc_channel", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultVecU8IronRdpError CloseDirectDvcChannel(ActiveStage* handle, uint channelId, ulong endpointId);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_graceful_shutdown", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError GracefulShutdown(ActiveStage* handle);
