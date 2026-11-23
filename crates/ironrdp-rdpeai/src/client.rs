@@ -172,7 +172,10 @@ impl RdpeaiClient {
                 }
             };
             let Ok(mut uplink) = uplink.lock() else {
-                warn!("AUDIO_INPUT uplink lock poisoned");
+                if !uplink_failed {
+                    warn!("AUDIO_INPUT uplink lock poisoned");
+                    uplink_failed = true;
+                }
                 return;
             };
             match uplink(channel_id, svc) {
@@ -328,32 +331,33 @@ impl RdpeaiClient {
                 Ok(())
             };
             let changed = self.handler.set_format_ordered(&encode_fmt, packet_size, &mut confirm);
-            let succeeded = matches!(&changed, Ok(true));
-            if !succeeded {
-                self.stop_capture();
-            }
-            match &changed {
-                Err(error) => warn!(%error, "AUDIO_INPUT ordered format change failed"),
-                Ok(false) => warn!("AUDIO_INPUT capture backend rejected the format change"),
-                Ok(true) => {}
-            }
-            if succeeded && !confirmed.get() {
-                self.stop_capture();
-                return Err(pdu_other_err!("audio format changed without confirming the transition"));
-            }
-            if !confirmed.get() {
-                if confirm_failed.get() {
-                    changed?;
-                    return Err(pdu_other_err!("failed to queue AUDIO_INPUT Format Change confirmation"));
+            return match changed {
+                Err(error) => {
+                    self.stop_capture();
+                    warn!(%error, "AUDIO_INPUT ordered format change failed");
+                    if !confirmed.get() && !confirm_failed.get() {
+                        confirm()?;
+                    }
+                    Err(error)
                 }
-                confirm()?;
+                Ok(false) => {
+                    self.stop_capture();
+                    warn!("AUDIO_INPUT capture backend rejected the format change");
+                    if !confirmed.get() && confirm_failed.get() {
+                        return Err(pdu_other_err!("failed to queue AUDIO_INPUT Format Change confirmation"));
+                    }
+                    if !confirmed.get() {
+                        confirm()?;
+                    }
+                    Err(pdu_other_err!("audio capture format change failed"))
+                }
+                Ok(true) if !confirmed.get() => {
+                    self.stop_capture();
+                    Err(pdu_other_err!("audio format changed without confirming the transition"))
+                }
+                Ok(true) => Ok(()),
             }
-            match changed {
-                Err(error) => return Err(error),
-                Ok(false) => return Err(pdu_other_err!("audio capture format change failed")),
-                Ok(true) => {}
-            }
-            return Ok(Vec::new());
+            .map(|()| Vec::new())
         }
 
         if self.handler.set_format(&encode_fmt, packet_size) {

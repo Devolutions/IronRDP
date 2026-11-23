@@ -241,7 +241,7 @@ fn capture_offers_encodable_formats_compressed_first() {
     assert_eq!(first_pcm, 2);
 }
 
-// oracle: mutant reject high-rate PCM during capture negotiation
+// oracle: mutant reject PCM above 48 kHz during native format negotiation
 #[test]
 fn capture_negotiation_preserves_high_rate_and_multichannel_pcm() {
     use ironrdp_rdpeai::client::RdpeaiCaptureHandler as _;

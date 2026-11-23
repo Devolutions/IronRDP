@@ -82,19 +82,20 @@ mod native {
                         .checked_add(size_of::<SvcMessage>() + MESSAGE_ALLOCATION_OVERHEAD)?
                         .checked_add(message.unframed_pdu_size())
                 });
-            let reserved = charge.is_some_and(|charge| {
-                self.queued_bytes
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                        current
-                            .checked_add(charge)
-                            .filter(|next| *next <= CAPTURE_QUEUE_BYTE_LIMIT)
-                    })
-                    .is_ok()
-            });
+            let Some(charge) = charge else {
+                return self.fail_capture_uplink(token);
+            };
+            let reserved = self
+                .queued_bytes
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                    current
+                        .checked_add(charge)
+                        .filter(|next| *next <= CAPTURE_QUEUE_BYTE_LIMIT)
+                })
+                .is_ok();
             if !reserved {
                 return self.fail_capture_uplink(token);
             }
-            let charge = charge.expect("reservation requires a valid charge");
             if self
                 .capture_tx
                 .try_send(CaptureMessages {
@@ -170,27 +171,31 @@ mod native {
             if ironrdp::svc::MAX_STATIC_CHANNELS < channels.len() + needed {
                 return Err("no space for native audio channels");
             }
-            if let Some(drdynvc) = connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
-                let playback_in_use = self.playback
-                    && AudioChannelKind::Playback
+            let (playback_dvc, capture_dvc) =
+                if let Some(drdynvc) = connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
+                    let playback_in_use = AudioChannelKind::Playback
                         .channel_names()
                         .iter()
                         .any(|name| drdynvc.has_channel_name(name));
-                let capture_in_use = self.capture
-                    && AudioChannelKind::Capture
+                    let capture_in_use = AudioChannelKind::Capture
                         .channel_names()
                         .iter()
                         .any(|name| drdynvc.has_channel_name(name));
-                if playback_in_use || capture_in_use {
-                    return Err("native audio dynamic channel is already registered");
-                }
-            }
+                    let playback_conflicts = self.playback && playback_in_use;
+                    let capture_conflicts = self.capture && capture_in_use;
+                    if playback_conflicts || capture_conflicts {
+                        return Err("native audio dynamic channel is already registered");
+                    }
+                    (playback_in_use, capture_in_use)
+                } else {
+                    (false, false)
+                };
             if self.attached.swap(true, Ordering::AcqRel) {
                 return Err("native audio is already attached");
             }
 
-            connector.config.enable_audio_capture = self.capture;
-            connector.config.enable_audio_playback = self.playback || playback_type;
+            connector.config.enable_audio_capture = self.capture || capture_dvc;
+            connector.config.enable_audio_playback = self.playback || playback_type || playback_dvc;
             if self.playback {
                 if !rdpdr_type {
                     // UNTESTED: Windows servers require RDPDR to start playback.
@@ -1222,7 +1227,7 @@ mod native {
             assert_eq!(audio.0.active_capture.load(Ordering::Acquire), 0);
         }
 
-        // oracle: mutant disable capture after an ordinary server close
+        // oracle: mutant disable capture after every server-initiated channel close
         #[test]
         fn capture_listener_allows_reopen_after_nonterminal_server_close() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -1237,7 +1242,7 @@ mod native {
             drop(second);
         }
 
-        // oracle: mutant clear the active token without disabling failed capture
+        // oracle: mutant clear the active token without latching terminal capture failure
         #[test]
         fn failed_capture_server_close_does_not_allow_reopen_after_poll() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));

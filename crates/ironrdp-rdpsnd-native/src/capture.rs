@@ -346,7 +346,7 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
     fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool {
         let _ = packet_size;
         self.change_format(encode_format, &mut || Ok(()))
-            .expect("an empty confirmation cannot fail")
+            .unwrap_or(false)
     }
 
     fn set_format_ordered(
@@ -435,9 +435,8 @@ pub fn take_capture_packets(buffer: &mut Vec<u8>, packet_size: usize) -> Vec<Vec
     if packet_size == 0 {
         return Vec::new();
     }
-    let packets = buffer.chunks_exact(packet_size).map(<[u8]>::to_vec).collect();
-    let complete_len = buffer.len() - buffer.len() % packet_size;
-    buffer.drain(..complete_len);
+    let packets: Vec<_> = buffer.chunks_exact(packet_size).map(<[u8]>::to_vec).collect();
+    buffer.drain(..packets.len() * packet_size);
     packets
 }
 

@@ -96,19 +96,6 @@ pub mod ffi {
                 return Err("native audio must be attached before connecting".into());
             }
             audio.0.attach(connector)?;
-            let (playback, capture) = connector
-                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
-                .map(|drdynvc| {
-                    let has_kind =
-                        |kind: AudioChannelKind| kind.channel_names().iter().any(|name| drdynvc.has_channel_name(name));
-                    (
-                        has_kind(AudioChannelKind::Playback),
-                        has_kind(AudioChannelKind::Capture),
-                    )
-                })
-                .unwrap_or_default();
-            connector.config.enable_audio_playback |= playback;
-            connector.config.enable_audio_capture |= capture;
             self.1 = Some(std::sync::Arc::clone(&audio.0));
             Ok(())
         }

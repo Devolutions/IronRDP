@@ -4,8 +4,6 @@
 
 Currently, only the .NET target is officially supported.
 
-See the [FFI capability matrix](CAPABILITIES.md) for the current surface and its coverage relative to the Rust client.
-
 ## How to build
 
 - Install required tools: `cargo xtask ffi install`
