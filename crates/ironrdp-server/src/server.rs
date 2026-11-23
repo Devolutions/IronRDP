@@ -54,7 +54,7 @@ use rand::RngCore as _;
 use rdpdr::server::{RdpdrServer, RdpdrServerMessage};
 use rdpeai::server::{RdpeaiServer, RdpeaiServerMessage};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task;
@@ -1294,7 +1294,7 @@ pub struct SessionOutcome<S> {
 pub trait ConnectionSource: Send {
     /// The stream type every connection from this source has. A source that
     /// accepts more than one kind of stream boxes them into one.
-    type Stream: AsyncRead + AsyncWrite + Send + Sync + Unpin;
+    type Stream: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static;
 
     /// Waits for the next connection.
     ///
@@ -2930,6 +2930,44 @@ const EVICTION_GRACE: Duration = Duration::from_millis(750);
 /// Set Error Info PDU for an error.
 const ERROR_INFO_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How long the server, once a session has ended, waits for the client to close
+/// its side of the connection. See [`close_in_background`].
+const CLOSE_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Close the server's side of `stream`, then read and discard whatever the client
+/// still sends until it closes its side or `timeout` runs out.
+///
+/// Closing a socket that still holds unread data makes Windows reset the
+/// connection instead of closing it. The reset can reach the client before the
+/// last PDUs the server sent (a Set Error Info, a disconnect reason), which the
+/// client then loses, reporting a connection error (WSAECONNABORTED or
+/// WSAECONNRESET) instead. Waiting for the client's end of stream leaves nothing
+/// unread. A client that does not close in time is not an error: the connection
+/// is just dropped, as before.
+///
+/// This runs as its own task, so the session ends without waiting for the
+/// client. Under [`ConnectionPolicy::Reject`], a client that reconnects while the
+/// old connection is still closing must reach the next session, not be rejected
+/// as a second connection.
+fn close_in_background<S>(mut stream: S, timeout: Duration, label: &'static str)
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    task::spawn(async move {
+        let close = async {
+            stream.shutdown().await?;
+            let mut discarded = vec![0u8; 16 * 1024];
+            while stream.read(&mut discarded).await? != 0 {}
+            Ok::<(), std::io::Error>(())
+        };
+        match tokio::time::timeout(timeout, close).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => debug!(%error, "Closing the {} failed", label),
+            Err(_) => debug!(?timeout, "The client did not close the {} in time", label),
+        }
+    });
+}
+
 /// How long the client loop, at its end, writes what is still queued (a
 /// Deactivate All, a disconnect reason, the rest of a frame). A peer that
 /// does not read must not hold the loop until TCP gives up. Longer than
@@ -4010,7 +4048,7 @@ impl RdpServer {
     /// connection.
     async fn serve_negotiated<S>(&mut self, candidate: Box<NegotiatedConnection<S>>) -> ServerResult<()>
     where
-        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     {
         self.finalize_negotiated(*candidate).await
     }
@@ -4028,7 +4066,7 @@ impl RdpServer {
     /// before the call (see `Queued events` there).
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
     where
-        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     {
         self.run_connection_with(stream, TransportTls::Managed).await
     }
@@ -4127,7 +4165,7 @@ impl RdpServer {
     /// stream, because the caller's stream is already past TLS at a lower layer.
     pub async fn run_connection_with<S>(&mut self, stream: S, tls: TransportTls) -> ServerResult<()>
     where
-        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     {
         // The stream has no address, and `serve_connection` leaves its connection address set.
         self.connection_peer_addr = None;
@@ -4190,7 +4228,7 @@ impl RdpServer {
 
     async fn run_connection_inner<S>(&mut self, stream: S, tls: TransportTls) -> ServerResult<()>
     where
-        S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
+        S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
     {
         let pending = self.prepare_pending_connection().await;
         let Some(negotiated) = pending.negotiate_and_authenticate(stream, tls).await? else {
@@ -4238,7 +4276,7 @@ impl RdpServer {
     /// itself covers.
     async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedConnection<S>) -> ServerResult<()>
     where
-        S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
+        S: AsyncRead + AsyncWrite + Sync + Send + Unpin + 'static,
     {
         let NegotiatedConnection {
             transport,
@@ -4259,9 +4297,10 @@ impl RdpServer {
         let local_addr = local_addr.or(self.connection_local_addr);
         match transport {
             // No security upgrade happened, so there is no TLS session to shut
-            // down — matches the pre-existing `BeginResult::Continue` arm.
+            // down, but the TCP connection is still closed gracefully.
             NegotiatedTransport::Continued(framed) => {
-                self.accept_finalize(local_addr, framed, acceptor).await?;
+                self.finalize_and_shutdown(local_addr, framed, acceptor, "TCP connection")
+                    .await?;
             }
             NegotiatedTransport::Tls(framed) => {
                 self.finalize_and_shutdown(local_addr, *framed, acceptor, "TLS connection")
@@ -4285,10 +4324,10 @@ impl RdpServer {
         local_addr: Option<SocketAddr>,
         framed: TokioFramed<S>,
         acceptor: Acceptor,
-        shutdown_label: &str,
+        shutdown_label: &'static str,
     ) -> ServerResult<()>
     where
-        S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
+        S: AsyncRead + AsyncWrite + Sync + Send + Unpin + 'static,
     {
         // No mark_security_upgrade_as_done / CredSSP here: this refactor moved
         // both into `complete_security_upgrade`, called from
@@ -4297,10 +4336,8 @@ impl RdpServer {
         // work at this point, since it has no separate negotiation step.
         let framed = self.accept_finalize(local_addr, framed, acceptor).await?;
         debug!("Shutting down {}", shutdown_label);
-        let (mut inner, _) = framed.into_inner();
-        if let Err(e) = inner.shutdown().await {
-            debug!(?e, "{} shutdown error", shutdown_label);
-        }
+        let (inner, _) = framed.into_inner();
+        close_in_background(inner, CLOSE_DRAIN_TIMEOUT, shutdown_label);
 
         Ok(())
     }
@@ -6874,7 +6911,7 @@ impl RdpServer {
         mut acceptor: Acceptor,
     ) -> ServerResult<TokioFramed<S>>
     where
-        S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
+        S: AsyncRead + AsyncWrite + Sync + Send + Unpin + 'static,
     {
         let mut conn = self.attach_channels(&mut acceptor).await;
         let udp_bind_addr = self
@@ -6967,14 +7004,8 @@ impl RdpServer {
                         // The client was sent a Set Error Info PDU. Close the
                         // session as on a normal disconnect, so the client gets
                         // the PDU and then the end of the stream.
-                        let (mut inner, _) = unsplit_tokio_framed(reader, writer).into_inner();
-                        match tokio::time::timeout(ERROR_INFO_CLOSE_TIMEOUT, inner.shutdown()).await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(shutdown_error)) => {
-                                debug!(%shutdown_error, "Shutdown after the error reason failed")
-                            }
-                            Err(_) => debug!("Shutdown after the error reason timed out"),
-                        }
+                        let (inner, _) = unsplit_tokio_framed(reader, writer).into_inner();
+                        close_in_background(inner, ERROR_INFO_CLOSE_TIMEOUT, "connection after the error reason");
                     }
                     return Err(error);
                 }
