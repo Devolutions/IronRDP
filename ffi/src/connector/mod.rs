@@ -539,7 +539,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469 discussion_r4603169797
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
     #[test]
     fn static_playback_after_capture_advertises_both() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -596,7 +596,7 @@ mod tests {
         Ok(connector.with_dynamic_channel_direct(&config).is_ok())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
     fn input_direct_attached_after_playback_advertises_capture() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -607,7 +607,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
     fn playback_direct_attached_after_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -636,7 +636,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
     #[test]
     fn playback_proxy_attached_after_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -689,7 +689,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
     fn lossy_playback_proxy_after_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -721,7 +721,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
     fn input_proxy_attached_after_playback_advertises_capture() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -735,7 +735,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: mutant advertise audio for an unrelated dynamic channel
     #[test]
     fn unrelated_proxy_does_not_advertise_audio() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -747,7 +747,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: mutant drop pre-existing playback state when attaching capture
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
     #[test]
     fn separately_attached_playback_survives_later_capture_configuration() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -768,7 +768,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
     #[test]
     fn separately_attached_playback_after_capture_is_advertised() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -796,7 +796,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
     #[test]
     fn capture_only_audio_allows_playback_pipe_proxy() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -816,7 +816,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
     #[test]
     fn capture_only_audio_reserves_input_pipe_proxy() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -829,7 +829,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression Devolutions/IronRDP#2469, review comment 4604743100
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604743100
     #[test]
     fn reserved_pipe_proxy_rejects_all_descriptors_without_mutation() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -856,7 +856,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression Devolutions/IronRDP#2469, review comment 4604743100
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604743100
     #[test]
     fn rejected_proxy_batch_preserves_proxy_attached_before_audio() -> Result<(), &'static str> {
         use std::sync::mpsc::{self, TryRecvError};
@@ -889,7 +889,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression Devolutions/IronRDP#2469, review comment 4604743100
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604743100
     #[test]
     fn valid_proxy_batch_attaches_all_descriptors_after_audio() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -917,7 +917,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
     #[test]
     fn playback_proxy_attached_before_capture_only_audio_is_preserved() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -933,7 +933,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
     #[test]
     fn playback_only_audio_allows_input_pipe_proxy() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -946,7 +946,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
     #[test]
     fn playback_only_audio_reserves_playback_pipe_proxy() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -966,7 +966,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
     #[test]
     fn input_proxy_attached_before_capture_audio_is_rejected() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -977,7 +977,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
     #[test]
     fn playback_proxy_attached_before_native_playback_is_rejected() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;

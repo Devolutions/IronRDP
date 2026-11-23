@@ -752,7 +752,7 @@ mod native {
             playback.wave(&format, 0, Cow::Borrowed(&[0, 0]));
         }
 
-        // oracle: regression Devolutions/IronRDP#2480 review 5980962351
+        // oracle: mutant leave playback active after StopAudio
         #[test]
         fn stopping_audio_closes_active_playback() {
             let (mut stage, audio, mut playback, observed) = playback_stage();
@@ -766,7 +766,7 @@ mod native {
             assert_eq!(observed.closed_active, 1);
         }
 
-        // oracle: regression Devolutions/IronRDP#2480 review 5980962351
+        // oracle: mutant deliver later waves after StopAudio
         #[test]
         fn stopping_audio_permanently_suppresses_later_waves() {
             let (mut stage, audio, mut playback, observed) = playback_stage();
@@ -777,11 +777,11 @@ mod native {
             play_wave(&mut playback);
 
             let observed = *observed.lock().unwrap();
-            assert!(!observed.active);
             assert_eq!(observed.waves, 1);
+            assert!(!observed.active);
         }
 
-        // oracle: regression Devolutions/IronRDP#2480 review 5980962351
+        // oracle: mutant drop the active stage without closing playback
         #[test]
         fn dropping_stage_closes_playback_and_suppresses_retained_handlers() {
             let (stage, _audio, mut playback, observed) = playback_stage();
@@ -940,7 +940,7 @@ mod native {
             assert!(stage.get_dvc_by_channel_id::<CaptureChannel>(7).is_some());
         }
 
-        // oracle: regression #2469
+        // oracle: mutant omit RDPDR when native playback is attached
         // Windows servers need the device-redirection channel joined before starting playback.
         #[test]
         fn playback_attaches_rdpdr_when_missing() {
@@ -955,7 +955,7 @@ mod native {
             );
         }
 
-        // oracle: regression #2469
+        // oracle: mutant replace an existing RDPDR processor during playback attachment
         #[test]
         fn playback_preserves_an_existing_rdpdr_processor() {
             let audio = NativeAudio::new(true, false, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -982,7 +982,7 @@ mod native {
             );
         }
 
-        // oracle: regression #2469
+        // oracle: mutant attach RDPDR for capture-only audio
         #[test]
         fn capture_only_does_not_attach_rdpdr() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -996,7 +996,7 @@ mod native {
             );
         }
 
-        // oracle: regression #2469
+        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4616392122
         #[test]
         fn full_capture_queue_rejects_later_messages() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -1009,7 +1009,7 @@ mod native {
             assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), token);
         }
 
-        // oracle: regression #2469
+        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602557
         #[test]
         fn capture_only_disables_playback_advertisement() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -1066,7 +1066,7 @@ mod native {
             assert!(confirm.timestamp > 100);
         }
 
-        // oracle: regression #2469
+        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009494
         #[test]
         fn capture_queue_accepts_100ms_after_mono_to_stereo_change() {
             use ironrdp::svc::ChannelFlags;
@@ -1120,7 +1120,7 @@ mod native {
             assert_eq!(audio.0.queued_bytes.load(Ordering::Acquire), 0);
         }
 
-        // oracle: regression #2469
+        // oracle: mutant split a TPKT frame across response buffers
         #[test]
         fn large_encoded_batch_splits_only_between_tpkts() {
             let mut input = Vec::new();
@@ -1146,7 +1146,7 @@ mod native {
             assert_eq!(actual, input);
         }
 
-        // oracle: regression #2469
+        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009162
         #[test]
         fn capture_queue_bounds_large_packets_and_releases_capacity() {
             use ironrdp::svc::ChannelFlags;
@@ -1178,7 +1178,7 @@ mod native {
             assert_eq!(audio.0.queued_bytes.load(Ordering::Acquire), 0);
         }
 
-        // oracle: regression #2469
+        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4615789130
         #[test]
         fn capture_message_queue_overflow_requests_worker_stop() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -1194,7 +1194,7 @@ mod native {
             assert!(stop_signal.is_requested());
         }
 
-        // oracle: regression #2469
+        // oracle: mutant accept an FFI capture format above its rate or channel limit
         #[test]
         fn ffi_capture_limits_server_formats_and_open_capture_format() {
             use ironrdp_rdpeai::pdu::{OpenReplyPdu, pcm_format};
@@ -1213,7 +1213,7 @@ mod native {
             );
         }
 
-        // oracle: regression #2469
+        // oracle: mutant reopen capture while the previous channel is still active
         #[test]
         fn capture_listener_allows_reopen_only_after_previous_channel_is_dropped() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -1259,7 +1259,7 @@ mod native {
             assert!(listener.create_channel(7).is_none());
         }
 
-        // oracle: regression #2469
+        // oracle: mutant propagate malformed capture PDU errors to the session
         #[test]
         fn malformed_capture_pdu_stops_capture_without_failing_the_session() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
@@ -1271,7 +1271,7 @@ mod native {
             assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), channel.token);
         }
 
-        // oracle: regression #2469
+        // oracle: mutant propagate capture-control reply failure to the session
         #[test]
         fn full_queue_isolates_a_capture_control_reply_failure() {
             use ironrdp_rdpeai::pdu::{RdpeaiPdu, Version, VersionPdu};
@@ -1361,19 +1361,19 @@ mod native {
             fn close(&mut self) {}
         }
 
-        // oracle: regression #2469
+        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009365
         #[test]
         fn failed_restart_sends_confirmation_before_closing_capture() {
             assert_failed_restart_confirmation_precedes_close(false);
         }
 
-        // oracle: regression #2469
+        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009365
         #[test]
         fn stopping_after_failed_restart_sends_confirmation_before_closing_capture() {
             assert_failed_restart_confirmation_precedes_close(true);
         }
 
-        // oracle: regression #2469
+        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4615789388
         #[test]
         fn dropping_active_stage_closes_capture_before_waiting_for_playback() {
             struct StopSignal(mpsc::Sender<()>);
@@ -1502,7 +1502,7 @@ mod native {
             assert!(stage.get_dvc_by_channel_id::<CaptureChannel>(7).is_none());
         }
 
-        // oracle: regression #2469
+        // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602980839
         #[test]
         fn failed_format_confirmation_closes_capture_when_polled() {
             use ironrdp_rdpeai::pdu::{
@@ -1605,7 +1605,7 @@ mod native {
             assert_eq!(audio.0.failed_capture.load(Ordering::Acquire), token);
         }
 
-        // oracle: regression #2469
+        // oracle: mutant propagate capture overflow to the session
         #[test]
         fn polling_an_overflow_closes_capture_without_closing_the_session() {
             let audio = NativeAudio::new(false, true, "", "", 0).unwrap_or_else(|_| panic!("audio settings"));
