@@ -734,8 +734,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn probe_retries_a_connection_dropped_before_the_peer_owner_check() {
-        // oracle: capture of a macOS CI failure, where the connection made while the daemon was stopping failed with ENOTCONN (os error 57).
+    fn not_connected_is_classified_as_a_closing_endpoint() {
+        // oracle: mutant dropping NotConnected from endpoint_closing turns a dropped probe connection into a hard daemon stop failure
         let error = anyhow::Error::new(io::Error::from(io::ErrorKind::NotConnected))
             .context("connect to daemon at /tmp/ironrdp-agent.sock");
 
