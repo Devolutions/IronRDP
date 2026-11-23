@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpadrv"
-version = "0.0.0"
+version = "0.1.0"
 readme = "README.md"
 description = "Audio level and drive letter persistence dynamic channels as described in MS-RDPADRV"
 edition.workspace = true
