@@ -8871,6 +8871,30 @@ mod tests {
         assert_eq!(close.channel_id(), 7);
     }
 
+    // oracle: mutant routing a DYNVC_CLOSE when either its channel or tunnel type differs.
+    #[test]
+    fn server_initiated_dvc_close_falls_back_to_tcp_for_unmatched_routes() {
+        for (case, route) in [
+            (
+                "different channel",
+                Some((8, dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP)),
+            ),
+            ("different tunnel", Some((7, dvc::pdu::SoftSyncTunnelType::LOSSY_UDP))),
+            ("no route", None),
+        ] {
+            let mut conn = ConnectionState::default();
+            let close = dvc::pdu::DrdynvcServerPdu::Close(dvc::pdu::ClosePdu::new(7));
+            let outputs = conn
+                .encode_drdynvc_output(1001, true, 1003, vec![SvcMessage::from(close)], route)
+                .expect("DVC Close PDU should be encoded");
+
+            assert!(
+                matches!(outputs.as_slice(), [ConnectionOutput::ResponseFrame(_)]),
+                "unexpected output for {case}"
+            );
+        }
+    }
+
     /// A client that did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU is not sent a
     /// Set Error Info PDU; a client that set it is.
     // oracle: spec MS-RDPBCGR §3.3.5.7.1
