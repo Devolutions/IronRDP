@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [[0.3.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpei-v0.3.0...ironrdp-rdpei-v0.3.1)] - 2026-11-23
+
+### <!-- 1 -->Features
+
+- Bound dynamic channel messages and report RDPSND backpressure ([#2441](https://github.com/Devolutions/IronRDP/issues/2441)) ([e05f890d0a](https://github.com/Devolutions/IronRDP/commit/e05f890d0a6db5121eda2767cb4ca812242461e8)) 
+
+  Cap inbound dynamic virtual channel message reassembly to 64 KiB on
+  `RdpeiServer` and 256 KiB on `GraphicsPipelineServer`, `GfxDvcBridge`,
+  and `RdpeaiServer`, and forward RDPEI channel teardown to
+  `RdpeiHandler::close`.
+  
+  Bound `TouchFrame`, `TouchEventPdu`, `PenFrame`, and `PenEventPdu`
+  preallocation against the remaining payload bytes so a 2-byte count
+  header cannot preallocate more items than the buffer can hold.
+  
+  Add `RdpsndServerHandler::unconfirmed_waves_changed` and invoke it on
+  wave transmission and on the first timestamp-valid `WaveConfirm` so
+  audio producers can track in-flight unconfirmed waves.
+
+
+
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-rdpei-v0.2.0...ironrdp-rdpei-v0.3.0)] - 2026-10-27
 
 ### <!-- 7 -->Build
