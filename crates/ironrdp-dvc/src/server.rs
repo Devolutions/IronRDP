@@ -11,13 +11,16 @@ use ironrdp_svc::{
 };
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::pdu::{
     CapabilitiesRequestPdu, CapsVersion, ClosePdu, CreateRequestPdu, CreationStatus, DrdynvcClientPdu,
     DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
 };
-use crate::{CompleteData, DvcProcessor, DynamicChannelMut, DynamicChannelRef, encode_dvc_messages};
+use crate::{
+    CompleteData, DvcProcessErrorPolicy, DvcProcessor, DynamicChannelId, DynamicChannelMut, DynamicChannelRef,
+    encode_dvc_messages,
+};
 
 pub trait DvcServerProcessor: DvcProcessor {
     /// Invoked when the client declines a server-initiated `Create Request` PDU.
@@ -446,16 +449,31 @@ impl DrdynvcServer {
 
     /// Processes raw DRDYNVC data received through an established multitransport tunnel.
     pub fn process_tunnel(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        self.process_tunnel_with_route(payload).map(|(messages, _)| messages)
+    }
+
+    /// Processes raw DRDYNVC data and returns the outbound tunnel route captured before processing.
+    ///
+    /// The route remains available when processing closes the channel and removes its tunnel mapping.
+    pub fn process_tunnel_with_route(
+        &mut self,
+        payload: &[u8],
+    ) -> PduResult<(Vec<SvcMessage>, Option<(DynamicChannelId, SoftSyncTunnelType)>)> {
         let pdu = decode_dvc_message(payload).map_err(|e| decode_err!(e))?;
         let DrdynvcClientPdu::Data(data) = pdu else {
             return Err(pdu_other_err!("only DVC data is permitted on a multitransport tunnel"));
         };
-        if !self.incoming_tunnel_channels.contains_key(&data.channel_id()) {
+        let channel_id = data.channel_id();
+        if !self.incoming_tunnel_channels.contains_key(&channel_id) {
             return Err(pdu_other_err!(
                 "received tunneled data for a channel not selected by Soft-Sync"
             ));
         }
-        self.process_data(data)
+        let route = self
+            .outgoing_tunnel_channels
+            .get(&channel_id)
+            .map(|tunnel_type| (channel_id, *tunnel_type));
+        self.process_data(data).map(|messages| (messages, route))
     }
 
     fn close_for_message_limit(&mut self, channel_id: u32, size: usize) -> Vec<SvcMessage> {
@@ -491,15 +509,30 @@ impl DrdynvcServer {
                 return Ok(self.close_for_message_limit(channel_id, size));
             }
         }
-        let mut resp = Vec::new();
-        if let Some(complete) = c.complete_data.process_data(data).map_err(|e| decode_err!(e))? {
-            if max_message_size.is_some_and(|max_message_size| max_message_size < complete.len()) {
-                return Ok(self.close_for_message_limit(channel_id, complete.len()));
-            }
-            let msg = c.processor.process(channel_id, &complete)?;
-            resp.extend(encode_dvc_messages(channel_id, msg, ChannelFlags::SHOW_PROTOCOL).map_err(|e| encode_err!(e))?);
+        let Some(complete) = c.complete_data.process_data(data).map_err(|e| decode_err!(e))? else {
+            return Ok(Vec::new());
+        };
+        if max_message_size.is_some_and(|max_message_size| max_message_size < complete.len()) {
+            return Ok(self.close_for_message_limit(channel_id, complete.len()));
         }
-        Ok(resp)
+        let process_result = c.processor.process(channel_id, &complete);
+        let error_policy = c.processor.process_error_policy();
+        let messages = match process_result {
+            Ok(messages) => messages,
+            Err(error) if error_policy == DvcProcessErrorPolicy::CloseChannel => {
+                warn!(
+                    channel_id,
+                    error = %error,
+                    "Closing dynamic channel after processor error"
+                );
+                let close = self
+                    .close_channel(channel_id)
+                    .ok_or_else(|| pdu_other_err!("dynamic channel disappeared while handling processor error"))?;
+                return Ok(alloc::vec![close]);
+            }
+            Err(error) => return Err(error),
+        };
+        encode_dvc_messages(channel_id, messages, ChannelFlags::SHOW_PROTOCOL).map_err(|e| encode_err!(e))
     }
 
     fn process_soft_sync_response(&mut self, response: crate::pdu::SoftSyncResponsePdu) -> PduResult<()> {

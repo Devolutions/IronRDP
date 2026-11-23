@@ -10,7 +10,7 @@ use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::PduResult;
 use pdu::gcc::ChannelName;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::alloc::borrow::ToOwned as _;
 use crate::complete_data::CompleteData;
@@ -125,16 +125,6 @@ impl DynamicVirtualChannel {
         let messages = self.channel_processor.start(channel_id)?;
         self.channel_id = Some(channel_id);
         Ok(messages)
-    }
-
-    fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {
-        let channel_id = pdu.channel_id();
-        let complete_data = self.complete_data.process_data(pdu).map_err(|e| decode_err!(e))?;
-        if let Some(complete_data) = complete_data {
-            self.channel_processor.process(channel_id, &complete_data)
-        } else {
-            Ok(Vec::new())
-        }
     }
 
     fn channel_name(&self) -> &str {
@@ -642,11 +632,32 @@ impl DrdynvcClient {
 
     fn process_data(&mut self, data: DrdynvcDataPdu) -> PduResult<Vec<SvcMessage>> {
         let channel_id = data.channel_id();
-        let messages = self
-            .dynamic_channels
-            .get_by_channel_id_mut(channel_id)
-            .ok_or_else(|| pdu_other_err!("access to non existing DVC channel"))?
-            .process(data)?;
+        let (process_result, error_policy) = {
+            let dvc = self
+                .dynamic_channels
+                .get_by_channel_id_mut(channel_id)
+                .ok_or_else(|| pdu_other_err!("access to non existing DVC channel"))?;
+            let Some(complete_data) = dvc.complete_data.process_data(data).map_err(|e| decode_err!(e))? else {
+                return Ok(Vec::new());
+            };
+            let process_result = dvc.channel_processor.process(channel_id, &complete_data);
+            (process_result, dvc.channel_processor.process_error_policy())
+        };
+        let messages = match process_result {
+            Ok(messages) => messages,
+            Err(error) if error_policy == crate::DvcProcessErrorPolicy::CloseChannel => {
+                warn!(
+                    channel_id,
+                    error = %error,
+                    "Closing dynamic channel after processor error"
+                );
+                let (close_pdu, _) = self
+                    .client_close(channel_id)
+                    .ok_or_else(|| pdu_other_err!("dynamic channel disappeared while handling processor error"))?;
+                return Ok(alloc::vec![close_pdu]);
+            }
+            Err(error) => return Err(error),
+        };
 
         encode_dvc_messages(channel_id, messages, ChannelFlags::empty()).map_err(|e| encode_err!(e))
     }

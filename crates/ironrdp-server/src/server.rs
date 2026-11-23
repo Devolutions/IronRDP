@@ -2560,6 +2560,7 @@ impl ConnectionState {
                         context.udp_available,
                         data.channel_id,
                         messages,
+                        None,
                     )?);
                     outputs.extend(self.take_dvc_events());
                     if self
@@ -2599,6 +2600,7 @@ impl ConnectionState {
         udp_available: bool,
         channel_id: u16,
         messages: Vec<ironrdp_svc::SvcMessage>,
+        close_tunnel_route: Option<(u32, dvc::pdu::SoftSyncTunnelType)>,
     ) -> ServerResult<Vec<ConnectionOutput>> {
         let mut outputs = Vec::new();
         let mut tcp = Vec::new();
@@ -2610,6 +2612,12 @@ impl ConnectionState {
                         self.get_svc_processor::<dvc::DrdynvcServer>().is_some_and(|d| {
                             d.tunnel_for_outgoing_channel(data.channel_id())
                                 == Some(dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP)
+                        })
+                    }
+                    Ok(dvc::pdu::DrdynvcServerPdu::Close(close)) => {
+                        close_tunnel_route.is_some_and(|(routed_channel_id, tunnel_type)| {
+                            close.channel_id() == routed_channel_id
+                                && tunnel_type == dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP
                         })
                     }
                     _ => false,
@@ -2653,14 +2661,15 @@ impl ConnectionState {
         // UNTESTED: events the built-in dynamic channels receive over the UDP tunnel are taken below,
         // as the TCP path's are in `process_x224`. Without that they wait until the next DRDYNVC frame
         // over TCP. When changing the tunnel path, check that it still takes them after processing.
-        let messages = match drdynvc.process_tunnel(payload) {
-            Ok(messages) => messages,
+        let (messages, close_tunnel_route) = match drdynvc.process_tunnel_with_route(payload) {
+            Ok(result) => result,
             Err(error) => {
                 warn!(%error, "Failed to process UDP tunnel payload, dropping it");
                 return Ok(self.take_dvc_events());
             }
         };
-        let mut outputs = self.encode_drdynvc_output(user_channel_id, udp_available, channel_id, messages)?;
+        let mut outputs =
+            self.encode_drdynvc_output(user_channel_id, udp_available, channel_id, messages, close_tunnel_route)?;
         outputs.extend(self.take_dvc_events());
         Ok(outputs)
     }
@@ -8837,6 +8846,30 @@ mod tests {
     use ironrdp_svc::{SvcMessage, SvcServerProcessor};
 
     use super::*;
+
+    // oracle: mutant sending a server-initiated DYNVC_CLOSE over TCP after channel removal.
+    #[test]
+    fn server_initiated_dvc_close_uses_saved_reliable_udp_route() {
+        let mut conn = ConnectionState::default();
+        let close = dvc::pdu::DrdynvcServerPdu::Close(dvc::pdu::ClosePdu::new(7));
+        let outputs = conn
+            .encode_drdynvc_output(
+                1001,
+                true,
+                1003,
+                vec![SvcMessage::from(close)],
+                Some((7, dvc::pdu::SoftSyncTunnelType::RELIABLE_UDP)),
+            )
+            .expect("DVC Close PDU should be routed");
+
+        let [ConnectionOutput::TunnelData(payload)] = outputs.as_slice() else {
+            panic!("expected exactly one UDP tunnel output");
+        };
+        let dvc::pdu::DrdynvcServerPdu::Close(close) = decode(payload).expect("DVC Close PDU should decode") else {
+            panic!("expected a DVC Close PDU");
+        };
+        assert_eq!(close.channel_id(), 7);
+    }
 
     /// A client that did not set RNS_UD_CS_SUPPORT_ERRINFO_PDU is not sent a
     /// Set Error Info PDU; a client that set it is.

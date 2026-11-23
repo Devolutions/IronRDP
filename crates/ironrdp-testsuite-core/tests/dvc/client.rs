@@ -8,7 +8,10 @@ use ironrdp_dvc::pdu::{
     DataCompressedPdu, DataFirstCompressedPdu, DataFirstPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu,
     DrdynvcServerPdu, SoftSyncChannelList, SoftSyncRequestPdu, SoftSyncTunnelType,
 };
-use ironrdp_dvc::{DrdynvcClient, DvcChannelListener, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessor};
+use ironrdp_dvc::{
+    DrdynvcClient, DvcChannelListener, DvcClientProcessor, DvcMessage, DvcMessageBatch, DvcProcessErrorPolicy,
+    DvcProcessor,
+};
 use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
 struct RecordedDvc {
@@ -72,6 +75,58 @@ impl DvcProcessor for FailingDvc {
 }
 
 impl DvcClientProcessor for FailingDvc {}
+
+struct FailingProcessDvc(Arc<AtomicBool>);
+
+impl_as_any!(FailingProcessDvc);
+
+impl DvcProcessor for FailingProcessDvc {
+    fn channel_name(&self) -> &str {
+        "failing-process"
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn process_error_policy(&self) -> DvcProcessErrorPolicy {
+        DvcProcessErrorPolicy::CloseChannel
+    }
+
+    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        Err(pdu_other_err!("invalid application message"))
+    }
+
+    fn close(&mut self, _channel_id: u32) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+impl DvcClientProcessor for FailingProcessDvc {}
+
+struct PropagatingProcessDvc(Arc<AtomicBool>);
+
+impl_as_any!(PropagatingProcessDvc);
+
+impl DvcProcessor for PropagatingProcessDvc {
+    fn channel_name(&self) -> &str {
+        "propagating-process"
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
+        Ok(Vec::new())
+    }
+
+    fn process(&mut self, _channel_id: u32, _payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
+        Err(pdu_other_err!("invalid application message"))
+    }
+
+    fn close(&mut self, _channel_id: u32) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+impl DvcClientProcessor for PropagatingProcessDvc {}
 
 // oracle: mutant distinguish registered channel types for backward-compatible name checks
 #[test]
@@ -141,6 +196,145 @@ fn exchange_capabilities(client: &mut DrdynvcClient) {
     )))
     .expect("Capabilities Request should encode");
     client.process(&caps).expect("Capabilities Request should be processed");
+}
+
+// oracle: mutant ignoring CloseChannel leaves the failed DVC open.
+#[test]
+fn opted_in_processor_failure_closes_only_its_channel() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    let close_called = Arc::new(AtomicBool::new(false));
+    client
+        .attach_established_dynamic_channel(3, FailingProcessDvc(Arc::clone(&close_called)))
+        .expect("failing channel should attach");
+    client
+        .attach_established_dynamic_channel(7, RecordedDvc::default())
+        .expect("sibling channel should attach");
+
+    let first_fragment = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(
+        3,
+        17,
+        b"valid ".to_vec(),
+    ))))
+    .expect("first DVC fragment should encode");
+    // oracle: spec MS-RDPEDYC §3.1.5.2.3 dispatches a message only after its full length is received.
+    assert!(
+        client
+            .process(&first_fragment)
+            .expect("an incomplete message should be buffered")
+            .is_empty()
+    );
+    assert!(!close_called.load(Ordering::SeqCst));
+    assert!(client.get_dvc_by_channel_id::<FailingProcessDvc>(3).is_some());
+
+    let failing_data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        3,
+        b"DVC message".to_vec(),
+    ))))
+    .expect("final DVC fragment should encode");
+    let responses = client
+        .process(&failing_data)
+        .expect("an opted-in application error should close only its DVC");
+    let [close] = responses.as_slice() else {
+        panic!("expected exactly one Close PDU");
+    };
+    let DrdynvcClientPdu::Close(close) = decode_client_pdu(close) else {
+        panic!("expected a Close PDU");
+    };
+    assert_eq!(close.channel_id(), 3);
+    assert!(close_called.load(Ordering::SeqCst));
+    assert!(client.get_dvc_by_channel_id::<FailingProcessDvc>(3).is_none());
+    assert!(client.get_dvc_by_channel_id::<RecordedDvc>(7).is_some());
+
+    let sibling_data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        7,
+        b"sibling".to_vec(),
+    ))))
+    .expect("sibling DVC data should encode");
+    assert!(
+        client
+            .process(&sibling_data)
+            .expect("sibling DVC should remain usable")
+            .is_empty()
+    );
+}
+
+// oracle: mutant dropping a Close response from its DVC tunnel message batch.
+#[test]
+fn opted_in_processor_failure_keeps_tunnel_close_in_its_message_batch() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    let close_called = Arc::new(AtomicBool::new(false));
+    client
+        .attach_established_dynamic_channel(3, FailingProcessDvc(Arc::clone(&close_called)))
+        .expect("failing channel should attach");
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+    let request = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
+        SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![3]),
+    ])))
+    .expect("Soft-Sync request should encode");
+    client.process(&request).expect("Soft-Sync request should be accepted");
+
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        3,
+        b"valid DVC message".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+    let batch = client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &data)
+        .expect("an opted-in application error should close only its DVC");
+
+    assert_eq!(batch.channel_id(), 3);
+    let [close] = batch.messages() else {
+        panic!("expected exactly one Close PDU");
+    };
+    let DrdynvcClientPdu::Close(close) = decode_client_pdu(close) else {
+        panic!("expected a Close PDU");
+    };
+    assert_eq!(close.channel_id(), 3);
+    assert!(close_called.load(Ordering::SeqCst));
+    assert!(client.get_dvc_by_channel_id::<FailingProcessDvc>(3).is_none());
+}
+
+// oracle: mutant defaulting to channel closure instead of error propagation.
+#[test]
+fn processor_errors_propagate_by_default() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    let close_called = Arc::new(AtomicBool::new(false));
+    client
+        .attach_established_dynamic_channel(3, PropagatingProcessDvc(Arc::clone(&close_called)))
+        .expect("failing channel should attach");
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        3,
+        b"valid DVC message".to_vec(),
+    ))))
+    .expect("DVC data should encode");
+
+    assert!(client.process(&data).is_err());
+    assert!(!close_called.load(Ordering::SeqCst));
+    assert!(client.get_dvc_by_channel_id::<PropagatingProcessDvc>(3).is_some());
+}
+
+// oracle: mutant swallowing malformed DVC fragment reassembly errors.
+#[test]
+fn malformed_reassembly_error_is_not_converted_to_channel_close() {
+    let mut client = DrdynvcClient::new();
+    exchange_capabilities(&mut client);
+    let close_called = Arc::new(AtomicBool::new(false));
+    client
+        .attach_established_dynamic_channel(3, FailingProcessDvc(Arc::clone(&close_called)))
+        .expect("failing channel should attach");
+    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::new(
+        3,
+        2,
+        vec![1, 2, 3],
+    ))))
+    .expect("DVC data should encode");
+
+    assert!(client.process(&data).is_err());
+    assert!(!close_called.load(Ordering::SeqCst));
+    assert!(client.get_dvc_by_channel_id::<FailingProcessDvc>(3).is_some());
 }
 
 // oracle: regression #2005 - GNOME Remote Desktop sends AUDIO_PLAYBACK_DVC data right after its Create Request,

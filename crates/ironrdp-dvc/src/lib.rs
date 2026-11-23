@@ -107,6 +107,13 @@ pub trait DvcProcessor: AsAny + Send {
         None
     }
 
+    /// Returns how the DVC manager handles errors from [`Self::process`].
+    ///
+    /// The default propagates errors to the transport caller.
+    fn process_error_policy(&self) -> DvcProcessErrorPolicy {
+        DvcProcessErrorPolicy::Propagate
+    }
+
     /// Returns any messages that should be sent immediately
     /// upon the channel being created.
     ///
@@ -120,6 +127,15 @@ pub trait DvcProcessor: AsAny + Send {
 }
 
 assert_obj_safe!(DvcProcessor);
+
+/// Defines how a DVC manager handles an error returned by a processor's `process` method.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum DvcProcessErrorPolicy {
+    /// Propagates the error to the transport caller.
+    Propagate,
+    /// Closes only the dynamic channel that returned the error.
+    CloseChannel,
+}
 
 /// Encodes complete messages as DVC data PDUs, preserving message boundaries.
 ///
