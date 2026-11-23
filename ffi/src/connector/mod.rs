@@ -505,7 +505,7 @@ mod tests {
         NativeAudio::new(false, true, "", "", 0).map_err(|_| "audio settings")
     }
 
-    // oracle: regression #2469 discussion_r4603169797
+    // oracle: mutant drop pre-existing playback state when attaching capture
     #[test]
     fn static_playback_before_capture_preserves_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -559,7 +559,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2480
+    // oracle: mutant allow native playback alongside static playback
     #[test]
     fn existing_static_playback_rejects_native_playback_without_consuming_audio() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -653,7 +653,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: mutant drop pre-existing playback DVC state when attaching capture
     #[test]
     fn playback_proxy_attached_before_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -671,7 +671,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: mutant drop pre-existing playback DVC state when attaching capture
     #[test]
     fn lossy_playback_proxy_before_capture_advertises_playback() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -706,7 +706,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: mutant drop pre-existing capture DVC state when attaching playback
     #[test]
     fn input_proxy_attached_before_playback_advertises_capture() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
@@ -747,7 +747,7 @@ mod tests {
         Ok(())
     }
 
-    // oracle: regression #2469
+    // oracle: mutant drop pre-existing playback state when attaching capture
     #[test]
     fn separately_attached_playback_survives_later_capture_configuration() -> Result<(), &'static str> {
         let mut connector = connector_without_playback()?;
