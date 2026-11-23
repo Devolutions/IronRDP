@@ -27,10 +27,6 @@ mod sound;
 #[cfg(feature = "usb")]
 mod urbdrc;
 
-// Silence warnings about unused `zrip` when `qoiz-zstd` is enabled.
-#[cfg(all(feature = "qoiz-zstd", not(feature = "__test")))]
-use zrip as _;
-
 pub use clipboard::CliprdrServerFactory;
 pub use display::{
     BitmapUpdate, ColorPointer, DesktopSize, DisplayContext, DisplayUpdate, Framebuffer, LargePointer, PixelFormat,
@@ -96,9 +92,7 @@ pub mod bench {
     }
 }
 
-#[cfg(all(feature = "__test", feature = "qoiz"))]
-pub mod qoiz_test {
-    pub use crate::encoder::qoiz::zrip_backend::Compressor as ZripCompressor;
-    #[cfg(feature = "qoiz-zstd")]
-    pub use crate::encoder::qoiz::zstd_safe_backend::Compressor as ZstdSafeCompressor;
-}
+#[cfg(all(feature = "__test", feature = "qoiz-zrip"))]
+pub use crate::encoder::qoiz::zrip_backend::Compressor as ZripCompressor;
+#[cfg(all(feature = "__test", feature = "qoiz-zstd"))]
+pub use crate::encoder::qoiz::zstd_safe_backend::Compressor as ZstdSafeCompressor;

@@ -19,7 +19,7 @@ use tracing::{debug, trace, warn};
 use crate::image::DecodedImage;
 use crate::palette::Palette;
 use crate::pointer::PointerCache;
-#[cfg(feature = "qoiz")]
+#[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
 use crate::qoiz;
 use crate::{SessionError, SessionErrorExt as _, SessionErrorKind, SessionResult, reason_err, rfx};
 
@@ -142,7 +142,7 @@ pub struct Processor {
     /// repeatedly triggering redraw traffic.
     bitmap_recovery_requested: bool,
     bitmap_recovery_pending: bool,
-    #[cfg(feature = "qoiz")]
+    #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
     qoiz_decompressor: qoiz::Decompressor,
 }
 
@@ -808,7 +808,7 @@ impl Processor {
                                 &mut update_rectangle,
                             )?;
                         }
-                        #[cfg(feature = "qoiz")]
+                        #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
                         ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOIZ => {
                             let data = self.qoiz_decompressor.decompress(bits.extended_bitmap_data.data)?;
 
@@ -905,7 +905,7 @@ impl ProcessorBuilder {
             palette: Palette::system_default(),
             bitmap_recovery_requested: false,
             bitmap_recovery_pending: false,
-            #[cfg(feature = "qoiz")]
+            #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
             qoiz_decompressor: qoiz::Decompressor::default(),
         }
     }

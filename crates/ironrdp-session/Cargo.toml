@@ -19,9 +19,12 @@ test = false
 [features]
 default = []
 qoi = ["dep:qoicoubeh", "ironrdp-pdu/qoi"]
-qoiz = ["dep:zrip", "qoi"]
-# Decompress QOIZ with the reference C zstd implementation instead of the pure Rust one.
-qoiz-zstd = ["dep:zstd-safe", "qoiz"]
+# QOIZ codec support with the reference C zstd implementation backend.
+qoiz = ["qoiz-zstd"]
+# QOIZ codec, decompressed with the pure Rust zstd implementation.
+qoiz-zrip = ["qoi", "dep:zrip"]
+# QOIZ codec, decompressed with the reference C zstd implementation.
+qoiz-zstd = ["qoi", "dep:zstd-safe"]
 __test = ["dep:visibility"]
 
 [dependencies]
@@ -38,7 +41,7 @@ ironrdp-rdpei = { path = "../ironrdp-rdpei", version = "0.3" } # public
 tracing = { version = "0.1", features = ["log"] }
 qoicoubeh = { version = "0.5", optional = true }
 zrip = { version = "0.8", optional = true, default-features = false, features = ["alloc", "simd"] }
-zstd-safe = { version = "7.2", optional = true, features = ["std"] }
+zstd-safe = { version = "8.3", optional = true, features = ["std"] }
 visibility = { version = "0.1", optional = true }
 
 [lints]

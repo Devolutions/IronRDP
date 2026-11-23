@@ -27,7 +27,7 @@ use crate::{ColorPointer, DisplayUpdate, Framebuffer, LargePointer, RGBAPointer}
 mod bitmap;
 mod fast_path;
 mod pointer_mask;
-#[cfg(feature = "qoiz")]
+#[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
 pub(crate) mod qoiz;
 pub(crate) mod rfx;
 
@@ -45,7 +45,7 @@ pub(crate) struct UpdateEncoderCodecs {
     remotefx_quant: Quant,
     #[cfg(feature = "qoi")]
     qoi: Option<u8>,
-    #[cfg(feature = "qoiz")]
+    #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
     qoiz: Option<u8>,
     /// `(codec_id, color_loss_level)` from the negotiated NsCodec capability.
     #[cfg(feature = "nscodec")]
@@ -60,7 +60,7 @@ impl UpdateEncoderCodecs {
             remotefx_quant: Quant::default(),
             #[cfg(feature = "qoi")]
             qoi: None,
-            #[cfg(feature = "qoiz")]
+            #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
             qoiz: None,
             #[cfg(feature = "nscodec")]
             nscodec: None,
@@ -88,7 +88,7 @@ impl UpdateEncoderCodecs {
         self.qoi = qoi
     }
 
-    #[cfg(feature = "qoiz")]
+    #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
     #[cfg_attr(any(feature = "__test", feature = "__bench"), visibility::make(pub))]
     pub(crate) fn set_qoiz(&mut self, qoiz: Option<u8>) {
         self.qoiz = qoiz
@@ -156,7 +156,7 @@ impl UpdateEncoder {
     ) -> ServerResult<Self> {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             match codecs {
-                #[cfg(feature = "qoiz")]
+                #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
                 UpdateEncoderCodecs { qoiz: Some(id), .. } => BitmapUpdater::Qoiz(QoizHandler::new(id)?),
                 #[cfg(feature = "qoi")]
                 UpdateEncoderCodecs { qoi: Some(id), .. } => BitmapUpdater::Qoi(QoiHandler::new(id)),
@@ -782,7 +782,7 @@ enum BitmapUpdater {
     RemoteFx(RemoteFxHandler),
     #[cfg(feature = "qoi")]
     Qoi(QoiHandler),
-    #[cfg(feature = "qoiz")]
+    #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
     Qoiz(QoizHandler),
     #[cfg(feature = "nscodec")]
     NsCodec(NsCodecHandler),
@@ -795,7 +795,7 @@ impl BitmapUpdater {
             Self::RemoteFx(up) => up.handle(bitmap),
             #[cfg(feature = "qoi")]
             Self::Qoi(up) => up.handle(bitmap),
-            #[cfg(feature = "qoiz")]
+            #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
             Self::Qoiz(up) => up.handle(bitmap),
             #[cfg(feature = "nscodec")]
             Self::NsCodec(up) => up.handle(bitmap),
@@ -982,20 +982,20 @@ impl BitmapUpdateHandler for QoiHandler {
     }
 }
 
-#[cfg(feature = "qoiz")]
+#[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
 struct QoizHandler {
     codec_id: u8,
     compressor: qoiz::Compressor,
 }
 
-#[cfg(feature = "qoiz")]
+#[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
 impl fmt::Debug for QoizHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("QoizHandler").field("codec_id", &self.codec_id).finish()
     }
 }
 
-#[cfg(feature = "qoiz")]
+#[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
 impl QoizHandler {
     fn new(codec_id: u8) -> ServerResult<Self> {
         Ok(Self {
@@ -1005,7 +1005,7 @@ impl QoizHandler {
     }
 }
 
-#[cfg(feature = "qoiz")]
+#[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
 impl BitmapUpdateHandler for QoizHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
         let qoi = qoi_encode(bitmap)?;

@@ -427,7 +427,7 @@ pub struct ChannelConfig {
     pub qoi: bool,
 
     /// Enable QOIZ (QOI with zlib) bitmap codec.
-    #[cfg(feature = "qoiz")]
+    #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
     pub qoiz: bool,
 
     /// Enable native MS-RDPEWA WebAuthn redirection.
@@ -562,7 +562,7 @@ impl Default for ChannelConfig {
             rdpdr: RdpdrConfig::default(),
             #[cfg(feature = "qoi")]
             qoi: true,
-            #[cfg(feature = "qoiz")]
+            #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
             qoiz: true,
             #[cfg(feature = "webauthn")]
             webauthn: true,
@@ -1969,7 +1969,7 @@ impl ConfigBuilder {
     }
 
     /// Enable or disable QOIZ bitmap codec at runtime.
-    #[cfg(feature = "qoiz")]
+    #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
     #[must_use]
     pub fn with_qoiz(mut self, enabled: bool) -> Self {
         self.channels.qoiz = enabled;
@@ -3241,7 +3241,7 @@ impl ConfigBuilder {
         if let Some(enabled) = ps.enable_qoi() {
             self.channels.qoi = enabled;
         }
-        #[cfg(feature = "qoiz")]
+        #[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
         if let Some(enabled) = ps.enable_qoiz() {
             self.channels.qoiz = enabled;
         }

@@ -2,9 +2,10 @@
 //!
 //! Two backends are available:
 //!
-//! - `zrip`, a pure Rust zstd implementation, used by default.
-//! - `zstd-safe`, bindings to the reference C implementation, used when the
-//!   `qoiz-zstd` feature is enabled.
+//! - `zstd-safe`, bindings to the reference C implementation, enabled by the
+//!   `qoiz-zstd` feature (and by `qoiz`). It takes precedence when both
+//!   backends are enabled.
+//! - `zrip`, a pure Rust zstd implementation, enabled by the `qoiz-zrip` feature.
 //!
 //! Both consume standard zstd frames, so the choice of backend is invisible on
 //! the wire and either side of a connection may use either one.
@@ -20,7 +21,11 @@ use zstd_safe_backend as backend;
 /// against the history of the ones before it.
 pub(crate) type Decompressor = backend::Decompressor;
 
-#[cfg(any(not(feature = "qoiz-zstd"), feature = "__test"))]
+#[cfg(feature = "qoiz-zrip")]
+#[cfg_attr(
+    all(feature = "qoiz-zstd", not(feature = "__test")),
+    expect(dead_code, reason = "`zstd-safe` takes precedence when both backends are enabled")
+)]
 #[cfg_attr(feature = "__test", visibility::make(pub(crate)))]
 mod zrip_backend {
     use crate::{SessionResult, reason_err};

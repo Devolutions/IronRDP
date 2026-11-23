@@ -61,8 +61,9 @@ client-entra-auth = ["ironrdp-client?/entra-auth"]
 client-all = ["ironrdp-client?/all"]
 vmconnect = ["dep:ironrdp-vmconnect"]
 qoi = ["ironrdp-server?/qoi", "ironrdp-pdu?/qoi", "ironrdp-connector?/qoi", "ironrdp-session?/qoi", "ironrdp-client?/qoi"]
-qoiz = ["ironrdp-server?/qoiz", "ironrdp-pdu?/qoiz", "ironrdp-connector?/qoiz", "ironrdp-session?/qoiz", "ironrdp-client?/qoiz"]
-qoiz-zstd = ["ironrdp-server?/qoiz-zstd", "ironrdp-session?/qoiz-zstd", "ironrdp-client?/qoiz-zstd", "qoiz"]
+qoiz = ["qoiz-zstd"]
+qoiz-zrip = ["ironrdp-server?/qoiz-zrip", "ironrdp-pdu?/qoiz", "ironrdp-connector?/qoiz", "ironrdp-session?/qoiz-zrip", "ironrdp-client?/qoiz-zrip"]
+qoiz-zstd = ["ironrdp-server?/qoiz-zstd", "ironrdp-pdu?/qoiz", "ironrdp-connector?/qoiz", "ironrdp-session?/qoiz-zstd", "ironrdp-client?/qoiz-zstd"]
 
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.

@@ -13,14 +13,10 @@ pub mod x224;
 mod active_stage;
 mod autodetect;
 mod palette;
-#[cfg(feature = "qoiz")]
+#[cfg(any(feature = "qoiz-zrip", feature = "qoiz-zstd"))]
 mod qoiz;
 
 use core::fmt;
-
-// Silence warnings about unused `zrip` when `qoiz-zstd` is enabled.
-#[cfg(all(feature = "qoiz-zstd", not(feature = "__test")))]
-use zrip as _;
 
 #[cfg(feature = "__test")]
 pub use active_stage::composite_graphics_updates;
@@ -30,12 +26,10 @@ pub use active_stage::{
 };
 pub use fast_path::{BulkDecompressionErrorKind, FastPathBulkDecompressionFailure};
 
-#[cfg(all(feature = "__test", feature = "qoiz"))]
-pub mod qoiz_test {
-    pub use crate::qoiz::zrip_backend::Decompressor as ZripDecompressor;
-    #[cfg(feature = "qoiz-zstd")]
-    pub use crate::qoiz::zstd_safe_backend::Decompressor as ZstdSafeDecompressor;
-}
+#[cfg(all(feature = "__test", feature = "qoiz-zrip"))]
+pub use crate::qoiz::zrip_backend::Decompressor as ZripDecompressor;
+#[cfg(all(feature = "__test", feature = "qoiz-zstd"))]
+pub use crate::qoiz::zstd_safe_backend::Decompressor as ZstdSafeDecompressor;
 
 pub type SessionResult<T> = Result<T, SessionError>;
 
