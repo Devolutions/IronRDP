@@ -163,6 +163,7 @@ async fn callback_receives_initial_changed_and_reactivated_layouts() {
         set_cursor_style_callback: js_sys::Function::new_no_args(""),
         set_cursor_style_callback_context: JsValue::NULL,
         audio_playback_callback: None,
+        drive_request_callback: None,
         camera_callback: None,
         camera: None,
         monitor_layout_callback: Some(callback),

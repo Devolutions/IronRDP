@@ -1149,7 +1149,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn create_is_deferred_and_completed_with_the_reply() {
         let (mut backend, mut rx) = backend();
         let out = backend
@@ -1190,7 +1191,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn reset_drops_pending_requests() {
         let (mut backend, mut rx) = backend();
         backend
@@ -1215,7 +1217,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn oversized_reads_fail_without_a_round_trip() {
         let (mut backend, mut rx) = backend();
         let out = backend
@@ -1229,7 +1232,8 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_listing_is_fetched_once_and_served_from_memory() {
         let (mut backend, mut rx) = backend();
         let query = |file_id, completion_id, initial_query| {
@@ -1335,7 +1339,8 @@ mod tests {
             .len()
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_handle_that_changed_nothing_is_answered_locally() {
         let (mut backend, mut rx) = backend();
         open(&mut backend, &mut rx, 1);
@@ -1347,7 +1352,8 @@ mod tests {
         assert_eq!((request.id, request.op), (0, DriveOp::Close));
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn a_write_makes_metadata_and_close_go_to_javascript() {
         let (mut backend, mut rx) = backend();
         open(&mut backend, &mut rx, 1);
@@ -1368,7 +1374,8 @@ mod tests {
         assert!(request.id != 0 && request.op == DriveOp::Close);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn completions_go_out_in_the_order_the_irps_arrived() {
         let (mut backend, mut rx) = backend();
         open(&mut backend, &mut rx, 1);
@@ -1405,7 +1412,8 @@ mod tests {
         assert_eq!(query_information(&mut backend, 5), 1);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn filesystem_controls_report_no_reparse_points() {
         assert_eq!(
             fsctl_status(FSCTL_GET_REPARSE_POINT),
@@ -1416,16 +1424,19 @@ mod tests {
         assert_eq!(fsctl_status(0x0009_00C0), NtStatus::INVALID_DEVICE_REQUEST);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn times_round_trip_through_milliseconds() {
         let ms = 1_700_000_000_123.0;
-        assert_eq!(filetime_to_ms(ms_to_filetime(ms)), ms);
-        assert_eq!(filetime_to_ms(0), 0.0);
-        assert_eq!(filetime_to_ms(-1), 0.0);
+        // Compare bit patterns: the round trip must be exact, not just close.
+        assert_eq!(filetime_to_ms(ms_to_filetime(ms)).to_bits(), ms.to_bits());
+        assert_eq!(filetime_to_ms(0).to_bits(), 0.0f64.to_bits());
+        assert_eq!(filetime_to_ms(-1).to_bits(), 0.0f64.to_bits());
         assert_eq!(ms_to_filetime(0.0), 0);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn sizes_round_up_to_the_allocation_unit() {
         assert_eq!(allocation(0), 0);
         assert_eq!(allocation(1), 4096);

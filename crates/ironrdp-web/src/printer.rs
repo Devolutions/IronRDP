@@ -420,20 +420,20 @@ impl WasmPrinter {
                     let file_id = JsValue::from(file_id);
                     let device_id = JsValue::from(device_id);
                     if let Err(err) = on_job_start.call2(&this, &file_id, &device_id) {
-                        error!(?err, "on_job_start JS callback threw");
+                        error!(error = ?err, "JS onJobStart callback threw");
                     }
                 }
             }
             PrinterBackendMessage::Announced { device_id, result_code } => {
                 if let Some(on_printer_announced) = &self.callbacks.on_printer_announced {
-                    let accepted = JsValue::from(result_code == u32::from(NtStatus::SUCCESS));
+                    let accepted = JsValue::from(announcement_accepted(result_code));
                     if let Err(err) = on_printer_announced.call3(
                         &this,
                         &JsValue::from(device_id),
                         &accepted,
                         &JsValue::from(result_code),
                     ) {
-                        error!(?err, "on_printer_announced JS callback threw");
+                        error!(error = ?err, "JS onPrinterAnnounced callback threw");
                     }
                 }
             }
@@ -481,6 +481,12 @@ pub(crate) fn wasm_printer_pair(
     let backend = WasmPrinterBackend::new(proxy);
     let printer = WasmPrinter::new(callbacks);
     (backend, printer)
+}
+
+/// Whether the host accepted a device announcement: its Server Device
+/// Announce Response carries `STATUS_SUCCESS` (MS-RDPEFS 2.2.2.1).
+fn announcement_accepted(result_code: u32) -> bool {
+    result_code == u32::from(NtStatus::SUCCESS)
 }
 
 #[cfg(test)]
@@ -560,6 +566,8 @@ mod tests {
         match rx.try_recv().unwrap() {
             RdpInputEvent::Printer(PrinterBackendMessage::Created { file_id, device_id }) => {
                 assert_eq!(file_id, expected_file_id);
+                // oracle: doc onJobStart(fileId, deviceId) in web-client/iron-remote-desktop-rdp/README.md
+                // names the device of the request that created the job.
                 assert_eq!(device_id, DEVICE_ID);
             }
             other => panic!("unexpected event: {other:?}"),
@@ -598,7 +606,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn create_write_close_streams_print_job_events() {
         let (mut backend, mut rx) = printer_backend();
 
@@ -630,7 +639,42 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn device_announce_response_reaches_the_printer() {
+        // oracle: doc onPrinterAnnounced(deviceId, accepted, resultCode) in
+        // web-client/iron-remote-desktop-rdp/README.md receives the host's answer unchanged.
+        let (mut backend, mut rx) = printer_backend();
+        for result_code in [NtStatus::SUCCESS, NtStatus::UNSUCCESSFUL] {
+            backend
+                .handle_server_device_announce_response(ServerDeviceAnnounceResponse {
+                    device_id: DEVICE_ID,
+                    result_code,
+                })
+                .unwrap();
+            match rx.try_recv().unwrap() {
+                RdpInputEvent::Printer(PrinterBackendMessage::Announced {
+                    device_id,
+                    result_code: code,
+                }) => {
+                    assert_eq!(device_id, DEVICE_ID);
+                    assert_eq!(code, u32::from(result_code));
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn announcement_is_accepted_only_on_success() {
+        // oracle: spec MS-RDPEFS 2.2.2.1 ResultCode is STATUS_SUCCESS when the device was accepted.
+        assert!(announcement_accepted(u32::from(NtStatus::SUCCESS)));
+        assert!(!announcement_accepted(u32::from(NtStatus::UNSUCCESSFUL)));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn write_for_unknown_file_id_is_rejected() {
         let (mut backend, _rx) = printer_backend();
 
@@ -644,7 +688,8 @@ mod tests {
         assert_eq!(read_u32(&response[16..]), 0);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn oversized_write_rejects_and_drops_partial_job() {
         let (mut backend, mut rx) = printer_backend_with_limits(4, MAX_QUEUED_PRINT_DATA_BYTES);
 
@@ -677,7 +722,8 @@ mod tests {
         assert_eq!(response_status(&close_response), NtStatus::UNSUCCESSFUL);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn queued_print_data_budget_rejects_second_pending_chunk() {
         let (mut backend, mut rx) = printer_backend_with_limits(MAX_PRINT_JOB_BYTES, 4);
 
