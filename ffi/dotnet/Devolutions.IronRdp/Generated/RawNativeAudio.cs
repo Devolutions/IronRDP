@@ -10,7 +10,7 @@ internal partial struct NativeAudio
 {
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "NativeAudio_new", CallingConvention = CallingConvention.Cdecl)]
-    internal static unsafe extern DiplomatResultNativeAudioIronRdpError New(DiplomatSliceU8 outputDevice, uint latencyMs);
+    internal static unsafe extern DiplomatResultNativeAudioIronRdpError New([MarshalAs(UnmanagedType.U1)] bool playback, [MarshalAs(UnmanagedType.U1)] bool capture, DiplomatSliceU8 outputDevice, DiplomatSliceU8 inputDevice, uint latencyMs);
 
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "NativeAudio_destroy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void Destroy(NativeAudio* handle);
