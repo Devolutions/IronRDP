@@ -345,8 +345,7 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
 
     fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool {
         let _ = packet_size;
-        self.change_format(encode_format, &mut || Ok(()))
-            .unwrap_or(false)
+        self.change_format(encode_format, &mut || Ok(())).unwrap_or(false)
     }
 
     fn set_format_ordered(

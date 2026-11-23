@@ -357,7 +357,7 @@ impl RdpeaiClient {
                 }
                 Ok(true) => Ok(()),
             }
-            .map(|()| Vec::new())
+            .map(|()| Vec::new());
         }
 
         if self.handler.set_format(&encode_fmt, packet_size) {
