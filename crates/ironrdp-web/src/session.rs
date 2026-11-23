@@ -96,8 +96,8 @@ struct SessionBuilderInner {
     printer_device_id: Option<u32>,
     printer_driver_name: Option<String>,
     // Set by the `printers` extension; replaces the single printer above.
-    printers: Option<Vec<PrinterSpec>>,
-    invalid_printers: bool,
+    // `Err` holds the reason the extension value was rejected.
+    printers: Option<Result<Vec<PrinterSpec>, String>>,
 
     use_display_control: bool,
     audio_playback_callback: Option<js_sys::Function>,
@@ -154,7 +154,6 @@ impl Default for SessionBuilderInner {
             printer_device_id: None,
             printer_driver_name: None,
             printers: None,
-            invalid_printers: false,
 
             use_display_control: false,
             audio_playback_callback: None,
@@ -472,18 +471,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 };
             };
             |printers: JsValue| {
-                let mut inner = self.0.borrow_mut();
-                match parse_printers(printers) {
-                    Ok(printers) => {
-                        inner.invalid_printers = false;
-                        inner.printers = Some(printers);
-                    }
-                    Err(error) => {
-                        inner.invalid_printers = true;
-                        inner.printers = None;
-                        warn!(%error, "Invalid printers");
-                    }
-                }
+                let parsed = parse_printers(printers).map_err(|error| {
+                    warn!(%error, "Invalid printers");
+                    format!("{error:#}")
+                });
+                self.0.borrow_mut().printers = Some(parsed);
             };
         }
 
@@ -522,7 +514,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_device_id,
             printer_driver_name,
             printer_specs,
-            invalid_printers,
             outbound_message_size_limit,
             legacy_graphics,
             security,
@@ -569,7 +560,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             printer_device_id = inner.printer_device_id;
             printer_driver_name = inner.printer_driver_name.clone();
             printer_specs = inner.printers.clone();
-            invalid_printers = inner.invalid_printers;
             outbound_message_size_limit = inner.outbound_message_size_limit;
             legacy_graphics = inner.legacy_graphics;
             security = SecurityConfig {
@@ -664,23 +654,8 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             None => (None, None),
         };
 
-        if invalid_printers {
-            return Err(IronError::from(anyhow::anyhow!(
-                "invalid printers extension; see the log for details"
-            )));
-        }
-
-        let printers = match printer_specs {
-            Some(specs) => redirected_printers(specs),
-            None => {
-                // Default to 2 to avoid a potential collision if drive redirection is
-                // enabled in the same session.
-                let printer_device_id = printer_device_id.unwrap_or(2);
-                let printer_name = printer_name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
-                let printer_driver_name = printer_driver_name.unwrap_or_else(default_printer_driver_name);
-                vec![RdpdrPrinter::new(printer_device_id, printer_name, printer_driver_name).with_default(true)]
-            }
-        };
+        let printers = session_printers(printer_specs, printer_name, printer_device_id, printer_driver_name)
+            .map_err(IronError::from)?;
 
         let ws = if let Some(protocols) = websocket_protocols {
             web_sys::WebSocket::new_with_str_sequence(&proxy_address, &protocols)
@@ -1747,7 +1722,7 @@ fn get_u32_opt(obj: &js_sys::Object, key: &str) -> Result<Option<u32>, IronError
 }
 
 /// One printer of the `printers` extension.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 struct PrinterSpec {
     name: String,
     driver_name: Option<String>,
@@ -1755,9 +1730,6 @@ struct PrinterSpec {
     is_default: bool,
     network: bool,
 }
-
-/// Most printers announced in one session; the server names them `PRN1` and up.
-const MAX_PRINTERS: usize = 64;
 
 fn parse_printers(printers: JsValue) -> anyhow::Result<Vec<PrinterSpec>> {
     let printers = printers
@@ -1771,17 +1743,14 @@ fn parse_printers(printers: JsValue) -> anyhow::Result<Vec<PrinterSpec>> {
         let get = |key: &str| {
             js_sys::Reflect::get(&entry, &JsValue::from_str(key)).map_err(|e| anyhow::anyhow!("get `{key}`: {e:?}"))
         };
-        let name = get("name")?.as_string().context("printer `name` must be a string")?;
-        let driver_name = get("driverName")?.as_string().filter(|driver| !driver.is_empty());
-        let device_id = match get("deviceId")?.as_f64() {
-            Some(id) if id >= 1.0 && id <= f64::from(u32::MAX) && id.fract() == 0.0 => {
-                Some(f64_to_u32_saturating_cast(id))
-            }
-            Some(id) => anyhow::bail!("invalid printer deviceId {id}"),
-            None => None,
-        };
-        let is_default = get("isDefault")?.as_bool().unwrap_or(false);
-        let network = get("network")?.as_bool().unwrap_or(true);
+        let name = printer_property("name", get("name")?, JsValue::as_string)?.context("printer `name` is required")?;
+        let driver_name =
+            printer_property("driverName", get("driverName")?, JsValue::as_string)?.filter(|driver| !driver.is_empty());
+        let device_id = printer_property("deviceId", get("deviceId")?, JsValue::as_f64)?
+            .map(printer_device_id)
+            .transpose()?;
+        let is_default = printer_property("isDefault", get("isDefault")?, JsValue::as_bool)?.unwrap_or(false);
+        let network = printer_property("network", get("network")?, JsValue::as_bool)?.unwrap_or(true);
         specs.push(PrinterSpec {
             name,
             driver_name,
@@ -1794,8 +1763,36 @@ fn parse_printers(printers: JsValue) -> anyhow::Result<Vec<PrinterSpec>> {
     Ok(specs)
 }
 
+/// Reads one property of a printer object. A property that is missing,
+/// `undefined` or `null` is `None` and takes its default; a value of the wrong
+/// type is an error rather than silently replaced by the default.
+fn printer_property<T>(key: &str, value: JsValue, convert: fn(&JsValue) -> Option<T>) -> anyhow::Result<Option<T>> {
+    if value.is_undefined() || value.is_null() {
+        return Ok(None);
+    }
+    convert(&value)
+        .map(Some)
+        .with_context(|| format!("printer `{key}` has the wrong type"))
+}
+
+/// An RDPDR device ID is a non-zero `u32` (MS-RDPEFS 2.2.1.3).
+fn printer_device_id(id: f64) -> anyhow::Result<u32> {
+    anyhow::ensure!(
+        1.0 <= id && id <= f64::from(u32::MAX) && id.fract() == 0.0,
+        "invalid printer deviceId {id}"
+    );
+    Ok(f64_to_u32_saturating_cast(id))
+}
+
 fn validate_printers(specs: &[PrinterSpec]) -> anyhow::Result<()> {
-    anyhow::ensure!(specs.len() <= MAX_PRINTERS, "at most {MAX_PRINTERS} printers");
+    anyhow::ensure!(
+        !specs.is_empty(),
+        "printers must not be empty; leave the extension out to announce the single default printer"
+    );
+    anyhow::ensure!(
+        specs.iter().filter(|spec| spec.is_default).count() <= 1,
+        "at most one printer may be the default"
+    );
     for (i, spec) in specs.iter().enumerate() {
         anyhow::ensure!(!spec.name.is_empty(), "printer names must not be empty");
         for other in &specs[..i] {
@@ -1809,11 +1806,35 @@ fn validate_printers(specs: &[PrinterSpec]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The printers to announce: the `printers` extension when it was set,
+/// otherwise the single printer configured by `printerName`, `printerDeviceId`
+/// and `printerDriverName`. In both cases a printer without its own driver
+/// gets `printerDriverName`, or the platform default when that is unset too.
+fn session_printers(
+    specs: Option<Result<Vec<PrinterSpec>, String>>,
+    name: Option<String>,
+    device_id: Option<u32>,
+    driver_name: Option<String>,
+) -> anyhow::Result<Vec<RdpdrPrinter>> {
+    let driver_name = driver_name.unwrap_or_else(default_printer_driver_name);
+    match specs {
+        Some(Ok(specs)) => Ok(redirected_printers(specs, &driver_name)),
+        Some(Err(error)) => anyhow::bail!("invalid printers extension: {error}"),
+        None => {
+            // Default to 2 to avoid a potential collision if drive redirection is
+            // enabled in the same session.
+            let device_id = device_id.unwrap_or(2);
+            let name = name.unwrap_or_else(|| "IronRDP Virtual Printer".to_owned());
+            Ok(vec![RdpdrPrinter::new(device_id, name, driver_name).with_default(true)])
+        }
+    }
+}
+
 /// Turns the `printers` extension into announcements. Printers without a
-/// `deviceId` get the lowest free ID from 2 up (1 is left for a drive), and
-/// without a `driverName` the default printer driver. When no printer is
-/// marked as the default, the first one is.
-fn redirected_printers(specs: Vec<PrinterSpec>) -> Vec<RdpdrPrinter> {
+/// `deviceId` get the lowest free ID from 2 up, like the single printer's
+/// default, and without a `driverName` the `fallback_driver`. When no printer
+/// is marked as the default, the first one is.
+fn redirected_printers(specs: Vec<PrinterSpec>, fallback_driver: &str) -> Vec<RdpdrPrinter> {
     let mut used: Vec<u32> = specs.iter().filter_map(|spec| spec.device_id).collect();
     let mut next = 2;
     let any_default = specs.iter().any(|spec| spec.is_default);
@@ -1828,7 +1849,7 @@ fn redirected_printers(specs: Vec<PrinterSpec>) -> Vec<RdpdrPrinter> {
                 used.push(next);
                 next
             });
-            let driver_name = spec.driver_name.unwrap_or_else(default_printer_driver_name);
+            let driver_name = spec.driver_name.unwrap_or_else(|| fallback_driver.to_owned());
             RdpdrPrinter::new(device_id, spec.name, driver_name)
                 .with_network(spec.network)
                 .with_default(spec.is_default || (!any_default && index == 0))
@@ -2687,51 +2708,241 @@ mod tests {
         }
     }
 
-    #[test]
-    fn redirected_printers_fill_free_device_ids_from_two() {
-        // oracle: device IDs must be unique per RDPDR channel (MS-RDPEFS 2.2.1.3).
-        let printers = redirected_printers(vec![
-            spec("A", None, false),
-            spec("B", Some(3), false),
-            spec("C", None, false),
-        ]);
-        let ids: Vec<u32> = printers.iter().map(RdpdrPrinter::device_id).collect();
-        assert_eq!(ids, [2, 3, 4]);
+    fn validation_error(specs: &[PrinterSpec]) -> String {
+        validate_printers(specs).expect_err("rejected").to_string()
     }
 
-    #[test]
-    fn redirected_printers_keep_one_default() {
-        // oracle: MS-RDPEPC 2.2.2.1 allows a single default printer; without one the first is used.
-        let first = redirected_printers(vec![spec("A", None, false), spec("B", None, false)]);
-        assert_eq!(
-            first.iter().map(RdpdrPrinter::is_default).collect::<Vec<_>>(),
-            [true, false]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn redirected_printers_fill_free_device_ids_from_two() {
+        // oracle: spec MS-RDPEFS 2.2.1.3 device IDs are unique per RDPDR channel.
+        // oracle: doc web-client/iron-remote-desktop-rdp/README.md missing IDs are the lowest free from 2 up.
+        let printers = redirected_printers(
+            vec![
+                spec("A", None, false),
+                spec("B", Some(3), false),
+                spec("C", None, false),
+                spec("D", Some(2), false),
+            ],
+            "Driver",
         );
-        let chosen = redirected_printers(vec![spec("A", None, false), spec("B", None, true)]);
+        let ids: Vec<u32> = printers.iter().map(RdpdrPrinter::device_id).collect();
+        assert_eq!(ids, [4, 3, 5, 2]);
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn redirected_printers_keep_the_marked_default() {
+        // oracle: spec MS-RDPEPC 2.2.2.1 at most one printer carries the default flag.
+        let chosen = redirected_printers(vec![spec("A", None, false), spec("B", None, true)], "Driver");
         assert_eq!(
             chosen.iter().map(RdpdrPrinter::is_default).collect::<Vec<_>>(),
             [false, true]
         );
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn redirected_printers_default_to_the_first_when_none_is_marked() {
+        // oracle: doc web-client/iron-remote-desktop-rdp/README.md the first printer is the default
+        // when none is marked `isDefault`.
+        let first = redirected_printers(vec![spec("A", None, false), spec("B", None, false)], "Driver");
+        assert_eq!(
+            first.iter().map(RdpdrPrinter::is_default).collect::<Vec<_>>(),
+            [true, false]
+        );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn redirected_printers_use_the_given_driver_and_network_flag() {
+        // oracle: doc RedirectedPrinter in web-client/iron-remote-desktop-rdp/src/extensions.ts
+        // passes driverName and network through, and the chosen driver is announced as explicit
+        // so a cached host entry cannot replace it.
         let mut printer = spec("Office", None, false);
         printer.driver_name = Some("HP Universal Printing PCL 6".to_owned());
-        let printers = redirected_printers(vec![printer]);
+        let printers = redirected_printers(vec![printer], "Fallback");
         assert_eq!(printers[0].driver_name(), "HP Universal Printing PCL 6");
         assert!(!printers[0].network());
+        assert!(printers[0].explicit_driver());
     }
 
-    #[test]
-    fn validate_printers_rejects_duplicates_and_empty_names() {
-        assert!(validate_printers(&[spec("A", None, false), spec("A", None, false)]).is_err());
-        assert!(validate_printers(&[spec("A", Some(5), false), spec("B", Some(5), false)]).is_err());
-        assert!(validate_printers(&[spec("", None, false)]).is_err());
-        assert!(validate_printers(&[spec("A", None, false), spec("B", None, false)]).is_ok());
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn printers_without_a_driver_use_printer_driver_name() {
+        // oracle: doc RedirectedPrinter.driverName in web-client/iron-remote-desktop-rdp/src/extensions.ts
+        // defaults to the same driver as printerDriverName.
+        let printers = session_printers(
+            Some(Ok(vec![spec("A", None, false)])),
+            None,
+            None,
+            Some("Chosen Driver".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(printers[0].driver_name(), "Chosen Driver");
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn printers_without_any_driver_use_the_platform_default() {
+        // oracle: regression printers() without printerDriverName keeps the platform default driver.
+        let printers = session_printers(Some(Ok(vec![spec("A", None, false)])), None, None, None).unwrap();
+        assert_eq!(printers[0].driver_name(), default_printer_driver_name());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn single_printer_is_used_without_the_printers_extension() {
+        // oracle: regression the printerName/printerDeviceId/printerDriverName extensions keep working.
+        let printers =
+            session_printers(None, Some("Solo".to_owned()), Some(7), Some("Solo Driver".to_owned())).unwrap();
+        assert_eq!(printers.len(), 1);
+        assert_eq!(printers[0].name(), "Solo");
+        assert_eq!(printers[0].device_id(), 7);
+        assert_eq!(printers[0].driver_name(), "Solo Driver");
+        assert!(printers[0].is_default());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn invalid_printers_extension_fails_the_connection() {
+        // oracle: mutant ignoring a rejected printers extension and announcing the single printer instead.
+        let error = session_printers(Some(Err("duplicate printer name \"A\"".to_owned())), None, None, None)
+            .expect_err("rejected")
+            .to_string();
+        assert_eq!(error, "invalid printers extension: duplicate printer name \"A\"");
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn validate_printers_rejects_a_duplicate_name() {
+        // oracle: mutant dropping the name check, which would announce two queues with one name.
+        assert_eq!(
+            validation_error(&[spec("A", None, false), spec("A", None, false)]),
+            "duplicate printer name \"A\""
+        );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn validate_printers_rejects_a_duplicate_device_id() {
+        // oracle: spec MS-RDPEFS 2.2.1.3 device IDs are unique per RDPDR channel.
+        assert_eq!(
+            validation_error(&[spec("A", Some(5), false), spec("B", Some(5), false)]),
+            "duplicate printer deviceId"
+        );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn validate_printers_rejects_an_empty_name() {
+        // oracle: mutant accepting an empty queue name.
+        assert_eq!(
+            validation_error(&[spec("", None, false)]),
+            "printer names must not be empty"
+        );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn validate_printers_rejects_an_empty_list() {
+        // oracle: doc web-client/iron-remote-desktop-rdp/README.md printers([]) is an error; leave the
+        // extension out for the single default printer.
+        assert!(validation_error(&[]).starts_with("printers must not be empty"));
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn validate_printers_rejects_two_defaults() {
+        // oracle: spec MS-RDPEPC 2.2.2.1 at most one printer carries the default flag.
+        assert_eq!(
+            validation_error(&[spec("A", None, true), spec("B", None, true)]),
+            "at most one printer may be the default"
+        );
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn validate_printers_accepts_distinct_printers() {
+        // oracle: mutant rejecting every list with more than one printer.
+        validate_printers(&[spec("A", None, false), spec("B", None, false), spec("C", Some(9), true)]).unwrap();
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn printer_device_id_accepts_only_non_zero_u32_integers() {
+        // oracle: spec MS-RDPEFS 2.2.1.3 DeviceId is a 32-bit unsigned integer; 0 is never assigned.
+        assert_eq!(printer_device_id(1.0).unwrap(), 1);
+        assert_eq!(printer_device_id(f64::from(u32::MAX)).unwrap(), u32::MAX);
+        for invalid in [0.0, -1.0, 2.5, f64::from(u32::MAX) + 1.0, f64::NAN, f64::INFINITY] {
+            assert!(printer_device_id(invalid).is_err(), "{invalid} accepted");
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn parse_json_printers(json: &str) -> anyhow::Result<Vec<PrinterSpec>> {
+        parse_printers(js_sys::JSON::parse(json).expect("valid JSON"))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn parse_printers_reads_every_field() {
+        // oracle: doc RedirectedPrinter in web-client/iron-remote-desktop-rdp/src/extensions.ts.
+        let specs = parse_json_printers(
+            r#"[{"name":"A","driverName":"D","deviceId":7,"isDefault":true,"network":false},{"name":"B","driverName":"","deviceId":null}]"#,
+        )
+        .unwrap();
+        assert_eq!(specs[0].name, "A");
+        assert_eq!(specs[0].driver_name.as_deref(), Some("D"));
+        assert_eq!(specs[0].device_id, Some(7));
+        assert!(specs[0].is_default);
+        assert!(!specs[0].network);
+        assert_eq!(specs[1].driver_name, None);
+        assert_eq!(specs[1].device_id, None);
+        assert!(!specs[1].is_default);
+        assert!(specs[1].network);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn parse_printers_rejects_values_of_the_wrong_type() {
+        // oracle: mutant silently replacing a mistyped property with its default.
+        for (json, expected) in [
+            (
+                r#"[{"name":"A","deviceId":"3"}]"#,
+                "printer `deviceId` has the wrong type",
+            ),
+            (
+                r#"[{"name":"A","isDefault":"yes"}]"#,
+                "printer `isDefault` has the wrong type",
+            ),
+            (r#"[{"name":"A","network":1}]"#, "printer `network` has the wrong type"),
+            (
+                r#"[{"name":"A","driverName":5}]"#,
+                "printer `driverName` has the wrong type",
+            ),
+            (r#"[{"name":3}]"#, "printer `name` has the wrong type"),
+            ("[{}]", "printer `name` is required"),
+            (r#"[{"name":"A","deviceId":0}]"#, "invalid printer deviceId 0"),
+            (r#"[{"name":"A","deviceId":1.5}]"#, "invalid printer deviceId 1.5"),
+            (r#"["A"]"#, "expected printer objects"),
+            (r#"{"name":"A"}"#, "expected an array"),
+        ] {
+            let error = parse_json_printers(json).expect_err(json).to_string();
+            assert_eq!(error, expected, "{json}");
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn parse_printers_validates_the_list() {
+        // oracle: mutant skipping validate_printers after parsing.
+        assert!(parse_json_printers("[]").is_err());
+        assert!(parse_json_printers(r#"[{"name":"A"},{"name":"A"}]"#).is_err());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn printer_driver_defaults_to_postscript_when_macos_version_is_unknown() {
         assert_eq!(
             printer_driver_name_for_macos_major_version(None),

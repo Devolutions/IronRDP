@@ -86,9 +86,9 @@ export interface PrintJobStreamCallbacks {
 export interface RedirectedPrinter {
     /** Queue name shown on the host (usually with "(redirected N)" added). */
     name: string;
-    /** Driver the host uses for the queue; defaults to the same driver as `printerDriverName`. */
+    /** Driver the host uses for the queue; defaults to `printerDriverName`, else the platform default. */
     driverName?: string;
-    /** RDPDR device ID; the lowest free ID from 2 up when omitted. */
+    /** RDPDR device ID (a non-zero integer); the lowest free ID from 2 up when omitted. */
     deviceId?: number;
     /** At most one printer is the default; the first one when none is marked. */
     isDefault?: boolean;
@@ -112,7 +112,10 @@ export function printerDriverName(driverName: string): Extension {
     return new Extension('printer_driver_name', driverName);
 }
 
-/** Announces these printers instead of the single printer configured above. */
+/**
+ * Announces these printers instead of the single printer configured above. The
+ * list must not be empty, and names and device IDs must be unique.
+ */
 export function printers(list: RedirectedPrinter[]): Extension {
     return new Extension('printers', list as unknown);
 }
