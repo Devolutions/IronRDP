@@ -323,9 +323,14 @@ fn endpoint_absent(error: &anyhow::Error) -> bool {
 
 fn endpoint_closing(error: &anyhow::Error) -> bool {
     error.downcast_ref::<io::Error>().is_some_and(|error| {
+        // A connection the daemon drops while closing its listener fails the peer owner check with
+        // `NotConnected` on macOS, where reading the peer process ID needs a live peer.
         matches!(
             error.kind(),
-            io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+            io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::NotConnected
         ) || cfg!(windows) && matches!(error.raw_os_error(), Some(232 | 233))
     })
 }
@@ -727,6 +732,16 @@ fn open_log(path: &PathBuf) -> anyhow::Result<fs::File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_retries_a_connection_dropped_before_the_peer_owner_check() {
+        // oracle: capture of a macOS CI failure, where the connection made while the daemon was stopping failed with ENOTCONN (os error 57).
+        let error = anyhow::Error::new(io::Error::from(io::ErrorKind::NotConnected))
+            .context("connect to daemon at /tmp/ironrdp-agent.sock");
+
+        assert!(endpoint_closing(&error));
+        assert!(!endpoint_absent(&error));
+    }
 
     #[test]
     fn startup_settings_round_trip_values_without_logging_secrets() {
