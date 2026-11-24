@@ -3154,6 +3154,37 @@ fn a_mark_through_a_drive_of_the_shared_directory_replaces_the_name_of_another_b
     assert_eq!(names_in(&roots.first), ["a.txt"]);
 }
 
+/// Drives with roots of their own keep a marked name each although their roots name the same directory, because each holds it open through its own path and one may remove a file that the other cannot.
+/// The file has the hard links `a.txt`, marked through one drive, and `b.txt`, marked through the other after it.
+/// A local process removes `b.txt`, and the file loses `a.txt` when its last handle closes.
+// oracle: mutant drives with roots of their own that name the same directory kept one marked name between them
+#[test]
+fn a_mark_through_a_drive_with_its_own_root_keeps_the_name_of_another_with_the_same_root() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.share.join("a.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("a.txt"), fixture.share.join("b.txt")).expect("link file");
+    let factory = drives_with_the_same_root(&utf8(&fixture.share));
+    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    let backend = nix_backend(backend.as_mut());
+    let handles = [(FIRST, r"\a.txt"), (SECOND, r"\b.txt")].map(|(device_id, path)| {
+        (
+            device_id,
+            create_on(backend, device_id, path, CreateDisposition::FILE_OPEN),
+        )
+    });
+    for (device_id, file_id) in handles {
+        let marked = set_information_on(backend, device_id, file_id, delete_pending(true));
+        assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    }
+    std::fs::remove_file(fixture.share.join("b.txt")).expect("remove locally");
+
+    for (device_id, file_id) in handles {
+        close_on(backend, device_id, file_id);
+    }
+
+    assert_eq!(names_in(&fixture.share), Vec::<String>::new());
+}
+
 /// A rename does not replace a file that is open through the other drive that reaches it, whichever drive is the enclosing one.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[rstest]
