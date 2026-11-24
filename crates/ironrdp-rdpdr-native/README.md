@@ -11,7 +11,7 @@ Native backend building blocks for the IronRDP RDPDR static channel.
   [Drive roots on macOS and Linux](#drive-roots-on-macos-and-linux) describes how roots are resolved and what holds between drives that reach the same files.
   A file ID is valid only through the drive it was opened through: through another drive it is answered like a file ID that was never opened, and the request changes nothing.
   Files are opened without blocking, so a FIFO in a root cannot stall the channel.
-  Reads are limited to 1 MiB, and the open files of all drives together to a quarter of the soft descriptor limit, at most 1024, where each directory held open as a root counts as one open file.
+  Reads are limited to 1 MiB, and the open files of all drives together to a quarter of the soft descriptor limit, at most 1024, where each root that holds its directory open counts as one open file.
   Files open with the access the server requests, directory queries match Windows wildcards, and byte-range locks bind the server's handles to each other, across drives, but not to local processes.
   The `nix::printer` backend spools PostScript jobs in an exclusively created private directory (0700), using exclusive 0600 files.
   A worker thread submits each closed job to CUPS through `lp`, which gets 60 seconds to accept it, or saves it in the configured folder without replacing existing files.
@@ -38,7 +38,8 @@ A root given with `with_drive_root` is resolved once, when the backend is config
 The drive serves that directory, not its path: it keeps serving it when the directory is moved or its path comes to name something else, and when the channel restarts.
 Once a drive has a root of its own, the shared directory is resolved and held the same way.
 A backend whose drives all serve the shared directory opens it by path for each request, and does not check it.
-Each directory held open counts as one open file against the limit on open files, and keeps its filesystem busy while the backend lives.
+Roots that name the same directory each hold it open through their own path, so a drive is bound by what the mount on the path of its own root allows, such as a read-only bind mount.
+Each root that holds its directory open counts as one open file against the limit on open files, and keeps its filesystem busy while the backend lives.
 
 A root is unusable when its path:
 

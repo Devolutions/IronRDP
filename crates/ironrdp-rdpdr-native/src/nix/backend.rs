@@ -50,13 +50,13 @@ pub struct NixRdpdrBackend {
     roots: DriveRoots,
     /// The open files of every drive, by file ID.
     ///
-    /// INVARIANT: a file is added only while the entries and the directories `roots` holds open together number fewer than `max_open_files`.
+    /// INVARIANT: a file is added only while the entries and the roots that hold their directory open together number fewer than `max_open_files`.
     open_files: HashMap<u32, OpenFile>,
-    /// Bounds the open files and the directories held open as roots together, so the server cannot exhaust the descriptors of the client process.
+    /// Bounds the open files and the roots that hold their directory open together, so the server cannot exhaust the descriptors of the client process.
     ///
     /// A quarter of the soft descriptor limit, at most `MAX_OPEN_FILES`.
     /// An open file holds up to three descriptors: the file, and a directory being enumerated with its stream.
-    /// A directory held open as a root holds one, and takes the place of one open file.
+    /// A root that holds its directory open holds one, and takes the place of one open file.
     /// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process, unless more roots are configured than the bound allows.
     max_open_files: usize,
     /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open), each with the name it was marked through.
@@ -86,12 +86,13 @@ impl Default for NixRdpdrBackend {
 /// The directories the drives serve.
 ///
 /// While no drive has a root of its own, every drive serves the shared directory, which is opened by path for each request.
-/// From the first such root on, every root is resolved once and its directory held open, the shared directory included.
+/// From the first such root on, every root is resolved once and holds the directory it names open, the shared directory included.
+/// Roots that name the same directory each hold it open, through their own path.
 ///
-/// UNTESTED: a resolved root keeps one descriptor between requests, the one in `held`, and the shared directory keeps none while no drive has a root of its own.
-/// `max_open_files` counts one open file for each directory in `held`, so any other descriptor kept for a root would come out of the quarter it leaves to the rest of the process.
+/// UNTESTED: a resolved root keeps one descriptor between requests, the one in its `directory`, and the shared directory keeps none while no drive has a root of its own.
+/// `max_open_files` counts one open file for each root that holds its directory open, so any other descriptor kept for a root would come out of the quarter it leaves to the rest of the process.
 /// The tests count the places taken under the limit, not descriptors, which cannot be counted reliably in the one process they share.
-/// After changing how roots are opened or held, check that each resolved root keeps exactly the descriptor in `held`.
+/// After changing how roots are opened or held, check that each resolved root keeps exactly the descriptor in its `directory`.
 #[derive(Debug)]
 struct DriveRoots {
     /// The path of the shared directory, which is the root of every device without a root of its own, or empty when there is none.
@@ -102,11 +103,6 @@ struct DriveRoots {
     shared: Option<ConfiguredRoot>,
     /// The root of each device that does not serve the shared directory.
     drives: HashMap<u32, ConfiguredRoot>,
-    /// The directories the configured roots resolved to, each opened once however many roots name it.
-    ///
-    /// INVARIANT: holds the directory of every root in `shared` and `drives` that resolved, and no other.
-    /// A refused root keeps its directory too, because replacing the root that refuses it makes it usable again without resolving its path again.
-    held: HashMap<FileIdentity, Root>,
 }
 
 /// A root as its path resolved when it was configured.
@@ -114,8 +110,10 @@ struct DriveRoots {
 struct ConfiguredRoot {
     /// The path the root was configured with, which is only logged once it is resolved.
     path: String,
-    /// The directory the path named, or `None` when it named none.
-    directory: Option<FileIdentity>,
+    /// The directory the path named, opened through that path, or `None` when it named none.
+    ///
+    /// A refused root keeps its directory open too, because replacing the root that refuses it makes it usable again without resolving its path again.
+    directory: Option<Root>,
     /// The directories whose entries decide what the path names, because a symbolic link was followed in or below them.
     link_directories: HashSet<FileIdentity>,
     /// Whether one of `link_directories` is the directory of a configured root, so a server could have changed what the path names.
@@ -130,24 +128,35 @@ impl DriveRoots {
         if self.drives.is_empty() {
             return Root::open(&self.shared_path).map(RootRef::Opened);
         }
-        self.directory_of(device_id)
-            .and_then(|directory| self.held.get(&directory))
-            .map(RootRef::Held)
-            .ok_or(Errno::ENOENT)
+        self.held(device_id).map(RootRef::Held).ok_or(Errno::ENOENT)
     }
 
-    /// The directory `device_id` serves, once a drive has a root of its own.
-    fn directory_of(&self, device_id: u32) -> Option<FileIdentity> {
+    /// The directory `device_id` serves, as its own root holds it open, once a drive has a root of its own.
+    ///
+    /// UNTESTED: the requests of a drive use the descriptor that was opened through the root path of that drive, never the descriptor of another root that names the same directory.
+    /// A directory can be reached through several mounts, such as a read-only bind mount and its writable source, which report the same device and inode.
+    /// A descriptor shared between such roots would let a drive configured through the read-only mount write through the writable one.
+    /// The tests cannot create mounts, so after changing how descriptors are held, check that a drive given a read-only bind mount of the root of another drive refuses writes.
+    fn held(&self, device_id: u32) -> Option<&Root> {
         let root = self.drives.get(&device_id).or(self.shared.as_ref())?;
-        root.directory.filter(|_| !root.is_refused)
+        root.directory.as_ref().filter(|_| !root.is_refused)
     }
 
     /// Whether `first` and `second` serve the same directory, so a path beneath the root of one names the same file beneath the root of the other.
     fn serve_the_same_directory(&self, first: u32, second: u32) -> bool {
         self.drives.is_empty()
             || self
-                .directory_of(first)
-                .is_some_and(|directory| self.directory_of(second) == Some(directory))
+                .held(first)
+                .is_some_and(|root| self.held(second).map(Root::identity) == Some(root.identity()))
+    }
+
+    /// How many roots hold their directory open, each of which takes the place of one open file.
+    fn held_count(&self) -> usize {
+        self.shared
+            .iter()
+            .chain(self.drives.values())
+            .filter(|root| root.directory.is_some())
+            .count()
     }
 
     /// Resolves `path` as the root of `device_id` and holds the directory it names from now on, in place of an earlier root of that device.
@@ -155,24 +164,18 @@ impl DriveRoots {
     /// The shared directory is resolved and held with the first such root.
     fn set_drive_root(&mut self, device_id: u32, path: &str) {
         if self.shared.is_none() && !self.shared_path.is_empty() {
-            let shared_path = self.shared_path.clone();
-            self.shared = Some(self.resolve(None, &shared_path));
+            self.shared = Some(Self::resolve(None, &self.shared_path));
         }
-        let root = self.resolve(Some(device_id), path);
-        self.drives.insert(device_id, root);
+        self.drives.insert(device_id, Self::resolve(Some(device_id), path));
         self.refuse_roots_reached_through_links();
     }
 
-    /// Resolves `path` and holds the directory it names, unless a root that names the same directory already holds it.
+    /// Resolves `path` to a root that holds the directory it names open.
     ///
     /// `device_id` is `None` for the shared directory.
-    fn resolve(&mut self, device_id: Option<u32>, path: &str) -> ConfiguredRoot {
+    fn resolve(device_id: Option<u32>, path: &str) -> ConfiguredRoot {
         let (directory, link_directories) = match Root::resolve(path) {
-            Ok(resolved) => {
-                let directory = resolved.root.identity();
-                self.held.entry(directory).or_insert(resolved.root);
-                (Some(directory), resolved.link_directories)
-            }
+            Ok(resolved) => (Some(resolved.root), resolved.link_directories),
             Err(error) => {
                 warn!(%error, device_id, root = path, "Failed to resolve a drive root, so nothing is served from it");
                 (None, HashSet::new())
@@ -186,7 +189,7 @@ impl DriveRoots {
         }
     }
 
-    /// Refuses every root whose path followed a symbolic link in or below the directory of a configured root, and releases the directories no root names any more.
+    /// Refuses every root whose path followed a symbolic link in or below the directory of a configured root.
     ///
     /// Every root is judged again against all of them, refused ones included, so the outcome does not depend on the order the roots were given in.
     ///
@@ -203,7 +206,7 @@ impl DriveRoots {
             .shared
             .iter()
             .chain(self.drives.values())
-            .filter_map(|root| root.directory)
+            .filter_map(|root| root.directory.as_ref().map(Root::identity))
             .collect::<HashSet<_>>();
         let roots = self
             .shared
@@ -221,7 +224,6 @@ impl DriveRoots {
             }
             root.is_refused = is_refused;
         }
-        self.held.retain(|directory, _| directories.contains(directory));
     }
 }
 
@@ -367,7 +369,6 @@ impl NixRdpdrBackend {
                 shared_path: file_base,
                 shared: None,
                 drives: HashMap::new(),
-                held: HashMap::new(),
             },
             open_files: HashMap::new(),
             max_open_files: match getrlimit(Resource::RLIMIT_NOFILE) {
@@ -1634,7 +1635,7 @@ pub(crate) fn create_drive(
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = backend.next_file_id();
 
-    let opened = if backend.max_open_files <= backend.open_files.len().saturating_add(backend.roots.held.len()) {
+    let opened = if backend.max_open_files <= backend.open_files.len().saturating_add(backend.roots.held_count()) {
         warn!("Rejected a create request beyond the open file limit");
         Err(NtStatus::INSUFFICIENT_RESOURCES)
     } else {
@@ -2126,10 +2127,10 @@ mod tests {
         assert_eq!(with_a_replaced_root, with_one_root);
     }
 
-    /// Drives given the same directory hold it open once, however each spells its path.
-    // oracle: mutant a root descriptor held for each drive rather than for each directory
+    /// Drives given the same directory each hold it open through their own path, so each takes a place under the limit on open files.
+    // oracle: mutant one root descriptor shared by the drives that name one directory
     #[test]
-    fn drives_of_the_same_directory_hold_it_open_once() {
+    fn drives_of_the_same_directory_each_hold_it_open() {
         let roots = TwoRoots::new();
         let alias = roots.sandbox.join("alias");
         std::os::unix::fs::symlink(&roots.first, &alias).expect("link directory");
@@ -2138,8 +2139,10 @@ mod tests {
 
         let with_two_drives = opens_until_refused(one_drive().with_drive_root(SECOND, utf8(&alias)), &[FIRST]);
 
-        assert!(0 < with_one_drive.0);
-        assert_eq!(with_two_drives, with_one_drive);
+        assert_eq!(with_one_drive.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert_eq!(with_two_drives.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert!(0 < with_two_drives.0);
+        assert_eq!(with_two_drives.0 + 1, with_one_drive.0);
     }
 
     // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file_table.rs
