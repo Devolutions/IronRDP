@@ -28,10 +28,12 @@ pub mod ffi {
             }))
         }
 
-        /// Kerberos with an explicit KDC: `tcp://dc.example.com:88`, or a KDC proxy (MS-KKDCP) such as
+        /// Kerberos with an explicit KDC: `tcp://dc.example.com:88`, or a KDC proxy ([MS-KKDCP]) such as
         /// `https://gateway.example.com/KdcProxy`. The .NET transport carries `tcp`, `http` and `https`.
         ///
         /// The client computer name sent to the KDC is the connector's client name.
+        ///
+        /// [MS-KKDCP]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/5bcebb8d-b747-4ee5-9453-428aec1c5c38
         pub fn new_with_kdc_url(kdc_url: &str) -> Result<Box<KerberosConfig>, Box<IronRdpError>> {
             let config =
                 ironrdp::connector::credssp::KerberosConfig::new_with_kdc_url(Some(kdc_url.to_owned()), String::new())?;
