@@ -2845,6 +2845,52 @@ fn a_directory_on_the_path_of_a_pending_delete_cannot_be_renamed(#[case] mark_an
     assert_eq!(names_in(&roots.inner), Vec::<String>::new());
 }
 
+/// The directories that led to every name a file was marked for deletion through cannot be renamed while the delete is pending, whichever name was marked last.
+/// The file has one hard link in `x`, marked through the outer drive, and one in `sub` beneath the inner root, marked through the inner drive.
+/// Both marking handles are closed, and the handle left is on a third link in the outer root, which keeps neither directory from being renamed.
+// oracle: spec MS-FSA §2.1.5.15.12, §2.1.5.5
+#[rstest]
+#[case::on_the_path_of_the_name_marked_through_the_outer_drive(r"\x")]
+#[case::on_the_path_of_the_name_marked_through_the_inner_drive(r"\a\b\sub")]
+fn a_directory_on_the_path_of_any_name_of_a_pending_delete_cannot_be_renamed(
+    #[values(
+        [(FIRST, r"\x\f.txt"), (SECOND, r"\sub\f.txt")],
+        [(SECOND, r"\sub\f.txt"), (FIRST, r"\x\f.txt")]
+    )]
+    marks: [(u32, &str); 2],
+    #[case] directory: &str,
+) {
+    let roots = DeepRoots::new();
+    std::fs::create_dir(roots.outer.join("x")).expect("create directory");
+    std::fs::create_dir(roots.inner.join("sub")).expect("create directory");
+    std::fs::write(roots.outer.join("kept.txt"), b"marked").expect("write file");
+    for link in [roots.outer.join("x"), roots.inner.join("sub")] {
+        std::fs::hard_link(roots.outer.join("kept.txt"), link.join("f.txt")).expect("link file");
+    }
+    let mut backend = roots.backend();
+    let _kept_id = create_on(&mut backend, FIRST, r"\kept.txt", CreateDisposition::FILE_OPEN);
+    let handles = marks.map(|(device_id, path)| {
+        (
+            device_id,
+            create_on(&mut backend, device_id, path, CreateDisposition::FILE_OPEN),
+        )
+    });
+    for (device_id, file_id) in handles {
+        let marked = set_information_on(&mut backend, device_id, file_id, delete_pending(true));
+        assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    }
+    for (device_id, file_id) in handles {
+        close_on(&mut backend, device_id, file_id);
+    }
+    let directory_id = create_on(&mut backend, FIRST, directory, CreateDisposition::FILE_OPEN);
+    let before = entries_below(&roots.outer);
+
+    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\moved", false));
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert_eq!(entries_below(&roots.outer), before);
+}
+
 /// A file is deleted by its name beneath the root of the drive it was marked through, so a directory above that root leads to no pending delete.
 /// The enclosing drive can rename it, and the file is still deleted when its last handle closes.
 // oracle: mutant a directory above the root of the drive a file was marked through kept from being renamed for the pending delete
@@ -2885,6 +2931,160 @@ fn a_directory_on_the_path_of_a_pending_delete_can_be_renamed_with_only_a_shared
 
     assert_eq!(response_status(&response), NtStatus::SUCCESS);
     assert_eq!(names_in(&fixture.share), ["link.txt", "moved"]);
+}
+
+/// A file marked for deletion through both drives that reach it is deleted when its last handle closes, whichever drive marked it last.
+/// A local process renames a directory above the inner root, so the name marked through the outer drive names nothing, while the name marked through the inner drive still names the file beneath the root that drive holds.
+// oracle: spec MS-FSA §2.1.5.5
+#[rstest]
+fn a_file_marked_through_both_nested_drives_is_deleted_after_a_local_rename_above_the_inner_root(
+    #[values([FIRST, SECOND], [SECOND, FIRST])] marking_order: [u32; 2],
+) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("f.txt"), b"marked").expect("write file");
+    let mut backend = roots.backend();
+    let handles = marking_order
+        .into_iter()
+        .zip(roots.open_through(&mut backend, marking_order, "f.txt"));
+    for (device_id, file_id) in handles.clone() {
+        let marked = set_information_on(&mut backend, device_id, file_id, delete_pending(true));
+        assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    }
+    std::fs::rename(roots.outer.join("a"), roots.outer.join("z")).expect("rename locally");
+
+    for (device_id, file_id) in handles {
+        close_on(&mut backend, device_id, file_id);
+    }
+
+    assert_eq!(names_in(&roots.outer.join("z").join("b")), Vec::<String>::new());
+}
+
+/// A file opened to delete on close through both drives that reach it is deleted when its last handle closes, although the handle that closes last marks a name that names nothing.
+/// A local process renames a directory above the inner root before the closes, and the name the inner drive marked when its handle closed still names the file beneath the root that drive holds.
+// oracle: spec MS-FSA §2.1.5.5
+#[test]
+fn a_file_opened_to_delete_on_close_through_both_nested_drives_is_deleted_after_a_local_rename_above_the_inner_root() {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("f.txt"), b"marked").expect("write file");
+    let mut backend = roots.backend();
+    let [inner_id, outer_id] = [SECOND, FIRST].map(|device_id| {
+        let opened = create_with(
+            &mut backend,
+            DeviceCreateRequest {
+                create_options: CreateOptions::FILE_DELETE_ON_CLOSE,
+                ..create_request_on(
+                    device_id,
+                    &roots.path_through(device_id, "f.txt"),
+                    CreateDisposition::FILE_OPEN,
+                )
+            },
+        );
+        assert_eq!(response_status(&opened), NtStatus::SUCCESS);
+        response_file_id(&opened)
+    });
+    std::fs::rename(roots.outer.join("a"), roots.outer.join("z")).expect("rename locally");
+
+    close_on(&mut backend, SECOND, inner_id);
+    close_on(&mut backend, FIRST, outer_id);
+
+    assert_eq!(names_in(&roots.outer.join("z").join("b")), Vec::<String>::new());
+}
+
+/// Once a drive has a root of its own, a file marked for deletion keeps the name each drive marked it through last, and loses the one marked last that still names it.
+/// The file has the hard links `a.txt`, `b.txt` and `c.txt` beneath the inner root, which each case marks through the drives in the order given.
+/// A local process then removes some of them, and the last handle closes.
+// oracle: mutant a mark kept beside the earlier name of its drive, a name tried before one marked after it, more than one name removed, or a name another drive marked discarded
+#[rstest]
+#[case::the_name_marked_last_through_the_inner_drive(&[(FIRST, "a.txt"), (SECOND, "b.txt")], &[], &["a.txt", "c.txt"])]
+#[case::the_name_marked_last_through_the_outer_drive(&[(SECOND, "b.txt"), (FIRST, "a.txt")], &[], &["b.txt", "c.txt"])]
+#[case::the_name_marked_before_through_the_other_drive_once_the_last_is_gone(
+    &[(FIRST, "a.txt"), (SECOND, "b.txt")],
+    &["b.txt"],
+    &["c.txt"]
+)]
+#[case::the_name_a_drive_marked_last_of_its_two(&[(SECOND, "a.txt"), (SECOND, "b.txt")], &[], &["a.txt", "c.txt"])]
+#[case::nothing_once_the_name_a_drive_marked_last_of_its_two_is_gone(
+    &[(SECOND, "a.txt"), (SECOND, "b.txt")],
+    &["b.txt"],
+    &["a.txt", "c.txt"]
+)]
+#[case::the_name_a_drive_marked_again_after_the_other_drive_marked(
+    &[(SECOND, "a.txt"), (FIRST, "c.txt"), (SECOND, "b.txt")],
+    &[],
+    &["a.txt", "c.txt"]
+)]
+#[case::nothing_once_every_name_but_the_one_a_drive_marked_before_is_gone(
+    &[(SECOND, "a.txt"), (FIRST, "c.txt"), (SECOND, "b.txt")],
+    &["b.txt", "c.txt"],
+    &["a.txt"]
+)]
+fn a_file_marked_through_nested_drives_loses_the_name_marked_last_that_still_names_it(
+    #[case] marks: &[(u32, &str)],
+    #[case] removed_locally: &[&str],
+    #[case] left: &[&str],
+) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("a.txt"), b"linked").expect("write file");
+    for link in ["b.txt", "c.txt"] {
+        std::fs::hard_link(roots.inner.join("a.txt"), roots.inner.join(link)).expect("link file");
+    }
+    let mut backend = roots.backend();
+    let handles = marks
+        .iter()
+        .map(|&(device_id, name)| {
+            let path = roots.path_through(device_id, name);
+            (
+                device_id,
+                create_on(&mut backend, device_id, &path, CreateDisposition::FILE_OPEN),
+            )
+        })
+        .collect::<Vec<_>>();
+    for &(device_id, file_id) in &handles {
+        let marked = set_information_on(&mut backend, device_id, file_id, delete_pending(true));
+        assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    }
+    for name in removed_locally {
+        std::fs::remove_file(roots.inner.join(name)).expect("remove locally");
+    }
+
+    for (device_id, file_id) in handles {
+        close_on(&mut backend, device_id, file_id);
+    }
+
+    // Nothing else beneath either root is touched: the outer root holds only the directories that lead to the inner one.
+    let expected = [roots.outer.join("a"), roots.inner.clone()]
+        .into_iter()
+        .chain(left.iter().map(|name| roots.inner.join(name)))
+        .collect::<Vec<_>>();
+    assert_eq!(entries_below(&roots.outer), expected);
+}
+
+/// Clearing the mark through either drive clears every name the file was marked through, so nothing is removed when its last handle closes.
+// oracle: spec MS-FSA §2.1.5.15.3
+#[rstest]
+#[case::through_the_drive_that_marked_first(0)]
+#[case::through_the_drive_that_marked_last(1)]
+fn clearing_delete_pending_through_one_nested_drive_keeps_a_file_marked_through_both(#[case] clearing: usize) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("kept.txt"), b"kept").expect("write file");
+    let mut backend = roots.backend();
+    let devices = [SECOND, FIRST];
+    let handles = devices
+        .into_iter()
+        .zip(roots.open_through(&mut backend, devices, "kept.txt"));
+    for (device_id, file_id) in handles.clone() {
+        let marked = set_information_on(&mut backend, device_id, file_id, delete_pending(true));
+        assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    }
+
+    let (device_id, file_id) = handles.clone().nth(clearing).expect("a handle of each drive");
+    let cleared = set_information_on(&mut backend, device_id, file_id, delete_pending(false));
+    for (device_id, file_id) in handles {
+        close_on(&mut backend, device_id, file_id);
+    }
+
+    assert_eq!(response_status(&cleared), NtStatus::SUCCESS);
+    assert_eq!(names_in(&roots.inner), ["kept.txt"]);
 }
 
 /// With only a shared directory, a file keeps the one name it was marked for deletion through last: a mark through another drive replaces it, as a mark through the same drive does.

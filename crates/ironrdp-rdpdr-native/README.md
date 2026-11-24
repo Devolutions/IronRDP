@@ -67,11 +67,13 @@ A file or directory that is open through a drive that serves another directory, 
 A path names a file only beneath the root of its drive, so such a handle could not take the new name.
 A handle on the root of its own drive is the exception, because it names that root whatever the directory is called: the drive of an enclosing directory can rename the root of an inner drive while the inner drive holds only that root open.
 Once a drive has a root of its own, the directories that led to a file when it was marked for deletion cannot be renamed until the delete is done or the mark is cleared: the rename fails with `STATUS_ACCESS_DENIED`, as for a directory that holds open files.
-The file is deleted by the name it was marked through, which those directories are part of.
+The file is deleted by a name it was marked through, which those directories are part of.
+A file marked for deletion through several drives is deleted by the name marked last that still removes it: each drive keeps the name it marked last, and when a name fails, as beneath a root on a read-only mount, the name marked before it through another drive is tried.
+With only a shared directory, the name marked last is the only one, whichever drive marked it.
 
 Between drives that serve different directories, these limitations are known:
 
-- An open file keeps a directory from being renamed only from the root of its own drive down, and a file marked for deletion only from the root of the drive it was marked through down.
+- An open file keeps a directory from being renamed only from the root of its own drive down, and a file marked for deletion only from the root of each drive it was marked through down.
   The drive of an enclosing directory can therefore rename a directory above the root of an inner drive while the inner drive has files open, and the inner drive then serves its directory at the new path.
 - The drive of an enclosing directory can delete the root of an inner drive once it is empty, and nothing can then be created or opened below that root.
 - Roots are resolved again each time a backend is built.

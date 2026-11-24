@@ -60,13 +60,22 @@ pub struct NixRdpdrBackend {
     /// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process.
     /// The roots take at most half the places, as [`DriveRoots::resolve`] bounds them, so at least half are left to open files.
     max_open_files: usize,
-    /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open), each with the name it was marked through.
+    /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open), each with the names it was marked through, from the one marked first to the one marked last.
     ///
-    /// That name is removed rather than the path of whichever handle closes last, so a file with several hard links loses the link the server marked.
-    /// [MS-FSA] marks each link separately, while one name is kept per file here: marking through another link replaces it, and every link of a marked file refuses new opens.
+    /// A marked name is removed rather than the path of whichever handle closes last, so a file with several hard links loses a link the server marked.
+    /// [MS-FSA] marks each link separately, while a file loses one name here, and every link of a marked file refuses new opens.
+    /// While every drive serves the shared directory, one name is kept per file: marking through another link or another drive replaces it.
+    /// Once a drive has a root of its own, one name is kept for each device the file was marked through, because the drive that marked it last may be unable to remove a file that another drive can.
+    /// A mark then replaces only the name its own device marked before, and becomes the name marked last.
+    /// The names are tried from the last to the first when the last handle closes, and the first that removes the file ends the delete.
+    ///
+    /// INVARIANT: a file is kept only with a name, so a file is marked exactly while it has an entry.
+    ///
+    /// INVARIANT: the names of a file each belong to another device, so they number at most the devices it was marked through.
+    /// A marked file refuses new opens, so those devices number at most the handles that were open on it when it was first marked, which `max_open_files` bounds.
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/d142c93a-72bc-4b05-9d96-8e00371c3308
-    pending_deletes: HashMap<FileIdentity, PendingDelete>,
+    pending_deletes: HashMap<FileIdentity, Vec<PendingDelete>>,
     /// The locks on the files of every drive, so one drive sees the locks taken through another on the same file.
     ///
     /// UNTESTED: one table holds the locks of every drive, so its limit on held locks bounds them together.
@@ -289,7 +298,7 @@ struct OpenFile {
     listing: Option<DirectoryListing>,
 }
 
-/// The name a file marked for deletion is removed by.
+/// A name a file marked for deletion can be removed by: the one a device marked it through last.
 #[derive(Debug)]
 struct PendingDelete {
     /// The device the file was marked through, whose root `path` is relative to.
@@ -426,7 +435,9 @@ impl NixRdpdrBackend {
         if open_file.delete_on_close {
             match holds_entries(&open_file.file) {
                 Ok(false) => {
-                    self.pending_deletes.insert(
+                    mark_for_deletion(
+                        &self.roots,
+                        &mut self.pending_deletes,
                         open_file.identity,
                         PendingDelete {
                             device_id: open_file.device_id,
@@ -443,14 +454,32 @@ impl NixRdpdrBackend {
             .open_files
             .values()
             .any(|other| other.identity == open_file.identity);
-        if !still_open
-            && let Some(pending) = self.pending_deletes.remove(&open_file.identity)
-            && let Err(error) = self
-                .roots
-                .of(pending.device_id)
-                .and_then(|root| remove_file(&root, &pending.path, open_file.identity))
-        {
-            warn!(%error, "Delete on close error");
+        if !still_open && let Some(names) = self.pending_deletes.remove(&open_file.identity) {
+            // The name marked last is tried first, and an earlier one only after every name marked since failed, so the file loses one name.
+            // Each name is resolved beneath the root of its own device, and removed only while it still names this file.
+            //
+            // UNTESTED: a name that cannot be removed beneath the root of its device leaves the delete to the names marked before it through other drives.
+            // One directory can be the root of a drive through a read-only mount and of another drive through a writable one, and a file marked through both has to be deleted even when the read-only drive marked it last.
+            // The tests cannot create mounts, so they make a name fail by renaming a directory on its path locally, which fails before the name would be unlinked.
+            // After changing this loop, check that a file marked through a writable root and then through a read-only bind mount of it is removed when its last handle closes.
+            //
+            // UNTESTED: a file that no name removes logs one warning, and a failed name with earlier ones left to try is only traced.
+            // The server decides how many drives it marks a file through, so a warning for each name would let it fill the log.
+            // No test reads the log, so after changing this loop, check that only the failure of the last name tried warns.
+            let mut names = names.iter().rev().peekable();
+            while let Some(name) = names.next() {
+                let removed = self
+                    .roots
+                    .of(name.device_id)
+                    .and_then(|root| remove_file(&root, &name.path, open_file.identity));
+                match removed {
+                    Ok(()) => break,
+                    Err(error) if names.peek().is_some() => {
+                        trace!(%error, device_id = name.device_id, "Failed to delete a file by one of its marked names");
+                    }
+                    Err(error) => warn!(%error, "Delete on close error"),
+                }
+            }
         }
         responses
     }
@@ -1197,7 +1226,7 @@ pub(crate) fn set_information(
             })
         });
     // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
-    // A directory that led to a file marked for deletion is refused like one holding open files, because the file is deleted by the name it was marked through, which has to go on naming it.
+    // A directory that led to a file marked for deletion is refused like one holding open files, because the file is deleted by a name it was marked through, each of which has to go on naming it.
     // Only a backend with a drive that has a root of its own refuses it.
     // With only a shared directory the open handles alone decide, because a handle left on the marked link keeps those directories in place and a handle left on another hard link does not.
     let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
@@ -1211,7 +1240,8 @@ pub(crate) fn set_information(
                     && backend
                         .pending_deletes
                         .values()
-                        .any(|pending| pending.ancestors.contains(&open_file.identity))
+                        .flatten()
+                        .any(|name| name.ancestors.contains(&open_file.identity))
         });
     // A rename target that is open cannot be replaced, so the open files are collected before one of them is borrowed mutably.
     let open_identities = if matches!(req_inner.set_buffer, FileInformationClass::Rename(_)) {
@@ -1273,7 +1303,12 @@ pub(crate) fn set_information(
             // The allocation size is only a hint, so there is nothing to do.
             FileInformationClass::Allocation(_) => NtStatus::SUCCESS,
             FileInformationClass::Disposition(info) => {
-                match set_delete_pending(open_file, &mut backend.pending_deletes, info.delete_pending != 0) {
+                match set_delete_pending(
+                    &backend.roots,
+                    open_file,
+                    &mut backend.pending_deletes,
+                    info.delete_pending != 0,
+                ) {
                     Ok(()) => NtStatus::SUCCESS,
                     Err(status) => {
                         trace!(?status, "Set delete pending failed");
@@ -1339,7 +1374,7 @@ fn rename(
     open_file: &OpenFile,
     to: &RelativePath,
     replace_if_exists: bool,
-    pending_deletes: &HashMap<FileIdentity, PendingDelete>,
+    pending_deletes: &HashMap<FileIdentity, Vec<PendingDelete>>,
     open_identities: &HashSet<FileIdentity>,
 ) -> Result<Vec<FileIdentity>, NtStatus> {
     let (from_parent, from_name) = open_file.path.open_parent(root).map_err(status_from_parent_errno)?;
@@ -1409,8 +1444,9 @@ fn contains_entry(directory: BorrowedFd<'_>, name: &str) -> nix::Result<bool> {
 ///
 /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/386d9ec5-e0f6-4853-b175-c05be01419e0
 fn set_delete_pending(
+    roots: &DriveRoots,
     open_file: &OpenFile,
-    pending_deletes: &mut HashMap<FileIdentity, PendingDelete>,
+    pending_deletes: &mut HashMap<FileIdentity, Vec<PendingDelete>>,
     delete_pending: bool,
 ) -> Result<(), NtStatus> {
     if !delete_pending {
@@ -1427,7 +1463,9 @@ fn set_delete_pending(
     if holds_entries(&open_file.file).map_err(status_from_errno)? {
         return Err(NtStatus::DIRECTORY_NOT_EMPTY);
     }
-    pending_deletes.insert(
+    mark_for_deletion(
+        roots,
+        pending_deletes,
         open_file.identity,
         PendingDelete {
             device_id: open_file.device_id,
@@ -1436,6 +1474,24 @@ fn set_delete_pending(
         },
     );
     Ok(())
+}
+
+/// Marks the file `identity` for deletion by `name`, which becomes the name it was marked through last.
+fn mark_for_deletion(
+    roots: &DriveRoots,
+    pending_deletes: &mut HashMap<FileIdentity, Vec<PendingDelete>>,
+    identity: FileIdentity,
+    name: PendingDelete,
+) {
+    let names = pending_deletes.entry(identity).or_default();
+    if roots.serve_only_the_shared_directory() {
+        // Every handle reaches the file beneath the same directory, so the new name is as removable as the one it replaces.
+        names.clear();
+    } else {
+        // The root of another device may be able to remove the file where the root of this one cannot, so only the earlier name of this device is replaced.
+        names.retain(|earlier| earlier.device_id != name.device_id);
+    }
+    names.push(name);
 }
 
 /// Whether `file` is a directory with entries, which cannot be marked for deletion.
@@ -1762,7 +1818,7 @@ fn open_file(
     root: &Root,
     req: &DeviceCreateRequest,
     path: &RelativePath,
-    pending_deletes: &HashMap<FileIdentity, PendingDelete>,
+    pending_deletes: &HashMap<FileIdentity, Vec<PendingDelete>>,
 ) -> Result<(std::fs::File, FileIdentity, Vec<FileIdentity>), NtStatus> {
     // [MS-SMB2] 2.2.13 SMB2 CREATE Request makes any disposition but the six it lists invalid.
     if !matches!(
