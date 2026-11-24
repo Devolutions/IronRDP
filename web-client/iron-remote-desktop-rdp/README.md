@@ -41,6 +41,38 @@ const config = new ConfigBuilder()
   .build();
 ```
 
+## Microsoft Entra ID sign-in
+
+`entraAssertion(sign)` signs in with RDS AAD Auth (`PROTOCOL_RDSAAD`) instead of CredSSP, for Microsoft Entra joined hosts.
+The application acquires the RDP access token and the AAD nonce from the Microsoft identity platform; the username and password are not needed.
+
+```ts
+import { ConfigBuilder } from '@devolutions/iron-remote-desktop';
+import {
+  entraAssertion,
+  entraReqCnf,
+  generateEntraPopKey,
+  signEntraAssertion,
+} from '@devolutions/iron-remote-desktop-rdp';
+
+const key = await generateEntraPopKey();
+// Request the token for `${resourceUri}/user_impersonation` with `req_cnf` set to this value.
+const reqCnf = await entraReqCnf(key.publicKey);
+
+const config = new ConfigBuilder()
+  .withDestination('host.example.test:3389')
+  .withProxyAddress('wss://example.test/rdp')
+  .withAuthToken('token')
+  .withExtension(
+    entraAssertion((serverNonce) => signEntraAssertion({ accessToken, resourceUri, serverNonce, aadNonce, key })),
+  )
+  .build();
+```
+
+`resourceUri` is `ms-device-service://termsrv.wvd.microsoft.com/id/<device ID>` or `.../name/<hostname>`.
+Prefer the device ID: device names are not unique in a tenant, and the host rejects a token issued for another device.
+The host expects the authentication request in a single TLS record, so the proxy must not split it.
+
 ## RDCleanPath errors
 
 When the proxy rejects the connection, the error's `rdcleanpathDetails()` carries the RDCleanPath `errorCode`.

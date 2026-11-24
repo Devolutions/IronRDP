@@ -46,6 +46,19 @@ export function displayControl(enable: boolean): Extension {
 }
 
 /**
+ * Signs in with Microsoft Entra ID (RDS AAD Auth) instead of CredSSP.
+ * The callback receives the nonce the server sent after the TLS handshake and returns the compact
+ * JWS RDP assertion, or a promise of it; `signEntraAssertion` builds one.
+ * The username and password are not needed, because the server takes the user from the access token.
+ */
+export function entraAssertion(sign: (serverNonce: string) => string | Promise<string>): Extension {
+    return new Extension('entra_assertion', sign);
+}
+
+export { entraReqCnf, generateEntraPopKey, signEntraAssertion } from './entra';
+export type { EntraAssertionParams } from './entra';
+
+/**
  * Receives the remote desktop's audio through the callback described in README.md, Audio playback.
  * Wave messages contain interleaved 16-bit little-endian PCM in a Uint8Array.
  * Volume messages contain normalized logarithmic protocol levels, not linear amplitude gains.

@@ -41,6 +41,9 @@ impl From<connector::ConnectorError> for IronError {
     fn from(e: connector::ConnectorError) -> Self {
         use sspi::credssp::NStatusCode;
 
+        /// HRESULT sent in the RDS AAD authentication result when the user may not log on.
+        const E_ACCESSDENIED: u32 = 0x8007_0005;
+
         let kind = match e.kind() {
             ConnectorErrorKind::Credssp(sspi::Error {
                 nstatus: Some(NStatusCode::WRONG_PASSWORD),
@@ -51,6 +54,8 @@ impl From<connector::ConnectorError> for IronError {
                 ..
             }) => IronErrorKind::LogonFailure,
             ConnectorErrorKind::AccessDenied => IronErrorKind::AccessDenied,
+            ConnectorErrorKind::EntraAuth(E_ACCESSDENIED) => IronErrorKind::AccessDenied,
+            ConnectorErrorKind::EntraAuth(_) => IronErrorKind::LogonFailure,
             ConnectorErrorKind::Negotiation(_) => IronErrorKind::NegotiationFailure,
             _ => IronErrorKind::General,
         };
