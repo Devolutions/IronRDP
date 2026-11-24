@@ -242,6 +242,27 @@ fn fastpath_frame(update_pdu: &[u8]) -> Vec<u8> {
     frame
 }
 
+// oracle: regression #2515, web_replay_pdu_processing crash-9fd8b55210f6bcd1a6c49d8b1e713624e3b61a0d.
+#[test]
+fn surface_rectangle_fuzz_crash_is_ignored() {
+    let frame = hex::decode(concat!(
+        "0023030000000000000000042f000100ffff00000000000000ff280000000000",
+        "0000000000000000002300565656565656565656565656565656565656565656",
+        "5656565656565656565656565656565656565656565656565656565656565656",
+        "5656565656565656565656565656565656565656565656565656565656565656",
+        "5656565656565656565656565656565656565656565656565656565656560000",
+        "0000000000030100000000f56363",
+    ))
+    .unwrap();
+    let mut image = DecodedImage::new(PixelFormat::RgbA32, IMAGE_DIM, IMAGE_DIM);
+
+    processor()
+        .process(&mut image, &frame, &mut WriteBuf::new(), &mut None)
+        .expect("malformed surface destination must be ignored, not abort processing");
+
+    assert_visible_pixels(&image, &[0; IMAGE_DIM as usize * IMAGE_DIM as usize * 3]);
+}
+
 /// Runs one FastPath frame through a fresh processor and returns the resulting
 /// framebuffer.
 fn render(frame: &[u8]) -> DecodedImage {

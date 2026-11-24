@@ -742,6 +742,14 @@ impl Processor {
                     trace!(?codec_id, "Surface bits");
 
                     let destination = bits.destination;
+
+                    // The right and bottom bounds are exclusive, so a valid destination is non-empty.
+                    if !(destination.left < destination.right && destination.top < destination.bottom) {
+                        warn!("Ignoring surface bits with an empty or inverted destination");
+                        self.request_bitmap_recovery();
+                        continue;
+                    }
+
                     // TODO(@pacmancoder): Correct rectangle conversion logic should
                     // be revisited when `rectangle_processing.rs` from
                     // `ironrdp-graphics` will be refactored to use generic `Rectangle`
