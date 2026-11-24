@@ -1,16 +1,16 @@
-//! Server-supplied RDPDR filesystem paths, resolved beneath the shared directory.
+//! Server-supplied RDPDR filesystem paths, resolved beneath the root of a drive.
 //!
-//! The server names files with paths relative to the redirected drive root.
+//! The server names files with paths relative to the root of the redirected drive, the directory that drive serves.
 //! Each path is split into validated components and opened one component at a time relative to a directory descriptor.
-//! Symbolic links and mount points are refused, so no spelling, link or mount inside the share resolves outside it.
+//! Symbolic links and mount points are refused, so no spelling, link or mount inside the root resolves outside it.
 //!
 //! UNTESTED: every filesystem call on a server-supplied path works on a descriptor from `Root::open_at`,
 //! `RelativePath::open_parent` or `RelativePath::open_directory`, never on a joined path string.
-//! A path string is resolved again by the kernel, so a symbolic link swapped in after validation would lead outside the share.
+//! A path string is resolved again by the kernel, so a symbolic link swapped in after validation would lead outside the root.
 //! A new operation resolves its parent with `open_parent` and opens with `Root::open_at`, or uses an `*at` system call that does not follow the final component.
 //!
 //! UNTESTED: `Root::open_at` refuses a descriptor on another mount.
-//! The tests cannot create mounts, so after changing it, check by hand with a bind mount and a tmpfs mounted below a share, with and without `openat2`.
+//! The tests cannot create mounts, so after changing it, check by hand with a bind mount and a tmpfs mounted below a root, with and without `openat2`.
 
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
@@ -21,29 +21,29 @@ use nix::sys::stat::{FileStat, Mode, dev_t, fstat};
 /// Flags for every directory descriptor taken while walking a path.
 const DIRECTORY_FLAGS: OFlag = OFlag::O_RDONLY.union(OFlag::O_DIRECTORY);
 
-/// The opened shared directory, which every server-supplied path resolves beneath.
+/// The opened root of a drive, which every server-supplied path for that drive resolves beneath.
 #[derive(Debug)]
 pub(crate) struct Root {
     directory: OwnedFd,
-    /// The filesystem holding the shared directory.
+    /// The filesystem holding the root.
     device: dev_t,
 }
 
 impl Root {
-    /// Opens the shared directory.
+    /// Opens the directory at `path` as the root of a drive.
     ///
-    /// The shared directory is configured locally, so symbolic links in its own path are followed.
-    pub(crate) fn open(file_base: &str) -> nix::Result<Self> {
-        let directory = nix::fcntl::open(file_base, DIRECTORY_FLAGS | OFlag::O_CLOEXEC, Mode::empty())?;
+    /// A root is configured locally, so symbolic links in its own path are followed.
+    pub(crate) fn open(path: &str) -> nix::Result<Self> {
+        let directory = nix::fcntl::open(path, DIRECTORY_FLAGS | OFlag::O_CLOEXEC, Mode::empty())?;
         let device = fstat(directory.as_fd())?.st_dev;
         Ok(Self { directory, device })
     }
 
     /// Opens `name` in `parent`, a directory beneath this root.
     ///
-    /// Refuses a symbolic link and a mount point, so the result stays inside the share.
+    /// Refuses a symbolic link and a mount point, so the result stays inside the root.
     /// Without `openat2`, as on macOS and Linux before 5.6, only a mount of another filesystem is refused, not a bind mount within the same one.
-    /// Never blocks, so a FIFO in the share cannot stall the client.
+    /// Never blocks, so a FIFO in the root cannot stall the client.
     /// Takes no `O_TRUNC`: without `openat2` it would empty a file on another mount before the device check refuses it, so callers truncate the result instead.
     pub(crate) fn open_at(&self, parent: BorrowedFd<'_>, name: &str, flags: OFlag, mode: Mode) -> nix::Result<OwnedFd> {
         debug_assert!(!flags.contains(OFlag::O_TRUNC), "callers truncate after the open");
@@ -92,7 +92,7 @@ mod openat2 {
     /// That is a property of the process, so once the probe succeeds, an error from `openat2` is the answer for that path and never falls back to the weaker device check.
     ///
     /// UNTESTED: an `openat2` error after a successful probe is returned, never retried with `openat`.
-    /// A retry would let a bind mount inside the share through for any path whose open fails with EPERM, such as an immutable file opened for writing.
+    /// A retry would let a bind mount inside the root through for any path whose open fails with EPERM, such as an immutable file opened for writing.
     /// The tests cannot make `openat2` fail, so after changing this, check that `Root::open_at` returns the `openat2` result unchanged.
     pub(super) fn is_available(directory: BorrowedFd<'_>) -> bool {
         static AVAILABLE: OnceLock<bool> = OnceLock::new();
@@ -110,7 +110,7 @@ mod openat2 {
 /// The longest name Windows accepts, in UTF-16 code units.
 const MAX_NAME_CODE_UNITS: usize = 255;
 
-/// A validated path relative to the shared directory.
+/// A validated path relative to the root of a drive.
 ///
 /// INVARIANT: every component is a name Windows can hold, as [`is_valid_name`] checks, so none is empty, `.` or `..`, or contains `/` or NUL.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,14 +122,14 @@ impl RelativePath {
     /// Parses an RDPDR path without touching the host filesystem.
     ///
     /// A single leading backslash is the protocol's root-relative spelling and is stripped.
-    /// An empty remainder names the shared directory itself.
+    /// An empty remainder names the root itself.
     pub(crate) fn parse(path: &str) -> Result<Self, InvalidPath> {
         Self::parse_components(path.strip_prefix('\\').unwrap_or(path))
     }
 
     /// Parses a query-directory path into the directory it names and its final component, the pattern to match.
     ///
-    /// The pattern may hold the wildcards `*`, `?` and the DOS wildcards `<`, `>` and `"` ([MS-FSA] 2.1.5.6.3 Directory Information Queries), and an empty path enumerates the shared directory.
+    /// The pattern may hold the wildcards `*`, `?` and the DOS wildcards `<`, `>` and `"` ([MS-FSA] 2.1.5.6.3 Directory Information Queries), and an empty path enumerates the root.
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/fa8194e0-53ec-413b-8315-e8fa85396fd8
     pub(crate) fn parse_query(path: &str) -> Result<(Self, &str), InvalidPath> {
@@ -167,14 +167,14 @@ impl RelativePath {
         Ok(Self { components })
     }
 
-    /// The final component, or `None` for the shared directory itself.
+    /// The final component, or `None` for the root itself.
     pub(crate) fn file_name(&self) -> Option<&str> {
         self.components.last().map(String::as_str)
     }
 
     /// Opens the directory that holds the final component, and returns it with that component.
     ///
-    /// For the shared directory itself, the directory is the root and the component is `.`.
+    /// For the root itself, the directory is the root and the component is `.`.
     pub(crate) fn open_parent(&self, root: &Root) -> nix::Result<(OwnedFd, &str)> {
         let Some((file_name, parents)) = self.components.split_last() else {
             return Ok((root.directory.try_clone().map_err(io_to_errno)?, "."));
@@ -189,9 +189,9 @@ impl RelativePath {
         open_directories(root, &self.components, None)
     }
 
-    /// Like [`Self::open_parent`], and also returns the status of each directory opened on the way, from the shared directory down to the one returned.
+    /// Like [`Self::open_parent`], and also returns the status of each directory opened on the way, from the root down to the one returned.
     ///
-    /// The shared directory itself lies in no directory, so for it the list is empty.
+    /// The root itself lies in no directory, so for it the list is empty.
     pub(crate) fn open_parent_with_ancestors(&self, root: &Root) -> nix::Result<(OwnedFd, &str, Vec<FileStat>)> {
         let Some((file_name, parents)) = self.components.split_last() else {
             return Ok((root.directory.try_clone().map_err(io_to_errno)?, ".", Vec::new()));
@@ -218,7 +218,7 @@ fn is_valid_name(name: &str) -> bool {
         })
 }
 
-/// A path the backend refuses to resolve beneath the shared directory.
+/// A path the backend refuses to resolve beneath the root of a drive.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct InvalidPath;
 

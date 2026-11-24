@@ -1037,7 +1037,7 @@ pub(crate) fn set_information(
                 NtStatus::ACCESS_DENIED
             }
             FileInformationClass::Rename(_) if rename_denied => NtStatus::ACCESS_DENIED,
-            // The shared directory itself is no name to rename to.
+            // The root of a drive is no name to rename to.
             FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name)
                 .and_then(|to| to.file_name().is_some().then_some(to).ok_or(InvalidPath))
             {
@@ -1131,14 +1131,14 @@ pub(crate) fn set_information(
 ///
 /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/87f86c9b-6c2a-4803-84b7-131a74a434fa
 fn rename(
-    file_base: &str,
+    root_path: &str,
     open_file: &OpenFile,
     to: &RelativePath,
     replace_if_exists: bool,
     pending_deletes: &HashMap<FileIdentity, PendingDelete>,
     open_identities: &HashSet<FileIdentity>,
 ) -> Result<Vec<FileIdentity>, NtStatus> {
-    let root = Root::open(file_base).map_err(status_from_errno)?;
+    let root = Root::open(root_path).map_err(status_from_errno)?;
     let (from_parent, from_name) = open_file.path.open_parent(&root).map_err(status_from_parent_errno)?;
     let (to_parent, to_name, to_ancestors) = to.open_parent_with_ancestors(&root).map_err(status_from_parent_errno)?;
     let to_ancestors = to_ancestors.iter().map(FileIdentity::of).collect::<Vec<_>>();
@@ -1214,7 +1214,7 @@ fn set_delete_pending(
         pending_deletes.remove(&open_file.identity);
         return Ok(());
     }
-    // The shared directory cannot be removed through the share, and a mark on it would refuse every create in it until its handles close.
+    // The root of a drive cannot be removed through the drive, and a mark on it would refuse every create in it until its handles close.
     if open_file.path.file_name().is_none() {
         return Err(NtStatus::ACCESS_DENIED);
     }
@@ -1294,8 +1294,8 @@ fn status_from_parent_errno(error: Errno) -> NtStatus {
 }
 
 /// Whether `path` still names the file `identity`.
-fn names_file(file_base: &str, path: &RelativePath, identity: FileIdentity) -> bool {
-    Root::open(file_base)
+fn names_file(root_path: &str, path: &RelativePath, identity: FileIdentity) -> bool {
+    Root::open(root_path)
         .and_then(|root| {
             let (parent, name) = path.open_parent(&root)?;
             fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW)
@@ -1304,8 +1304,8 @@ fn names_file(file_base: &str, path: &RelativePath, identity: FileIdentity) -> b
 }
 
 /// Removes the file or empty directory `path` names, unless that name now refers to another file than `identity`.
-fn remove_file(file_base: &str, path: &RelativePath, identity: FileIdentity) -> nix::Result<()> {
-    let root = Root::open(file_base)?;
+fn remove_file(root_path: &str, path: &RelativePath, identity: FileIdentity) -> nix::Result<()> {
+    let root = Root::open(root_path)?;
     let (parent, name) = path.open_parent(&root)?;
     let stat = fstatat(parent.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
     if FileIdentity::of(&stat) != identity {
@@ -1438,12 +1438,12 @@ pub(crate) fn query_directory(
 
     /// Returns the first match for `pattern` in `directory`, where a pattern with wildcards enumerates the matching entries.
     fn start_query(
-        file_base: &str,
+        root_path: &str,
         open_file: &mut OpenFile,
         directory: &RelativePath,
         pattern: &str,
     ) -> nix::Result<Option<DirectoryEntry>> {
-        let root = Root::open(file_base)?;
+        let root = Root::open(root_path)?;
         let opened = directory.open_directory(&root)?;
         if contains_wildcards(pattern) {
             let filter = (pattern != "*").then(|| pattern.to_owned());
@@ -1540,17 +1540,17 @@ pub(crate) fn create_drive(
     }
 }
 
-/// Opens or creates `path` beneath the shared directory as `req` asks, and returns it with its identity and the directories leading to it.
+/// Opens or creates `path` beneath the root at `root_path` as `req` asks, and returns it with its identity and the directories leading to it.
 ///
 /// A file marked for deletion is refused before it is overwritten, so a failed open leaves its contents intact.
 fn open_file(
-    file_base: &str,
+    root_path: &str,
     req: &DeviceCreateRequest,
     path: &RelativePath,
     pending_deletes: &HashMap<FileIdentity, PendingDelete>,
 ) -> Result<(std::fs::File, FileIdentity, Vec<FileIdentity>), NtStatus> {
-    let root = Root::open(file_base).map_err(|error| {
-        warn!(%error, "Open shared directory error");
+    let root = Root::open(root_path).map_err(|error| {
+        warn!(%error, "Open drive root error");
         NtStatus::UNSUCCESSFUL
     })?;
     // [MS-SMB2] 2.2.13 SMB2 CREATE Request makes any disposition but the six it lists invalid.
@@ -1618,9 +1618,9 @@ fn open_file(
                     NtStatus::OBJECT_NAME_COLLISION
                 });
             }
-            // The shared directory cannot be removed through the share, as on the Windows backend.
+            // The root of a drive cannot be removed through the drive, as on the Windows backend.
             if delete_on_close && path.file_name().is_none() {
-                trace!("Refused to delete the shared directory on close");
+                trace!("Refused to delete a drive root on close");
                 return Err(NtStatus::ACCESS_DENIED);
             }
             OFlag::O_RDONLY | OFlag::O_DIRECTORY
