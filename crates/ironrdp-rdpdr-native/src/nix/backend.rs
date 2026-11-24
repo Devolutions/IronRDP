@@ -1184,10 +1184,13 @@ pub(crate) fn set_information(
 ) -> PduResult<Vec<SvcMessage>> {
     // A path names a file only beneath the root of its drive, so a rename cannot give the new name to a handle of a drive that serves another directory.
     // The file is therefore not renamed while such a drive holds it open, through any of its hard links.
+    // A handle on the root of its own drive is no reason to refuse: its path is empty and names that root whatever the directory is called, so the rename leaves it no stale name.
+    // Remote file managers keep such handles open, and refusing would keep the enclosing drive from renaming the root of an inner drive while only that root is open.
     let is_open_through_another_directory = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
         && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
             backend.open_files.values().any(|other| {
                 other.identity == open_file.identity
+                    && other.path.file_name().is_some()
                     && !backend
                         .roots
                         .serve_the_same_directory(other.device_id, open_file.device_id)
@@ -1299,7 +1302,8 @@ pub(crate) fn set_information(
     // A handle whose path no longer names the file was opened through that link, possibly spelled differently on a case-insensitive filesystem.
     // A handle opened through another hard link of the file still finds it at its path, and keeps that link.
     // Only the handles of drives that serve the same directory as the renaming drive take the new path, which names the file beneath the root of each of them.
-    // A rename is refused while a drive that serves another directory holds the file open, so these are all the other handles of the file.
+    // The only other handle a rename leaves on the file is one on the root of a drive that serves another directory, since a rename is refused while such a drive holds the file open any other way.
+    // That handle keeps its empty path, and takes none of the directories that lead to the new name, which lie beneath the root of the renaming drive and not beneath its own.
     if let Some((device_id, identity, from, to, ancestors)) = renamed {
         let root = backend.roots.of(device_id);
         for open_file in backend.open_files.values_mut().filter(|open_file| {

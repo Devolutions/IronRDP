@@ -65,6 +65,7 @@ A lock or a pending delete on a file holds through every drive that reaches it, 
 A rename moves the open handles of every drive that serves the same directory to the new name, however the roots of those drives are spelled.
 A file or directory that is open through a drive that serves another directory, another hard link of it included, cannot be renamed until those handles are closed: the rename fails with `STATUS_SHARING_VIOLATION`.
 A path names a file only beneath the root of its drive, so such a handle could not take the new name.
+A handle on the root of its own drive is the exception, because it names that root whatever the directory is called: the drive of an enclosing directory can rename the root of an inner drive while the inner drive holds only that root open.
 Once a drive has a root of its own, the directories that led to a file when it was marked for deletion cannot be renamed until the delete is done or the mark is cleared: the rename fails with `STATUS_ACCESS_DENIED`, as for a directory that holds open files.
 The file is deleted by the name it was marked through, which those directories are part of.
 

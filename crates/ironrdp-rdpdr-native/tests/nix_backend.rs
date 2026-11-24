@@ -2981,19 +2981,36 @@ fn a_rename_is_refused_while_a_drive_nested_with_the_renaming_one_holds_the_file
     );
 }
 
-/// A handle on the root of its drive holds that directory open like any other handle, so the enclosing drive cannot rename the root of the inner drive meanwhile.
-// oracle: mutant a handle on the root of its drive left out of the handles that refuse a rename through a drive that serves another directory
+/// A handle on the root of its drive names that directory whatever it is called, so it does not keep the enclosing drive from renaming the root of the inner drive.
+/// The inner drive goes on serving the renamed directory.
+/// A file that the inner drive holds open inside its root still keeps the root from being renamed, as it does for any directory holding open files.
+// oracle: mutant a handle on the root of its drive counted among the handles that refuse a rename through a drive that serves another directory, or the inner drive served nothing after its root was renamed
 #[test]
-fn the_enclosing_drive_cannot_rename_the_root_of_the_inner_drive_while_the_inner_drive_holds_it_open() {
+fn the_enclosing_drive_renames_the_root_of_the_inner_drive_while_the_inner_drive_holds_only_that_root_open() {
     let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("open.txt"), b"open").expect("write file");
     let mut backend = roots.backend();
     let _root_id = create_on(&mut backend, SECOND, r"\", CreateDisposition::FILE_OPEN);
+    let file_id = create_on(&mut backend, SECOND, r"\open.txt", CreateDisposition::FILE_OPEN);
     let directory_id = create_on(&mut backend, FIRST, r"\a\b", CreateDisposition::FILE_OPEN);
+    let rename = rename_to(r"\a\c", false);
 
-    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\a\c", false));
+    let refused = set_information_on(&mut backend, FIRST, directory_id, rename.clone());
+    let names_after_the_refusal = names_in(&roots.outer.join("a"));
+    close_on(&mut backend, SECOND, file_id);
+    let renamed = set_information_on(&mut backend, FIRST, directory_id, rename);
+    let created = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
 
-    assert_eq!(response_status(&response), NtStatus::SHARING_VIOLATION);
-    assert_eq!(names_in(&roots.outer.join("a")), ["b"]);
+    // oracle: spec MS-FSA §2.1.5.15.12
+    assert_eq!(response_status(&refused), NtStatus::ACCESS_DENIED);
+    assert_eq!(names_after_the_refusal, ["b"]);
+    assert_eq!(response_status(&renamed), NtStatus::SUCCESS);
+    assert_eq!(response_status(&created), NtStatus::SUCCESS);
+    assert_eq!(names_in(&roots.outer.join("a")), ["c"]);
+    assert_eq!(names_in(&roots.outer.join("a").join("c")), ["new.txt", "open.txt"]);
 }
 
 /// With three drives nested in one another, the outermost cannot move a file that the middle one holds open, to a name outside the root of the middle one as to any other.
