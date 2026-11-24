@@ -1948,6 +1948,9 @@ pub(crate) fn process_dependent_file(
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
 
     fn build_error(factory: &NixRdpdrBackendFactory) -> NixRdpdrBackendFactoryError {
@@ -2001,8 +2004,16 @@ mod tests {
 
     /// Opens the shared directory, returning the status and file ID of the Device Create Response.
     fn open_share(backend: &mut NixRdpdrBackend) -> (NtStatus, u32) {
+        open_root(backend, 1)
+    }
+
+    /// Opens the root of `device_id`, returning the status and file ID of the Device Create Response.
+    fn open_root(backend: &mut NixRdpdrBackend, device_id: u32) -> (NtStatus, u32) {
         let request = DeviceCreateRequest {
-            device_io_request: header(0, MajorFunction::Create),
+            device_io_request: DeviceIoRequest {
+                device_id,
+                ..header(0, MajorFunction::Create)
+            },
             desired_access: DesiredAccess::empty(),
             allocation_size: 0,
             file_attributes: FileAttributes::empty(),
@@ -2040,6 +2051,136 @@ mod tests {
         )
         .expect("complete close");
         assert_eq!(open_share(&mut backend).0, NtStatus::SUCCESS);
+    }
+
+    /// The devices whose roots the tests of the cap open.
+    const FIRST: u32 = 1;
+    const SECOND: u32 = 2;
+
+    /// Two directories in one sandbox, each to be the root of a drive, removed when dropped.
+    struct TwoRoots {
+        sandbox: PathBuf,
+        first: PathBuf,
+        second: PathBuf,
+    }
+
+    impl TwoRoots {
+        fn new() -> Self {
+            static NEXT_SANDBOX: AtomicU32 = AtomicU32::new(0);
+            let unique = format!(
+                "rdpdr-native-nix-cap-{}-{}",
+                std::process::id(),
+                NEXT_SANDBOX.fetch_add(1, Ordering::Relaxed)
+            );
+            let sandbox = std::env::temp_dir().join(unique);
+            let _ = std::fs::remove_dir_all(&sandbox);
+            let (first, second) = (sandbox.join("first"), sandbox.join("second"));
+            std::fs::create_dir_all(&first).expect("create first root");
+            std::fs::create_dir_all(&second).expect("create second root");
+            Self { sandbox, first, second }
+        }
+
+        /// A backend without a shared directory, whose devices `FIRST` and `SECOND` serve the two roots.
+        fn backend(&self) -> NixRdpdrBackend {
+            NixRdpdrBackend::default()
+                .with_drive_root(FIRST, utf8(&self.first))
+                .with_drive_root(SECOND, utf8(&self.second))
+        }
+    }
+
+    impl Drop for TwoRoots {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.sandbox);
+        }
+    }
+
+    fn utf8(path: &Path) -> String {
+        path.to_str().expect("UTF-8 temporary directory").to_owned()
+    }
+
+    /// Opens the root of each device in turn under a cap of eight open files, until a create fails.
+    /// Returns the number of files opened and the status of the failure.
+    fn opens_until_refused(mut backend: NixRdpdrBackend, devices: &[u32]) -> (usize, NtStatus) {
+        // A create refused at the cap and one that ran out of descriptors report the same status.
+        // Only a cap far below the descriptor limit tells them apart, and this private field is the only way to set one.
+        backend.max_open_files = 8;
+        for (opened, device_id) in devices.iter().cycle().enumerate() {
+            let (status, _) = open_root(&mut backend, *device_id);
+            if status != NtStatus::SUCCESS {
+                return (opened, status);
+            }
+        }
+        unreachable!("a cycle over the devices does not end")
+    }
+
+    /// The open files of every drive count against one limit, so more drives do not let the server hold more files open.
+    // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file_table.rs
+    #[test]
+    fn drives_share_the_open_file_limit() {
+        let roots = TwoRoots::new();
+        let through_one_drive = opens_until_refused(roots.backend(), &[FIRST]);
+
+        let through_two_drives = opens_until_refused(roots.backend(), &[FIRST, SECOND]);
+
+        // oracle: mutant the status that refuses a create beyond the limit changed
+        assert_eq!(through_one_drive.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert!(0 < through_one_drive.0);
+        assert_eq!(through_two_drives, through_one_drive);
+    }
+
+    /// A root held open takes one place under the limit on open files, so the descriptors of the roots come out of the budget that limit protects.
+    // oracle: mutant held root descriptors left out of the open-file limit
+    #[test]
+    fn a_held_root_takes_the_place_of_one_open_file() {
+        let roots = TwoRoots::new();
+        let with_one_root = opens_until_refused(
+            NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.first)),
+            &[FIRST],
+        );
+
+        let with_two_roots = opens_until_refused(roots.backend(), &[FIRST]);
+
+        assert_eq!(with_one_root.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert_eq!(with_two_roots.1, NtStatus::INSUFFICIENT_RESOURCES);
+        assert!(0 < with_two_roots.0);
+        assert_eq!(with_two_roots.0 + 1, with_one_root.0);
+    }
+
+    /// A root that was replaced is no longer held open, so it takes no place under the limit on open files.
+    // oracle: mutant the directory of a replaced root kept open
+    #[test]
+    fn a_replaced_root_is_no_longer_held_open() {
+        let roots = TwoRoots::new();
+        let with_one_root = opens_until_refused(
+            NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.second)),
+            &[FIRST],
+        );
+
+        let with_a_replaced_root = opens_until_refused(
+            NixRdpdrBackend::default()
+                .with_drive_root(FIRST, utf8(&roots.first))
+                .with_drive_root(FIRST, utf8(&roots.second)),
+            &[FIRST],
+        );
+
+        assert!(0 < with_one_root.0);
+        assert_eq!(with_a_replaced_root, with_one_root);
+    }
+
+    /// Drives given the same directory hold it open once, however each spells its path.
+    // oracle: mutant a root descriptor held for each drive rather than for each directory
+    #[test]
+    fn drives_of_the_same_directory_hold_it_open_once() {
+        let roots = TwoRoots::new();
+        let alias = roots.sandbox.join("alias");
+        std::os::unix::fs::symlink(&roots.first, &alias).expect("link directory");
+        let one_drive = || NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.first));
+        let with_one_drive = opens_until_refused(one_drive(), &[FIRST]);
+
+        let with_two_drives = opens_until_refused(one_drive().with_drive_root(SECOND, utf8(&alias)), &[FIRST]);
+
+        assert!(0 < with_one_drive.0);
+        assert_eq!(with_two_drives, with_one_drive);
     }
 
     // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file_table.rs
