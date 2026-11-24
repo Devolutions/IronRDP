@@ -297,7 +297,7 @@ struct PendingDelete {
     path: RelativePath,
     /// The directories `path` led through when the file was marked, from the root of `device_id` down.
     ///
-    /// Once a drive has a root of its own, none of them is renamed while the delete is pending, so `path` goes on naming the file.
+    /// INVARIANT: once a drive has a root of its own, the requests a server sends rename none of them while the delete is pending, so `path` goes on naming the file.
     ancestors: Vec<FileIdentity>,
 }
 
@@ -1199,7 +1199,7 @@ pub(crate) fn set_information(
     // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
     // A directory that led to a file marked for deletion is refused like one holding open files, because the file is deleted by the name it was marked through, which has to go on naming it.
     // Only a backend with a drive that has a root of its own refuses it.
-    // With only a shared directory the open handles alone decide, which leaves the behaviour of that configuration unchanged: a handle left on the marked link keeps those directories in place, and a handle left on another hard link does not.
+    // With only a shared directory the open handles alone decide, because a handle left on the marked link keeps those directories in place and a handle left on another hard link does not.
     let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
         && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
             backend.pending_deletes.contains_key(&open_file.identity)
@@ -1309,10 +1309,11 @@ pub(crate) fn set_information(
         for open_file in backend.open_files.values_mut().filter(|open_file| {
             open_file.identity == identity && backend.roots.serve_the_same_directory(open_file.device_id, device_id)
         }) {
-            let still_names_file = root
-                .as_ref()
-                .is_ok_and(|root| names_file(root, &open_file.path, identity));
-            if open_file.path == from || !still_names_file {
+            if open_file.path == from
+                || !root
+                    .as_ref()
+                    .is_ok_and(|root| names_file(root, &open_file.path, identity))
+            {
                 open_file.path = to.clone();
                 open_file.ancestors = ancestors.clone();
             }
