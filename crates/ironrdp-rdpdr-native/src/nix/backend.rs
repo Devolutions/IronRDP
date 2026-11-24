@@ -41,50 +41,9 @@ const MAX_READ_LENGTH: usize = 1_024 * 1_024;
 /// A file ID names a file only through the drive it was opened through.
 /// Through another drive it is answered like a file ID that was never opened, and the request changes nothing.
 ///
-/// # Roots
+/// The limits on open files and byte-range locks apply to all drives together.
 ///
-/// A root given with [`Self::with_drive_root`] is resolved once, when it is given, and the backend holds the directory it names open for its lifetime.
-/// The drive serves that directory, not its path: it keeps serving it when the directory is moved or its path comes to name something else, and after [`RdpdrBackend::reset`].
-/// Once a drive has a root of its own, the shared directory is resolved and held the same way.
-/// A backend whose drives all serve the shared directory opens it by path for each request and does not check it.
-///
-/// A root is unusable when its path is relative or empty, holds a `.` or `..` component, or names no directory.
-/// It is also unusable when resolving it followed a symbolic link in or below the directory of any root of the backend, its own included.
-/// A server can replace such a link through the drive of that root, so the path could name another directory the next time it is resolved.
-/// A drive with an unusable root stays configured and is served nothing: a create through it fails as it does when the shared directory cannot be opened.
-/// The other drives are served, and a warning is logged when a root becomes unusable.
-///
-/// # Drives that reach the same files
-///
-/// Drives may serve the same directory, or directories inside one another.
-/// The limits on open files and byte-range locks apply to all drives together, and each directory held open as a root counts as one open file.
-/// A lock or a pending delete on a file holds through every drive that reaches it, and a rename does not replace a file that is open through any drive.
-/// A rename moves the open handles of every drive that serves the same directory to the new name, however the roots of those drives are spelled.
-///
-/// Between drives that serve different directories, these limitations are known:
-///
-/// - A handle keeps its old path after a rename through the other drive: once that path no longer names the file, a rename through the handle fails and a delete through it removes nothing.
-/// - An open file keeps a directory from being renamed only from the root of its own drive down.
-///   The drive of an enclosing directory can therefore rename a directory above the root of an inner drive while the inner drive has files open, and the inner drive then serves its directory at the new path.
-/// - The drive of an enclosing directory can delete the root of an inner drive once it is empty, and nothing can then be created or opened below that root.
-/// - Roots are resolved again for each backend.
-///   Between two backends given the same root paths, as a [`NixRdpdrBackendFactory`] builds them, the drive of an enclosing directory can rename directories so that the path of an inner root names another directory inside the enclosing root, and the later backend serves that directory through the inner drive.
-///   A symbolic link placed on that path makes the inner root unusable instead, so under the assumptions below the later backend never serves a directory outside the enclosing root through the inner drive.
-///
-/// # Guarantees and assumptions
-///
-/// These hold by construction and are tested:
-///
-/// - A drive with its own root serves the directory the root named when it was given, for the lifetime of the backend.
-/// - A root is unusable when the walk that resolved it, one component at a time from `/`, followed a symbolic link in the directory of a root of the backend or in a directory it reached through one.
-/// - A drive with an unusable root is served nothing, and the other drives are served.
-///
-/// These are assumed, and nothing checks them:
-///
-/// - Local processes are trusted, because they can change what any path names.
-/// - No bind mount, and on macOS no firmlink such as `/Users` for `/System/Volumes/Data/Users`, shows a directory inside a root at another path, where the walk does not reach a link through that root.
-/// - No other backend with another configuration lets a server write to a directory that a root path leads through: a root path is trusted as local configuration wherever it lies outside the roots of this backend.
-/// - No server of another connection changes the directories on a root path while the root is resolved.
+/// [Drive roots on macOS and Linux](crate#drive-roots-on-macos-and-linux) describes how roots are resolved, when a root is unusable, and what holds between drives that reach the same files.
 #[derive(Debug)]
 pub struct NixRdpdrBackend {
     file_id: u32,
@@ -492,7 +451,7 @@ impl NixRdpdrBackend {
     /// `root` is resolved here, once, and the directory it names is held open until the backend is dropped, so every root has to be given before the backend serves a request.
     /// The drive then serves that directory whatever becomes of its path.
     /// `root` must be an absolute path without `.` or `..` components, and may lead through symbolic links that lie outside every root of the backend.
-    /// An unusable root, as the [type documentation](Self#roots) defines it, is logged and leaves the drive configured but served nothing.
+    /// An unusable root, as [Drive roots on macOS and Linux](crate#drive-roots-on-macos-and-linux) defines it, is logged and leaves the drive configured but served nothing.
     /// Roots are checked against each other in whichever order they are given, so a root given later can make an earlier one unusable.
     /// A root given again for the same device replaces the earlier one.
     #[must_use]

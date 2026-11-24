@@ -55,6 +55,7 @@ Roots are checked against each other in whichever order they are given.
 ### Drives that reach the same files
 
 Drives may serve the same directory, or directories inside one another.
+The limits on open files and byte-range locks apply to all drives together.
 A lock or a pending delete on a file holds through every drive that reaches it, and a rename does not replace a file that is open through any drive.
 A rename moves the open handles of every drive that serves the same directory to the new name, however the roots of those drives are spelled.
 
