@@ -2474,9 +2474,9 @@ fn a_root_inside_another_may_be_given_through_a_link_outside_every_root(
     assert_eq!(names_in(&nested.inner), ["new.txt"]);
 }
 
-/// A root whose path does not resolve to a directory is served nothing, and the other drive works.
+/// A root whose path does not resolve to a directory is served nothing, not even the shared directory, which the other drive is still served.
 /// Opening the root creates nothing, so a root that was served would only show in the status.
-// oracle: mutant a root path that must not resolve left to the kernel, which resolves it
+// oracle: mutant a root path that must not resolve left to the kernel, which resolves it, or a drive with such a root served the shared directory
 #[rstest]
 // `src` exists in the package root, the working directory of the tests, so the path fails only for being relative.
 #[case::a_relative_path(|_: &TwoRoots| "src".to_owned())]
@@ -2499,9 +2499,7 @@ fn a_root_inside_another_may_be_given_through_a_link_outside_every_root(
 })]
 fn a_root_that_names_no_directory_serves_nothing(#[case] root: fn(&TwoRoots) -> String) {
     let roots = TwoRoots::new();
-    let mut backend = NixRdpdrBackend::default()
-        .with_drive_root(FIRST, utf8(&roots.first))
-        .with_drive_root(SECOND, root(&roots));
+    let mut backend = NixRdpdrBackend::new(utf8(&roots.first)).with_drive_root(SECOND, root(&roots));
 
     let unresolvable = create_with(
         &mut backend,
