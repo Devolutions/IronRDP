@@ -2380,6 +2380,11 @@ fn a_root_inside_another_may_be_given_through_a_link_outside_every_root(
 #[rstest]
 // `src` exists in the package root, the working directory of the tests, so the path fails only for being relative.
 #[case::a_relative_path(|_: &TwoRoots| "src".to_owned())]
+// The path names the second root when walked from `/`, so it too fails only for being relative.
+// oracle: reference crates/ironrdp-rdpdr-native/src/windows/factory.rs
+#[case::a_relative_path_that_names_a_directory_from_the_filesystem_root(|roots: &TwoRoots| {
+    utf8(&roots.second).trim_start_matches('/').to_owned()
+})]
 #[case::an_empty_path(|_: &TwoRoots| String::new())]
 #[case::a_parent_component(|roots: &TwoRoots| format!("{}/../second", utf8(&roots.first)))]
 #[case::a_current_directory_component(|roots: &TwoRoots| format!("{}/.", utf8(&roots.second)))]
@@ -2569,6 +2574,24 @@ fn a_parent_component_in_a_link_target_leads_to_the_parent_of_the_directory_reac
 
     assert_eq!(names_in(&deep.join("kept")), ["new.txt"]);
     assert!(names_in(&links.join("kept")).is_empty());
+}
+
+/// A `..` at `/` in the target of a followed link stays at `/`, as when the kernel resolves the path.
+/// The test lists the root through the same link, so the kernel decides where the file must be.
+// oracle: reference the kernel's resolution of the same link
+#[test]
+fn a_parent_component_at_the_filesystem_root_stays_there() {
+    let fixture = Fixture::new();
+    let alias = fixture.sandbox.join("alias");
+    link(Path::new(&format!("/..{}", utf8(&fixture.share))), &alias);
+    let mut backend = NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&alias));
+
+    let _ = create_with(
+        &mut backend,
+        create_request(r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(names_in(&alias), ["new.txt"]);
 }
 
 /// Resolving a root is bounded, so a path built to make it run long names no directory, although every link in it leads on to one.
