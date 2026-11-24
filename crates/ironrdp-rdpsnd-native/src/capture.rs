@@ -1,11 +1,11 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::sync::{Arc, Mutex, mpsc};
-use std::thread::{self, JoinHandle};
+use std::thread::{self, JoinHandle, Thread};
 
 use cpal::traits::{DeviceTrait as _, StreamTrait as _};
 use cpal::{Stream, StreamConfig};
-use ironrdp_rdpeai::client::{AudioPacketSink, RdpeaiCaptureHandler};
+use ironrdp_rdpeai::client::{AudioPacketSink, PduResult, RdpeaiCaptureHandler};
 use ironrdp_rdpeai::pdu::{MAX_DATA_PACKET_SIZE, OpenReplyPdu, pcm_format};
 use ironrdp_rdpsnd::codec::AudioEncoder;
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
@@ -13,10 +13,16 @@ use tracing::{debug, error, info, warn};
 
 use crate::device::{self, DeviceSelector, Direction};
 
-/// Upper bound for waiting on CPAL input stream startup from the session task.
-///
-/// Open must report a real HRESULT, but the client session loop is single-threaded.
-/// Keep this short so a slow/hung device does not stall the whole RDP session.
+/// Highest default sample rate offered by the native capture backend, in samples per second.
+const MAX_CAPTURE_SAMPLE_RATE: u32 = 48_000;
+
+/// Allow cold CoreAudio startup to exceed 250 ms without reporting a spurious Open failure.
+/// Cleanup still joins the worker, so a blocked driver can exceed this deadline.
+#[cfg(not(target_os = "linux"))]
+const STREAM_START_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Preserve the existing startup deadline for ALSA capture.
+#[cfg(target_os = "linux")]
 const STREAM_START_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// `KSDATAFORMAT_SUBTYPE_PCM` (`{00000001-0000-0010-8000-00aa00389b71}`).
@@ -47,6 +53,7 @@ pub struct RdpeaiCaptureBackend {
     formats: Vec<AudioFormat>,
     stream_handle: Option<JoinHandle<()>>,
     stream_ended: Arc<AtomicBool>,
+    stop_requested: CaptureStopSignal,
     /// Capture WAVEFORMATEX established by a successful Open (or last restart).
     open_capture_format: Option<AudioFormat>,
     /// Shared sink + packet size for the capture callback thread.
@@ -80,9 +87,17 @@ impl RdpeaiCaptureBackend {
             formats: default_capture_formats(),
             stream_handle: None,
             stream_ended: Arc::new(AtomicBool::new(false)),
+            stop_requested: CaptureStopSignal::new(),
             open_capture_format: None,
             sink_state: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Returns a nonblocking signal that stops capture without joining the worker.
+    ///
+    /// Once requested, this backend will not start capture again.
+    pub fn stop_signal(&self) -> CaptureStopSignal {
+        self.stop_requested.clone()
     }
 
     /// Stop the worker thread without clearing an already-installed sink.
@@ -105,6 +120,10 @@ impl RdpeaiCaptureBackend {
     fn start_stream(&mut self, format: &AudioFormat) -> Result<(), String> {
         self.stop_worker();
 
+        if self.stop_requested.is_requested() {
+            return Err("capture stop was requested".to_owned());
+        }
+
         if !is_pcm_capture_format(format) {
             return Err(format!("unsupported capture wave format: {:?}", format.format));
         }
@@ -126,13 +145,29 @@ impl RdpeaiCaptureBackend {
         let stream_ended = Arc::new(AtomicBool::new(false));
         self.stream_ended = Arc::clone(&stream_ended);
         let sink_state = Arc::clone(&self.sink_state);
+        let stop_requested = self.stop_requested.clone();
 
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
 
-        self.stream_handle = Some(thread::spawn(move || {
-            run_capture(&selector, &config, &sink_state, &stream_ended, ready_tx);
-        }));
+        let handle = thread::spawn(move || {
+            run_capture(
+                &selector,
+                &config,
+                &sink_state,
+                &stream_ended,
+                &stop_requested,
+                ready_tx,
+            );
+        });
+        if let Ok(mut worker_thread) = self.stop_requested.worker_thread.lock() {
+            *worker_thread = Some(handle.thread().clone());
+        }
+        self.stream_handle = Some(handle);
 
+        self.wait_for_stream_start(ready_rx)
+    }
+
+    fn wait_for_stream_start(&mut self, ready_rx: mpsc::Receiver<Result<(), String>>) -> Result<(), String> {
         match ready_rx.recv_timeout(STREAM_START_TIMEOUT) {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => {
@@ -141,15 +176,95 @@ impl RdpeaiCaptureBackend {
             }
             Err(error) => {
                 self.stop_worker();
-                Err(format!("capture stream startup timed out: {error}"))
+                Err(format!("capture stream startup did not complete: {error}"))
             }
         }
+    }
+
+    fn change_format(
+        &mut self,
+        encode_format: &AudioFormat,
+        confirm: &mut dyn FnMut() -> PduResult<()>,
+    ) -> PduResult<bool> {
+        let Some(capture_format) = self.open_capture_format.clone() else {
+            return Ok(false);
+        };
+        let restart = !same_rate_and_channels(&capture_format, encode_format);
+        let capture_format = if restart {
+            pcm_format(encode_format.n_channels, encode_format.n_samples_per_sec, 16)
+        } else {
+            capture_format
+        };
+        let encoder = match encoder_for(&capture_format, encode_format) {
+            Ok(encoder) => encoder,
+            Err(error) => {
+                warn!(?encode_format, error, "Rejecting FormatChange");
+                return Ok(false);
+            }
+        };
+
+        if restart {
+            self.stop_worker();
+        }
+        {
+            let Ok(mut guard) = self.sink_state.lock() else {
+                warn!("Capture format change failed: capture state is poisoned");
+                return Ok(false);
+            };
+            let Some(state) = guard.as_mut() else {
+                return Ok(false);
+            };
+            state.buffer.clear();
+            state.encoder = encoder;
+            // INVARIANT: No new-format packet is enqueued before confirmation completes.
+            confirm()?;
+        }
+        if restart {
+            if let Err(error) = self.start_stream(&capture_format) {
+                warn!(%error, "AUDIO_INPUT capture restart for FormatChange failed");
+                return Ok(false);
+            }
+            self.open_capture_format = Some(capture_format);
+        }
+        debug!(?encode_format, "AUDIO_INPUT capture encoding changed");
+        Ok(true)
     }
 }
 
 impl Drop for RdpeaiCaptureBackend {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+/// A nonblocking request to stop an [`RdpeaiCaptureBackend`] stream.
+#[derive(Clone)]
+pub struct CaptureStopSignal {
+    requested: Arc<AtomicBool>,
+    worker_thread: Arc<Mutex<Option<Thread>>>,
+}
+
+impl CaptureStopSignal {
+    fn new() -> Self {
+        Self {
+            requested: Arc::new(AtomicBool::new(false)),
+            worker_thread: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Requests that the capture worker stop at its next callback or wake-up.
+    pub fn request_stop(&self) {
+        self.requested.store(true, Ordering::Release);
+        if let Ok(worker_thread) = self.worker_thread.try_lock()
+            && let Some(worker_thread) = worker_thread.as_ref()
+        {
+            worker_thread.unpark();
+        }
+    }
+
+    /// Returns whether capture has been asked to stop.
+    pub fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
     }
 }
 
@@ -201,6 +316,7 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
 
         {
             let Ok(mut guard) = self.sink_state.lock() else {
+                warn!("Capture open failed: capture state is poisoned");
                 return OpenReplyPdu::E_FAIL;
             };
             *guard = Some(SinkState {
@@ -228,51 +344,18 @@ impl RdpeaiCaptureHandler for RdpeaiCaptureBackend {
     }
 
     fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool {
-        // FormatChange switches encoding. Capture packet size stays at the Open value.
         let _ = packet_size;
-        let Some(capture_format) = self.open_capture_format.clone() else {
-            return false;
-        };
+        self.change_format(encode_format, &mut || Ok(())).unwrap_or(false)
+    }
 
-        let restart = !same_rate_and_channels(&capture_format, encode_format);
-        let capture_format = if restart {
-            // Capture at the new rate and channel count so the confirmation is honest.
-            pcm_format(encode_format.n_channels, encode_format.n_samples_per_sec, 16)
-        } else {
-            capture_format
-        };
-        let encoder = match encoder_for(&capture_format, encode_format) {
-            Ok(encoder) => encoder,
-            Err(reason) => {
-                warn!(?encode_format, reason, "Rejecting FormatChange");
-                return false;
-            }
-        };
-
-        if restart {
-            // Stop the old stream before switching, so none of its samples meet the new encoder.
-            self.stop_worker();
-        }
-        {
-            let Ok(mut guard) = self.sink_state.lock() else {
-                return false;
-            };
-            let Some(state) = guard.as_mut() else {
-                return false;
-            };
-            // Leftover samples of the old format must not start a packet of the new one.
-            state.buffer.clear();
-            state.encoder = encoder;
-        }
-        if restart {
-            if let Err(error) = self.start_stream(&capture_format) {
-                warn!(%error, "AUDIO_INPUT capture restart for FormatChange failed");
-                return false;
-            }
-            self.open_capture_format = Some(capture_format);
-        }
-        debug!(?encode_format, "AUDIO_INPUT capture encoding changed");
-        true
+    fn set_format_ordered(
+        &mut self,
+        encode_format: &AudioFormat,
+        packet_size: usize,
+        confirm: &mut dyn FnMut() -> PduResult<()>,
+    ) -> PduResult<bool> {
+        let _ = packet_size;
+        self.change_format(encode_format, confirm)
     }
 
     fn close(&mut self) {
@@ -305,12 +388,12 @@ fn encoder_for(capture_format: &AudioFormat, encode_format: &AudioFormat) -> Cap
 fn default_capture_formats() -> Vec<AudioFormat> {
     // Prefer common VoIP / Windows mic rates, mono first.
     vec![
-        pcm_format(1, 48000, 16),
+        pcm_format(1, MAX_CAPTURE_SAMPLE_RATE, 16),
         pcm_format(1, 44100, 16),
         pcm_format(1, 22050, 16),
         pcm_format(1, 16000, 16),
         pcm_format(1, 8000, 16),
-        pcm_format(2, 48000, 16),
+        pcm_format(2, MAX_CAPTURE_SAMPLE_RATE, 16),
         pcm_format(2, 44100, 16),
         pcm_format(2, 16000, 16),
     ]
@@ -351,35 +434,33 @@ pub fn take_capture_packets(buffer: &mut Vec<u8>, packet_size: usize) -> Vec<Vec
     if packet_size == 0 {
         return Vec::new();
     }
-    let mut packets = Vec::new();
-    while buffer.len() >= packet_size {
-        let rest = buffer.split_off(packet_size);
-        let packet = core::mem::replace(buffer, rest);
-        packets.push(packet);
-    }
+    let packets: Vec<_> = buffer.chunks_exact(packet_size).map(<[u8]>::to_vec).collect();
+    buffer.drain(..packets.len() * packet_size);
     packets
 }
 
 /// Body of the capture thread: keeps an input stream open on the selected device until `ended`.
 ///
-/// The first open reports its outcome through `ready`; later reopens (device lost, or the default
-/// input device changed) are only logged.
+/// The first open reports its outcome through `ready`; later reopen failures are logged.
 fn run_capture(
     selector: &DeviceSelector,
     config: &StreamConfig,
     sink_state: &Arc<Mutex<Option<SinkState>>>,
     ended: &Arc<AtomicBool>,
+    stop_requested: &CaptureStopSignal,
     ready: mpsc::SyncSender<Result<(), String>>,
 ) {
     let mut ready = Some(ready);
     let device_lost = Arc::new(AtomicBool::new(false));
 
-    while !ended.load(Ordering::Relaxed) {
+    while !ended.load(Ordering::Relaxed) && !stop_requested.is_requested() {
         let opened = device::open_device(selector, Direction::Input)
             .ok_or_else(|| format!("audio input device {selector} not found"))
             .and_then(|device| {
-                let stream = build_input_stream(&device, config, sink_state, &device_lost)?;
-                stream.play().map_err(|error| error.to_string())?;
+                let stream = build_input_stream(&device, config, sink_state, &device_lost, stop_requested)?;
+                stream
+                    .play()
+                    .map_err(|error| format!("could not start the audio input stream: {error}"))?;
                 Ok((device::device_id(&device), stream))
             });
         let (device_id, stream) = match opened {
@@ -405,7 +486,11 @@ fn run_capture(
             device_id.as_deref(),
             ended,
             &device_lost,
-            || {},
+            || {
+                if stop_requested.is_requested() {
+                    ended.store(true, Ordering::Release);
+                }
+            },
         );
         drop(stream);
     }
@@ -429,12 +514,14 @@ fn build_input_stream(
     config: &StreamConfig,
     sink_state: &Arc<Mutex<Option<SinkState>>>,
     device_lost: &Arc<AtomicBool>,
+    stop_requested: &CaptureStopSignal,
 ) -> Result<Stream, String> {
     let capture_thread = thread::current();
     let err_fn = {
         let device_lost = Arc::clone(device_lost);
         move |error| match error {
             cpal::StreamError::DeviceNotAvailable | cpal::StreamError::StreamInvalidated => {
+                warn!(%error, "Audio input device lost; reopening");
                 device_lost.store(true, Ordering::Relaxed);
                 capture_thread.unpark();
             }
@@ -447,7 +534,8 @@ fn build_input_stream(
         config,
         {
             let sink_state = Arc::clone(sink_state);
-            move |data: &[i16], _| push_samples(&sink_state, data.iter().copied())
+            let stop_requested = stop_requested.clone();
+            move |data: &[i16], _| push_samples(&sink_state, data.iter().copied(), &stop_requested)
         },
         err_fn.clone(),
         None,
@@ -458,19 +546,32 @@ fn build_input_stream(
         Err(i16_error) => {
             debug!(%i16_error, "I16 input stream unsupported; trying F32");
             let sink_state = Arc::clone(sink_state);
+            let stop_requested = stop_requested.clone();
             device
                 .build_input_stream(
                     config,
-                    move |data: &[f32], _| push_samples(&sink_state, data.iter().copied().map(f32_to_i16)),
+                    move |data: &[f32], _| {
+                        push_samples(&sink_state, data.iter().copied().map(f32_to_i16), &stop_requested)
+                    },
                     err_fn,
                     None,
                 )
-                .map_err(|f32_error| format!("i16: {i16_error}; f32: {f32_error}"))
+                .map_err(|f32_error| {
+                    format!("could not build the audio input stream (i16: {i16_error}; f32: {f32_error})")
+                })
         }
     }
 }
 
-fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactSizeIterator<Item = i16>) {
+fn push_samples(
+    sink_state: &Arc<Mutex<Option<SinkState>>>,
+    samples: impl ExactSizeIterator<Item = i16>,
+    stop_requested: &CaptureStopSignal,
+) {
+    if stop_requested.is_requested() {
+        return;
+    }
+
     // The packets are encoded and handed to the sink under the lock, so a format change, which takes
     // the same lock, separates the packets of the old encoding from those of the new one. The sink
     // only queues the packets for the session loop (a non-blocking `try_send`).
@@ -489,7 +590,12 @@ fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactS
     for sample in samples {
         state.buffer.extend_from_slice(&sample.to_le_bytes());
     }
+
     for packet in take_capture_packets(&mut state.buffer, state.packet_size) {
+        if stop_requested.is_requested() {
+            break;
+        }
+
         let packet = match state.encoder.as_mut() {
             None => packet,
             Some(encoder) => {
@@ -509,5 +615,81 @@ fn push_samples(sink_state: &Arc<Mutex<Option<SinkState>>>, samples: impl ExactS
             }
         };
         (state.sink)(packet);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // oracle: regression #2469
+    // Cold CoreAudio startup reached 348 ms before the stream became ready.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn cold_stream_start_is_not_rejected_after_250_ms() {
+        let mut backend = RdpeaiCaptureBackend::new();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        backend.stream_handle = Some(thread::spawn(move || {
+            thread::sleep(Duration::from_millis(400));
+            let _ = ready_tx.send(Ok(()));
+        }));
+
+        assert!(backend.wait_for_stream_start(ready_rx).is_ok());
+    }
+
+    // oracle: regression #2469
+    #[test]
+    fn stream_start_preserves_device_failure() {
+        let mut backend = RdpeaiCaptureBackend::new();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        ready_tx.send(Err("device unavailable".to_owned())).unwrap();
+
+        assert!(backend.wait_for_stream_start(ready_rx).is_err());
+    }
+
+    // oracle: spec MS-RDPEAI §3.2.5.3.2
+    #[test]
+    fn format_confirmation_precedes_concurrent_capture() {
+        let format = pcm_format(1, 16000, 16);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let packet_events = Arc::clone(&events);
+        let mut backend = RdpeaiCaptureBackend::new();
+        backend.open_capture_format = Some(format.clone());
+        *backend.sink_state.lock().unwrap() = Some(SinkState {
+            sink: Box::new(move |_| packet_events.lock().unwrap().push("data")),
+            packet_size: 4,
+            buffer: Vec::new(),
+            encoder: None,
+            pcm: Vec::new(),
+        });
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+        let mut worker = None;
+        let sink_state = Arc::clone(&backend.sink_state);
+        let stop_signal = backend.stop_signal();
+        let mut confirm = || {
+            // oracle: mutant confirmation runs outside the sink lock
+            assert!(matches!(
+                sink_state.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            let sink_state = Arc::clone(&sink_state);
+            let stop_signal = stop_signal.clone();
+            let started_tx = started_tx.clone();
+            let finished_tx = finished_tx.clone();
+            worker = Some(thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                push_samples(&sink_state, [1i16, 2].into_iter(), &stop_signal);
+                finished_tx.send(()).unwrap();
+            }));
+            started_rx.recv().unwrap();
+            events.lock().unwrap().push("confirmation");
+            Ok(())
+        };
+
+        assert!(backend.set_format_ordered(&format, 4, &mut confirm).unwrap());
+        finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.unwrap().join().unwrap();
+        assert_eq!(*events.lock().unwrap(), ["confirmation", "data"]);
     }
 }

@@ -225,12 +225,18 @@ pub mod ffi {
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
-        /// Permanently stops native playback for this connection without disconnecting the desktop.
-        /// Stopping playback produces no transport frames.
+        /// Drains captured audio and audio channel closures into transport frames.
+        pub fn poll_audio(&mut self, audio: &NativeAudio) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            super::ensure_native_audio_attached(self.2.as_ref(), &audio.0)?;
+            let outputs = crate::audio::poll_audio(&mut self.0, &audio.0)?;
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
+        }
+
+        /// Stops native playback and capture for this connection.
         pub fn stop_audio(&mut self, audio: &NativeAudio) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             super::ensure_native_audio_attached(self.2.as_ref(), &audio.0)?;
-            audio.0.stop_playback();
-            Ok(Box::new(ActiveStageOutputIterator(VecDeque::new())))
+            let outputs = crate::audio::stop_audio(&mut self.0, &audio.0)?;
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
         pub fn process_fastpath_input(
@@ -928,8 +934,10 @@ pub mod ffi {
 
 impl Drop for ffi::ActiveStage {
     fn drop(&mut self) {
-        if let Some(audio) = self.2.as_ref() {
-            audio.stop_playback();
+        if let Some(audio) = self.2.as_ref()
+            && crate::audio::stop_audio(&mut self.0, audio).is_err()
+        {
+            tracing::warn!("Failed to stop native audio while dropping active stage");
         }
     }
 }

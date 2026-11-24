@@ -1,9 +1,8 @@
 [package]
 name = "ironrdp-rdpetxt"
-version = "0.0.0"
+version = "0.1.0"
 readme = "README.md"
 description = "Text input dynamic channel client and server as described in MS-RDPETXT"
-publish = false
 edition.workspace = true
 rust-version = "1.94"
 license.workspace = true
