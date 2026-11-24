@@ -206,6 +206,9 @@ jobs:
         run: |
           if ($env:RUNNER_OS -eq 'Windows') {
             $env:RUSTFLAGS = '-C target-feature=+crt-static'
+            # Release tags may predate the toolchain file, so create it outside the checkout.
+            $env:CMAKE_TOOLCHAIN_FILE = Join-Path $env:RUNNER_TEMP 'opus-static-runtime.cmake'
+            Set-Content -LiteralPath $env:CMAKE_TOOLCHAIN_FILE -Value 'set(OPUS_STATIC_RUNTIME ON CACHE BOOL "Build Opus with the static MSVC runtime")'
           }
 
           if ($env:RUNNER_OS -eq 'macOS') {
