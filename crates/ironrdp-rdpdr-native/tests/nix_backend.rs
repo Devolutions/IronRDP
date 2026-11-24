@@ -1772,8 +1772,8 @@ fn a_drive_cannot_reach_the_root_of_another_drive(
     offset: 8,
     write_data: b"XXXX".to_vec(),
 }))]
-// A close has no failure status, so one that names no file succeeds.
-// oracle: spec MS-FSA §2.1.5.5
+// This backend answers a close of a file ID that names nothing with success.
+// oracle: mutant a close of a file ID that names nothing answered with another status
 #[case::close(NtStatus::SUCCESS, |file_id| ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
     device_io_request: header_on(SECOND, file_id, MajorFunction::Close),
 }))]
