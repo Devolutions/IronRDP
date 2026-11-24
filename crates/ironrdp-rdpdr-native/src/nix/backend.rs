@@ -2261,8 +2261,9 @@ mod tests {
         assert_eq!(with_a_replaced_root, with_one_root);
     }
 
-    /// Drives given the same directory each hold it open through their own path, so each takes a place under the limit on open files.
-    // oracle: mutant one root descriptor shared by the drives that name one directory
+    /// Each root takes its own place under the limit on open files, also when another root names the same directory.
+    /// Which descriptor the requests of a drive use is not checked here.
+    // oracle: mutant roots that name one directory took one place between them under the open-file limit
     #[test]
     fn drives_of_the_same_directory_each_hold_it_open() {
         let roots = TwoRoots::new();

@@ -3104,7 +3104,7 @@ fn a_rename_fails_through_a_handle_whose_file_the_enclosing_drive_moved_out_of_i
 }
 
 /// A delete through a handle whose file the enclosing drive moved out of the root of its own drive removes nothing: neither the file, which no path of that drive names, nor a file that has taken its old name.
-// oracle: mutant a delete through a handle whose path names another file than the handle holds removed a file
+// oracle: mutant a removal through a handle whose file left the root of its drive skipped the check that its path still names that file
 #[test]
 fn a_delete_through_a_handle_whose_file_the_enclosing_drive_moved_out_of_its_root_removes_nothing() {
     let (roots, mut backend, outer_id, inner_id) = a_file_moved_out_of_the_inner_root();
@@ -3120,30 +3120,14 @@ fn a_delete_through_a_handle_whose_file_the_enclosing_drive_moved_out_of_its_roo
 
 /// A handle whose file the enclosing drive moved out of the root of its own drive takes no path from a later rename of the file outside that root.
 /// The path such a rename gives the file, read beneath the root of the inner drive, names the decoy here, which a rename or a delete through the handle would then move or remove.
+/// The decoy is another link of the file, because a rename or a delete through a handle spares any other file its path names.
 // oracle: mutant a handle whose file left the root of its drive took the path of a later rename outside that root
-#[rstest]
-#[case::a_file_created_through_the_inner_drive(|_: &DeepRoots, backend: &mut NixRdpdrBackend| {
-    let directory = create_with(
-        backend,
-        DeviceCreateRequest {
-            create_options: CreateOptions::FILE_DIRECTORY_FILE,
-            ..create_request_on(SECOND, r"\d", CreateDisposition::FILE_CREATE)
-        },
-    );
-    close_on(backend, SECOND, response_file_id(&directory));
-    let file_id = create_on(backend, SECOND, r"\d\g.txt", CreateDisposition::FILE_CREATE);
-    close_on(backend, SECOND, file_id);
-})]
-#[case::another_link_of_the_file(|roots: &DeepRoots, _: &mut NixRdpdrBackend| {
-    std::fs::create_dir(roots.inner.join("d")).expect("create directory");
-    std::fs::hard_link(roots.outer.join("c").join("f.txt"), roots.inner.join("d").join("g.txt")).expect("link file");
-})]
-fn a_handle_whose_file_left_its_root_takes_no_path_from_a_later_rename_outside_that_root(
-    #[case] make_decoy: fn(&DeepRoots, &mut NixRdpdrBackend),
-) {
+#[test]
+fn a_handle_whose_file_left_its_root_takes_no_path_from_a_later_rename_outside_that_root() {
     let (roots, mut backend, outer_id, inner_id) = a_file_moved_out_of_the_inner_root();
     std::fs::create_dir(roots.outer.join("d")).expect("create directory");
-    make_decoy(&roots, &mut backend);
+    std::fs::create_dir(roots.inner.join("d")).expect("create directory");
+    std::fs::hard_link(roots.outer.join("c").join("f.txt"), roots.inner.join("d").join("g.txt")).expect("link file");
     let renamed_again = set_information_on(&mut backend, FIRST, outer_id, rename_to(r"\d\g.txt", false));
     assert_eq!(response_status(&renamed_again), NtStatus::SUCCESS);
     let before = entries_below(&roots.sandbox);
