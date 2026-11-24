@@ -63,20 +63,23 @@ Between drives that serve different directories, these limitations are known:
 - A handle keeps its old path after a rename through the other drive: once that path no longer names the file, a rename through the handle fails and a delete through it removes nothing.
 - An open file keeps a directory from being renamed only from the root of its own drive down.
   The drive of an enclosing directory can therefore rename a directory above the root of an inner drive while the inner drive has files open, and the inner drive then serves its directory at the new path.
-- The drive of an enclosing directory can delete the root of an inner drive once it is empty, and every create through the inner drive then fails.
+- The drive of an enclosing directory can delete the root of an inner drive once it is empty, and nothing can then be created or opened below that root.
+- Roots are resolved again each time a backend is built.
+  Between two backends built from one configuration, the drive of an enclosing directory can rename directories so that the path of an inner root names another directory inside the enclosing root, and the later backend serves that directory through the inner drive.
+  A symbolic link placed on that path makes the inner root unusable instead, so the path never comes to name a directory outside the enclosing root.
 
 ### Guarantees and assumptions
 
 These hold by construction and are tested:
 
 - A drive with its own root serves the directory the root named when the backend was configured, for the lifetime of the backend.
-- A root resolved when the backend is configured is never served through a symbolic link in or below a root of the backend.
+- A root is unusable when the walk that resolved it, one component at a time from `/`, followed a symbolic link in the directory of a root of the backend or in a directory it reached through one.
 - A drive with an unusable root is served nothing, and the other drives are served.
 
 These are assumed, and nothing checks them:
 
 - Local processes are trusted, because they can change what any path names.
-- No bind mount shows the inside of a root at another path, where a link would not be seen to lie below that root.
+- No bind mount, and on macOS no firmlink such as `/Users` for `/System/Volumes/Data/Users`, shows a directory inside a root at another path, where the walk does not reach a link through that root.
 - No other backend with another configuration lets a server write to a directory that a root path leads through.
   A root path is trusted as local configuration wherever it lies outside the roots of its own backend.
 - No server of another connection changes the directories on a root path while the root is resolved.
