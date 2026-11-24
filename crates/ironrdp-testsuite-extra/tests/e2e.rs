@@ -5752,12 +5752,12 @@ async fn hooks_reaching_handler_under(policy: server::ConnectionPolicy) -> (bool
 /// `(desktop, device)` scale factors as `ConnectionInfo` reports them.
 type ScaleFactors = (Option<u32>, Option<u32>);
 
-/// Records the scale factors `on_connection_info` reports.
-struct ScaleRecorder(Arc<StdMutex<Option<ScaleFactors>>>);
+/// Records the `ConnectionInfo` that `on_connection_info` reports.
+struct ConnectionInfoRecorder(Arc<StdMutex<Option<server::ConnectionInfo>>>);
 
-impl server::ConnectionHandler for ScaleRecorder {
+impl server::ConnectionHandler for ConnectionInfoRecorder {
     fn on_connection_info(&mut self, info: &server::ConnectionInfo) {
-        *self.0.lock().unwrap() = Some((info.desktop_scale_factor, info.device_scale_factor));
+        *self.0.lock().unwrap() = Some(info.clone());
     }
 }
 
@@ -6068,9 +6068,22 @@ async fn client_session_config_callback_rejection_stops_real_connection_setup() 
 /// `device_scale_factor`, when given) and report the `(desktop, device)` scale
 /// factors `on_connection_info` received.
 async fn scale_factors_reported_for(desktop_scale_factor: u32, device_scale_factor: Option<u32>) -> ScaleFactors {
+    let info = Box::pin(connection_info_reported_for(move |config| {
+        config.desktop_scale_factor = desktop_scale_factor;
+        config.device_scale_factor = device_scale_factor;
+    }))
+    .await;
+    (info.desktop_scale_factor, info.device_scale_factor)
+}
+
+/// Connect a real client whose configuration `configure` adjusts and report the `ConnectionInfo` that
+/// `on_connection_info` received.
+async fn connection_info_reported_for(
+    configure: impl FnOnce(&mut connector::Config) + 'static,
+) -> server::ConnectionInfo {
     let seen = Arc::new(StdMutex::new(None));
     let (mut server, _display_tx) = handler_server(
-        Box::new(ScaleRecorder(Arc::clone(&seen))),
+        Box::new(ConnectionInfoRecorder(Arc::clone(&seen))),
         server::ConnectionPolicy::Queue,
     );
     let ev = server.event_sender().clone();
@@ -6085,8 +6098,7 @@ async fn scale_factors_reported_for(desktop_scale_factor: u32, device_scale_fact
             let server_addr = local_addr_of(&ev).await;
             let (client, _) = connect_client(server_addr, |client_addr| {
                 let mut config = default_client_config();
-                config.desktop_scale_factor = desktop_scale_factor;
-                config.device_scale_factor = device_scale_factor;
+                configure(&mut config);
                 connector::ClientConnector::new(config, client_addr)
             })
             .await;
@@ -6097,9 +6109,27 @@ async fn scale_factors_reported_for(desktop_scale_factor: u32, device_scale_fact
             );
             drop(client);
             server_task.abort();
-            seen.lock().unwrap().expect("checked above")
+            seen.lock().unwrap().take().expect("checked above")
         })
         .await
+}
+
+/// The client's `AlternateShell` and `WorkingDir`, MS-RDPBCGR [2.2.1.11.1.1], reach `ConnectionInfo` each in its own
+/// field.
+///
+/// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+// oracle: spec MS-RDPBCGR §2.2.1.11.1.1
+// oracle: mutant RdpServer filling ConnectionInfo::alternate_shell from the working directory, or the reverse
+#[tokio::test]
+async fn connection_info_reports_the_client_alternate_shell_and_work_dir() {
+    let info = Box::pin(connection_info_reported_for(|config| {
+        config.alternate_shell = "curtain".to_owned();
+        config.work_dir = "/Users/shared".to_owned();
+    }))
+    .await;
+
+    assert_eq!(info.alternate_shell, "curtain");
+    assert_eq!(info.work_dir, "/Users/shared");
 }
 
 // oracle: spec MS-RDPBCGR §2.2.1.3.2 (a desktopScaleFactor in 100..=500 with a deviceScaleFactor of 100/140/180 is reported)

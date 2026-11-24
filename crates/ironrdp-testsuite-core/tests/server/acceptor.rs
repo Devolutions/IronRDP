@@ -36,7 +36,7 @@ use ironrdp_pdu::mcs::{self, ConnectInitial};
 use ironrdp_pdu::nego::{self, SecurityProtocol};
 use ironrdp_pdu::rdp::ClientInfoPdu;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
-use ironrdp_pdu::rdp::client_info::{ClientInfoFlags, CompressionType, Credentials};
+use ironrdp_pdu::rdp::client_info::{ClientInfo, ClientInfoFlags, CompressionType, Credentials};
 use ironrdp_pdu::rdp::finalization_messages::{ControlAction, ControlPdu, SynchronizePdu};
 use ironrdp_pdu::rdp::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
@@ -1254,19 +1254,23 @@ fn reactivation_backlog_rejects_frames_beyond_sixteen_mib() {
     assert!(error.to_string().contains("backlog"));
 }
 
-/// The encoded Client Info PDU of [`CLIENT_INFO_UNICODE`] with `flags` added, and the flags it then carries.
-fn client_info_with_flags(flags: ClientInfoFlags) -> (Vec<u8>, ClientInfoFlags) {
-    let mut client_info = CLIENT_INFO_UNICODE.clone();
-    client_info.flags |= flags;
-    let sent = client_info.flags;
-    let pdu = encode_vec(&ClientInfoPdu {
+/// The encoded Client Info PDU that carries `client_info`.
+fn client_info_pdu(client_info: ClientInfo) -> Vec<u8> {
+    encode_vec(&ClientInfoPdu {
         security_header: BasicSecurityHeader {
             flags: BasicSecurityHeaderFlags::INFO_PKT,
         },
         client_info,
     })
-    .unwrap();
-    (pdu, sent)
+    .unwrap()
+}
+
+/// The encoded Client Info PDU of [`CLIENT_INFO_UNICODE`] with `flags` added, and the flags it then carries.
+fn client_info_with_flags(flags: ClientInfoFlags) -> (Vec<u8>, ClientInfoFlags) {
+    let mut client_info = CLIENT_INFO_UNICODE.clone();
+    client_info.flags |= flags;
+    let sent = client_info.flags;
+    (client_info_pdu(client_info), sent)
 }
 
 /// The flags of the client's Info Packet, MS-RDPBCGR [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET), reach
@@ -1341,13 +1345,7 @@ fn alternate_shell_and_work_dir_are_kept_as_sent() {
     let mut client_info = CLIENT_INFO_UNICODE.clone();
     client_info.alternate_shell = "curtain".to_owned();
     client_info.work_dir = "C:\\work".to_owned();
-    let client_info = encode_vec(&ClientInfoPdu {
-        security_header: BasicSecurityHeader {
-            flags: BasicSecurityHeaderFlags::INFO_PKT,
-        },
-        client_info,
-    })
-    .unwrap();
+    let client_info = client_info_pdu(client_info);
 
     let mut client_blocks = CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
     client_blocks.network = None;
