@@ -1335,8 +1335,13 @@ pub(crate) fn set_information(
             } else {
                 backend.roots.held(open_file.device_id)
             };
-            let still_names_file =
-                own_root.is_some_and(|root| open_file.is_beneath(root) && names_file(root, &open_file.path, identity));
+            // Only a rename through a drive that serves another directory leaves a handle with the ancestors of another root.
+            // While every drive serves the shared directory there is none, and that directory is opened by path for each request.
+            // Its identity then says nothing about a handle opened before a local process changed what the path names, so such a handle is judged by its path alone.
+            let still_names_file = own_root.is_some_and(|root| {
+                (backend.roots.drives.is_empty() || open_file.is_beneath(root))
+                    && names_file(root, &open_file.path, identity)
+            });
             if serves_the_same_directory {
                 if open_file.path == from || !still_names_file {
                     open_file.path = to.clone();

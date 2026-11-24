@@ -602,6 +602,32 @@ fn renaming_a_hard_link_does_not_move_handles_opened_through_another_link() {
     );
 }
 
+/// A backend with only a shared directory opens it by path for each request, so a handle is judged by what its path names in the directory now at that path.
+/// A handle opened through another link before a local process replaced the shared directory still names its file there, and keeps that link.
+// oracle: spec MS-FSA §2.1.5.15.3
+#[test]
+fn renaming_a_hard_link_does_not_move_a_handle_of_another_link_opened_before_the_shared_directory_was_replaced() {
+    let fixture = Fixture::new();
+    let moved = fixture.sandbox.join("moved");
+    std::fs::write(fixture.share.join("p1.txt"), b"linked").expect("write file");
+    std::fs::hard_link(fixture.share.join("p1.txt"), fixture.share.join("p2.txt")).expect("link file");
+    let mut backend = fixture.backend();
+    let p2_id = create(&mut backend, r"\p2.txt", CreateDisposition::FILE_OPEN);
+    std::fs::rename(&fixture.share, &moved).expect("move shared directory");
+    std::fs::create_dir(&fixture.share).expect("create directory");
+    std::fs::hard_link(moved.join("p1.txt"), fixture.share.join("p1.txt")).expect("link file");
+    std::fs::hard_link(moved.join("p1.txt"), fixture.share.join("p2.txt")).expect("link file");
+    let p1_id = create(&mut backend, r"\p1.txt", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, p1_id, rename_to(r"\t.txt", false));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    let _ = set_information(&mut backend, p2_id, delete_pending(true));
+    close(&mut backend, p1_id);
+    close(&mut backend, p2_id);
+
+    assert_eq!(names_in(&fixture.share), ["t.txt"]);
+}
+
 // oracle: spec MS-FSA §2.1.5.15.12
 #[test]
 fn rename_with_replace_refuses_a_target_marked_for_deletion() {
