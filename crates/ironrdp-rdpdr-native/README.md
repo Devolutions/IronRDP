@@ -67,7 +67,7 @@ A handle of a drive nested with the renaming one follows the rename when the new
 Between drives that serve different directories, these limitations are known:
 
 - A handle keeps its old path when a rename through the other drive moves its file out of the root of its own drive.
-  A rename through the handle then fails and a delete through it removes nothing, until a rename moves the file back into that root.
+  A rename through the handle then fails and a delete through it removes nothing, until a rename gives the file, or another hard link of it, a name in that root, which the handle then takes.
   Meanwhile the directories that lead to the file from the root of the other drive cannot be renamed.
 - An open file keeps a directory from being renamed only from the root of its own drive down.
   The drive of an enclosing directory can therefore rename a directory above the root of an inner drive while the inner drive has files open, and the inner drive then serves its directory at the new path.
