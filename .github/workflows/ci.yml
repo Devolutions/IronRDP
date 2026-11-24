@@ -137,7 +137,7 @@ jobs:
         if: matrix.os == 'windows'
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Install build dependencies
         uses: ./.github/actions/install-build-deps
@@ -272,7 +272,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 10.0.100
+          global-json-file: ffi/dotnet/global.json
 
       - name: Install native build dependencies
         uses: ./.github/actions/install-build-deps
@@ -304,7 +304,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 10.0.100
+          global-json-file: ffi/dotnet/global.json
 
       - name: Install native build dependencies
         uses: ./.github/actions/install-build-deps
