@@ -2266,6 +2266,35 @@ fn a_drive_keeps_its_directory_when_an_enclosing_drive_renames_a_link_into_its_p
     assert_eq!(names_in(&roots.outside), ["outside.txt"]);
 }
 
+/// A backend built after a server renamed a link into the path of the inner root does not follow that link, so the inner drive is served nothing.
+// oracle: mutant a link below a configured root followed when a root is resolved
+#[test]
+fn a_root_whose_path_a_server_led_through_a_link_serves_nothing() {
+    let roots = SwappedRoot::new();
+    let factory = roots.factory();
+    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    roots.swap_through_the_outer_drive(nix_backend(backend.as_mut()));
+    drop(backend);
+
+    let (mut backend, drives) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    let backend = nix_backend(backend.as_mut());
+    let through_the_inner_drive = create_with(
+        backend,
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    let through_the_outer_drive = create_with(
+        backend,
+        create_request_on(FIRST, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    let announced = drives.iter().map(|drive| drive.device_id()).collect::<Vec<_>>();
+    assert_eq!(announced, [FIRST, SECOND]);
+    assert_eq!(response_status(&through_the_inner_drive), NOTHING_SERVED);
+    assert_eq!(names_in(&roots.outside), ["outside.txt"]);
+    assert_eq!(response_status(&through_the_outer_drive), NtStatus::SUCCESS);
+    assert!(roots.outer.join("new.txt").exists());
+}
+
 /// Pins a documented limitation: roots are resolved again for each backend, so one built after a server renamed another directory to the path of the inner root serves that directory through the inner drive.
 /// That directory lies inside the outer root, where the outer drive reaches it as well.
 // oracle: mutant a later backend refused a root whose path came to name another directory inside the enclosing root, or resolved it outside that root
@@ -3421,6 +3450,13 @@ impl SwappedRoot {
             outside,
             _fixture: fixture,
         }
+    }
+
+    /// Announces `FIRST` over the outer root and `SECOND` over the inner one.
+    fn factory(&self) -> NixRdpdrBackendFactory {
+        NixRdpdrBackendFactory::default()
+            .with_drive_root(FIRST, "outer".to_owned(), utf8(&self.outer))
+            .with_drive_root(SECOND, "inner".to_owned(), utf8(&self.outer.join("a").join("b")))
     }
 
     fn backend(&self) -> NixRdpdrBackend {
