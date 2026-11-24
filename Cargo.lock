@@ -2740,7 +2740,7 @@ dependencies = [
  "ironrdp-rpc",
  "ironrdp-session",
  "libc",
- "md-5 0.10.6",
+ "md-5 0.11.0",
  "png",
  "rstest",
  "serde",
@@ -8464,9 +8464,9 @@ dependencies = [
 
 [[package]]
 name = "x509-cert"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "105ef4642d9cb137ef83d623d0e4bf08b8adf69e9918ca904a174adb6d3d038b"
+checksum = "e9f58ad685a2945c7c063f5d69b5c27105d75bb85c740380d8fc64e79a098417"
 dependencies = [
  "const-oid 0.10.2",
  "der 0.8.3",
