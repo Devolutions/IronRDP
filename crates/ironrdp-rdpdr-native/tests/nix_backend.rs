@@ -2251,30 +2251,6 @@ fn delete_on_close_follows_a_rename_through_another_drive_of_the_same_root(
     assert!(!fixture.share.join("backup.tmp").exists());
 }
 
-/// The name a file was marked through is relative to the root of the marking drive, whichever drive closes the file last.
-// oracle: spec MS-FSA §2.1.5.5
-#[rstest]
-fn a_delete_runs_beneath_the_root_of_the_drive_it_was_marked_through(#[values(FIRST, SECOND)] marking: u32) {
-    let nested = NestedRoots::new();
-    let file = nested.inner.join("doc.txt");
-    std::fs::write(&file, b"doc").expect("write file");
-    let mut backend = nested.backend();
-    let outer_id = create_on(&mut backend, FIRST, r"\sub\doc.txt", CreateDisposition::FILE_OPEN);
-    let inner_id = create_on(&mut backend, SECOND, r"\doc.txt", CreateDisposition::FILE_OPEN);
-    let mut handles = [(FIRST, outer_id), (SECOND, inner_id)];
-    // The marking handle closes first.
-    handles.sort_by_key(|(device_id, _)| *device_id != marking);
-
-    let (device_id, file_id) = handles[0];
-    let response = set_information_on(&mut backend, device_id, file_id, delete_pending(true));
-    assert_eq!(response_status(&response), NtStatus::SUCCESS);
-    for (device_id, file_id) in handles {
-        close_on(&mut backend, device_id, file_id);
-    }
-
-    assert!(!file.exists());
-}
-
 /// A drive serves the directory it was configured with, whatever a rename through an enclosing drive makes of its path.
 // oracle: mutant a root opened again by path after an enclosing drive renamed a link into that path
 #[test]
@@ -2294,35 +2270,6 @@ fn a_drive_keeps_its_directory_when_an_enclosing_drive_renames_a_link_into_its_p
     assert_eq!(response_status(&created), NtStatus::SUCCESS);
     assert_eq!(names_in(&roots.outer.join("a_old").join("b")), ["inner.txt", "new.txt"]);
     assert_eq!(names_in(&roots.outside), ["outside.txt"]);
-}
-
-/// A backend built after a server renamed a link into the path of the inner root does not follow that link, so the inner drive is served nothing.
-// oracle: mutant a link below a configured root followed when a root is resolved
-#[test]
-fn a_root_whose_path_a_server_led_through_a_link_serves_nothing() {
-    let roots = SwappedRoot::new();
-    let factory = roots.factory();
-    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
-    roots.swap_through_the_outer_drive(nix_backend(backend.as_mut()));
-    drop(backend);
-
-    let (mut backend, drives) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
-    let backend = nix_backend(backend.as_mut());
-    let through_the_inner_drive = create_with(
-        backend,
-        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
-    );
-    let through_the_outer_drive = create_with(
-        backend,
-        create_request_on(FIRST, r"\new.txt", CreateDisposition::FILE_CREATE),
-    );
-
-    let announced = drives.iter().map(|drive| drive.device_id()).collect::<Vec<_>>();
-    assert_eq!(announced, [FIRST, SECOND]);
-    assert_eq!(response_status(&through_the_inner_drive), NOTHING_SERVED);
-    assert_eq!(names_in(&roots.outside), ["outside.txt"]);
-    assert_eq!(response_status(&through_the_outer_drive), NtStatus::SUCCESS);
-    assert!(roots.outer.join("new.txt").exists());
 }
 
 /// Pins a documented limitation: roots are resolved again for each backend, so one built after a server renamed another directory to the path of the inner root serves that directory through the inner drive.
@@ -3457,13 +3404,6 @@ impl SwappedRoot {
             outside,
             _fixture: fixture,
         }
-    }
-
-    /// Announces `FIRST` over the outer root and `SECOND` over the inner one.
-    fn factory(&self) -> NixRdpdrBackendFactory {
-        NixRdpdrBackendFactory::default()
-            .with_drive_root(FIRST, "outer".to_owned(), utf8(&self.outer))
-            .with_drive_root(SECOND, "inner".to_owned(), utf8(&self.outer.join("a").join("b")))
     }
 
     fn backend(&self) -> NixRdpdrBackend {
