@@ -1952,6 +1952,44 @@ fn a_rename_leaves_the_path_of_a_handle_on_a_drive_with_another_root() {
     assert!(other_link.exists());
 }
 
+/// A handle keeps its path when a drive with another root renames its file, and a rename through that handle then fails, whichever drive is the enclosing one.
+/// The rustdoc of `rename` in `src/nix/backend.rs` has the path of the handle resolved again, and the rename fail with STATUS_NO_SUCH_FILE once that name refers to another file than the handle's.
+/// Until another file takes the old name it refers to none, and the lookup of a missing file is reported with the same status.
+// oracle: mutant a rename through a handle whose path names no file or another one moved a file or reported another status
+#[rstest]
+#[case::the_old_name_refers_to_no_file(|_: &Path| {})]
+#[case::the_old_name_refers_to_another_file(|old_name: &Path| std::fs::write(old_name, b"other").expect("write file"))]
+fn a_rename_fails_through_a_handle_whose_path_a_drive_with_another_root_renamed_away(
+    #[case] reuse: fn(&Path),
+    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
+) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("x.txt"), b"renamed").expect("write file");
+    let mut backend = roots.backend();
+    let [renaming, stale] = devices;
+    let [renaming_id, stale_id] = roots.open_through(&mut backend, devices, "x.txt");
+    let renamed = set_information_on(
+        &mut backend,
+        renaming,
+        renaming_id,
+        rename_to(&roots.path_through(renaming, "y.txt"), false),
+    );
+    assert_eq!(response_status(&renamed), NtStatus::SUCCESS);
+    reuse(&roots.inner.join("x.txt"));
+    let before = entries_below(&roots.sandbox);
+
+    let response = set_information_on(
+        &mut backend,
+        stale,
+        stale_id,
+        rename_to(&roots.path_through(stale, "z.txt"), false),
+    );
+
+    assert_eq!(response_status(&response), NtStatus::NO_SUCH_FILE);
+    assert_eq!(entries_below(&roots.sandbox), before);
+    assert_eq!(std::fs::read(roots.inner.join("y.txt")).expect("read file"), b"renamed");
+}
+
 // oracle: reference crates/ironrdp-rdpdr-native/src/windows/factory.rs
 #[test]
 fn the_factory_builds_a_backend_that_serves_each_drive_from_its_root() {
@@ -2285,6 +2323,44 @@ fn a_root_whose_path_a_server_led_through_a_link_serves_nothing() {
     assert_eq!(names_in(&roots.outside), ["outside.txt"]);
     assert_eq!(response_status(&through_the_outer_drive), NtStatus::SUCCESS);
     assert!(roots.outer.join("new.txt").exists());
+}
+
+/// Pins a documented limitation: roots are resolved again for each backend, so one built after a server renamed another directory to the path of the inner root serves that directory through the inner drive.
+/// That directory lies inside the outer root, where the outer drive reaches it as well.
+// oracle: mutant a later backend refused a root whose path came to name another directory inside the enclosing root, or resolved it outside that root
+#[test]
+fn a_later_backend_serves_the_directory_a_server_renamed_to_the_path_of_the_inner_root() {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("inner.txt"), b"inner").expect("write file");
+    let private = roots.outer.join("private").join("b");
+    std::fs::create_dir_all(&private).expect("create directory");
+    std::fs::write(private.join("private.txt"), b"private").expect("write file");
+    let factory = NixRdpdrBackendFactory::default()
+        .with_drive_root(FIRST, "outer".to_owned(), utf8(&roots.outer))
+        .with_drive_root(SECOND, "inner".to_owned(), utf8(&roots.inner));
+    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    rename_on(nix_backend(backend.as_mut()), FIRST, r"\a", r"\a_old");
+    rename_on(nix_backend(backend.as_mut()), FIRST, r"\private", r"\a");
+    drop(backend);
+
+    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    let backend = nix_backend(backend.as_mut());
+    let file_id = create_on(backend, SECOND, r"\private.txt", CreateDisposition::FILE_OPEN);
+    let read = read_on(backend, SECOND, file_id, 0, 16);
+    let created = create_with(
+        backend,
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    let through_the_outer_drive = create_with(
+        backend,
+        create_request_on(FIRST, r"\a\b\new.txt", CreateDisposition::FILE_OPEN),
+    );
+
+    assert_eq!(response_read_data(&read), b"private");
+    assert_eq!(response_status(&created), NtStatus::SUCCESS);
+    assert_eq!(response_status(&through_the_outer_drive), NtStatus::SUCCESS);
+    assert_eq!(names_in(&roots.outer.join("a").join("b")), ["new.txt", "private.txt"]);
+    assert_eq!(names_in(&roots.outer.join("a_old").join("b")), ["inner.txt"]);
 }
 
 /// A root whose path follows a symbolic link in or below the directory of a configured root is served nothing, in whichever order the roots are given.
@@ -2691,6 +2767,55 @@ fn an_exclusive_lock_refuses_a_read_through_a_drive_nested_with_the_locking_one(
     assert_eq!(response_status(&read), NtStatus::from(0xC000_0054));
 }
 
+/// A lock request waiting through one drive is granted when the conflicting lock taken through the other drive of the same file is released, whichever drive is the enclosing one.
+// oracle: spec MS-FSA §2.1.5.8
+#[rstest]
+fn a_waiting_lock_is_granted_when_a_drive_nested_with_the_waiting_one_releases_the_conflicting_lock(
+    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
+) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("data.bin"), [0; 16]).expect("write file");
+    let mut backend = roots.backend();
+    let [holding, waiting] = devices;
+    let [holding_id, waiting_id] = roots.open_through(&mut backend, devices, "data.bin");
+    let _ = send(
+        &mut backend,
+        lock_request_with(holding, holding_id, 1, LockOperation::Exclusive, false),
+    );
+
+    let waited = send(
+        &mut backend,
+        lock_request_with(waiting, waiting_id, 2, LockOperation::Exclusive, true),
+    );
+    let released = send(
+        &mut backend,
+        lock_request_with(holding, holding_id, 3, LockOperation::Unlock, false),
+    );
+
+    assert!(waited.is_empty());
+    assert_eq!(completions(&released), [(2, NtStatus::SUCCESS), (3, NtStatus::SUCCESS)]);
+
+    /// A request on the first ten bytes of `file_id`, answered with `completion_id`.
+    fn lock_request_with(
+        device_id: u32,
+        file_id: u32,
+        completion_id: u32,
+        operation: LockOperation,
+        wait: bool,
+    ) -> ServerDriveIoRequest {
+        lock_request(
+            DeviceIoRequest {
+                completion_id,
+                ..header_on(device_id, file_id, MajorFunction::LockControl)
+            },
+            operation,
+            wait,
+            0,
+            10,
+        )
+    }
+}
+
 /// A file marked for deletion through one drive is marked for the other drive that reaches it too, whichever drive is the enclosing one.
 /// The other drive cannot open it, with the status that refuses the same open on one drive, and it is removed when its last handle closes.
 // oracle: spec MS-FSA §2.1.5.5
@@ -2876,6 +3001,14 @@ fn backend_with_roots_in_order(roots: &[PathBuf; 2], order: [u32; 2]) -> NixRdpd
             let root = if device_id == FIRST { &roots[0] } else { &roots[1] };
             backend.with_drive_root(device_id, utf8(root))
         })
+}
+
+/// Renames `from` to `to` through `device_id`, with a handle opened for the rename and closed after it.
+fn rename_on(backend: &mut NixRdpdrBackend, device_id: u32, from: &str, to: &str) {
+    let file_id = create_on(backend, device_id, from, CreateDisposition::FILE_OPEN);
+    let response = set_information_on(backend, device_id, file_id, rename_to(to, false));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS, "rename {from} to {to}");
+    close_on(backend, device_id, file_id);
 }
 
 /// Makes `link` a symbolic link to `target`.
@@ -3341,12 +3474,8 @@ impl SwappedRoot {
 
     /// Renames `a` to `a_old` and `d` to `a` through the outer drive, so the path of the inner root leads through the link.
     fn swap_through_the_outer_drive(&self, backend: &mut NixRdpdrBackend) {
-        for (from, to) in [(r"\a", r"\a_old"), (r"\d", r"\a")] {
-            let directory_id = create_on(backend, FIRST, from, CreateDisposition::FILE_OPEN);
-            let response = set_information_on(backend, FIRST, directory_id, rename_to(to, false));
-            assert_eq!(response_status(&response), NtStatus::SUCCESS, "rename {from} to {to}");
-            close_on(backend, FIRST, directory_id);
-        }
+        rename_on(backend, FIRST, r"\a", r"\a_old");
+        rename_on(backend, FIRST, r"\d", r"\a");
     }
 }
 
