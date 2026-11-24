@@ -57,7 +57,8 @@ pub struct NixRdpdrBackend {
     /// A quarter of the soft descriptor limit, at most `MAX_OPEN_FILES`.
     /// An open file holds up to three descriptors: the file, and a directory being enumerated with its stream.
     /// A root that holds its directory open holds one, and takes the place of one open file.
-    /// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process, unless more roots are configured than the bound allows.
+    /// A quarter of the limit therefore leaves at least a quarter of the descriptors to the rest of the process.
+    /// The roots take at most half the places, as [`DriveRoots::resolve`] bounds them, so at least half are left to open files.
     max_open_files: usize,
     /// Files to delete when their last open handle closes ([MS-FSA] 2.1.5.5 Server Requests Closing an Open), each with the name it was marked through.
     ///
@@ -89,7 +90,7 @@ impl Default for NixRdpdrBackend {
 /// From the first such root on, every root is resolved once and holds the directory it names open, the shared directory included.
 /// Roots that name the same directory each hold it open, through their own path.
 ///
-/// UNTESTED: a resolved root keeps one descriptor between requests, the one in its `directory`, and the shared directory keeps none while no drive has a root of its own.
+/// UNTESTED: a resolved root keeps one descriptor between requests, the one in its `directory`, and a root that did not resolve keeps none, like the shared directory while no drive has a root of its own.
 /// `max_open_files` counts one open file for each root that holds its directory open, so any other descriptor kept for a root would come out of the quarter it leaves to the rest of the process.
 /// The tests count the places taken under the limit, not descriptors, which cannot be counted reliably in the one process they share.
 /// After changing how roots are opened or held, check that each resolved root keeps exactly the descriptor in its `directory`.
@@ -162,24 +163,42 @@ impl DriveRoots {
     /// Resolves `path` as the root of `device_id` and holds the directory it names from now on, in place of an earlier root of that device.
     ///
     /// The shared directory is resolved and held with the first such root.
-    fn set_drive_root(&mut self, device_id: u32, path: &str) {
+    /// `max_open_files` is the limit of the backend on open files, which bounds the roots held open as [`Self::resolve`] describes.
+    fn set_drive_root(&mut self, max_open_files: usize, device_id: u32, path: &str) {
         if self.shared.is_none() && !self.shared_path.is_empty() {
-            self.shared = Some(Self::resolve(None, &self.shared_path));
+            self.shared = Some(self.resolve(max_open_files, None, &self.shared_path));
         }
-        self.drives.insert(device_id, Self::resolve(Some(device_id), path));
+        // The earlier root of the device is released first, so the root that replaces it can take its place.
+        self.drives.remove(&device_id);
+        let root = self.resolve(max_open_files, Some(device_id), path);
+        self.drives.insert(device_id, root);
         self.refuse_roots_reached_through_links();
     }
 
     /// Resolves `path` to a root that holds the directory it names open.
     ///
+    /// The roots hold at most half of `max_open_files` directories open, so at least half the limit is left to open files however many roots are given.
+    /// A root beyond that is not resolved, so it opens nothing and is unusable.
+    /// It stays unusable when a place is freed later, because a root is resolved only when it is given.
     /// `device_id` is `None` for the shared directory.
-    fn resolve(device_id: Option<u32>, path: &str) -> ConfiguredRoot {
-        let (directory, link_directories) = match Root::resolve(path) {
-            Ok(resolved) => (Some(resolved.root), resolved.link_directories),
-            Err(error) => {
-                warn!(%error, device_id, root = path, "Failed to resolve a drive root, so nothing is served from it");
-                (None, HashSet::new())
+    fn resolve(&self, max_open_files: usize, device_id: Option<u32>, path: &str) -> ConfiguredRoot {
+        let max_held_roots = max_open_files / 2;
+        let (directory, link_directories) = if self.held_count() < max_held_roots {
+            match Root::resolve(path) {
+                Ok(resolved) => (Some(resolved.root), resolved.link_directories),
+                Err(error) => {
+                    warn!(%error, device_id, root = path, "Failed to resolve a drive root, so nothing is served from it");
+                    (None, HashSet::new())
+                }
             }
+        } else {
+            warn!(
+                device_id,
+                root = path,
+                max_held_roots,
+                "Reached the limit on drive roots held open, so nothing is served from this root"
+            );
+            (None, HashSet::new())
         };
         ConfiguredRoot {
             path: path.to_owned(),
@@ -460,7 +479,7 @@ impl NixRdpdrBackend {
         // UNTESTED: every root is resolved before the backend serves its first request, because the factory gives the roots before it returns the backend.
         // A root resolved between requests would be walked through whatever a server had made of its path through an enclosing drive, and could race requests through that drive.
         // Nothing stops a caller that holds the backend from giving a root later, so when adding a way to configure roots, check that it runs before the backend is handed to the channel.
-        self.roots.set_drive_root(device_id, &root);
+        self.roots.set_drive_root(self.max_open_files, device_id, &root);
         self
     }
 
@@ -1911,6 +1930,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    use rstest::rstest;
+
     use super::*;
 
     fn build_error(factory: &NixRdpdrBackendFactory) -> NixRdpdrBackendFactoryError {
@@ -1969,6 +1990,11 @@ mod tests {
 
     /// Opens the root of `device_id`, returning the status and file ID of the Device Create Response.
     fn open_root(backend: &mut NixRdpdrBackend, device_id: u32) -> (NtStatus, u32) {
+        open_path(backend, device_id, r"\")
+    }
+
+    /// Opens `path` through `device_id`, returning the status and file ID of the Device Create Response.
+    fn open_path(backend: &mut NixRdpdrBackend, device_id: u32, path: &str) -> (NtStatus, u32) {
         let request = DeviceCreateRequest {
             device_io_request: DeviceIoRequest {
                 device_id,
@@ -1980,7 +2006,7 @@ mod tests {
             shared_access: SharedAccess::empty(),
             create_disposition: CreateDisposition::FILE_OPEN,
             create_options: CreateOptions::empty(),
-            path: r"\".to_owned(),
+            path: path.to_owned(),
         };
         let response = create_drive(backend, request).expect("complete create");
         let response = response[0].encode_unframed_pdu().expect("encode create response");
@@ -2045,6 +2071,19 @@ mod tests {
             NixRdpdrBackend::default()
                 .with_drive_root(FIRST, utf8(&self.first))
                 .with_drive_root(SECOND, utf8(&self.second))
+        }
+
+        /// A backend under a cap of eight open files, half of which are four roots, given a new directory of the sandbox as the root of each device from 1 to `root_count`.
+        ///
+        /// The cap is set before the roots are given, because it bounds them as they are resolved.
+        fn backend_with_roots(&self, root_count: u32) -> NixRdpdrBackend {
+            let mut backend = NixRdpdrBackend::default();
+            backend.max_open_files = 8;
+            (1..=root_count).fold(backend, |backend, device_id| {
+                let root = self.sandbox.join(format!("root-{device_id}"));
+                std::fs::create_dir(&root).expect("create root");
+                backend.with_drive_root(device_id, utf8(&root))
+            })
         }
     }
 
@@ -2143,6 +2182,49 @@ mod tests {
         assert_eq!(with_two_drives.1, NtStatus::INSUFFICIENT_RESOURCES);
         assert!(0 < with_two_drives.0);
         assert_eq!(with_two_drives.0 + 1, with_one_drive.0);
+    }
+
+    /// The roots held open take at most half the places under the limit on open files.
+    /// A root given beyond that is served nothing, and the roots given before it are served.
+    // oracle: mutant roots held open without a bound, or with a bound off by one
+    #[test]
+    fn a_root_beyond_half_the_open_file_limit_is_served_nothing() {
+        let roots = TwoRoots::new();
+        let mut backend = roots.backend_with_roots(5);
+
+        let beyond = open_root(&mut backend, 5).0;
+        let within = [1, 2, 3, 4].map(|device_id| open_root(&mut backend, device_id).0);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(beyond, NtStatus::UNSUCCESSFUL);
+        assert_eq!(within, [NtStatus::SUCCESS; 4]);
+    }
+
+    /// However many roots are given, they leave half the places under the limit to open files.
+    /// A root beyond the bound is therefore not held open, which would take a place.
+    // oracle: mutant roots took the places the limit leaves to open files, or a root beyond the bound was kept open
+    #[rstest]
+    #[case::one_root_more_than_the_bound(5)]
+    #[case::more_roots_than_the_limit(12)]
+    fn roots_leave_half_the_open_file_limit_to_open_files(#[case] root_count: u32) {
+        let roots = TwoRoots::new();
+        let backend = roots.backend_with_roots(root_count);
+
+        let opened = opens_until_refused(backend, &[1]);
+
+        assert_eq!(opened, (4, NtStatus::INSUFFICIENT_RESOURCES));
+    }
+
+    /// A root given again takes the place of the root it replaces, so it is served although the roots already hold half the places under the limit.
+    // oracle: mutant the root being replaced counted against the bound on the root that replaces it
+    #[test]
+    fn a_root_takes_the_place_of_the_root_it_replaces() {
+        let roots = TwoRoots::new();
+        std::fs::write(roots.second.join("only-in-second.txt"), b"second").expect("write file");
+
+        let mut backend = roots.backend_with_roots(4).with_drive_root(1, utf8(&roots.second));
+
+        assert_eq!(open_path(&mut backend, 1, r"\only-in-second.txt").0, NtStatus::SUCCESS);
     }
 
     // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file_table.rs
