@@ -34,7 +34,7 @@ use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::capability_sets::{BitmapCodecs, client_codecs_capabilities};
-use ironrdp::pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp::pdu::rdp::client_info::{CompressionType, PerformanceFlags, TimezoneInfo};
 use ironrdp::rdpdr::Rdpdr;
 use ironrdp::rdpdr::pdu::efs::{DEFAULT_PRINTER_DRIVER_NAME, MICROSOFT_PRINT_TO_PDF_DRIVER_NAME};
 use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
@@ -108,7 +108,7 @@ struct SessionBuilderInner {
     /// The bulk compression requested in the [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET) flags.
     ///
     /// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
-    compression_type: Option<ironrdp::pdu::rdp::client_info::CompressionType>,
+    compression_type: Option<CompressionType>,
     legacy_graphics: bool,
     outbound_message_size_limit: Option<usize>,
     performance_flags: Option<PerformanceFlags>,
@@ -339,8 +339,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |enable_server_pointer: bool| { self.0.borrow_mut().enable_server_pointer = enable_server_pointer };
             |enable_compression: bool| {
                 // MPPC 64K, the `ironrdp-client` default.
-                self.0.borrow_mut().compression_type =
-                    enable_compression.then_some(ironrdp::pdu::rdp::client_info::CompressionType::K64);
+                self.0.borrow_mut().compression_type = enable_compression.then_some(CompressionType::K64);
             };
             |legacy_graphics: bool| { self.0.borrow_mut().legacy_graphics = legacy_graphics };
             |outbound_message_size_limit: f64| {
@@ -3249,7 +3248,6 @@ mod tests {
         // oracle: reference crates/ironrdp-client/src/config.rs - MPPC 64K is its type when compression is on.
         // oracle: mutant the extension not dispatched by its name, compression on by default, or not turned off.
         use iron_remote_desktop::SessionBuilder as _;
-        use ironrdp::pdu::rdp::client_info::CompressionType;
 
         let builder = SessionBuilder::create();
         assert_eq!(builder.0.borrow().compression_type, None);
