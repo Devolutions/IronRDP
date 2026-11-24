@@ -1954,108 +1954,6 @@ fn renaming_a_hard_link_on_a_drive_with_its_own_root_does_not_move_handles_of_an
     assert_eq!(names_in(&roots.second), ["c.txt"]);
 }
 
-/// A handle that follows a rename through the enclosing drive takes the new name relative to the root of its own drive, not the path the enclosing drive renamed to.
-/// Here that path, read beneath the root of the inner drive, names another link of the renamed file, which a delete through the inner drive would then remove in place of the renamed link.
-// oracle: spec MS-FSA §2.1.5.15.3
-#[test]
-fn a_handle_follows_a_rename_through_the_enclosing_drive_to_the_name_beneath_its_own_root() {
-    let nested = NestedRoots::new();
-    let file = nested.inner.join("x.txt");
-    std::fs::write(&file, b"linked").expect("write file");
-    std::fs::create_dir(nested.inner.join("sub")).expect("create directory");
-    let other_link = nested.inner.join("sub").join("y.txt");
-    std::fs::hard_link(&file, &other_link).expect("link file");
-    let mut backend = nested.backend();
-    let outer_id = create_on(&mut backend, FIRST, r"\sub\x.txt", CreateDisposition::FILE_OPEN);
-    let inner_id = create_on(&mut backend, SECOND, r"\x.txt", CreateDisposition::FILE_OPEN);
-
-    let response = set_information_on(&mut backend, FIRST, outer_id, rename_to(r"\sub\y.txt", false));
-    assert_eq!(response_status(&response), NtStatus::SUCCESS);
-    let _ = set_information_on(&mut backend, SECOND, inner_id, delete_pending(true));
-    close_on(&mut backend, FIRST, outer_id);
-    close_on(&mut backend, SECOND, inner_id);
-
-    assert!(other_link.exists());
-    assert_eq!(names_in(&nested.inner), ["sub"]);
-}
-
-/// A handle follows a rename of its file through a drive nested with its own to a name inside its own root, whichever drive is the enclosing one.
-/// A rename through the handle then moves the file from its new name, and leaves alone whatever has the old one.
-// oracle: spec MS-FSA §2.1.5.15.12
-#[rstest]
-#[case::the_old_name_refers_to_no_file(|_: &Path| {})]
-#[case::the_old_name_refers_to_another_file(|old_name: &Path| std::fs::write(old_name, b"other").expect("write file"))]
-fn a_rename_through_a_handle_moves_the_file_a_drive_nested_with_its_own_renamed(
-    #[case] reuse: fn(&Path),
-    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
-) {
-    let roots = DeepRoots::new();
-    let old_name = roots.inner.join("x").join("f.txt");
-    std::fs::create_dir(roots.inner.join("x")).expect("create directory");
-    std::fs::create_dir(roots.inner.join("y")).expect("create directory");
-    std::fs::write(&old_name, b"renamed").expect("write file");
-    let mut backend = roots.backend();
-    let [renaming, following] = devices;
-    let [renaming_id, following_id] = roots.open_through(&mut backend, devices, r"x\f.txt");
-    let renamed = set_information_on(
-        &mut backend,
-        renaming,
-        renaming_id,
-        rename_to(&roots.path_through(renaming, r"y\g.txt"), false),
-    );
-    assert_eq!(response_status(&renamed), NtStatus::SUCCESS);
-    reuse(&old_name);
-    let at_the_old_name = std::fs::read(&old_name).ok();
-
-    let response = set_information_on(
-        &mut backend,
-        following,
-        following_id,
-        rename_to(&roots.path_through(following, r"y\h.txt"), false),
-    );
-
-    assert_eq!(response_status(&response), NtStatus::SUCCESS);
-    assert_eq!(names_in(&roots.inner.join("y")), ["h.txt"]);
-    assert_eq!(
-        std::fs::read(roots.inner.join("y").join("h.txt")).expect("read file"),
-        b"renamed"
-    );
-    assert_eq!(std::fs::read(&old_name).ok(), at_the_old_name);
-}
-
-/// A handle follows a rename of its file through a drive nested with its own to a name inside its own root, whichever drive is the enclosing one.
-/// A delete through the handle then removes the file at its new name, and not the file that has taken the old one.
-// oracle: spec MS-FSA §2.1.5.5
-#[rstest]
-fn a_delete_through_a_handle_removes_the_file_a_drive_nested_with_its_own_renamed(
-    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
-) {
-    let roots = DeepRoots::new();
-    let old_name = roots.inner.join("x").join("f.txt");
-    std::fs::create_dir(roots.inner.join("x")).expect("create directory");
-    std::fs::create_dir(roots.inner.join("y")).expect("create directory");
-    std::fs::write(&old_name, b"renamed").expect("write file");
-    let mut backend = roots.backend();
-    let [renaming, following] = devices;
-    let [renaming_id, following_id] = roots.open_through(&mut backend, devices, r"x\f.txt");
-    let renamed = set_information_on(
-        &mut backend,
-        renaming,
-        renaming_id,
-        rename_to(&roots.path_through(renaming, r"y\g.txt"), false),
-    );
-    assert_eq!(response_status(&renamed), NtStatus::SUCCESS);
-    std::fs::write(&old_name, b"other").expect("write file");
-
-    let marked = set_information_on(&mut backend, following, following_id, delete_pending(true));
-    close_on(&mut backend, renaming, renaming_id);
-    close_on(&mut backend, following, following_id);
-
-    assert_eq!(response_status(&marked), NtStatus::SUCCESS);
-    assert_eq!(names_in(&roots.inner.join("y")), Vec::<String>::new());
-    assert_eq!(std::fs::read(&old_name).expect("read file"), b"other");
-}
-
 // oracle: reference crates/ironrdp-rdpdr-native/src/windows/factory.rs
 #[test]
 fn the_factory_builds_a_backend_that_serves_each_drive_from_its_root() {
@@ -2950,6 +2848,147 @@ fn rename_with_replace_refuses_a_target_open_through_a_drive_nested_with_the_ren
     assert!(roots.inner.join("source.txt").exists());
 }
 
+/// A file or directory that is open through one drive cannot be renamed through the other drive that reaches it, whichever drive is the enclosing one.
+/// A path names a file only beneath the root of its drive, so the handle of the other drive could not take the new name.
+/// Once the other drive closes its handle, the same rename goes ahead.
+/// Each case names what is renamed, what the other drive holds open, and the new name, all beneath the inner root.
+// oracle: mutant a file or directory open through a drive that serves another directory renamed, or the rename refused with another status
+#[rstest]
+#[case::the_file("x.txt", "x.txt", "y.txt")]
+#[case::another_hard_link_of_the_file("linked.txt", "link.txt", "y.txt")]
+#[case::a_directory("dir", "dir", "moved")]
+// The rename is refused before the filesystem is asked what the new name refers to, so the case holds whether or not the filesystem tells the two spellings apart.
+#[case::the_file_renamed_to_another_spelling_of_its_name("x.txt", "x.txt", "X.txt")]
+fn a_rename_is_refused_while_a_drive_nested_with_the_renaming_one_holds_the_file_open(
+    #[case] renamed: &str,
+    #[case] open: &str,
+    #[case] to: &str,
+    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
+) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("x.txt"), b"open").expect("write file");
+    std::fs::write(roots.inner.join("linked.txt"), b"linked").expect("write file");
+    std::fs::hard_link(roots.inner.join("linked.txt"), roots.inner.join("link.txt")).expect("link file");
+    std::fs::create_dir(roots.inner.join("dir")).expect("create directory");
+    let mut backend = roots.backend();
+    let [renaming, other] = devices;
+    let renaming_id = create_on(
+        &mut backend,
+        renaming,
+        &roots.path_through(renaming, renamed),
+        CreateDisposition::FILE_OPEN,
+    );
+    let other_id = create_on(
+        &mut backend,
+        other,
+        &roots.path_through(other, open),
+        CreateDisposition::FILE_OPEN,
+    );
+    let rename = rename_to(&roots.path_through(renaming, to), false);
+    let before = entries_below(&roots.sandbox);
+
+    let refused = set_information_on(&mut backend, renaming, renaming_id, rename.clone());
+    let after_the_refusal = entries_below(&roots.sandbox);
+    close_on(&mut backend, other, other_id);
+    let renamed_after_the_close = set_information_on(&mut backend, renaming, renaming_id, rename);
+
+    assert_eq!(response_status(&refused), NtStatus::SHARING_VIOLATION);
+    assert_eq!(after_the_refusal, before);
+    // oracle: spec MS-FSA §2.1.5.15.12
+    assert_eq!(response_status(&renamed_after_the_close), NtStatus::SUCCESS);
+    let names = names_in(&roots.inner);
+    assert!(
+        names.iter().any(|name| name == to) && !names.iter().any(|name| name == renamed),
+        "{renamed} is stored as {to} among {names:?}"
+    );
+}
+
+/// A handle on the root of its drive holds that directory open like any other handle, so the enclosing drive cannot rename the root of the inner drive meanwhile.
+// oracle: mutant a handle on the root of its drive left out of the handles that refuse a rename through a drive that serves another directory
+#[test]
+fn the_enclosing_drive_cannot_rename_the_root_of_the_inner_drive_while_the_inner_drive_holds_it_open() {
+    let roots = DeepRoots::new();
+    let mut backend = roots.backend();
+    let _root_id = create_on(&mut backend, SECOND, r"\", CreateDisposition::FILE_OPEN);
+    let directory_id = create_on(&mut backend, FIRST, r"\a\b", CreateDisposition::FILE_OPEN);
+
+    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\a\c", false));
+
+    assert_eq!(response_status(&response), NtStatus::SHARING_VIOLATION);
+    assert_eq!(names_in(&roots.outer.join("a")), ["b"]);
+}
+
+/// With three drives nested in one another, the outermost cannot move a file that the middle one holds open, to a name outside the root of the middle one as to any other.
+// oracle: mutant a file open through the middle of three nested drives moved through the outermost, or the rename refused with another status
+#[test]
+fn the_outermost_of_three_nested_drives_cannot_move_a_file_open_through_the_middle_one() {
+    const MIDDLE: u32 = 3;
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("f.txt"), b"open").expect("write file");
+    let mut backend = roots.backend().with_drive_root(MIDDLE, utf8(&roots.outer.join("a")));
+    let outer_id = create_on(&mut backend, FIRST, r"\a\b\f.txt", CreateDisposition::FILE_OPEN);
+    let _middle_id = create_on(&mut backend, MIDDLE, r"\b\f.txt", CreateDisposition::FILE_OPEN);
+    let before = entries_below(&roots.sandbox);
+
+    let response = set_information_on(&mut backend, FIRST, outer_id, rename_to(r"\out.txt", false));
+
+    assert_eq!(response_status(&response), NtStatus::SHARING_VIOLATION);
+    assert_eq!(entries_below(&roots.sandbox), before);
+}
+
+/// A handle without DELETE access is refused for that, whatever else would refuse the rename, such as a handle of the other drive on the same file.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[test]
+fn a_rename_through_a_handle_without_delete_access_is_refused_for_that_while_another_drive_holds_the_file_open() {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("x.txt"), b"open").expect("write file");
+    let mut backend = roots.backend();
+    let _inner_id = create_on(&mut backend, SECOND, r"\x.txt", CreateDisposition::FILE_OPEN);
+    let opened = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            desired_access: DesiredAccess::FILE_READ_DATA_OR_FILE_LIST_DIRECTORY,
+            ..create_request_on(FIRST, r"\a\b\x.txt", CreateDisposition::FILE_OPEN)
+        },
+    );
+
+    let response = set_information_on(
+        &mut backend,
+        FIRST,
+        response_file_id(&opened),
+        rename_to(r"\a\b\y.txt", false),
+    );
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+}
+
+/// A rename of a file that is open through a drive that serves another directory is refused for that, before anything else about the file or its new name is checked.
+/// Each case would otherwise be refused with another status: STATUS_ACCESS_DENIED for a file marked for deletion, STATUS_OBJECT_NAME_INVALID for a name Windows cannot hold.
+// oracle: mutant a rename of a file open through a drive that serves another directory refused for another reason first
+#[rstest]
+#[case::a_file_marked_for_deletion(
+    |backend: &mut NixRdpdrBackend, file_id: u32| {
+        let marked = set_information_on(backend, SECOND, file_id, delete_pending(true));
+        assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    },
+    r"\a\b\y.txt"
+)]
+#[case::a_new_name_windows_cannot_hold(|_: &mut NixRdpdrBackend, _: u32| {}, r"\a\b\y*.txt")]
+fn a_rename_is_refused_for_a_handle_of_another_drive_before_any_other_check(
+    #[case] prepare: fn(&mut NixRdpdrBackend, u32),
+    #[case] to: &str,
+) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("x.txt"), b"open").expect("write file");
+    let mut backend = roots.backend();
+    let [outer_id, inner_id] = roots.open_through(&mut backend, [FIRST, SECOND], "x.txt");
+    prepare(&mut backend, inner_id);
+
+    let response = set_information_on(&mut backend, FIRST, outer_id, rename_to(to, false));
+
+    assert_eq!(response_status(&response), NtStatus::SHARING_VIOLATION);
+}
+
 /// The enclosing drive cannot rename the root of the inner drive, or a directory below it, while the inner drive holds a file open inside that directory.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[rstest]
@@ -2967,214 +3006,6 @@ fn the_enclosing_drive_cannot_rename_a_directory_holding_files_open_through_the_
 
     assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
     assert!(roots.inner.join("sub").join("open.txt").exists());
-}
-
-/// A file renamed through one drive while the other drive holds it open keeps the directory it is now in from being renamed, whichever drive is the enclosing one.
-/// The directory it left holds no open file any more, and can be renamed.
-// oracle: spec MS-FSA §2.1.5.15.12
-#[rstest]
-fn a_directory_cannot_be_renamed_while_it_holds_a_file_renamed_into_it_through_a_drive_nested_with_the_holding_one(
-    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
-) {
-    let roots = DeepRoots::new();
-    std::fs::create_dir(roots.inner.join("x")).expect("create directory");
-    std::fs::create_dir(roots.inner.join("y")).expect("create directory");
-    std::fs::write(roots.inner.join("x").join("f.txt"), b"open").expect("write file");
-    let mut backend = roots.backend();
-    let [renaming, _holding] = devices;
-    let [renaming_id, _holding_id] = roots.open_through(&mut backend, devices, r"x\f.txt");
-    let renamed = set_information_on(
-        &mut backend,
-        renaming,
-        renaming_id,
-        rename_to(&roots.path_through(renaming, r"y\f.txt"), false),
-    );
-    assert_eq!(response_status(&renamed), NtStatus::SUCCESS);
-    close_on(&mut backend, renaming, renaming_id);
-    let entered_id = create_on(&mut backend, FIRST, r"\a\b\y", CreateDisposition::FILE_OPEN);
-    let left_id = create_on(&mut backend, FIRST, r"\a\b\x", CreateDisposition::FILE_OPEN);
-
-    let entered = set_information_on(&mut backend, FIRST, entered_id, rename_to(r"\a\b\entered", false));
-    let left = set_information_on(&mut backend, FIRST, left_id, rename_to(r"\a\b\left", false));
-
-    assert_eq!(response_status(&entered), NtStatus::ACCESS_DENIED);
-    assert_eq!(response_status(&left), NtStatus::SUCCESS);
-    assert_eq!(names_in(&roots.inner), ["left", "y"]);
-}
-
-/// A file renamed through the inner drive while the outer drive holds it open keeps every directory that leads to it from the outer root from being renamed, those above the inner root included.
-// oracle: spec MS-FSA §2.1.5.15.12
-#[test]
-fn a_directory_above_the_inner_root_cannot_be_renamed_while_the_outer_drive_holds_a_file_the_inner_drive_renamed() {
-    let roots = DeepRoots::new();
-    std::fs::create_dir(roots.inner.join("x")).expect("create directory");
-    std::fs::create_dir(roots.inner.join("y")).expect("create directory");
-    std::fs::write(roots.inner.join("x").join("f.txt"), b"open").expect("write file");
-    let mut backend = roots.backend();
-    let [inner_id, _outer_id] = roots.open_through(&mut backend, [SECOND, FIRST], r"x\f.txt");
-    let renamed = set_information_on(&mut backend, SECOND, inner_id, rename_to(r"\y\g.txt", false));
-    assert_eq!(response_status(&renamed), NtStatus::SUCCESS);
-    close_on(&mut backend, SECOND, inner_id);
-    let directory_id = create_on(&mut backend, FIRST, r"\a", CreateDisposition::FILE_OPEN);
-
-    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\moved", false));
-
-    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
-    assert_eq!(names_in(&roots.outer), ["a"]);
-}
-
-/// A handle that followed a rename through a drive nested with its own stays on the link it followed when that drive renames another link of the file, whichever drive is the enclosing one.
-/// A delete through the handle then removes the link it holds, and not the link renamed last.
-// oracle: spec MS-FSA §2.1.5.15.3
-#[rstest]
-fn renaming_a_hard_link_through_a_drive_nested_with_another_does_not_move_a_handle_that_followed_another_link(
-    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
-) {
-    let roots = DeepRoots::new();
-    std::fs::create_dir(roots.inner.join("x")).expect("create directory");
-    std::fs::create_dir(roots.inner.join("y")).expect("create directory");
-    std::fs::write(roots.inner.join("x").join("f.txt"), b"linked").expect("write file");
-    std::fs::hard_link(roots.inner.join("x").join("f.txt"), roots.inner.join("z.txt")).expect("link file");
-    let mut backend = roots.backend();
-    let [renaming, holding] = devices;
-    let [renaming_id, holding_id] = roots.open_through(&mut backend, devices, r"x\f.txt");
-    let renamed = set_information_on(
-        &mut backend,
-        renaming,
-        renaming_id,
-        rename_to(&roots.path_through(renaming, r"y\g.txt"), false),
-    );
-    assert_eq!(response_status(&renamed), NtStatus::SUCCESS);
-    close_on(&mut backend, renaming, renaming_id);
-    rename_on(
-        &mut backend,
-        renaming,
-        &roots.path_through(renaming, "z.txt"),
-        &roots.path_through(renaming, "w.txt"),
-    );
-
-    let _ = set_information_on(&mut backend, holding, holding_id, delete_pending(true));
-    close_on(&mut backend, holding, holding_id);
-
-    assert_eq!(names_in(&roots.inner), ["w.txt", "x", "y"]);
-    assert_eq!(names_in(&roots.inner.join("y")), Vec::<String>::new());
-}
-
-/// A file the enclosing drive moved out of the inner root while the inner drive holds it open keeps the directory it is now in from being renamed.
-/// The directory it left holds no open file any more, and can be renamed.
-// oracle: spec MS-FSA §2.1.5.15.12
-#[test]
-fn a_directory_cannot_be_renamed_while_it_holds_a_file_moved_into_it_out_of_the_root_of_the_holding_drive() {
-    let (roots, mut backend, outer_id, _inner_id) = a_file_moved_out_of_the_inner_root();
-    close_on(&mut backend, FIRST, outer_id);
-    let entered_id = create_on(&mut backend, FIRST, r"\c", CreateDisposition::FILE_OPEN);
-    let left_id = create_on(&mut backend, FIRST, r"\a\b\x", CreateDisposition::FILE_OPEN);
-
-    let entered = set_information_on(&mut backend, FIRST, entered_id, rename_to(r"\entered", false));
-    let left = set_information_on(&mut backend, FIRST, left_id, rename_to(r"\a\b\left", false));
-
-    assert_eq!(response_status(&entered), NtStatus::ACCESS_DENIED);
-    assert_eq!(response_status(&left), NtStatus::SUCCESS);
-    assert_eq!(names_in(&roots.outer), ["a", "c"]);
-    assert_eq!(names_in(&roots.inner), ["left"]);
-}
-
-/// A handle keeps its path when the enclosing drive moves its file out of the root of its own drive, where no path of that drive names the file, and a rename through the handle then fails.
-/// The rustdoc of `rename` in `src/nix/backend.rs` has the path of the handle resolved again, and the rename fail with STATUS_NO_SUCH_FILE once that name refers to another file than the handle's.
-/// Until another file takes the old name it refers to none, and the lookup of a missing file is reported with the same status.
-// oracle: mutant a rename through a handle whose path names no file or another one moved a file or reported another status
-#[rstest]
-#[case::the_old_name_refers_to_no_file(|_: &Path| {})]
-#[case::the_old_name_refers_to_another_file(|old_name: &Path| std::fs::write(old_name, b"other").expect("write file"))]
-fn a_rename_fails_through_a_handle_whose_file_the_enclosing_drive_moved_out_of_its_root(#[case] reuse: fn(&Path)) {
-    let (roots, mut backend, _outer_id, inner_id) = a_file_moved_out_of_the_inner_root();
-    reuse(&roots.inner.join("x").join("f.txt"));
-    let before = entries_below(&roots.sandbox);
-
-    let response = set_information_on(&mut backend, SECOND, inner_id, rename_to(r"\x\g.txt", false));
-
-    assert_eq!(response_status(&response), NtStatus::NO_SUCH_FILE);
-    assert_eq!(entries_below(&roots.sandbox), before);
-    assert_eq!(
-        std::fs::read(roots.outer.join("c").join("f.txt")).expect("read file"),
-        b"moved"
-    );
-}
-
-/// A delete through a handle whose file the enclosing drive moved out of the root of its own drive removes nothing: neither the file, which no path of that drive names, nor a file that has taken its old name.
-// oracle: mutant a removal through a handle whose file left the root of its drive skipped the check that its path still names that file
-#[test]
-fn a_delete_through_a_handle_whose_file_the_enclosing_drive_moved_out_of_its_root_removes_nothing() {
-    let (roots, mut backend, outer_id, inner_id) = a_file_moved_out_of_the_inner_root();
-    std::fs::write(roots.inner.join("x").join("f.txt"), b"other").expect("write file");
-    let before = entries_below(&roots.sandbox);
-
-    let _ = set_information_on(&mut backend, SECOND, inner_id, delete_pending(true));
-    close_on(&mut backend, FIRST, outer_id);
-    close_on(&mut backend, SECOND, inner_id);
-
-    assert_eq!(entries_below(&roots.sandbox), before);
-}
-
-/// A handle whose file the enclosing drive moved out of the root of its own drive takes no path from a later rename of the file outside that root.
-/// The path such a rename gives the file, read beneath the root of the inner drive, names the decoy here, which a rename or a delete through the handle would then move or remove.
-/// The decoy is another link of the file, because a rename or a delete through a handle spares any other file its path names.
-// oracle: mutant a handle whose file left the root of its drive took the path of a later rename outside that root
-#[test]
-fn a_handle_whose_file_left_its_root_takes_no_path_from_a_later_rename_outside_that_root() {
-    let (roots, mut backend, outer_id, inner_id) = a_file_moved_out_of_the_inner_root();
-    std::fs::create_dir(roots.outer.join("d")).expect("create directory");
-    std::fs::create_dir(roots.inner.join("d")).expect("create directory");
-    std::fs::hard_link(roots.outer.join("c").join("f.txt"), roots.inner.join("d").join("g.txt")).expect("link file");
-    let renamed_again = set_information_on(&mut backend, FIRST, outer_id, rename_to(r"\d\g.txt", false));
-    assert_eq!(response_status(&renamed_again), NtStatus::SUCCESS);
-    let before = entries_below(&roots.sandbox);
-
-    let renamed = set_information_on(&mut backend, SECOND, inner_id, rename_to(r"\x\h.txt", false));
-    let _ = set_information_on(&mut backend, SECOND, inner_id, delete_pending(true));
-    close_on(&mut backend, FIRST, outer_id);
-    close_on(&mut backend, SECOND, inner_id);
-
-    assert_eq!(response_status(&renamed), NtStatus::NO_SUCH_FILE);
-    assert_eq!(entries_below(&roots.sandbox), before);
-    assert!(roots.inner.join("d").join("g.txt").exists());
-}
-
-/// A handle whose file the enclosing drive moved out of the root of its own drive follows the file again once the enclosing drive renames it back into that root.
-/// A rename through the handle then moves the file from the name it came back under.
-// oracle: spec MS-FSA §2.1.5.15.12
-#[test]
-fn a_rename_through_a_handle_moves_the_file_the_enclosing_drive_moved_out_of_its_root_and_back() {
-    let (roots, mut backend, outer_id, inner_id) = a_file_moved_out_of_the_inner_root();
-    std::fs::create_dir(roots.inner.join("y")).expect("create directory");
-    let moved_back = set_information_on(&mut backend, FIRST, outer_id, rename_to(r"\a\b\y\g.txt", false));
-    assert_eq!(response_status(&moved_back), NtStatus::SUCCESS);
-
-    let response = set_information_on(&mut backend, SECOND, inner_id, rename_to(r"\y\h.txt", false));
-
-    assert_eq!(response_status(&response), NtStatus::SUCCESS);
-    assert_eq!(names_in(&roots.inner.join("y")), ["h.txt"]);
-    assert_eq!(
-        std::fs::read(roots.inner.join("y").join("h.txt")).expect("read file"),
-        b"moved"
-    );
-}
-
-/// A handle whose file the enclosing drive moved out of the root of its own drive holds the file beneath that root again once another link of the file is renamed to the name the handle kept.
-/// The directory of that name then holds an open file, and cannot be renamed.
-// oracle: spec MS-FSA §2.1.5.15.12
-#[test]
-fn a_directory_cannot_be_renamed_while_it_holds_a_link_renamed_to_the_name_a_handle_kept_when_its_file_left_its_root() {
-    let (roots, mut backend, outer_id, _inner_id) = a_file_moved_out_of_the_inner_root();
-    std::fs::hard_link(roots.outer.join("c").join("f.txt"), roots.inner.join("z.txt")).expect("link file");
-    rename_on(&mut backend, SECOND, r"\z.txt", r"\x\f.txt");
-    close_on(&mut backend, FIRST, outer_id);
-    let directory_id = create_on(&mut backend, FIRST, r"\a\b\x", CreateDisposition::FILE_OPEN);
-
-    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\a\b\moved", false));
-
-    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
-    assert!(roots.inner.join("x").join("f.txt").exists());
 }
 
 /// The enclosing drive can rename a directory above the root of the inner drive while the inner drive holds a file open.
@@ -3202,23 +3033,6 @@ fn a_drive_follows_its_directory_when_the_enclosing_drive_renames_a_directory_ab
     assert_eq!(response_read_data(&read), b"open");
     assert_eq!(response_read_data(&read_again), b"open");
     assert_eq!(names_in(&roots.outer.join("moved").join("b")), ["new.txt", "open.txt"]);
-    assert_eq!(names_in(&roots.outer), ["moved"]);
-}
-
-/// A handle on the root of the inner drive names that root wherever it lies, so it takes no path from a rename of the root through the enclosing drive.
-/// The enclosing drive can therefore still rename the directory above the inner root, as it can before it renames the root.
-// oracle: mutant a handle on the root of a drive took the directories that lead to that root from the root of the enclosing drive
-#[test]
-fn a_directory_above_the_inner_root_can_be_renamed_after_the_root_was_renamed_while_the_inner_drive_holds_it_open() {
-    let roots = DeepRoots::new();
-    let mut backend = roots.backend();
-    let _root_id = create_on(&mut backend, SECOND, r"\", CreateDisposition::FILE_OPEN);
-    rename_on(&mut backend, FIRST, r"\a\b", r"\a\c");
-    let directory_id = create_on(&mut backend, FIRST, r"\a", CreateDisposition::FILE_OPEN);
-
-    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\moved", false));
-
-    assert_eq!(response_status(&response), NtStatus::SUCCESS);
     assert_eq!(names_in(&roots.outer), ["moved"]);
 }
 
@@ -3255,20 +3069,6 @@ fn a_drive_whose_directory_the_enclosing_drive_deleted_creates_nothing() {
     assert_ne!(response_status(&file), NtStatus::SUCCESS);
     assert_ne!(response_status(&directory), NtStatus::SUCCESS);
     assert_eq!(entries_below(&roots.sandbox), before);
-}
-
-/// The file `x/f.txt` of the inner root, opened through both drives and then renamed through the outer drive to `c/f.txt` in the outer root, outside the inner one.
-/// Returns the handle of the outer drive and then that of the inner drive.
-fn a_file_moved_out_of_the_inner_root() -> (DeepRoots, NixRdpdrBackend, u32, u32) {
-    let roots = DeepRoots::new();
-    std::fs::create_dir(roots.inner.join("x")).expect("create directory");
-    std::fs::create_dir(roots.outer.join("c")).expect("create directory");
-    std::fs::write(roots.inner.join("x").join("f.txt"), b"moved").expect("write file");
-    let mut backend = roots.backend();
-    let [outer_id, inner_id] = roots.open_through(&mut backend, [FIRST, SECOND], r"x\f.txt");
-    let renamed = set_information_on(&mut backend, FIRST, outer_id, rename_to(r"\c\f.txt", false));
-    assert_eq!(response_status(&renamed), NtStatus::SUCCESS);
-    (roots, backend, outer_id, inner_id)
 }
 
 /// Devices `FIRST` and `SECOND` announced over the one shared directory.
@@ -3724,13 +3524,6 @@ impl NestedRoots {
         let inner = fixture.share.join("sub");
         std::fs::create_dir(&inner).expect("create inner root");
         Self { inner, fixture }
-    }
-
-    /// A backend without a shared directory, whose device `FIRST` serves the outer root and `SECOND` the inner one.
-    fn backend(&self) -> NixRdpdrBackend {
-        NixRdpdrBackend::default()
-            .with_drive_root(FIRST, utf8(&self.fixture.share))
-            .with_drive_root(SECOND, utf8(&self.inner))
     }
 }
 

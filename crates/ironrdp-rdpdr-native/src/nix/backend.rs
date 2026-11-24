@@ -1220,6 +1220,17 @@ pub(crate) fn set_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
+    // A path names a file only beneath the root of its drive, so a rename cannot give the new name to a handle of a drive that serves another directory.
+    // The file is therefore not renamed while such a drive holds it open, through any of its hard links.
+    let is_open_through_another_directory = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
+        && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
+            backend.open_files.values().any(|other| {
+                other.identity == open_file.identity
+                    && !backend
+                        .roots
+                        .serve_the_same_directory(other.device_id, open_file.device_id)
+            })
+        });
     // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
     let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
         && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
@@ -1246,6 +1257,7 @@ pub(crate) fn set_information(
             FileInformationClass::Rename(_) | FileInformationClass::Disposition(_) if !open_file.may_delete => {
                 NtStatus::ACCESS_DENIED
             }
+            FileInformationClass::Rename(_) if is_open_through_another_directory => NtStatus::SHARING_VIOLATION,
             FileInformationClass::Rename(_) if rename_denied => NtStatus::ACCESS_DENIED,
             // The root of a drive is no name to rename to.
             FileInformationClass::Rename(info) => match RelativePath::parse(&info.file_name)
