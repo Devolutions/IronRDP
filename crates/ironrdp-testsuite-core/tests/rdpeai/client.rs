@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{decode, encode_vec};
@@ -84,6 +84,22 @@ fn process_encoded(client: &mut RdpeaiClient, channel_id: u32, pdu: RdpeaiPdu) -
     client
         .process(channel_id, &encode_vec(&pdu).expect("encode"))
         .expect("process")
+}
+
+fn open_ordered_capture(mut client: RdpeaiClient, formats: &[AudioFormat]) -> RdpeaiClient {
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Formats(FormatsPdu::server(formats.to_vec())));
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 2,
+            initial_format: 0,
+            capture_format: formats[0].clone(),
+        }),
+    );
+    client
 }
 
 #[test]
@@ -240,6 +256,166 @@ fn format_change_failure_still_acks() {
     }
 }
 
+#[derive(Clone, Copy)]
+enum OrderedFormatBehavior {
+    ErrorBeforeConfirmation,
+    SucceedWithoutConfirmation,
+    Confirm,
+    FailAfterConfirmation,
+}
+
+struct OrderedFormatCapture {
+    formats: Vec<AudioFormat>,
+    closed: Arc<AtomicBool>,
+    behavior: OrderedFormatBehavior,
+}
+
+impl RdpeaiCaptureHandler for OrderedFormatCapture {
+    fn supported_formats(&self) -> &[AudioFormat] {
+        &self.formats
+    }
+
+    fn open(
+        &mut self,
+        _capture_format: &AudioFormat,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        _sink: AudioPacketSink,
+    ) -> i32 {
+        OpenReplyPdu::S_OK
+    }
+
+    fn set_format(&mut self, _encode_format: &AudioFormat, _packet_size: usize) -> bool {
+        false
+    }
+
+    fn set_format_ordered(
+        &mut self,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        confirm: &mut dyn FnMut() -> ironrdp_rdpeai::client::PduResult<()>,
+    ) -> ironrdp_rdpeai::client::PduResult<bool> {
+        match self.behavior {
+            OrderedFormatBehavior::ErrorBeforeConfirmation => {
+                Err(ironrdp_pdu::pdu_other_err!("capture format switch failed"))
+            }
+            OrderedFormatBehavior::SucceedWithoutConfirmation => Ok(true),
+            OrderedFormatBehavior::Confirm => {
+                confirm()?;
+                Ok(true)
+            }
+            OrderedFormatBehavior::FailAfterConfirmation => {
+                confirm()?;
+                Ok(false)
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        self.closed.store(true, Ordering::Release);
+    }
+}
+
+// oracle: regression #2469
+#[test]
+fn ordered_restart_failure_after_confirmation_notifies_owner() {
+    let formats = vec![pcm_format(1, 16000, 16), pcm_format(1, 48000, 16)];
+    let closed = Arc::new(AtomicBool::new(false));
+    let (client, uplinked) = client_with_uplink(OrderedFormatCapture {
+        formats: formats.clone(),
+        closed: Arc::clone(&closed),
+        behavior: OrderedFormatBehavior::FailAfterConfirmation,
+    });
+    let mut client = open_ordered_capture(client.with_ordered_replies(), &formats);
+    uplinked.lock().unwrap().clear();
+
+    let payload = encode_vec(&RdpeaiPdu::FormatChange(FormatChangePdu::new(1))).unwrap();
+    assert!(client.process(3, &payload).is_err());
+    assert!(closed.load(Ordering::Acquire));
+    let uplinked = uplinked.lock().unwrap();
+    let [confirmation] = uplinked.as_slice() else {
+        panic!("expected one queued Format Change confirmation");
+    };
+    assert!(matches!(
+        decode_uplinked(confirmation),
+        RdpeaiPdu::FormatChange(change) if change.new_format == 1
+    ));
+}
+
+// oracle: spec MS-RDPEAI §3.2.5.3.2
+#[test]
+fn ordered_format_failure_before_confirmation_still_queues_confirmation() {
+    let formats = vec![pcm_format(1, 16000, 16), pcm_format(1, 48000, 16)];
+    let closed = Arc::new(AtomicBool::new(false));
+    let (client, uplinked) = client_with_uplink(OrderedFormatCapture {
+        formats: formats.clone(),
+        closed: Arc::clone(&closed),
+        behavior: OrderedFormatBehavior::ErrorBeforeConfirmation,
+    });
+    let mut client = open_ordered_capture(client.with_ordered_replies(), &formats);
+    uplinked.lock().unwrap().clear();
+
+    let payload = encode_vec(&RdpeaiPdu::FormatChange(FormatChangePdu::new(1))).unwrap();
+    assert!(client.process(3, &payload).is_err());
+    assert!(closed.load(Ordering::Acquire));
+    let uplinked = uplinked.lock().unwrap();
+    let [confirmation] = uplinked.as_slice() else {
+        panic!("expected one queued Format Change confirmation");
+    };
+    match decode_uplinked(confirmation) {
+        RdpeaiPdu::FormatChange(change) => assert_eq!(change.new_format, 1),
+        other => panic!("expected Format Change confirmation, got {other:?}"),
+    }
+}
+
+// oracle: regression #2469
+#[test]
+fn ordered_format_success_without_confirmation_fails_closed() {
+    let formats = vec![pcm_format(1, 16000, 16), pcm_format(1, 48000, 16)];
+    let closed = Arc::new(AtomicBool::new(false));
+    let (client, uplinked) = client_with_uplink(OrderedFormatCapture {
+        formats: formats.clone(),
+        closed: Arc::clone(&closed),
+        behavior: OrderedFormatBehavior::SucceedWithoutConfirmation,
+    });
+    let mut client = open_ordered_capture(client.with_ordered_replies(), &formats);
+    uplinked.lock().unwrap().clear();
+
+    let payload = encode_vec(&RdpeaiPdu::FormatChange(FormatChangePdu::new(1))).unwrap();
+    assert!(client.process(3, &payload).is_err());
+    assert!(closed.load(Ordering::Acquire));
+    assert!(uplinked.lock().unwrap().is_empty());
+}
+
+// oracle: regression #2469
+#[test]
+fn ordered_format_confirmation_enqueue_failure_fails_closed() {
+    let formats = vec![pcm_format(1, 16000, 16), pcm_format(1, 48000, 16)];
+    let closed = Arc::new(AtomicBool::new(false));
+    let fail_uplink = Arc::new(AtomicBool::new(false));
+    let fail = Arc::clone(&fail_uplink);
+    let client = RdpeaiClient::new(
+        Box::new(OrderedFormatCapture {
+            formats: formats.clone(),
+            closed: Arc::clone(&closed),
+            behavior: OrderedFormatBehavior::Confirm,
+        }),
+        Box::new(move |_, _| {
+            if fail.load(Ordering::Acquire) {
+                Err(ironrdp_pdu::pdu_other_err!("uplink unavailable"))
+            } else {
+                Ok(())
+            }
+        }),
+    );
+    let mut client = open_ordered_capture(client.with_ordered_replies(), &formats);
+    fail_uplink.store(true, Ordering::Release);
+
+    let payload = encode_vec(&RdpeaiPdu::FormatChange(FormatChangePdu::new(1))).unwrap();
+    assert!(client.process(3, &payload).is_err());
+    assert!(closed.load(Ordering::Acquire));
+}
+
 #[test]
 fn open_rejects_oversized_frames_per_packet() {
     let fmt = pcm_format(1, 16000, 16);
@@ -384,6 +560,199 @@ fn format_change_confirmation_follows_already_queued_data() {
         ),
         "the confirmation must follow the queued data, got {uplinked:?}"
     );
+}
+
+struct EagerFormatCapture {
+    formats: Vec<AudioFormat>,
+    sink: Option<AudioPacketSink>,
+}
+
+impl RdpeaiCaptureHandler for EagerFormatCapture {
+    fn supported_formats(&self) -> &[AudioFormat] {
+        &self.formats
+    }
+
+    fn open(
+        &mut self,
+        _capture_format: &AudioFormat,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        sink: AudioPacketSink,
+    ) -> i32 {
+        self.sink = Some(sink);
+        OpenReplyPdu::S_OK
+    }
+
+    fn set_format(&mut self, _encode_format: &AudioFormat, _packet_size: usize) -> bool {
+        (self.sink.as_mut().expect("open sink"))(vec![5, 6, 7, 8]);
+        true
+    }
+
+    fn set_format_ordered(
+        &mut self,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        confirm: &mut dyn FnMut() -> ironrdp_rdpeai::client::PduResult<()>,
+    ) -> ironrdp_rdpeai::client::PduResult<bool> {
+        confirm()?;
+        (self.sink.as_mut().expect("open sink"))(vec![5, 6, 7, 8]);
+        Ok(true)
+    }
+
+    fn close(&mut self) {}
+}
+
+// oracle: spec MS-RDPEAI §3.2.5.3.1
+#[test]
+fn format_change_confirmation_precedes_new_format_data() {
+    let fmt_a = pcm_format(1, 16000, 16);
+    let fmt_b = pcm_format(1, 48000, 16);
+    let (client, uplinked) = client_with_uplink(EagerFormatCapture {
+        formats: vec![fmt_a.clone(), fmt_b.clone()],
+        sink: None,
+    });
+    let mut client = client.with_ordered_replies();
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt_a.clone(), fmt_b])),
+    );
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 2,
+            initial_format: 0,
+            capture_format: fmt_a,
+        }),
+    );
+    uplinked.lock().unwrap().clear();
+
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::FormatChange(FormatChangePdu::new(1)));
+    let uplinked: Vec<RdpeaiPdu> = uplinked.lock().unwrap().iter().map(decode_uplinked).collect();
+    assert!(
+        matches!(
+            uplinked.as_slice(),
+            [RdpeaiPdu::FormatChange(change), RdpeaiPdu::DataIncoming, RdpeaiPdu::Data(_)] if change.new_format == 1
+        ),
+        "the confirmation must precede new-format data, got {uplinked:?}"
+    );
+}
+
+struct EagerOpenCapture {
+    formats: Vec<AudioFormat>,
+    sink: Arc<Mutex<Option<AudioPacketSink>>>,
+}
+
+impl RdpeaiCaptureHandler for EagerOpenCapture {
+    fn supported_formats(&self) -> &[AudioFormat] {
+        &self.formats
+    }
+
+    fn open(
+        &mut self,
+        _capture_format: &AudioFormat,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        mut sink: AudioPacketSink,
+    ) -> i32 {
+        sink(vec![1, 2, 3, 4]);
+        *self.sink.lock().unwrap() = Some(sink);
+        OpenReplyPdu::S_OK
+    }
+
+    fn set_format(&mut self, _encode_format: &AudioFormat, _packet_size: usize) -> bool {
+        true
+    }
+
+    fn close(&mut self) {}
+}
+
+// oracle: spec MS-RDPEAI §3.2.5.1.7
+#[test]
+fn ordered_open_format_confirmation_precedes_open_reply() {
+    let fmt = pcm_format(1, 16000, 16);
+    let sink = Arc::new(Mutex::new(None));
+    let (client, uplinked) = client_with_uplink(EagerOpenCapture {
+        formats: vec![fmt.clone()],
+        sink: Arc::clone(&sink),
+    });
+    let mut client = client.with_ordered_replies();
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt.clone()])),
+    );
+    uplinked.lock().unwrap().clear();
+    let open = || {
+        RdpeaiPdu::Open(OpenPdu {
+            frames_per_packet: 2,
+            initial_format: 0,
+            capture_format: fmt.clone(),
+        })
+    };
+
+    assert!(process_encoded(&mut client, 3, open()).is_empty());
+
+    let uplinked: Vec<RdpeaiPdu> = uplinked.lock().unwrap().iter().map(decode_uplinked).collect();
+    assert!(matches!(
+        uplinked.as_slice(),
+        [RdpeaiPdu::FormatChange(change), RdpeaiPdu::OpenReply(_)] if change.new_format == 0
+    ));
+}
+
+// oracle: regression #2469
+#[test]
+fn samples_captured_before_open_reply_are_discarded() {
+    let fmt = pcm_format(1, 16000, 16);
+    let sink = Arc::new(Mutex::new(None));
+    let (client, uplinked) = client_with_uplink(EagerOpenCapture {
+        formats: vec![fmt.clone()],
+        sink: Arc::clone(&sink),
+    });
+    let mut client = client.with_ordered_replies();
+    client.start(3).unwrap();
+    let _ = process_encoded(&mut client, 3, RdpeaiPdu::Version(VersionPdu::new(Version::V1)));
+    let _ = process_encoded(
+        &mut client,
+        3,
+        RdpeaiPdu::Formats(FormatsPdu::server(vec![fmt.clone()])),
+    );
+    uplinked.lock().unwrap().clear();
+
+    assert!(
+        process_encoded(
+            &mut client,
+            3,
+            RdpeaiPdu::Open(OpenPdu {
+                frames_per_packet: 2,
+                initial_format: 0,
+                capture_format: fmt,
+            }),
+        )
+        .is_empty()
+    );
+    let after_open: Vec<RdpeaiPdu> = uplinked.lock().unwrap().iter().map(decode_uplinked).collect();
+    assert!(matches!(
+        after_open.as_slice(),
+        [RdpeaiPdu::FormatChange(_), RdpeaiPdu::OpenReply(_)]
+    ));
+
+    (sink.lock().unwrap().as_mut().unwrap())(vec![5, 6, 7, 8]);
+    let after_capture: Vec<RdpeaiPdu> = uplinked.lock().unwrap().iter().map(decode_uplinked).collect();
+    assert!(matches!(
+        after_capture.as_slice(),
+        [
+            RdpeaiPdu::FormatChange(_),
+            RdpeaiPdu::OpenReply(_),
+            RdpeaiPdu::DataIncoming,
+            RdpeaiPdu::Data(_)
+        ]
+    ));
 }
 
 // oracle: spec MS-RDPEAI §3.2.5.1.5 (the client replies with formats it supports among those the server sent)

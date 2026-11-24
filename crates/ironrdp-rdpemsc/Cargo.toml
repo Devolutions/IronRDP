@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpemsc"
-version = "0.0.0"
+version = "0.1.0"
 readme = "README.md"
 description = "Mouse cursor dynamic channel as described in MS-RDPEMSC"
 edition.workspace = true

@@ -1,11 +1,13 @@
 //! AUDIO_INPUT dynamic virtual channel client (MS-RDPEAI).
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::cell::Cell;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{decode, impl_as_any};
 use ironrdp_dvc::{DvcClientProcessor, DvcMessage, DvcProcessor, encode_dvc_messages};
-use ironrdp_pdu::{PduResult, decode_err, encode_err, pdu_other_err};
+pub use ironrdp_pdu::PduResult;
+use ironrdp_pdu::{decode_err, encode_err, pdu_other_err};
 use ironrdp_rdpsnd::pdu::AudioFormat;
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, info, trace, warn};
@@ -49,14 +51,34 @@ pub trait RdpeaiCaptureHandler: Send {
         sink: AudioPacketSink,
     ) -> i32;
 
-    /// Switch the negotiated encoding format while capture stays open.
+    /// Switch the negotiated encoding format while capture stays open, as required by
+    /// [Processing a Format Change PDU][ms-rdpeai-format-change].
     ///
     /// `packet_size` remains the capture packet size established by Open; it must not be
     /// recalculated from `encode_format`.
     ///
     /// PCM-only backends may restart the capture device when `encode_format` differs from
     /// the Open capture WAVEFORMATEX so FormatChange can be confirmed honestly.
+    ///
+    /// [ms-rdpeai-format-change]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeai/bd3b5bb5-9b81-41cb-bff0-ce4eaabd2dad
     fn set_format(&mut self, encode_format: &AudioFormat, packet_size: usize) -> bool;
+
+    /// Switch formats and enqueue the confirmation at the boundary between old and new packets, as
+    /// required by [Processing a Format Change PDU][ms-rdpeai-format-change].
+    ///
+    /// Implementations must serialize `confirm` with delivery to the packet sink.
+    /// A successful switch must call `confirm` exactly once before delivering new-format packets.
+    /// The default rejects ordered changes rather than allowing packets to overtake the confirmation.
+    ///
+    /// [ms-rdpeai-format-change]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeai/bd3b5bb5-9b81-41cb-bff0-ce4eaabd2dad
+    fn set_format_ordered(
+        &mut self,
+        _encode_format: &AudioFormat,
+        _packet_size: usize,
+        _confirm: &mut dyn FnMut() -> PduResult<()>,
+    ) -> PduResult<bool> {
+        Err(pdu_other_err!("ordered audio format changes are unsupported"))
+    }
 
     /// Stop capture and release the device.
     fn close(&mut self);
@@ -87,6 +109,8 @@ pub struct RdpeaiClient {
     capture_packet_size: Option<usize>,
     /// Drop-flag for in-flight capture callbacks after close/reopen.
     capture_epoch: Arc<AtomicU32>,
+    ordered_replies: bool,
+    pending_open: Option<Arc<AtomicBool>>,
 }
 
 impl RdpeaiClient {
@@ -101,7 +125,25 @@ impl RdpeaiClient {
             frames_per_packet: 0,
             capture_packet_size: None,
             capture_epoch: Arc::new(AtomicU32::new(0)),
+            ordered_replies: false,
+            pending_open: None,
         }
+    }
+
+    /// Enqueue control replies with capture packets instead of returning them directly, preserving
+    /// the order required by [Sending a Format Change PDU][ms-rdpeai-format-change].
+    ///
+    /// Samples received before the Open reply is queued are discarded rather than sent ahead of it.
+    /// Capture handlers must implement [`RdpeaiCaptureHandler::set_format_ordered`].
+    /// When a format change fails, the client attempts to queue its confirmation before returning
+    /// an error.
+    /// The owner must send queued messages before closing the channel.
+    ///
+    /// [ms-rdpeai-format-change]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeai/74e22a5c-535c-481b-a99b-ca30cbd40fd2
+    #[must_use]
+    pub fn with_ordered_replies(mut self) -> Self {
+        self.ordered_replies = true;
+        self
     }
 
     fn build_packet_sink(&self) -> AudioPacketSink {
@@ -109,9 +151,13 @@ impl RdpeaiClient {
         let uplink = Arc::clone(&self.uplink);
         let epoch = Arc::clone(&self.capture_epoch);
         let expected = epoch.load(Ordering::Acquire);
+        let open = self.pending_open.clone();
+        let mut uplink_failed = false;
 
         Box::new(move |packet: Vec<u8>| {
-            if epoch.load(Ordering::Acquire) != expected {
+            if epoch.load(Ordering::Acquire) != expected
+                || open.as_ref().is_some_and(|open| !open.load(Ordering::Acquire))
+            {
                 return;
             }
             let messages: Vec<DvcMessage> = vec![
@@ -126,10 +172,19 @@ impl RdpeaiClient {
                 }
             };
             let Ok(mut uplink) = uplink.lock() else {
+                if !uplink_failed {
+                    warn!("AUDIO_INPUT uplink lock poisoned");
+                    uplink_failed = true;
+                }
                 return;
             };
-            if let Err(error) = uplink(channel_id, svc) {
-                warn!(%error, "Failed to uplink AUDIO_INPUT data");
+            match uplink(channel_id, svc) {
+                Err(error) if !uplink_failed => {
+                    warn!(%error, "Failed to uplink AUDIO_INPUT data");
+                    uplink_failed = true;
+                }
+                Err(_) => {}
+                Ok(()) => uplink_failed = false,
             }
         })
     }
@@ -212,6 +267,9 @@ impl RdpeaiClient {
             open.initial_format,
         )))];
 
+        if self.ordered_replies {
+            self.pending_open = Some(Arc::new(AtomicBool::new(false)));
+        }
         let sink = self.build_packet_sink();
         let hr = self.handler.open(&capture_fmt, &encode_fmt, packet_size, sink);
         if hr == OpenReplyPdu::S_OK {
@@ -254,6 +312,54 @@ impl RdpeaiClient {
             )))]);
         };
 
+        if self.ordered_replies {
+            let uplink = Arc::clone(&self.uplink);
+            let channel_id = self
+                .channel_id
+                .ok_or_else(|| pdu_other_err!("AUDIO_INPUT channel not started"))?;
+            let confirmed = Cell::new(false);
+            let confirm_failed = Cell::new(false);
+            let mut confirm = || {
+                let messages: Vec<DvcMessage> = vec![Box::new(RdpeaiPdu::FormatChange(FormatChangePdu::new(
+                    change.new_format,
+                )))];
+                if let Err(error) = queue_messages(&uplink, channel_id, messages) {
+                    confirm_failed.set(true);
+                    return Err(error);
+                }
+                confirmed.set(true);
+                Ok(())
+            };
+            let changed = self.handler.set_format_ordered(&encode_fmt, packet_size, &mut confirm);
+            return match changed {
+                Err(error) => {
+                    self.stop_capture();
+                    warn!(%error, "AUDIO_INPUT ordered format change failed");
+                    if !confirmed.get() && !confirm_failed.get() {
+                        confirm()?;
+                    }
+                    Err(error)
+                }
+                Ok(false) => {
+                    self.stop_capture();
+                    warn!("AUDIO_INPUT capture backend rejected the format change");
+                    if !confirmed.get() && confirm_failed.get() {
+                        return Err(pdu_other_err!("failed to queue AUDIO_INPUT Format Change confirmation"));
+                    }
+                    if !confirmed.get() {
+                        confirm()?;
+                    }
+                    Err(pdu_other_err!("audio capture format change failed"))
+                }
+                Ok(true) if !confirmed.get() => {
+                    self.stop_capture();
+                    Err(pdu_other_err!("audio format changed without confirming the transition"))
+                }
+                Ok(true) => Ok(()),
+            }
+            .map(|()| Vec::new());
+        }
+
         if self.handler.set_format(&encode_fmt, packet_size) {
             // Data PDUs reach the server through the uplink queue. Queuing the confirmation there too
             // keeps it behind the packets encoded in the old format, which the server would
@@ -278,21 +384,24 @@ impl RdpeaiClient {
         let channel_id = self
             .channel_id
             .ok_or_else(|| pdu_other_err!("AUDIO_INPUT channel not started"))?;
-        let messages: Vec<DvcMessage> = vec![Box::new(pdu)];
-        let svc = encode_dvc_messages(channel_id, messages, ChannelFlags::empty()).map_err(|e| encode_err!(e))?;
-        let mut uplink = self
-            .uplink
-            .lock()
-            .map_err(|_| pdu_other_err!("AUDIO_INPUT uplink lock poisoned"))?;
-        uplink(channel_id, svc)
+        queue_messages(&self.uplink, channel_id, vec![Box::new(pdu)])
     }
 
     fn stop_capture(&mut self) {
         self.capture_epoch.fetch_add(1, Ordering::AcqRel);
         self.handler.close();
         self.capture_packet_size = None;
+        self.pending_open = None;
         self.state = State::Ready;
     }
+}
+
+fn queue_messages(uplink: &Arc<Mutex<DvcUplink>>, channel_id: u32, messages: Vec<DvcMessage>) -> PduResult<()> {
+    let svc = encode_dvc_messages(channel_id, messages, ChannelFlags::empty()).map_err(|e| encode_err!(e))?;
+    let mut uplink = uplink
+        .lock()
+        .map_err(|_| pdu_other_err!("AUDIO_INPUT uplink lock poisoned"))?;
+    uplink(channel_id, svc)
 }
 
 impl_as_any!(RdpeaiClient);
@@ -308,6 +417,7 @@ impl DvcProcessor for RdpeaiClient {
         self.negotiated_formats.clear();
         self.frames_per_packet = 0;
         self.capture_packet_size = None;
+        self.pending_open = None;
         debug!(channel_id, "AUDIO_INPUT channel started");
         Ok(Vec::new())
     }
@@ -315,7 +425,7 @@ impl DvcProcessor for RdpeaiClient {
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         let pdu: RdpeaiPdu = decode(payload).map_err(|e| decode_err!(e))?;
         trace!(?pdu, "AUDIO_INPUT PDU received");
-        match pdu {
+        let replies = match pdu {
             RdpeaiPdu::Version(v) => self.handle_version(v),
             RdpeaiPdu::Formats(f) => self.handle_formats(f),
             RdpeaiPdu::Open(o) => self.handle_open(o),
@@ -324,7 +434,21 @@ impl DvcProcessor for RdpeaiClient {
                 warn!("Ignoring client-originated AUDIO_INPUT PDU from server");
                 Ok(Vec::new())
             }
+        }?;
+        if !self.ordered_replies || replies.is_empty() {
+            return Ok(replies);
         }
+        let channel_id = self
+            .channel_id
+            .ok_or_else(|| pdu_other_err!("AUDIO_INPUT channel not started"))?;
+        if let Err(error) = queue_messages(&self.uplink, channel_id, replies) {
+            self.stop_capture();
+            return Err(error);
+        }
+        if let Some(open) = self.pending_open.take().filter(|_| self.state == State::Opened) {
+            open.store(true, Ordering::Release);
+        }
+        Ok(Vec::new())
     }
 
     fn close(&mut self, _channel_id: u32) {

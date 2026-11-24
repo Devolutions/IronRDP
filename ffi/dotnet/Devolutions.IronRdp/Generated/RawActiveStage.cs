@@ -21,6 +21,9 @@ internal partial struct ActiveStage
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_poll_rdpdr_deferred", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError PollRdpdrDeferred(ActiveStage* handle);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_poll_audio", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError PollAudio(ActiveStage* handle, NativeAudio* audio);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ActiveStage_stop_audio", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultActiveStageOutputIteratorIronRdpError StopAudio(ActiveStage* handle, NativeAudio* audio);
 

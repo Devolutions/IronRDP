@@ -1761,6 +1761,7 @@ dependencies = [
  "ironrdp-dvc-pipe-proxy",
  "ironrdp-rdcleanpath",
  "ironrdp-rdpdr-native",
+ "ironrdp-rdpeai",
  "ironrdp-rdpsnd-native",
  "ironrdp-vmconnect",
  "sspi",
@@ -3261,7 +3262,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpadrv"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",
@@ -3341,7 +3342,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpeci"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",
@@ -3396,7 +3397,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpemsc"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",
@@ -3440,7 +3441,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpetxt"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core 0.3.1",
  "ironrdp-dvc",

@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpeci"
-version = "0.0.0"
+version = "0.1.0"
 readme = "README.md"
 description = "Core input dynamic channel as described in MS-RDPECI"
 edition.workspace = true

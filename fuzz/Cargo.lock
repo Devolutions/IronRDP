@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpadrv"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpeci"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpemsc"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -663,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpetxt"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-str",

@@ -157,6 +157,9 @@ pub(crate) fn watch_device(
             return;
         }
         on_wake();
+        if ended.load(Ordering::Relaxed) {
+            return;
+        }
         if lost.swap(false, Ordering::Relaxed) {
             info!(?direction, device = ?device_id, "Audio device lost; reopening");
             return;
@@ -197,5 +200,41 @@ fn default_device(host: &cpal::Host, direction: Direction) -> Option<cpal::Devic
     match direction {
         Direction::Output => host.default_output_device(),
         Direction::Input => host.default_input_device(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+
+    // oracle: regression #2469 stop requests must end the capture worker at its next wake-up
+    #[test]
+    fn watch_device_exits_when_on_wake_requests_stop() {
+        let ended = Arc::new(AtomicBool::new(false));
+        let lost = Arc::new(AtomicBool::new(false));
+        let (worker_tx, worker_rx) = mpsc::sync_channel(1);
+        let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+        let worker_ended = Arc::clone(&ended);
+        let worker_lost = Arc::clone(&lost);
+        let worker = thread::spawn(move || {
+            let current = thread::current();
+            worker_tx.send(current).expect("send worker thread");
+            watch_device(
+                &DeviceSelector::Name("test".to_owned()),
+                Direction::Input,
+                None,
+                &worker_ended,
+                &worker_lost,
+                || worker_ended.store(true, Ordering::Release),
+            );
+            finished_tx.send(()).expect("send completion");
+        });
+
+        worker_rx.recv().expect("receive worker thread").unpark();
+        finished_rx
+            .recv_timeout(DEVICE_POLL_INTERVAL - Duration::from_millis(50))
+            .expect("watcher exits without another poll interval");
+        worker.join().expect("join worker");
     }
 }

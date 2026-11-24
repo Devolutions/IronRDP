@@ -689,7 +689,7 @@ internal static class SmokeTests
         // oracle: mutant attach one audio settings object to multiple connectors or replace native playback
         yield return ("native playback settings attach to only one connector", () =>
         {
-            var audio = NativeAudio.New("", 0);
+            using var audio = NativeAudio.New(true, false, "", "", 0);
             var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
             var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
             first.WithNativeAudio(audio);
@@ -701,7 +701,7 @@ internal static class SmokeTests
         yield return ("native playback rejects an existing static playback channel", () =>
         {
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
-            var audio = NativeAudio.New("", 0);
+            using var audio = NativeAudio.New(true, false, "", "", 0);
             connector.WithStaticChannelRdpSnd();
             Throws<IronRdpException>(() => connector.WithNativeAudio(audio));
 
@@ -717,10 +717,12 @@ internal static class SmokeTests
             proxy.AddPipeProxy(DvcPipeProxyDescriptor.New("AUDIO_PLAYBACK_LOSSY_DVC", "test-playback"));
             var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
             first.WithDynamicChannelPipeProxy(proxy);
-            Throws<IronRdpException>(() => first.WithNativeAudio(NativeAudio.New("", 0)));
+            using var firstAudio = NativeAudio.New(true, false, "", "", 0);
+            Throws<IronRdpException>(() => first.WithNativeAudio(firstAudio));
 
             var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
-            second.WithNativeAudio(NativeAudio.New("", 0));
+            using var secondAudio = NativeAudio.New(true, false, "", "", 0);
+            second.WithNativeAudio(secondAudio);
             Throws<IronRdpException>(() => second.WithDynamicChannelPipeProxy(proxy));
         });
 
@@ -731,10 +733,12 @@ internal static class SmokeTests
             var direct = NewDirectDvcConfig(events, "AUDIO_PLAYBACK_DVC");
             var first = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
             first.WithDynamicChannelDirect(direct);
-            Throws<IronRdpException>(() => first.WithNativeAudio(NativeAudio.New("", 0)));
+            using var firstAudio = NativeAudio.New(true, false, "", "", 0);
+            Throws<IronRdpException>(() => first.WithNativeAudio(firstAudio));
 
             var second = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
-            second.WithNativeAudio(NativeAudio.New("", 0));
+            using var secondAudio = NativeAudio.New(true, false, "", "", 0);
+            second.WithNativeAudio(secondAudio);
             Throws<IronRdpException>(() => second.WithDynamicChannelDirect(direct));
         });
 
@@ -744,7 +748,8 @@ internal static class SmokeTests
             using var events = DirectDvcEventQueue.New(4);
             var queue = DvcPipeProxyMessageQueue.New(4);
             var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
-            connector.WithNativeAudio(NativeAudio.New("", 0));
+            using var audio = NativeAudio.New(true, false, "", "", 0);
+            connector.WithNativeAudio(audio);
             connector.WithDynamicChannelDirect(NewDirectDvcConfig(events, "direct-conflict"));
             Throws<IronRdpException>(
                 () => connector.WithDynamicChannelPipeProxy(NewPipeProxyConfig(queue, "first-in-batch", "direct-conflict")));
@@ -754,8 +759,8 @@ internal static class SmokeTests
         // oracle: mutant stop playback attached to a different connection
         yield return ("stopping playback requires the attached connection", () =>
         {
-            var audio = NativeAudio.New("", 0);
-            var other = NativeAudio.New("", 0);
+            using var audio = NativeAudio.New(true, false, "", "", 0);
+            using var other = NativeAudio.New(true, false, "", "", 0);
             var connected = ConnectedStage(8, 4, audio: audio);
             using var stage = connected.Stage;
             using var image = connected.Image;
@@ -763,6 +768,42 @@ internal static class SmokeTests
             using var stopped = stage.StopAudio(audio);
             // oracle: mutant stopping playback produces transport output
             Equal(0ul, (ulong)stopped.Len(), "stopping playback requires no response frame");
+        });
+
+        // oracle: regression Devolutions/IronRDP#2469
+        yield return ("native audio requires an enabled direction", () =>
+        {
+            Throws<IronRdpException>(() => NativeAudio.New(false, false, "", "", 0));
+        });
+
+        // oracle: regression Devolutions/IronRDP#2469
+        yield return ("stopping capture closes the channel and prevents it reopening", () =>
+        {
+            using var audio = NativeAudio.New(false, true, "", "", 0);
+            var connected = ConnectedStage(8, 4, audio: audio, audioPlayback: false);
+            using var stage = connected.Stage;
+            using var image = connected.Image;
+            ProcessFrame(stage, image, DrdynvcAudioInputCreateRequest);
+            using (var closed = stage.StopAudio(audio))
+            {
+                Equal(1ul, (ulong)closed.Len(), "capture close frame");
+                True(closed.Next() is { EnumType: ActiveStageOutputType.ResponseFrame }, "close is a response frame");
+            }
+            ProcessFrame(stage, image, DrdynvcAudioInputCreateRequest);
+            using var stoppedAgain = stage.StopAudio(audio);
+            Equal(0ul, (ulong)stoppedAgain.Len(), "capture cannot reopen after stop");
+        });
+
+        // oracle: regression Devolutions/IronRDP#2469
+        yield return ("audio polling rejects a different connection", () =>
+        {
+            using var attached = NativeAudio.New(false, true, "", "", 0);
+            using var other = NativeAudio.New(false, true, "", "", 0);
+            var connected = ConnectedStage(8, 4, audio: attached, audioPlayback: false);
+            using var stage = connected.Stage;
+            using var image = connected.Image;
+            Throws<IronRdpException>(() => stage.PollAudio(other));
+            Throws<IronRdpException>(() => stage.StopAudio(other));
         });
 
         // oracle: spec MS-RDPEDISP §1.3 (the client sends a monitor layout only after the server's DISPLAYCONTROL_CAPS_PDU)
@@ -1263,6 +1304,15 @@ internal static class SmokeTests
         0x02, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x60, 0x09, 0x00, 0x00,
     };
 
+    // oracle: spec MS-RDPBCGR §2.2.9.1.1, §2.2.9.1.2, §2.2.6.1.1; T.125 §11.33; MS-RDPEDYC §2.2.2.1
+    // The DYNVC create request opens AUDIO_INPUT as channel 1 on static channel 1004.
+    private static readonly byte[] DrdynvcAudioInputCreateRequest =
+    {
+        0x03, 0x00, 0x00, 0x24, 0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, 0x16, 0x0e, 0x00,
+        0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x10, 0x01, 0x41, 0x55, 0x44, 0x49, 0x4f, 0x5f, 0x49, 0x4e,
+        0x50, 0x55, 0x54, 0x00,
+    };
+
     // Server PDUs on static channel 1004 (MCS Send Data Indication, Virtual Channel PDU header with
     // CHANNEL_FLAG_FIRST | CHANNEL_FLAG_LAST) that open the RDPEI dynamic channel as channel 1.
     private static readonly byte[][] RdpeiOpeningServerPdus =
@@ -1328,7 +1378,7 @@ internal static class SmokeTests
         setup.Invoke(null, [connector, config, null]);
     }
 
-    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false, DirectDvcConfig? directDvc = null, NativeAudio? audio = null)
+    private static (ActiveStage Stage, DecodedImage Image) ConnectedStage(ushort width, ushort height, bool displayControl = false, bool rdpei = false, DirectDvcConfig? directDvc = null, NativeAudio? audio = null, bool audioPlayback = true)
     {
         var connector = ClientConnector.New(TlsConfig(), "127.0.0.1:33890");
         var serverPdus = HandshakeServerPdus.ToArray();
@@ -1350,7 +1400,7 @@ internal static class SmokeTests
         if (audio is not null)
         {
             connector.WithNativeAudio(audio);
-            serverPdus[1] = McsConnectResponseWithPlayback;
+            serverPdus[1] = audioPlayback ? McsConnectResponseWithPlayback : McsConnectResponseWithDrdynvc;
         }
         else if (displayControl || rdpei || directDvc is not null)
         {
