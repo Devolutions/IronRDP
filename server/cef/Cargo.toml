@@ -35,7 +35,7 @@ media-fixture = [
 [dependencies]
 anyhow = "1" # public
 ab_glyph = "0.2"
-cef = { git = "https://github.com/tauri-apps/cef-rs", rev = "9aa78c450489eddb828eb982eaee6c104a89d348", default-features = false, features = ["sandbox"], optional = true }
+cef = { git = "https://github.com/tauri-apps/cef-rs", rev = "7b6bf84e76e919790bd61df077e29dc4132eb5e2", default-features = false, features = ["sandbox"], optional = true }
 async-trait = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
 clap = { version = "4.6", features = ["derive"], optional = true }

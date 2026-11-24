@@ -13,7 +13,7 @@ Use the repository's Rust toolchain, CMake, Ninja, and Python 3.9 or later.
 Build on the intended operating system: `package-cef` is a native-host packager, not a cross-packager.
 macOS needs the Xcode command-line tools; Windows needs the MSVC C++ build tools and Windows SDK; Linux needs a C++ toolchain and CEF's X11, GTK, NSS, GBM, and ALSA runtime libraries.
 The package has its own Cargo workspace and lockfile, so root-workspace builds do not build or download CEF.
-The pinned `tauri-apps/cef-rs` revision is `9aa78c450489eddb828eb982eaee6c104a89d348`, using CEF `156.4.0+156.0.26`.
+The pinned `tauri-apps/cef-rs` revision is `7b6bf84e76e919790bd61df077e29dc4132eb5e2`, using CEF `156.7.0+156.0.31`.
 Building the native feature downloads a large CEF distribution and compiles its wrapper.
 The default `package-cef` command uses stock CEF.
 The server requires patched CEF even when CLIPRDR redirection is disabled; it rejects stock CEF at browser startup.
@@ -27,7 +27,9 @@ The patches are in `server/cef/patches`:
 | `in-process-audio-shutdown.patch` | Chromium | Stops the in-process audio service before its `AudioManager` |
 | `disable-chromium-shutdown-signals.patch` | Chromium, POSIX only | Lets Rust own shutdown cleanup |
 
-Rebuild and distribute the patched CEF checkout, then set `CEF_PATH` to its distribution root before packaging.
+Patched CEF builds are published as [cef-distro releases](https://github.com/mamoreau-devolutions/cef-distro/releases); this revision uses [`v156.0.31`](https://github.com/mamoreau-devolutions/cef-distro/releases/tag/v156.0.31).
+Download `cef-156.0.31-<target>.tar.gz` for the build host (`linux-x64`, `linux-arm64`, `windows-x64`, `windows-arm64`, `macos-x64` or `macos-arm64`), check it against the release's `SHA256SUMS`, extract it, and set `CEF_PATH` to the extracted `cef-156.0.31-<target>` directory before building or packaging.
+A cef-rs revision older than the release's CEF version rejects it and silently falls back to stock CEF, so move this pin and the release together.
 The packager copies only regular files, so the distribution framework must not use symlinked `Versions` directories.
 The custom build has been validated on macOS ARM64; Linux and Windows remain unverified.
 

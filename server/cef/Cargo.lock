@@ -437,8 +437,8 @@ dependencies = [
 
 [[package]]
 name = "cef"
-version = "156.4.0+156.0.26"
-source = "git+https://github.com/tauri-apps/cef-rs?rev=9aa78c450489eddb828eb982eaee6c104a89d348#9aa78c450489eddb828eb982eaee6c104a89d348"
+version = "156.7.0+156.0.31"
+source = "git+https://github.com/tauri-apps/cef-rs?rev=7b6bf84e76e919790bd61df077e29dc4132eb5e2#7b6bf84e76e919790bd61df077e29dc4132eb5e2"
 dependencies = [
  "anyhow",
  "cargo_metadata",
@@ -456,8 +456,8 @@ dependencies = [
 
 [[package]]
 name = "cef-dll-sys"
-version = "156.4.0+156.0.26"
-source = "git+https://github.com/tauri-apps/cef-rs?rev=9aa78c450489eddb828eb982eaee6c104a89d348#9aa78c450489eddb828eb982eaee6c104a89d348"
+version = "156.7.0+156.0.31"
+source = "git+https://github.com/tauri-apps/cef-rs?rev=7b6bf84e76e919790bd61df077e29dc4132eb5e2#7b6bf84e76e919790bd61df077e29dc4132eb5e2"
 dependencies = [
  "anyhow",
  "cc",
@@ -945,8 +945,8 @@ dependencies = [
 
 [[package]]
 name = "download-cef"
-version = "3.0.0"
-source = "git+https://github.com/tauri-apps/cef-rs?rev=9aa78c450489eddb828eb982eaee6c104a89d348#9aa78c450489eddb828eb982eaee6c104a89d348"
+version = "3.0.1"
+source = "git+https://github.com/tauri-apps/cef-rs?rev=7b6bf84e76e919790bd61df077e29dc4132eb5e2#7b6bf84e76e919790bd61df077e29dc4132eb5e2"
 dependencies = [
  "bzip2",
  "clap",
@@ -3796,7 +3796,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
