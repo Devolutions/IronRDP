@@ -1191,41 +1191,106 @@ fn soft_sync_checks_every_listed_channel_before_it_fills_the_close_history() {
     assert!(batch.messages().is_empty());
 }
 
-#[test]
-fn tunneled_data_for_an_open_channel_soft_sync_did_not_list_is_taken() {
-    // Windows creates AUDIO_PLAYBACK_LOSSY_DVC over TCP after Soft-Sync and then sends its data
-    // on the reliable UDP tunnel (seen when a UAC prompt plays its sound): the channel is open,
-    // so the data is its own, and the channel is bound to the tunnel from then on.
+/// A client whose channel 7 Soft-Sync moved to the reliable UDP tunnel and channel 8 to the lossy
+/// UDP tunnel, with channel 10 opened over TCP afterwards and never listed.
+fn client_with_an_unlisted_channel_after_soft_sync() -> DrdynvcClient {
     let mut client = DrdynvcClient::new();
     exchange_capabilities(&mut client);
-    client
-        .attach_established_dynamic_channel(7, RecordedDvc::default())
-        .expect("recorded channel should attach");
+    for channel_id in [7, 8] {
+        client
+            .attach_established_dynamic_channel(channel_id, RecordedDvc::default())
+            .expect("listed channel should attach");
+    }
     client.enable_soft_sync_tunnel(SoftSyncTunnelType::RELIABLE_UDP);
+    client.enable_soft_sync_tunnel(SoftSyncTunnelType::LOSSY_UDP);
     let request = encode_vec(&DrdynvcServerPdu::SoftSyncRequest(SoftSyncRequestPdu::new(vec![
         SoftSyncChannelList::new(SoftSyncTunnelType::RELIABLE_UDP, vec![7]),
+        SoftSyncChannelList::new(SoftSyncTunnelType::LOSSY_UDP, vec![8]),
     ])))
     .expect("Soft-Sync request should encode");
     client.process(&request).expect("Soft-Sync request should be accepted");
     client
         .attach_established_dynamic_channel(10, RecordedDvc::default())
-        .expect("a second channel should attach");
+        .expect("unlisted channel should attach");
     assert_eq!(client.tunnel_for_channel(10), None);
+    client
+}
 
-    let data = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
-        10,
-        vec![1, 2, 3],
+fn dvc_data(channel_id: u32, payload: &[u8]) -> Vec<u8> {
+    encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(
+        channel_id,
+        payload.to_vec(),
     ))))
-    .expect("data should encode");
-    client
-        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &data)
-        .expect("data on the tunnel for an open channel is taken");
-    assert_eq!(client.tunnel_for_channel(10), Some(SoftSyncTunnelType::RELIABLE_UDP));
+    .expect("data should encode")
+}
 
-    // A channel that is not open still fails.
-    let stray = encode_vec(&DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(12, vec![1]))))
-        .expect("data should encode");
+fn received(client: &DrdynvcClient, channel_id: u32) -> &[Vec<u8>] {
+    &client
+        .get_dvc_by_channel_id::<RecordedDvc>(channel_id)
+        .expect("channel should remain attached")
+        .processor()
+        .received
+}
+
+// oracle: reference Windows 10 Pro 22H2 creates AUDIO_PLAYBACK_LOSSY_DVC over TCP after Soft-Sync,
+// never lists it, and sends its data on the reliable UDP tunnel when a UAC prompt plays its sound.
+#[test]
+fn tunneled_data_for_an_open_channel_soft_sync_did_not_list_is_taken() {
+    let mut client = client_with_an_unlisted_channel_after_soft_sync();
+
     client
-        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &stray)
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &dvc_data(10, &[1, 2, 3]))
+        .expect("data on the tunnel for an open channel is taken");
+
+    assert_eq!(received(&client, 10), [vec![1, 2, 3]]);
+    assert_eq!(client.tunnel_for_channel(10), Some(SoftSyncTunnelType::RELIABLE_UDP));
+}
+
+#[test]
+fn tcp_data_for_a_channel_bound_by_unlisted_tunneled_data_is_taken() {
+    let mut client = client_with_an_unlisted_channel_after_soft_sync();
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &dvc_data(10, &[1]))
+        .expect("data on the tunnel for an open channel is taken");
+
+    client
+        .process(&dvc_data(10, &[2]))
+        .expect("the server chose no tunnel for the channel, so TCP stays valid");
+
+    assert_eq!(received(&client, 10), [vec![1], vec![2]]);
+}
+
+#[test]
+fn tunneled_data_for_a_channel_that_is_not_open_is_an_error() {
+    let mut client = client_with_an_unlisted_channel_after_soft_sync();
+
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &dvc_data(12, &[1]))
         .expect_err("data for a channel that is not open is an error");
+}
+
+// oracle: spec MS-RDPEDYC section 3.1.5.4.3 - data for a channel moves to the tunnel the server selected.
+#[test]
+fn tunneled_data_for_a_listed_channel_on_another_tunnel_is_an_error() {
+    let mut client = client_with_an_unlisted_channel_after_soft_sync();
+
+    client
+        .process_tunnel(SoftSyncTunnelType::LOSSY_UDP, &dvc_data(7, &[1]))
+        .expect_err("channel 7 was listed on the reliable UDP tunnel");
+
+    assert!(received(&client, 7).is_empty());
+}
+
+#[test]
+fn tunneled_data_for_a_bound_unlisted_channel_on_another_tunnel_is_an_error() {
+    let mut client = client_with_an_unlisted_channel_after_soft_sync();
+    client
+        .process_tunnel(SoftSyncTunnelType::RELIABLE_UDP, &dvc_data(10, &[1]))
+        .expect("data on the tunnel for an open channel is taken");
+
+    client
+        .process_tunnel(SoftSyncTunnelType::LOSSY_UDP, &dvc_data(10, &[2]))
+        .expect_err("channel 10 is bound to the reliable UDP tunnel");
+
+    assert_eq!(received(&client, 10), [vec![1]]);
 }
