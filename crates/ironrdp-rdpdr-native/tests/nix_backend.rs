@@ -2848,7 +2848,7 @@ fn a_directory_on_the_path_of_a_pending_delete_cannot_be_renamed(#[case] mark_an
 /// The directories that led to every name a file was marked for deletion through cannot be renamed while the delete is pending, whichever name was marked last.
 /// The file has one hard link in `x`, marked through the outer drive, and one in `sub` beneath the inner root, marked through the inner drive.
 /// Both marking handles are closed, and the handle left is on a third link in the outer root, which keeps neither directory from being renamed.
-// oracle: spec MS-FSA §2.1.5.15.12, §2.1.5.5
+// oracle: mutant a directory on the path of a name other than the one marked last renamed while the delete is pending
 #[rstest]
 #[case::on_the_path_of_the_name_marked_through_the_outer_drive(r"\x")]
 #[case::on_the_path_of_the_name_marked_through_the_inner_drive(r"\a\b\sub")]
