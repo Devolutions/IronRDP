@@ -7,11 +7,14 @@ Currently, only the .NET target is officially supported.
 ## How to build
 
 - Install required tools: `cargo xtask ffi install`
-  - For .NET, note that `dotnet` is also a requirement that you will need to install on your own.
+  - Install the .NET 10 SDK separately.
 
 - Build the shared library: `cargo xtask ffi build` (alternatively, in release mode: `cargo xtask ffi build --release`)
 
 - Build the bindings: `cargo xtask ffi bindings`
+
+The iOS package targets `net10.0-ios` with a minimum deployment target of iOS 12.2.
+Install the .NET iOS workload to build it.
 
 At this point, you may build and run the examples for .NET:
 

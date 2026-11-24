@@ -133,6 +133,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Set up .NET
+        if: matrix.os == 'windows'
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
       - name: Install build dependencies
         uses: ./.github/actions/install-build-deps
 
@@ -263,6 +269,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
       - name: Install native build dependencies
         uses: ./.github/actions/install-build-deps
 
@@ -287,6 +298,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
 
       - name: Install native build dependencies
         uses: ./.github/actions/install-build-deps

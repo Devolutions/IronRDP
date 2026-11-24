@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup Condition="$(PackageId.EndsWith('iOS'))">
-    <TargetFrameworks>net9.0-ios</TargetFrameworks>
-    <SupportedOSPlatformVersion>12.1</SupportedOSPlatformVersion>
+    <TargetFrameworks>net10.0-ios</TargetFrameworks>
+    <SupportedOSPlatformVersion>12.2</SupportedOSPlatformVersion>
   </PropertyGroup>
 
   <ItemGroup Condition="Exists('$(NativeLibPath_ios_arm64_framework)')">
