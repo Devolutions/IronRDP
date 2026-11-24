@@ -21,10 +21,10 @@
   </ItemGroup>
 
   <ItemGroup Condition="!$(PackageId.EndsWith('iOS'))">
-    <Content Include="Devolutions.IronRdp.iOS.props" PackagePath="build/Devolutions.IronRdp.props" Pack="true" />
+    <Content Include="Devolutions.IronRdp.iOS.targets" PackagePath="build/Devolutions.IronRdp.iOS.targets" Pack="true" />
   </ItemGroup>
 
   <ItemGroup Condition="$(PackageId.EndsWith('iOS'))">
-    <Content Include="Devolutions.IronRdp.iOS.props" PackagePath="build/Devolutions.IronRdp.iOS.props" Pack="true" />
+    <Content Include="Devolutions.IronRdp.iOS.targets" PackagePath="build/Devolutions.IronRdp.iOS.targets" Pack="true" />
   </ItemGroup>
 </Project>
