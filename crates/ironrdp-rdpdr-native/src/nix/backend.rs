@@ -295,6 +295,10 @@ struct PendingDelete {
     /// The device the file was marked through, whose root `path` is relative to.
     device_id: u32,
     path: RelativePath,
+    /// The directories `path` led through when the file was marked, from the root of `device_id` down.
+    ///
+    /// Once a drive has a root of its own, none of them is renamed while the delete is pending, so `path` goes on naming the file.
+    ancestors: Vec<FileIdentity>,
 }
 
 #[derive(Debug)]
@@ -427,6 +431,7 @@ impl NixRdpdrBackend {
                         PendingDelete {
                             device_id: open_file.device_id,
                             path: open_file.path,
+                            ancestors: open_file.ancestors,
                         },
                     );
                 }
@@ -1189,6 +1194,9 @@ pub(crate) fn set_information(
             })
         });
     // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
+    // A directory that led to a file marked for deletion is refused like one holding open files, because the file is deleted by the name it was marked through, which has to go on naming it.
+    // Only a backend with a drive that has a root of its own refuses it.
+    // With only a shared directory the open handles alone decide, which leaves the behaviour of that configuration unchanged: a handle left on the marked link keeps those directories in place, and a handle left on another hard link does not.
     let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
         && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
             backend.pending_deletes.contains_key(&open_file.identity)
@@ -1196,6 +1204,11 @@ pub(crate) fn set_information(
                     .open_files
                     .values()
                     .any(|other| other.ancestors.contains(&open_file.identity))
+                || !backend.roots.serve_only_the_shared_directory()
+                    && backend
+                        .pending_deletes
+                        .values()
+                        .any(|pending| pending.ancestors.contains(&open_file.identity))
         });
     // A rename target that is open cannot be replaced, so the open files are collected before one of them is borrowed mutably.
     let open_identities = if matches!(req_inner.set_buffer, FileInformationClass::Rename(_)) {
@@ -1414,6 +1427,7 @@ fn set_delete_pending(
         PendingDelete {
             device_id: open_file.device_id,
             path: open_file.path.clone(),
+            ancestors: open_file.ancestors.clone(),
         },
     );
     Ok(())

@@ -2809,6 +2809,84 @@ fn a_file_marked_for_deletion_is_marked_for_a_drive_nested_with_the_marking_one(
     assert!(!file.exists());
 }
 
+/// The directories that led to a file when it was marked for deletion cannot be renamed while the delete is pending, because the file is deleted by the name it was marked through.
+/// The handle that marked the file is closed here, and the handle left belongs to the inner drive, which keeps only the directories from its own root down from being renamed.
+/// Each case marks the file through the outer drive and closes the handle it used.
+// oracle: spec MS-FSA §2.1.5.15.12, §2.1.5.5
+#[rstest]
+#[case::marked_through_its_disposition(|backend: &mut NixRdpdrBackend| {
+    let file_id = create_on(backend, FIRST, r"\a\b\f.txt", CreateDisposition::FILE_OPEN);
+    let _ = set_information_on(backend, FIRST, file_id, delete_pending(true));
+    close_on(backend, FIRST, file_id);
+})]
+#[case::marked_when_a_handle_opened_to_delete_on_close_closed(|backend: &mut NixRdpdrBackend| {
+    let opened = create_with(
+        backend,
+        DeviceCreateRequest {
+            create_options: CreateOptions::FILE_DELETE_ON_CLOSE,
+            ..create_request_on(FIRST, r"\a\b\f.txt", CreateDisposition::FILE_OPEN)
+        },
+    );
+    close_on(backend, FIRST, response_file_id(&opened));
+})]
+fn a_directory_on_the_path_of_a_pending_delete_cannot_be_renamed(#[case] mark_and_close: fn(&mut NixRdpdrBackend)) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("f.txt"), b"marked").expect("write file");
+    let mut backend = roots.backend();
+    let inner_id = create_on(&mut backend, SECOND, r"\f.txt", CreateDisposition::FILE_OPEN);
+    mark_and_close(&mut backend);
+    let directory_id = create_on(&mut backend, FIRST, r"\a", CreateDisposition::FILE_OPEN);
+
+    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\moved", false));
+    close_on(&mut backend, SECOND, inner_id);
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert_eq!(names_in(&roots.outer), ["a"]);
+    assert_eq!(names_in(&roots.inner), Vec::<String>::new());
+}
+
+/// A file is deleted by its name beneath the root of the drive it was marked through, so a directory above that root leads to no pending delete.
+/// The enclosing drive can rename it, and the file is still deleted when its last handle closes.
+// oracle: mutant a directory above the root of the drive a file was marked through kept from being renamed for the pending delete
+#[test]
+fn a_directory_above_the_root_of_the_marking_drive_can_be_renamed_while_the_delete_is_pending() {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("f.txt"), b"marked").expect("write file");
+    let mut backend = roots.backend();
+    let inner_id = create_on(&mut backend, SECOND, r"\f.txt", CreateDisposition::FILE_OPEN);
+    let _ = set_information_on(&mut backend, SECOND, inner_id, delete_pending(true));
+    let directory_id = create_on(&mut backend, FIRST, r"\a", CreateDisposition::FILE_OPEN);
+
+    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\moved", false));
+    close_on(&mut backend, SECOND, inner_id);
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    // oracle: spec MS-FSA §2.1.5.5
+    assert_eq!(names_in(&roots.outer.join("moved").join("b")), Vec::<String>::new());
+}
+
+/// A backend with only a shared directory decides a rename by its open handles alone, not by the pending deletes.
+/// The handle left here is on another hard link of the file marked for deletion, so the directory that led to the marked link holds no open file, and is renamed.
+// oracle: mutant a backend with only a shared directory refused to rename a directory for a pending delete below it
+#[test]
+fn a_directory_on_the_path_of_a_pending_delete_can_be_renamed_with_only_a_shared_directory() {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.share.join("dir")).expect("create directory");
+    std::fs::write(fixture.share.join("dir").join("f.txt"), b"marked").expect("write file");
+    std::fs::hard_link(fixture.share.join("dir").join("f.txt"), fixture.share.join("link.txt")).expect("link file");
+    let mut backend = fixture.backend();
+    let _link_id = create(&mut backend, r"\link.txt", CreateDisposition::FILE_OPEN);
+    let marked_id = create(&mut backend, r"\dir\f.txt", CreateDisposition::FILE_OPEN);
+    let _ = set_information(&mut backend, marked_id, delete_pending(true));
+    close(&mut backend, marked_id);
+    let directory_id = create(&mut backend, r"\dir", CreateDisposition::FILE_OPEN);
+
+    let response = set_information(&mut backend, directory_id, rename_to(r"\moved", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(names_in(&fixture.share), ["link.txt", "moved"]);
+}
+
 /// A rename does not replace a file that is open through the other drive that reaches it, whichever drive is the enclosing one.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[rstest]

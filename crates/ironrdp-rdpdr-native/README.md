@@ -65,10 +65,12 @@ A lock or a pending delete on a file holds through every drive that reaches it, 
 A rename moves the open handles of every drive that serves the same directory to the new name, however the roots of those drives are spelled.
 A file or directory that is open through a drive that serves another directory, another hard link of it included, cannot be renamed until those handles are closed: the rename fails with `STATUS_SHARING_VIOLATION`.
 A path names a file only beneath the root of its drive, so such a handle could not take the new name.
+Once a drive has a root of its own, the directories that led to a file when it was marked for deletion cannot be renamed until the delete is done or the mark is cleared: the rename fails with `STATUS_ACCESS_DENIED`, as for a directory that holds open files.
+The file is deleted by the name it was marked through, which those directories are part of.
 
 Between drives that serve different directories, these limitations are known:
 
-- An open file keeps a directory from being renamed only from the root of its own drive down.
+- An open file keeps a directory from being renamed only from the root of its own drive down, and a file marked for deletion only from the root of the drive it was marked through down.
   The drive of an enclosing directory can therefore rename a directory above the root of an inner drive while the inner drive has files open, and the inner drive then serves its directory at the new path.
 - The drive of an enclosing directory can delete the root of an inner drive once it is empty, and nothing can then be created or opened below that root.
 - Roots are resolved again each time a backend is built.
