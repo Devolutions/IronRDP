@@ -348,13 +348,14 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.100
 
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v3
 
       - name: Install ios workload
         run: dotnet workload install ios
+        working-directory: ffi/dotnet
 
       - name: Prepare dependencies
         run: |
@@ -378,10 +379,11 @@ jobs:
           PROJECT_VERSION: ${{ needs.preflight.outputs.project-version }}
         run: |
           # net10.0 target packaged as Devolutions.IronRdp
-          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:Version=$Env:PROJECT_VERSION
+          dotnet build .\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:Version=$Env:PROJECT_VERSION
           # net10.0-ios target packaged as Devolutions.IronRdp.iOS
-          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS /p:Version=$Env:PROJECT_VERSION
+          dotnet build .\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS /p:Version=$Env:PROJECT_VERSION
         shell: pwsh
+        working-directory: ffi/dotnet
 
       - name: Upload managed components
         uses: actions/upload-artifact@v7

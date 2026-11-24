@@ -272,7 +272,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.100
 
       - name: Install native build dependencies
         uses: ./.github/actions/install-build-deps
@@ -287,10 +287,12 @@ jobs:
         run: cargo xtask ffi bindings -v
 
       - name: Build .NET projects
-        run: cd ./ffi/dotnet && dotnet build
+        run: dotnet build
+        working-directory: ./ffi/dotnet
 
       - name: Run .NET smoke tests
-        run: dotnet run --project ./ffi/dotnet/Devolutions.IronRdp.Tests --no-build
+        run: dotnet run --project ./Devolutions.IronRdp.Tests --no-build
+        working-directory: ./ffi/dotnet
 
   ffi-bindings-check:
     name: FFI bindings reproducibility
@@ -302,7 +304,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.100
 
       - name: Install native build dependencies
         uses: ./.github/actions/install-build-deps
@@ -333,10 +335,12 @@ jobs:
         run: cargo xtask ffi build -v
 
       - name: Build IronRdp.sln
-        run: dotnet build ffi/dotnet/IronRdp.sln -c Release
+        run: dotnet build IronRdp.sln -c Release
+        working-directory: ./ffi/dotnet
 
       - name: Run .NET smoke tests
-        run: dotnet run --project ffi/dotnet/Devolutions.IronRdp.Tests -c Release --no-build
+        run: dotnet run --project Devolutions.IronRdp.Tests -c Release --no-build
+        working-directory: ./ffi/dotnet
 
   feature-matrix-setup:
     name: feature matrix setup
