@@ -343,8 +343,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $Env:RUSTFLAGS = '-C target-feature=+crt-static'
           $Env:CMAKE_TOOLCHAIN_FILE = Join-Path $PWD 'ffi/cmake/opus-static-runtime.cmake'
-          $VsInstallDir = vswhere.exe -latest -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
-          $Env:LIBCLANG_PATH = "$VsInstallDir\VC\Tools\Llvm\x64\bin"
           cargo build -p ffi --profile production-ffi --target ${{ matrix.target }} --locked
 
   feature-matrix-setup:
