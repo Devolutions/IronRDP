@@ -2109,12 +2109,17 @@ fn create_fails_without_a_directory_to_serve() {
     let mut unopenable = NixRdpdrBackend::new(utf8(&roots.first.join("missing")));
     let mut backend = NixRdpdrBackend::default().with_drive_root(SECOND, utf8(&roots.second));
     let name = format!("rdpdr-native-nix-{}-no-root.txt", std::process::id());
+    let in_working_directory = std::env::current_dir().expect("working directory").join(&name);
+    // The entry is absent before the request, so the removal after it can only remove what the request created.
+    assert!(
+        std::fs::symlink_metadata(&in_working_directory).is_err(),
+        "{name} already exists in the working directory"
+    );
     let request = || create_request_on(FIRST, &format!(r"\{name}"), CreateDisposition::FILE_CREATE);
 
     let response = create_with(&mut backend, request());
 
-    let in_working_directory = std::env::current_dir().expect("working directory").join(&name);
-    let was_created = in_working_directory.exists();
+    let was_created = std::fs::symlink_metadata(&in_working_directory).is_ok();
     let _ = std::fs::remove_file(in_working_directory);
     assert!(!was_created);
     assert!(names_in(&roots.first).is_empty());
