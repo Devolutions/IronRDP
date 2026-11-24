@@ -2384,7 +2384,7 @@ enum ConnectionOutput {
     Keyboard(KeyboardEvent),
     /// Mouse input from whichever input path owns the mouse.
     Mouse(MouseEvent),
-    /// The client opened the Advanced Input channel; comes before its first mouse event.
+    /// The client opened the Advanced Input channel; it comes before the channel's first mouse event.
     AdvancedInputOpened,
     DisplayLayout(DisplayControlMonitorLayout),
     ResponseFrame(Vec<u8>),
@@ -8960,10 +8960,6 @@ mod tests {
             CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
         };
 
-        const IO_CHANNEL_ID: u16 = 1003;
-        const DRDYNVC_CHANNEL_ID: u16 = 1004;
-        const USER_CHANNEL_ID: u16 = 1007;
-
         let opened = Arc::new(AtomicBool::new(false));
         let mut server = RdpServer::builder()
             .with_addr(([127, 0, 0, 1], 0))
@@ -8971,27 +8967,10 @@ mod tests {
             .with_input_handler(AdvancedInputRecorder(Arc::clone(&opened)))
             .with_display_handler(PendingDisplay)
             .build();
-        let mut conn = ConnectionState::default();
-        conn.static_channels
-            .insert(dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler::new()));
-        conn.static_channels
-            .attach_channel_id(core::any::TypeId::of::<dvc::DrdynvcServer>(), DRDYNVC_CHANNEL_ID);
-        conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap().start().unwrap();
-        let mut writer = cliprdr_error_tests::CapturingWriter::default();
-        let mut send = async |server: &mut RdpServer, conn: &mut ConnectionState, pdu: DrdynvcClientPdu| {
-            let frame = ironrdp_svc::client_encode_svc_messages(
-                vec![SvcMessage::from(pdu)],
-                DRDYNVC_CHANNEL_ID,
-                USER_CHANNEL_ID,
-            )
-            .unwrap();
-            server
-                .handle_x224(conn, &mut writer, IO_CHANNEL_ID, USER_CHANNEL_ID, None, &frame, None)
-                .await
-                .unwrap()
-        };
+        let mut conn =
+            connection_with_started_drdynvc(dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler::new()));
 
-        send(
+        server_send_drdynvc(
             &mut server,
             &mut conn,
             DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
@@ -9003,7 +8982,7 @@ mod tests {
             .get_channel_id_by_type::<AInputHandler>()
             .unwrap();
         assert!(!opened.load(Ordering::Acquire));
-        send(
+        server_send_drdynvc(
             &mut server,
             &mut conn,
             DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, CreationStatus::OK)),
@@ -9021,10 +9000,6 @@ mod tests {
             CapabilitiesResponsePdu, CapsVersion, CreateResponsePdu, CreationStatus, DataPdu, DrdynvcClientPdu,
             DrdynvcDataPdu,
         };
-
-        const IO_CHANNEL_ID: u16 = 1003;
-        const DRDYNVC_CHANNEL_ID: u16 = 1004;
-        const USER_CHANNEL_ID: u16 = 1007;
 
         struct RecordingDisplay(Arc<StdMutex<Vec<DisplayControlMonitorLayout>>>);
 
@@ -9053,29 +9028,12 @@ mod tests {
             .with_no_input()
             .with_display_handler(RecordingDisplay(Arc::clone(&requested)))
             .build();
-        let mut conn = ConnectionState::default();
-        conn.static_channels.insert(
+        let mut conn = connection_with_started_drdynvc(
             dvc::DrdynvcServer::new()
                 .with_dynamic_channel(DisplayControlServer::new(DisplayControlCapabilities::single_monitor())),
         );
-        conn.static_channels
-            .attach_channel_id(core::any::TypeId::of::<dvc::DrdynvcServer>(), DRDYNVC_CHANNEL_ID);
-        conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap().start().unwrap();
-        let mut writer = cliprdr_error_tests::CapturingWriter::default();
-        let mut send = async |server: &mut RdpServer, conn: &mut ConnectionState, pdu: DrdynvcClientPdu| {
-            let frame = ironrdp_svc::client_encode_svc_messages(
-                vec![SvcMessage::from(pdu)],
-                DRDYNVC_CHANNEL_ID,
-                USER_CHANNEL_ID,
-            )
-            .unwrap();
-            server
-                .handle_x224(conn, &mut writer, IO_CHANNEL_ID, USER_CHANNEL_ID, None, &frame, None)
-                .await
-                .unwrap()
-        };
 
-        send(
+        server_send_drdynvc(
             &mut server,
             &mut conn,
             DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
@@ -9086,7 +9044,7 @@ mod tests {
             .unwrap()
             .get_channel_id_by_type::<DisplayControlServer>()
             .unwrap();
-        send(
+        server_send_drdynvc(
             &mut server,
             &mut conn,
             DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, CreationStatus::OK)),
@@ -9098,7 +9056,7 @@ mod tests {
         let (first, second) = (layout(1024), layout(1280));
         for layout in [&first, &second] {
             let data = encode_vec(&DisplayControlPdu::MonitorLayout(layout.clone())).unwrap();
-            send(
+            server_send_drdynvc(
                 &mut server,
                 &mut conn,
                 DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(DataPdu::new(channel_id, data))),
@@ -9132,6 +9090,44 @@ mod tests {
     }
 
     const DRDYNVC_CHANNEL_ID: u16 = 1004;
+
+    /// A connection on which `drdynvc` has started, as it does once the client joins the DRDYNVC channel.
+    fn connection_with_started_drdynvc(drdynvc: dvc::DrdynvcServer) -> ConnectionState {
+        let mut conn = ConnectionState::default();
+        conn.static_channels.insert(drdynvc);
+        conn.static_channels
+            .attach_channel_id(core::any::TypeId::of::<dvc::DrdynvcServer>(), DRDYNVC_CHANNEL_ID);
+        conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap().start().unwrap();
+        conn
+    }
+
+    /// Hands one client DRDYNVC PDU to `server` the way its connection loop does, and returns whether it disconnects.
+    async fn server_send_drdynvc(
+        server: &mut RdpServer,
+        conn: &mut ConnectionState,
+        pdu: ironrdp_dvc::pdu::DrdynvcClientPdu,
+    ) -> bool {
+        let context = tcp_pdu_context();
+        let frame = ironrdp_svc::client_encode_svc_messages(
+            vec![SvcMessage::from(pdu)],
+            DRDYNVC_CHANNEL_ID,
+            context.user_channel_id,
+        )
+        .unwrap();
+        let mut writer = cliprdr_error_tests::CapturingWriter::default();
+        server
+            .handle_x224(
+                conn,
+                &mut writer,
+                context.io_channel_id,
+                context.user_channel_id,
+                None,
+                &frame,
+                None,
+            )
+            .await
+            .unwrap()
+    }
 
     fn send_drdynvc(conn: &mut ConnectionState, pdu: ironrdp_dvc::pdu::DrdynvcClientPdu) -> Vec<ConnectionOutput> {
         let frame = ironrdp_svc::client_encode_svc_messages(
@@ -9197,28 +9193,38 @@ mod tests {
         )))
     }
 
-    // oracle: mutant AInputHandler::start not reporting the opened channel, or reporting it more than once
+    // oracle: mutant take_dvc_events handing over the mouse events before the opened notice, or AInputHandler::start not reporting the opened channel
     #[test]
     fn opening_ainput_comes_before_its_mouse_events() {
         use ironrdp_dvc::pdu::{CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
 
         let (mut conn, ainput_id, _) = connection_offering_builtin_dvcs();
 
-        let outputs = send_drdynvc(
-            &mut conn,
+        // The channel opens and a mouse event arrives before anything takes what the channels received.
+        let drdynvc = conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap();
+        for pdu in [
             DrdynvcClientPdu::Create(CreateResponsePdu::new(ainput_id, CreationStatus::OK)),
-        );
-        let notices = outputs
-            .iter()
-            .filter(|output| matches!(output, ConnectionOutput::AdvancedInputOpened))
-            .count();
-        assert_eq!(notices, 1, "{outputs:?}");
-
-        let outputs = send_drdynvc(&mut conn, ainput_mouse_move(ainput_id, 1, 2));
+            ainput_mouse_move(ainput_id, 1, 2),
+        ] {
+            drdynvc.process(&encode_vec(&pdu).unwrap()).unwrap();
+        }
+        let outputs = conn.take_dvc_events();
         assert!(
             matches!(
                 outputs.as_slice(),
-                [ConnectionOutput::Mouse(MouseEvent::Move { x: 1, y: 2 })]
+                [
+                    ConnectionOutput::AdvancedInputOpened,
+                    ConnectionOutput::Mouse(MouseEvent::Move { x: 1, y: 2 })
+                ]
+            ),
+            "{outputs:?}"
+        );
+
+        let outputs = send_drdynvc(&mut conn, ainput_mouse_move(ainput_id, 3, 4));
+        assert!(
+            matches!(
+                outputs.as_slice(),
+                [ConnectionOutput::Mouse(MouseEvent::Move { x: 3, y: 4 })]
             ),
             "{outputs:?}"
         );
