@@ -68,7 +68,9 @@ A path names a file only beneath the root of its drive, so such a handle could n
 A handle on the root of its own drive is the exception, because it names that root whatever the directory is called: the drive of an enclosing directory can rename the root of an inner drive while the inner drive holds only that root open.
 Once a drive has a root of its own, the directories that led to a file when it was marked for deletion cannot be renamed until the delete is done or the mark is cleared: the rename fails with `STATUS_ACCESS_DENIED`, as for a directory that holds open files.
 The file is deleted by a name it was marked through, which those directories are part of.
-A file marked for deletion through several drives is deleted by the name marked last that still removes it: each drive keeps the name it marked last, and when a name fails, as beneath a root on a read-only mount, the name marked before it through another drive is tried.
+A file marked for deletion through several drives is deleted by the name marked last that still removes it.
+Each drive with a root of its own keeps the name it marked last, and the drives that serve the shared directory keep one name between them, the one marked last through any of them.
+When a name fails, as beneath a root on a read-only mount, the name marked before it through another root is tried.
 With only a shared directory, the name marked last is the only one, whichever drive marked it.
 
 Between drives that serve different directories, these limitations are known:

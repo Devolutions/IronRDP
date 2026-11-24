@@ -3124,6 +3124,36 @@ fn a_file_marked_through_two_drives_of_the_shared_directory_loses_only_the_name_
     assert_eq!(names_in(&fixture.share), ["a.txt"]);
 }
 
+/// The drives without a root of their own keep one marked name between them while another drive has a root of its own, because they all reach the file through the one root of the shared directory.
+/// The file has the hard links `a.txt`, marked through one such drive, and `b.txt`, marked through another after it.
+/// A local process removes `b.txt`, and `a.txt` is still there after the last handle closes, because the later mark replaced it.
+// oracle: mutant a name marked through a drive of the shared directory kept beside the name another such drive marked after it, once a drive has a root of its own
+#[test]
+fn a_mark_through_a_drive_of_the_shared_directory_replaces_the_name_of_another_beside_a_drive_with_its_own_root() {
+    const OWN_ROOT: u32 = 3;
+    let roots = TwoRoots::new();
+    std::fs::write(roots.first.join("a.txt"), b"linked").expect("write file");
+    std::fs::hard_link(roots.first.join("a.txt"), roots.first.join("b.txt")).expect("link file");
+    let mut backend = NixRdpdrBackend::new(utf8(&roots.first)).with_drive_root(OWN_ROOT, utf8(&roots.second));
+    let handles = [(FIRST, r"\a.txt"), (SECOND, r"\b.txt")].map(|(device_id, path)| {
+        (
+            device_id,
+            create_on(&mut backend, device_id, path, CreateDisposition::FILE_OPEN),
+        )
+    });
+    for (device_id, file_id) in handles {
+        let marked = set_information_on(&mut backend, device_id, file_id, delete_pending(true));
+        assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    }
+    std::fs::remove_file(roots.first.join("b.txt")).expect("remove locally");
+
+    for (device_id, file_id) in handles {
+        close_on(&mut backend, device_id, file_id);
+    }
+
+    assert_eq!(names_in(&roots.first), ["a.txt"]);
+}
+
 /// A rename does not replace a file that is open through the other drive that reaches it, whichever drive is the enclosing one.
 // oracle: spec MS-FSA §2.1.5.15.12
 #[rstest]

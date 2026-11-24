@@ -65,14 +65,15 @@ pub struct NixRdpdrBackend {
     /// A marked name is removed rather than the path of whichever handle closes last, so a file with several hard links loses a link the server marked.
     /// [MS-FSA] marks each link separately, while a file loses one name here, and every link of a marked file refuses new opens.
     /// While every drive serves the shared directory, one name is kept per file: marking through another link or another drive replaces it.
-    /// Once a drive has a root of its own, one name is kept for each device the file was marked through, because the drive that marked it last may be unable to remove a file that another drive can.
-    /// A mark then replaces only the name its own device marked before, and becomes the name marked last.
+    /// Once a drive has a root of its own, one name is kept for each root the file was marked through, because the root it was marked through last may be unable to remove a file that another root can.
+    /// A mark then replaces only the name marked before through the same root, as [`DriveRoots::use_the_same_root`] decides, and becomes the name marked last.
     /// The names are tried from the last to the first when the last handle closes, and the first that removes the file ends the delete.
     ///
     /// INVARIANT: a file is kept only with a name, so a file is marked exactly while it has an entry.
     ///
-    /// INVARIANT: the names of a file each belong to another device, so they number at most the devices it was marked through.
-    /// A marked file refuses new opens, so those devices number at most the handles that were open on it when it was first marked, which `max_open_files` bounds.
+    /// INVARIANT: the names of a file each belong to a different root: at most one to the shared directory, and one to each drive with a root of its own.
+    /// A request can carry any device ID, so a name for each device would let the server keep as many names as it likes for a file it holds open.
+    /// A marked file has an open handle, so the names of all files together number at most the open files times one more than the configured roots.
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/d142c93a-72bc-4b05-9d96-8e00371c3308
     pending_deletes: HashMap<FileIdentity, Vec<PendingDelete>>,
@@ -163,6 +164,14 @@ impl DriveRoots {
             || self
                 .held(first)
                 .is_some_and(|root| self.held(second).map(Root::identity) == Some(root.identity()))
+    }
+
+    /// Whether `first` and `second` use the same root, so a name beneath it removes a file through one exactly when it does through the other.
+    ///
+    /// Every device without a root of its own uses the one root of the shared directory.
+    /// Devices with roots of their own use different roots even when those name the same directory, which each holds open through its own path.
+    fn use_the_same_root(&self, first: u32, second: u32) -> bool {
+        first == second || !self.drives.contains_key(&first) && !self.drives.contains_key(&second)
     }
 
     /// How many roots hold their directory open, each of which takes the place of one open file.
@@ -298,7 +307,7 @@ struct OpenFile {
     listing: Option<DirectoryListing>,
 }
 
-/// A name a file marked for deletion can be removed by: the one a device marked it through last.
+/// A name a file marked for deletion can be removed by: the one marked last through a root.
 #[derive(Debug)]
 struct PendingDelete {
     /// The device the file was marked through, whose root `path` is relative to.
@@ -458,7 +467,7 @@ impl NixRdpdrBackend {
             // The name marked last is tried first, and an earlier one only after every name marked since failed, so the file loses one name.
             // Each name is resolved beneath the root of its own device, and removed only while it still names this file.
             //
-            // UNTESTED: a name that cannot be removed beneath the root of its device leaves the delete to the names marked before it through other drives.
+            // UNTESTED: a name that cannot be removed beneath the root of its device leaves the delete to the names marked before it through other roots.
             // One directory can be the root of a drive through a read-only mount and of another drive through a writable one, and a file marked through both has to be deleted even when the read-only drive marked it last.
             // The tests cannot create mounts, so they make a name fail by renaming a directory on its path locally, which fails before the name would be unlinked.
             // After changing this loop, check that a file marked through a writable root and then through a read-only bind mount of it is removed when its last handle closes.
@@ -1484,13 +1493,10 @@ fn mark_for_deletion(
     name: PendingDelete,
 ) {
     let names = pending_deletes.entry(identity).or_default();
-    if roots.serve_only_the_shared_directory() {
-        // Every handle reaches the file beneath the same directory, so the new name is as removable as the one it replaces.
-        names.clear();
-    } else {
-        // The root of another device may be able to remove the file where the root of this one cannot, so only the earlier name of this device is replaced.
-        names.retain(|earlier| earlier.device_id != name.device_id);
-    }
+    // A name marked through the same root is replaced, because the new name is as removable as it is.
+    // A different root may be able to remove the file where this one cannot, so the names marked through other roots are kept.
+    // With only a shared directory every device uses the one root, so the new name is the only one.
+    names.retain(|earlier| !roots.use_the_same_root(earlier.device_id, name.device_id));
     names.push(name);
 }
 
