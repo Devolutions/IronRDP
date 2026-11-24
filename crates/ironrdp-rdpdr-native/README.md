@@ -40,6 +40,7 @@ Once a drive has a root of its own, the shared directory is resolved and held th
 A backend whose drives all serve the shared directory opens it by path for each request, and does not check it.
 Roots that name the same directory each hold it open through their own path, so a drive is bound by what the mount on the path of its own root allows, such as a read-only bind mount.
 Each root that holds its directory open counts as one open file against the limit on open files, and keeps its filesystem busy while the backend lives.
+A root that is unusable because its path followed a symbolic link, as described below, still holds its directory open and counts.
 The roots hold at most half of that limit, so at least half is left to open files: with a soft descriptor limit of 256, at most 32 roots hold their directory open.
 
 A root is unusable when its path:
