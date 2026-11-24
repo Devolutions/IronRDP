@@ -16,6 +16,7 @@ Currently, only the .NET target is officially supported.
 - Build the bindings: `cargo xtask ffi bindings`
 
 The iOS package targets `net10.0-ios` with a minimum deployment target of iOS 12.2.
+The pinned iOS workload requires Xcode 26.6.
 Run `(cd ffi/dotnet && dotnet workload install ios)` to build it.
 
 At this point, you may build and run the examples for .NET:
