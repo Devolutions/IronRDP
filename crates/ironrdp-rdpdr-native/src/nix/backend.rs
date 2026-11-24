@@ -1684,7 +1684,17 @@ pub(crate) fn create_drive(
                 .roots
                 .of(req_inner.device_io_request.device_id)
                 .map_err(|error| {
-                    warn!(%error, "Open drive root error");
+                    if backend.roots.drives.is_empty() {
+                        warn!(%error, "Open drive root error");
+                    } else {
+                        // UNTESTED: once roots are held, a create through a drive that is served nothing logs nothing above `trace!`.
+                        // An unusable root was logged with a warning when it was configured, and the server decides how many creates it sends, so a warning here would let it fill the log.
+                        // No test reads the log, so after changing this, check that only a shared directory opened for each request warns.
+                        trace!(
+                            device_id = req_inner.device_io_request.device_id,
+                            "Rejected a create through a drive that is served nothing"
+                        );
+                    }
                     NtStatus::UNSUCCESSFUL
                 })
                 .and_then(|root| open_file(&root, &req_inner, &path, &backend.pending_deletes))
