@@ -74,15 +74,6 @@ pub enum CredsspAuth {
     Kerberos(Option<KerberosConfig>),
 }
 
-impl CredsspAuth {
-    fn kerberos_config(&self) -> Option<&KerberosConfig> {
-        match self {
-            CredsspAuth::Ntlm => None,
-            CredsspAuth::Negotiate(config) | CredsspAuth::Kerberos(config) => config.as_ref(),
-        }
-    }
-}
-
 impl From<KerberosConfig> for sspi::KerberosConfig {
     fn from(val: KerberosConfig) -> Self {
         sspi::KerberosConfig {
@@ -257,8 +248,14 @@ impl CredsspSequence {
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         if remote_guard
             && !matches!(
-                auth.kerberos_config().map(|cfg| &cfg.kdc_resolution),
-                Some(KdcResolution::KdcUrl(_))
+                &auth,
+                CredsspAuth::Negotiate(Some(KerberosConfig {
+                    kdc_resolution: KdcResolution::KdcUrl(_),
+                    ..
+                })) | CredsspAuth::Kerberos(Some(KerberosConfig {
+                    kdc_resolution: KdcResolution::KdcUrl(_),
+                    ..
+                }))
             )
         {
             return Err(general_err!("RCG requires an explicit Kerberos configuration"));

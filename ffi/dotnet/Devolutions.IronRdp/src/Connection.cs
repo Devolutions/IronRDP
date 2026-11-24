@@ -132,23 +132,30 @@ public static class Connection
     // after replying, so every request uses its own connection, as sspi does.
     internal static async Task<byte[]> SendKdcTcpRequest(Uri url, byte[] data, CancellationToken cancellationToken)
     {
-        using var client = new TcpClient();
-        await client.ConnectAsync(url.DnsSafeHost, url.Port < 0 ? 88 : url.Port, cancellationToken);
-        var stream = client.GetStream();
-        await stream.WriteAsync(data, cancellationToken);
-
-        var header = new byte[4];
-        await stream.ReadExactlyAsync(header, cancellationToken);
-        var length = BinaryPrimitives.ReadUInt32BigEndian(header);
-        if (length > MaxKdcReplyLength)
+        try
         {
-            throw new InvalidDataException($"The KDC reply length {length} exceeds {MaxKdcReplyLength} bytes.");
-        }
+            using var client = new TcpClient();
+            await client.ConnectAsync(url.DnsSafeHost, url.Port < 0 ? 88 : url.Port, cancellationToken);
+            var stream = client.GetStream();
+            await stream.WriteAsync(data, cancellationToken);
 
-        var response = new byte[4 + (int)length];
-        header.CopyTo(response, 0);
-        await stream.ReadExactlyAsync(response.AsMemory(4), cancellationToken);
-        return response;
+            var header = new byte[4];
+            await stream.ReadExactlyAsync(header, cancellationToken);
+            var length = BinaryPrimitives.ReadUInt32BigEndian(header);
+            if (length > MaxKdcReplyLength)
+            {
+                throw KdcRequestFailed(url, $"the reply length {length} exceeds {MaxKdcReplyLength} bytes");
+            }
+
+            var response = new byte[4 + (int)length];
+            header.CopyTo(response, 0);
+            await stream.ReadExactlyAsync(response.AsMemory(4), cancellationToken);
+            return response;
+        }
+        catch (Exception ex) when (ex is SocketException or IOException)
+        {
+            throw KdcRequestFailed(url, ex.Message, ex);
+        }
     }
 
     // KDC proxy (MS-KKDCP section 2.1): sspi wraps the request in a DER-encoded KDC_PROXY_MESSAGE, which is POSTed as
@@ -157,30 +164,41 @@ public static class Connection
     internal static async Task<byte[]> SendKdcProxyRequest(HttpClient client, Uri url, byte[] data,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(data) };
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/kerberos");
-        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        response.EnsureSuccessStatusCode();
-        if (response.Content.Headers.ContentLength > MaxKdcReplyLength)
+        try
         {
-            throw new InvalidDataException($"The KDC proxy reply length {response.Content.Headers.ContentLength} exceeds {MaxKdcReplyLength} bytes.");
-        }
+            using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(data) };
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/kerberos");
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            response.EnsureSuccessStatusCode();
 
-        await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var reply = new MemoryStream();
-        var chunk = new byte[16 * 1024];
-        int read;
-        while ((read = await body.ReadAsync(chunk, cancellationToken)) > 0)
-        {
-            if (reply.Length + read > MaxKdcReplyLength)
+            await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var reply = new MemoryStream();
+            var chunk = new byte[16 * 1024];
+            int read;
+            while ((read = await body.ReadAsync(chunk, cancellationToken)) > 0)
             {
-                throw new InvalidDataException($"The KDC proxy reply exceeds {MaxKdcReplyLength} bytes.");
+                if (reply.Length + read > MaxKdcReplyLength)
+                {
+                    throw KdcRequestFailed(url, $"the reply exceeds {MaxKdcReplyLength} bytes");
+                }
+
+                reply.Write(chunk, 0, read);
             }
 
-            reply.Write(chunk, 0, read);
+            return reply.ToArray();
         }
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        {
+            throw KdcRequestFailed(url, ex.Message, ex);
+        }
+    }
 
-        return reply.ToArray();
+    private static IronRdpLibException KdcRequestFailed(Uri url, string reason, Exception? inner = null)
+    {
+        var message = $"The KDC request to {url} failed: {reason}";
+        return inner is null
+            ? new IronRdpLibException(IronRdpLibExceptionType.KdcRequestFailed, message)
+            : new IronRdpLibException(IronRdpLibExceptionType.KdcRequestFailed, message, inner);
     }
 
     public static async Task SingleSequenceStep<S, T>(S sequence, WriteBuf buf, Framed<T> framed,

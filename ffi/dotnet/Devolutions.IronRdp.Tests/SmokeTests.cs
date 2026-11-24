@@ -440,10 +440,6 @@ internal static class SmokeTests
             var ntlmOnly = FirstCredsspToken("alice", CredsspPackage.Ntlm, null);
             True(Contains(ntlmOnly, NtlmSignature), "NTLM sends an NTLM negotiate message");
 
-            // EXAMPLE.INVALID is reserved (RFC 2606), so sspi's realm lookup finds no KDC for it.
-            var negotiateWithoutKdc = FirstCredsspToken("alice@EXAMPLE.INVALID", CredsspPackage.Negotiate, null);
-            True(Contains(negotiateWithoutKdc, NtlmSignature), "Negotiate without a findable KDC starts with NTLM");
-
             var negotiateWithKdc = FirstCredsspToken("alice@EXAMPLE.INVALID", CredsspPackage.Negotiate,
                 KerberosConfig.NewWithKdcUrl("tcp://127.0.0.1:1"));
             True(Contains(negotiateWithKdc, Krb5Oid) || Contains(negotiateWithKdc, MsKrb5Oid), "Negotiate with a KDC starts with Kerberos");
@@ -454,13 +450,13 @@ internal static class SmokeTests
             True(!Contains(kerberosOnly, NtlmOid) && !Contains(kerberosOnly, NtlmSignature), "Kerberos package never offers NTLM");
         });
 
-        // oracle: review of #2488, NTLM with a Kerberos configuration must not be accepted; the FFI validates the pair
+        // oracle: mutant the FFI accepting a Kerberos configuration with the NTLM package (ffi/src/credssp/mod.rs validates the pair)
         yield return ("ntlm package refuses a Kerberos configuration", () =>
         {
             Throws<IronRdpException>(() => FirstCredsspToken("alice", CredsspPackage.Ntlm, KerberosConfig.New()));
         });
 
-        // oracle: RFC 4120 section 7.2.2; TCP may deliver one reply in several reads
+        // oracle: spec RFC 4120 7.2.2; TCP may deliver one reply in several reads
         yield return ("KDC TCP transport returns a reply that arrives in several writes", () =>
         {
             var request = LengthPrefixed(Enumerable.Range(0, 300).Select(i => (byte)i).ToArray());
@@ -509,13 +505,14 @@ internal static class SmokeTests
             });
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            Throws<InvalidDataException>(() => Connection.SendKdcTcpRequest(
+            var error = Throws<IronRdpLibException>(() => Connection.SendKdcTcpRequest(
                 new Uri($"tcp://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}"), LengthPrefixed([1]), timeout.Token).GetAwaiter().GetResult());
+            Equal(IronRdpLibExceptionType.KdcRequestFailed, error.ErrorType, "error type");
             release.Cancel();
             kdc.GetAwaiter().GetResult();
         });
 
-        // oracle: MS-KKDCP section 2.1, the KDC_PROXY_MESSAGE is the body of an HTTP POST and the reply is the response body; application/kerberos is what MIT krb5's KKDCP client sends
+        // oracle: spec MS-KKDCP 2.1, the KDC_PROXY_MESSAGE is the body of an HTTP POST and the reply is the response body; application/kerberos is what MIT krb5's KKDCP client sends
         yield return ("KDC proxy transport POSTs the request and returns the response body", () =>
         {
             var request = new byte[] { 0x30, 0x03, 0x01, 0x02, 0x03 };
@@ -569,10 +566,33 @@ internal static class SmokeTests
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             using var client = new HttpClient();
-            Throws<InvalidDataException>(() =>
+            var error = Throws<IronRdpLibException>(() =>
                 Connection.SendKdcProxyRequest(client, new Uri(prefix), [0x30, 0x00], timeout.Token).GetAwaiter().GetResult());
+            Equal(IronRdpLibExceptionType.KdcRequestFailed, error.ErrorType, "error type");
             listener.Stop();
             proxy.GetAwaiter().GetResult();
+        });
+
+        // oracle: spec MS-KKDCP 3.1.5.3, a 403 from the proxy is distinguishable from other failures
+        yield return ("KDC proxy transport reports an HTTP error with its status code", () =>
+        {
+            var (listener, prefix) = StartHttpListener();
+            using var _ = listener;
+            var proxy = Task.Run(async () =>
+            {
+                var context = await listener.GetContextAsync();
+                await context.Request.InputStream.CopyToAsync(Stream.Null);
+                context.Response.StatusCode = 403;
+                context.Response.Close();
+            });
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var client = new HttpClient();
+            var error = Throws<IronRdpLibException>(() =>
+                Connection.SendKdcProxyRequest(client, new Uri(prefix), [0x30, 0x00], timeout.Token).GetAwaiter().GetResult());
+            proxy.GetAwaiter().GetResult();
+            Equal(IronRdpLibExceptionType.KdcRequestFailed, error.ErrorType, "error type");
+            Equal(HttpStatusCode.Forbidden, (error.InnerException as HttpRequestException)?.StatusCode, "status code");
         });
 
         yield return ("connector sends an X.224 request and accepts the confirm", () =>

@@ -10,6 +10,12 @@ public class IronRdpLibException : Exception
         ErrorType = errorType;
     }
 
+    public IronRdpLibException(IronRdpLibExceptionType errorType, string message, Exception innerException)
+        : base(message, innerException)
+    {
+        ErrorType = errorType;
+    }
+
 }
 
 /// <summary>
@@ -36,4 +42,9 @@ public enum IronRdpLibExceptionType
     ConnectionFailed,
     EndOfFile,
     ServerRedirected,
+    /// <summary>
+    /// A request to the KDC or KDC proxy failed or returned an invalid reply. For a KDC proxy HTTP error, the inner
+    /// <see cref="HttpRequestException"/> carries the status code.
+    /// </summary>
+    KdcRequestFailed,
 }
