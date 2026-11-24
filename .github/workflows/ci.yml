@@ -346,7 +346,6 @@ jobs:
           $VsInstallDir = vswhere.exe -latest -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
           $Env:LIBCLANG_PATH = "$VsInstallDir\VC\Tools\Llvm\x64\bin"
           cargo build -p ffi --profile production-ffi --target ${{ matrix.target }} --locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   feature-matrix-setup:
     name: feature matrix setup
