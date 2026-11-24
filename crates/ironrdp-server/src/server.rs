@@ -9158,15 +9158,11 @@ mod tests {
     fn connection_offering_builtin_dvcs() -> (ConnectionState, u32, u32) {
         use ironrdp_dvc::pdu::{CapabilitiesResponsePdu, CapsVersion, DrdynvcClientPdu};
 
-        let mut conn = ConnectionState::default();
-        conn.static_channels.insert(
+        let mut conn = connection_with_started_drdynvc(
             dvc::DrdynvcServer::new()
                 .with_dynamic_channel(AInputHandler::new())
                 .with_dynamic_channel(DisplayControlServer::new(DisplayControlCapabilities::single_monitor())),
         );
-        conn.static_channels
-            .attach_channel_id(core::any::TypeId::of::<dvc::DrdynvcServer>(), DRDYNVC_CHANNEL_ID);
-        conn.get_svc_processor::<dvc::DrdynvcServer>().unwrap().start().unwrap();
         send_drdynvc(
             &mut conn,
             DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V3)),
@@ -9193,7 +9189,8 @@ mod tests {
         )))
     }
 
-    // oracle: mutant take_dvc_events handing over the mouse events before the opened notice, or AInputHandler::start not reporting the opened channel
+    // oracle: mutant take_dvc_events handing over mouse events before the opened notice, or AInputHandler::start
+    // not reporting the opened channel
     #[test]
     fn opening_ainput_comes_before_its_mouse_events() {
         use ironrdp_dvc::pdu::{CreateResponsePdu, CreationStatus, DrdynvcClientPdu};
