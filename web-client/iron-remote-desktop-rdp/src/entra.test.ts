@@ -66,7 +66,7 @@ describe('signEntraAssertion', () => {
             at: params.accessToken,
             u: params.resourceUri,
             nonce: params.serverNonce,
-            cnf: { jwk: { kty: 'RSA', e: jwk.e, n: jwk.n } },
+            cnf: { jwk: { kty: 'RSA', e: jwk.e, n: jwk.n, alg: 'RS256' } },
             client_claims: '{"aad_nonce":"aad-nonce-under-test"}',
         });
     });

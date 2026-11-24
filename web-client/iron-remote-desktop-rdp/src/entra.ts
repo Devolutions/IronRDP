@@ -18,12 +18,21 @@ function base64Url(bytes: Uint8Array): string {
     return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function rsaPublicJwk(publicKey: CryptoKey): Promise<{ kty: 'RSA'; e: string; n: string }> {
+type RsaPublicJwk = { kty: 'RSA'; e: string; n: string };
+
+async function rsaPublicJwk(publicKey: CryptoKey): Promise<RsaPublicJwk> {
     const jwk = await crypto.subtle.exportKey('jwk', publicKey);
     if (jwk.kty !== 'RSA' || jwk.e === undefined || jwk.n === undefined) {
         throw new Error('the Entra proof-of-possession key must be an RSA key');
     }
     return { kty: 'RSA', e: jwk.e, n: jwk.n };
+}
+
+async function reqCnfFromJwk({ e, n }: RsaPublicJwk): Promise<string> {
+    // RFC 7638 hashes the required members in lexicographic order without whitespace.
+    const canonical = `{"e":"${e}","kty":"RSA","n":"${n}"}`;
+    const thumbprint = new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(canonical)));
+    return base64Url(encoder.encode(JSON.stringify({ kid: base64Url(thumbprint) })));
 }
 
 /**
@@ -48,11 +57,7 @@ export function generateEntraPopKey(): Promise<CryptoKeyPair> {
  * the Base64URL encoding of `{"kid":"<RFC 7638 thumbprint>"}`.
  */
 export async function entraReqCnf(publicKey: CryptoKey): Promise<string> {
-    const { e, n } = await rsaPublicJwk(publicKey);
-    // RFC 7638 hashes the required members in lexicographic order without whitespace.
-    const canonical = `{"e":"${e}","kty":"RSA","n":"${n}"}`;
-    const thumbprint = new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(canonical)));
-    return base64Url(encoder.encode(JSON.stringify({ kid: base64Url(thumbprint) })));
+    return reqCnfFromJwk(await rsaPublicJwk(publicKey));
 }
 
 export type EntraAssertionParams = {
@@ -78,14 +83,16 @@ export type EntraAssertionParams = {
  * both nonces. Pass the result to the callback of the `entraAssertion` extension.
  */
 export async function signEntraAssertion(params: EntraAssertionParams): Promise<string> {
-    const header = { alg: 'RS256', kid: await entraReqCnf(params.key.publicKey) };
+    const jwk = await rsaPublicJwk(params.key.publicKey);
+    const header = { alg: 'RS256', kid: await reqCnfFromJwk(jwk) };
     // The members follow the order of the specification.
     const payload = {
         ts: String(params.unixTimeSecs ?? Math.floor(Date.now() / 1000)),
         at: params.accessToken,
         u: params.resourceUri,
         nonce: params.serverNonce,
-        cnf: { jwk: await rsaPublicJwk(params.key.publicKey) },
+        // The embedded key names its algorithm, as the native client's does.
+        cnf: { jwk: { ...jwk, alg: 'RS256' } },
         client_claims: JSON.stringify({ aad_nonce: params.aadNonce }),
     };
 

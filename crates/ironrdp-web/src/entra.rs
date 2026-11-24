@@ -3,9 +3,10 @@
 //! The connector negotiates `PROTOCOL_RDSAAD` and frames the exchange, and the embedding
 //! application signs the RDP assertion, because it holds the access token and the
 //! proof-of-possession key.
-//! See [MS-RDPBCGR] section "5.4.5.4.1 RDS AAD Auth Connection Sequence"[^sequence].
 //!
-//! [^sequence]: <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/8f62058b-c7e5-4244-8f14-ed7d76618cb5>
+//! [5.4.5.4.1] RDS AAD Auth Connection Sequence
+//!
+//! [5.4.5.4.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/8f62058b-c7e5-4244-8f14-ed7d76618cb5
 
 use anyhow::Context as _;
 use ironrdp::connector::ClientConnector;
@@ -13,6 +14,7 @@ use ironrdp_core::WriteBuf;
 use ironrdp_futures::{Framed, FramedRead, FramedWrite, single_sequence_step};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::JsFuture;
+use zeroize::Zeroize as _;
 
 use crate::error::IronError;
 
@@ -31,19 +33,40 @@ where
     let mut output = WriteBuf::new();
 
     while connector.should_perform_entra_auth() {
-        if let Some(server_nonce) = connector.entra_server_nonce().map(str::to_owned) {
-            let assertion = request_assertion(sign_assertion, &server_nonce).await?;
+        let step_result = entra_auth_step(framed, connector, sign_assertion, &mut output).await;
 
-            let written = connector.submit_entra_assertion(&assertion, &mut output)?;
-            if written.size().is_some() {
-                let write_result = framed.write_all(output.filled()).await;
-                output.clear();
-                write_result.context("write RDS AAD authentication request")?;
-            }
-        } else {
-            single_sequence_step(framed, connector, &mut output).await?;
-            output.clear();
+        // The authentication request embeds the access token, so the buffer is scrubbed
+        // whether or not the step succeeded.
+        output.filled_mut().zeroize();
+        output.clear();
+
+        step_result?;
+    }
+
+    Ok(())
+}
+
+async fn entra_auth_step<S>(
+    framed: &mut Framed<S>,
+    connector: &mut ClientConnector,
+    sign_assertion: &js_sys::Function,
+    output: &mut WriteBuf,
+) -> Result<(), IronError>
+where
+    S: FramedRead + FramedWrite,
+{
+    if let Some(server_nonce) = connector.entra_server_nonce() {
+        let assertion = request_assertion(sign_assertion, server_nonce).await?;
+
+        let written = connector.submit_entra_assertion(&assertion, output)?;
+        if written.size().is_some() {
+            framed
+                .write_all(output.filled())
+                .await
+                .context("write RDS AAD authentication request")?;
         }
+    } else {
+        single_sequence_step(framed, connector, output).await?;
     }
 
     Ok(())

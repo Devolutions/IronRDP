@@ -3965,6 +3965,7 @@ dependencies = [
  "wasm-bindgen-test",
  "web-sys",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]
