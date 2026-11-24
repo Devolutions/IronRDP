@@ -343,6 +343,27 @@ impl RelativePath {
         self.components.last().map(String::as_str)
     }
 
+    /// The number of components, which is the number of directories that lead to the file the path names, from the root down.
+    pub(crate) fn depth(&self) -> usize {
+        self.components.len()
+    }
+
+    /// This path relative to the directory its first `depth` components name, or `None` unless a component is left to name a file in that directory.
+    pub(crate) fn below(&self, depth: usize) -> Option<Self> {
+        let components = self.components.get(depth..)?;
+        (!components.is_empty()).then(|| Self {
+            components: components.to_vec(),
+        })
+    }
+
+    /// The path of the file `path` names in the directory the first `depth` components of this path name, or `None` when this path has fewer components.
+    pub(crate) fn joined(&self, depth: usize, path: &Self) -> Option<Self> {
+        let directories = self.components.get(..depth)?;
+        Some(Self {
+            components: directories.iter().chain(&path.components).cloned().collect(),
+        })
+    }
+
     /// Opens the directory that holds the final component, and returns it with that component.
     ///
     /// For the root itself, the directory is the root and the component is `.`.

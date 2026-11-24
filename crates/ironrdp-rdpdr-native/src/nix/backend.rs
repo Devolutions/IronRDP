@@ -270,11 +270,16 @@ struct OpenFile {
     /// The device the file was opened through, whose root `path` is relative to.
     device_id: u32,
     file: std::fs::File,
+    /// The name of the file relative to the root of `device_id`, as the invariant on `ancestors` qualifies.
     path: RelativePath,
     identity: FileIdentity,
-    /// The directories from the root of the drive down to the one holding this file, as the server last reached it.
+    /// The directories that lead to this file, from a root down to the one holding the file, as the server last reached it.
     ///
     /// A directory holding open files is found by these rather than by path, so another spelling of a name or a local rename does not hide one.
+    ///
+    /// INVARIANT: while this is empty, as for a root itself, or starts with the directory of the root of `device_id`, `path` names the file beneath that root and these are the directories `path` leads through, that root first.
+    /// Otherwise a drive that serves another directory renamed the file to where no path beneath the root of `device_id` names it.
+    /// `path` is then the name the file had before, which may now name nothing or another file, and these lead to the file from the root of the renaming drive.
     ancestors: Vec<FileIdentity>,
     /// Whether the handle was granted DELETE access, which renaming and marking for deletion need.
     may_delete: bool,
@@ -282,6 +287,49 @@ struct OpenFile {
     delete_on_close: bool,
     /// The enumeration the last initial query-directory request started on this file.
     listing: Option<DirectoryListing>,
+}
+
+impl OpenFile {
+    /// Whether `path` and `ancestors` describe the file beneath `own_root`, the root of its drive, as the invariant on `ancestors` defines.
+    fn is_beneath(&self, own_root: &Root) -> bool {
+        self.ancestors
+            .first()
+            .is_none_or(|directory| *directory == own_root.identity())
+    }
+
+    /// The path and ancestors of the file beneath `own_root`, the root of its drive, after a drive that serves another directory renamed the file to `to`.
+    ///
+    /// `chain` holds the directories that lead to `to`, from the root of the renaming drive down.
+    /// When the directory of `own_root` is among them, the file lies beneath it at the rest of `to`, whatever this handle recorded before.
+    /// Otherwise, when the root of the renaming drive is among the ancestors of this handle, the path of this handle down to that root leads on to `to`.
+    /// That takes ancestors that describe the path of this handle.
+    /// Those a rename out of `own_root` left start at another root, so an index into them is no index into the path, and a path joined there could name another file.
+    /// `None` when the file now lies where no path beneath `own_root` is known to name it.
+    fn renamed_beneath(
+        &self,
+        own_root: &Root,
+        to: &RelativePath,
+        chain: &[FileIdentity],
+    ) -> Option<(RelativePath, Vec<FileIdentity>)> {
+        // UNTESTED: a chain that does not hold one directory for each component of its path derives no path, whether `chain` for `to` or the ancestors of this handle for its path.
+        // A path cut or joined at the index of a directory in such a chain could name another file than the handle holds.
+        // `open_file` and `rename` build every chain from the path it belongs to, so no request reaches this.
+        // After changing how either builds its chain, check that it still holds one directory for each component, the root first.
+        if chain.len() != to.depth() {
+            return None;
+        }
+        if let Some(depth) = chain.iter().position(|directory| *directory == own_root.identity()) {
+            return Some((to.below(depth)?, chain.get(depth..)?.to_vec()));
+        }
+        if !self.is_beneath(own_root) || self.ancestors.len() != self.path.depth() {
+            return None;
+        }
+        let renaming_root = chain.first()?;
+        let depth = self.ancestors.iter().position(|directory| directory == renaming_root)?;
+        let path = self.path.joined(depth, to)?;
+        let ancestors = self.ancestors.get(..depth)?.iter().chain(chain).copied().collect();
+        Some((path, ancestors))
+    }
 }
 
 /// The name a file marked for deletion is removed by.
@@ -1267,20 +1315,41 @@ pub(crate) fn set_information(
     };
     // Every handle opened through the renamed link follows it, so a later delete removes this file and not whatever takes the old name.
     // A handle whose path no longer names the file was opened through that link, possibly spelled differently on a case-insensitive filesystem.
+    // A handle whose path and ancestors do not describe the file beneath the root of its drive counts as one, whatever its path names, because nothing ties that name to the handle.
     // A handle opened through another hard link of the file still finds it at its path, and keeps that link.
-    // A handle of a drive that serves another directory keeps its path too, because the new path is relative to the root of the renaming drive.
-    // Its path may then name nothing or another file, which a later rename or delete through it refuses.
+    // A handle of a drive that serves the same directory as the renaming drive takes the new path as it is.
+    // A handle of a drive that serves another directory takes the new path relative to its own root, where the file still lies beneath that root.
+    // Where it does not, the handle keeps its path, which names nothing or another file, so a later rename or delete through it is refused.
+    // Its ancestors become the directories that now lead to the file, so those are the ones that cannot be renamed.
     if let Some((device_id, identity, from, to, ancestors)) = renamed {
         let root = backend.roots.of(device_id);
-        for open_file in backend.open_files.values_mut().filter(|open_file| {
-            open_file.identity == identity && backend.roots.serve_the_same_directory(open_file.device_id, device_id)
-        }) {
-            let still_names_file = root
-                .as_ref()
-                .is_ok_and(|root| names_file(root, &open_file.path, identity));
-            if open_file.path == from || !still_names_file {
-                open_file.path = to.clone();
-                open_file.ancestors = ancestors.clone();
+        for open_file in backend
+            .open_files
+            .values_mut()
+            .filter(|open_file| open_file.identity == identity)
+        {
+            let serves_the_same_directory = backend.roots.serve_the_same_directory(open_file.device_id, device_id);
+            // The root of the renaming drive stands in for the root of a drive that serves the same directory, so a shared directory opened for each request is opened once here.
+            let own_root = if serves_the_same_directory {
+                root.as_deref().ok()
+            } else {
+                backend.roots.held(open_file.device_id)
+            };
+            let still_names_file =
+                own_root.is_some_and(|root| open_file.is_beneath(root) && names_file(root, &open_file.path, identity));
+            if serves_the_same_directory {
+                if open_file.path == from || !still_names_file {
+                    open_file.path = to.clone();
+                    open_file.ancestors = ancestors.clone();
+                }
+            } else if !still_names_file {
+                match own_root.and_then(|root| open_file.renamed_beneath(root, &to, &ancestors)) {
+                    Some((path, ancestors)) => {
+                        open_file.path = path;
+                        open_file.ancestors = ancestors;
+                    }
+                    None => open_file.ancestors = ancestors.clone(),
+                }
             }
         }
     }
