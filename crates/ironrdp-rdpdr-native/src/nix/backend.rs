@@ -463,7 +463,7 @@ impl NixRdpdrBackend {
             .open_files
             .values()
             .any(|other| other.identity == open_file.identity);
-        if !still_open && let Some(names) = self.pending_deletes.remove(&open_file.identity) {
+        if !still_open && let Some(mut names) = self.pending_deletes.remove(&open_file.identity) {
             // The name marked last is tried first, and an earlier one only after every name marked since failed, so the file loses one name.
             // Each name is resolved beneath the root of its own device, and removed only while it still names this file.
             //
@@ -475,18 +475,17 @@ impl NixRdpdrBackend {
             // UNTESTED: a file that no name removes logs one warning, and a failed name with earlier ones left to try is only traced.
             // The server decides how many drives it marks a file through, so a warning for each name would let it fill the log.
             // No test reads the log, so after changing this loop, check that only the failure of the last name tried warns.
-            let mut names = names.iter().rev().peekable();
-            while let Some(name) = names.next() {
+            while let Some(name) = names.pop() {
                 let removed = self
                     .roots
                     .of(name.device_id)
                     .and_then(|root| remove_file(&root, &name.path, open_file.identity));
                 match removed {
                     Ok(()) => break,
-                    Err(error) if names.peek().is_some() => {
+                    Err(error) if !names.is_empty() => {
                         trace!(%error, device_id = name.device_id, "Failed to delete a file by one of its marked names");
                     }
-                    Err(error) => warn!(%error, "Delete on close error"),
+                    Err(error) => warn!(%error, device_id = name.device_id, "Delete on close error"),
                 }
             }
         }
