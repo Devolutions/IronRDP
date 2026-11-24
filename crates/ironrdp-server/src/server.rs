@@ -4864,7 +4864,7 @@ impl RdpServer {
     /// Sends `completion` after they are written, or at once when nothing is queued.
     fn dispatch_clipboard_event(
         conn: &mut ConnectionState,
-        writer: &mut QueuedWriter,
+        writer: &mut QueuedWriter<'_>,
         user_channel_id: u16,
         message: ClipboardMessage,
         completion: Option<oneshot::Sender<()>>,
@@ -4919,7 +4919,7 @@ impl RdpServer {
 
     fn dispatch_rdpsnd_event(
         conn: &mut ConnectionState,
-        writer: &mut QueuedWriter,
+        writer: &mut QueuedWriter<'_>,
         user_channel_id: u16,
         drop_stale_wave: bool,
         message: RdpsndServerMessage,
@@ -5063,7 +5063,7 @@ impl RdpServer {
         &mut self,
         conn: &mut ConnectionState,
         events: &mut Vec<ServerEvent>,
-        writer: &mut QueuedWriter,
+        writer: &mut QueuedWriter<'_>,
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
@@ -6070,7 +6070,7 @@ impl RdpServer {
         // on the wire in queue order. The loop never waits for the socket, so
         // it still reads input and frame acks while a large write is in
         // progress.
-        let queue = Rc::new(OutboundQueue::default());
+        let queue = OutboundQueue::default();
         let write_queued = queue.write_queued(writer);
         tokio::pin!(write_queued);
         let state = {
@@ -6135,7 +6135,7 @@ impl RdpServer {
         &mut self,
         conn: &mut ConnectionState,
         reader: &mut Framed<R>,
-        queue: &Rc<OutboundQueue>,
+        queue: &OutboundQueue,
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
@@ -6146,7 +6146,7 @@ impl RdpServer {
     where
         R: FramedRead,
     {
-        let mut writer = QueuedWriter::new(Rc::clone(queue));
+        let mut writer = QueuedWriter::new(queue);
         debug!("Starting client loop");
         let heartbeat = if conn.client_supports_heartbeat {
             self.heartbeat
@@ -7675,13 +7675,13 @@ impl OutboundQueue {
 /// `write_all` returns as soon as the bytes are queued.
 #[derive(Clone)]
 #[cfg_attr(feature = "__test", visibility::make(pub))]
-struct QueuedWriter {
-    queue: Rc<OutboundQueue>,
+struct QueuedWriter<'a> {
+    queue: &'a OutboundQueue,
     /// What this writer queues are replies to client PDUs.
     replies: bool,
 }
 
-impl FramedWrite for QueuedWriter {
+impl FramedWrite for QueuedWriter<'_> {
     type WriteAllFut<'write>
         = core::future::Ready<std::io::Result<()>>
     where
@@ -7692,9 +7692,9 @@ impl FramedWrite for QueuedWriter {
     }
 }
 
-impl QueuedWriter {
+impl<'a> QueuedWriter<'a> {
     #[cfg_attr(feature = "__test", visibility::make(pub))]
-    fn new(queue: Rc<OutboundQueue>) -> Self {
+    fn new(queue: &'a OutboundQueue) -> Self {
         Self { queue, replies: false }
     }
 
@@ -7730,7 +7730,7 @@ pub async fn dispatch_static_channel_events(
     server: &mut RdpServer,
     channels: StaticChannelSet,
     events: &mut Vec<ServerEvent>,
-    writer: &mut QueuedWriter,
+    writer: &mut QueuedWriter<'_>,
 ) -> ServerResult<StaticChannelSet> {
     let mut conn = ConnectionState {
         static_channels: channels,
@@ -7755,8 +7755,8 @@ pub async fn drive_static_channel_events(
         static_channels: channels,
         ..ConnectionState::default()
     };
-    let queue = Rc::new(OutboundQueue::default());
-    let mut writer = QueuedWriter::new(Rc::clone(&queue));
+    let queue = OutboundQueue::default();
+    let mut writer = QueuedWriter::new(&queue);
     let write_queued = queue.write_queued(transport);
     tokio::pin!(write_queued);
     {
@@ -8676,12 +8676,12 @@ mod cliprdr_error_tests {
             },
         ))];
 
-        let queue = Rc::new(OutboundQueue::default());
+        let queue = OutboundQueue::default();
         let state = server
             .dispatch_server_events(
                 &mut conn,
                 &mut events,
-                &mut QueuedWriter::new(Rc::clone(&queue)),
+                &mut QueuedWriter::new(&queue),
                 1003,
                 1002,
                 None,
