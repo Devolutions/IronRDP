@@ -44,16 +44,19 @@ pub mod ffi {
         }
     }
 
-    /// The security package CredSSP authenticates with.
-    #[diplomat::enum_convert(ironrdp::connector::credssp::CredsspPackage)]
+    /// The security package CredSSP authenticates with. Paired with an optional [`KerberosConfig`].
     pub enum CredsspPackage {
         /// NTLM only. Takes no Kerberos configuration.
         Ntlm,
-        /// SPNEGO, preferring Kerberos and allowing NTLM. Without a Kerberos configuration, Kerberos is used when a
-        /// KDC is found for the user's realm, and NTLM otherwise. With one, Kerberos starts right away, and a KDC that
-        /// cannot be found during the CredSSP exchange fails it instead of falling back to NTLM.
+        /// SPNEGO, preferring Kerberos and allowing NTLM.
+        ///
+        /// Without a Kerberos configuration, the KDC is looked up from the user's realm when the exchange starts, and
+        /// NTLM is used when none is found. With one, such as [`KerberosConfig::new`], Kerberos is used from the
+        /// start, and a KDC that cannot be reached fails the exchange instead of falling back to NTLM. Use
+        /// [`CredsspPackage::Kerberos`] to rule out NTLM entirely.
         Negotiate,
-        /// SPNEGO restricted to Kerberos: NTLM is never negotiated or used as a fallback.
+        /// SPNEGO restricted to Kerberos: NTLM is never negotiated or used as a fallback. Without a Kerberos
+        /// configuration, the KDC is found from the user's realm, as with [`KerberosConfig::new`].
         Kerberos,
     }
 
@@ -150,18 +153,29 @@ pub mod ffi {
             package: CredsspPackage,
             kerberos_config: Option<&KerberosConfig>,
         ) -> Result<Box<CredsspSequenceInitResult>, Box<IronRdpError>> {
+            use ironrdp::connector::credssp::CredsspAuth;
+
             let kerberos_config = kerberos_config.map(|config| ironrdp::connector::credssp::KerberosConfig {
                 hostname: connector.config.client_name.clone(),
                 ..config.0.clone()
             });
-            let (credssp_sequence, ts_request) = ironrdp::connector::credssp::CredsspSequence::init_with_package(
+            let auth = match package {
+                CredsspPackage::Ntlm if kerberos_config.is_some() => {
+                    return Err(
+                        ironrdp::connector::general_err!("the NTLM package takes no Kerberos configuration").into(),
+                    );
+                }
+                CredsspPackage::Ntlm => CredsspAuth::Ntlm,
+                CredsspPackage::Negotiate => CredsspAuth::Negotiate(kerberos_config),
+                CredsspPackage::Kerberos => CredsspAuth::Kerberos(kerberos_config),
+            };
+            let (credssp_sequence, ts_request) = ironrdp::connector::credssp::CredsspSequence::init(
                 connector.config.credentials.clone(),
                 connector.config.domain.as_deref(),
                 selected_protocol,
                 server_name.into(),
                 server_public_key.to_owned(),
-                package.into(),
-                kerberos_config,
+                auth,
             )?;
 
             Ok(Box::new(CredsspSequenceInitResult {

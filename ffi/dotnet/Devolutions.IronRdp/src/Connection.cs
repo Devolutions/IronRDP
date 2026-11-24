@@ -11,12 +11,12 @@ public static class Connection
     // Far above real Kerberos replies, which stay in the tens of kilobytes even with large PACs.
     internal const int MaxKdcReplyLength = 1024 * 1024;
 
-    private static readonly HttpClient KdcProxyClient = new() { MaxResponseContentBufferSize = MaxKdcReplyLength };
+    private static readonly HttpClient DefaultKdcProxyClient = new();
 
     public static Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName,
         CliprdrBackendFactory? factory, int port = 3389, CancellationToken cancellationToken = default)
     {
-        return Connect(config, serverName, factory, CredsspPackage.Ntlm, null, port, cancellationToken);
+        return Connect(config, serverName, factory, CredsspPackage.Ntlm, null, port, cancellationToken: cancellationToken);
     }
 
     /// <summary>
@@ -25,9 +25,12 @@ public static class Connection
     /// <paramref name="serverName"/> to be the server's host name, because the service ticket is for
     /// <c>TERMSRV/serverName</c>.
     /// </summary>
+    /// <param name="kdcProxyClient">Sends KDC proxy (<c>http</c>/<c>https</c>) requests, so the host controls
+    /// certificate validation, proxy and timeout. Defaults to a shared client with default settings. Direct
+    /// <c>tcp</c> KDC requests are bounded by <paramref name="cancellationToken"/>.</param>
     public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName,
         CliprdrBackendFactory? factory, CredsspPackage package, KerberosConfig? kerberosConfig, int port = 3389,
-        CancellationToken cancellationToken = default)
+        HttpClient? kdcProxyClient = null, CancellationToken cancellationToken = default)
     {
         var client = await CreateTcpConnection(serverName, port, cancellationToken);
         string clientAddr = client.Client.LocalEndPoint.ToString();
@@ -41,7 +44,7 @@ public static class Connection
 
         await ConnectBegin(framed, connector, cancellationToken);
         var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector, cancellationToken);
-        var result = await ConnectionHelpers.ConnectFinalize(serverName, connector, serverPublicKey, framedSsl, cancellationToken, package, kerberosConfig);
+        var result = await ConnectionHelpers.ConnectFinalize(serverName, connector, serverPublicKey, framedSsl, cancellationToken, package, kerberosConfig, kdcProxyClient);
 
         return (result, framedSsl);
     }
@@ -78,7 +81,7 @@ public static class Connection
     }
 
     internal static async Task<ClientState> ResolveGenerator(CredsspProcessGenerator generator,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, HttpClient? kdcProxyClient = null)
     {
         var state = generator.Start();
 
@@ -95,7 +98,7 @@ public static class Connection
                 {
                     NetworkRequestProtocol.Tcp => await SendKdcTcpRequest(new Uri(url), Utils.VecU8ToByte(data), cancellationToken),
                     NetworkRequestProtocol.Http or NetworkRequestProtocol.Https =>
-                        await SendKdcProxyRequest(new Uri(url), Utils.VecU8ToByte(data), cancellationToken),
+                        await SendKdcProxyRequest(kdcProxyClient ?? DefaultKdcProxyClient, new Uri(url), Utils.VecU8ToByte(data), cancellationToken),
                     _ => throw new Exception($"Unimplemented protocol: {protocol}"),
                 };
                 state = generator.Resume(response);
@@ -149,14 +152,35 @@ public static class Connection
     }
 
     // KDC proxy (MS-KKDCP section 2.1): sspi wraps the request in a DER-encoded KDC_PROXY_MESSAGE, which is POSTed as
-    // the body, and unwraps the KDC_PROXY_MESSAGE in the response body.
-    internal static async Task<byte[]> SendKdcProxyRequest(Uri url, byte[] data, CancellationToken cancellationToken)
+    // the body, and unwraps the KDC_PROXY_MESSAGE in the response body. The reply cap is enforced here rather than
+    // through the client's buffer size, so a caller's client gets it too.
+    internal static async Task<byte[]> SendKdcProxyRequest(HttpClient client, Uri url, byte[] data,
+        CancellationToken cancellationToken)
     {
-        using var content = new ByteArrayContent(data);
-        content.Headers.ContentType = new MediaTypeHeaderValue("application/kerberos");
-        using var response = await KdcProxyClient.PostAsync(url, content, cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = new ByteArrayContent(data) };
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/kerberos");
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        if (response.Content.Headers.ContentLength > MaxKdcReplyLength)
+        {
+            throw new InvalidDataException($"The KDC proxy reply length {response.Content.Headers.ContentLength} exceeds {MaxKdcReplyLength} bytes.");
+        }
+
+        await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reply = new MemoryStream();
+        var chunk = new byte[16 * 1024];
+        int read;
+        while ((read = await body.ReadAsync(chunk, cancellationToken)) > 0)
+        {
+            if (reply.Length + read > MaxKdcReplyLength)
+            {
+                throw new InvalidDataException($"The KDC proxy reply exceeds {MaxKdcReplyLength} bytes.");
+            }
+
+            reply.Write(chunk, 0, read);
+        }
+
+        return reply.ToArray();
     }
 
     public static async Task SingleSequenceStep<S, T>(S sequence, WriteBuf buf, Framed<T> framed,

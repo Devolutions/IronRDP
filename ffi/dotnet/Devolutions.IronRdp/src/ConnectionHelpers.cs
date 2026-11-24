@@ -45,7 +45,8 @@ internal static class ConnectionHelpers
         uint? selectedProtocol = null,
         CancellationToken cancellationToken = default,
         CredsspPackage package = CredsspPackage.Ntlm,
-        KerberosConfig? kerberosConfig = null) where T : Stream
+        KerberosConfig? kerberosConfig = null,
+        HttpClient? kdcProxyClient = null) where T : Stream
     {
         // Extract hostname from "hostname:port" format if needed
         // CredSSP needs just the hostname for the service principal name (TERMSRV/hostname)
@@ -67,7 +68,7 @@ internal static class ConnectionHelpers
             ClientState clientState;
             using (var generator = credsspSequence.ProcessTsRequest(tsRequest))
             {
-                clientState = await Connection.ResolveGenerator(generator, cancellationToken);
+                clientState = await Connection.ResolveGenerator(generator, cancellationToken, kdcProxyClient);
             }
 
             writeBuf.Clear();
@@ -111,14 +112,16 @@ internal static class ConnectionHelpers
         Framed<T> framedSsl,
         CancellationToken cancellationToken = default,
         CredsspPackage package = CredsspPackage.Ntlm,
-        KerberosConfig? kerberosConfig = null) where T : Stream
+        KerberosConfig? kerberosConfig = null,
+        HttpClient? kdcProxyClient = null) where T : Stream
     {
         var writeBuf = WriteBuf.New();
 
         if (connector.ShouldPerformCredssp())
         {
             await PerformCredsspSteps(connector, serverName, writeBuf, framedSsl, serverPubKey,
-                cancellationToken: cancellationToken, package: package, kerberosConfig: kerberosConfig);
+                cancellationToken: cancellationToken, package: package, kerberosConfig: kerberosConfig,
+                kdcProxyClient: kdcProxyClient);
         }
 
         while (!connector.DynState.IsTerminal())

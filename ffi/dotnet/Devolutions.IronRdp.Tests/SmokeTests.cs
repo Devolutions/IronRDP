@@ -434,12 +434,13 @@ internal static class SmokeTests
             Throws<IronRdpException>(() => KerberosConfig.NewWithKdcUrl("udp://dc.example.com:88"));
         });
 
-        // oracle: CredsspPackage docs; mechanism OIDs from RFC 4178/MS-SPNG (NTLM 1.3.6.1.4.1.311.2.2.10, Kerberos 1.2.840.113554.1.2.2 and 1.2.840.48018.1.2.2), NTLM's "NTLMSSP\0" signature from MS-NLMP section 2.2.1.1
+        // oracle: sspi 0.23.1 negotiate/mod.rs (`PackageListConfig::parse`: a package list of "kerberos" disables NTLM; `negotiate_protocol`: NTLM until a KDC is found for the realm); mechanism OIDs from RFC 4178/MS-SPNG (NTLM 1.3.6.1.4.1.311.2.2.10, Kerberos 1.2.840.113554.1.2.2 and 1.2.840.48018.1.2.2), NTLM's "NTLMSSP\0" signature from MS-NLMP section 2.2.1.1
         yield return ("each CredSSP package offers the mechanisms it allows in its first token", () =>
         {
             var ntlmOnly = FirstCredsspToken("alice", CredsspPackage.Ntlm, null);
             True(Contains(ntlmOnly, NtlmSignature), "NTLM sends an NTLM negotiate message");
 
+            // EXAMPLE.INVALID is reserved (RFC 2606), so sspi's realm lookup finds no KDC for it.
             var negotiateWithoutKdc = FirstCredsspToken("alice@EXAMPLE.INVALID", CredsspPackage.Negotiate, null);
             True(Contains(negotiateWithoutKdc, NtlmSignature), "Negotiate without a findable KDC starts with NTLM");
 
@@ -453,7 +454,7 @@ internal static class SmokeTests
             True(!Contains(kerberosOnly, NtlmOid) && !Contains(kerberosOnly, NtlmSignature), "Kerberos package never offers NTLM");
         });
 
-        // oracle: CredsspPackage docs, NTLM takes no Kerberos configuration
+        // oracle: review of #2488, NTLM with a Kerberos configuration must not be accepted; the FFI validates the pair
         yield return ("ntlm package refuses a Kerberos configuration", () =>
         {
             Throws<IronRdpException>(() => FirstCredsspToken("alice", CredsspPackage.Ntlm, KerberosConfig.New()));
@@ -463,29 +464,33 @@ internal static class SmokeTests
         yield return ("KDC TCP transport returns a reply that arrives in several writes", () =>
         {
             var request = LengthPrefixed(Enumerable.Range(0, 300).Select(i => (byte)i).ToArray());
-            var reply = LengthPrefixed(Enumerable.Range(0, 70_000).Select(i => (byte)(i * 7)).ToArray());
-            using var listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            var kdc = Task.Run(async () =>
+            // Empty, one byte, the old single-read size, exactly one write, and several writes.
+            foreach (var length in new[] { 0, 1, 8192, 20_000, 70_000 })
             {
-                using var client = await listener.AcceptTcpClientAsync();
-                var stream = client.GetStream();
-                var received = new byte[request.Length];
-                await stream.ReadExactlyAsync(received);
-                foreach (var chunk in reply.Chunk(20_000))
+                var reply = LengthPrefixed(Enumerable.Range(0, length).Select(i => (byte)(i * 7)).ToArray());
+                using var listener = new TcpListener(IPAddress.Loopback, 0);
+                listener.Start();
+                var kdc = Task.Run(async () =>
                 {
-                    await stream.WriteAsync(chunk);
-                    await stream.FlushAsync();
-                    await Task.Delay(20);
-                }
-                return received;
-            });
+                    using var client = await listener.AcceptTcpClientAsync();
+                    var stream = client.GetStream();
+                    var received = new byte[request.Length];
+                    await stream.ReadExactlyAsync(received);
+                    foreach (var chunk in reply.Chunk(20_000))
+                    {
+                        await stream.WriteAsync(chunk);
+                        await stream.FlushAsync();
+                        await Task.Delay(20);
+                    }
+                    return received;
+                });
 
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            var response = Connection.SendKdcTcpRequest(
-                new Uri($"tcp://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}"), request, timeout.Token).GetAwaiter().GetResult();
-            True(kdc.GetAwaiter().GetResult().SequenceEqual(request), "KDC received the request as sspi framed it");
-            True(response.SequenceEqual(reply), "whole reply with its length prefix");
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var response = Connection.SendKdcTcpRequest(
+                    new Uri($"tcp://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}"), request, timeout.Token).GetAwaiter().GetResult();
+                True(kdc.GetAwaiter().GetResult().SequenceEqual(request), $"KDC received the request as sspi framed it ({length})");
+                True(response.SequenceEqual(reply), $"whole reply with its length prefix ({length})");
+            }
         });
 
         // oracle: mutant allocating the advertised length before checking it; the body never arrives, so only an up-front check passes
@@ -515,10 +520,8 @@ internal static class SmokeTests
         {
             var request = new byte[] { 0x30, 0x03, 0x01, 0x02, 0x03 };
             var reply = Enumerable.Range(0, 5000).Select(i => (byte)i).ToArray();
-            var prefix = $"http://127.0.0.1:{FreePort()}/KdcProxy/";
-            using var listener = new HttpListener();
-            listener.Prefixes.Add(prefix);
-            listener.Start();
+            var (listener, prefix) = StartHttpListener();
+            using var _ = listener;
             var proxy = Task.Run(async () =>
             {
                 var context = await listener.GetContextAsync();
@@ -531,12 +534,45 @@ internal static class SmokeTests
             });
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            var response = Connection.SendKdcProxyRequest(new Uri(prefix), request, timeout.Token).GetAwaiter().GetResult();
+            var handler = new CountingHandler();
+            using var client = new HttpClient(handler);
+            var response = Connection.SendKdcProxyRequest(client, new Uri(prefix), request, timeout.Token).GetAwaiter().GetResult();
             var (method, contentType, received) = proxy.GetAwaiter().GetResult();
+            Equal(1, handler.Requests, "requests through the caller's client");
             Equal("POST", method, "method");
             Equal("application/kerberos", contentType, "content type");
             True(received.SequenceEqual(request), "request body");
             True(response.SequenceEqual(reply), "response body");
+        });
+
+        // oracle: mutant relying on the client's buffer limit, which a caller's HttpClient does not set; the reply is chunked, so only a check while reading passes
+        yield return ("KDC proxy transport rejects a reply over the cap from a caller's client", () =>
+        {
+            var (listener, prefix) = StartHttpListener();
+            using var _ = listener;
+            var proxy = Task.Run(async () =>
+            {
+                var context = await listener.GetContextAsync();
+                await context.Request.InputStream.CopyToAsync(Stream.Null);
+                context.Response.SendChunked = true;
+                try
+                {
+                    var chunk = new byte[64 * 1024];
+                    for (var sent = 0; sent <= Connection.MaxKdcReplyLength; sent += chunk.Length)
+                    {
+                        await context.Response.OutputStream.WriteAsync(chunk);
+                    }
+                    context.Response.Close();
+                }
+                catch (HttpListenerException) { }
+            });
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var client = new HttpClient();
+            Throws<InvalidDataException>(() =>
+                Connection.SendKdcProxyRequest(client, new Uri(prefix), [0x30, 0x00], timeout.Token).GetAwaiter().GetResult());
+            listener.Stop();
+            proxy.GetAwaiter().GetResult();
         });
 
         yield return ("connector sends an X.224 request and accepts the confirm", () =>
@@ -1617,6 +1653,7 @@ internal static class SmokeTests
         using (var generator = sequence.ProcessTsRequest(init.GetTsRequest()))
         {
             var state = generator.Start();
+            // sspi 0.23.1 kerberos/client/mod.rs: with CredSSP's USE_SESSION_KEY, the first Kerberos token is a user-to-user TGT_REQ to the server, built without contacting the KDC
             True(state.IsCompleted(), "the first token needs no network request");
             clientState = state.ClientStateIfCompleted;
         }
@@ -1640,11 +1677,42 @@ internal static class SmokeTests
         return message;
     }
 
-    private static int FreePort()
+    // A free port can be taken between probing it and binding it, so retry with another one.
+    private static (HttpListener, string) StartHttpListener()
     {
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        return ((IPEndPoint)listener.LocalEndpoint).Port;
+        for (var attempt = 0; ; attempt++)
+        {
+            int port;
+            using (var probe = new TcpListener(IPAddress.Loopback, 0))
+            {
+                probe.Start();
+                port = ((IPEndPoint)probe.LocalEndpoint).Port;
+            }
+
+            var prefix = $"http://127.0.0.1:{port}/KdcProxy/";
+            var listener = new HttpListener();
+            listener.Prefixes.Add(prefix);
+            try
+            {
+                listener.Start();
+                return (listener, prefix);
+            }
+            catch (HttpListenerException) when (attempt < 10)
+            {
+                listener.Close();
+            }
+        }
+    }
+
+    private sealed class CountingHandler() : DelegatingHandler(new SocketsHttpHandler())
+    {
+        public int Requests;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Requests);
+            return base.SendAsync(request, cancellationToken);
+        }
     }
 
     private static Config TlsConfig(DirectDvcConfig? directDvc = null)

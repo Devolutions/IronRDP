@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 
-use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, KerberosConfig};
+use ironrdp_connector::credssp::{CredsspAuth, CredsspProcessGenerator, CredsspSequence, KerberosConfig};
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::sspi::network_client::NetworkClient;
@@ -152,8 +152,12 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let (mut sequence, mut ts_request) =
-        CredsspSequence::init_for_connector(connector, server_name, server_public_key, kerberos_config)?;
+    let (mut sequence, mut ts_request) = CredsspSequence::init_for_connector(
+        connector,
+        server_name,
+        server_public_key,
+        kerberos_config.map_or(CredsspAuth::Ntlm, |config| CredsspAuth::Negotiate(Some(config))),
+    )?;
 
     loop {
         let client_state = {

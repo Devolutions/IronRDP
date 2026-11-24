@@ -24,6 +24,9 @@ public static class RDCleanPathConnection
     /// <param name="destination">The destination RDP server address (e.g., "10.10.0.3:3389")</param>
     /// <param name="pcb">Optional legacy complete preconnection blob represented as a string</param>
     /// <param name="factory">Optional clipboard backend factory</param>
+    /// <param name="package">The CredSSP security package, as for <see cref="Connection.Connect(Config, string, CliprdrBackendFactory?, CredsspPackage, KerberosConfig?, int, HttpClient?, CancellationToken)"/></param>
+    /// <param name="kerberosConfig">Optional Kerberos configuration for <paramref name="package"/></param>
+    /// <param name="kdcProxyClient">Optional client for KDC proxy requests</param>
     /// <returns>A tuple containing the connection result and framed WebSocket stream</returns>
     public static Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPath(
         Config config,
@@ -32,16 +35,21 @@ public static class RDCleanPathConnection
         string destination,
         string? pcb = null,
         CliprdrBackendFactory? factory = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CredsspPackage package = CredsspPackage.Ntlm,
+        KerberosConfig? kerberosConfig = null,
+        HttpClient? kdcProxyClient = null)
     {
-        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, pcb, null, factory, cancellationToken);
+        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, pcb, null, factory, cancellationToken,
+            package, kerberosConfig, kdcProxyClient);
     }
 
     /// <summary>
     /// Connects to a Hyper-V VM through an RDCleanPath-compatible gateway.
     /// </summary>
     /// <remarks>
-    /// The supplied configuration must enable TLS and CredSSP.
+    /// The supplied configuration must enable TLS and CredSSP. <paramref name="package"/>,
+    /// <paramref name="kerberosConfig"/> and <paramref name="kdcProxyClient"/> are as for <see cref="ConnectRDCleanPath"/>.
     /// </remarks>
     public static Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectVmConnectRDCleanPath(
         Config config,
@@ -51,7 +59,10 @@ public static class RDCleanPathConnection
         string vmId,
         VmConnectMode mode = VmConnectMode.Enhanced,
         CliprdrBackendFactory? factory = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        CredsspPackage package = CredsspPackage.Ntlm,
+        KerberosConfig? kerberosConfig = null,
+        HttpClient? kdcProxyClient = null)
     {
         if (string.IsNullOrWhiteSpace(vmId))
         {
@@ -59,7 +70,8 @@ public static class RDCleanPathConnection
         }
 
         var pcbPayload = mode == VmConnectMode.Enhanced ? $"{vmId};EnhancedMode=1" : vmId;
-        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, null, pcbPayload, factory, cancellationToken);
+        return ConnectRDCleanPathCore(config, gatewayUrl, authToken, destination, null, pcbPayload, factory, cancellationToken,
+            package, kerberosConfig, kdcProxyClient);
     }
 
     private static async Task<(ConnectionResult, Framed<WebSocketStream>)> ConnectRDCleanPathCore(
@@ -70,7 +82,10 @@ public static class RDCleanPathConnection
         string? pcb,
         string? vmconnectPayload,
         CliprdrBackendFactory? factory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CredsspPackage package,
+        KerberosConfig? kerberosConfig,
+        HttpClient? kdcProxyClient)
     {
         // Step 1: Connect WebSocket to gateway
         System.Diagnostics.Debug.WriteLine($"Connecting to gateway at {gatewayUrl}...");
@@ -109,7 +124,10 @@ public static class RDCleanPathConnection
                 framedAfterHandshake,
                 serverPublicKey,
                 HybridProtocol,
-                cancellationToken);
+                cancellationToken,
+                package,
+                kerberosConfig,
+                kdcProxyClient);
 
             connector.ClearCredentialsAfterHostAuth();
 
@@ -135,7 +153,8 @@ public static class RDCleanPathConnection
 
         // Step 6: Finalize connection
         System.Diagnostics.Debug.WriteLine("Finalizing RDP connection...");
-        var result = await ConnectionHelpers.ConnectFinalize(destination, connector, serverPublicKey, framedAfterHandshake, cancellationToken);
+        var result = await ConnectionHelpers.ConnectFinalize(destination, connector, serverPublicKey, framedAfterHandshake, cancellationToken,
+            package, kerberosConfig, kdcProxyClient);
 
         System.Diagnostics.Debug.WriteLine("Gateway connection established successfully!");
         return (result, framedAfterHandshake);

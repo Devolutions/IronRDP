@@ -16,7 +16,7 @@ use core::time::Duration;
 use ironrdp_async::{
     Framed, FramedRead, FramedWrite, NetworkClient, Upgraded, connect_begin, mark_as_upgraded, perform_credssp,
 };
-use ironrdp_connector::credssp::{CredsspSequence, KerberosConfig};
+use ironrdp_connector::credssp::{CredsspAuth, CredsspSequence, KerberosConfig};
 use ironrdp_connector::{
     ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorExt as _, ConnectorResult, Credentials,
     ServerName, State as _, custom_err, reason_err,
@@ -173,7 +173,7 @@ where
         PRE_X224_CREDSSP_PROTOCOL,
         server_name,
         server_public_key.to_owned(),
-        kerberos_config,
+        kerberos_config.map_or(CredsspAuth::Ntlm, |config| CredsspAuth::Negotiate(Some(config))),
     )?;
     perform_credssp(framed, network_client, &mut buf, sequence, ts_request).await?;
 

@@ -1,4 +1,4 @@
-use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, KerberosConfig};
+use ironrdp_connector::credssp::{CredsspAuth, CredsspProcessGenerator, CredsspSequence, KerberosConfig};
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
@@ -312,8 +312,12 @@ where
 
     debug!(connector.state = connector.state.name(), "Begin CredSSP");
 
-    let (sequence, ts_request) =
-        CredsspSequence::init_for_connector(connector, server_name, server_public_key, kerberos_config)?;
+    let (sequence, ts_request) = CredsspSequence::init_for_connector(
+        connector,
+        server_name,
+        server_public_key,
+        kerberos_config.map_or(CredsspAuth::Ntlm, |config| CredsspAuth::Negotiate(Some(config))),
+    )?;
 
     let sequence = perform_credssp_with_context(framed, network_client, buf, sequence, ts_request).await?;
     connector.complete_credssp(sequence)?;
