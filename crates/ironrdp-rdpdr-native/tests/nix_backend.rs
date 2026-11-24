@@ -3223,6 +3223,23 @@ fn a_drive_follows_its_directory_when_the_enclosing_drive_renames_a_directory_ab
     assert_eq!(names_in(&roots.outer), ["moved"]);
 }
 
+/// A handle on the root of the inner drive names that root wherever it lies, so it takes no path from a rename of the root through the enclosing drive.
+/// The enclosing drive can therefore still rename the directory above the inner root, as it can before it renames the root.
+// oracle: mutant a handle on the root of a drive took the directories that lead to that root from the root of the enclosing drive
+#[test]
+fn a_directory_above_the_inner_root_can_be_renamed_after_the_root_was_renamed_while_the_inner_drive_holds_it_open() {
+    let roots = DeepRoots::new();
+    let mut backend = roots.backend();
+    let _root_id = create_on(&mut backend, SECOND, r"\", CreateDisposition::FILE_OPEN);
+    rename_on(&mut backend, FIRST, r"\a\b", r"\a\c");
+    let directory_id = create_on(&mut backend, FIRST, r"\a", CreateDisposition::FILE_OPEN);
+
+    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\moved", false));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+    assert_eq!(names_in(&roots.outer), ["moved"]);
+}
+
 /// The enclosing drive can delete the root of the inner drive once it is empty and no file in it is open.
 /// The inner drive then has no directory to create in, and its creates make nothing anywhere else.
 // oracle: mutant a drive whose directory was deleted served the directory now at its path, or another one
