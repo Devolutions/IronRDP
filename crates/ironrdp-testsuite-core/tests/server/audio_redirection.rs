@@ -3,7 +3,6 @@ use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 use core::time::Duration;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{encode_vec, impl_as_any};
@@ -126,8 +125,8 @@ async fn rdpsnd_validity_retains_permit_until_transport_write_completes() {
     };
     let (stream, mut peer) = tokio::io::duplex(1);
     let mut transport = TokioFramed::new(stream);
-    let queue = Rc::new(OutboundQueue::default());
-    let mut writer = QueuedWriter::new(Rc::clone(&queue));
+    let queue = OutboundQueue::default();
+    let mut writer = QueuedWriter::new(&queue);
     let mut events = vec![event];
     dispatch_static_channel_events(&mut server(), channels, &mut events, &mut writer)
         .await

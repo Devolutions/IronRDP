@@ -3,7 +3,6 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 use core::time::Duration;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use ironrdp_async::FramedWrite as _;
@@ -79,14 +78,8 @@ async fn dispatch_and_write(
     mut events: Vec<ServerEvent>,
     transport: &mut TokioFramed<tokio::io::DuplexStream>,
 ) -> ServerResult<()> {
-    let queue = Rc::new(OutboundQueue::default());
-    dispatch_static_channel_events(
-        &mut server(),
-        channels,
-        &mut events,
-        &mut QueuedWriter::new(Rc::clone(&queue)),
-    )
-    .await?;
+    let queue = OutboundQueue::default();
+    dispatch_static_channel_events(&mut server(), channels, &mut events, &mut QueuedWriter::new(&queue)).await?;
     queue.finish();
     queue.write_queued(transport).await
 }
@@ -152,8 +145,8 @@ async fn behind_event(event: ServerEvent, after_wait: impl FnOnce(), permits: &S
     let (blocker, mut blocker_done) = write(b"blocker".to_vec(), &blocker_permits);
     {
         // Queue events during a stalled write, then cancel or invalidate the second while the first is stalled.
-        let queue = Rc::new(OutboundQueue::default());
-        let mut writer = QueuedWriter::new(Rc::clone(&queue));
+        let queue = OutboundQueue::default();
+        let mut writer = QueuedWriter::new(&queue);
         let mut competing_writer = writer.clone();
         competing_writer.write_all(b"ahead").await.unwrap();
         let writing = queue.write_queued(&mut transport);
@@ -341,8 +334,8 @@ async fn completion_and_permit_wait_for_all_chunks_without_interleaving() {
     let (next, mut next_done) = write(b"next".to_vec(), &permits);
     let (stream, mut peer) = tokio::io::duplex(1);
     let mut transport = TokioFramed::new(stream);
-    let queue = Rc::new(OutboundQueue::default());
-    let mut writer = QueuedWriter::new(Rc::clone(&queue));
+    let queue = OutboundQueue::default();
+    let mut writer = QueuedWriter::new(&queue);
     let mut competing_writer = writer.clone();
     let mut server = server();
     let mut events = vec![event, next];
@@ -390,8 +383,8 @@ async fn cancellation_after_transmission_starts_finishes_the_frame() {
     let (event, processed) = write(b"finish this frame".to_vec(), &permits);
     let (stream, mut peer) = tokio::io::duplex(1);
     let mut transport = TokioFramed::new(stream);
-    let queue = Rc::new(OutboundQueue::default());
-    let mut writer = QueuedWriter::new(Rc::clone(&queue));
+    let queue = OutboundQueue::default();
+    let mut writer = QueuedWriter::new(&queue);
     let mut server = server();
     let mut events = vec![event];
     dispatch_static_channel_events(&mut server, channels(true), &mut events, &mut writer)
