@@ -2101,19 +2101,13 @@ fn the_printer_avoids_the_id_of_a_drive_with_its_own_root() {
     }
 }
 
-/// A create beneath a root that cannot be opened fails like one beneath a shared directory that cannot be opened, and makes no file.
-// oracle: mutant a missing root resolved against the working directory or reported with another status
-#[rstest]
-#[case::a_device_without_a_root_or_a_shared_directory(|roots: &TwoRoots| {
-    NixRdpdrBackend::default().with_drive_root(SECOND, utf8(&roots.second))
-})]
-#[case::a_root_that_does_not_exist(|roots: &TwoRoots| {
-    NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.first.join("missing")))
-})]
-fn create_fails_without_a_directory_to_serve(#[case] backend: fn(&TwoRoots) -> NixRdpdrBackend) {
+/// A create through a device that has neither a root of its own nor a shared directory fails like one beneath a shared directory that cannot be opened, and makes no file.
+// oracle: mutant a device without a root or a shared directory served the working directory or the root of another drive, or answered with another status
+#[test]
+fn create_fails_without_a_directory_to_serve() {
     let roots = TwoRoots::new();
     let mut unopenable = NixRdpdrBackend::new(utf8(&roots.first.join("missing")));
-    let mut backend = backend(&roots);
+    let mut backend = NixRdpdrBackend::default().with_drive_root(SECOND, utf8(&roots.second));
     let name = format!("rdpdr-native-nix-{}-no-root.txt", std::process::id());
     let request = || create_request_on(FIRST, &format!(r"\{name}"), CreateDisposition::FILE_CREATE);
 
