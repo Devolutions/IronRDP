@@ -122,11 +122,16 @@ struct ConfiguredRoot {
 }
 
 impl DriveRoots {
+    /// Whether no drive has a root of its own, so every drive serves the shared directory, which is opened by path for each request.
+    fn serve_only_the_shared_directory(&self) -> bool {
+        self.drives.is_empty()
+    }
+
     /// The root of `device_id`, which paths in requests for that device resolve beneath.
     ///
     /// Once a drive has a root of its own, this resolves no path, and fails for a device that is served nothing.
     fn of(&self, device_id: u32) -> nix::Result<RootRef<'_>> {
-        if self.drives.is_empty() {
+        if self.serve_only_the_shared_directory() {
             return Root::open(&self.shared_path).map(RootRef::Opened);
         }
         self.held(device_id).map(RootRef::Held).ok_or(Errno::ENOENT)
@@ -145,7 +150,7 @@ impl DriveRoots {
 
     /// Whether `first` and `second` serve the same directory, so a path beneath the root of one names the same file beneath the root of the other.
     fn serve_the_same_directory(&self, first: u32, second: u32) -> bool {
-        self.drives.is_empty()
+        self.serve_only_the_shared_directory()
             || self
                 .held(first)
                 .is_some_and(|root| self.held(second).map(Root::identity) == Some(root.identity()))
@@ -1675,7 +1680,7 @@ pub(crate) fn create_drive(
                 .roots
                 .of(req_inner.device_io_request.device_id)
                 .map_err(|error| {
-                    if backend.roots.drives.is_empty() {
+                    if backend.roots.serve_only_the_shared_directory() {
                         warn!(%error, "Open drive root error");
                     } else {
                         // UNTESTED: once roots are held, a create through a drive that is served nothing logs nothing above `trace!`.
