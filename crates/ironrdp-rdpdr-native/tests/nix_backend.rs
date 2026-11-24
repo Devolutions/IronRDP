@@ -1759,46 +1759,49 @@ fn a_drive_cannot_reach_the_root_of_another_drive(
 
 /// A file ID names a file only through the device it was opened through.
 /// Through another device it is answered like a file ID that names nothing, so the server learns nothing about the files of another drive, and the request changes nothing.
+/// Each case gives the status a file ID that names nothing is answered with.
 // oracle: reference crates/ironrdp-rdpdr-native/src/windows/file.rs
 #[rstest]
-#[case::read(|file_id| ServerDriveIoRequest::DeviceReadRequest(DeviceReadRequest {
+#[case::read(NtStatus::NO_SUCH_FILE, |file_id| ServerDriveIoRequest::DeviceReadRequest(DeviceReadRequest {
     device_io_request: header_on(SECOND, file_id, MajorFunction::Read),
     length: 4,
     offset: 8,
 }))]
-#[case::write(|file_id| ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
+#[case::write(NtStatus::NO_SUCH_FILE, |file_id| ServerDriveIoRequest::DeviceWriteRequest(DeviceWriteRequest {
     device_io_request: header_on(SECOND, file_id, MajorFunction::Write),
     offset: 8,
     write_data: b"XXXX".to_vec(),
 }))]
-#[case::close(|file_id| ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
+// A close has no failure status, so one that names no file succeeds.
+// oracle: spec MS-FSA §2.1.5.5
+#[case::close(NtStatus::SUCCESS, |file_id| ServerDriveIoRequest::DeviceCloseRequest(DeviceCloseRequest {
     device_io_request: header_on(SECOND, file_id, MajorFunction::Close),
 }))]
-#[case::query_information(|file_id| {
+#[case::query_information(NtStatus::NO_SUCH_FILE, |file_id| {
     ServerDriveIoRequest::ServerDriveQueryInformationRequest(ServerDriveQueryInformationRequest {
         device_io_request: header_on(SECOND, file_id, MajorFunction::QueryInformation),
         file_info_class_lvl: FileInformationClassLevel::FILE_BASIC_INFORMATION,
     })
 })]
-#[case::query_volume_information(|file_id| {
+#[case::query_volume_information(NtStatus::NO_SUCH_FILE, |file_id| {
     ServerDriveIoRequest::ServerDriveQueryVolumeInformationRequest(ServerDriveQueryVolumeInformationRequest {
         device_io_request: header_on(SECOND, file_id, MajorFunction::QueryVolumeInformation),
         fs_info_class_lvl: FileSystemInformationClassLevel::FILE_FS_ATTRIBUTE_INFORMATION,
     })
 })]
-#[case::rename(|file_id| set_information_request(SECOND, file_id, rename_to(r"\moved.bin", false)))]
-#[case::mark_for_deletion(|file_id| set_information_request(SECOND, file_id, delete_pending(true)))]
-#[case::set_end_of_file(|file_id| {
+#[case::rename(NtStatus::NO_SUCH_FILE, |file_id| set_information_request(SECOND, file_id, rename_to(r"\moved.bin", false)))]
+#[case::mark_for_deletion(NtStatus::NO_SUCH_FILE, |file_id| set_information_request(SECOND, file_id, delete_pending(true)))]
+#[case::set_end_of_file(NtStatus::NO_SUCH_FILE, |file_id| {
     set_information_request(SECOND, file_id, FileInformationClass::EndOfFile(FileEndOfFileInformation { end_of_file: 0 }))
 })]
-#[case::set_allocation(|file_id| {
+#[case::set_allocation(NtStatus::NO_SUCH_FILE, |file_id| {
     set_information_request(
         SECOND,
         file_id,
         FileInformationClass::Allocation(FileAllocationInformation { allocation_size: 0 }),
     )
 })]
-#[case::set_basic_information(|file_id| {
+#[case::set_basic_information(NtStatus::NO_SUCH_FILE, |file_id| {
     set_information_request(
         SECOND,
         file_id,
@@ -1811,9 +1814,9 @@ fn a_drive_cannot_reach_the_root_of_another_drive(
         }),
     )
 })]
-#[case::initial_directory_query(|file_id| query_directory_request(SECOND, file_id, r"\*", true))]
-#[case::continued_directory_query(|file_id| query_directory_request(SECOND, file_id, "", false))]
-#[case::lock(|file_id| {
+#[case::initial_directory_query(NtStatus::NO_SUCH_FILE, |file_id| query_directory_request(SECOND, file_id, r"\*", true))]
+#[case::continued_directory_query(NtStatus::NO_SUCH_FILE, |file_id| query_directory_request(SECOND, file_id, "", false))]
+#[case::lock(NtStatus::NO_SUCH_FILE, |file_id| {
     lock_request(
         header_on(SECOND, file_id, MajorFunction::LockControl),
         LockOperation::Exclusive,
@@ -1822,7 +1825,7 @@ fn a_drive_cannot_reach_the_root_of_another_drive(
         4,
     )
 })]
-#[case::unlock(|file_id| {
+#[case::unlock(NtStatus::NO_SUCH_FILE, |file_id| {
     lock_request(
         header_on(SECOND, file_id, MajorFunction::LockControl),
         LockOperation::Unlock,
@@ -1831,7 +1834,10 @@ fn a_drive_cannot_reach_the_root_of_another_drive(
         4,
     )
 })]
-fn a_file_id_names_nothing_through_another_device(#[case] request: fn(u32) -> ServerDriveIoRequest) {
+fn a_file_id_names_nothing_through_another_device(
+    #[case] status: NtStatus,
+    #[case] request: fn(u32) -> ServerDriveIoRequest,
+) {
     let contents = b"0123456789abcdef";
     let roots = TwoRoots::new();
     std::fs::write(roots.first.join("data.bin"), contents).expect("write file");
@@ -1850,6 +1856,8 @@ fn a_file_id_names_nothing_through_another_device(#[case] request: fn(u32) -> Se
     let refused = send(&mut backend, request(file_id));
 
     assert_eq!(encoded(&refused), encoded(&unknown));
+    // oracle: mutant the status that answers a file ID that names nothing changed
+    assert_eq!(response_status(&refused), status);
     // The handle is still open and still holds its lock, which refuses a read through another handle.
     // oracle: spec MS-FSA §2.1.5.3
     let other_read = read(&mut backend, other_id, 0, 4);
@@ -2094,6 +2102,9 @@ fn drives_share_the_open_file_limit() {
 
     let through_two_drives = opens_until_refused(roots.backend(), &[FIRST, SECOND]);
 
+    // oracle: mutant the status that refuses a create beyond the limit changed
+    assert_eq!(through_one_drive.1, NtStatus::INSUFFICIENT_RESOURCES);
+    assert!(0 < through_one_drive.0);
     assert_eq!(through_two_drives, through_one_drive);
 }
 
@@ -2160,6 +2171,9 @@ fn drives_share_the_waiting_lock_limit() {
 
     let through_two_drives = waits_until_refused(&[FIRST, SECOND]);
 
+    // The queue's own test in `src/nix/locks.rs`, `a_full_queue_refuses_another_waiting_request`, requires this status of a full queue.
+    assert_eq!(through_one_drive.1, NtStatus::INSUFFICIENT_RESOURCES);
+    assert!(0 < through_one_drive.0);
     assert_eq!(through_two_drives, through_one_drive);
 
     /// Locks a file of each device, then queues lock requests behind those locks, one device after the other, until one is refused.
@@ -2718,6 +2732,189 @@ fn a_drive_keeps_its_directory_when_its_path_comes_to_name_another(#[case] repla
     }
 }
 
+/// An exclusive lock taken through one drive refuses a read through the other drive of the same file, whichever drive is the enclosing one.
+// oracle: spec MS-FSA §2.1.5.3
+#[rstest]
+fn an_exclusive_lock_refuses_a_read_through_a_drive_nested_with_the_locking_one(
+    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
+) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("data.bin"), [0; 16]).expect("write file");
+    let mut backend = roots.backend();
+    let [locking, reading] = devices;
+    let [locking_id, reading_id] = roots.open_through(&mut backend, devices, "data.bin");
+
+    let locked = send(
+        &mut backend,
+        lock_request(
+            header_on(locking, locking_id, MajorFunction::LockControl),
+            LockOperation::Exclusive,
+            false,
+            0,
+            10,
+        ),
+    );
+    let read = read_on(&mut backend, reading, reading_id, 0, 4);
+
+    assert_eq!(response_status(&locked), NtStatus::SUCCESS);
+    // oracle: spec MS-ERREF §2.3.1
+    assert_eq!(response_status(&read), NtStatus::from(0xC000_0054));
+}
+
+/// A file marked for deletion through one drive is marked for the other drive that reaches it too, whichever drive is the enclosing one.
+/// The other drive cannot open it, with the status that refuses the same open on one drive, and it is removed when its last handle closes.
+// oracle: spec MS-FSA §2.1.5.5
+#[rstest]
+fn a_file_marked_for_deletion_is_marked_for_a_drive_nested_with_the_marking_one(
+    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
+) {
+    let roots = DeepRoots::new();
+    let file = roots.inner.join("doc.txt");
+    std::fs::write(&file, b"doc").expect("write file");
+    let mut backend = roots.backend();
+    let [marking, other] = devices;
+    let [marking_id, other_id] = roots.open_through(&mut backend, devices, "doc.txt");
+    let marked = set_information_on(&mut backend, marking, marking_id, delete_pending(true));
+
+    let reopen = create_with(
+        &mut backend,
+        create_request_on(
+            other,
+            &roots.path_through(other, "doc.txt"),
+            CreateDisposition::FILE_OPEN,
+        ),
+    );
+    close_on(&mut backend, marking, marking_id);
+    let still_there = file.exists();
+    close_on(&mut backend, other, other_id);
+
+    assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    assert_eq!(response_status(&reopen), NtStatus::DELETE_PENDING);
+    assert!(still_there);
+    assert!(!file.exists());
+}
+
+/// A rename does not replace a file that is open through the other drive that reaches it, whichever drive is the enclosing one.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[rstest]
+fn rename_with_replace_refuses_a_target_open_through_a_drive_nested_with_the_renaming_one(
+    #[values([FIRST, SECOND], [SECOND, FIRST])] devices: [u32; 2],
+) {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("target.txt"), b"old").expect("write target");
+    std::fs::write(roots.inner.join("source.txt"), b"new").expect("write source");
+    let mut backend = roots.backend();
+    let [renaming, other] = devices;
+    let _target_id = create_on(
+        &mut backend,
+        other,
+        &roots.path_through(other, "target.txt"),
+        CreateDisposition::FILE_OPEN,
+    );
+    let source_id = create_on(
+        &mut backend,
+        renaming,
+        &roots.path_through(renaming, "source.txt"),
+        CreateDisposition::FILE_OPEN,
+    );
+
+    let response = set_information_on(
+        &mut backend,
+        renaming,
+        source_id,
+        rename_to(&roots.path_through(renaming, "target.txt"), true),
+    );
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert_eq!(
+        std::fs::read(roots.inner.join("target.txt")).expect("read target"),
+        b"old"
+    );
+    assert!(roots.inner.join("source.txt").exists());
+}
+
+/// The enclosing drive cannot rename the root of the inner drive, or a directory below it, while the inner drive holds a file open inside that directory.
+// oracle: spec MS-FSA §2.1.5.15.12
+#[rstest]
+#[case::the_root_of_the_inner_drive(r"\a\b")]
+#[case::a_directory_below_it(r"\a\b\sub")]
+fn the_enclosing_drive_cannot_rename_a_directory_holding_files_open_through_the_inner_drive(#[case] directory: &str) {
+    let roots = DeepRoots::new();
+    std::fs::create_dir(roots.inner.join("sub")).expect("create directory");
+    std::fs::write(roots.inner.join("sub").join("open.txt"), b"open").expect("write file");
+    let mut backend = roots.backend();
+    let _file_id = create_on(&mut backend, SECOND, r"\sub\open.txt", CreateDisposition::FILE_OPEN);
+    let directory_id = create_on(&mut backend, FIRST, directory, CreateDisposition::FILE_OPEN);
+
+    let response = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\moved", false));
+
+    assert_eq!(response_status(&response), NtStatus::ACCESS_DENIED);
+    assert!(roots.inner.join("sub").join("open.txt").exists());
+}
+
+/// The enclosing drive can rename a directory above the root of the inner drive while the inner drive holds a file open.
+/// A drive tracks the directories from its own root down, so the enclosing drive does not see that file below the directory it renames.
+/// The inner drive then serves the same directory at its new path.
+// oracle: mutant a drive loses its directory when an enclosing drive renames a directory above it
+#[test]
+fn a_drive_follows_its_directory_when_the_enclosing_drive_renames_a_directory_above_it() {
+    let roots = DeepRoots::new();
+    std::fs::write(roots.inner.join("open.txt"), b"open").expect("write file");
+    let mut backend = roots.backend();
+    let file_id = create_on(&mut backend, SECOND, r"\open.txt", CreateDisposition::FILE_OPEN);
+    let directory_id = create_on(&mut backend, FIRST, r"\a", CreateDisposition::FILE_OPEN);
+
+    let renamed = set_information_on(&mut backend, FIRST, directory_id, rename_to(r"\moved", false));
+    let read = read_on(&mut backend, SECOND, file_id, 0, 16);
+    let _ = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    let reopened = create_on(&mut backend, SECOND, r"\open.txt", CreateDisposition::FILE_OPEN);
+    let read_again = read_on(&mut backend, SECOND, reopened, 0, 16);
+
+    assert_eq!(response_status(&renamed), NtStatus::SUCCESS);
+    assert_eq!(response_read_data(&read), b"open");
+    assert_eq!(response_read_data(&read_again), b"open");
+    assert_eq!(names_in(&roots.outer.join("moved").join("b")), ["new.txt", "open.txt"]);
+    assert_eq!(names_in(&roots.outer), ["moved"]);
+}
+
+/// The enclosing drive can delete the root of the inner drive once it is empty and no file in it is open.
+/// The inner drive then has no directory to create in, and its creates make nothing anywhere else.
+// oracle: mutant a drive whose directory was deleted served the directory now at its path, or another one
+#[test]
+fn a_drive_whose_directory_the_enclosing_drive_deleted_creates_nothing() {
+    let roots = DeepRoots::new();
+    let mut backend = roots.backend();
+    let directory_id = create_on(&mut backend, FIRST, r"\a\b", CreateDisposition::FILE_OPEN);
+    let marked = set_information_on(&mut backend, FIRST, directory_id, delete_pending(true));
+    close_on(&mut backend, FIRST, directory_id);
+    let is_deleted = !roots.inner.exists();
+    // A directory now at the path of the deleted one is not the directory the drive was configured with.
+    std::fs::create_dir(&roots.inner).expect("create directory");
+    let before = entries_below(&roots.sandbox);
+
+    let file = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    let directory = create_with(
+        &mut backend,
+        DeviceCreateRequest {
+            create_options: CreateOptions::FILE_DIRECTORY_FILE,
+            ..create_request_on(SECOND, r"\new", CreateDisposition::FILE_CREATE)
+        },
+    );
+
+    // oracle: spec MS-FSA §2.1.5.15.3
+    assert_eq!(response_status(&marked), NtStatus::SUCCESS);
+    assert!(is_deleted);
+    assert_ne!(response_status(&file), NtStatus::SUCCESS);
+    assert_ne!(response_status(&directory), NtStatus::SUCCESS);
+    assert_eq!(entries_below(&roots.sandbox), before);
+}
+
 /// Devices `FIRST` and `SECOND` announced over the one shared directory.
 fn drives_of_the_shared_directory(share: &str) -> NixRdpdrBackendFactory {
     NixRdpdrBackendFactory::new(share.to_owned())
@@ -3234,6 +3431,52 @@ impl SwappedRoot {
             assert_eq!(response_status(&response), NtStatus::SUCCESS, "rename {from} to {to}");
             close_on(backend, FIRST, directory_id);
         }
+    }
+}
+
+/// A directory and the directory `a/b` two levels below it, each the root of one drive, so both drives reach the files of the inner one.
+struct DeepRoots {
+    sandbox: PathBuf,
+    outer: PathBuf,
+    inner: PathBuf,
+    _fixture: Fixture,
+}
+
+impl DeepRoots {
+    fn new() -> Self {
+        let fixture = Fixture::new();
+        let inner = fixture.share.join("a").join("b");
+        std::fs::create_dir_all(&inner).expect("create inner root");
+        Self {
+            sandbox: fixture.sandbox.clone(),
+            outer: fixture.share.clone(),
+            inner,
+            _fixture: fixture,
+        }
+    }
+
+    /// A backend without a shared directory, whose device `FIRST` serves the outer root and `SECOND` the inner one.
+    fn backend(&self) -> NixRdpdrBackend {
+        NixRdpdrBackend::default()
+            .with_drive_root(FIRST, utf8(&self.outer))
+            .with_drive_root(SECOND, utf8(&self.inner))
+    }
+
+    /// The path that names the file `name` of the inner root through `device_id`.
+    fn path_through(&self, device_id: u32, name: &str) -> String {
+        if device_id == FIRST {
+            format!(r"\a\b\{name}")
+        } else {
+            format!(r"\{name}")
+        }
+    }
+
+    /// Opens the file `name` of the inner root through each of `devices`, and returns their handles in that order.
+    fn open_through(&self, backend: &mut NixRdpdrBackend, devices: [u32; 2], name: &str) -> [u32; 2] {
+        devices.map(|device_id| {
+            let path = self.path_through(device_id, name);
+            create_on(backend, device_id, &path, CreateDisposition::FILE_OPEN)
+        })
     }
 }
 
