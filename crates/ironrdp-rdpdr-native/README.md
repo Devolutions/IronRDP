@@ -8,13 +8,10 @@ Native backend building blocks for the IronRDP RDPDR static channel.
   With an empty shared directory, which `Default` gives, only drives with their own root are served.
   The backend resolves every protocol path one component at a time below the opened root of the drive the request addresses, rejecting `.` and `..` components and never following symbolic links or crossing mount points.
   Without `openat2`, as on macOS and Linux before 5.6, only mounts of another filesystem are refused, not bind mounts within the same one.
-  Roots are opened for each request and not checked when the backend is built, so creates through a drive fail while its root cannot be opened.
+  [Drive roots on macOS and Linux](#drive-roots-on-macos-and-linux) describes how roots are resolved and what holds between drives that reach the same files.
   A file ID is valid only through the drive it was opened through: through another drive it is answered like a file ID that was never opened, and the request changes nothing.
-  Drives may serve the same directory or directories inside one another: a lock or a pending delete on a file then holds through every drive that reaches it.
-  A rename moves the open handles of drives given the same root path to the new name.
-  A handle of a drive with another root keeps its old path: once that path no longer names the file, a rename through the handle fails and a delete through it removes nothing.
   Files are opened without blocking, so a FIFO in a root cannot stall the channel.
-  Reads are limited to 1 MiB, and the open files of all drives together to a quarter of the soft descriptor limit, at most 1024.
+  Reads are limited to 1 MiB, and the open files of all drives together to a quarter of the soft descriptor limit, at most 1024, where each directory held open as a root counts as one open file.
   Files open with the access the server requests, directory queries match Windows wildcards, and byte-range locks bind the server's handles to each other, across drives, but not to local processes.
   The `nix::printer` backend spools PostScript jobs in an exclusively created private directory (0700), using exclusive 0600 files.
   A worker thread submits each closed job to CUPS through `lp`, which gets 60 seconds to accept it, or saves it in the configured folder without replacing existing files.
@@ -34,6 +31,55 @@ platform independent in `ironrdp-rdpdr`.
 A redirected drive root is a volume root (`C:\`) or a directory on one, opened without following reparse points.
 `WindowsRdpdrBackendFactory::with_logical_drives` registers the drive letters (device IDs `1` to `26`) and announces the selected letters mapped when each connection starts, without probing their volumes.
 `LogicalDriveWatcher` reports volumes mounted and removed during a session, from `WM_DEVICECHANGE` broadcasts and a `GetLogicalDrives` poll for network drives; hosts forward its changes as dynamic drive announcements and removals.
+
+## Drive roots on macOS and Linux
+
+A root given with `with_drive_root` is resolved once, when the backend is configured, and the backend holds the directory it names open for its lifetime.
+The drive serves that directory, not its path: it keeps serving it when the directory is moved or its path comes to name something else, and when the channel restarts.
+Once a drive has a root of its own, the shared directory is resolved and held the same way.
+A backend whose drives all serve the shared directory opens it by path for each request, and does not check it.
+Each directory held open counts as one open file against the limit on open files, and keeps its filesystem busy while the backend lives.
+
+A root is unusable when its path:
+
+- is relative or empty, or holds a `.` or `..` component;
+- names no directory, or takes more than 40 symbolic links or 1024 components to resolve;
+- follows a symbolic link in or below the directory of any root of the same backend, its own included.
+
+A server can replace a link in a directory it is served, so a path through one could name another directory the next time it is resolved.
+Symbolic links that lie outside every root are followed.
+A drive with an unusable root is still configured and announced, but is served nothing: a create through it fails as it does when the shared directory cannot be opened.
+The other drives are served, and a warning is logged when a root becomes unusable.
+Roots are checked against each other in whichever order they are given.
+
+### Drives that reach the same files
+
+Drives may serve the same directory, or directories inside one another.
+A lock or a pending delete on a file holds through every drive that reaches it, and a rename does not replace a file that is open through any drive.
+A rename moves the open handles of every drive that serves the same directory to the new name, however the roots of those drives are spelled.
+
+Between drives that serve different directories, these limitations are known:
+
+- A handle keeps its old path after a rename through the other drive: once that path no longer names the file, a rename through the handle fails and a delete through it removes nothing.
+- An open file keeps a directory from being renamed only from the root of its own drive down.
+  The drive of an enclosing directory can therefore rename a directory above the root of an inner drive while the inner drive has files open, and the inner drive then serves its directory at the new path.
+- The drive of an enclosing directory can delete the root of an inner drive once it is empty, and every create through the inner drive then fails.
+
+### Guarantees and assumptions
+
+These hold by construction and are tested:
+
+- A drive with its own root serves the directory the root named when the backend was configured, for the lifetime of the backend.
+- A root resolved when the backend is configured is never served through a symbolic link in or below a root of the backend.
+- A drive with an unusable root is served nothing, and the other drives are served.
+
+These are assumed, and nothing checks them:
+
+- Local processes are trusted, because they can change what any path names.
+- No bind mount shows the inside of a root at another path, where a link would not be seen to lie below that root.
+- No other backend with another configuration lets a server write to a directory that a root path leads through.
+  A root path is trusted as local configuration wherever it lies outside the roots of its own backend.
+- No server of another connection changes the directories on a root path while the root is resolved.
 
 ## Windows printers
 

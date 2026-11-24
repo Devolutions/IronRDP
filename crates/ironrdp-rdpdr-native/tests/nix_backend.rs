@@ -2090,26 +2090,66 @@ fn create_fails_without_a_directory_to_serve(#[case] backend: fn(&TwoRoots) -> N
 #[test]
 fn drives_share_the_open_file_limit() {
     let roots = TwoRoots::new();
-    let through_one_drive = opens_until_refused(&roots, &[FIRST]);
+    let through_one_drive = opens_until_refused(roots.backend(), &[FIRST]);
 
-    let through_two_drives = opens_until_refused(&roots, &[FIRST, SECOND]);
+    let through_two_drives = opens_until_refused(roots.backend(), &[FIRST, SECOND]);
 
     assert_eq!(through_two_drives, through_one_drive);
+}
 
-    /// Opens the root of each device in turn until a create fails, and returns the number of files opened and the status of the failure.
-    fn opens_until_refused(roots: &TwoRoots, devices: &[u32]) -> (usize, NtStatus) {
-        let mut backend = roots.backend();
-        for (opened, device_id) in devices.iter().cycle().enumerate() {
-            let response = create_with(
-                &mut backend,
-                create_request_on(*device_id, r"\", CreateDisposition::FILE_OPEN),
-            );
-            if response_status(&response) != NtStatus::SUCCESS {
-                return (opened, response_status(&response));
-            }
-        }
-        unreachable!("a cycle over the devices does not end")
-    }
+/// A root held open takes one place under the limit on open files, so the descriptors of the roots come out of the budget that limit protects.
+// oracle: mutant held root descriptors left out of the open-file limit
+#[test]
+fn a_held_root_takes_the_place_of_one_open_file() {
+    let roots = TwoRoots::new();
+    let with_one_root = opens_until_refused(
+        NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.first)),
+        &[FIRST],
+    );
+
+    let with_two_roots = opens_until_refused(roots.backend(), &[FIRST]);
+
+    assert_eq!(with_one_root.1, NtStatus::INSUFFICIENT_RESOURCES);
+    assert_eq!(with_two_roots.1, NtStatus::INSUFFICIENT_RESOURCES);
+    assert!(0 < with_two_roots.0);
+    assert_eq!(with_two_roots.0 + 1, with_one_root.0);
+}
+
+/// A root that was replaced is no longer held open, so it takes no place under the limit on open files.
+// oracle: mutant the directory of a replaced root kept open
+#[test]
+fn a_replaced_root_is_no_longer_held_open() {
+    let roots = TwoRoots::new();
+    let with_one_root = opens_until_refused(
+        NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.second)),
+        &[FIRST],
+    );
+
+    let with_a_replaced_root = opens_until_refused(
+        NixRdpdrBackend::default()
+            .with_drive_root(FIRST, utf8(&roots.first))
+            .with_drive_root(FIRST, utf8(&roots.second)),
+        &[FIRST],
+    );
+
+    assert!(0 < with_one_root.0);
+    assert_eq!(with_a_replaced_root, with_one_root);
+}
+
+/// Drives given the same directory hold it open once, however each spells its path.
+// oracle: mutant a root descriptor held for each drive rather than for each directory
+#[test]
+fn drives_of_the_same_directory_hold_it_open_once() {
+    let roots = TwoRoots::new();
+    let alias = roots.first.parent().expect("a sandbox").join("alias");
+    std::os::unix::fs::symlink(&roots.first, &alias).expect("link directory");
+    let one_drive = || NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&roots.first));
+    let with_one_drive = opens_until_refused(one_drive(), &[FIRST]);
+
+    let with_two_drives = opens_until_refused(one_drive().with_drive_root(SECOND, utf8(&alias)), &[FIRST]);
+
+    assert!(0 < with_one_drive.0);
+    assert_eq!(with_two_drives, with_one_drive);
 }
 
 /// The lock requests waiting on every drive count against one limit, because one table holds the locks of every drive.
@@ -2171,6 +2211,7 @@ fn drives_share_the_waiting_lock_limit() {
 #[rstest]
 #[case::drives_of_the_shared_directory(drives_of_the_shared_directory)]
 #[case::drives_with_the_same_root(drives_with_the_same_root)]
+#[case::drives_with_the_same_root_under_two_spellings(drives_with_the_same_root_under_two_spellings)]
 fn a_file_marked_for_deletion_through_one_drive_is_deleted_when_another_drive_closes_it_last(
     #[case] factory: fn(&str) -> NixRdpdrBackendFactory,
 ) {
@@ -2202,6 +2243,7 @@ fn a_file_marked_for_deletion_through_one_drive_is_deleted_when_another_drive_cl
 #[rstest]
 #[case::drives_of_the_shared_directory(drives_of_the_shared_directory)]
 #[case::drives_with_the_same_root(drives_with_the_same_root)]
+#[case::drives_with_the_same_root_under_two_spellings(drives_with_the_same_root_under_two_spellings)]
 fn delete_on_close_follows_a_rename_through_another_drive_of_the_same_root(
     #[case] factory: fn(&str) -> NixRdpdrBackendFactory,
 ) {
@@ -2251,6 +2293,431 @@ fn a_delete_runs_beneath_the_root_of_the_drive_it_was_marked_through(#[values(FI
     assert!(!file.exists());
 }
 
+/// A drive serves the directory it was configured with, whatever a rename through an enclosing drive makes of its path.
+// oracle: mutant a root opened again by path after an enclosing drive renamed a link into that path
+#[test]
+fn a_drive_keeps_its_directory_when_an_enclosing_drive_renames_a_link_into_its_path() {
+    let roots = SwappedRoot::new();
+    let mut backend = roots.backend();
+
+    roots.swap_through_the_outer_drive(&mut backend);
+
+    let file_id = create_on(&mut backend, SECOND, r"\inner.txt", CreateDisposition::FILE_OPEN);
+    let read = read_on(&mut backend, SECOND, file_id, 0, 16);
+    assert_eq!(response_read_data(&read), b"inner");
+    let created = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    assert_eq!(response_status(&created), NtStatus::SUCCESS);
+    assert_eq!(names_in(&roots.outer.join("a_old").join("b")), ["inner.txt", "new.txt"]);
+    assert_eq!(names_in(&roots.outside), ["outside.txt"]);
+}
+
+/// A backend built after a server renamed a link into the path of the inner root does not follow that link, so the inner drive is served nothing.
+// oracle: mutant a link below a configured root followed when a root is resolved
+#[test]
+fn a_root_whose_path_a_server_led_through_a_link_serves_nothing() {
+    let roots = SwappedRoot::new();
+    let factory = roots.factory();
+    let (mut backend, _) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    roots.swap_through_the_outer_drive(nix_backend(backend.as_mut()));
+    drop(backend);
+
+    let (mut backend, drives) = factory.build_rdpdr_backend().expect("valid configuration").into_parts();
+    let backend = nix_backend(backend.as_mut());
+    let through_the_inner_drive = create_with(
+        backend,
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    let through_the_outer_drive = create_with(
+        backend,
+        create_request_on(FIRST, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    let announced = drives.iter().map(|drive| drive.device_id()).collect::<Vec<_>>();
+    assert_eq!(announced, [FIRST, SECOND]);
+    assert_eq!(response_status(&through_the_inner_drive), NOTHING_SERVED);
+    assert_eq!(names_in(&roots.outside), ["outside.txt"]);
+    assert_eq!(response_status(&through_the_outer_drive), NtStatus::SUCCESS);
+    assert!(roots.outer.join("new.txt").exists());
+}
+
+/// A root whose path follows a symbolic link in or below the directory of a configured root is served nothing, in whichever order the roots are given.
+/// A server can replace such a link through the drive of that root, so the next backend would serve whatever the path then names.
+/// Each case returns the roots of `FIRST`, which is served, and of `SECOND`, which is not.
+// oracle: mutant a link in or below a configured root followed when a root is resolved
+#[rstest]
+#[case::a_link_directly_in_another_root(|fixture: &Fixture| {
+    link(&fixture.sandbox.join("target"), &fixture.share.join("link"));
+    [fixture.share.clone(), fixture.share.join("link")]
+})]
+#[case::a_link_below_another_root(|fixture: &Fixture| {
+    std::fs::create_dir(fixture.share.join("sub")).expect("create directory");
+    link(&fixture.sandbox.join("target"), &fixture.share.join("sub").join("link"));
+    [fixture.share.clone(), fixture.share.join("sub").join("link")]
+})]
+#[case::a_link_outside_every_root_and_then_a_link_below_another_root(|fixture: &Fixture| {
+    std::fs::create_dir(fixture.share.join("sub")).expect("create directory");
+    link(&fixture.sandbox.join("target"), &fixture.share.join("sub").join("link"));
+    link(&fixture.share.join("sub"), &fixture.sandbox.join("alias"));
+    [fixture.share.clone(), fixture.sandbox.join("alias").join("link")]
+})]
+#[case::a_link_in_its_own_directory(|fixture: &Fixture| {
+    link(&fixture.sandbox.join("target"), &fixture.sandbox.join("target").join("self"));
+    [fixture.share.clone(), fixture.sandbox.join("target").join("self")]
+})]
+fn a_root_reached_through_a_link_inside_a_root_serves_nothing(
+    #[case] roots: fn(&Fixture) -> [PathBuf; 2],
+    #[values([FIRST, SECOND], [SECOND, FIRST])] order: [u32; 2],
+) {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.sandbox.join("target")).expect("create directory");
+    let roots = roots(&fixture);
+    let mut backend = backend_with_roots_in_order(&roots, order);
+    let before = entries_below(&fixture.sandbox);
+
+    let refused = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    let after = entries_below(&fixture.sandbox);
+    let served = create_with(
+        &mut backend,
+        create_request_on(FIRST, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(response_status(&refused), NOTHING_SERVED);
+    assert_eq!(after, before);
+    assert_eq!(response_status(&served), NtStatus::SUCCESS);
+    assert!(fixture.share.join("new.txt").exists());
+}
+
+/// A root inside another root may be given through a symbolic link that lies outside every root, in whichever order the roots are given.
+/// No drive reaches that link, so a server cannot change it.
+// oracle: mutant a root refused for a link that lies in no configured root
+#[rstest]
+fn a_root_inside_another_may_be_given_through_a_link_outside_every_root(
+    #[values([FIRST, SECOND], [SECOND, FIRST])] order: [u32; 2],
+) {
+    let nested = NestedRoots::new();
+    let alias = nested.fixture.sandbox.join("alias");
+    link(&nested.inner, &alias);
+    let mut backend = backend_with_roots_in_order(&[nested.fixture.share.clone(), alias], order);
+
+    let _ = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(names_in(&nested.inner), ["new.txt"]);
+}
+
+/// A root whose path does not resolve to a directory is served nothing, and the other drive works.
+/// Opening the root creates nothing, so a root that was served would only show in the status.
+// oracle: mutant a root path that must not resolve left to the kernel, which resolves it
+#[rstest]
+// `src` exists in the package root, the working directory of the tests, so the path fails only for being relative.
+#[case::a_relative_path(|_: &TwoRoots| "src".to_owned())]
+#[case::an_empty_path(|_: &TwoRoots| String::new())]
+#[case::a_parent_component(|roots: &TwoRoots| format!("{}/../second", utf8(&roots.first)))]
+#[case::a_current_directory_component(|roots: &TwoRoots| format!("{}/.", utf8(&roots.second)))]
+#[case::a_missing_directory(|roots: &TwoRoots| utf8(&roots.second.join("missing")))]
+#[case::a_file(|roots: &TwoRoots| {
+    std::fs::write(roots.second.join("file.txt"), b"file").expect("write file");
+    utf8(&roots.second.join("file.txt"))
+})]
+#[case::a_link_to_itself(|roots: &TwoRoots| {
+    link(Path::new("loop"), &roots.second.join("loop"));
+    utf8(&roots.second.join("loop"))
+})]
+fn a_root_that_names_no_directory_serves_nothing(#[case] root: fn(&TwoRoots) -> String) {
+    let roots = TwoRoots::new();
+    let mut backend = NixRdpdrBackend::default()
+        .with_drive_root(FIRST, utf8(&roots.first))
+        .with_drive_root(SECOND, root(&roots));
+
+    let unresolvable = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\", CreateDisposition::FILE_OPEN),
+    );
+    let served = create_with(
+        &mut backend,
+        create_request_on(FIRST, r"\", CreateDisposition::FILE_OPEN),
+    );
+
+    assert_eq!(response_status(&unresolvable), NOTHING_SERVED);
+    assert_eq!(response_status(&served), NtStatus::SUCCESS);
+}
+
+/// Beside a drive with its own root, the shared directory is resolved like a root, so one that names no directory serves nothing to its drives.
+// oracle: mutant the shared directory left to the kernel beside a drive with its own root
+#[rstest]
+#[case::a_missing_directory(|roots: &TwoRoots| utf8(&roots.first.join("missing")))]
+// `src` exists in the package root, the working directory of the tests, so the path fails only for being relative.
+#[case::a_relative_path(|_: &TwoRoots| "src".to_owned())]
+fn a_shared_directory_that_names_no_directory_serves_nothing_beside_a_drive_with_its_own_root(
+    #[case] shared: fn(&TwoRoots) -> String,
+) {
+    let roots = TwoRoots::new();
+    let mut backend = NixRdpdrBackend::new(shared(&roots)).with_drive_root(SECOND, utf8(&roots.second));
+
+    let unresolvable = create_with(
+        &mut backend,
+        create_request_on(FIRST, r"\", CreateDisposition::FILE_OPEN),
+    );
+    let served = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\", CreateDisposition::FILE_OPEN),
+    );
+
+    assert_eq!(response_status(&unresolvable), NOTHING_SERVED);
+    assert_eq!(response_status(&served), NtStatus::SUCCESS);
+}
+
+/// Beside a drive with its own root, the shared directory is checked like a root: neither may be reached through a link inside the other.
+/// Each case returns the shared directory, which `FIRST` serves, and the root of `SECOND`, with the device that is served nothing.
+// oracle: mutant the shared directory left out of the roots a followed link is checked against
+#[rstest]
+#[case::the_shared_directory_through_a_link_in_the_root(|fixture: &Fixture| {
+    link(&fixture.sandbox.join("target"), &fixture.share.join("link"));
+    ([fixture.share.join("link"), fixture.share.clone()], FIRST)
+})]
+#[case::the_root_through_a_link_in_the_shared_directory(|fixture: &Fixture| {
+    link(&fixture.sandbox.join("target"), &fixture.share.join("link"));
+    ([fixture.share.clone(), fixture.share.join("link")], SECOND)
+})]
+fn a_link_between_the_shared_directory_and_a_root_is_not_followed(#[case] roots: fn(&Fixture) -> ([PathBuf; 2], u32)) {
+    let fixture = Fixture::new();
+    std::fs::create_dir(fixture.sandbox.join("target")).expect("create directory");
+    let ([shared, root], refused) = roots(&fixture);
+    let mut backend = NixRdpdrBackend::new(utf8(&shared)).with_drive_root(SECOND, utf8(&root));
+
+    let response = create_with(
+        &mut backend,
+        create_request_on(refused, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(response_status(&response), NOTHING_SERVED);
+    assert!(names_in(&fixture.sandbox.join("target")).is_empty());
+}
+
+/// Beside a drive with its own root, the shared directory is held like a root, so its drives keep serving it after its path comes to name another directory.
+// oracle: mutant the shared directory opened by path for each request beside a drive with its own root
+#[test]
+fn the_shared_directory_is_held_beside_a_drive_with_its_own_root() {
+    let roots = TwoRoots::new();
+    let sandbox = roots.first.parent().expect("a sandbox");
+    let moved = sandbox.join("moved");
+    let mut backend = NixRdpdrBackend::new(utf8(&roots.first)).with_drive_root(SECOND, utf8(&roots.second));
+
+    std::fs::rename(&roots.first, &moved).expect("move shared directory");
+    std::fs::create_dir(&roots.first).expect("create directory");
+    let _ = create_with(
+        &mut backend,
+        create_request_on(FIRST, r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(names_in(&moved), ["new.txt"]);
+    assert!(names_in(&roots.first).is_empty());
+}
+
+/// A backend whose drives all serve the shared directory opens it by path for each request, so it serves a directory created after it was built.
+/// Until then a create fails with STATUS_UNSUCCESSFUL, the status of a shared directory that cannot be opened.
+// oracle: mutant the shared directory of a backend without a drive root resolved when the backend is built
+#[test]
+fn a_shared_directory_alone_is_opened_for_each_request() {
+    let fixture = Fixture::new();
+    let late = fixture.sandbox.join("late");
+    let mut backend = NixRdpdrBackend::new(utf8(&late));
+
+    let before = create_with(
+        &mut backend,
+        create_request(r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+    std::fs::create_dir(&late).expect("create shared directory");
+    let after = create_with(
+        &mut backend,
+        create_request(r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(response_status(&before), NtStatus::UNSUCCESSFUL);
+    assert_eq!(response_status(&after), NtStatus::SUCCESS);
+    assert_eq!(names_in(&late), ["new.txt"]);
+}
+
+/// A backend whose drives all serve the shared directory leaves its path to the kernel, so paths a drive root may not have are served.
+// oracle: mutant the shared directory of a backend without a drive root held to the rules for a drive root
+#[rstest]
+#[case::a_relative_path(|_: &Fixture| ".".to_owned())]
+#[case::a_parent_component(|fixture: &Fixture| format!("{}/../share", utf8(&fixture.share)))]
+#[case::a_link_in_the_shared_directory(|fixture: &Fixture| {
+    link(Path::new("."), &fixture.share.join("self"));
+    utf8(&fixture.share.join("self"))
+})]
+fn a_shared_directory_alone_may_have_any_path(#[case] shared: fn(&Fixture) -> String) {
+    let fixture = Fixture::new();
+    let mut backend = NixRdpdrBackend::new(shared(&fixture));
+
+    let response = create_with(&mut backend, create_request(r"\", CreateDisposition::FILE_OPEN));
+
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+}
+
+/// The directories leading to a root need to be searched, not read, as for any path the kernel resolves.
+/// Run as a user that no permission stops, the test proves nothing.
+// oracle: mutant the directories leading to a root opened for reading
+#[test]
+fn a_root_beneath_a_directory_that_cannot_be_read_is_served() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new();
+    let unreadable = fixture.sandbox.join("unreadable");
+    std::fs::create_dir_all(unreadable.join("root")).expect("create root");
+    let set_mode = |mode| {
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(mode)).expect("set permissions");
+    };
+
+    set_mode(0o300);
+    let mut backend = NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&unreadable.join("root")));
+    // The fixture lists the directory to remove it.
+    set_mode(0o700);
+
+    let response = create_with(&mut backend, create_request(r"\", CreateDisposition::FILE_OPEN));
+    assert_eq!(response_status(&response), NtStatus::SUCCESS);
+}
+
+/// A `..` in the target of a followed link leads to the parent of the directory reached, not of the directory holding the link.
+/// Here the two differ, because the target first passes through another link.
+// oracle: spec POSIX.1-2017 §4.13
+#[test]
+fn a_parent_component_in_a_link_target_leads_to_the_parent_of_the_directory_reached() {
+    let fixture = Fixture::new();
+    let (links, deep) = (fixture.sandbox.join("links"), fixture.sandbox.join("deep"));
+    for directory in [links.join("kept"), deep.join("inner"), deep.join("kept")] {
+        std::fs::create_dir_all(directory).expect("create directory");
+    }
+    link(&deep.join("inner"), &links.join("jump"));
+    link(Path::new("jump/../kept"), &links.join("root"));
+    let mut backend = NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&links.join("root")));
+
+    let _ = create_with(
+        &mut backend,
+        create_request(r"\new.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(names_in(&deep.join("kept")), ["new.txt"]);
+    assert!(names_in(&links.join("kept")).is_empty());
+}
+
+/// Resolving a root is bounded, so a path built to make it run long names no directory, although every link in it leads on to one.
+// oracle: mutant a bound on the links followed or the components walked removed
+#[rstest]
+#[case::a_chain_of_links(|fixture: &Fixture| {
+    for index in 0..64 {
+        link(Path::new(&format!("chain{}", index + 1)), &fixture.sandbox.join(format!("chain{index}")));
+    }
+    link(&fixture.share, &fixture.sandbox.join("chain64"));
+    fixture.sandbox.join("chain0")
+})]
+#[case::links_of_many_components(|fixture: &Fixture| {
+    std::fs::create_dir(fixture.sandbox.join("d")).expect("create directory");
+    let detour = "d/../".repeat(150);
+    for index in 0..4 {
+        link(Path::new(&format!("{detour}detour{}", index + 1)), &fixture.sandbox.join(format!("detour{index}")));
+    }
+    link(&fixture.share, &fixture.sandbox.join("detour4"));
+    fixture.sandbox.join("detour0")
+})]
+fn a_root_path_that_takes_too_long_to_resolve_serves_nothing(#[case] root: fn(&Fixture) -> PathBuf) {
+    let fixture = Fixture::new();
+    let mut backend = NixRdpdrBackend::default().with_drive_root(FIRST, utf8(&root(&fixture)));
+
+    let response = create_with(&mut backend, create_request(r"\", CreateDisposition::FILE_OPEN));
+
+    assert_eq!(response_status(&response), NOTHING_SERVED);
+}
+
+/// A root given again for the same device replaces the earlier one, which then no longer counts among the roots a followed link is checked against.
+/// The root of `SECOND` lies behind a link in the first root given to `FIRST`, and in no root once that one is replaced.
+// oracle: mutant the earlier root of a device still served, or still checked against
+#[test]
+fn a_root_given_again_replaces_the_earlier_one() {
+    let fixture = Fixture::new();
+    let (target, other) = (fixture.sandbox.join("target"), fixture.sandbox.join("other"));
+    std::fs::create_dir(&target).expect("create directory");
+    std::fs::create_dir(&other).expect("create directory");
+    link(&target, &fixture.share.join("link"));
+    let mut backend = NixRdpdrBackend::default()
+        .with_drive_root(FIRST, utf8(&fixture.share))
+        .with_drive_root(SECOND, utf8(&fixture.share.join("link")))
+        .with_drive_root(FIRST, utf8(&other));
+
+    let _ = create_with(
+        &mut backend,
+        create_request_on(FIRST, r"\first.txt", CreateDisposition::FILE_CREATE),
+    );
+    let _ = create_with(
+        &mut backend,
+        create_request_on(SECOND, r"\second.txt", CreateDisposition::FILE_CREATE),
+    );
+
+    assert_eq!(names_in(&other), ["first.txt"]);
+    assert_eq!(names_in(&target), ["second.txt"]);
+    assert_eq!(names_in(&fixture.share), ["link"]);
+}
+
+/// A listing of the root of a drive starts at the first entry each time, although the drive holds its root open between requests.
+// oracle: spec MS-FSA §2.1.5.6.3
+#[test]
+fn the_root_of_a_drive_lists_from_the_start_each_time() {
+    let roots = TwoRoots::new();
+    std::fs::write(roots.second.join("only.txt"), b"only").expect("write file");
+    let mut backend = roots.backend();
+    let root_id = create_on(&mut backend, SECOND, r"\", CreateDisposition::FILE_OPEN);
+    let listed = (vec!["only.txt".to_owned()], NtStatus::NO_MORE_FILES);
+
+    assert_eq!(list_directory_on(&mut backend, SECOND, root_id, r"\*"), listed);
+    assert_eq!(list_directory_on(&mut backend, SECOND, root_id, r"\*"), listed);
+}
+
+/// A drive serves the directory it was configured with after a local change makes its path name something else.
+/// The channel restarting does not resolve the path again either.
+// oracle: mutant a root opened again by path, for a request or when the channel restarts
+#[rstest]
+#[case::a_link_to_another_directory(|other: &Path, path: &Path| {
+    std::os::unix::fs::symlink(other, path).expect("link directory");
+})]
+#[case::another_directory(|other: &Path, path: &Path| std::fs::rename(other, path).expect("move directory"))]
+fn a_drive_keeps_its_directory_when_its_path_comes_to_name_another(#[case] replace_path: fn(&Path, &Path)) {
+    let roots = TwoRoots::new();
+    std::fs::write(roots.second.join("kept.txt"), b"kept").expect("write file");
+    let sandbox = roots.second.parent().expect("a sandbox");
+    let (moved, other) = (sandbox.join("moved"), sandbox.join("other"));
+    std::fs::create_dir(&other).expect("create directory");
+    std::fs::write(other.join("kept.txt"), b"other").expect("write file");
+    let mut backend = roots.backend();
+
+    std::fs::rename(&roots.second, &moved).expect("move root");
+    replace_path(&other, &roots.second);
+    let before_reset = read_kept_and_create(&mut backend, r"\before.txt");
+    backend.reset().expect("reset");
+    let after_reset = read_kept_and_create(&mut backend, r"\after.txt");
+
+    assert_eq!(before_reset, b"kept");
+    assert_eq!(after_reset, b"kept");
+    assert_eq!(names_in(&moved), ["after.txt", "before.txt", "kept.txt"]);
+    assert_eq!(names_in(&roots.second), ["kept.txt"]);
+
+    /// Reads `kept.txt` through `SECOND` and creates `path` through it.
+    fn read_kept_and_create(backend: &mut NixRdpdrBackend, path: &str) -> Vec<u8> {
+        let file_id = create_on(backend, SECOND, r"\kept.txt", CreateDisposition::FILE_OPEN);
+        let read = read_on(backend, SECOND, file_id, 0, 16);
+        let _ = create_with(backend, create_request_on(SECOND, path, CreateDisposition::FILE_CREATE));
+        response_read_data(&read)
+    }
+}
+
 /// Devices `FIRST` and `SECOND` announced over the one shared directory.
 fn drives_of_the_shared_directory(share: &str) -> NixRdpdrBackendFactory {
     NixRdpdrBackendFactory::new(share.to_owned())
@@ -2263,6 +2730,61 @@ fn drives_with_the_same_root(share: &str) -> NixRdpdrBackendFactory {
     NixRdpdrBackendFactory::default()
         .with_drive_root(FIRST, "first".to_owned(), share.to_owned())
         .with_drive_root(SECOND, "second".to_owned(), share.to_owned())
+}
+
+/// Devices `FIRST` and `SECOND` each given `share` as its own root, `SECOND` through a symbolic link beside `share`, which lies in no root.
+fn drives_with_the_same_root_under_two_spellings(share: &str) -> NixRdpdrBackendFactory {
+    let alias = format!("{share}-alias");
+    std::os::unix::fs::symlink(share, &alias).expect("link directory");
+    NixRdpdrBackendFactory::default()
+        .with_drive_root(FIRST, "first".to_owned(), share.to_owned())
+        .with_drive_root(SECOND, "second".to_owned(), alias)
+}
+
+/// Opens the root of each device in turn until a create fails, and returns the number of files opened and the status of the failure.
+fn opens_until_refused(mut backend: NixRdpdrBackend, devices: &[u32]) -> (usize, NtStatus) {
+    for (opened, device_id) in devices.iter().cycle().enumerate() {
+        let response = create_with(
+            &mut backend,
+            create_request_on(*device_id, r"\", CreateDisposition::FILE_OPEN),
+        );
+        if response_status(&response) != NtStatus::SUCCESS {
+            return (opened, response_status(&response));
+        }
+    }
+    unreachable!("a cycle over the devices does not end")
+}
+
+/// A backend whose devices `FIRST` and `SECOND` serve `roots`, given their roots in `order`.
+fn backend_with_roots_in_order(roots: &[PathBuf; 2], order: [u32; 2]) -> NixRdpdrBackend {
+    order
+        .into_iter()
+        .fold(NixRdpdrBackend::default(), |backend, device_id| {
+            let root = if device_id == FIRST { &roots[0] } else { &roots[1] };
+            backend.with_drive_root(device_id, utf8(root))
+        })
+}
+
+/// Makes `link` a symbolic link to `target`.
+fn link(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).expect("create symbolic link");
+}
+
+/// The path of every entry below `directory`, sorted, without following symbolic links.
+fn entries_below(directory: &Path) -> Vec<PathBuf> {
+    let mut entries = Vec::new();
+    let mut pending = vec![directory.to_owned()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("list directory") {
+            let entry = entry.expect("read entry");
+            if entry.file_type().expect("entry type").is_dir() {
+                pending.push(entry.path());
+            }
+            entries.push(entry.path());
+        }
+    }
+    entries.sort();
+    entries
 }
 
 fn nix_backend(backend: &mut dyn RdpdrBackend) -> &mut NixRdpdrBackend {
@@ -2608,6 +3130,9 @@ fn read_u32(messages: &[SvcMessage], field: Range<usize>) -> u32 {
     u32::from_le_bytes(response[field].try_into().expect("four-byte field"))
 }
 
+/// The status of a create through a drive that is served nothing, which a create beneath a shared directory that cannot be opened fails with.
+const NOTHING_SERVED: NtStatus = NtStatus::UNSUCCESSFUL;
+
 /// The devices the tests address: every helper without a device parameter addresses `FIRST`.
 const FIRST: u32 = 1;
 const SECOND: u32 = 2;
@@ -2659,6 +3184,56 @@ impl NestedRoots {
         NixRdpdrBackend::default()
             .with_drive_root(FIRST, utf8(&self.fixture.share))
             .with_drive_root(SECOND, utf8(&self.inner))
+    }
+}
+
+/// An outer root holding an inner root two levels down, at `a/b`.
+/// Beside `a` lies `d`, whose entry `b` is a symbolic link to `outside`, a directory outside both roots.
+struct SwappedRoot {
+    outer: PathBuf,
+    outside: PathBuf,
+    _fixture: Fixture,
+}
+
+impl SwappedRoot {
+    fn new() -> Self {
+        let fixture = Fixture::new();
+        let outer = fixture.share.clone();
+        let outside = fixture.sandbox.join("outside");
+        std::fs::create_dir_all(outer.join("a").join("b")).expect("create inner root");
+        std::fs::write(outer.join("a").join("b").join("inner.txt"), b"inner").expect("write file");
+        std::fs::create_dir(&outside).expect("create outside directory");
+        std::fs::write(outside.join("outside.txt"), b"outside").expect("write file");
+        std::fs::create_dir(outer.join("d")).expect("create directory");
+        std::os::unix::fs::symlink(&outside, outer.join("d").join("b")).expect("link directory");
+        Self {
+            outer,
+            outside,
+            _fixture: fixture,
+        }
+    }
+
+    /// Announces `FIRST` over the outer root and `SECOND` over the inner one.
+    fn factory(&self) -> NixRdpdrBackendFactory {
+        NixRdpdrBackendFactory::default()
+            .with_drive_root(FIRST, "outer".to_owned(), utf8(&self.outer))
+            .with_drive_root(SECOND, "inner".to_owned(), utf8(&self.outer.join("a").join("b")))
+    }
+
+    fn backend(&self) -> NixRdpdrBackend {
+        NixRdpdrBackend::default()
+            .with_drive_root(FIRST, utf8(&self.outer))
+            .with_drive_root(SECOND, utf8(&self.outer.join("a").join("b")))
+    }
+
+    /// Renames `a` to `a_old` and `d` to `a` through the outer drive, so the path of the inner root leads through the link.
+    fn swap_through_the_outer_drive(&self, backend: &mut NixRdpdrBackend) {
+        for (from, to) in [(r"\a", r"\a_old"), (r"\d", r"\a")] {
+            let directory_id = create_on(backend, FIRST, from, CreateDisposition::FILE_OPEN);
+            let response = set_information_on(backend, FIRST, directory_id, rename_to(to, false));
+            assert_eq!(response_status(&response), NtStatus::SUCCESS, "rename {from} to {to}");
+            close_on(backend, FIRST, directory_id);
+        }
     }
 }
 
