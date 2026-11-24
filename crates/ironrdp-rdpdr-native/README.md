@@ -4,11 +4,18 @@ Native backend building blocks for the IronRDP RDPDR static channel.
 
 - On macOS and Linux, the crate exports the existing `nix::backend` filesystem
   backend.
-  It resolves every protocol path one component at a time below the opened shared directory, rejecting `.` and `..` components and never following symbolic links or crossing mount points.
+  Each drive serves one directory, its root: the shared directory given to `NixRdpdrBackend::new` or `NixRdpdrBackendFactory::new`, or a directory of its own given to `with_drive_root`.
+  With an empty shared directory, which `Default` gives, only drives with their own root are served.
+  The backend resolves every protocol path one component at a time below the opened root of the drive the request addresses, rejecting `.` and `..` components and never following symbolic links or crossing mount points.
   Without `openat2`, as on macOS and Linux before 5.6, only mounts of another filesystem are refused, not bind mounts within the same one.
-  Files are opened without blocking, so a FIFO in the shared directory cannot stall the channel.
-  Reads are limited to 1 MiB, and open files to a quarter of the soft descriptor limit, at most 1024.
-  Files open with the access the server requests, directory queries match Windows wildcards, and byte-range locks bind the server's handles to each other but not to local processes.
+  Roots are opened for each request and not checked when the backend is built, so creates through a drive fail while its root cannot be opened.
+  A file ID is valid only through the drive it was opened through: through another drive it is answered like a file ID that was never opened, and the request changes nothing.
+  Drives may serve the same directory or directories inside one another: a lock or a pending delete on a file then holds through every drive that reaches it.
+  A rename moves the open handles of drives given the same root path to the new name.
+  A handle of a drive with another root keeps its old path: once that path no longer names the file, a rename through the handle fails and a delete through it removes nothing.
+  Files are opened without blocking, so a FIFO in a root cannot stall the channel.
+  Reads are limited to 1 MiB, and the open files of all drives together to a quarter of the soft descriptor limit, at most 1024.
+  Files open with the access the server requests, directory queries match Windows wildcards, and byte-range locks bind the server's handles to each other, across drives, but not to local processes.
   The `nix::printer` backend spools PostScript jobs in an exclusively created private directory (0700), using exclusive 0600 files.
   A worker thread submits each closed job to CUPS through `lp`, which gets 60 seconds to accept it, or saves it in the configured folder without replacing existing files.
   A job is limited to 128 MiB and at most 16 jobs are open at once; dropping the backend deletes unfinished spool files.

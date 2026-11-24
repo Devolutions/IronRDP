@@ -32,11 +32,24 @@ const MAX_OPEN_FILES: usize = 1_024;
 /// The largest read the server may request, so a single request cannot make the client allocate gigabytes.
 const MAX_READ_LENGTH: usize = 1_024 * 1_024;
 
+/// Serves redirected drives, and optionally a printer, on macOS and Linux.
+///
+/// Each drive serves one directory, its root: the shared directory given to [`Self::new`], or a directory of its own given to [`Self::with_drive_root`].
+/// Server-supplied paths are resolved beneath the root of the drive the request addresses and never follow symbolic links, so the server cannot reach files outside it.
+///
+/// A file ID names a file only through the drive it was opened through.
+/// Through another drive it is answered like a file ID that was never opened, and the request changes nothing.
+///
+/// The limits on open files and byte-range locks apply to all drives together.
+/// Drives may serve the same directory or directories inside one another: a lock or a pending delete on a file then holds through every drive that reaches it.
+/// A rename moves the open handles of drives given the same root path to the new name.
+/// A handle of a drive with another root keeps its old path: once that path no longer names the file, a rename through the handle fails and a delete through it removes nothing.
 #[derive(Debug)]
 pub struct NixRdpdrBackend {
     file_id: u32,
-    /// The shared directory every server-supplied path resolves beneath.
-    file_base: String,
+    roots: DriveRoots,
+    /// The open files of every drive, by file ID.
+    ///
     /// INVARIANT: holds at most `max_open_files` entries.
     open_files: HashMap<u32, OpenFile>,
     /// Bounds the open files, so the server cannot exhaust the descriptors of the client process.
@@ -51,24 +64,54 @@ pub struct NixRdpdrBackend {
     /// [MS-FSA] marks each link separately, while one name is kept per file here: marking through another link replaces it, and every link of a marked file refuses new opens.
     ///
     /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/d142c93a-72bc-4b05-9d96-8e00371c3308
-    pending_deletes: HashMap<FileIdentity, RelativePath>,
+    pending_deletes: HashMap<FileIdentity, PendingDelete>,
+    /// The locks on the files of every drive, so one drive sees the locks taken through another on the same file.
+    ///
+    /// UNTESTED: one table holds the locks of every drive, so its limit on held locks bounds them together.
+    /// A table for each drive would let the server hold that many locks for each drive it is given.
+    /// Filling the table takes seconds, so the tests show only that the limit on waiting requests is shared; after splitting the table, check the limit on held locks across two drives by hand.
     locks: ByteRangeLocks,
     /// Print-job handling for the virtual printer, when one is announced.
     printer: Option<Printer>,
 }
 
 impl Default for NixRdpdrBackend {
+    /// Creates a backend without a shared directory, which serves only the drives given a root with [`Self::with_drive_root`].
     fn default() -> Self {
         Self::new(String::new())
     }
 }
 
+/// The directories the drives serve.
+///
+/// UNTESTED: the roots are kept as paths and opened for each request, so a configured drive holds no descriptor between requests.
+/// A descriptor for each drive would take descriptors that `max_open_files` does not count, from the quarter it leaves to the rest of the process.
+/// The tests share one process, where descriptors cannot be counted reliably, so after changing how roots are opened, check that only open files hold descriptors.
+#[derive(Debug)]
+struct DriveRoots {
+    /// The shared directory, which is the root of every device without a root of its own, or empty when there is none.
+    ///
+    /// Opening an empty path fails, so such a device is served nothing rather than the working directory.
+    shared: String,
+    /// The root of each device that does not serve the shared directory.
+    drives: HashMap<u32, String>,
+}
+
+impl DriveRoots {
+    /// The root of `device_id`, which paths in requests for that device resolve beneath.
+    fn of(&self, device_id: u32) -> &str {
+        self.drives.get(&device_id).unwrap_or(&self.shared)
+    }
+}
+
 #[derive(Debug)]
 struct OpenFile {
+    /// The device the file was opened through, whose root `path` is relative to.
+    device_id: u32,
     file: std::fs::File,
     path: RelativePath,
     identity: FileIdentity,
-    /// The directories from the shared directory down to the one holding this file, as the server last reached it.
+    /// The directories from the root of the drive down to the one holding this file, as the server last reached it.
     ///
     /// A directory holding open files is found by these rather than by path, so another spelling of a name or a local rename does not hide one.
     ancestors: Vec<FileIdentity>,
@@ -78,6 +121,14 @@ struct OpenFile {
     delete_on_close: bool,
     /// The enumeration the last initial query-directory request started on this file.
     listing: Option<DirectoryListing>,
+}
+
+/// The name a file marked for deletion is removed by.
+#[derive(Debug)]
+struct PendingDelete {
+    /// The device the file was marked through, whose root `path` is relative to.
+    device_id: u32,
+    path: RelativePath,
 }
 
 /// Identifies a file independently of its name, so a rename does not lose track of it.
@@ -180,10 +231,16 @@ impl NixRdpdrBackend {
     /// Creates a backend that serves drive requests from the `file_base` directory.
     ///
     /// Server-supplied paths are resolved beneath `file_base` and never follow symbolic links, so the server cannot reach files outside it.
+    ///
+    /// `file_base` is the shared directory: the root of every drive not given its own with [`Self::with_drive_root`].
+    /// An empty `file_base` is no directory, so creates through such a drive fail as they do when the shared directory cannot be opened.
     pub fn new(file_base: String) -> Self {
         Self {
             file_id: 0,
-            file_base,
+            roots: DriveRoots {
+                shared: file_base,
+                drives: HashMap::new(),
+            },
             open_files: HashMap::new(),
             max_open_files: match getrlimit(Resource::RLIMIT_NOFILE) {
                 Ok((soft_limit, _)) => usize::try_from(soft_limit / 4)
@@ -212,7 +269,13 @@ impl NixRdpdrBackend {
         if open_file.delete_on_close {
             match holds_entries(&open_file.file) {
                 Ok(false) => {
-                    self.pending_deletes.insert(open_file.identity, open_file.path);
+                    self.pending_deletes.insert(
+                        open_file.identity,
+                        PendingDelete {
+                            device_id: open_file.device_id,
+                            path: open_file.path,
+                        },
+                    );
                 }
                 Ok(true) => trace!("Kept a directory opened with delete on close that is not empty"),
                 Err(error) => warn!(%error, "Delete on close check error"),
@@ -223,8 +286,8 @@ impl NixRdpdrBackend {
             .values()
             .any(|other| other.identity == open_file.identity);
         if !still_open
-            && let Some(path) = self.pending_deletes.remove(&open_file.identity)
-            && let Err(error) = remove_file(&self.file_base, &path, open_file.identity)
+            && let Some(pending) = self.pending_deletes.remove(&open_file.identity)
+            && let Err(error) = remove_file(self.roots.of(pending.device_id), &pending.path, open_file.identity)
         {
             warn!(%error, "Delete on close error");
         }
@@ -250,6 +313,16 @@ impl NixRdpdrBackend {
         for file_id in file_ids {
             self.close_file(file_id);
         }
+    }
+
+    /// Serves the drive announced as `device_id` from the `root` directory instead of the shared directory.
+    ///
+    /// `root` is opened for each request and not checked here, so creates through the drive fail while it cannot be opened.
+    /// A root given again for the same device replaces the earlier one.
+    #[must_use]
+    pub fn with_drive_root(mut self, device_id: u32, root: String) -> Self {
+        self.roots.drives.insert(device_id, root);
+        self
     }
 
     /// Accepts print jobs for the virtual printer announced as `device_id` and sends them to
@@ -280,14 +353,29 @@ impl_as_any!(NixRdpdrBackend);
 /// device IDs must be unique and nonzero, and the printer takes the highest ID
 /// no drive uses; [`RdpdrBackendFactory::build_rdpdr_backend`] reports a
 /// configuration that breaks this with a [`NixRdpdrBackendFactoryError`].
-#[derive(Debug, Clone)]
+///
+/// A drive added with [`Self::with_drive`] serves the shared directory given to [`Self::new`], and a drive added with [`Self::with_drive_root`] serves a directory of its own.
+/// The default factory has no shared directory, for a configuration where every drive has its own root.
+/// No directory is opened or checked when a backend is built.
+#[derive(Debug, Clone, Default)]
 pub struct NixRdpdrBackendFactory {
     file_base: String,
-    drives: Vec<(u32, String)>,
+    drives: Vec<Drive>,
     printer: Option<(String, PrintTarget)>,
 }
 
+#[derive(Debug, Clone)]
+struct Drive {
+    device_id: u32,
+    name: String,
+    /// The directory the drive serves, or `None` for the shared directory.
+    root: Option<String>,
+}
+
 impl NixRdpdrBackendFactory {
+    /// Creates a factory whose drives serve the `file_base` directory unless they are given their own root.
+    ///
+    /// An empty `file_base` is no directory, as for [`NixRdpdrBackend::new`].
     pub fn new(file_base: String) -> Self {
         Self {
             file_base,
@@ -296,9 +384,27 @@ impl NixRdpdrBackendFactory {
         }
     }
 
+    /// Announces a drive called `name` that serves the shared directory.
     #[must_use]
     pub fn with_drive(mut self, device_id: u32, name: String) -> Self {
-        self.drives.push((device_id, name));
+        self.drives.push(Drive {
+            device_id,
+            name,
+            root: None,
+        });
+        self
+    }
+
+    /// Announces a drive called `name` that serves the `root` directory instead of the shared directory.
+    ///
+    /// Several drives may serve the same directory, or directories inside one another.
+    #[must_use]
+    pub fn with_drive_root(mut self, device_id: u32, name: String, root: String) -> Self {
+        self.drives.push(Drive {
+            device_id,
+            name,
+            root: Some(root),
+        });
         self
     }
 
@@ -315,19 +421,26 @@ const DEFAULT_PRINTER_DEVICE_ID: u32 = u32::MAX - 1;
 impl RdpdrBackendFactory for NixRdpdrBackendFactory {
     fn build_rdpdr_backend(&self) -> RdpdrBackendFactoryResult<RdpdrBackendProduct> {
         let mut device_ids = HashSet::with_capacity(self.drives.len());
-        for (device_id, name) in &self.drives {
-            if *device_id == 0 {
+        for drive in &self.drives {
+            if drive.device_id == 0 {
                 return Err(Box::new(NixRdpdrBackendFactoryError::ReservedDeviceId));
             }
-            if !is_valid_device_name(name) {
-                return Err(Box::new(NixRdpdrBackendFactoryError::InvalidDriveName(*device_id)));
+            if !is_valid_device_name(&drive.name) {
+                return Err(Box::new(NixRdpdrBackendFactoryError::InvalidDriveName(drive.device_id)));
             }
-            if !device_ids.insert(*device_id) {
-                return Err(Box::new(NixRdpdrBackendFactoryError::DuplicateDeviceId(*device_id)));
+            if !device_ids.insert(drive.device_id) {
+                return Err(Box::new(NixRdpdrBackendFactoryError::DuplicateDeviceId(
+                    drive.device_id,
+                )));
             }
         }
 
         let mut backend = NixRdpdrBackend::new(self.file_base.clone());
+        for drive in &self.drives {
+            if let Some(root) = &drive.root {
+                backend = backend.with_drive_root(drive.device_id, root.clone());
+            }
+        }
         let mut printer = None;
         if let Some((name, target)) = &self.printer {
             if !is_valid_device_name(name) {
@@ -351,7 +464,7 @@ impl RdpdrBackendFactory for NixRdpdrBackendFactory {
         let drives = self
             .drives
             .iter()
-            .map(|(id, name)| RdpdrDrive::new(*id, name.clone()))
+            .map(|drive| RdpdrDrive::new(drive.device_id, drive.name.clone()))
             .collect();
         let mut product = RdpdrBackendProduct::new(Box::new(backend), drives);
         if let Some(printer) = printer {
@@ -494,7 +607,7 @@ pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWrite
     let length = u64::try_from(req_inner.write_data.len()).unwrap_or(u64::MAX);
     // [MS-FSA] 2.1.5.4 refuses a write into a range another handle locked, or that any shared lock covers, after a write of no bytes has already succeeded.
     if length != 0
-        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+        && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
             backend
                 .locks
                 .conflicts(open_file.identity, file_id, req_inner.offset, length, true, false)
@@ -561,7 +674,7 @@ pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRe
     let file_id = req_inner.device_io_request.file_id;
     // [MS-FSA] 2.1.5.3 refuses a read from a range another handle locked exclusively, after a read of no bytes has already succeeded.
     if req_inner.length != 0
-        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+        && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
             backend.locks.conflicts(
                 open_file.identity,
                 file_id,
@@ -629,7 +742,7 @@ pub(crate) fn lock_control(
     req_inner: ServerDriveLockControlRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = req_inner.device_io_request.file_id;
-    let checked = match backend.open_files.get(&file_id) {
+    let checked = match file_for_request(&backend.open_files, &req_inner.device_io_request) {
         None => {
             warn!("No such file");
             Err(NtStatus::NO_SUCH_FILE)
@@ -673,7 +786,12 @@ pub(crate) fn lock_control(
 pub(crate) fn close_device(backend: &mut NixRdpdrBackend, req_inner: DeviceCloseRequest) -> PduResult<Vec<SvcMessage>> {
     // A failed delete on close is only logged, and the close still reports success.
     // [MS-FSA] 2.1.5.5 Server Requests Closing an Open defines no failure status, and Windows does not report a failed delete on close to the caller closing the handle either.
-    let lock_responses = backend.close_file(req_inner.device_io_request.file_id);
+    // A file ID that names no file of this device closes nothing, so it cannot close a file of another device.
+    let lock_responses = if file_for_request(&backend.open_files, &req_inner.device_io_request).is_some() {
+        backend.close_file(req_inner.device_io_request.file_id)
+    } else {
+        Vec::new()
+    };
     let res = RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
         device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::SUCCESS),
     });
@@ -686,7 +804,7 @@ pub(crate) fn query_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.open_files.get(&req_inner.device_io_request.file_id) {
+    match file_for_request(&backend.open_files, &req_inner.device_io_request) {
         Some(OpenFile {
             file, path, identity, ..
         }) => match file.metadata() {
@@ -774,7 +892,7 @@ pub(crate) fn query_volume_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryVolumeInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.open_files.get(&req_inner.device_io_request.file_id) {
+    match file_for_request(&backend.open_files, &req_inner.device_io_request) {
         Some(OpenFile { file, .. }) => {
             if let Ok(statvfs) = nix::sys::statvfs::fstatvfs(file.as_fd()) {
                 if FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION == req_inner.fs_info_class_lvl {
@@ -892,10 +1010,9 @@ pub(crate) fn set_information(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    let file_id = req_inner.device_io_request.file_id;
     // [MS-FSA] 2.1.5.15.12 FileRenameInformation refuses to rename a file marked for deletion or a directory holding open files.
     let rename_denied = matches!(req_inner.set_buffer, FileInformationClass::Rename(_))
-        && backend.open_files.get(&file_id).is_some_and(|open_file| {
+        && file_for_request(&backend.open_files, &req_inner.device_io_request).is_some_and(|open_file| {
             backend.pending_deletes.contains_key(&open_file.identity)
                 || backend
                     .open_files
@@ -913,7 +1030,7 @@ pub(crate) fn set_information(
         HashSet::new()
     };
     let mut renamed = None;
-    let status = match backend.open_files.get_mut(&file_id) {
+    let status = match file_for_request_mut(&mut backend.open_files, &req_inner.device_io_request) {
         Some(open_file) => match &req_inner.set_buffer {
             // [MS-FSA] 2.1.5.15.3 FileDispositionInformation and 2.1.5.15.12 FileRenameInformation refuse a handle without DELETE access before any other check.
             FileInformationClass::Rename(_) | FileInformationClass::Disposition(_) if !open_file.may_delete => {
@@ -925,7 +1042,7 @@ pub(crate) fn set_information(
                 .and_then(|to| to.file_name().is_some().then_some(to).ok_or(InvalidPath))
             {
                 Ok(to) => match rename(
-                    &backend.file_base,
+                    backend.roots.of(open_file.device_id),
                     open_file,
                     &to,
                     info.replace_if_exists == Boolean::True,
@@ -933,7 +1050,13 @@ pub(crate) fn set_information(
                     &open_identities,
                 ) {
                     Ok(ancestors) => {
-                        renamed = Some((open_file.identity, open_file.path.clone(), to, ancestors));
+                        renamed = Some((
+                            open_file.device_id,
+                            open_file.identity,
+                            open_file.path.clone(),
+                            to,
+                            ancestors,
+                        ));
                         NtStatus::SUCCESS
                     }
                     Err(status) => {
@@ -977,13 +1100,16 @@ pub(crate) fn set_information(
     // Every handle opened through the renamed link follows it, so a later delete removes this file and not whatever takes the old name.
     // A handle whose path no longer names the file was opened through that link, possibly spelled differently on a case-insensitive filesystem.
     // A handle opened through another hard link of the file still finds it at its path, and keeps that link.
-    if let Some((identity, from, to, ancestors)) = renamed {
+    // A handle of a drive with another root keeps its path too, because the new path is relative to the root of the renaming drive.
+    // Its path may then name nothing or another file, which a later rename or delete through it refuses.
+    if let Some((device_id, identity, from, to, ancestors)) = renamed {
+        let root = backend.roots.of(device_id);
         for open_file in backend
             .open_files
             .values_mut()
-            .filter(|open_file| open_file.identity == identity)
+            .filter(|open_file| open_file.identity == identity && backend.roots.of(open_file.device_id) == root)
         {
-            if open_file.path == from || !names_file(&backend.file_base, &open_file.path, identity) {
+            if open_file.path == from || !names_file(root, &open_file.path, identity) {
                 open_file.path = to.clone();
                 open_file.ancestors = ancestors.clone();
             }
@@ -1009,7 +1135,7 @@ fn rename(
     open_file: &OpenFile,
     to: &RelativePath,
     replace_if_exists: bool,
-    pending_deletes: &HashMap<FileIdentity, RelativePath>,
+    pending_deletes: &HashMap<FileIdentity, PendingDelete>,
     open_identities: &HashSet<FileIdentity>,
 ) -> Result<Vec<FileIdentity>, NtStatus> {
     let root = Root::open(file_base).map_err(status_from_errno)?;
@@ -1081,7 +1207,7 @@ fn contains_entry(directory: BorrowedFd<'_>, name: &str) -> nix::Result<bool> {
 /// [MS-FSA]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/386d9ec5-e0f6-4853-b175-c05be01419e0
 fn set_delete_pending(
     open_file: &OpenFile,
-    pending_deletes: &mut HashMap<FileIdentity, RelativePath>,
+    pending_deletes: &mut HashMap<FileIdentity, PendingDelete>,
     delete_pending: bool,
 ) -> Result<(), NtStatus> {
     if !delete_pending {
@@ -1098,7 +1224,13 @@ fn set_delete_pending(
     if holds_entries(&open_file.file).map_err(status_from_errno)? {
         return Err(NtStatus::DIRECTORY_NOT_EMPTY);
     }
-    pending_deletes.insert(open_file.identity, open_file.path.clone());
+    pending_deletes.insert(
+        open_file.identity,
+        PendingDelete {
+            device_id: open_file.device_id,
+            path: open_file.path.clone(),
+        },
+    );
     Ok(())
 }
 
@@ -1262,7 +1394,7 @@ pub(crate) fn query_directory(
     backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryDirectoryRequest,
 ) -> PduResult<Vec<SvcMessage>> {
-    let entry = match backend.open_files.get_mut(&req_inner.device_io_request.file_id) {
+    let entry = match file_for_request_mut(&mut backend.open_files, &req_inner.device_io_request) {
         None => {
             warn!("No file to query directory");
             Err(NtStatus::NO_SUCH_FILE)
@@ -1286,13 +1418,15 @@ pub(crate) fn query_directory(
             open_file.listing = None;
             match RelativePath::parse_query(&req_inner.path) {
                 // Only a missing name or an empty listing is no match; any other error is reported, so the server does not take it for an empty directory.
-                Ok((directory, pattern)) => match start_query(&backend.file_base, open_file, &directory, pattern) {
-                    Ok(entry) => entry.ok_or(NtStatus::NO_SUCH_FILE),
-                    Err(error) => {
-                        trace!(%error, "Initial query directory failed");
-                        Err(status_from_errno(error))
+                Ok((directory, pattern)) => {
+                    match start_query(backend.roots.of(open_file.device_id), open_file, &directory, pattern) {
+                        Ok(entry) => entry.ok_or(NtStatus::NO_SUCH_FILE),
+                        Err(error) => {
+                            trace!(%error, "Initial query directory failed");
+                            Err(status_from_errno(error))
+                        }
                     }
-                },
+                }
                 Err(InvalidPath) => {
                     trace!(path = ?req_inner.path, "Rejected an invalid query path");
                     Err(NtStatus::OBJECT_NAME_INVALID)
@@ -1358,8 +1492,13 @@ pub(crate) fn create_drive(
         Err(NtStatus::INSUFFICIENT_RESOURCES)
     } else {
         match RelativePath::parse(&req_inner.path) {
-            Ok(path) => open_file(&backend.file_base, &req_inner, &path, &backend.pending_deletes)
-                .map(|(file, identity, ancestors)| (file, path, identity, ancestors)),
+            Ok(path) => open_file(
+                backend.roots.of(req_inner.device_io_request.device_id),
+                &req_inner,
+                &path,
+                &backend.pending_deletes,
+            )
+            .map(|(file, identity, ancestors)| (file, path, identity, ancestors)),
             Err(InvalidPath) => {
                 trace!(path = ?req_inner.path, "Rejected an invalid create path");
                 Err(NtStatus::OBJECT_NAME_INVALID)
@@ -1373,6 +1512,7 @@ pub(crate) fn create_drive(
             backend.open_files.insert(
                 file_id,
                 OpenFile {
+                    device_id: req_inner.device_io_request.device_id,
                     file,
                     path,
                     identity,
@@ -1407,7 +1547,7 @@ fn open_file(
     file_base: &str,
     req: &DeviceCreateRequest,
     path: &RelativePath,
-    pending_deletes: &HashMap<FileIdentity, RelativePath>,
+    pending_deletes: &HashMap<FileIdentity, PendingDelete>,
 ) -> Result<(std::fs::File, FileIdentity, Vec<FileIdentity>), NtStatus> {
     let root = Root::open(file_base).map_err(|error| {
         warn!(%error, "Open shared directory error");
@@ -1579,13 +1719,32 @@ fn open_file(
     Ok((std::fs::File::from(file), identity, ancestors))
 }
 
+/// Returns the file `request` names, which is one opened through the device the request addresses.
+///
+/// A file ID used through another device names nothing, like one that was never opened, so the server cannot reach the files of another drive or learn which IDs they hold.
+fn file_for_request<'a>(open_files: &'a HashMap<u32, OpenFile>, request: &DeviceIoRequest) -> Option<&'a OpenFile> {
+    open_files
+        .get(&request.file_id)
+        .filter(|open_file| open_file.device_id == request.device_id)
+}
+
+/// Like [`file_for_request`], for a request that changes the file.
+fn file_for_request_mut<'a>(
+    open_files: &'a mut HashMap<u32, OpenFile>,
+    request: &DeviceIoRequest,
+) -> Option<&'a mut OpenFile> {
+    open_files
+        .get_mut(&request.file_id)
+        .filter(|open_file| open_file.device_id == request.device_id)
+}
+
 pub(crate) fn process_dependent_file(
     backend: &mut NixRdpdrBackend,
     request: DeviceIoRequest,
     error_fx: impl Fn(DeviceIoRequest) -> PduResult<Vec<SvcMessage>>,
     fx: impl Fn(&mut std::fs::File, DeviceIoRequest) -> PduResult<Vec<SvcMessage>>,
 ) -> PduResult<Vec<SvcMessage>> {
-    match backend.open_files.get_mut(&request.file_id) {
+    match file_for_request_mut(&mut backend.open_files, &request) {
         None => error_fx(request),
         Some(open_file) => fx(&mut open_file.file, request),
     }
