@@ -7,17 +7,14 @@ Currently, only the .NET target is officially supported.
 ## How to build
 
 - Install required tools: `cargo xtask ffi install`
-  - Install the .NET 10.0.1xx SDK separately; `global.json` pins the compatible iOS workload set.
-
-- Restore the workload set: `(cd ffi/dotnet && dotnet workload restore IronRdp.sln)`
+  - Install the .NET 10 SDK separately.
 
 - Build the shared library: `cargo xtask ffi build` (alternatively, in release mode: `cargo xtask ffi build --release`)
 
 - Build the bindings: `cargo xtask ffi bindings`
 
-The iOS package targets `net10.0-ios` with a minimum deployment target of iOS 12.2.
-The pinned iOS workload requires Xcode 26.6.
-Run `(cd ffi/dotnet && dotnet workload install ios)` to build it.
+The iOS package targets `net10.0-ios` with a minimum deployment target of iOS 15.
+Run `(cd ffi/dotnet && dotnet workload install ios)` and use the matching Xcode version to build it.
 
 At this point, you may build and run the examples for .NET:
 

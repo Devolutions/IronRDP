@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup Condition="$(PackageId.EndsWith('iOS'))">
     <TargetFrameworks>net10.0-ios</TargetFrameworks>
-    <SupportedOSPlatformVersion>12.2</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
   </PropertyGroup>
 
   <ItemGroup Condition="Exists('$(NativeLibPath_ios_arm64_framework)')">
@@ -20,11 +20,7 @@
     </None>
   </ItemGroup>
 
-  <ItemGroup Condition="!$(PackageId.EndsWith('iOS'))">
-    <Content Include="Devolutions.IronRdp.iOS.targets" PackagePath="build/Devolutions.IronRdp.iOS.targets" Pack="true" />
-  </ItemGroup>
-
-  <ItemGroup Condition="$(PackageId.EndsWith('iOS'))">
+  <ItemGroup>
     <Content Include="Devolutions.IronRdp.iOS.targets" PackagePath="build/Devolutions.IronRdp.iOS.targets" Pack="true" />
   </ItemGroup>
 </Project>

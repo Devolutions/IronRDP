@@ -272,11 +272,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
         with:
-          global-json-file: ffi/dotnet/global.json
-
-      - name: Restore .NET workloads
-        run: dotnet workload restore IronRdp.sln
-        working-directory: ./ffi/dotnet
+          global-json-file: global.json
 
       - name: Install native build dependencies
         uses: ./.github/actions/install-build-deps
@@ -291,12 +287,10 @@ jobs:
         run: cargo xtask ffi bindings -v
 
       - name: Build .NET projects
-        run: dotnet build
-        working-directory: ./ffi/dotnet
+        run: cd ./ffi/dotnet && dotnet build
 
       - name: Run .NET smoke tests
-        run: dotnet run --project ./Devolutions.IronRdp.Tests --no-build
-        working-directory: ./ffi/dotnet
+        run: dotnet run --project ./ffi/dotnet/Devolutions.IronRdp.Tests --no-build
 
   ffi-bindings-check:
     name: FFI bindings reproducibility
@@ -308,11 +302,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
         with:
-          global-json-file: ffi/dotnet/global.json
-
-      - name: Restore .NET workloads
-        run: dotnet workload restore IronRdp.sln
-        working-directory: ./ffi/dotnet
+          global-json-file: global.json
 
       - name: Install native build dependencies
         uses: ./.github/actions/install-build-deps
@@ -343,93 +333,10 @@ jobs:
         run: cargo xtask ffi build -v
 
       - name: Build IronRdp.sln
-        run: dotnet build IronRdp.sln -c Release
-        working-directory: ./ffi/dotnet
+        run: dotnet build ffi/dotnet/IronRdp.sln -c Release
 
       - name: Run .NET smoke tests
-        run: dotnet run --project Devolutions.IronRdp.Tests -c Release --no-build
-        working-directory: ./ffi/dotnet
-
-  ffi-ios:
-    name: FFI iOS NuGet consumers
-    runs-on: macos-26
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
-      IPHONEOS_DEPLOYMENT_TARGET: "12.2"
-      IPHONESIMULATOR_DEPLOYMENT_TARGET: "12.2"
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          global-json-file: ffi/dotnet/global.json
-
-      - name: Install pinned iOS workload
-        working-directory: ffi/dotnet
-        run: |
-          xcodebuild -version
-          dotnet workload install ios
-          dotnet workload --info
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2.9.1
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      - name: Build native iOS frameworks
-        run: |
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-          cargo install --locked bindgen-cli
-          for target in aarch64-apple-ios aarch64-apple-ios-sim; do
-            rid=ios-arm64
-            sdk=iphoneos
-            if [[ "$target" == aarch64-apple-ios-sim ]]; then
-              rid=iossimulator-arm64
-              sdk=iphonesimulator
-            fi
-            SDKROOT="$(xcrun --sdk "$sdk" --show-sdk-path)" cargo build -p ffi --target "$target"
-            framework="dependencies/runtimes/$rid/native/libDevolutionsIronRdp.framework"
-            mkdir -p "$framework"
-            cp "target/$target/debug/libironrdp.dylib" "$framework/libDevolutionsIronRdp"
-            install_name_tool -id @rpath/libDevolutionsIronRdp.framework/libDevolutionsIronRdp "$framework/libDevolutionsIronRdp"
-            cp ffi/dotnet/Devolutions.IronRdp/Info.plist "$framework/Info.plist"
-            /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable libDevolutionsIronRdp" "$framework/Info.plist"
-            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.devolutions.ironrdp" "$framework/Info.plist"
-            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 1.0" "$framework/Info.plist"
-          done
-
-      - name: Pack NuGet packages
-        working-directory: ffi/dotnet
-        run: |
-          for package in Devolutions.IronRdp Devolutions.IronRdp.iOS; do
-            dotnet build Devolutions.IronRdp/Devolutions.IronRdp.csproj -c Release \
-              -p:PackageId="$package" -p:Version=1.0.0 -p:PackageOutputPath="$RUNNER_TEMP/ios-packages"
-          done
-
-      - name: Upload iOS test packages
-        uses: actions/upload-artifact@v7
-        with:
-          name: ironrdp-ios-test-packages
-          path: ${{ runner.temp }}/ios-packages/*.nupkg
-
-      - name: Link device and simulator package consumers
-        working-directory: ffi/dotnet
-        run: |
-          for package in Devolutions.IronRdp Devolutions.IronRdp.iOS; do
-            for rid in ios-arm64 iossimulator-arm64; do
-              output="$RUNNER_TEMP/$package-$rid"
-              dotnet build tests/IosPackageConsumer/IosPackageConsumer.csproj -c Release -r "$rid" \
-                -p:IronRdpPackageId="$package" -p:IronRdpPackageVersion=1.0.0 \
-                -p:RestorePackagesPath="$output/packages" -p:BaseIntermediateOutputPath="$output/obj/" \
-                --output "$output/bin" --source "$RUNNER_TEMP/ios-packages" --source https://api.nuget.org/v3/index.json
-              app="$output/bin/IosPackageConsumer.app"
-              test -f "$app/Frameworks/libDevolutionsIronRdp.framework/libDevolutionsIronRdp"
-              otool -L "$app/IosPackageConsumer" | grep -F @rpath/libDevolutionsIronRdp.framework/libDevolutionsIronRdp
-              test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$app/Info.plist")" = "12.2"
-            done
-          done
+        run: dotnet run --project ffi/dotnet/Devolutions.IronRdp.Tests -c Release --no-build
 
   feature-matrix-setup:
     name: feature matrix setup
@@ -495,7 +402,7 @@ jobs:
   success:
     name: Success
     if: ${{ always() }}
-    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, ffi-bindings-check, ffi-ios, feature-matrix-setup, feature-matrix]
+    needs: [formatting, test-settings, typos, openai-agent, checks, fuzz, web, ffi, ffi-bindings-check, feature-matrix-setup, feature-matrix]
     runs-on: ubuntu-latest
 
     steps:

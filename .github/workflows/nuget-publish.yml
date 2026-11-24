@@ -128,13 +128,13 @@ jobs:
 
       - name: Configure iOS deployement target
         if: ${{ matrix.os == 'ios' }}
-        run: Write-Output "IPHONEOS_DEPLOYMENT_TARGET=12.2" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+        run: Write-Output "IPHONEOS_DEPLOYMENT_TARGET=15.0" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
         shell: pwsh
 
       - name: Configure iOS simulator deployement target
         if: ${{ matrix.os == 'iossimulator' }}
         run: |
-          Write-Output "IPHONESIMULATOR_DEPLOYMENT_TARGET=12.2" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Output "IPHONESIMULATOR_DEPLOYMENT_TARGET=15.0" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
           $SimulatorSdk = xcrun --sdk iphonesimulator --show-sdk-path
           Write-Output "SDKROOT=$SimulatorSdk" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
         shell: pwsh
@@ -348,14 +348,13 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v5
         with:
-          global-json-file: ffi/dotnet/global.json
+          global-json-file: global.json
 
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v3
 
       - name: Install ios workload
         run: dotnet workload install ios
-        working-directory: ffi/dotnet
 
       - name: Prepare dependencies
         run: |
@@ -379,11 +378,10 @@ jobs:
           PROJECT_VERSION: ${{ needs.preflight.outputs.project-version }}
         run: |
           # net10.0 target packaged as Devolutions.IronRdp
-          dotnet build .\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:Version=$Env:PROJECT_VERSION
+          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:Version=$Env:PROJECT_VERSION
           # net10.0-ios target packaged as Devolutions.IronRdp.iOS
-          dotnet build .\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS /p:Version=$Env:PROJECT_VERSION
+          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS /p:Version=$Env:PROJECT_VERSION
         shell: pwsh
-        working-directory: ffi/dotnet
 
       - name: Upload managed components
         uses: actions/upload-artifact@v7
