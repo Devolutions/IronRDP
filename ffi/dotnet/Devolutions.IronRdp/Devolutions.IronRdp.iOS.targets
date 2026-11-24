@@ -2,7 +2,7 @@
 <Project ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <IsIOS Condition="'$(Platform)' == 'iPhone' or '$(Platform)' == 'iPhoneSimulator' or $(TargetFramework.Contains('-ios')) or $(TargetFramework.Contains('-iossimulator'))">true</IsIOS>
-    <IsIOSSimulator Condition="'$(Platform)' == 'iPhoneSimulator' or '$(RuntimeIdentifier)' == 'iossimulator-arm64' or $(RuntimeIdentifiers.Contains('iossimulator-arm64')) or $(TargetFramework.Contains('-iossimulator'))">true</IsIOSSimulator>
+    <IsIOSSimulator Condition="'$(Platform)' == 'iPhoneSimulator' or '$(RuntimeIdentifier)' == 'iossimulator-arm64' or $(TargetFramework.Contains('-iossimulator'))">true</IsIOSSimulator>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(IsIOS)' == 'true' AND '$(IsIOSSimulator)' != 'true'">
