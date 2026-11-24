@@ -18,6 +18,34 @@ At this point, you may build and run the examples for .NET:
 - `dotnet run --project Devolutions.IronRdp.ConnectExample`
 - `dotnet run --project Devolutions.IronRdp.AvaloniaExample`
 
+## Direct dynamic virtual channels
+
+Register channel names with `DirectDvcConfig` and set `ConfigBuilder.DirectDvc`, or attach it with `ClientConnector.WithDynamicChannelDirect`.
+The server can open multiple channels with the same registered name at once; each opening has its own channel and endpoint IDs.
+Create its `DirectDvcEventQueue` with a positive event capacity and poll `NextEvent()` for `Opened`, `Data` and `Closed` events.
+The capacity limits event count, not aggregate payload bytes.
+`NextEvent()` returns null when the queue is empty.
+Each event carries the channel name, server channel ID and an endpoint ID unique to that channel opening; call `TakeData()` to transfer a data event's owned bytes into `VecU8`.
+Dispose the queue, each returned event and every `VecU8` from `TakeData()` when finished to release native memory promptly.
+Pass both IDs to `ActiveStage.SendDirectDvcData` or `CloseDirectDvcChannel`; each method checks that the endpoint is still active when encoding the frame.
+After a channel closes or reopens, the previous endpoint ID is rejected.
+On queue overflow, `NextEvent()` reports an error immediately, even if events remain queued, and continues to fail on later calls.
+Overflow drops an application-level event; it does not corrupt RDP framing or DVC reassembly.
+Channels configured with the same event sink share a queue, so overflow stops delivery for each of those channels and later inbound events may fail processing.
+Because the application event history is incomplete and the queue cannot recover, stop acting on its events and close the session.
+Both methods return an encoded frame for the main RDP connection and fail if the channel was moved to a multitransport tunnel.
+
+Use one serialized pipeline for `ActiveStage.Process`, direct send and close encoding, and the resulting transport writes.
+Write the responses from `Process`, including the channel create response, before acting on the resulting DVC events in that pipeline.
+Write each encoded direct DVC frame before processing another inbound PDU that could close or reopen its channel; endpoint IDs are checked during encoding, not again when the frame is written.
+
+```csharp
+var events = DirectDvcEventQueue.New(256);
+var directDvc = DirectDvcConfig.New(events.Sink);
+directDvc.AddChannel("my-channel");
+builder.DirectDvc = directDvc;
+```
+
 ## Dynamic resize
 
 `ClientConnector.WithDynamicChannelDisplayControl()` requests the Display Control channel ([MS-RDPEDISP]).
@@ -25,6 +53,73 @@ The server opens it and sends its capabilities some time after the connection is
 Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from `Pending` to `Ready` when the capabilities arrive, which is when to send the first resize.
 `Unavailable` means the channel was not requested.
 `ActiveStage.DisplayControlCapabilities` exposes the server's monitor count and area limits once `Ready`.
+
+## Native audio
+
+Attach native playback and, optionally, microphone capture before starting the connector.
+Create a new `NativeAudio` for each connection.
+Native playback joins RDPDR without redirected devices if it is absent, because Windows servers require the channel to start playback.
+An existing RDPDR configuration is preserved.
+An existing RDPSND channel prevents native playback from being attached.
+
+```csharp
+using var audio = NativeAudio.New(
+    playback: true, capture: true, outputDevice: "", inputDevice: "", latencyMs: 0);
+connector.WithNativeAudio(audio);
+```
+
+Empty device selectors follow the system default; otherwise supply a device ID or name.
+The latency is in milliseconds; zero selects the native default.
+Incoming audio is handled by the normal `ActiveStage.Process` loop.
+Device and stream failures are logged through Rust tracing rather than returned as managed status events.
+
+Call `PollAudio(audio)` before and after each incoming PDU and at least every 50 ms while the connection is idle.
+Write each returned `ResponseFrame` to the same transport in order and dispose the output iterator and frames.
+Each response can contain multiple complete RDP packets.
+The bounded queue holds at least 100 ms at up to 48 kHz and two channels, including after a mono-to-stereo format change.
+On the next poll, queue overflow, malformed capture PDUs, or a failed ordered format change permanently disable capture for the connection and close its dynamic channel.
+An Open failure affects one capture attempt; the server can reopen the channel and retry.
+Opening capture or changing its rate or channels waits up to two seconds for device readiness in the serialized session loop.
+This pauses session processing, and cleanup can take longer if a driver blocks.
+Capture samples received before the Open reply is queued are discarded so they cannot overtake the reply.
+
+Serialize `PollAudio`, `StopAudio`, and `Process` with their transport writes on the same pipeline.
+Finish writing each call's returned frames before starting the next call, so capture data cannot overtake a format confirmation.
+Stopping audio is permanent for the connection and does not disconnect the desktop.
+Stopping audio closes capture before waiting for playback cleanup.
+Dispose the stage on disconnect to release device streams.
+Keep `NativeAudio` undisposed until the final `PollAudio` or `StopAudio` call.
+Disposing `NativeAudio` releases its handle but does not stop an attached stage.
+
+```csharp
+async Task SendAudioOutputs(ActiveStageOutputIterator outputs)
+{
+    using (outputs)
+    {
+        while (outputs.Next() is { } output)
+        {
+            using (output)
+            using (var frame = output.ResponseFrame)
+            {
+                var bytes = new byte[frame.Size];
+                frame.Fill(bytes);
+                await framed.Write(bytes);
+            }
+        }
+    }
+}
+
+await SendAudioOutputs(stage.PollAudio(audio));
+await SendAudioOutputs(stage.StopAudio(audio));
+```
+
+Microphone capture requires operating-system permission.
+On iOS and macOS, provide `NSMicrophoneUsageDescription` and request microphone access.
+On macOS, applications using the hardened runtime need the `com.apple.security.device.audio-input` entitlement.
+Applications using App Sandbox need the `com.apple.security.device.microphone` entitlement.
+Linux builds require ALSA development headers.
+The native FFI library requires `libasound` at runtime even when audio is disabled.
+Android audio is unsupported so that the Android API 21 baseline remains usable.
 
 ## Touch and pen input (MS-RDPEI)
 
@@ -40,7 +135,7 @@ Read `ActiveStage.DisplayControlState` after each `Process` call: it moves from 
 ## Migrating from 2026.10.19
 
 - Properties replace the `GetX()` and `SetX()` methods they duplicated.
-- Only these types are `IDisposable`: `ActiveStage`, `ActiveStageOutput`, `ActiveStageOutputIterator`, `ClipboardMessage`, `ClipboardSvcMessage`, `CredsspProcessGenerator`, `DecodedImage`, `DecodedPointer`, `FfiFileContentsResponse`, `FormatDataResponse`, `PenFrameBuilder`, `TouchFrameBuilder`, `VecU8`, `WinCliprdr` and `WriteBuf`.
+- These types are `IDisposable`: `ActiveStage`, `ActiveStageOutput`, `ActiveStageOutputIterator`, `ClientConnectorState`, `ClipboardMessage`, `ClipboardSvcMessage`, `ConnectionResult`, `CredsspProcessGenerator`, `DecodedImage`, `DecodedPointer`, `DirectDvcEvent`, `DirectDvcEventQueue`, `FfiFileContentsResponse`, `FormatDataResponse`, `NativeAudio`, `PenFrameBuilder`, `TouchFrameBuilder`, `VecU8`, `WinCliprdr` and `WriteBuf`.
   Every other type is released by its finalizer, so drop `using` and `Dispose()` on it.
 - Dispose `WinCliprdr` on the thread that created it, because only that thread can remove its window subclass.
 - Dispose a `CredsspProcessGenerator` before the next call on its `CredsspSequence`.

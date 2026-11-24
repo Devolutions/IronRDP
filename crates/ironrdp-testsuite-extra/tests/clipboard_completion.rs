@@ -3,7 +3,6 @@ use core::net::Ipv4Addr;
 use core::pin::Pin;
 use core::task::Poll;
 use core::time::Duration;
-use std::rc::Rc;
 
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackend};
@@ -119,8 +118,8 @@ async fn dispatch_and_write(
     mut events: Vec<ServerEvent>,
     transport: &mut TokioFramed<tokio::io::DuplexStream>,
 ) -> ServerResult<()> {
-    let queue = Rc::new(OutboundQueue::default());
-    dispatch_static_channel_events(server, channels, &mut events, &mut QueuedWriter::new(Rc::clone(&queue))).await?;
+    let queue = OutboundQueue::default();
+    dispatch_static_channel_events(server, channels, &mut events, &mut QueuedWriter::new(&queue)).await?;
     queue.finish();
     queue.write_queued(transport).await
 }

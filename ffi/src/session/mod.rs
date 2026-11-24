@@ -1,5 +1,16 @@
 pub mod image;
 
+fn ensure_native_audio_attached(
+    attached: Option<&std::sync::Arc<crate::audio::AudioShared>>,
+    audio: &std::sync::Arc<crate::audio::AudioShared>,
+) -> Result<(), Box<crate::error::ffi::IronRdpError>> {
+    if attached.is_some_and(|attached| std::sync::Arc::ptr_eq(attached, audio)) {
+        Ok(())
+    } else {
+        Err("native audio belongs to another connection".into())
+    }
+}
+
 /// Encodes windowing orders as a complete slow-path Orders update ([MS-RDPBCGR] 2.2.9.1.1.3.1
 /// Slow-Path Graphics Update carrying an [MS-RDPEGDI] 2.2.2.1 Orders Update), the byte form this
 /// API exposed before orders were decoded.
@@ -25,11 +36,13 @@ pub mod ffi {
     use std::collections::VecDeque;
 
     use super::image::ffi::DecodedImage;
+    use crate::audio::ffi::NativeAudio;
     use crate::clipboard::message::ffi::{
         ClipboardFormatId, ClipboardFormatIterator, ClipboardMessage, FormatDataResponse,
     };
     use crate::connector::activation::ffi::ConnectionActivationSequence;
     use crate::connector::result::ffi::ConnectionResult;
+    use crate::dvc::direct_channel::{DirectDvcChannelProcessor, DirectDvcMessage};
     use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessage;
     use crate::error::ffi::IronRdpError;
     use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
@@ -41,8 +54,9 @@ pub mod ffi {
     #[diplomat::attr(dotnet, manually_disposable)]
     #[diplomat::opaque_mut]
     pub struct ActiveStage(
-        pub ironrdp::session::ActiveStage,
-        pub ironrdp::connector::connection_activation::ConnectionActivationFactory,
+        pub(crate) ironrdp::session::ActiveStage,
+        pub(crate) ironrdp::connector::connection_activation::ConnectionActivationFactory,
+        pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
     );
 
     #[diplomat::attr(dotnet, manually_disposable)]
@@ -126,7 +140,21 @@ pub mod ffi {
     }
 
     impl ActiveStage {
+        fn validate_direct_dvc_endpoint(&self, channel_id: u32, endpoint_id: u64) -> Result<(), Box<IronRdpError>> {
+            let Some(channel) = self.0.get_dvc_by_channel_id::<DirectDvcChannelProcessor>(channel_id) else {
+                return Err("direct DVC channel is not open".into());
+            };
+            if !channel.processor().is_active_endpoint(endpoint_id) {
+                return Err("direct DVC endpoint is no longer active".into());
+            }
+            if self.0.dvc_tunnel_for_channel(channel_id).is_some() {
+                return Err("direct DVC channel is routed through a multitransport tunnel".into());
+            }
+            Ok(())
+        }
+
         pub fn new(connection_result: &mut ConnectionResult) -> Result<Box<Self>, Box<IronRdpError>> {
+            let audio = connection_result.1.take();
             let connection_result = connection_result
                 .0
                 .take()
@@ -149,7 +177,7 @@ pub mod ffi {
             .build();
             stage.set_window_support_level(window_support_level);
 
-            Ok(Box::new(ActiveStage(stage, activation_factory)))
+            Ok(Box::new(ActiveStage(stage, activation_factory, audio)))
         }
 
         /// Produces a fresh connection activation sequence to drive the Deactivation-Reactivation
@@ -194,6 +222,20 @@ pub mod ffi {
         /// not call it concurrently with other methods of this `ActiveStage`.
         pub fn poll_rdpdr_deferred(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             let outputs = self.poll_rdpdr_deferred_output()?;
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
+        }
+
+        /// Drains captured audio and audio channel closures into transport frames.
+        pub fn poll_audio(&mut self, audio: &NativeAudio) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            super::ensure_native_audio_attached(self.2.as_ref(), &audio.0)?;
+            let outputs = crate::audio::poll_audio(&mut self.0, &audio.0)?;
+            Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
+        }
+
+        /// Stops native playback and capture for this connection.
+        pub fn stop_audio(&mut self, audio: &NativeAudio) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            super::ensure_native_audio_attached(self.2.as_ref(), &audio.0)?;
+            let outputs = crate::audio::stop_audio(&mut self.0, &audio.0)?;
             Ok(Box::new(ActiveStageOutputIterator(outputs.into())))
         }
 
@@ -324,6 +366,53 @@ pub mod ffi {
             }
 
             let frame = self.0.encode_dvc_messages(messages)?;
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        /// Encodes `data` in a DYNVC_DATA PDU ([MS-RDPEDYC] section 2.2.3.2, "DVC Data (DYNVC_DATA)").
+        ///
+        /// Rejects an inactive endpoint or a channel moved to a multitransport tunnel.
+        /// The endpoint is checked during encoding.
+        /// Serialize inbound processing, encoding, and transport writes, and write this frame before processing a later close or reopen.
+        ///
+        /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/11402a8d-7ad8-49a7-a7d4-1458b7ac3fea
+        pub fn send_direct_dvc_data(
+            &mut self,
+            channel_id: u32,
+            endpoint_id: u64,
+            data: &[u8],
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            self.validate_direct_dvc_endpoint(channel_id, endpoint_id)?;
+
+            let messages = ironrdp::dvc::encode_dvc_messages(
+                channel_id,
+                vec![Box::new(DirectDvcMessage(data.to_vec()))],
+                ironrdp::svc::ChannelFlags::empty(),
+            )?;
+            let frame = self.0.encode_dvc_messages(messages)?;
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        /// Encodes a DYNVC_CLOSE PDU ([MS-RDPEDYC] section 2.2.4, "Closing a DVC (DYNVC_CLOSE)").
+        ///
+        /// Rejects an inactive endpoint, a channel moved to a multitransport tunnel, or a channel that is not open.
+        /// The endpoint is checked during encoding.
+        /// Serialize inbound processing, encoding, and transport writes, and write this frame before processing a later close or reopen.
+        ///
+        /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/c02dfd21-ccbc-4254-985b-3ef6dd115dec
+        pub fn close_direct_dvc_channel(
+            &mut self,
+            channel_id: u32,
+            endpoint_id: u64,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            self.validate_direct_dvc_endpoint(channel_id, endpoint_id)?;
+
+            let close = self
+                .0
+                .get_svc_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .and_then(|drdynvc| drdynvc.close_channel(channel_id))
+                .ok_or("direct DVC channel is not open")?;
+            let frame = self.0.encode_dvc_messages(vec![close])?;
             Ok(Box::new(VecU8(frame)))
         }
 
@@ -841,6 +930,16 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct GracefulDisconnectReason(pub ironrdp::session::GracefulDisconnectReason);
+}
+
+impl Drop for ffi::ActiveStage {
+    fn drop(&mut self) {
+        if let Some(audio) = self.2.as_ref()
+            && crate::audio::stop_audio(&mut self.0, audio).is_err()
+        {
+            tracing::warn!("Failed to stop native audio while dropping active stage");
+        }
+    }
 }
 
 #[cfg(test)]

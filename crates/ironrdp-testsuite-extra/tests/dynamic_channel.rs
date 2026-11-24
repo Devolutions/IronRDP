@@ -1,7 +1,6 @@
 use core::any::TypeId;
 use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicBool, Ordering};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{ReadCursor, decode, decode_cursor, encode_vec, impl_as_any};
@@ -127,10 +126,9 @@ async fn dispatch_and_write(
     mut events: Vec<ServerEvent>,
     transport: &mut TokioFramed<tokio::io::DuplexStream>,
 ) -> ServerResult<StaticChannelSet> {
-    let queue = Rc::new(OutboundQueue::default());
+    let queue = OutboundQueue::default();
     let channels =
-        dispatch_static_channel_events(server, channels, &mut events, &mut QueuedWriter::new(Rc::clone(&queue)))
-            .await?;
+        dispatch_static_channel_events(server, channels, &mut events, &mut QueuedWriter::new(&queue)).await?;
     queue.finish();
     queue.write_queued(transport).await?;
     Ok(channels)

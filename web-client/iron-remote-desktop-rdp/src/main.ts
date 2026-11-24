@@ -46,6 +46,19 @@ export function displayControl(enable: boolean): Extension {
 }
 
 /**
+ * Signs in with Microsoft Entra ID (RDS AAD Auth) instead of CredSSP.
+ * The callback receives the nonce the server sent after the TLS handshake and returns the compact
+ * JWS RDP assertion, or a promise of it; `signEntraAssertion` builds one.
+ * The username and password are not needed, because the server takes the user from the access token.
+ */
+export function entraAssertion(sign: (serverNonce: string) => string | Promise<string>): Extension {
+    return new Extension('entra_assertion', sign);
+}
+
+export { entraReqCnf, generateEntraPopKey, signEntraAssertion } from './entra';
+export type { EntraAssertionParams } from './entra';
+
+/**
  * Receives the remote desktop's audio through the callback described in README.md, Audio playback.
  * Wave messages contain interleaved 16-bit little-endian PCM in a Uint8Array.
  * Volume messages contain normalized logarithmic protocol levels, not linear amplitude gains.
@@ -57,11 +70,19 @@ export function audioPlayback(callback: (message: unknown) => void): Extension {
 
 /**
  * Redirects a camera through the callback described in README.md, Camera.
- * Start messages name the format the server picked; a stop message ends the capture.
- * The page then pushes one JPEG per frame with `cameraSample`.
+ * Start messages name the size and the format the server picked, `'mjpeg'` or `'h264'`; a stop message ends the capture.
+ * The page then pushes one frame at a time with `cameraSample`.
  */
 export function camera(callback: (message: unknown) => void): Extension {
     return new Extension('camera', callback);
+}
+
+/**
+ * Also offer H.264 at every size, ahead of MJPEG, when the page can encode it.
+ * The start message's `format` says which the server picked.
+ */
+export function cameraH264(enable: boolean): Extension {
+    return new Extension('camera_h264', enable);
 }
 
 /** The camera's name on the remote desktop, in place of `Browser camera`. An empty name is ignored. */
@@ -70,13 +91,24 @@ export function cameraName(name: string): Extension {
 }
 
 /**
- * One JPEG frame for `invokeExtension`, in the format of the last start message.
- * `invokeExtension` returns true when the frame answered a pending request. It returns false when the frame is held
+ * One frame for `invokeExtension`, a JPEG or an H.264 access unit as the last start message said.
+ * `invokeExtension` returns true when a frame went out and none is left held. It returns false when a frame is held
  * for the next request, when no stream is running (the frame is dropped), or when the server refused the frame and
  * got a Sample Error Response instead.
+ * An MJPEG frame replaces any held frame; an H.264 frame queues behind them, since each depends on the ones before it.
+ * Push H.264 access units in decode order, as the encoder emits them: the queue keeps that order.
+ * When 30 frames are held and none is requested, the queue is dropped and the callback gets a stop and a new start.
  */
 export function cameraSample(frame: Uint8Array): Extension {
     return new Extension('camera_sample', frame);
+}
+
+/**
+ * For `invokeExtension`: how many frames to encode now, the pending requests no held frame answers plus one kept ready.
+ * Ask before encoding an H.264 frame, because a dropped one spoils the picture until the next key frame.
+ */
+export function cameraWanted(): Extension {
+    return new Extension('camera_wanted', null);
 }
 
 export function kdcProxyUrl(url: string): Extension {

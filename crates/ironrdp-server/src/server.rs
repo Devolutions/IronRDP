@@ -1451,6 +1451,12 @@ pub struct RdpServer {
     /// The local address the current client reached. See
     /// [`Self::set_connection_local_addr`].
     connection_local_addr: Option<SocketAddr>,
+    /// How long the server waits for the client to close a connection that an error ended: [`ERROR_CLOSE_TIMEOUT`],
+    /// unless a test sets it.
+    error_close_timeout: Duration,
+    /// How long the server waits for the client to close a session that ended without an error: [`CLOSE_TIMEOUT`],
+    /// unless a test sets it.
+    close_timeout: Duration,
     /// Peer address of the connection served by [`Self::serve_connection`].
     /// Set on connection entry and cleared by [`Self::run_connection_with`] and
     /// [`Self::run_connection_session`]; see [`ConnectionInfo::peer_addr`].
@@ -1502,6 +1508,9 @@ pub struct RdpServer {
     /// client that came back with a verified one; see
     /// [`Self::set_auto_reconnect_on_request`].
     auto_reconnect_on_request: bool,
+    /// Tell the client of its user's logon only when asked (`LogonCompleted`); see
+    /// [`Self::set_logon_notification_on_request`].
+    logon_notification_on_request: bool,
     /// Whether the client's core Frame Acknowledge capability caps the EGFX
     /// frame window; see [`Self::set_egfx_core_frame_ack_limit`].
     #[cfg(feature = "egfx")]
@@ -1805,6 +1814,10 @@ pub enum ServerEvent {
     SetCredentials(Credentials),
     /// Replace or clear the Server Auto-Reconnect Cookie.
     SetAutoReconnectCookie(Option<rdp::session_info::ServerAutoReconnect>),
+    /// The user of the current connection has logged on: tell the client, if it has not been told yet.
+    ///
+    /// See [`RdpServer::set_logon_notification_on_request`].
+    LogonCompleted,
     GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
     /// Writes window orders only after RemoteApp negotiation.
     WindowingOrders(WindowingOrders),
@@ -1866,6 +1879,7 @@ impl fmt::Debug for ServerEvent {
             Self::SetCredentials(..) => f.write_str("SetCredentials(..)"),
             Self::SetAutoReconnectCookie(Some(..)) => f.write_str("SetAutoReconnectCookie(Some(..))"),
             Self::SetAutoReconnectCookie(None) => f.write_str("SetAutoReconnectCookie(None)"),
+            Self::LogonCompleted => f.write_str("LogonCompleted"),
             Self::GetLocalAddr(..) => f.write_str("GetLocalAddr(..)"),
             Self::WindowingOrders(request) => f.debug_tuple("WindowingOrders").field(&request.orders.len()).finish(),
             #[cfg(feature = "egfx")]
@@ -1910,6 +1924,16 @@ impl RdpServerHandle {
         self.sender
             .send(ServerEvent::SetCredentials(credentials))
             .map_err(|_| ServerError::channel("send server credentials event"))
+    }
+
+    /// Queues [`ServerEvent::LogonCompleted`] to tell the current connection's client that its user has logged on.
+    ///
+    /// Success confirms queuing, not that the client was notified.
+    /// See [`RdpServer::set_logon_notification_on_request`].
+    pub fn logon_completed(&self) -> ServerResult<()> {
+        self.sender
+            .send(ServerEvent::LogonCompleted)
+            .map_err(|_| ServerError::channel("send logon completed event"))
     }
 
     /// Queries the listener address through the server event loop.
@@ -1963,13 +1987,10 @@ enum RunState {
     },
 }
 
-/// Which transport a connection ended up on after
-/// [`negotiate_and_authenticate`], carrying the framed stream in the shape the
-/// finalize step needs. The three variants exist to preserve the three
-/// pre-existing finalize behaviours exactly.
+/// Which transport a connection ended up on after [`negotiate_and_authenticate`], carrying the framed stream in the
+/// shape the finalize step needs.
 enum NegotiatedTransport<S> {
-    /// Never upgraded ([`RdpServerSecurity::None`]): finalize without a
-    /// stream shutdown, matching the old `BeginResult::Continue` arm.
+    /// Never upgraded ([`RdpServerSecurity::None`]).
     Continued(TokioFramed<S>),
     /// Upgraded in-band by us ([`TransportTls::Managed`]).
     Tls(Box<TokioFramed<tokio_rustls::server::TlsStream<S>>>),
@@ -2329,10 +2350,20 @@ struct ConnectionState {
     /// eligible for the hourly update when cookies are on request (see
     /// [`RdpServer::set_auto_reconnect_on_request`]).
     auto_reconnect_issued: bool,
+    /// What the logon notification needs from the client, while the client has not been sent one yet but will be
+    /// once the embedder signals the logon (see [`RdpServer::set_logon_notification_on_request`]).
+    pending_logon_notification: Option<LogonNotificationRequest>,
     /// The client's Pointer Capability Set (MS-RDPBCGR 2.2.7.1.5) from the last activation, for
     /// [`DisplayContext::pointer_cache_size`] and [`DisplayContext::color_pointer_cache_size`].
     pointer_cache_size: u16,
     color_pointer_cache_size: u16,
+}
+
+/// What the client asked for in its logon notification; see [`RdpServer::send_logon_notification`].
+#[derive(Debug, Clone, Copy)]
+struct LogonNotificationRequest {
+    client_info_flags: rdp::client_info::ClientInfoFlags,
+    long_credentials: bool,
 }
 
 /// What processing client data asks the driver to do.
@@ -2898,9 +2929,21 @@ where
 /// exceeding it is not an error, it just degrades to an abrupt drop.
 const EVICTION_GRACE: Duration = Duration::from_millis(750);
 
-/// How long the server waits to close the connection after it sent the client a
-/// Set Error Info PDU for an error.
-const ERROR_INFO_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long the server waits for the client to close a connection that an error ended, whether or not the error sent
+/// the client a last PDU.
+/// The errors that send one happen before the session streams anything, so the client has little left to read.
+/// After an error that sent nothing, only a client that stays connected holds the server, and one that has already gone
+/// ends the wait at once.
+/// A client that never closes the connection holds the server for this long, so the next client waits too, unless it
+/// takes the session over, which waits at most [`EVICTION_GRACE`].
+const ERROR_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How long the server waits for the client to close a session that ended without an error.
+/// The client may still be decoding frames sent before the reason and the ultimatum, so this matches
+/// [`FINAL_FLUSH_TIMEOUT`].
+/// A client that never closes the connection holds the server for this long, so the next client waits too, unless it
+/// takes the session over, which waits at most [`EVICTION_GRACE`].
+const CLOSE_TIMEOUT: Duration = FINAL_FLUSH_TIMEOUT;
 
 /// How long the client loop, at its end, writes what is still queued (a
 /// Deactivate All, a disconnect reason, the rest of a frame). A peer that
@@ -3239,6 +3282,8 @@ impl RdpServer {
             pending_authenticated_credentials: Arc::new(StdMutex::new(None)),
             local_addr: None,
             connection_local_addr: None,
+            error_close_timeout: ERROR_CLOSE_TIMEOUT,
+            close_timeout: CLOSE_TIMEOUT,
             connection_peer_addr: None,
             autodetect_enabled: false,
             heartbeat: None,
@@ -3248,6 +3293,7 @@ impl RdpServer {
             previous_auto_reconnect_cookie: None,
             auto_reconnect_sent: false,
             auto_reconnect_on_request: false,
+            logon_notification_on_request: false,
             #[cfg(feature = "egfx")]
             egfx_core_frame_ack_limit: false,
         }
@@ -3340,6 +3386,26 @@ impl RdpServer {
     /// effect there.
     pub fn set_auto_reconnect_on_request(&mut self, on_request: bool) {
         self.auto_reconnect_on_request = on_request;
+    }
+
+    /// Tell a client that its user has logged on only when the embedder says so, by sending
+    /// [`ServerEvent::LogonCompleted`] (through [`RdpServerHandle::logon_completed`]), instead of at activation.
+    ///
+    /// For embedders that activate a connection before the user has logged on, for instance to draw their own
+    /// logon screen: a client such as the Microsoft RDP client reports a completed logon once it gets the
+    /// notification, which [MS-RDPBCGR 3.3.5.10.1] sends after the user has logged on.
+    ///
+    /// Each connection gets at most one notification, and none on a Deactivation-Reactivation Sequence.
+    /// Like a vouch for the auto-reconnect cookie (see [`Self::set_auto_reconnect_on_request`]), the signal
+    /// belongs to the connection that was current when it was sent: if that connection is replaced before the
+    /// server reads it, it is dropped and the replacement is not notified until the embedder signals again.
+    /// The signal carries no connection identity: it is dropped by draining the queue at the connection boundary,
+    /// before serving the next connection, so a producer must stop signalling for a connection before the next one
+    /// starts, or its late signal counts for the next connection.
+    ///
+    /// [MS-RDPBCGR 3.3.5.10.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/3061e2df-ae7c-41fe-8743-650a9cb70365
+    pub fn set_logon_notification_on_request(&mut self, on_request: bool) {
+        self.logon_notification_on_request = on_request;
     }
 
     /// Choose whether the client's `maxUnacknowledgedFrameCount` caps the EGFX
@@ -3491,6 +3557,89 @@ impl RdpServer {
             .await
             .map_err(|e| ServerError::io("send auto-reconnect cookie", e))?;
         debug!("Sent Server Auto-Reconnect Cookie (Save Session Info PDU)");
+
+        Ok(())
+    }
+
+    /// Tells the client that the user has logged on, as [MS-RDPBCGR 3.3.5.10.1] "Sending Save Session Info PDU"
+    /// asks after every logon.
+    ///
+    /// A client that set INFO_LOGONNOTIFY gets the logged-on user and domain, in the long form when it supports
+    /// long credentials.
+    /// Any other client gets a plain notification, as does one whose user this server does not know or whose user
+    /// or domain does not fit the fixed fields of the logon information, rather than a truncated name or a failed
+    /// connection.
+    /// The session ID it reports is the logon ID of the auto-reconnect cookie, so both name the same session, or 0
+    /// when the server holds no cookie.
+    ///
+    /// Each connection is sent one notification, after its first activation or, on request, once the embedder
+    /// signals the logon; a Deactivation-Reactivation Sequence does not log the user on again.
+    ///
+    /// [MS-RDPBCGR 3.3.5.10.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/3061e2df-ae7c-41fe-8743-650a9cb70365
+    async fn send_logon_notification(
+        &self,
+        writer: &mut impl FramedWrite,
+        request: LogonNotificationRequest,
+        io_channel_id: u16,
+        user_channel_id: u16,
+    ) -> ServerResult<()> {
+        let LogonNotificationRequest {
+            client_info_flags,
+            long_credentials,
+        } = request;
+        use rdp::session_info::{InfoData, InfoType, LogonInfo, LogonInfoVersion1, LogonInfoVersion2};
+
+        let encode = |info_type, info_data| {
+            let pdu = rdp::headers::ShareDataPdu::SaveSessionInfo(rdp::session_info::SaveSessionInfoPdu {
+                info_type,
+                info_data,
+            });
+            encode_share_data_pdu(pdu, user_channel_id, io_channel_id, user_channel_id)
+        };
+
+        let logon_info = if client_info_flags.contains(rdp::client_info::ClientInfoFlags::LOGON_NOTIFY) {
+            self.pending_authenticated_credentials
+                .lock()
+                .expect("authenticated credentials lock poisoned")
+                .as_ref()
+                .map(|credentials| LogonInfo {
+                    session_id: self.auto_reconnect_cookie.as_ref().map_or(0, |cookie| cookie.logon_id),
+                    user_name: credentials.username.clone(),
+                    domain_name: credentials.domain.clone().unwrap_or_default(),
+                })
+        } else {
+            None
+        };
+
+        let logon = logon_info.map(|logon_info| {
+            if long_credentials {
+                // UNTESTED: the Size field ironrdp-pdu writes here is 18, as in the MS-RDPBCGR 4.3.1 example and what
+                // Windows Server sends (see FreeRDP's libfreerdp/core/info.c), not the 576 the 2.2.10.1.1.2 layout
+                // implies; the Microsoft RDP client accepts it. When changing the encoder, check that a client
+                // that set LONG_CREDENTIALS_SUPPORTED still reports the logon.
+                (
+                    InfoType::LogonLong,
+                    InfoData::LogonInfoV2(LogonInfoVersion2 { logon_info }),
+                )
+            } else {
+                (InfoType::Logon, InfoData::LogonInfoV1(LogonInfoVersion1 { logon_info }))
+            }
+        });
+        let plain = || encode(InfoType::PlainNotify, InfoData::PlainNotify).map(|data| (InfoType::PlainNotify, data));
+        let (info_type, data) = match logon.map(|(info_type, info_data)| (info_type, encode(info_type, info_data))) {
+            Some((info_type, Ok(data))) => (info_type, data),
+            Some((_, Err(error))) => {
+                debug!(%error, "Logon information does not fit, sending a plain logon notification");
+                plain()?
+            }
+            None => plain()?,
+        };
+
+        writer
+            .write_all(&data)
+            .await
+            .map_err(|e| ServerError::io("send logon notification", e))?;
+        debug!(?info_type, "Sent logon notification (Save Session Info PDU)");
 
         Ok(())
     }
@@ -3774,6 +3923,7 @@ impl RdpServer {
             egfx_on_udp: false,
             early_tunnel_payloads: VecDeque::new(),
             auto_reconnect_issued: false,
+            pending_logon_notification: None,
             pointer_cache_size: 0,
             color_pointer_cache_size: 0,
         }
@@ -3808,7 +3958,8 @@ impl RdpServer {
     /// the embedder is replacing the stored cookie on its own account. With
     /// [`RdpServer::set_auto_reconnect_on_request`] it is a vouch for one
     /// connection, so a vouch the replaced connection never consumed is dropped
-    /// here instead of reaching the connection that replaced it.
+    /// here instead of reaching the connection that replaced it. So is
+    /// `LogonCompleted`, which always speaks for one connection.
     #[cfg_attr(feature = "__test", visibility::make(pub))]
     async fn discard_stale_session_events(&mut self) {
         let ev_receiver = Arc::clone(&self.ev_receiver);
@@ -3889,9 +4040,9 @@ impl RdpServer {
     /// have `TCP_NODELAY` set; [`RdpServer::run`] does that for the
     /// connections it accepts itself.
     ///
-    /// Equivalent to [`run_connection_with`](Self::run_connection_with) with
-    /// [`TransportTls::Managed`], including the treatment of events queued
-    /// before the call (see `Queued events` there).
+    /// Equivalent to [`run_connection_with`](Self::run_connection_with) with [`TransportTls::Managed`], including how
+    /// it treats events queued before the call and how it closes the connection (see `Queued events` and `Closing the
+    /// connection` there).
     pub async fn run_connection<S>(&mut self, stream: S) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Send + Sync + Unpin,
@@ -3934,6 +4085,14 @@ impl RdpServer {
     /// [`event_sender`](Self::event_sender) clone or one of the server's
     /// handles is not, so stop such producers before starting the next
     /// connection.
+    ///
+    /// # Closing the connection
+    ///
+    /// When the session ends, or an error ends the connection once the client is accepted, this method shuts the stream
+    /// down and then reads and discards what the client still sends until the client closes its side, so the client can
+    /// read the server's last PDUs.
+    /// It returns when the client closes, or once the wait reaches five seconds at the end of a session or one second
+    /// after an error.
     ///
     /// # Use case for [`TransportTls::AlreadyDone`]
     ///
@@ -4093,15 +4252,10 @@ impl RdpServer {
         pending
     }
 
-    /// Finalize a connection that has already negotiated (and, under Hybrid,
-    /// authenticated) via [`PendingConnection::negotiate_and_authenticate`].
-    /// Dispatches on which [`NegotiatedTransport`] variant it got: `Continued`
-    /// (no security upgrade happened, [`RdpServerSecurity::None`]) goes
-    /// straight to `accept_finalize` with no stream to shut down, while `Tls`
-    /// / `Offloaded` route through [`Self::finalize_and_shutdown`] for the
-    /// extra shutdown step — these three paths are NOT structurally identical
-    /// past this point, only past the handshake `negotiate_and_authenticate`
-    /// itself covers.
+    /// Finalize a connection that has already negotiated (and, under Hybrid, authenticated) via
+    /// [`PendingConnection::negotiate_and_authenticate`].
+    /// Every [`NegotiatedTransport`] variant goes through [`Self::finalize_and_shutdown`], which closes the stream once
+    /// the client could read the last PDUs.
     async fn finalize_negotiated<S>(&mut self, negotiated: NegotiatedConnection<S>) -> ServerResult<()>
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
@@ -4124,10 +4278,10 @@ impl RdpServer {
             .expect("authenticated credentials lock poisoned") = authenticated_credentials;
         let local_addr = local_addr.or(self.connection_local_addr);
         match transport {
-            // No security upgrade happened, so there is no TLS session to shut
-            // down — matches the pre-existing `BeginResult::Continue` arm.
+            // No security upgrade happened, so there is no TLS session, but the client still has to read the last PDUs.
             NegotiatedTransport::Continued(framed) => {
-                self.accept_finalize(local_addr, framed, acceptor).await?;
+                self.finalize_and_shutdown(local_addr, framed, acceptor, "connection")
+                    .await?;
             }
             NegotiatedTransport::Tls(framed) => {
                 self.finalize_and_shutdown(local_addr, *framed, acceptor, "TLS connection")
@@ -4142,10 +4296,9 @@ impl RdpServer {
         Ok(())
     }
 
-    /// Finalize an upgraded stream and shut it down afterwards. The
-    /// negotiation and authentication that used to precede this now live in
-    /// [`negotiate_and_authenticate`], which the preemption candidate path
-    /// shares.
+    /// Finalize a stream and close it afterwards, as [`close_after_last_pdu`] does.
+    /// Negotiation and authentication happen before this, in [`negotiate_and_authenticate`], which the preemption
+    /// candidate path shares.
     async fn finalize_and_shutdown<S>(
         &mut self,
         local_addr: Option<SocketAddr>,
@@ -4163,10 +4316,8 @@ impl RdpServer {
         // work at this point, since it has no separate negotiation step.
         let framed = self.accept_finalize(local_addr, framed, acceptor).await?;
         debug!("Shutting down {}", shutdown_label);
-        let (mut inner, _) = framed.into_inner();
-        if let Err(e) = inner.shutdown().await {
-            debug!(?e, "{} shutdown error", shutdown_label);
-        }
+        let (inner, _) = framed.into_inner();
+        close_after_last_pdu(inner, self.close_timeout).await;
 
         Ok(())
     }
@@ -4228,6 +4379,10 @@ impl RdpServer {
     /// if it succeeds. [`ConnectionHandler::on_accept`] and
     /// [`ConnectionHandler::on_disconnected`] are called for connections that
     /// have a [`peer`](IncomingConnection::peer).
+    ///
+    /// Connections are served one at a time, so the close of one, which waits for the client as
+    /// [`run_connection_with`](Self::run_connection_with) describes, delays the next, except that under
+    /// [`ConnectionPolicy::Preempt`] a client taking the session over waits at most 750 ms.
     ///
     /// An embedder that needs its own loop around the policy (its own hooks, its
     /// own shutdown) calls [`serve_connection`](Self::serve_connection) instead.
@@ -4709,7 +4864,7 @@ impl RdpServer {
     /// Sends `completion` after they are written, or at once when nothing is queued.
     fn dispatch_clipboard_event(
         conn: &mut ConnectionState,
-        writer: &mut QueuedWriter,
+        writer: &mut QueuedWriter<'_>,
         user_channel_id: u16,
         message: ClipboardMessage,
         completion: Option<oneshot::Sender<()>>,
@@ -4764,7 +4919,7 @@ impl RdpServer {
 
     fn dispatch_rdpsnd_event(
         conn: &mut ConnectionState,
-        writer: &mut QueuedWriter,
+        writer: &mut QueuedWriter<'_>,
         user_channel_id: u16,
         drop_stale_wave: bool,
         message: RdpsndServerMessage,
@@ -4908,7 +5063,7 @@ impl RdpServer {
         &mut self,
         conn: &mut ConnectionState,
         events: &mut Vec<ServerEvent>,
-        writer: &mut QueuedWriter,
+        writer: &mut QueuedWriter<'_>,
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
@@ -5208,6 +5363,14 @@ impl RdpServer {
                 ServerEvent::SetAutoReconnectCookie(cookie) => {
                     self.update_auto_reconnect_cookie(conn, cookie, writer, io_channel_id, user_channel_id)
                         .await?;
+                }
+                ServerEvent::LogonCompleted => {
+                    if let Some(request) = conn.pending_logon_notification.take() {
+                        self.send_logon_notification(writer, request, io_channel_id, user_channel_id)
+                            .await?;
+                    } else {
+                        debug!("The client was already told of its logon");
+                    }
                 }
                 ServerEvent::Rdpsnd(message) => {
                     let drop_stale_wave = matches!(&message, RdpsndServerMessage::Wave(..))
@@ -5907,7 +6070,7 @@ impl RdpServer {
         // on the wire in queue order. The loop never waits for the socket, so
         // it still reads input and frame acks while a large write is in
         // progress.
-        let queue = Rc::new(OutboundQueue::default());
+        let queue = OutboundQueue::default();
         let write_queued = queue.write_queued(writer);
         tokio::pin!(write_queued);
         let state = {
@@ -5972,7 +6135,7 @@ impl RdpServer {
         &mut self,
         conn: &mut ConnectionState,
         reader: &mut Framed<R>,
-        queue: &Rc<OutboundQueue>,
+        queue: &OutboundQueue,
         io_channel_id: u16,
         user_channel_id: u16,
         message_channel_id: Option<u16>,
@@ -5983,7 +6146,7 @@ impl RdpServer {
     where
         R: FramedRead,
     {
-        let mut writer = QueuedWriter::new(Rc::clone(queue));
+        let mut writer = QueuedWriter::new(queue);
         debug!("Starting client loop");
         let heartbeat = if conn.client_supports_heartbeat {
             self.heartbeat
@@ -6381,6 +6544,30 @@ impl RdpServer {
         conn.client_supports_errinfo = result
             .client_early_capability_flags
             .contains(ironrdp_pdu::gcc::ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
+        // The user logs on once per connection, so a reactivation does not notify the client again.
+        // UNTESTED: on request, a reactivation leaves `pending_logon_notification` as it was, so a notification the
+        // embedder has not signalled yet is still sent on its later signal. When changing the reactivation path,
+        // check that it neither clears nor refills that state.
+        if !result.reactivation {
+            let long_credentials = result.capabilities.iter().any(|capability| {
+                matches!(
+                    capability,
+                    CapabilitySet::General(general)
+                        if general.extra_flags.contains(GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED)
+                )
+            });
+            let request = LogonNotificationRequest {
+                client_info_flags: result.client_info_flags,
+                long_credentials,
+            };
+            if self.logon_notification_on_request {
+                conn.pending_logon_notification = Some(request);
+            } else {
+                self.send_logon_notification(writer, request, result.io_channel_id, result.user_channel_id)
+                    .await?;
+            }
+        }
+
         // A client can join the rdpsnd channel although it asked for no audio redirection, as some do for device
         // redirection, so the channel is left joined but never started: no Server Audio Formats PDU goes out, and the
         // sound handler is never asked to start.
@@ -6797,19 +6984,12 @@ impl RdpServer {
             let state = match state {
                 Ok(state) => state,
                 Err(error) => {
-                    if matches!(error.kind(), ServerErrorKind::ErrorInfo(_)) {
-                        // The client was sent a Set Error Info PDU. Close the
-                        // session as on a normal disconnect, so the client gets
-                        // the PDU and then the end of the stream.
-                        let (mut inner, _) = unsplit_tokio_framed(reader, writer).into_inner();
-                        match tokio::time::timeout(ERROR_INFO_CLOSE_TIMEOUT, inner.shutdown()).await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(shutdown_error)) => {
-                                debug!(%shutdown_error, "Shutdown after the error reason failed")
-                            }
-                            Err(_) => debug!("Shutdown after the error reason timed out"),
-                        }
-                    }
+                    // The server may have sent a last PDU before the error, such as the Set Error Info PDU of a
+                    // refusal or of a display error.
+                    // Close as on a normal disconnect, and wait for the client to close its side.
+                    // A client that has already gone ends the wait at once.
+                    let (inner, _) = unsplit_tokio_framed(reader, writer).into_inner();
+                    close_after_last_pdu(inner, self.error_close_timeout).await;
                     return Err(error);
                 }
             };
@@ -6885,6 +7065,15 @@ impl RdpServer {
     #[doc(hidden)]
     pub fn connection_local_addr_for_test(&self) -> Option<SocketAddr> {
         self.connection_local_addr
+    }
+
+    /// Sets how long the server waits for the client to close a connection, after an error and at the end of a session
+    /// alike.
+    #[cfg(feature = "__test")]
+    #[doc(hidden)]
+    pub fn set_close_timeout_for_test(&mut self, timeout: Duration) {
+        self.error_close_timeout = timeout;
+        self.close_timeout = timeout;
     }
 }
 
@@ -7142,6 +7331,39 @@ async fn send_disconnect_ultimatum(writer: &mut impl FramedWrite) {
         Err(error) => {
             warn!(%error, "Could not encode the Disconnect Provider Ultimatum; disconnecting anyway");
         }
+    }
+}
+
+/// Closes a connection that the server ends, so that the client can still read the last PDUs sent on it.
+///
+/// It shuts the stream down, then reads and discards what the client still sends until the client closes its side or
+/// `timeout` passes.
+/// A socket closed while the client is still sending answers that data with a reset, and the client's next write
+/// fails.
+/// FreeRDP takes the failed write for a lost connection, so it never processes the PDUs already waiting to be read, and
+/// it reconnects.
+async fn close_after_last_pdu<S>(mut stream: S, timeout: Duration)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncReadExt as _;
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    match tokio::time::timeout_at(deadline, stream.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            debug!(%error, "Shutdown before closing the connection failed");
+            return;
+        }
+        Err(_) => {
+            debug!("Shutdown before closing the connection timed out");
+            return;
+        }
+    }
+    let mut discarded = [0u8; 1024];
+    let drain = async { while matches!(stream.read(&mut discarded).await, Ok(1..)) {} };
+    if tokio::time::timeout_at(deadline, drain).await.is_err() {
+        debug!("The client did not close the connection in time");
     }
 }
 
@@ -7453,13 +7675,13 @@ impl OutboundQueue {
 /// `write_all` returns as soon as the bytes are queued.
 #[derive(Clone)]
 #[cfg_attr(feature = "__test", visibility::make(pub))]
-struct QueuedWriter {
-    queue: Rc<OutboundQueue>,
+struct QueuedWriter<'a> {
+    queue: &'a OutboundQueue,
     /// What this writer queues are replies to client PDUs.
     replies: bool,
 }
 
-impl FramedWrite for QueuedWriter {
+impl FramedWrite for QueuedWriter<'_> {
     type WriteAllFut<'write>
         = core::future::Ready<std::io::Result<()>>
     where
@@ -7470,9 +7692,9 @@ impl FramedWrite for QueuedWriter {
     }
 }
 
-impl QueuedWriter {
+impl<'a> QueuedWriter<'a> {
     #[cfg_attr(feature = "__test", visibility::make(pub))]
-    fn new(queue: Rc<OutboundQueue>) -> Self {
+    fn new(queue: &'a OutboundQueue) -> Self {
         Self { queue, replies: false }
     }
 
@@ -7508,7 +7730,7 @@ pub async fn dispatch_static_channel_events(
     server: &mut RdpServer,
     channels: StaticChannelSet,
     events: &mut Vec<ServerEvent>,
-    writer: &mut QueuedWriter,
+    writer: &mut QueuedWriter<'_>,
 ) -> ServerResult<StaticChannelSet> {
     let mut conn = ConnectionState {
         static_channels: channels,
@@ -7533,8 +7755,8 @@ pub async fn drive_static_channel_events(
         static_channels: channels,
         ..ConnectionState::default()
     };
-    let queue = Rc::new(OutboundQueue::default());
-    let mut writer = QueuedWriter::new(Rc::clone(&queue));
+    let queue = OutboundQueue::default();
+    let mut writer = QueuedWriter::new(&queue);
     let write_queued = queue.write_queued(transport);
     tokio::pin!(write_queued);
     {
@@ -8454,12 +8676,12 @@ mod cliprdr_error_tests {
             },
         ))];
 
-        let queue = Rc::new(OutboundQueue::default());
+        let queue = OutboundQueue::default();
         let state = server
             .dispatch_server_events(
                 &mut conn,
                 &mut events,
-                &mut QueuedWriter::new(Rc::clone(&queue)),
+                &mut QueuedWriter::new(&queue),
                 1003,
                 1002,
                 None,

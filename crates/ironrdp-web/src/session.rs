@@ -43,6 +43,7 @@ use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp_core::WriteBuf;
+use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_futures::{FramedWrite, single_sequence_step_read};
 use rgb::AsPixels as _;
 use tap::prelude::*;
@@ -74,6 +75,7 @@ struct SessionBuilderInner {
     pcb: Option<String>,
     vmconnect: Option<String>,
     kdc_proxy_url: Option<String>,
+    entra_assertion_callback: Option<js_sys::Function>,
     client_name: String,
     desktop_size: DesktopSize,
 
@@ -108,6 +110,7 @@ struct SessionBuilderInner {
     audio_playback_callback: Option<js_sys::Function>,
     camera_callback: Option<js_sys::Function>,
     camera_name: Option<String>,
+    camera_h264: bool,
     enable_credssp: bool,
     enable_standard_rdp_security: bool,
     enable_server_pointer: bool,
@@ -134,6 +137,7 @@ impl Default for SessionBuilderInner {
             pcb: None,
             vmconnect: None,
             kdc_proxy_url: None,
+            entra_assertion_callback: None,
             client_name: "ironrdp-web".to_owned(),
             desktop_size: DesktopSize {
                 width: DEFAULT_WIDTH,
@@ -166,6 +170,7 @@ impl Default for SessionBuilderInner {
             audio_playback_callback: None,
             camera_callback: None,
             camera_name: None,
+            camera_h264: false,
             enable_credssp: true,
             enable_standard_rdp_security: false,
             enable_server_pointer: true,
@@ -320,6 +325,11 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             |pcb: String| { self.0.borrow_mut().pcb = Some(pcb) };
             |vmconnect: String| { self.0.borrow_mut().vmconnect = Some(vmconnect) };
             |kdc_proxy_url: String| { self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url) };
+            |entra_assertion: JsValue| {
+                // A function signing the RDP assertion (see entra::perform_entra_auth); anything else leaves
+                // Microsoft Entra ID sign-in off.
+                self.0.borrow_mut().entra_assertion_callback = entra_assertion.dyn_into::<js_sys::Function>().ok();
+            };
             |display_control: bool| { self.0.borrow_mut().use_display_control = display_control };
             |audio_playback: JsValue| {
                 // A function receiving the audio (see audio::to_js); anything else turns playback off.
@@ -334,6 +344,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     self.0.borrow_mut().camera_name = Some(camera_name);
                 }
             };
+            |camera_h264: bool| { self.0.borrow_mut().camera_h264 = camera_h264 };
             |enable_credssp: bool| { self.0.borrow_mut().enable_credssp = enable_credssp };
             |enable_standard_rdp_security: bool| {
                 self.0.borrow_mut().enable_standard_rdp_security = enable_standard_rdp_security;
@@ -511,6 +522,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             pcb,
             vmconnect,
             kdc_proxy_url,
+            entra_assertion_callback,
             client_name,
             desktop_size,
             render_canvas,
@@ -542,10 +554,21 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             let inner = self.0.borrow();
 
             websocket_protocols = inner.websocket_protocols.clone().map_err(anyhow::Error::msg)?;
-            username = inner.username.clone().context("username missing")?;
+            entra_assertion_callback = inner.entra_assertion_callback.clone();
+            // With Microsoft Entra ID sign-in the server takes the user from the access token.
+            let credentials_optional = entra_assertion_callback.is_some();
+            username = inner
+                .username
+                .clone()
+                .or_else(|| credentials_optional.then(String::new))
+                .context("username missing")?;
             destination = inner.destination.clone().context("destination missing")?;
             server_domain = inner.server_domain.clone();
-            password = inner.password.clone().context("password missing")?;
+            password = inner
+                .password
+                .clone()
+                .or_else(|| credentials_optional.then(String::new))
+                .context("password missing")?;
             proxy_address = inner.proxy_address.clone().context("proxy_address missing")?;
             auth_token = inner.auth_token.clone().context("auth_token missing")?;
             pcb = inner.pcb.clone();
@@ -595,6 +618,12 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
 
         if security.enable_standard_rdp_security && vmconnect.is_some() {
             return Err(anyhow::Error::msg("standard RDP security and VMConnect are mutually exclusive").into());
+        }
+
+        if entra_assertion_callback.is_some() && (security.enable_standard_rdp_security || vmconnect.is_some()) {
+            return Err(
+                anyhow::Error::msg("Microsoft Entra ID sign-in excludes standard RDP security and VMConnect").into(),
+            );
         }
 
         info!("Connect to RDP host");
@@ -744,6 +773,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                     input_events_tx.clone(),
                     sink.clone(),
                     self.0.borrow().camera_name.clone(),
+                    self.0.borrow().camera_h264,
                 )
             })
             .transpose()?;
@@ -756,6 +786,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             pcb,
             vmconnect,
             kdc_proxy_url,
+            entra_assertion_callback,
             clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
             printer_backend,
             printers,
@@ -766,6 +797,7 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
                 .is_some()
                 .then(|| crate::audio::WasmAudioBackend::new(input_events_tx.clone())),
             camera_channels,
+            legacy_graphics,
         })
         .await?;
 
@@ -958,6 +990,12 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    /// The camera's frame sink, when the `camera` extension turned the camera on.
+    fn camera(&self) -> Result<&crate::camera::CameraSink, IronError> {
+        self.camera
+            .as_ref()
+            .ok_or_else(|| IronError::from(anyhow::Error::msg("camera is not enabled")))
+    }
     // UNTESTED: The callback receives layouts from a live server.
     // Server interoperability failures can leave the application's monitor geometry stale.
     // When changing these paths, verify activation, reactivation and layout changes with a server.
@@ -1072,8 +1110,7 @@ impl iron_remote_desktop::Session for Session {
             connection_result.desktop_size.width,
             connection_result.desktop_size.height,
         );
-
-        let mut requested_resize = None;
+        let mut framebuffer_size = (image.width(), image.height());
 
         // Reused across frames so per-region extraction doesn't allocate on every draw.
         let mut draw_buffer = WriteBuf::new();
@@ -1254,10 +1291,6 @@ impl iron_remote_desktop::Session for Session {
                                 warn!("Resize event ignored: width or height is zero");
                                 Vec::new()
                             } else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
-                                let width = NonZeroU32::new(width).expect("width is guaranteed to be non-zero due to the prior check");
-                                let height = NonZeroU32::new(height).expect("height is guaranteed to be non-zero due to the prior check");
-
-                                requested_resize = Some((width, height));
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                             } else {
                                 debug!("Resize event ignored");
@@ -1351,6 +1384,13 @@ impl iron_remote_desktop::Session for Session {
                     }
                 }
             };
+
+            // UNTESTED: HTML canvas dimensions stay synchronized with `image` after an EGFX
+            // `ResetGraphics` PDU updates `DecodedImage` without a `DeactivateAll` sequence,
+            // so `gui.draw` never blits post-reset regions onto stale canvas bounds; only the
+            // size decision (`canvas_resize`) is unit-tested, not the loop placement.
+            // Check dynamic resize against an EGFX-capable server when changing this loop.
+            sync_canvas(&mut gui, &image, &mut framebuffer_size)?;
 
             for out in outputs {
                 match out {
@@ -1474,13 +1514,6 @@ impl iron_remote_desktop::Session for Session {
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
                         debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
 
-                        // We need to perform resize after receiving the Deactivate All PDU, because there may be frames
-                        // with the previous dimensions arriving between the resize request and this message.
-                        if let Some((width, height)) = requested_resize {
-                            gui.resize(width, height);
-                            requested_resize = None;
-                        }
-
                         let mut connection_activation = activation_factory.create();
                         let mut buf = WriteBuf::new();
                         'activation_seq: loop {
@@ -1513,6 +1546,7 @@ impl iron_remote_desktop::Session for Session {
                                 drop(image);
                                 ensure_framebuffer_allocatable(desktop_size)?;
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+                                sync_canvas(&mut gui, &image, &mut framebuffer_size)?;
                                 if !active_stage.reactivate(
                                     connection_activation.io_channel_id(),
                                     connection_activation.user_channel_id(),
@@ -1720,13 +1754,15 @@ impl iron_remote_desktop::Session for Session {
                 return Ok(JsValue::NULL);
             };
             |camera_sample: JsValue| {
-                let Some(camera) = &self.camera else {
-                    return Err(IronError::from(anyhow::Error::msg("camera is not enabled")));
-                };
+                let camera = self.camera()?;
                 let sample = camera_sample
                     .dyn_into::<js_sys::Uint8Array>()
                     .map_err(|_| IronError::from(anyhow::Error::msg("camera_sample expects a Uint8Array")))?;
-                return Ok(JsValue::from_bool(camera.push(|| sample.to_vec())));
+                return Ok(JsValue::from_bool(camera.push(sample.to_vec())));
+            };
+            |camera_wanted: JsValue| {
+                drop(camera_wanted);
+                return Ok(JsValue::from(self.camera()?.wanted()));
             };
             |drive_reply: JsValue| {
                 let reply = DriveReply::from_js(drive_reply).map_err(IronError::from)?;
@@ -2113,6 +2149,8 @@ fn build_config(
     security: SecurityConfig,
 ) -> connector::Config {
     // Win7-class servers need 32-bpp lossless bitmaps and no advertised codecs.
+    // The 16-bpp lossy configuration carries the whole session only when the server does not
+    // negotiate the EGFX pipeline, so it stays the WAN-friendly default.
     let bitmap = if legacy_graphics {
         connector::BitmapConfig {
             color_depth: 32,
@@ -2167,7 +2205,7 @@ fn build_config(
         request_data: None,
         pointer_software_rendering: false,
         multitransport_flags: None,
-        support_dyn_vc_gfx_protocol: false,
+        support_dyn_vc_gfx_protocol: !legacy_graphics,
         rdp_version: ironrdp::pdu::gcc::RdpVersion::V5_PLUS,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
@@ -2232,6 +2270,7 @@ struct ConnectParams {
     pcb: Option<String>,
     vmconnect: Option<String>,
     kdc_proxy_url: Option<String>,
+    entra_assertion_callback: Option<js_sys::Function>,
     clipboard_backend: Option<WasmClipboardBackend>,
     printer_backend: Option<WasmPrinterBackend>,
     printers: Vec<RdpdrPrinter>,
@@ -2242,6 +2281,7 @@ struct ConnectParams {
     use_display_control: bool,
     audio_backend: Option<crate::audio::WasmAudioBackend>,
     camera_channels: Option<crate::camera::CameraChannels>,
+    legacy_graphics: bool,
 }
 
 fn default_printer_driver_name() -> String {
@@ -2275,6 +2315,9 @@ fn macos_major_version_from_user_agent(user_agent: &str) -> Option<u32> {
         .next()
         .and_then(|major| major.parse().ok())
 }
+
+struct NoopGraphicsPipelineHandler;
+impl GraphicsPipelineHandler for NoopGraphicsPipelineHandler {}
 
 fn attach_audio_and_printer_channels(
     connector: &mut ClientConnector,
@@ -2345,6 +2388,7 @@ async fn connect(
         pcb,
         vmconnect,
         kdc_proxy_url,
+        entra_assertion_callback,
         clipboard_backend,
         printer_backend,
         printers,
@@ -2353,6 +2397,7 @@ async fn connect(
         use_display_control,
         audio_backend,
         camera_channels,
+        legacy_graphics,
     }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
@@ -2361,6 +2406,10 @@ async fn connect(
     let dummy_client_addr = core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899));
 
     let mut connector = ClientConnector::new(config, dummy_client_addr);
+
+    if entra_assertion_callback.is_some() {
+        connector = connector.with_entra_auth();
+    }
 
     if let Some(clipboard_backend) = clipboard_backend {
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
@@ -2375,16 +2424,22 @@ async fn connect(
         computer_name,
     );
 
-    if use_display_control || camera_channels.is_some() {
-        let mut drdynvc = DrdynvcClient::new();
-        if use_display_control {
-            drdynvc = drdynvc.with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
-        }
-        if let Some((enumeration, device)) = camera_channels {
-            drdynvc = drdynvc.with_dynamic_channel(enumeration).with_listener(device);
-        }
-        connector.attach_static_channel(drdynvc);
+    let mut dynamic_channels = DrdynvcClient::new();
+    if !legacy_graphics {
+        dynamic_channels = dynamic_channels.with_dynamic_channel(GraphicsPipelineClient::new(
+            Box::new(NoopGraphicsPipelineHandler),
+            // The browser build has no H.264 decoder, so the pipeline filters out the AVC
+            // capability sets and falls back to non-AVC V8.
+            None,
+        ));
     }
+    if use_display_control {
+        dynamic_channels = dynamic_channels.with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+    }
+    if let Some((enumeration, device)) = camera_channels {
+        dynamic_channels = dynamic_channels.with_dynamic_channel(enumeration).with_listener(device);
+    }
+    connector.attach_static_channel(dynamic_channels);
 
     let kerberos_config = url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str())
         .ok()
@@ -2411,6 +2466,10 @@ async fn connect(
         },
     )
     .await?;
+
+    if let Some(sign_assertion) = &entra_assertion_callback {
+        crate::entra::perform_entra_auth(&mut framed, &mut connector, sign_assertion).await?;
+    }
 
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
@@ -2677,6 +2736,31 @@ fn ensure_framebuffer_allocatable(desktop_size: connector::DesktopSize) -> anyho
     Ok(())
 }
 
+/// Returns the canvas dimensions to apply when the graphics output changed size since it was
+/// last tracked, or `None` while the size is unchanged.
+fn canvas_resize(
+    framebuffer_size: (u16, u16),
+    output_size: (u16, u16),
+) -> anyhow::Result<Option<(NonZeroU32, NonZeroU32)>> {
+    if output_size == framebuffer_size {
+        return Ok(None);
+    }
+    let width = NonZeroU32::new(u32::from(output_size.0)).context("graphics output width is zero")?;
+    let height = NonZeroU32::new(u32::from(output_size.1)).context("graphics output height is zero")?;
+    Ok(Some((width, height)))
+}
+
+/// Resizes the canvas to match the `DecodedImage`, keeping the canvas bounds equal to the image
+/// dimensions so `gui.draw` never blits onto a stale backing store.
+fn sync_canvas(gui: &mut Canvas, image: &DecodedImage, framebuffer_size: &mut (u16, u16)) -> anyhow::Result<()> {
+    let output_size = (image.width(), image.height());
+    if let Some((width, height)) = canvas_resize(*framebuffer_size, output_size)? {
+        gui.resize(width, height);
+        *framebuffer_size = output_size;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use futures_util::io::Cursor;
@@ -2697,7 +2781,7 @@ mod tests {
         ironrdp_futures::LocalFuturesFramed::new_with_leftover(Cursor::new(Vec::new()), BytesMut::from(response))
     }
 
-    fn connector_config(security: SecurityConfig) -> connector::Config {
+    fn connector_config(legacy_graphics: bool, security: SecurityConfig) -> connector::Config {
         build_config(
             String::new(),
             String::new(),
@@ -2707,7 +2791,7 @@ mod tests {
                 width: DEFAULT_WIDTH,
                 height: DEFAULT_HEIGHT,
             },
-            false,
+            legacy_graphics,
             security,
         )
     }
@@ -2745,10 +2829,13 @@ mod tests {
     fn audio_test_connector(audio: bool, printer: bool) -> ClientConnector {
         let (tx, _rx) = mpsc::unbounded();
         let mut connector = ClientConnector::new(
-            connector_config(SecurityConfig {
-                enable_credssp: true,
-                enable_standard_rdp_security: false,
-            }),
+            connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp: true,
+                    enable_standard_rdp_security: false,
+                },
+            ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         attach_audio_and_printer_channels(
@@ -2931,10 +3018,13 @@ mod tests {
         // oracle: spec MS-RDPEFS 3.1.5.1.6 drives are announced with the drive hotplug capability.
         let (tx, _rx) = mpsc::unbounded();
         let mut connector = ClientConnector::new(
-            connector_config(SecurityConfig {
-                enable_credssp: true,
-                enable_standard_rdp_security: false,
-            }),
+            connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp: true,
+                    enable_standard_rdp_security: false,
+                },
+            ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         let drive = WasmDriveBackend::new(
@@ -3240,10 +3330,13 @@ mod tests {
             ("credssp disabled", false, false, true, false),
             ("standard RDP security", true, true, false, false),
         ] {
-            let config = connector_config(SecurityConfig {
-                enable_credssp,
-                enable_standard_rdp_security,
-            });
+            let config = connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp,
+                    enable_standard_rdp_security,
+                },
+            );
 
             assert_eq!(config.enable_tls, expected_tls, "{case}");
             assert_eq!(config.enable_credssp, expected_credssp, "{case}");
@@ -3251,14 +3344,78 @@ mod tests {
     }
 
     #[test]
+    fn graphics_config_tracks_legacy_graphics() {
+        // The expected values pin the contract agreed for this change: legacy_graphics keeps
+        // the pre-EGFX behavior as a compatibility escape hatch, and the WAN-friendly 16-bpp
+        // lossy bitmap configuration carries the session when the server does not negotiate
+        // the EGFX pipeline.
+        for (case, legacy_graphics, gfx_protocol, color_depth, lossy_compression, codecs_empty) in [
+            ("modern servers get the EGFX pipeline", false, true, 16, true, false),
+            (
+                "legacy graphics keeps the pre-EGFX behavior",
+                true,
+                false,
+                32,
+                false,
+                true,
+            ),
+        ] {
+            let config = connector_config(
+                legacy_graphics,
+                SecurityConfig {
+                    enable_credssp: true,
+                    enable_standard_rdp_security: false,
+                },
+            );
+            let bitmap = config.bitmap.expect("bitmap config is always set");
+
+            assert_eq!(config.support_dyn_vc_gfx_protocol, gfx_protocol, "{case}");
+            assert_eq!(bitmap.color_depth, color_depth, "{case}");
+            assert_eq!(bitmap.lossy_compression, lossy_compression, "{case}");
+            assert_eq!(bitmap.codecs.0.is_empty(), codecs_empty, "{case}");
+        }
+    }
+
+    #[test]
+    fn canvas_resize_reports_unchanged_output_size() {
+        let resized = canvas_resize((1280, 720), (1280, 720)).expect("an unchanged size is not an error");
+
+        assert_eq!(resized, None);
+    }
+
+    #[test]
+    fn canvas_resize_returns_the_new_dimensions() {
+        // An EGFX ResetGraphics PDU resizes the output without a DeactivateAll sequence.
+        let resized = canvas_resize((1280, 720), (1920, 1080)).expect("a non-zero size is not an error");
+
+        assert_eq!(
+            resized,
+            Some((
+                NonZeroU32::new(1920).expect("test dimensions are non-zero"),
+                NonZeroU32::new(1080).expect("test dimensions are non-zero"),
+            ))
+        );
+    }
+
+    #[test]
+    fn canvas_resize_rejects_a_zero_sized_output() {
+        // A zero-sized canvas cannot be drawn to, so the resize must fail the session instead.
+        assert!(canvas_resize((1280, 720), (0, 1080)).is_err());
+        assert!(canvas_resize((1280, 720), (1920, 0)).is_err());
+    }
+
+    #[test]
     fn standard_rdp_security_accepts_empty_rdcleanpath_certificate_chain() {
         let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::empty());
         let mut framed = rdcleanpath_framed(&response);
         let mut connector = ClientConnector::new(
-            connector_config(SecurityConfig {
-                enable_credssp: false,
-                enable_standard_rdp_security: true,
-            }),
+            connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp: false,
+                    enable_standard_rdp_security: true,
+                },
+            ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         let mut network_client = WasmNetworkClient;
@@ -3308,10 +3465,13 @@ mod tests {
         let response = rdcleanpath_response(ironrdp::pdu::nego::SecurityProtocol::SSL);
         let mut framed = rdcleanpath_framed(&response);
         let mut connector = ClientConnector::new(
-            connector_config(SecurityConfig {
-                enable_credssp: false,
-                enable_standard_rdp_security: false,
-            }),
+            connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp: false,
+                    enable_standard_rdp_security: false,
+                },
+            ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         let mut network_client = WasmNetworkClient;
@@ -3353,10 +3513,13 @@ mod tests {
         .expect("encode RDCleanPath error");
         let mut framed = rdcleanpath_framed(&response);
         let mut connector = ClientConnector::new(
-            connector_config(SecurityConfig {
-                enable_credssp: false,
-                enable_standard_rdp_security: false,
-            }),
+            connector_config(
+                false,
+                SecurityConfig {
+                    enable_credssp: false,
+                    enable_standard_rdp_security: false,
+                },
+            ),
             core::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899)),
         );
         let mut network_client = WasmNetworkClient;
@@ -3730,6 +3893,17 @@ mod tests {
             }
             _ => panic!("Expected correct flags conversion"),
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn the_camera_h264_extension_sets_the_flag() {
+        // oracle: mutant the extension name `cameraH264` sends not matched
+        use iron_remote_desktop::SessionBuilder as _;
+
+        let builder = SessionBuilder::create().extension(Extension::create("camera_h264".to_owned(), JsValue::TRUE));
+
+        assert!(builder.0.borrow().camera_h264);
     }
 }
 

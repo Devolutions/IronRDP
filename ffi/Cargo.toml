@@ -20,11 +20,15 @@ ironrdp-dvc-pipe-proxy.path = "../crates/ironrdp-dvc-pipe-proxy"
 ironrdp-core = { path = "../crates/ironrdp-core", features = ["alloc"] }
 ironrdp-vmconnect = { path = "../crates/ironrdp-vmconnect" }
 ironrdp-rdcleanpath.path = "../crates/ironrdp-rdcleanpath"
+ironrdp-rdpeai.path = "../crates/ironrdp-rdpeai"
 sspi = { version = "0.23", features = ["network_client"] }
 thiserror = "2"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+ironrdp-rdpsnd-native = { path = "../crates/ironrdp-rdpsnd-native", features = ["capture"] }
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-rdpdr-native.path = "../crates/ironrdp-rdpdr-native"

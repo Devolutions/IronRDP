@@ -19,7 +19,11 @@ pub mod ffi {
     use super::config::ffi::Config;
     use super::result::ffi::Written;
     use super::state::ffi::ClientConnectorState;
+    use crate::audio::ffi::NativeAudio;
+    use crate::audio::{AudioChannelKind, audio_channel_kind};
     use crate::clipboard::ffi::Cliprdr;
+    use crate::dvc::direct_channel::DirectDvcChannelProcessor;
+    use crate::dvc::direct_channel::ffi::DirectDvcConfig;
     use crate::dvc::dvc_pipe_proxy_message_queue::DvcPipeProxyMessageInner;
     use crate::dvc::ffi::DvcPipeProxyConfig;
     use crate::error::ValueConsumedError;
@@ -28,16 +32,27 @@ pub mod ffi {
     use crate::utils::monotonic_now;
 
     #[diplomat::opaque_mut] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
-    pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
+    pub struct ClientConnector(
+        pub(crate) Option<ironrdp::connector::ClientConnector>,
+        pub(crate) Option<std::sync::Arc<crate::audio::AudioShared>>,
+    );
 
     // Basic Impl for ClientConnector
     impl ClientConnector {
+        fn has_direct_dvc_listener(drdynvc: &ironrdp::dvc::DrdynvcClient, channel_name: &str) -> bool {
+            drdynvc.has_channel_name_of_type::<DirectDvcChannelProcessor>(channel_name)
+        }
+
         pub fn new(config: &Config, client_addr: &str) -> Result<Box<ClientConnector>, Box<IronRdpError>> {
             let client_addr = client_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
 
-            Ok(Box::new(ClientConnector(Some(
-                ironrdp::connector::ClientConnector::new(config.connector.clone(), client_addr),
-            ))))
+            Ok(Box::new(ClientConnector(
+                Some(ironrdp::connector::ClientConnector::new(
+                    config.connector.clone(),
+                    client_addr,
+                )),
+                None,
+            )))
         }
 
         // FIXME: Naming: since this is not a builder pattern, use "attach"?
@@ -46,12 +61,42 @@ pub mod ffi {
         pub fn with_static_channel_rdp_snd(&mut self) -> Result<(), Box<IronRdpError>> {
             use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
 
+            if self.1.as_ref().is_some_and(|audio| audio.has_playback()) {
+                return Err("native playback is already attached".into());
+            }
             let Some(connector) = self.0.take() else {
                 return Err(IronRdpErrorKind::Consumed.into());
             };
 
-            self.0 = Some(connector.with_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend {}))));
+            let mut connector = connector.with_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend {})));
+            connector.config.enable_audio_playback = true;
+            self.0 = Some(connector);
 
+            Ok(())
+        }
+
+        /// Attaches native audio to this connector.
+        ///
+        /// Use a fresh `NativeAudio` for each connection.
+        /// Playback attaches RDPDR without redirected devices when the channel is absent.
+        /// Existing RDPDR configuration is preserved.
+        /// An existing RDPSND channel prevents native playback from being attached.
+        pub fn with_native_audio(&mut self, audio: &NativeAudio) -> Result<(), Box<IronRdpError>> {
+            let connector = self
+                .0
+                .as_mut()
+                .ok_or_else(|| ValueConsumedError::for_item("connector"))?;
+            if self.1.is_some() {
+                return Err("native audio is already attached to this connector".into());
+            }
+            if !matches!(
+                connector.state,
+                ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest
+            ) {
+                return Err("native audio must be attached before connecting".into());
+            }
+            audio.0.attach(connector)?;
+            self.1 = Some(std::sync::Arc::clone(&audio.0));
             Ok(())
         }
 
@@ -97,10 +142,20 @@ pub mod ffi {
         where
             T: DvcClientProcessor + 'static,
         {
+            if self
+                .1
+                .as_ref()
+                .is_some_and(|audio| audio.reserves_dynamic_channel(processor.channel_name()))
+            {
+                return Err("native audio dynamic channel is reserved".into());
+            }
             let Some(connector) = &mut self.0 else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
 
+            let kind = audio_channel_kind(processor.channel_name());
+            let playback = kind == Some(AudioChannelKind::Playback);
+            let capture = kind == Some(AudioChannelKind::Capture);
             let drdynvc = match connector.get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>() {
                 Some(processor) => processor,
                 None => {
@@ -111,7 +166,13 @@ pub mod ffi {
                 }
             };
 
+            if Self::has_direct_dvc_listener(drdynvc, processor.channel_name()) {
+                return Err("dynamic channel name is already registered as a direct DVC".into());
+            }
+
             drdynvc.attach_dynamic_channel(processor);
+            connector.config.enable_audio_playback |= playback;
+            connector.config.enable_audio_capture |= capture;
 
             Ok(())
         }
@@ -153,6 +214,29 @@ pub mod ffi {
             &mut self,
             config: &DvcPipeProxyConfig,
         ) -> Result<(), Box<IronRdpError>> {
+            if self.1.as_ref().is_some_and(|audio| {
+                config
+                    .descriptors
+                    .iter()
+                    .any(|descriptor| audio.reserves_dynamic_channel(&descriptor.channel_name))
+            }) {
+                return Err("native audio dynamic channel is reserved".into());
+            }
+
+            let has_direct_collision = self.0.as_mut().is_some_and(|connector| {
+                connector
+                    .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                    .is_some_and(|drdynvc| {
+                        config
+                            .descriptors
+                            .iter()
+                            .any(|descriptor| Self::has_direct_dvc_listener(drdynvc, &descriptor.channel_name))
+                    })
+            });
+            if has_direct_collision {
+                return Err("dynamic channel name is already registered as a direct DVC".into());
+            }
+
             for descriptor in &config.descriptors {
                 let sink = config.message_sink.0.clone();
                 let proxy = DvcNamedPipeProxy::new(
@@ -164,6 +248,66 @@ pub mod ffi {
                     },
                 );
                 self.with_dvc(proxy)?;
+            }
+            Ok(())
+        }
+
+        /// Registers event-driven listeners for dynamic virtual channels ([MS-RDPEDYC]).
+        ///
+        /// Rejects duplicate names and names already registered by another listener.
+        /// This includes built-in channels and pipe proxies.
+        ///
+        /// [MS-RDPEDYC]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/
+        pub fn with_dynamic_channel_direct(&mut self, config: &DirectDvcConfig) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+
+            let mut channel_names = std::collections::BTreeSet::new();
+            for channel_name in &config.channel_names {
+                if !channel_names.insert(channel_name) {
+                    return Err("direct DVC channel name is registered more than once".into());
+                }
+            }
+
+            if connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .is_some_and(|drdynvc| {
+                    config
+                        .channel_names
+                        .iter()
+                        .any(|channel_name| drdynvc.has_channel_name(channel_name))
+                })
+            {
+                return Err("dynamic channel name is already registered".into());
+            }
+
+            if config.channel_names.is_empty() {
+                return Ok(());
+            }
+
+            if connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .is_none()
+            {
+                connector.attach_static_channel(ironrdp::dvc::DrdynvcClient::new());
+            }
+            let drdynvc = connector
+                .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+                .ok_or("failed to attach DRDYNVC static channel")?;
+            for channel_name in &config.channel_names {
+                let name = channel_name.clone();
+                let sink = config.event_sink.clone();
+                drdynvc.attach_dynamic_channel_factory(channel_name.clone(), move || {
+                    DirectDvcChannelProcessor::new(&sink, &name)
+                });
+            }
+            for channel_name in &config.channel_names {
+                match audio_channel_kind(channel_name) {
+                    Some(AudioChannelKind::Playback) => connector.config.enable_audio_playback = true,
+                    Some(AudioChannelKind::Capture) => connector.config.enable_audio_capture = true,
+                    None => {}
+                }
             }
             Ok(())
         }
@@ -292,7 +436,7 @@ pub mod ffi {
             let Some(connector) = self.0.take() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            Ok(Box::new(ClientConnectorState(Some(connector.state))))
+            Ok(Box::new(ClientConnectorState(Some(connector.state), self.1.take())))
         }
     }
 
@@ -329,4 +473,521 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct LicenseExchangeSequence(pub ironrdp::connector::LicenseExchangeSequence);
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+mod tests {
+    use super::ffi::ClientConnector;
+    use crate::audio::ffi::NativeAudio;
+    use crate::connector::config::ffi::{ConfigBuilder, PerformanceFlags};
+    use crate::dvc::direct_channel::ffi::{DirectDvcConfig, DirectDvcEventQueue};
+    use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessageQueue;
+    use crate::dvc::ffi::{DvcPipeProxyConfig, DvcPipeProxyDescriptor};
+
+    fn connector_without_playback() -> Result<ClientConnector, &'static str> {
+        let mut builder = ConfigBuilder::new();
+        builder.with_username_and_password("user", "password");
+        builder.set_desktop_size(768, 1024);
+        builder.set_client_name("client");
+        builder.set_client_dir("C:\\");
+        builder.set_performance_flags(&PerformanceFlags::new_default());
+        builder.no_audio_playback = Some(true);
+        let config = builder.build().map_err(|_| "connector config")?;
+        let client_addr = "127.0.0.1:0".parse().map_err(|_| "test address")?;
+
+        Ok(ClientConnector(
+            Some(ironrdp::connector::ClientConnector::new(config.connector, client_addr)),
+            None,
+        ))
+    }
+
+    fn capture_audio() -> Result<Box<NativeAudio>, &'static str> {
+        NativeAudio::new(false, true, "", "", 0).map_err(|_| "audio settings")
+    }
+
+    // oracle: mutant drop pre-existing playback state when attaching capture
+    #[test]
+    fn static_playback_before_capture_preserves_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        connector.with_static_channel_rdp_snd().map_err(|_| "attach playback")?;
+        let playback = core::ptr::from_ref(
+            connector
+                .0
+                .as_ref()
+                .ok_or("connector")?
+                .static_channels
+                .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
+                .and_then(|channel| channel.channel_processor_downcast_ref::<ironrdp::rdpsnd::client::Rdpsnd>())
+                .ok_or("playback")?,
+        );
+        connector
+            .with_native_audio(&*capture_audio()?)
+            .map_err(|_| "attach capture")?;
+        let inner = connector.0.as_ref().ok_or("connector")?;
+        assert!(inner.config.enable_audio_playback);
+        assert!(inner.config.enable_audio_capture);
+        assert_eq!(
+            playback,
+            core::ptr::from_ref(
+                inner
+                    .static_channels
+                    .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
+                    .and_then(|channel| channel.channel_processor_downcast_ref::<ironrdp::rdpsnd::client::Rdpsnd>())
+                    .ok_or("playback")?
+            )
+        );
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
+    #[test]
+    fn static_playback_after_capture_advertises_both() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        connector
+            .with_native_audio(&*capture_audio()?)
+            .map_err(|_| "attach capture")?;
+        connector.with_static_channel_rdp_snd().map_err(|_| "attach playback")?;
+        let inner = connector.0.as_ref().ok_or("connector")?;
+        assert!(inner.config.enable_audio_playback);
+        assert!(inner.config.enable_audio_capture);
+        assert!(
+            inner
+                .static_channels
+                .get_by_type::<ironrdp::rdpsnd::client::Rdpsnd>()
+                .is_some()
+        );
+        Ok(())
+    }
+
+    // oracle: mutant allow native playback alongside static playback
+    #[test]
+    fn existing_static_playback_rejects_native_playback_without_consuming_audio() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        connector.with_static_channel_rdp_snd().map_err(|_| "attach playback")?;
+        let audio = NativeAudio::new(true, true, "", "", 0).map_err(|_| "audio settings")?;
+        let channel_count = connector.0.as_ref().ok_or("connector")?.static_channels.len();
+
+        assert!(connector.with_native_audio(&audio).is_err());
+        assert!(connector.1.is_none());
+        let inner = connector.0.as_ref().ok_or("connector")?;
+        assert_eq!(inner.static_channels.len(), channel_count);
+        assert!(inner.config.enable_audio_playback);
+        assert!(!inner.config.enable_audio_capture);
+
+        let mut other = connector_without_playback()?;
+        other.with_native_audio(&audio).map_err(|_| "attach rejected audio")?;
+        Ok(())
+    }
+
+    fn attach_pipe_proxy(connector: &mut ClientConnector, channel_name: &str) -> bool {
+        let queue = DvcPipeProxyMessageQueue::new(1);
+        let sink = queue.get_sink();
+        let descriptor = DvcPipeProxyDescriptor::new(channel_name, "test-pipe");
+        let mut config = DvcPipeProxyConfig::new(&sink);
+        config.add_pipe_proxy(&descriptor);
+
+        connector.with_dynamic_channel_pipe_proxy(&config).is_ok()
+    }
+
+    fn attach_direct(connector: &mut ClientConnector, channel_name: &str) -> Result<bool, &'static str> {
+        let queue = DirectDvcEventQueue::new(1).map_err(|_| "direct DVC queue")?;
+        let mut config = DirectDvcConfig::new(&queue.get_sink());
+        config.add_channel(channel_name);
+        Ok(connector.with_dynamic_channel_direct(&config).is_ok())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
+    #[test]
+    fn input_direct_attached_after_playback_advertises_capture() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+        connector.with_native_audio(&playback).map_err(|_| "attach playback")?;
+        assert!(attach_direct(&mut connector, ironrdp_rdpeai::CHANNEL_NAME)?);
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_capture);
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
+    #[test]
+    fn playback_direct_attached_after_capture_advertises_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        connector
+            .with_native_audio(&*capture_audio()?)
+            .map_err(|_| "attach capture")?;
+        assert!(attach_direct(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        )?);
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: mutant allow capture to reuse a direct AUDIO_INPUT channel
+    #[test]
+    fn capture_and_direct_input_reject_collisions_in_both_orders() -> Result<(), &'static str> {
+        let mut first = connector_without_playback()?;
+        assert!(attach_direct(&mut first, ironrdp_rdpeai::CHANNEL_NAME)?);
+        assert!(first.with_native_audio(&*capture_audio()?).is_err());
+        let mut second = connector_without_playback()?;
+        second
+            .with_native_audio(&*capture_audio()?)
+            .map_err(|_| "attach capture")?;
+        assert!(!attach_direct(&mut second, ironrdp_rdpeai::CHANNEL_NAME)?);
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
+    #[test]
+    fn playback_proxy_attached_after_capture_advertises_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: mutant drop pre-existing playback DVC state when attaching capture
+    #[test]
+    fn playback_proxy_attached_before_capture_advertises_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: mutant drop pre-existing playback DVC state when attaching capture
+    #[test]
+    fn lossy_playback_proxy_before_capture_advertises_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+        ));
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
+    #[test]
+    fn lossy_playback_proxy_after_capture_advertises_playback() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+        ));
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback);
+        Ok(())
+    }
+
+    // oracle: mutant drop pre-existing capture DVC state when attaching playback
+    #[test]
+    fn input_proxy_attached_before_playback_advertises_capture() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_capture);
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+        connector
+            .with_native_audio(&playback)
+            .map_err(|_| "attach playback-only audio")?;
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_capture);
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
+    #[test]
+    fn input_proxy_attached_after_playback_advertises_capture() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+        connector
+            .with_native_audio(&playback)
+            .map_err(|_| "attach playback-only audio")?;
+        assert!(attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
+
+        assert!(connector.0.as_ref().ok_or("connector")?.config.enable_audio_capture);
+        Ok(())
+    }
+
+    // oracle: mutant advertise audio for an unrelated dynamic channel
+    #[test]
+    fn unrelated_proxy_does_not_advertise_audio() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(&mut connector, "unrelated"));
+
+        let config = &connector.0.as_ref().ok_or("connector")?.config;
+        assert!(!config.enable_audio_playback);
+        assert!(!config.enable_audio_capture);
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
+    #[test]
+    fn separately_attached_playback_survives_later_capture_configuration() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        connector
+            .with_static_channel_rdp_snd()
+            .map_err(|_| "attach playback channel")?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+
+        assert!(
+            connector
+                .0
+                .as_ref()
+                .is_some_and(|connector| connector.config.enable_audio_playback)
+        );
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169797
+    #[test]
+    fn separately_attached_playback_after_capture_is_advertised() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        assert!(
+            !connector
+                .0
+                .as_ref()
+                .is_some_and(|connector| connector.config.enable_audio_playback)
+        );
+
+        connector
+            .with_static_channel_rdp_snd()
+            .map_err(|_| "attach playback channel")?;
+
+        assert!(
+            connector
+                .0
+                .as_ref()
+                .is_some_and(|connector| connector.config.enable_audio_playback)
+        );
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
+    #[test]
+    fn capture_only_audio_allows_playback_pipe_proxy() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+        ));
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
+    #[test]
+    fn capture_only_audio_reserves_input_pipe_proxy() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+
+        assert!(!attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604743100
+    #[test]
+    fn reserved_pipe_proxy_rejects_all_descriptors_without_mutation() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        let queue = DvcPipeProxyMessageQueue::new(1);
+        let mut config = DvcPipeProxyConfig::new(&queue.get_sink());
+        config.add_pipe_proxy(&DvcPipeProxyDescriptor::new(
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME,
+            "playback-pipe",
+        ));
+        config.add_pipe_proxy(&DvcPipeProxyDescriptor::new(ironrdp_rdpeai::CHANNEL_NAME, "input-pipe"));
+
+        assert!(connector.with_dynamic_channel_pipe_proxy(&config).is_err());
+        let inner = connector.0.as_mut().ok_or("connector")?;
+        assert!(!inner.config.enable_audio_playback);
+        let drdynvc = inner
+            .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+            .ok_or("dynamic channels")?;
+        assert!(!drdynvc.has_channel_name(ironrdp::rdpsnd::client::DVC_CHANNEL_NAME));
+        assert!(drdynvc.has_channel_name(ironrdp_rdpeai::CHANNEL_NAME));
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604743100
+    #[test]
+    fn rejected_proxy_batch_preserves_proxy_attached_before_audio() -> Result<(), &'static str> {
+        use std::sync::mpsc::{self, TryRecvError};
+
+        use crate::dvc::dvc_pipe_proxy_message_queue::ffi::DvcPipeProxyMessageSink;
+
+        let mut connector = connector_without_playback()?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let sink = DvcPipeProxyMessageSink(sender);
+        let mut original = DvcPipeProxyConfig::new(&sink);
+        original.add_pipe_proxy(&DvcPipeProxyDescriptor::new("other", "original-pipe"));
+        connector
+            .with_dynamic_channel_pipe_proxy(&original)
+            .map_err(|_| "attach original proxy")?;
+        drop(original);
+        drop(sink);
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        let queue = DvcPipeProxyMessageQueue::new(1);
+        let mut replacement = DvcPipeProxyConfig::new(&queue.get_sink());
+        replacement.add_pipe_proxy(&DvcPipeProxyDescriptor::new("other", "replacement-pipe"));
+        replacement.add_pipe_proxy(&DvcPipeProxyDescriptor::new(ironrdp_rdpeai::CHANNEL_NAME, "input-pipe"));
+
+        assert!(connector.with_dynamic_channel_pipe_proxy(&replacement).is_err());
+        assert!(matches!(receiver.try_recv(), Err(TryRecvError::Empty)));
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604743100
+    #[test]
+    fn valid_proxy_batch_attaches_all_descriptors_after_audio() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        let queue = DvcPipeProxyMessageQueue::new(1);
+        let mut config = DvcPipeProxyConfig::new(&queue.get_sink());
+        config.add_pipe_proxy(&DvcPipeProxyDescriptor::new("first", "first-pipe"));
+        config.add_pipe_proxy(&DvcPipeProxyDescriptor::new("second", "second-pipe"));
+
+        connector
+            .with_dynamic_channel_pipe_proxy(&config)
+            .map_err(|_| "attach proxies")?;
+        let drdynvc = connector
+            .0
+            .as_mut()
+            .ok_or("connector")?
+            .get_static_channel_processor_mut::<ironrdp::dvc::DrdynvcClient>()
+            .ok_or("dynamic channels")?;
+        assert!(drdynvc.has_channel_name("first"));
+        assert!(drdynvc.has_channel_name("second"));
+        assert!(drdynvc.has_channel_name(ironrdp_rdpeai::CHANNEL_NAME));
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4604009562
+    #[test]
+    fn playback_proxy_attached_before_capture_only_audio_is_preserved() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+
+        let capture = capture_audio()?;
+        connector
+            .with_native_audio(&capture)
+            .map_err(|_| "attach capture-only audio")?;
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
+    #[test]
+    fn playback_only_audio_allows_input_pipe_proxy() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+        connector
+            .with_native_audio(&playback)
+            .map_err(|_| "attach playback-only audio")?;
+
+        assert!(attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
+    #[test]
+    fn playback_only_audio_reserves_playback_pipe_proxy() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+        connector
+            .with_native_audio(&playback)
+            .map_err(|_| "attach playback-only audio")?;
+
+        assert!(!attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+        assert!(!attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::LOSSY_DVC_CHANNEL_NAME
+        ));
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4603169803
+    #[test]
+    fn input_proxy_attached_before_capture_audio_is_rejected() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(&mut connector, ironrdp_rdpeai::CHANNEL_NAME));
+
+        let capture = capture_audio()?;
+        assert!(connector.with_native_audio(&capture).is_err());
+        Ok(())
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2469#discussion_r4602602700
+    #[test]
+    fn playback_proxy_attached_before_native_playback_is_rejected() -> Result<(), &'static str> {
+        let mut connector = connector_without_playback()?;
+        assert!(attach_pipe_proxy(
+            &mut connector,
+            ironrdp::rdpsnd::client::DVC_CHANNEL_NAME
+        ));
+        let playback = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio settings")?;
+
+        assert!(connector.with_native_audio(&playback).is_err());
+        Ok(())
+    }
 }

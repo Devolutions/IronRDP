@@ -3,7 +3,6 @@
 use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::{Context, Poll};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use ironrdp_async::FramedWrite as _;
@@ -75,8 +74,8 @@ proptest! {
             .build()
             .expect("runtime")
             .block_on(async {
-                let queue = Rc::new(OutboundQueue::default());
-                let mut other = QueuedWriter::new(Rc::clone(&queue));
+                let queue = OutboundQueue::default();
+                let mut other = QueuedWriter::new(&queue);
                 let mut reply = other.for_replies();
                 let finish_at = split.index(pdus.len() + 1);
                 for (i, (is_reply, bytes)) in pdus.iter().enumerate() {

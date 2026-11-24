@@ -72,6 +72,9 @@ internal partial struct ConfigBuilder
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ConfigBuilder_set_dvc_pipe_proxy", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern void SetDvcPipeProxy(ConfigBuilder* handle, DvcPipeProxyConfig* dvcPipeProxy);
 
+    [DllImport(DiplomatNativeLib.Name, EntryPoint = "ConfigBuilder_set_direct_dvc", CallingConvention = CallingConvention.Cdecl)]
+    internal static unsafe extern void SetDirectDvc(ConfigBuilder* handle, DirectDvcConfig* directDvc);
+
     [DllImport(DiplomatNativeLib.Name, EntryPoint = "ConfigBuilder_build", CallingConvention = CallingConvention.Cdecl)]
     internal static unsafe extern DiplomatResultConfigIronRdpError Build(ConfigBuilder* handle);
 

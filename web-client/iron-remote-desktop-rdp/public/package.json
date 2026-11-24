@@ -6,7 +6,7 @@
     "Benoit Cortier"
   ],
   "description": "RDP backend for iron-remote-desktop",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Devolutions/IronRDP.git"

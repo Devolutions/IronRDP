@@ -21,6 +21,7 @@ mod canvas;
 mod clipboard;
 mod cursor;
 mod drive;
+mod entra;
 mod error;
 mod image;
 mod input;
