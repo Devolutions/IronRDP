@@ -69,7 +69,7 @@ const MAX_READ_LENGTH: usize = 1_024 * 1_024;
 /// - The drive of an enclosing directory can delete the root of an inner drive once it is empty, and nothing can then be created or opened below that root.
 /// - Roots are resolved again for each backend.
 ///   Between two backends given the same root paths, as a [`NixRdpdrBackendFactory`] builds them, the drive of an enclosing directory can rename directories so that the path of an inner root names another directory inside the enclosing root, and the later backend serves that directory through the inner drive.
-///   A symbolic link placed on that path makes the inner root unusable instead, so the path never comes to name a directory outside the enclosing root.
+///   A symbolic link placed on that path makes the inner root unusable instead, so under the assumptions below the later backend never serves a directory outside the enclosing root through the inner drive.
 ///
 /// # Guarantees and assumptions
 ///

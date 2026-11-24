@@ -66,7 +66,7 @@ Between drives that serve different directories, these limitations are known:
 - The drive of an enclosing directory can delete the root of an inner drive once it is empty, and nothing can then be created or opened below that root.
 - Roots are resolved again each time a backend is built.
   Between two backends built from one configuration, the drive of an enclosing directory can rename directories so that the path of an inner root names another directory inside the enclosing root, and the later backend serves that directory through the inner drive.
-  A symbolic link placed on that path makes the inner root unusable instead, so the path never comes to name a directory outside the enclosing root.
+  A symbolic link placed on that path makes the inner root unusable instead, so under the assumptions below the later backend never serves a directory outside the enclosing root through the inner drive.
 
 ### Guarantees and assumptions
 
