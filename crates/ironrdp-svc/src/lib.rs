@@ -95,6 +95,11 @@ impl fmt::Debug for SvcMessage {
 }
 
 impl SvcMessage {
+    /// Returns the encoded PDU size without SVC channel framing headers.
+    pub fn unframed_pdu_size(&self) -> usize {
+        self.pdu.size()
+    }
+
     /// Adds additional SVC header flags to the message.
     #[must_use]
     pub fn with_flags(mut self, flags: ChannelFlags) -> Self {
