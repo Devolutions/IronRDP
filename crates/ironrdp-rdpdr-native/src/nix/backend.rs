@@ -2219,6 +2219,27 @@ mod tests {
         assert_eq!(with_two_roots.0 + 1, with_one_root.0);
     }
 
+    /// A root refused because its path followed a link in another root keeps the directory it named open.
+    /// It therefore takes a place under the limit on open files, although nothing is served from it.
+    // oracle: mutant a root refused for a link left out of the places the roots take under the open-file limit
+    #[test]
+    fn a_root_refused_for_a_link_takes_the_place_of_one_open_file() {
+        let roots = TwoRoots::new();
+        let link = roots.first.join("link");
+        std::os::unix::fs::symlink(&roots.second, &link).expect("link directory");
+        let mut backend = NixRdpdrBackend::default()
+            .with_drive_root(FIRST, utf8(&roots.first))
+            .with_drive_root(SECOND, utf8(&link));
+        let through_the_refused_root = open_root(&mut backend, SECOND).0;
+
+        let opened = opens_until_refused(backend, &[FIRST]);
+
+        // The status of a create through a drive with any other unusable root.
+        assert_eq!(through_the_refused_root, NtStatus::UNSUCCESSFUL);
+        // The eight places under the cap, less one for each of the two roots.
+        assert_eq!(opened, (6, NtStatus::INSUFFICIENT_RESOURCES));
+    }
+
     /// A root that was replaced is no longer held open, so it takes no place under the limit on open files.
     // oracle: mutant the directory of a replaced root kept open
     #[test]
