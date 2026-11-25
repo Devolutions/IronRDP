@@ -82,8 +82,14 @@ var connector = ClientConnector.New(config, "127.0.0.1:3389");
 
 The root must be an existing, absolute, normalized drive-letter path.
 Relative, parent-directory, UNC, device and verbatim paths are rejected.
+Drive names must be distinct after device-name sanitization and Unicode uppercase conversion.
 The path syntax is checked when adding the drive; the directory is opened when the server initializes RDPDR.
 Drive redirection is supported only on Windows; other platforms return an error.
+
+Call `ActiveStage.PollRdpdrDeferred()` on a short timer, such as every 50 ms, even while the server sends no frames.
+Directory notifications and waiting file locks can complete asynchronously, and `Process` drains completions only after incoming frames.
+Serialize polling and `Process` with their transport writes, and write all returned response frames in order before the next operation.
+Dispose each output iterator, output and response frame after use.
 
 Call `ClientConnector.WithStaticChannelRdpdr(computerName, smartCardDeviceId)` to add smartcard redirection.
 That call keeps the drives selected in the configuration.

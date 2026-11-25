@@ -14,6 +14,14 @@ pub(crate) struct RedirectedDriveConfig {
     pub(crate) read_only: bool,
 }
 
+#[cfg(any(windows, test))]
+fn drive_wire_name(name: &str) -> String {
+    let mut devices = ironrdp::rdpdr::pdu::efs::Devices::new();
+    devices.add_drive(0, name.to_owned());
+    let data = devices.device(0).expect("the drive was just added").device_data();
+    String::from_utf8_lossy(data).to_uppercase()
+}
+
 /// The bitmap settings used when the caller sets none, matching the native client.
 ///
 /// Without a codec on offer, the server falls back to sending the screen as nearly raw bitmaps,
@@ -287,6 +295,14 @@ pub mod ffi {
         ) -> Result<(), Box<IronRdpError>> {
             #[cfg(windows)]
             {
+                let wire_name = super::drive_wire_name(display_name);
+                if self
+                    .redirected_drives
+                    .iter()
+                    .any(|drive| super::drive_wire_name(&drive.display_name) == wire_name)
+                {
+                    return Err("redirected drive name is already in use".into());
+                }
                 let device_id =
                     u32::try_from(self.redirected_drives.len() + 1).map_err(|_| "too many redirected drives")?;
                 ironrdp_rdpdr_native::RedirectedDrive::new(
@@ -464,25 +480,60 @@ mod tests {
     // oracle: user request requires multiple drives to retain independent read-only settings
     #[test]
     fn redirected_drives_keep_independent_read_only_settings() {
-        let root_path = std::env::temp_dir().to_string_lossy().into_owned();
+        let root_path = std::env::current_dir().unwrap().to_string_lossy().into_owned();
         let mut builder = super::ffi::ConfigBuilder::new();
         builder.with_username_and_password("user", "password");
         builder.set_desktop_size(768, 1024);
         builder.set_client_name("client");
         builder.set_client_dir("C:\\");
         builder.set_performance_flags(&super::ffi::PerformanceFlags::new_default());
-        builder
-            .add_redirected_drive("ReadOnly", &root_path, true)
-            .expect("valid read-only drive");
-        builder
-            .add_redirected_drive("Writable", &root_path, false)
-            .expect("valid writable drive");
+        assert!(builder.add_redirected_drive("ReadOnly", &root_path, true).is_ok());
+        assert!(builder.add_redirected_drive("Writable", &root_path, false).is_ok());
 
-        let config = builder.build().expect("valid configuration");
+        let Ok(config) = builder.build() else {
+            panic!("valid configuration");
+        };
 
         assert_eq!(config.redirected_drives.len(), 2);
         assert!(config.redirected_drives[0].read_only);
         assert!(!config.redirected_drives[1].read_only);
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195203
+    #[test]
+    fn drive_names_collide_after_wire_sanitization_and_case_folding() {
+        assert_eq!(
+            super::drive_wire_name("Projects/Docs"),
+            super::drive_wire_name("projects_docs")
+        );
+        assert_eq!(super::drive_wire_name("Ä"), super::drive_wire_name("ä"));
+        assert_eq!(super::drive_wire_name("Σ"), super::drive_wire_name("ς"));
+        assert_ne!(super::drive_wire_name("Projects"), super::drive_wire_name("Project"));
+    }
+
+    #[cfg(windows)]
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195203
+    #[test]
+    fn duplicate_wire_names_are_rejected_without_changing_drives() {
+        let root_path = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        let mut builder = super::ffi::ConfigBuilder::new();
+        assert!(builder.add_redirected_drive("Projects/Docs", &root_path, true).is_ok());
+        assert!(
+            builder
+                .add_redirected_drive("projects_docs", &root_path, false)
+                .is_err()
+        );
+        assert!(builder.add_redirected_drive("Other", &root_path, false).is_ok());
+        builder.with_username_and_password("user", "password");
+        builder.set_desktop_size(768, 1024);
+        builder.set_client_name("client");
+        builder.set_client_dir("C:\\");
+        builder.set_performance_flags(&super::ffi::PerformanceFlags::new_default());
+        let Ok(config) = builder.build() else {
+            panic!("valid configuration");
+        };
+        assert_eq!(config.redirected_drives.len(), 2);
+        assert_eq!(config.redirected_drives[1].device_id, 2);
     }
 
     #[cfg(not(windows))]

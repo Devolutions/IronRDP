@@ -133,6 +133,8 @@ pub mod ffi {
                 },
             );
             if !client.2.drives.is_empty() {
+                // UNTESTED: A drive-only connector must retain each read-only flag through RDPDR I/O,
+                // or a read-only share can become writable; check remote writes when changing this path.
                 let rdpdr = client.create_rdpdr(&config.connector.client_name, None)?;
                 let connector = client
                     .0
@@ -652,15 +654,182 @@ mod tests {
         NativeAudio::new(false, true, "", "", 0).map_err(|_| "audio settings")
     }
 
-    fn rdpdr_channel_ptr(
-        connector: &ClientConnector,
-    ) -> Result<*const ironrdp::svc::StaticVirtualChannel, &'static str> {
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195142
+    #[test]
+    fn smartcard_compatibility_channel_preserves_playback_setting() -> Result<(), &'static str> {
+        for (setting, expected) in [(None, true), (Some(false), true), (Some(true), false)] {
+            let mut builder = ConfigBuilder::new();
+            builder.with_username_and_password("user", "password");
+            builder.set_desktop_size(768, 1024);
+            builder.set_client_name("client");
+            builder.set_client_dir("C:\\");
+            builder.set_performance_flags(&PerformanceFlags::new_default());
+            builder.no_audio_playback = setting;
+            let config = builder.build().map_err(|_| "config")?;
+            let mut connector = ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")?;
+            connector
+                .with_static_channel_rdpdr("client", 42)
+                .map_err(|_| "smartcard")?;
+            assert_eq!(
+                connector.0.as_ref().ok_or("connector")?.config.enable_audio_playback,
+                expected
+            );
+        }
+        Ok(())
+    }
+
+    fn rdpdr_channel_ptr(connector: &ClientConnector) -> Result<*const ironrdp::rdpdr::Rdpdr, &'static str> {
         connector
             .0
             .as_ref()
             .and_then(|connector| connector.static_channels.get_by_type::<ironrdp::rdpdr::Rdpdr>())
+            .and_then(|channel| channel.channel_processor_downcast_ref::<ironrdp::rdpdr::Rdpdr>())
             .map(core::ptr::from_ref)
             .ok_or("RDPDR channel")
+    }
+
+    #[cfg(windows)]
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195247
+    #[test]
+    fn configured_drives_survive_smartcard_then_audio() -> Result<(), Box<dyn std::error::Error>> {
+        assert_drives_survive_attachments(false)
+    }
+
+    #[cfg(windows)]
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2528#discussion_r4700195247
+    #[test]
+    fn configured_drives_survive_audio_then_smartcard() -> Result<(), Box<dyn std::error::Error>> {
+        assert_drives_survive_attachments(true)
+    }
+
+    #[cfg(windows)]
+    fn assert_drives_survive_attachments(audio_first: bool) -> Result<(), Box<dyn std::error::Error>> {
+        use ironrdp::rdpdr::pdu::RdpdrPdu;
+        use ironrdp::rdpdr::pdu::efs::{
+            CreateDisposition, CreateOptions, DesiredAccess, DeviceCreateRequest, DeviceIoRequest, DeviceIoResponse,
+            DeviceWriteRequest, FileAttributes, MajorFunction, MinorFunction, NtStatus, SharedAccess, VersionAndIdPdu,
+            VersionAndIdPduKind,
+        };
+        use ironrdp::svc::SvcProcessor as _;
+        use ironrdp_core::{ReadCursor, WriteCursor, decode, encode_vec};
+
+        struct TestFile(std::path::PathBuf);
+        impl Drop for TestFile {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        let root = std::env::current_dir()?;
+        let name = format!("ffi-drive-test-{}-{audio_first}", std::process::id());
+        let path = root.join(&name);
+        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+        let _file = TestFile(path.clone());
+        drop(file);
+        let root = root.to_string_lossy();
+        let mut builder = ConfigBuilder::new();
+        builder.with_username_and_password("user", "password");
+        builder.set_desktop_size(768, 1024);
+        builder.set_client_name("client");
+        builder.set_client_dir("C:\\");
+        builder.set_performance_flags(&PerformanceFlags::new_default());
+        builder
+            .add_redirected_drive("ReadOnly", &root, true)
+            .map_err(|_| "read-only drive")?;
+        builder
+            .add_redirected_drive("Writable", &root, false)
+            .map_err(|_| "writable drive")?;
+        let config = builder.build().map_err(|_| "configuration")?;
+        let mut connector = ClientConnector::new(&config, "127.0.0.1:0").map_err(|_| "connector")?;
+        let audio = NativeAudio::new(true, false, "", "", 0).map_err(|_| "audio")?;
+        if audio_first {
+            connector.with_native_audio(&audio).map_err(|_| "attach audio")?;
+        }
+        connector
+            .with_static_channel_rdpdr("client", 42)
+            .map_err(|_| "smartcard")?;
+        if !audio_first {
+            connector.with_native_audio(&audio).map_err(|_| "attach audio")?;
+        }
+        let rdpdr = connector
+            .0
+            .as_mut()
+            .ok_or("connector")?
+            .get_static_channel_processor_mut::<ironrdp::rdpdr::Rdpdr>()
+            .ok_or("RDPDR")?;
+        let version = |kind| {
+            RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu {
+                version_major: 1,
+                version_minor: 12,
+                client_id: 0x1234,
+                kind,
+            })
+        };
+        rdpdr.process(&encode_vec(&version(VersionAndIdPduKind::ServerAnnounceRequest))?)?;
+        rdpdr.process(&encode_vec(&version(VersionAndIdPduKind::ServerClientIdConfirm))?)?;
+        let announcements = rdpdr.process(&encode_vec(&RdpdrPdu::UserLoggedon)?)?;
+        let mut drives = Vec::new();
+        for message in announcements {
+            let bytes = message.encode_unframed_pdu()?;
+            if let RdpdrPdu::ClientDeviceListAnnounce(list) = decode::<RdpdrPdu>(&bytes)? {
+                for device in list.device_list {
+                    drives.push((device.device_id(), device.device_data().to_vec()));
+                }
+            }
+        }
+        assert!(drives.contains(&(1, b"ReadOnly\0".to_vec())));
+        assert!(drives.contains(&(2, b"Writable\0".to_vec())));
+
+        let request_header = |device_id, file_id, major_function| DeviceIoRequest {
+            device_id,
+            file_id,
+            completion_id: 1,
+            major_function,
+            minor_function: MinorFunction::from(0),
+        };
+        for (device_id, access) in [(1, DesiredAccess::GENERIC_READ), (2, DesiredAccess::GENERIC_WRITE)] {
+            let request = DeviceCreateRequest {
+                device_io_request: request_header(device_id, 0, MajorFunction::Create),
+                desired_access: access,
+                allocation_size: 0,
+                file_attributes: FileAttributes::empty(),
+                shared_access: SharedAccess::FILE_SHARE_READ | SharedAccess::FILE_SHARE_WRITE,
+                create_disposition: CreateDisposition::FILE_OPEN,
+                create_options: CreateOptions::empty(),
+                path: format!("\\{name}"),
+            };
+            let mut encoded = encode_vec(&RdpdrPdu::DeviceIoRequest(request.device_io_request.clone()))?;
+            encoded.resize(4 + request.size(), 0);
+            request.encode(&mut WriteCursor::new(&mut encoded[4..]))?;
+            let messages = rdpdr.process(&encoded)?;
+            let bytes = messages[0].encode_unframed_pdu()?;
+            let mut cursor = ReadCursor::new(&bytes[4..]);
+            let reply = DeviceIoResponse::decode(&mut cursor)?;
+            assert_eq!(reply.io_status, NtStatus::SUCCESS);
+            let opened = ironrdp::rdpdr::pdu::efs::DeviceCreateResponse::decode(reply, &mut cursor)?;
+            let write = DeviceWriteRequest {
+                device_io_request: request_header(device_id, opened.file_id, MajorFunction::Write),
+                offset: 0,
+                write_data: b"ok".to_vec(),
+            };
+            let mut encoded = encode_vec(&RdpdrPdu::DeviceIoRequest(write.device_io_request.clone()))?;
+            encoded.resize(4 + write.size(), 0);
+            write.encode(&mut WriteCursor::new(&mut encoded[4..]))?;
+            let messages = rdpdr.process(&encoded)?;
+            let bytes = messages[0].encode_unframed_pdu()?;
+            let reply = DeviceIoResponse::decode(&mut ReadCursor::new(&bytes[4..]))?;
+            assert_eq!(
+                reply.io_status,
+                if device_id == 1 {
+                    NtStatus::MEDIA_WRITE_PROTECTED
+                } else {
+                    NtStatus::SUCCESS
+                }
+            );
+        }
+        drop(connector);
+        assert_eq!(std::fs::read(path)?, b"ok");
+        Ok(())
     }
 
     // oracle: user request requires smartcard and native audio to interoperate in either attachment order
