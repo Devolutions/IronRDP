@@ -33,7 +33,8 @@ public static class Connection
         HttpClient? kdcProxyClient = null, CancellationToken cancellationToken = default)
     {
         var client = await CreateTcpConnection(serverName, port, cancellationToken);
-        string clientAddr = client.Client.LocalEndPoint.ToString();
+        string clientAddr = client.Client.LocalEndPoint?.ToString()
+            ?? throw new InvalidOperationException("TCP connection has no local endpoint");
         System.Diagnostics.Debug.WriteLine(clientAddr);
 
         var framed = new Framed<NetworkStream>(client.GetStream());
