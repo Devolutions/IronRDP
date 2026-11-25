@@ -506,8 +506,8 @@ mod tests {
             super::drive_wire_name("Projects/Docs"),
             super::drive_wire_name("projects_docs")
         );
-        assert_eq!(super::drive_wire_name("Ä"), super::drive_wire_name("ä"));
-        assert_eq!(super::drive_wire_name("Σ"), super::drive_wire_name("ς"));
+        assert_eq!(super::drive_wire_name("\u{c4}"), super::drive_wire_name("\u{e4}"));
+        assert_eq!(super::drive_wire_name("\u{3a3}"), super::drive_wire_name("\u{3c2}"));
         assert_ne!(super::drive_wire_name("Projects"), super::drive_wire_name("Project"));
     }
 
